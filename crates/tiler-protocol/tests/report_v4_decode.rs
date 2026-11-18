@@ -2098,6 +2098,14 @@ fn v4_writer_refuses_inconsistent_metadata() {
     let error = encode_report_v4(&decoded).expect_err("nonfinite refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "nonfinite");
+    // A held screen carrying a non-finite retained scalar never normalizes to null on the wire.
+    let mut decoded = decode_ok("messages/report-observe.json");
+    decoded.report.screens[0].scale = f64::NAN;
+    decoded.report = tiler_core::world_report_v4_checks::grade_invalid_screens_v4(&decoded.report)
+        .expect("grades to hold");
+    let error = encode_report_v4(&decoded).expect_err("held nonfinite refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "nonfinite");
     // An ungrammatical id fails the self-check instead of emitting.
     let mut decoded = decode_ok("messages/report-command-focus.json");
     decoded.report.command = Some(tiler_core::world_report::WorldCommand::Focus {

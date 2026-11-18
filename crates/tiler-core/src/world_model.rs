@@ -5,13 +5,16 @@
 //! admission focus, and the layout sweep over staged domains.
 //! No behavior change.
 
+use crate::world_transaction::WorldTransaction;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::ids::{CorrelationId, OwnerId};
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
-use crate::world_engine::{RetainedTransfer, StagedDomain, WorldEngine, inset_world_domain};
+#[cfg(test)]
+use crate::world_engine::WorldEngine;
+use crate::world_engine::{RetainedTransfer, StagedDomain, inset_world_domain};
 use crate::world_publish::SweepFailure;
 use crate::world_report::{
     EffectCause, EffectKind, HeldScreenRow, HoldReason, OneShotEffect, ScreenReport, TilingMode,
@@ -23,7 +26,7 @@ thread_local! {
     static TEST_SWEEP_SKIP_HITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Live output order for one staged observation: ordinal-interleaved
     /// merge of valid and held rows. Each held row returns to its carried
     /// `screens` ordinal while valid rows fill the remaining slots in
@@ -83,18 +86,20 @@ impl WorldEngine {
     /// scoped view is empty).
     pub(crate) fn converge_logical_post(&mut self) {
         use crate::workspace::{WorkspaceFacts, plan_trailing};
-        let inventory_complete = self.staged.observation.inventory_complete;
+        let inventory_complete = self.world.staged.observation.inventory_complete;
         let live: Vec<String> =
-            Self::live_output_order(&self.staged.screens, &self.staged.held_screens);
+            Self::live_output_order(&self.world.staged.screens, &self.world.staged.held_screens);
         // Narrow derived presence (output ids plus flags only, never whole
         // rows): screen completeness and non-empty native orders.
         let complete_map: BTreeMap<String, bool> = self
+            .world
             .staged
             .screens
             .iter()
             .map(|screen| (screen.output.0.clone(), screen.complete))
             .collect();
         let native_nonempty: BTreeSet<String> = self
+            .world
             .staged
             .observation
             .native
@@ -107,8 +112,8 @@ impl WorldEngine {
         // occupying.
         let mut occupied: BTreeSet<String> = BTreeSet::new();
         let mut sticky_homed: BTreeSet<String> = BTreeSet::new();
-        for (window, key) in &self.staged.homing {
-            let Some(fact) = self.staged.facts.get(window) else {
+        for (window, key) in &self.world.staged.homing {
+            let Some(fact) = self.world.staged.facts.get(window) else {
                 continue;
             };
             let _ = fact;
@@ -123,24 +128,25 @@ impl WorldEngine {
         // retained homes occupy, never an empty workspace. Held rows carry
         // no sticky facts, so the retained home keeps plain occupancy (the
         // safe direction: never delete a live workspace).
-        for held in &self.staged.held_windows {
+        for held in &self.world.staged.held_windows {
             if let Some(key) = self.core_homing(&held.window) {
                 occupied.insert(format!("{}/{}", key.output.0, key.workspace.0));
             }
         }
         let mut hosted: BTreeSet<String> = BTreeSet::new();
-        for entry in self.displaced.values() {
+        for entry in self.world.workspace.displaced.values() {
             for id in &entry.workspaces {
                 hosted.insert(format!("{}/{}", entry.dest, id));
             }
         }
-        let shared = self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared;
+        let shared = self.connection.workspace_mode_setting()
+            == crate::workspace_scope::WorkspaceMode::Shared;
         if shared {
             // Union occupancy over logical ids across all live outputs.
             let mut occupied_ids: BTreeSet<String> = BTreeSet::new();
             let mut retained_ids: BTreeSet<String> = BTreeSet::new();
-            for (window, key) in &self.staged.homing {
-                let Some(fact) = self.staged.facts.get(window) else {
+            for (window, key) in &self.world.staged.homing {
+                let Some(fact) = self.world.staged.facts.get(window) else {
                     continue;
                 };
                 let _ = fact;
@@ -152,12 +158,12 @@ impl WorldEngine {
             }
             // Narrowly held rows are live presence: their retained homes
             // occupy under union semantics too.
-            for held in &self.staged.held_windows {
+            for held in &self.world.staged.held_windows {
                 if let Some(key) = self.core_homing(&held.window) {
                     occupied_ids.insert(key.workspace.0.clone());
                 }
             }
-            for entry in self.displaced.values() {
+            for entry in self.world.workspace.displaced.values() {
                 for id in &entry.workspaces {
                     retained_ids.insert(id.clone());
                 }
@@ -167,7 +173,7 @@ impl WorldEngine {
             let first = ordered.first().cloned();
             let ring = first
                 .as_ref()
-                .and_then(|first| self.mapping.get(first).cloned());
+                .and_then(|first| self.world.workspace.mapping.get(first).cloned());
             let complete_all = live
                 .iter()
                 .all(|output| complete_map.get(output.as_str()).copied().unwrap_or(false));
@@ -185,16 +191,20 @@ impl WorldEngine {
                         visible: visible == *id,
                         occupied: occupied_ids.contains(id),
                         retained: retained_ids.contains(id)
-                            || self.retained.iter().any(|r| {
+                            || self.world.settlement.retained.iter().any(|r| {
                                 r.target.target_workspace == *id
                                     || r.source_workspace == *id
                                     || r.migration_refill.as_deref() == Some(id.as_str())
                             })
                             || self
+                                .world
+                                .settlement
                                 .pending_source_releases
                                 .iter()
                                 .any(|(_, workspace)| workspace == id)
                             || self
+                                .world
+                                .settlement
                                 .retained_creations
                                 .iter()
                                 .any(|retained| retained.logical_workspace == *id),
@@ -220,6 +230,8 @@ impl WorldEngine {
                             // occupancy fails closed: retain the row, never
                             // retire on unreadable counts.
                             let pairs: Vec<(String, String)> = self
+                                .world
+                                .settlement
                                 .native_map
                                 .iter()
                                 .filter(|(_, logical)| *logical == id)
@@ -234,38 +246,51 @@ impl WorldEngine {
                                 continue;
                             }
                             for pair in pairs {
-                                self.native_map.remove(&pair);
-                                self.retired_natives.insert(pair, id.clone());
+                                self.world.settlement.native_map.remove(&pair);
+                                self.world
+                                    .settlement
+                                    .retired_natives
+                                    .insert(pair, id.clone());
                             }
                             for output in &live {
                                 let key = DomainKey {
                                     output: OutputId(output.clone()),
                                     workspace: WorkspaceId(id.clone()),
                                 };
-                                self.layout.drop_domain(&key);
-                                self.tiling.remove(&key);
+                                self.world.layout.drop_domain(&key);
+                                self.world.workspace.tiling.remove(&key);
                             }
                         } else {
                             kept.push(id.clone());
                         }
                     }
                     for output in &live {
-                        self.mapping.insert(output.clone(), kept.clone());
+                        self.world
+                            .workspace
+                            .mapping
+                            .insert(output.clone(), kept.clone());
                     }
                 }
                 if plan.need_append {
-                    let default_tiled = self.default_tiled();
+                    let default_tiled = self.connection.default_tiled();
                     let out = OutputId(first.clone());
                     if let Some(id) = self.create_trailing_workspace(&out, default_tiled) {
                         for output in &live {
                             if output == &first {
                                 continue;
                             }
-                            let slot = self.mapping.entry(output.clone()).or_default();
+                            let slot = self
+                                .world
+                                .workspace
+                                .mapping
+                                .entry(output.clone())
+                                .or_default();
                             if !slot.iter().any(|kept| kept == &id) {
                                 slot.push(id.clone());
                             }
-                            self.tiling
+                            self.world
+                                .workspace
+                                .tiling
                                 .entry(DomainKey {
                                     output: OutputId(output.clone()),
                                     workspace: WorkspaceId(id.clone()),
@@ -286,7 +311,7 @@ impl WorldEngine {
                 if !complete || !inventory_complete {
                     continue;
                 }
-                let Some(ring) = self.mapping.get(output).cloned() else {
+                let Some(ring) = self.world.workspace.mapping.get(output).cloned() else {
                     continue;
                 };
                 let facts: Vec<WorkspaceFacts> = ring
@@ -301,7 +326,7 @@ impl WorldEngine {
                             occupied: occupied.contains(&scoped),
                             retained: sticky_homed.contains(&scoped)
                                 || hosted.contains(&scoped)
-                                || self.retained.iter().any(|r| {
+                                || self.world.settlement.retained.iter().any(|r| {
                                     (r.target.target_output.0 == *output
                                         && r.target.target_workspace == *id)
                                         || (r.source_output.0 == *output
@@ -309,13 +334,17 @@ impl WorldEngine {
                                         || r.migration_refill.as_deref() == Some(id.as_str())
                                 })
                                 || self
+                                    .world
+                                    .settlement
                                     .pending_source_releases
                                     .iter()
                                     .any(|(out, workspace)| out == output && workspace == id)
-                                || self.retained_creations.iter().any(|retained| {
-                                    retained.target_output.0 == *output
-                                        && retained.logical_workspace == *id
-                                }),
+                                || self.world.settlement.retained_creations.iter().any(
+                                    |retained| {
+                                        retained.target_output.0 == *output
+                                            && retained.logical_workspace == *id
+                                    },
+                                ),
                         }
                     })
                     .collect();
@@ -350,13 +379,15 @@ impl WorldEngine {
                     plan.remove.clear();
                 }
             }
-            if self.host_owned_workspace_domains() && self.equal_workspace_count() {
+            if self.connection.host_owned_workspace_domains()
+                && self.connection.equal_workspace_count()
+            {
                 // Partial native retirement readback must not replace an old
                 // logical identity with freshly minted equal-count padding.
                 let floor = live
                     .iter()
                     .filter_map(|output| {
-                        let ring = self.mapping.get(output)?;
+                        let ring = self.world.workspace.mapping.get(output)?;
                         Some(plans.get(output).map_or(ring.len(), |(_, plan)| {
                             ring.len() - plan.remove.len() + usize::from(plan.need_append)
                         }))
@@ -386,25 +417,30 @@ impl WorldEngine {
                                     kept.push(id.clone());
                                     continue;
                                 }
-                                self.retired_natives
+                                self.world
+                                    .settlement
+                                    .retired_natives
                                     .insert((output.clone(), native.clone()), id.clone());
-                                self.native_map.remove(&(output.clone(), native));
+                                self.world
+                                    .settlement
+                                    .native_map
+                                    .remove(&(output.clone(), native));
                             }
                             let key = DomainKey {
                                 output: OutputId(output.clone()),
                                 workspace: WorkspaceId(id.clone()),
                             };
-                            self.layout.drop_domain(&key);
-                            self.tiling.remove(&key);
+                            self.world.layout.drop_domain(&key);
+                            self.world.workspace.tiling.remove(&key);
                         } else {
                             kept.push(id.clone());
                         }
                     }
-                    self.mapping.insert(output.clone(), kept);
+                    self.world.workspace.mapping.insert(output.clone(), kept);
                 }
                 if plan.need_append {
                     let out = OutputId(output.clone());
-                    self.create_trailing_workspace(&out, self.default_tiled());
+                    self.create_trailing_workspace(&out, self.connection.default_tiled());
                 }
             }
         }
@@ -417,25 +453,27 @@ impl WorldEngine {
             && live
                 .iter()
                 .all(|output| complete_map.get(output.as_str()).copied().unwrap_or(false));
-        let native_orders_known = !self.host_owned_workspace_domains()
+        let native_orders_known = !self.connection.host_owned_workspace_domains()
             || live
                 .iter()
                 .all(|output| native_nonempty.contains(output.as_str()));
-        if self.equal_workspace_count() && inventories_readable && native_orders_known {
+        if self.connection.equal_workspace_count() && inventories_readable && native_orders_known {
             let max_len = live
                 .iter()
-                .filter_map(|output| self.mapping.get(output).map(Vec::len))
+                .filter_map(|output| self.world.workspace.mapping.get(output).map(Vec::len))
                 .max()
                 .unwrap_or(0);
             for output in &live {
                 while self
+                    .world
+                    .workspace
                     .mapping
                     .get(output)
                     .is_some_and(|ring| ring.len() < max_len)
                 {
                     let out = OutputId(output.clone());
                     if self
-                        .create_trailing_workspace(&out, self.default_tiled())
+                        .create_trailing_workspace(&out, self.connection.default_tiled())
                         .is_none()
                     {
                         break;
@@ -445,54 +483,81 @@ impl WorldEngine {
         }
         // View sanity after lifecycle: invalid views use the known-echo fallback.
         for output in &live {
-            let valid = self.views.get(output).is_some_and(|view| {
-                self.mapping
+            let valid = self.world.workspace.views.get(output).is_some_and(|view| {
+                self.world
+                    .workspace
+                    .mapping
                     .get(output)
                     .is_some_and(|ring| ring.contains(view))
             });
             if !valid {
                 if let Some(fallback) = self.preferred_view_fallback(output) {
-                    self.views.insert(output.clone(), fallback);
+                    self.world.workspace.views.insert(output.clone(), fallback);
                 } else {
-                    self.views.remove(output);
+                    self.world.workspace.views.remove(output);
                 }
             }
         }
         // History observes effective views over the fresh rings. Shared
         // mode keeps one history over the unified order; per-output
         // entries still discard with their outputs.
-        if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
+        if self.connection.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared
+        {
             let mut ordered = live.clone();
             ordered.sort();
             if let Some(first) = ordered.first() {
-                let canonical = self.mapping.get(first).cloned().unwrap_or_default();
+                let canonical = self
+                    .world
+                    .workspace
+                    .mapping
+                    .get(first)
+                    .cloned()
+                    .unwrap_or_default();
                 for output in &ordered {
-                    self.mapping.insert(output.clone(), canonical.clone());
+                    self.world
+                        .workspace
+                        .mapping
+                        .insert(output.clone(), canonical.clone());
                 }
                 if let Some(current) = self.effective_view(&OutputId(first.clone())) {
                     for output in &ordered {
-                        self.views.insert(output.clone(), current.clone());
+                        self.world
+                            .workspace
+                            .views
+                            .insert(output.clone(), current.clone());
                     }
-                    self.history.observe_shared(&canonical, &current);
+                    self.world
+                        .workspace
+                        .history
+                        .observe_shared(&canonical, &current);
                 }
             }
         } else {
             for output in &live {
                 if let Some(current) = self.effective_view(&OutputId(output.clone())) {
-                    let ring = self.mapping.get(output).cloned().unwrap_or_default();
-                    self.history.observe(output, &current, &ring);
+                    let ring = self
+                        .world
+                        .workspace
+                        .mapping
+                        .get(output)
+                        .cloned()
+                        .unwrap_or_default();
+                    self.world
+                        .workspace
+                        .history
+                        .observe(output, &current, &ring);
                 }
             }
         }
-        for output in self.history.history_outputs() {
+        for output in self.world.workspace.history.history_outputs() {
             if !live.iter().any(|id| id == &output) {
-                self.history.discard_output(&output);
+                self.world.workspace.history.discard_output(&output);
             }
         }
         // Stale sessions: keys outside every ring retire (displaced cells
         // re-seed on their survivor; removed trailing cells drop).
         let mut ringed: BTreeSet<DomainKey> = BTreeSet::new();
-        for (output, ring) in &self.mapping {
+        for (output, ring) in &self.world.workspace.mapping {
             for id in ring {
                 ringed.insert(DomainKey {
                     output: OutputId(output.clone()),
@@ -500,9 +565,9 @@ impl WorldEngine {
                 });
             }
         }
-        for key in self.layout.domain_keys() {
+        for key in self.world.layout.domain_keys() {
             if !ringed.contains(&key) {
-                self.layout.drop_domain(&key);
+                self.world.layout.drop_domain(&key);
             }
         }
     }
@@ -519,13 +584,13 @@ impl WorldEngine {
     ) -> Vec<(String, String)> {
         let mut matched: Vec<(String, String)> = Vec::new();
         for origin in origins {
-            let Some(entry) = self.displaced.get(origin) else {
+            let Some(entry) = self.world.workspace.displaced.get(origin) else {
                 continue;
             };
             let siblings: Vec<&crate::world_report::OutputIdentity> = origins
                 .iter()
                 .filter(|other| *other != origin)
-                .filter_map(|other| self.displaced.get(other))
+                .filter_map(|other| self.world.workspace.displaced.get(other))
                 .map(|sibling| &sibling.origin_identity)
                 .collect();
             if let Some(handle) =
@@ -558,30 +623,33 @@ impl WorldEngine {
         // Fresh-displacement rehoming below is per-report evidence: clear
         // the discriminator so an earlier disconnect never suppresses a
         // later report's genuinely new lifetimes.
-        self.displaced_rehomed.clear();
-        let shared = self.workspace_mode_setting() == WorkspaceMode::Shared;
-        let inventory_complete = self.staged.observation.inventory_complete;
-        let staged_focused = self.staged.observation.focused_global.clone();
-        let staged_primary = self.staged.observation.primary_output.clone();
+        self.world.workspace.displaced_rehomed.clear();
+        let shared = self.connection.workspace_mode_setting() == WorkspaceMode::Shared;
+        let inventory_complete = self.world.staged.observation.inventory_complete;
+        let staged_focused = self.world.staged.observation.focused_global.clone();
+        let staged_primary = self.world.staged.observation.primary_output.clone();
         let live: Vec<String> =
-            Self::live_output_order(&self.staged.screens, &self.staged.held_screens);
+            Self::live_output_order(&self.world.staged.screens, &self.world.staged.held_screens);
         let designated = staged_primary.as_ref().map(|out| out.0.clone());
         // Narrow derived presence (output ids plus flags only, never whole
         // rows): valid screens, screen completeness, and non-empty native
         // orders.
         let valid_set: BTreeSet<String> = self
+            .world
             .staged
             .screens
             .iter()
             .map(|screen| screen.output.0.clone())
             .collect();
         let complete_map: BTreeMap<String, bool> = self
+            .world
             .staged
             .screens
             .iter()
             .map(|screen| (screen.output.0.clone(), screen.complete))
             .collect();
         let native_nonempty: BTreeSet<String> = self
+            .world
             .staged
             .observation
             .native
@@ -590,8 +658,8 @@ impl WorldEngine {
             .map(|entry| entry.output.0.clone())
             .collect();
         let live_set: BTreeSet<&str> = live.iter().map(String::as_str).collect();
-        for screen in &self.staged.screens {
-            self.output_facts.insert(
+        for screen in &self.world.staged.screens {
+            self.world.workspace.output_facts.insert(
                 screen.output.0.clone(),
                 OutputFacts {
                     rect: screen.full_rect,
@@ -600,13 +668,13 @@ impl WorldEngine {
                 },
             );
         }
-        for held in &self.staged.held_screens {
+        for held in &self.world.staged.held_screens {
             // Held outputs keep disconnect-time-style facts (no geometry)
             // so displacement still places survivors without inventing a
             // proxy frame; the designated flag never marks a held output.
             // Held identity rows are unreadable: record unknown rather
             // than stale evidence.
-            self.output_facts.insert(
+            self.world.workspace.output_facts.insert(
                 held.output.0.clone(),
                 OutputFacts {
                     rect: None,
@@ -636,12 +704,14 @@ impl WorldEngine {
         // ring, that ring is left empty here and
         // [`WorldEngine::converge_native_pre`] builds one logical per
         // native desktop in native order below.
-        let native_bootstrap = self.host_owned_workspace_domains() && inventory_complete;
+        let native_bootstrap = self.connection.host_owned_workspace_domains() && inventory_complete;
         if shared {
             let mut ordered = live.clone();
             ordered.sort();
             let inhabited = ordered.iter().any(|output| {
-                self.mapping
+                self.world
+                    .workspace
+                    .mapping
                     .get(output)
                     .is_some_and(|ring| !ring.is_empty())
             });
@@ -659,17 +729,27 @@ impl WorldEngine {
                         .iter()
                         .any(|output| native_nonempty.contains(output.as_str()));
                 if !native_ready && let Some(first) = ordered.first().cloned() {
-                    let id = self
-                        .create_trailing_workspace(&OutputId(first.clone()), self.default_tiled());
+                    let id = self.create_trailing_workspace(
+                        &OutputId(first.clone()),
+                        self.connection.default_tiled(),
+                    );
                     if let Some(id) = id {
                         for output in &ordered {
-                            let ring = self.mapping.entry(output.clone()).or_default();
+                            let ring = self
+                                .world
+                                .workspace
+                                .mapping
+                                .entry(output.clone())
+                                .or_default();
                             if !ring.iter().any(|kept| kept == &id) {
                                 ring.push(id.clone());
                             }
-                            self.views.insert(output.clone(), id.clone());
+                            self.world
+                                .workspace
+                                .views
+                                .insert(output.clone(), id.clone());
                         }
-                        self.history.prime_shared(&id);
+                        self.world.workspace.history.prime_shared(&id);
                     }
                 }
             } else {
@@ -677,21 +757,42 @@ impl WorldEngine {
                 // per-screen mappings stay unified without rewriting
                 // history beyond the shared rules.
                 if let Some(first) = ordered.first().cloned() {
-                    let canonical = self.mapping.get(&first).cloned().unwrap_or_default();
+                    let canonical = self
+                        .world
+                        .workspace
+                        .mapping
+                        .get(&first)
+                        .cloned()
+                        .unwrap_or_default();
                     for output in &ordered {
-                        self.mapping.insert(output.clone(), canonical.clone());
+                        self.world
+                            .workspace
+                            .mapping
+                            .insert(output.clone(), canonical.clone());
                     }
-                    if let Some(view) = self.views.get(&first).cloned() {
+                    if let Some(view) = self.world.workspace.views.get(&first).cloned() {
                         for output in &ordered {
-                            self.views.insert(output.clone(), view.clone());
+                            self.world
+                                .workspace
+                                .views
+                                .insert(output.clone(), view.clone());
                         }
                     }
                 }
             }
         } else {
             for output in &live {
-                self.mapping.entry(output.clone()).or_default();
-                let empty = self.mapping.get(output).is_some_and(Vec::is_empty);
+                self.world
+                    .workspace
+                    .mapping
+                    .entry(output.clone())
+                    .or_default();
+                let empty = self
+                    .world
+                    .workspace
+                    .mapping
+                    .get(output)
+                    .is_some_and(Vec::is_empty);
                 if empty {
                     let native_ready = native_bootstrap
                         && complete_map.get(output.as_str()).copied().unwrap_or(false)
@@ -699,10 +800,12 @@ impl WorldEngine {
                     if native_ready {
                         continue;
                     }
-                    let id = self
-                        .create_trailing_workspace(&OutputId(output.clone()), self.default_tiled());
+                    let id = self.create_trailing_workspace(
+                        &OutputId(output.clone()),
+                        self.connection.default_tiled(),
+                    );
                     if let Some(id) = id {
-                        self.views.insert(output.clone(), id);
+                        self.world.workspace.views.insert(output.clone(), id);
                     }
                 }
             }
@@ -724,6 +827,7 @@ impl WorldEngine {
             // live-name fallback: unknown, duplicate or mismatched
             // identities hold rather than reclaim a same-named panel.
             let live_panels: Vec<(String, crate::world_report::OutputIdentity)> = self
+                .world
                 .staged
                 .screens
                 .iter()
@@ -733,19 +837,21 @@ impl WorldEngine {
                 .iter()
                 .map(|(handle, identity)| (handle.as_str(), identity))
                 .collect();
-            let origins: Vec<String> = self.displaced.keys().cloned().collect();
+            let origins: Vec<String> = self.world.workspace.displaced.keys().cloned().collect();
             let matched = self.matched_physical_returns(&live_refs, &origins);
             // Pre-rekey member homes: the scan below must read where
             // members lived before this report's return rekeys them onto
             // the live handle, otherwise every home already names the
             // origin and no return flight ever mints.
             let pre_homes: BTreeMap<WindowId, DomainKey> = self
+                .world
+                .workspace
                 .members
                 .iter()
                 .map(|(window, state)| (window.clone(), state.home.clone()))
                 .collect();
             for (origin, live_handle) in matched {
-                let Some(entry) = self.displaced.remove(&origin) else {
+                let Some(entry) = self.world.workspace.displaced.remove(&origin) else {
                     continue;
                 };
                 // Original affinity, established at displacement: only the
@@ -756,7 +862,12 @@ impl WorldEngine {
                     self.take_workspace_from_all(id, &live_handle);
                 }
                 {
-                    let slot = self.mapping.entry(live_handle.clone()).or_default();
+                    let slot = self
+                        .world
+                        .workspace
+                        .mapping
+                        .entry(live_handle.clone())
+                        .or_default();
                     for id in &owned {
                         if !slot.iter().any(|kept| kept == id) {
                             slot.push(id.clone());
@@ -789,7 +900,7 @@ impl WorldEngine {
                 // facts only: own-process and safety exclusions never
                 // ride. Never replace an outstanding non-policy Window or
                 // Migration flight: the command path owns it.
-                for (window, fact) in &self.staged.facts.clone() {
+                for (window, fact) in &self.world.staged.facts.clone() {
                     if self.derived_for(window).sticky {
                         continue;
                     }
@@ -802,7 +913,7 @@ impl WorldEngine {
                     else {
                         continue;
                     };
-                    let occupied = self.retained.iter().any(|retained| {
+                    let occupied = self.world.settlement.retained.iter().any(|retained| {
                         if retained.policy {
                             false
                         } else {
@@ -837,32 +948,41 @@ impl WorldEngine {
                 // every remaining hosting and affinity set so a later
                 // return never yanks them back. Emptied records drop with
                 // their stale view and history, as on displacement.
-                for record in self.displaced.values_mut() {
+                for record in self.world.workspace.displaced.values_mut() {
                     record.workspaces.retain(|id| !owned.contains(id));
                     record.owned.retain(|id| !owned.contains(id));
                 }
                 let emptied: Vec<String> = self
+                    .world
+                    .workspace
                     .displaced
                     .iter()
                     .filter(|(_, record)| record.workspaces.is_empty())
                     .map(|(other, _)| other.clone())
                     .collect();
                 for other in emptied {
-                    self.displaced.remove(&other);
-                    self.views.remove(&other);
-                    self.history.discard_output(&other);
+                    self.world.workspace.displaced.remove(&other);
+                    self.world.workspace.views.remove(&other);
+                    self.world.workspace.history.discard_output(&other);
                 }
             }
             // Displacement: removed origins place their units on one survivor.
             let removed: Vec<String> = self
+                .world
+                .workspace
                 .mapping
                 .keys()
                 .filter(|output| !live_set.contains(output.as_str()))
                 .cloned()
                 .collect();
             for origin in removed {
-                let mut candidates: Vec<String> = self.mapping.remove(&origin).unwrap_or_default();
-                if let Some(record) = self.displaced.get(&origin) {
+                let mut candidates: Vec<String> = self
+                    .world
+                    .workspace
+                    .mapping
+                    .remove(&origin)
+                    .unwrap_or_default();
+                if let Some(record) = self.world.workspace.displaced.get(&origin) {
                     for id in &record.workspaces {
                         if !candidates.iter().any(|kept| kept == id) {
                             candidates.push(id.clone());
@@ -893,15 +1013,16 @@ impl WorldEngine {
                 // origin native pair, so a same-name return adopts fresh
                 // instead of resurrecting the stale logical. Independent
                 // rosters keep the legacy adopt-everything path untouched.
-                if self.shared_native_roster() && self.shared_disconnect_prune_ready() {
+                if self.connection.shared_native_roster() && self.shared_disconnect_prune_ready() {
                     let pre: Vec<String> = candidates.clone();
                     candidates.retain(|id| {
-                        if self.members.values().any(|state| {
+                        if self.world.workspace.members.values().any(|state| {
                             state.home.output.0 == origin && state.home.workspace.0 == *id
                         }) {
                             return true;
                         }
                         if self
+                            .world
                             .staged
                             .homing
                             .values()
@@ -915,30 +1036,40 @@ impl WorldEngine {
                     let dropped: Vec<String> =
                         pre.into_iter().filter(|id| !kept.contains(id)).collect();
                     if !dropped.is_empty() {
-                        self.native_map.retain(|(out, _), logical| {
-                            out != &origin || !dropped.iter().any(|id| id == logical)
-                        });
+                        self.world
+                            .settlement
+                            .native_map
+                            .retain(|(out, _), logical| {
+                                out != &origin || !dropped.iter().any(|id| id == logical)
+                            });
                     }
                 }
                 candidates.sort();
                 candidates.dedup();
                 let prev = self
+                    .world
+                    .workspace
                     .displaced
                     .get(&origin)
                     .map(|record| record.dest.clone());
                 if candidates.is_empty() {
-                    self.displaced.remove(&origin);
-                    self.views.remove(&origin);
-                    self.history.discard_output(&origin);
+                    self.world.workspace.displaced.remove(&origin);
+                    self.world.workspace.views.remove(&origin);
+                    self.world.workspace.history.discard_output(&origin);
                     continue;
                 }
                 let dest = prev
                     .clone()
                     .filter(|dest| live_set.contains(dest.as_str()))
                     .or_else(|| {
-                        let removed_rect =
-                            self.output_facts.get(&origin).and_then(|facts| facts.rect);
+                        let removed_rect = self
+                            .world
+                            .workspace
+                            .output_facts
+                            .get(&origin)
+                            .and_then(|facts| facts.rect);
                         let survivors: Vec<SurvivorInfo> = self
+                            .world
                             .staged
                             .screens
                             .iter()
@@ -956,7 +1087,10 @@ impl WorldEngine {
                 let Some(dest) = dest else {
                     // No survivor: keep the ring untouched; the next report
                     // retries once screens exist again.
-                    self.mapping.insert(origin.clone(), candidates);
+                    self.world
+                        .workspace
+                        .mapping
+                        .insert(origin.clone(), candidates);
                     continue;
                 };
                 let fresh = prev.as_deref() != Some(dest.as_str());
@@ -976,7 +1110,7 @@ impl WorldEngine {
                 let mut stray_members: Vec<(WindowId, DomainKey, DomainKey)> = Vec::new();
                 if fresh {
                     // Staged admitted facts only (see above).
-                    for window in self.staged.facts.clone().keys() {
+                    for window in self.world.staged.facts.clone().keys() {
                         if self.derived_for(window).sticky {
                             continue;
                         }
@@ -985,7 +1119,11 @@ impl WorldEngine {
                         // is already removed above), so the remapping helper
                         // cannot resolve origin homes yet.
                         let home_of = |window: &WindowId| {
-                            self.members.get(window).map(|state| state.home.clone())
+                            self.world
+                                .workspace
+                                .members
+                                .get(window)
+                                .map(|state| state.home.clone())
                         };
                         let moved_id = candidates.iter().find(|id| {
                             home_of(window).is_some_and(|key| {
@@ -1000,10 +1138,13 @@ impl WorldEngine {
                         // origin's units, so `take_admission_focus` spends
                         // it without emitting even when the survivor homing
                         // lands on a previously empty controlled unit.
-                        self.displaced_rehomed.insert(window.clone());
+                        self.world
+                            .workspace
+                            .displaced_rehomed
+                            .insert(window.clone());
                         // Never replace an outstanding non-policy Window or
                         // Migration flight: the command path owns it.
-                        let occupied = self.retained.iter().any(|retained| {
+                        let occupied = self.world.settlement.retained.iter().any(|retained| {
                             if retained.policy {
                                 false
                             } else {
@@ -1033,7 +1174,12 @@ impl WorldEngine {
                     self.take_workspace_from_all(id, &dest);
                 }
                 {
-                    let slot = self.mapping.entry(dest.clone()).or_default();
+                    let slot = self
+                        .world
+                        .workspace
+                        .mapping
+                        .entry(dest.clone())
+                        .or_default();
                     for id in &candidates {
                         if !slot.iter().any(|kept| kept == id) {
                             slot.push(id.clone());
@@ -1061,6 +1207,8 @@ impl WorldEngine {
                 // record scans retained facts for peers sharing the tuple
                 // or connector. Unknown holds any return.
                 let (identity, tuple_contested, connector_contested) = self
+                    .world
+                    .workspace
                     .displaced
                     .get(&origin)
                     .map(|record| {
@@ -1072,11 +1220,13 @@ impl WorldEngine {
                     })
                     .unwrap_or_else(|| {
                         let (tuple, connector) = crate::workspace_scope::snapshot_contention(
-                            &self.output_facts,
+                            &self.world.workspace.output_facts,
                             &origin,
                         );
                         (
-                            self.output_facts
+                            self.world
+                                .workspace
+                                .output_facts
                                 .get(&origin)
                                 .map(|facts| facts.identity.clone())
                                 .unwrap_or_else(crate::world_report::OutputIdentity::unknown),
@@ -1084,7 +1234,7 @@ impl WorldEngine {
                             connector,
                         )
                     });
-                self.displaced.insert(
+                self.world.workspace.displaced.insert(
                     origin.clone(),
                     DisplacedEntry {
                         workspaces: candidates.clone(),
@@ -1096,9 +1246,15 @@ impl WorldEngine {
                         owned: candidates
                             .iter()
                             .filter(|id| {
-                                !self.displaced.iter().any(|(other, record)| {
-                                    other != &origin && record.owned.iter().any(|kept| kept == *id)
-                                })
+                                !self
+                                    .world
+                                    .workspace
+                                    .displaced
+                                    .iter()
+                                    .any(|(other, record)| {
+                                        other != &origin
+                                            && record.owned.iter().any(|kept| kept == *id)
+                                    })
                             })
                             .cloned()
                             .collect(),
@@ -1111,7 +1267,7 @@ impl WorldEngine {
                 // Chain refresh: earlier records whose units rode along on
                 // this ring now live on the new dest. Without this the
                 // return rekeys against a stale source and trims the unit.
-                for (other, record) in self.displaced.iter_mut() {
+                for (other, record) in self.world.workspace.displaced.iter_mut() {
                     if *other != origin
                         && record.workspaces.iter().any(|id| candidates.contains(id))
                     {
@@ -1129,20 +1285,22 @@ impl WorldEngine {
                     // via rehome and ride no transfer.
                     fresh_members.extend(stray_members);
                 }
-                self.views.remove(&origin);
-                self.history.discard_output(&origin);
+                self.world.workspace.views.remove(&origin);
+                self.world.workspace.history.discard_output(&origin);
             }
         } else {
             // Shared mode: discard disconnected output history; the one
             // shared history persists.
             let gone: Vec<String> = self
+                .world
+                .workspace
                 .history
                 .history_outputs()
                 .into_iter()
                 .filter(|output| !live_set.contains(output.as_str()))
                 .collect();
             for output in gone {
-                self.history.discard_output(&output);
+                self.world.workspace.history.discard_output(&output);
             }
         }
         // Focused survivor/return view policy, fresh placements only: when
@@ -1152,7 +1310,7 @@ impl WorldEngine {
         // parent. Operation identities pin the creating revision plus a
         // per-run index: stable across repeated snapshots of the
         // outstanding intent, yet distinct for every cycle.
-        let epoch = self.state_revision;
+        let epoch = self.world.state_revision;
         if !staged_focused.is_empty() {
             let active = WindowId(staged_focused.clone());
             if let Some(homing) = self.logical_homing(&active) {
@@ -1173,9 +1331,11 @@ impl WorldEngine {
         // affected member.
         for (index, (window, target, source)) in fresh_members.into_iter().enumerate() {
             let operation_id = format!("op-hp-{epoch}-{index}");
-            self.retained
+            self.world
+                .settlement
+                .retained
                 .retain(|r| !matches!(&r.target.kind, TransferKind::Window(w) if w == &window));
-            self.retained.push(RetainedTransfer {
+            self.world.settlement.retained.push(RetainedTransfer {
                 target: TransferTarget {
                     operation_id,
                     kind: TransferKind::Window(window),
@@ -1205,7 +1365,7 @@ impl WorldEngine {
         // Tiling seeds for new logical ids; prune keys outside all rings
         // so a reused id reseeds from the current default.
         let mut ringed: BTreeSet<DomainKey> = BTreeSet::new();
-        for (output, ring) in &self.mapping {
+        for (output, ring) in &self.world.workspace.mapping {
             for id in ring {
                 ringed.insert(DomainKey {
                     output: OutputId(output.clone()),
@@ -1213,34 +1373,40 @@ impl WorldEngine {
                 });
             }
         }
-        self.tiling.retain(|key, _| ringed.contains(key));
-        let seed = if self.default_tiled() {
+        self.world
+            .workspace
+            .tiling
+            .retain(|key, _| ringed.contains(key));
+        let seed = if self.connection.default_tiled() {
             TilingMode::Tiled
         } else {
             TilingMode::Floating
         };
         for key in ringed {
-            self.tiling.entry(key).or_insert(seed);
+            self.world.workspace.tiling.entry(key).or_insert(seed);
         }
         // View sanity: invalid views use the known-echo fallback.
         for output in &live {
-            let valid = self.views.get(output).is_some_and(|view| {
-                self.mapping
+            let valid = self.world.workspace.views.get(output).is_some_and(|view| {
+                self.world
+                    .workspace
+                    .mapping
                     .get(output)
                     .is_some_and(|ring| ring.contains(view))
             });
             if !valid {
                 if let Some(fallback) = self.preferred_view_fallback(output) {
-                    self.views.insert(output.clone(), fallback);
+                    self.world.workspace.views.insert(output.clone(), fallback);
                 } else {
-                    self.views.remove(output);
+                    self.world.workspace.views.remove(output);
                 }
             }
         }
         // Prune retained output facts to live screens plus displaced
         // origins still needing placement.
-        self.output_facts.retain(|output, _| {
-            live_set.contains(output.as_str()) || self.displaced.contains_key(output)
+        self.world.workspace.output_facts.retain(|output, _| {
+            live_set.contains(output.as_str())
+                || self.world.workspace.displaced.contains_key(output)
         });
     }
 
@@ -1253,13 +1419,15 @@ impl WorldEngine {
         output: &OutputId,
         default_tiled: bool,
     ) -> Option<String> {
-        if self.creation_counter == u64::MAX {
+        if self.world.workspace.creation_counter == u64::MAX {
             return None;
         }
-        let next = self.creation_counter.saturating_add(1);
-        self.creation_counter = next;
+        let next = self.world.workspace.creation_counter.saturating_add(1);
+        self.world.workspace.creation_counter = next;
         let id = format!("ws-{next}");
-        self.mapping
+        self.world
+            .workspace
+            .mapping
             .entry(output.0.clone())
             .or_default()
             .push(id.clone());
@@ -1267,11 +1435,15 @@ impl WorldEngine {
             output: output.clone(),
             workspace: WorkspaceId(id.clone()),
         };
-        self.tiling.entry(key).or_insert(if default_tiled {
-            TilingMode::Tiled
-        } else {
-            TilingMode::Floating
-        });
+        self.world
+            .workspace
+            .tiling
+            .entry(key)
+            .or_insert(if default_tiled {
+                TilingMode::Tiled
+            } else {
+                TilingMode::Floating
+            });
         Some(id)
     }
 
@@ -1286,7 +1458,7 @@ impl WorldEngine {
         source_output: &OutputId,
         migrated: &str,
     ) -> Option<String> {
-        let ring = self.mapping.get(&source_output.0)?;
+        let ring = self.world.workspace.mapping.get(&source_output.0)?;
         let candidates: Vec<String> = ring
             .iter()
             .filter(|id| id.as_str() != migrated)
@@ -1297,16 +1469,18 @@ impl WorldEngine {
         }
         let current = self
             .known_echo(source_output)
-            .or_else(|| self.views.get(&source_output.0).cloned());
+            .or_else(|| self.world.workspace.views.get(&source_output.0).cloned());
         if let Some(current) = current
             && current != migrated
             && candidates.iter().any(|id| id == &current)
         {
             return Some(current);
         }
-        match crate::workspace_scope::MigrationRefill::from(self.settings.migration_refill) {
+        match crate::workspace_scope::MigrationRefill::from(
+            self.connection.settings.migration_refill,
+        ) {
             crate::workspace_scope::MigrationRefill::MostRecentlyUsed => {
-                if let Some(prev) = self.history.previous(&source_output.0)
+                if let Some(prev) = self.world.workspace.history.previous(&source_output.0)
                     && prev != migrated
                     && candidates.iter().any(|id| id == &prev)
                 {
@@ -1368,20 +1542,20 @@ impl WorldEngine {
     ) -> Vec<OneShotEffect> {
         let mut known_now: BTreeSet<String> = BTreeSet::new();
         let mut current: BTreeMap<DomainKey, BTreeSet<String>> = BTreeMap::new();
-        for key in self.layout.domain_keys() {
-            if !self.layout.contains_domain(&key) {
+        for key in self.world.layout.domain_keys() {
+            if !self.world.layout.contains_domain(&key) {
                 continue;
             }
             let mut known = BTreeSet::new();
-            for window in self.layout.tiled_windows(&key) {
+            for window in self.world.layout.tiled_windows(&key) {
                 known.insert(window.0.clone());
                 known_now.insert(window.0.clone());
             }
-            for window in self.layout.exception_windows(&key) {
+            for window in self.world.layout.exception_windows(&key) {
                 known.insert(window.0.clone());
                 known_now.insert(window.0.clone());
             }
-            for window in self.layout.minimized_windows(&key) {
+            for window in self.world.layout.minimized_windows(&key) {
                 known_now.insert(window.0.clone());
             }
             current.insert(key, known);
@@ -1390,18 +1564,27 @@ impl WorldEngine {
         // exclusion retires the slot without ever closing the lifetime,
         // so the lift restores without a fresh admission intent. An
         // explicit close is never staged excluded and still prunes.
-        let excluded_here: BTreeSet<String> =
-            self.staged.excluded.iter().map(|id| id.0.clone()).collect();
-        self.admission_focus_spent
+        let excluded_here: BTreeSet<String> = self
+            .world
+            .staged
+            .excluded
+            .iter()
+            .map(|id| id.0.clone())
+            .collect();
+        self.world
+            .focus
+            .admission_focus_spent
             .retain(|id| known_now.contains(id) || excluded_here.contains(id));
         // Admission policy shares the fresh-placement bootstrap phase:
         // the baseline report itself stays quiet (startup adoption), and
         // incomplete inventories never mint (no speculative ingress
         // across a gap). Only a complete report after the baseline mints.
-        if !self.placement_bootstrapped || !self.staged.observation.inventory_complete {
+        if !self.world.placement_bootstrapped || !self.world.staged.observation.inventory_complete {
             return Vec::new();
         }
         let transferred: BTreeSet<&str> = self
+            .world
+            .settlement
             .retained
             .iter()
             .flat_map(|retained| match &retained.target.kind {
@@ -1428,9 +1611,9 @@ impl WorldEngine {
             .values()
             .flat_map(|known| known.iter().map(String::as_str))
             .collect();
-        for domain in &self.staged.domains.clone() {
+        for domain in &self.world.staged.domains.clone() {
             if !domain.readable
-                || self.floating_scopes.contains(&domain.key)
+                || self.world.floating_scopes.contains(&domain.key)
                 || held_scopes.contains(&domain.key)
             {
                 continue;
@@ -1459,8 +1642,16 @@ impl WorldEngine {
                 // displacement spend here without emitting, so a survivor
                 // landing on a previously empty controlled unit never
                 // replays as a newcomer on a later report either.
-                if self.displaced_rehomed.contains(&window.window) {
-                    self.admission_focus_spent.insert(window.window.0.clone());
+                if self
+                    .world
+                    .workspace
+                    .displaced_rehomed
+                    .contains(&window.window)
+                {
+                    self.world
+                        .focus
+                        .admission_focus_spent
+                        .insert(window.window.0.clone());
                     continue;
                 }
                 if window.sticky && known_anywhere.contains(id) {
@@ -1490,15 +1681,20 @@ impl WorldEngine {
                     // intent. Each withheld newcomer spends here so it
                     // never replays, while selection continues to the last
                     // non-withheld newcomer, preserving ordinary selection.
-                    if self.layout.contains_domain(&domain.key)
+                    if self.world.layout.contains_domain(&domain.key)
                         && self
+                            .world
                             .layout
                             .is_automatic_fixed_float(&domain.key, &window.window)
                         && !self
+                            .world
                             .layout
                             .has_fixed_tile_override(&domain.key, &window.window)
                     {
-                        self.admission_focus_spent.insert(window.window.0.clone());
+                        self.world
+                            .focus
+                            .admission_focus_spent
+                            .insert(window.window.0.clone());
                         continue;
                     }
                     // REQ-INS-07b: a newcomer homed on an inactive workspace
@@ -1508,7 +1704,10 @@ impl WorldEngine {
                     // selection and never overrides an eligible active
                     // newcomer.
                     if !domain_active {
-                        self.admission_focus_spent.insert(window.window.0.clone());
+                        self.world
+                            .focus
+                            .admission_focus_spent
+                            .insert(window.window.0.clone());
                         continue;
                     }
                     newcomer = Some((window.window.clone(), domain.key.clone()));
@@ -1524,13 +1723,16 @@ impl WorldEngine {
         // explicit switching; the automatic intent spends without
         // emitting and is never retried. Explicit user focus/send
         // shortcuts ride commands, never this path.
-        if self.staged.domains.iter().any(|domain| {
+        if self.world.staged.domains.iter().any(|domain| {
             domain.key == target_key
                 && domain.windows.iter().any(|window| {
                     window.window != target && (window.fullscreen || window.maximized)
                 })
         }) {
-            self.admission_focus_spent.insert(target.0.clone());
+            self.world
+                .focus
+                .admission_focus_spent
+                .insert(target.0.clone());
             return Vec::new();
         }
         // Focused float/sticky ownership: never activate a newcomer over
@@ -1538,13 +1740,16 @@ impl WorldEngine {
         // without emitting and is never retried. An empty or unknown
         // foreground imposes no shape, and focusing the already-focused
         // window itself is unaffected.
-        if !self.staged.observation.focused_global.is_empty()
-            && self.staged.observation.focused_global != target.0
+        if !self.world.staged.observation.focused_global.is_empty()
+            && self.world.staged.observation.focused_global != target.0
         {
-            let focused = WindowId(self.staged.observation.focused_global.clone());
+            let focused = WindowId(self.world.staged.observation.focused_global.clone());
             let shape = self.derived_for(&focused);
             if shape.floating || shape.sticky {
-                self.admission_focus_spent.insert(target.0.clone());
+                self.world
+                    .focus
+                    .admission_focus_spent
+                    .insert(target.0.clone());
                 return Vec::new();
             }
         }
@@ -1555,7 +1760,7 @@ impl WorldEngine {
         // veto rides the float exception only, never a blanket veto.
         {
             let shape = self.derived_for(&target);
-            let raw = self.staged.facts.get(&target);
+            let raw = self.world.staged.facts.get(&target);
             let sticky = shape.sticky || raw.is_some_and(|fact| fact.sticky == Some(true));
             let float_overlay = shape.floating
                 && (shape.overlay_fullscreen
@@ -1564,7 +1769,10 @@ impl WorldEngine {
                         fact.fullscreen == Some(true) || fact.maximized == Some(true)
                     }));
             if sticky || float_overlay {
-                self.admission_focus_spent.insert(target.0.clone());
+                self.world
+                    .focus
+                    .admission_focus_spent
+                    .insert(target.0.clone());
                 return Vec::new();
             }
         }
@@ -1572,11 +1780,19 @@ impl WorldEngine {
         // mid-gesture drops its activation here and never replays it on
         // a later report (safety over liveness; the at-most-once
         // watermark still records it as spent).
-        if self.staged.gesture_barrier {
-            self.admission_focus_spent.insert(target.0.clone());
+        if self.world.staged.gesture_barrier {
+            self.world
+                .focus
+                .admission_focus_spent
+                .insert(target.0.clone());
             return Vec::new();
         }
-        if !self.admission_focus_spent.insert(target.0.clone()) {
+        if !self
+            .world
+            .focus
+            .admission_focus_spent
+            .insert(target.0.clone())
+        {
             return Vec::new();
         }
         let token = self.automatic_focus_token(&target);
@@ -1584,7 +1800,7 @@ impl WorldEngine {
             id: format!("af-{token}"),
             kind: EffectKind::Focus,
             target,
-            issued_revision: self.state_revision + 1,
+            issued_revision: self.world.state_revision + 1,
             cause: EffectCause::AutomaticAdmission,
             command_seq: None,
             await_shown: false,
@@ -1599,7 +1815,7 @@ impl WorldEngine {
     /// non-empty) is not birth evidence: truly unknown rosters never
     /// infer admission by absence.
     fn prior_empty_controlled(&self, key: &DomainKey) -> bool {
-        self.prior_context.empty_controlled.contains(key)
+        self.world.prior_context.empty_controlled.contains(key)
     }
 
     /// Closed ids converged for one staged domain: explicit closes homed
@@ -1609,16 +1825,16 @@ impl WorldEngine {
     /// close; this authorizes no native close, only slot removal.
     pub(crate) fn closed_for_domain(&self, domain: &StagedDomain) -> Vec<WindowId> {
         let mut closed = domain.closed.clone();
-        if !self.layout.contains_domain(&domain.key) {
+        if !self.world.layout.contains_domain(&domain.key) {
             return closed;
         }
-        for id in &self.staged.excluded {
+        for id in &self.world.staged.excluded {
             if closed.iter().any(|known| known == id) {
                 continue;
             }
-            let held_here = self.layout.is_tiled_window(&domain.key, id)
-                || self.layout.is_exception(&domain.key, id)
-                || self.layout.has_minimized_slot(&domain.key, id);
+            let held_here = self.world.layout.is_tiled_window(&domain.key, id)
+                || self.world.layout.is_exception(&domain.key, id)
+                || self.world.layout.has_minimized_slot(&domain.key, id);
             if held_here {
                 closed.push(id.clone());
             }
@@ -1656,7 +1872,8 @@ impl WorldEngine {
         // drops retained topology. This protected hold stands even
         // mid-gesture: the barrier defers repair, never exhaustion.
         let Some(inset) = inset_world_domain(&staged_domain, domain.outer_gap) else {
-            self.hold_reasons
+            self.world
+                .hold_reasons
                 .insert(key.clone(), HoldReason::ConstraintClamp);
             held_scopes.insert(key);
             return;
@@ -1669,8 +1886,8 @@ impl WorldEngine {
         // Unknown domains reconcile (fresh seed), never update-gaps
         // (which refuses unknown domains so the fresh route seeds them).
         let is_update_gaps = match (
-            self.layout.domain_geometry(&key),
-            self.layout.domain_outer_gap(&key),
+            self.world.layout.domain_geometry(&key),
+            self.world.layout.domain_outer_gap(&key),
         ) {
             (Some((bounds, gap)), Some(outer)) => {
                 bounds != inset.bounds || gap != inset.gap || outer != domain.outer_gap
@@ -1678,16 +1895,17 @@ impl WorldEngine {
             _ => false,
         };
         let retained_focus = self
+            .world
             .layout
             .focus_leaf(&key)
-            .and_then(|focus_leaf| self.layout.window_for_leaf(&key, focus_leaf));
+            .and_then(|focus_leaf| self.world.layout.window_for_leaf(&key, focus_leaf));
         let windows = self.shielded_windows(&domain.key, &domain.windows);
         let closed_windows = self.closed_for_domain(domain);
         if !is_update_gaps {
             // Conservative live-state no-op: proven unchanged domains skip
             // convergence and projection entirely. Every other case (and every
             // uncertainty) keeps the ordinary path below.
-            if self.layout.try_unchanged_reconcile(
+            if self.world.layout.try_unchanged_reconcile(
                 &key,
                 inset.bounds,
                 inset.gap,
@@ -1707,25 +1925,25 @@ impl WorldEngine {
                 &windows,
                 &closed_windows,
             ) {
-                self.hold_reasons.insert(key.clone(), hold);
+                self.world.hold_reasons.insert(key.clone(), hold);
                 held_scopes.insert(key);
                 return;
             }
         } else {
-            if let Err(failure) = self.layout.converge_retained_observation(
+            if let Err(failure) = self.world.layout.converge_retained_observation(
                 &key,
                 &windows,
                 &domain.focused,
                 &closed_windows,
             ) {
-                self.hold_reasons.insert(
+                self.world.hold_reasons.insert(
                     key.clone(),
                     Self::classify_sweep_hold(SweepFailure::Layout(failure)),
                 );
                 held_scopes.insert(key);
                 return;
             }
-            if let Err(failure) = self.layout.update_domain_gaps(
+            if let Err(failure) = self.world.layout.update_domain_gaps(
                 &key,
                 inset.bounds,
                 inset.gap,
@@ -1733,7 +1951,7 @@ impl WorldEngine {
                 &domain.focused,
                 &windows,
             ) {
-                self.hold_reasons.insert(
+                self.world.hold_reasons.insert(
                     key.clone(),
                     Self::classify_sweep_hold(SweepFailure::Layout(failure)),
                 );
@@ -1749,10 +1967,11 @@ impl WorldEngine {
         // publication holds.
         if domain.focused.0.is_empty()
             && let Some(window) = retained_focus
-            && self.staged.excluded.contains(&window)
+            && self.world.staged.excluded.contains(&window)
             && !domain.closed.contains(&window)
         {
-            self.hold_reasons
+            self.world
+                .hold_reasons
                 .insert(key.clone(), HoldReason::Unreadable);
             held_scopes.insert(key);
         }
@@ -1768,22 +1987,23 @@ impl WorldEngine {
     ) -> Result<(), HoldReason> {
         let key = domain.key();
         let disjoint = !windows.is_empty()
-            && self.layout.contains_domain(&key)
+            && self.world.layout.contains_domain(&key)
             && !windows.iter().any(|w| {
-                self.layout.is_tiled_window(&key, &w.window)
-                    || self.layout.is_exception(&key, &w.window)
-                    || self.layout.has_minimized_slot(&key, &w.window)
+                self.world.layout.is_tiled_window(&key, &w.window)
+                    || self.world.layout.is_exception(&key, &w.window)
+                    || self.world.layout.has_minimized_slot(&key, &w.window)
             });
         if disjoint {
-            self.layout.drop_domain(&key);
+            self.world.layout.drop_domain(&key);
         }
         if let Err(failure) =
-            self.layout
+            self.world
+                .layout
                 .converge_retained_observation(&key, windows, focused, closed_windows)
         {
             return Err(Self::classify_sweep_hold(SweepFailure::Layout(failure)));
         }
-        match self.layout.reconcile_retained(
+        match self.world.layout.reconcile_retained(
             &key,
             domain.bounds,
             domain.gap,
@@ -1794,6 +2014,7 @@ impl WorldEngine {
         ) {
             Ok(Some(_)) => Ok(()),
             Ok(None) => self
+                .world
                 .layout
                 .reconcile_fresh(domain, outer_gap, focused, windows)
                 .map(|_| ())
@@ -1821,14 +2042,14 @@ impl WorldEngine {
         _correlation: &CorrelationId,
         held_scopes: &mut BTreeSet<DomainKey>,
     ) -> bool {
-        if !self.staged.gesture_barrier {
+        if !self.world.staged.gesture_barrier {
             return false;
         }
         let key = domain.key.clone();
-        let Some((bounds, gap)) = self.layout.domain_geometry(&key) else {
+        let Some((bounds, gap)) = self.world.layout.domain_geometry(&key) else {
             return false;
         };
-        let Some(outer) = self.layout.domain_outer_gap(&key) else {
+        let Some(outer) = self.world.layout.domain_outer_gap(&key) else {
             return false;
         };
         if bounds == inset.bounds && gap == inset.gap && outer == domain.outer_gap {
@@ -1850,11 +2071,12 @@ impl WorldEngine {
             &windows,
             &closed_windows,
         ) {
-            self.hold_reasons.insert(key.clone(), hold);
+            self.world.hold_reasons.insert(key.clone(), hold);
             held_scopes.insert(key);
             return true;
         }
-        self.hold_reasons
+        self.world
+            .hold_reasons
             .insert(key.clone(), HoldReason::GestureBarrier);
         held_scopes.insert(key);
         true
@@ -1872,15 +2094,15 @@ impl WorldEngine {
         held_scopes: &mut BTreeSet<DomainKey>,
         was_floating: &BTreeSet<DomainKey>,
     ) {
-        let domains = self.staged.domains.clone();
+        let domains = self.world.staged.domains.clone();
         for domain in &domains {
             if !domain.readable {
                 continue;
             }
             if !was_floating.contains(&domain.key)
-                || self.floating_scopes.contains(&domain.key)
+                || self.world.floating_scopes.contains(&domain.key)
                 || held_scopes.contains(&domain.key)
-                || self.layout.contains_domain(&domain.key)
+                || self.world.layout.contains_domain(&domain.key)
             {
                 continue;
             }
@@ -1911,14 +2133,20 @@ impl WorldEngine {
         let mut out: Vec<EngineWindow> = windows
             .iter()
             .filter(|window| {
-                if self.retained.iter().any(|r| match &r.target.kind {
-                    TransferKind::Window(w) => {
-                        w.0 == window.window.0
-                            && !(r.target.target_output == key.output
-                                && r.target.target_workspace == key.workspace.0)
-                    }
-                    TransferKind::View | TransferKind::Migration => false,
-                }) {
+                if self
+                    .world
+                    .settlement
+                    .retained
+                    .iter()
+                    .any(|r| match &r.target.kind {
+                        TransferKind::Window(w) => {
+                            w.0 == window.window.0
+                                && !(r.target.target_output == key.output
+                                    && r.target.target_workspace == key.workspace.0)
+                        }
+                        TransferKind::View | TransferKind::Migration => false,
+                    })
+                {
                     return false;
                 }
                 // Migration source shielding: strip surviving members still
@@ -1926,7 +2154,7 @@ impl WorldEngine {
                 // rebuild the emptied source cell. Closed/externally-moved
                 // members already dropped from `members`, and arrived members
                 // are already absent here.
-                !self.retained.iter().any(|r| {
+                !self.world.settlement.retained.iter().any(|r| {
                     matches!(&r.target.kind, TransferKind::Migration)
                         && r.source_output == key.output
                         && r.source_workspace == key.workspace.0
@@ -1937,6 +2165,8 @@ impl WorldEngine {
             .collect();
         for entry in &mut out {
             if self
+                .world
+                .settlement
                 .retained_floats
                 .iter()
                 .any(|held| held.window == entry.window)
@@ -1948,8 +2178,8 @@ impl WorldEngine {
         // the swept key. Admitted facts only: held/excluded windows never
         // inject geometry.
         let mut by_id: BTreeMap<&WindowId, EngineWindow> = BTreeMap::new();
-        for fact in self.staged.facts.values() {
-            let derived = self.staged.derived.get(&fact.window);
+        for fact in self.world.staged.facts.values() {
+            let derived = self.world.staged.derived.get(&fact.window);
             if derived.is_some_and(|cls| cls.hidden || cls.hold || cls.excluded) {
                 continue;
             }
@@ -1982,7 +2212,7 @@ impl WorldEngine {
                 },
             );
         }
-        for retained in &self.retained {
+        for retained in &self.world.settlement.retained {
             if let TransferKind::Window(window) = &retained.target.kind
                 && retained.target.target_output == key.output
                 && retained.target.target_workspace == key.workspace.0
@@ -1995,7 +2225,7 @@ impl WorldEngine {
                 out.push(injected);
             }
         }
-        for retained in &self.retained {
+        for retained in &self.world.settlement.retained {
             if !matches!(&retained.target.kind, TransferKind::Migration) {
                 continue;
             }
@@ -2066,14 +2296,14 @@ mod prior_empty_scope_tests {
             .iter()
             .find(|workspace| workspace.output == OutputId("out-a".to_owned()))
             .expect("published workspace row");
-        assert!(engine.prior_empty_controlled(&DomainKey {
+        assert!(engine.tx_ro(|tx| tx.prior_empty_controlled(&DomainKey {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(known_empty.id.clone()),
-        }));
-        assert!(!engine.prior_empty_controlled(&DomainKey {
+        })));
+        assert!(!engine.tx_ro(|tx| tx.prior_empty_controlled(&DomainKey {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId("newly-appearing".to_owned()),
-        }));
+        })));
     }
 
     #[test]
@@ -2090,17 +2320,16 @@ mod prior_empty_scope_tests {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(known_empty.id.clone()),
         };
-        assert!(engine.prior_empty_controlled(&key));
+        assert!(engine.tx_ro(|tx| tx.prior_empty_controlled(&key)));
         // Test-only eviction of the typed replay cache: production keeps
         // full typed equality and the cached reply for duplicate checks.
         // The shared prior-context lane must not depend on those lanes.
-        engine.last_report_v4 = None;
-        engine.last_reply_v4 = None;
-        assert!(engine.prior_empty_controlled(&key));
-        assert!(!engine.prior_empty_controlled(&DomainKey {
+        engine.clear_replay();
+        assert!(engine.tx_ro(|tx| tx.prior_empty_controlled(&key)));
+        assert!(!engine.tx_ro(|tx| tx.prior_empty_controlled(&DomainKey {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId("newly-appearing".to_owned()),
-        }));
+        })));
     }
 
     #[test]
@@ -2131,7 +2360,7 @@ mod prior_empty_scope_tests {
             WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
             other => panic!("expected reused refusal, got {other:?}"),
         }
-        assert!(engine.prior_empty_controlled(&key));
+        assert!(engine.tx_ro(|tx| tx.prior_empty_controlled(&key)));
     }
 
     #[test]
@@ -2186,10 +2415,10 @@ mod prior_empty_scope_tests {
                     .iter()
                     .find(|workspace| workspace.output == OutputId("out-a".to_owned()))
                     .expect("published workspace row");
-                assert!(engine.prior_empty_controlled(&DomainKey {
+                assert!(engine.tx_ro(|tx| tx.prior_empty_controlled(&DomainKey {
                     output: OutputId("out-a".to_owned()),
                     workspace: WorkspaceId(known_empty.id.clone()),
-                }));
+                })));
             }
             other => panic!("expected consumed command, got {other:?}"),
         }
@@ -2238,7 +2467,7 @@ mod live_output_order_tests {
         staged.held_screens = vec![held("out-b", 1)];
         assert_eq!(validate_report_reason(&staged), None);
         assert_eq!(
-            WorldEngine::live_output_order(&staged.screens, &staged.held_screens),
+            WorldTransaction::live_output_order(&staged.screens, &staged.held_screens),
             vec!["out-a", "out-b", "out-c"]
         );
     }
@@ -2251,7 +2480,7 @@ mod live_output_order_tests {
         // valid row fills the single non-held slot in order.
         assert_eq!(validate_report_reason(&staged), None);
         assert_eq!(
-            WorldEngine::live_output_order(&staged.screens, &staged.held_screens),
+            WorldTransaction::live_output_order(&staged.screens, &staged.held_screens),
             vec!["out-a", "out-b", "out-c"]
         );
     }

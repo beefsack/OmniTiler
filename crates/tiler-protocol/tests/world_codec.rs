@@ -14,11 +14,12 @@ use tiler_core::connection::{
 use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{WORLD_CONTRACT_VERSION_V4, WorldReplyV4, WorldReportV4};
 use tiler_core::world_report_v4_checks::{report_digest_v4, validate_report_v4_reason};
-use tiler_core::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4, report_estimate_v4};
+use tiler_protocol::world_admission_sizing::report_estimate_v4;
 use tiler_protocol::world_protocol::{
     DecodedReplyV4, ReplyWireOptionals, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES,
     WorldOutcome, decode_reply_v4, decode_request, encode_reply_v4,
 };
+use tiler_protocol::world_reply_write::count_reply_v4;
 
 /// Minimal observation-only v4 report envelope: screens plus facts only,
 /// no native workspace concept. The v4 contract carries `rendererInput`
@@ -154,8 +155,8 @@ fn reply_wire(reply: &WorldReplyV4) -> String {
     let wire = encode_reply_v4(&decoded).expect("reply encodes");
     assert_eq!(
         wire.len(),
-        reply_exact_bytes_v4(reply),
-        "core byte count is exact over the wire"
+        count_reply_v4(reply, &decoded.wire).expect("protocol count succeeds"),
+        "protocol byte count is exact over the wire"
     );
     assert_eq!(
         decode_reply_v4(&wire).expect("reply round-trips"),
@@ -1483,20 +1484,13 @@ fn reply_presentation_rev_encodes_quoted_exact_order() {
         wire.contains("\"rev\":\"7\""),
         "outer reply revision stays independent"
     );
-    let estimate = reply_estimate_v4(&reply);
-    assert!(
-        estimate >= wire.len(),
-        "estimate {estimate} bounds wire {}",
-        wire.len()
-    );
     assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
 }
 
 #[test]
 fn reply_gesture_settled_matches_core_sizing() {
     // A reply carrying a gesture terminal encodes through the canonical
-    // v4 writer with exact size accounting, and the structural estimate
-    // bounds the exact bytes.
+    // v4 writer with exact size accounting.
     let report = decode_request(&one_window_request()).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
     let mut reply = match engine.handle_report(&report, &[]).0 {
@@ -1509,20 +1503,13 @@ fn reply_gesture_settled_matches_core_sizing() {
     });
     let wire = reply_wire(&reply);
     assert!(wire.contains("\"gestureSettled\":{\"id\":\"7\",\"committed\":true}"));
-    let estimate = reply_estimate_v4(&reply);
-    assert!(
-        estimate >= wire.len(),
-        "estimate {estimate} bounds wire {}",
-        wire.len()
-    );
     assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
 }
 
 #[test]
 fn reply_warp_cursor_matches_core_sizing() {
     // A reply carrying a desired cursor-warp point encodes through the
-    // canonical v4 writer with exact size accounting, and the structural
-    // estimate bounds the exact bytes.
+    // canonical v4 writer with exact size accounting.
     let report = decode_request(&one_window_request()).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
     let mut reply = match engine.handle_report(&report, &[]).0 {
@@ -1532,12 +1519,6 @@ fn reply_warp_cursor_matches_core_sizing() {
     reply.cursor_warp = Some((810, 300));
     let wire = reply_wire(&reply);
     assert!(wire.contains("\"warpCursor\":[810,300]"));
-    let estimate = reply_estimate_v4(&reply);
-    assert!(
-        estimate >= wire.len(),
-        "estimate {estimate} bounds wire {}",
-        wire.len()
-    );
     assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
 }
 
@@ -1702,12 +1683,6 @@ fn reply_operation_settled_matches_core_sizing() {
     assert!(wire.contains("\"outcome\":\"float-abandoned\""));
     assert!(wire.contains("\"cause\":\"constraints\""));
     assert!(wire.contains("\"cause\":\"closed\""));
-    let estimate = reply_estimate_v4(&reply);
-    assert!(
-        estimate >= wire.len(),
-        "estimate {estimate} bounds wire {}",
-        wire.len()
-    );
     assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
 }
 
@@ -2348,17 +2323,13 @@ fn toggle_maximize_decodes_and_result_encodes() {
         "wire carries dragPreview:null, got {wire}"
     );
     let mut encoded = String::new();
-    tiler_core::world_sizing::encode_command_result(&mut encoded, &settlements[0].result);
-    assert_eq!(
-        tiler_core::world_sizing::command_result_estimate(&settlements[0].result),
-        encoded.len() + 10,
-        "result estimate is exact: {encoded}"
+    tiler_protocol::world_command_result::encode_command_result(
+        &mut encoded,
+        &settlements[0].result,
     );
-    let estimate = reply_estimate_v4(&reply);
-    assert!(
-        estimate >= wire.len(),
-        "estimate {estimate} bounds wire {}",
-        wire.len()
+    assert_eq!(
+        encoded,
+        r#"{"op":"maximize","win":"win-a","maximized":true,"clearFullscreen":false,"wasMaximized":false}"#,
     );
     assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
     let missing = serde_json::json!({"op": "toggle-maximize"});
@@ -2433,7 +2404,7 @@ fn sticky_commands_decode_typed_and_rejected_result_encodes_exact() {
     assert_ne!(digest_on, digest_off);
     assert_ne!(digest_on, digest_toggle);
     assert_ne!(digest_off, digest_toggle);
-    // Frozen rejection shape through the canonical v4 writer, exact sizing.
+    // Frozen rejection shape through the canonical v4 writer.
     for kind in [
         K::OperationRefused,
         K::StateUnsupported,
@@ -2441,15 +2412,10 @@ fn sticky_commands_decode_typed_and_rejected_result_encodes_exact() {
     ] {
         let result = Some(R::Rejected { kind });
         let mut encoded = String::new();
-        tiler_core::world_sizing::encode_command_result(&mut encoded, &result);
+        tiler_protocol::world_command_result::encode_command_result(&mut encoded, &result);
         assert_eq!(
             encoded,
             format!("{{\"op\":\"rejected\",\"kind\":\"{}\"}}", kind.as_str())
-        );
-        assert_eq!(
-            tiler_core::world_sizing::command_result_estimate(&result),
-            encoded.len() + 10,
-            "result estimate is exact: {encoded}"
         );
     }
 }
@@ -2506,17 +2472,6 @@ fn drag_preview_v4_exact_sizing_bounds() {
         let mut reply = base_reply.clone();
         reply.drag_preview = preview;
         let wire = reply_wire(&reply);
-        assert_eq!(
-            tiler_core::world_sizing_v4::reply_exact_bytes_v4(&reply),
-            wire.len(),
-            "exact sizing matches wire: {wire}"
-        );
-        let estimate = reply_estimate_v4(&reply);
-        assert!(
-            estimate >= wire.len(),
-            "estimate {estimate} bounds wire {}",
-            wire.len()
-        );
         assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
     }
 }
@@ -2586,12 +2541,6 @@ fn reply_trailing_marker_encodes_on_v4_writer() {
         "one plan plus one pager key"
     );
     assert!(!wire.contains("\"trailing\":false"));
-    let estimate = reply_estimate_v4(&reply);
-    assert!(
-        estimate >= wire.len(),
-        "estimate {estimate} bounds wire {}",
-        wire.len()
-    );
     assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
 }
 
@@ -2647,8 +2596,8 @@ fn typed_scopes_match_v4_fixture_rows_and_reject_malformed_unions() {
     let wire = encode_reply_v4(&decoded).expect("reply encodes");
     assert_eq!(
         wire.len(),
-        reply_exact_bytes_v4(&decoded.reply),
-        "core byte count is exact over the wire"
+        count_reply_v4(&decoded.reply, &decoded.wire).expect("protocol count succeeds"),
+        "protocol byte count is exact over the wire"
     );
     assert_eq!(
         decode_reply_v4(&wire).expect("reply round-trips"),
@@ -2695,8 +2644,9 @@ fn typed_scopes_match_v4_fixture_rows_and_reject_malformed_unions() {
     let output_wire = encode_reply_v4(&output_decoded).expect("output reply encodes");
     assert_eq!(
         output_wire.len(),
-        reply_exact_bytes_v4(&output_decoded.reply),
-        "core byte count is exact over the wire"
+        count_reply_v4(&output_decoded.reply, &output_decoded.wire)
+            .expect("protocol count succeeds"),
+        "protocol byte count is exact over the wire"
     );
     assert_eq!(
         decode_reply_v4(&output_wire).expect("output reply round-trips"),
@@ -2924,9 +2874,8 @@ fn world_request_rejects_duplicate_json_keys_strictly() {
 
 #[test]
 fn v4_screen_rows_decode_valid_held_and_reject_with_canonical_bytes() {
-    use tiler_core::world_report::{
-        RowDiagnosticKind, RowDiagnosticLane, encode_held_screen_canonical,
-    };
+    use tiler_core::world_report::{RowDiagnosticKind, RowDiagnosticLane};
+    use tiler_protocol::world_protocol::encode_held_screen_canonical;
 
     fn request_with(screens: &str, windows: &str, extra_top: &str) -> String {
         let mut value: serde_json::Value =
@@ -3270,9 +3219,8 @@ fn stage_fixture_rows(rows: &[&str], primary: Option<&str>) -> String {
 /// row.
 #[test]
 fn v4_screen_rows_retain_canonical_bytes_from_immutable_fixtures() {
-    use tiler_core::world_report::{
-        RowDiagnosticKind, RowDiagnosticLane, encode_held_screen_canonical, encode_screen_canonical,
-    };
+    use tiler_core::world_report::{RowDiagnosticKind, RowDiagnosticLane};
+    use tiler_protocol::world_protocol::{encode_held_screen_canonical, encode_screen_canonical};
 
     let held: &[(&str, &str)] = &[
         (
@@ -3393,7 +3341,7 @@ fn v4_screen_rows_retain_canonical_bytes_from_immutable_fixtures() {
 /// and control escapes spell canonically.
 #[test]
 fn v4_held_rows_retain_multibyte_identity_bytes() {
-    use tiler_core::world_report::encode_held_screen_canonical;
+    use tiler_protocol::world_protocol::{encode_held_screen_canonical, encode_screen_canonical};
 
     // 254 ASCII bytes plus one 2-byte character: exactly the bound.
     let at_bound = format!("{}é", "s".repeat(254));
@@ -3415,7 +3363,7 @@ fn v4_held_rows_retain_multibyte_identity_bytes() {
         Some(at_bound.as_str())
     );
     assert_eq!(
-        tiler_core::world_report::encode_screen_canonical(&report.screens[0]).expect("finite row"),
+        encode_screen_canonical(&report.screens[0]).expect("finite row"),
         valid_row
     );
 
@@ -3459,7 +3407,7 @@ fn v4_mixed_valid_held_rows_keep_original_index() {
     assert_eq!(report.held_screens[0].output.0, "out-b");
     assert_eq!(report.held_screens[0].ordinal, 1);
     assert_eq!(
-        tiler_core::world_report::encode_held_screen_canonical(&report.held_screens[0])
+        tiler_protocol::world_protocol::encode_held_screen_canonical(&report.held_screens[0])
             .expect("finite row"),
         rows[1]
     );
@@ -3974,9 +3922,8 @@ fn stage_fixture_window_rows(rows: &[&str]) -> String {
 /// themselves, never from a `Value` re-serialization or a hand-authored row.
 #[test]
 fn v4_window_rows_retain_canonical_bytes_from_immutable_fixtures() {
-    use tiler_core::world_report::{
-        RowDiagnosticKind, RowDiagnosticLane, encode_held_window_canonical, encode_window_canonical,
-    };
+    use tiler_core::world_report::{RowDiagnosticKind, RowDiagnosticLane};
+    use tiler_protocol::world_protocol::{encode_held_window_canonical, encode_window_canonical};
 
     fn raw_window(message: &str) -> String {
         let rows = raw_lane_elements(message, "windows");
@@ -4112,7 +4059,8 @@ fn v4_window_rows_retain_canonical_bytes_from_immutable_fixtures() {
 /// round-trips to its own exact bytes with a distinct digest.
 #[test]
 fn v4_window_canonical_spells_escapes_and_preserves_native_ws() {
-    use tiler_core::world_report::{NativeWorkspaceFact, encode_window_canonical};
+    use tiler_core::world_report::NativeWorkspaceFact;
+    use tiler_protocol::world_protocol::encode_window_canonical;
 
     let healthy_raw = {
         let message = include_str!(
@@ -4214,9 +4162,8 @@ fn v4_window_canonical_spells_escapes_and_preserves_native_ws() {
 /// retained.
 #[test]
 fn v4_window_vocab_rejects_unknown_enums_and_holds_retired() {
-    use tiler_core::world_report::{
-        RowDiagnosticKind, RowDiagnosticLane, encode_held_window_canonical, encode_window_canonical,
-    };
+    use tiler_core::world_report::{RowDiagnosticKind, RowDiagnosticLane};
+    use tiler_protocol::world_protocol::{encode_held_window_canonical, encode_window_canonical};
 
     // Unknown `type` token holds the identifiable row with exact bytes.
     let unknown = {

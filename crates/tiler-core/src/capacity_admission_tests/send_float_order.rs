@@ -664,18 +664,20 @@ fn send_to_output_refused_when_target_unknown_source_preserved() {
     );
     assert!(matches!(outcome, WorldOutcome::Accepted(_)));
     let key1 = engine
+        .world
         .layout
         .domain_keys()
         .into_iter()
         .find(|k| k.output.0 == "o1")
         .expect("o1 domain");
     let seq_b = engine
+        .world
         .layout
         .admission_sequence(&key1, &WindowId("b".to_owned()));
     let (tree_before, focus_before, rev_before) = (
-        engine.layout.tree(&key1).cloned(),
-        engine.layout.focus_leaf(&key1).cloned(),
-        engine.layout.accepted_revision(&key1),
+        engine.world.layout.tree(&key1).cloned(),
+        engine.world.layout.focus_leaf(&key1).cloned(),
+        engine.world.layout.accepted_revision(&key1),
     );
     let (outcome, settlements) = engine.handle_report(
         &make_report(
@@ -701,21 +703,22 @@ fn send_to_output_refused_when_target_unknown_source_preserved() {
         })
     );
     assert_eq!(
-        engine.layout.tree(&key1),
+        engine.world.layout.tree(&key1),
         tree_before.as_ref(),
         "source preserved"
     );
-    assert_eq!(engine.layout.focus_leaf(&key1), focus_before.as_ref());
-    assert_eq!(engine.layout.accepted_revision(&key1), rev_before);
+    assert_eq!(engine.world.layout.focus_leaf(&key1), focus_before.as_ref());
+    assert_eq!(engine.world.layout.accepted_revision(&key1), rev_before);
     assert_eq!(
         engine
+            .world
             .layout
             .admission_sequence(&key1, &WindowId("b".to_owned())),
         seq_b,
         "refusal never re-sequences"
     );
     assert!(
-        engine.layout.all_exception_windows().next().is_none(),
+        engine.world.layout.all_exception_windows().next().is_none(),
         "no fake float staged"
     );
 }

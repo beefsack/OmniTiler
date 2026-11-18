@@ -20,6 +20,7 @@
 //! clone and discard the candidate when it returns
 //! [`V4RunOutcome::Rejected`], exactly like the legacy staged path.
 
+use crate::world_transaction::WorldTransaction;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::directional::{OutputId, WindowId, WorkspaceId};
@@ -54,7 +55,7 @@ pub enum V4RunOutcome {
     },
 }
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Run one already-admitted v4 candidate to a genuine typed v4 reply.
     /// `consumed` names an already-consumed command sequence (reconcile
     /// only, never re-execute or re-validate); `issuing_revision` stamps
@@ -100,7 +101,7 @@ impl WorldEngine {
         // Admitted-candidate precondition without implementing admission:
         // an exhausted counter refuses and re-bootstraps under a new
         // generation elsewhere; it never wraps in place.
-        if self.state_revision == u64::MAX {
+        if self.world.state_revision == u64::MAX {
             return (
                 V4RunOutcome::Rejected {
                     kind: KIND_REVISION_EXHAUSTED,
@@ -111,16 +112,16 @@ impl WorldEngine {
         }
         debug_assert_eq!(
             issuing_revision,
-            self.state_revision + 1,
+            self.world.state_revision + 1,
             "admitted issuing revision must be exactly the next live revision"
         );
-        if !self.staged_dropped_operations.is_empty() {
-            self.staged_dropped_operations.clear();
+        if !self.world.settlement.staged_dropped_operations.is_empty() {
+            self.world.settlement.staged_dropped_operations.clear();
         }
-        if !self.staged_dropped_switches.is_empty() {
-            self.staged_dropped_switches.clear();
+        if !self.world.settlement.staged_dropped_switches.is_empty() {
+            self.world.settlement.staged_dropped_switches.clear();
         }
-        self.staged_drag_preview_reason = None;
+        self.world.gesture.staged_drag_preview_reason = None;
         // Freeze implicit send sources from pre-observation retained
         // homing, before staging can admit newcomers or settle rehoming.
         // The frozen explicit output is the only source the command below
@@ -132,15 +133,16 @@ impl WorldEngine {
         // merely because the raw input carried it; raw capture and replay
         // below stay verbatim.
         let unavailable: &[crate::connection::FactName] = self
+            .connection
             .capabilities()
             .map(|capabilities| capabilities.unavailable_facts.as_slice())
             .unwrap_or(&[]);
         let native_sticky_supported = crate::world_state::state_property_supported(
-            self.capabilities(),
+            self.connection.capabilities(),
             crate::world_report::StateProperty::Sticky,
         );
         let maximize_supported = crate::world_state::state_property_supported(
-            self.capabilities(),
+            self.connection.capabilities(),
             crate::world_report::StateProperty::Maximized,
         );
         let graded = graded_effective_v4(
@@ -184,7 +186,9 @@ impl WorldEngine {
                 )
         );
         let pre_send_homes: BTreeMap<WindowId, OutputId> = if first_implicit_home_send {
-            self.members
+            self.world
+                .workspace
+                .members
                 .iter()
                 .map(|(window, state)| (window.clone(), state.home.output.clone()))
                 .collect()
@@ -202,10 +206,15 @@ impl WorldEngine {
         // classifier sees pending first-admission wins this same report
         // with no second ingestion. Later command restages reuse the
         // classification-only `restage_classification` and never reingest.
-        let observation = Self::capture_observation_v4(report);
+        let observation = WorldEngine::capture_observation_v4(report);
         self.ingest_staged_intent(&observation);
         self.stage_captured_v4(effective, observation);
-        self.staged.revision = issuing_revision;
+        self.world.staged.revision = issuing_revision;
+        self.world.focus.prev_cursor = self.world.focus.last_cursor;
+        self.world.focus.last_cursor = self.world.staged.observation.cursor;
+        self.world
+            .layout
+            .set_fresh_cursor(self.world.staged.observation.cursor);
         // Freeze the positive-close survivor before convergence ingests the
         // host fallback: the retained request records the pre-close MRU
         // winner while later observations stay truthful.
@@ -220,16 +229,16 @@ impl WorldEngine {
         self.settle_selection_feedback();
         self.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Visibility);
         self.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Frames);
-        self.prev_cursor = self.last_cursor;
-        self.last_cursor = self.staged.observation.cursor;
-        self.layout.set_fresh_cursor(self.staged.observation.cursor);
-        self.floating_scopes = self
+        self.world.floating_scopes = self
+            .world
             .staged
             .domains
             .iter()
             .map(|domain| domain.key.clone())
             .filter(|key| {
-                self.tiling
+                self.world
+                    .workspace
+                    .tiling
                     .get(key)
                     .is_some_and(|mode| *mode == TilingMode::Floating)
             })
@@ -237,42 +246,42 @@ impl WorldEngine {
         self.converge_logical_post();
         self.retain_live_topology();
         let mut known_before: BTreeMap<DomainKey, BTreeSet<String>> = BTreeMap::new();
-        for domain in &self.staged.domains {
+        for domain in &self.world.staged.domains {
             if !domain.readable {
                 continue;
             }
-            if self.floating_scopes.contains(&domain.key) {
+            if self.world.floating_scopes.contains(&domain.key) {
                 continue;
             }
-            if !self.layout.contains_domain(&domain.key) {
+            if !self.world.layout.contains_domain(&domain.key) {
                 continue;
             }
             let mut known = BTreeSet::new();
-            for window in self.layout.tiled_windows(&domain.key) {
+            for window in self.world.layout.tiled_windows(&domain.key) {
                 known.insert(window.0.clone());
             }
-            for window in self.layout.exception_windows(&domain.key) {
+            for window in self.world.layout.exception_windows(&domain.key) {
                 known.insert(window.0.clone());
             }
-            for window in self.layout.minimized_windows(&domain.key) {
+            for window in self.world.layout.minimized_windows(&domain.key) {
                 known.insert(window.0.clone());
             }
             known_before.insert(domain.key.clone(), known);
         }
         let mut slotted_before: BTreeSet<WindowId> = BTreeSet::new();
-        for domain in &self.staged.domains {
-            for window in self.layout.tiled_windows(&domain.key) {
+        for domain in &self.world.staged.domains {
+            for window in self.world.layout.tiled_windows(&domain.key) {
                 slotted_before.insert(window.clone());
             }
         }
-        self.hold_reasons.clear();
+        self.world.hold_reasons.clear();
         let mut held_scopes: BTreeSet<DomainKey> = BTreeSet::new();
-        if self.host_owned_workspace_domains() {
+        if self.connection.host_owned_workspace_domains() {
             let mut fence: Vec<DomainKey> = Vec::new();
-            for (window, fact) in &self.staged.facts {
+            for (window, fact) in &self.world.staged.facts {
                 let authoritative = match fact.output.as_ref() {
                     Some(_) => self.native_authoritative(),
-                    None => self.host_owned_workspace_domains(),
+                    None => self.connection.host_owned_workspace_domains(),
                 };
                 if !authoritative {
                     continue;
@@ -280,7 +289,7 @@ impl WorldEngine {
                 if self.effective_logical_receipt(fact).is_some() {
                     continue;
                 }
-                if let Some(key) = self.staged.homing.get(window) {
+                if let Some(key) = self.world.staged.homing.get(window) {
                     // Retained all-desktop home: positive sticky with no
                     // single native workspace keeps its already-retained
                     // same-lifetime home without fencing the scope.
@@ -295,33 +304,36 @@ impl WorldEngine {
                 }
             }
             if self.native_order_conflict() {
-                for domain in &self.staged.domains {
+                for domain in &self.world.staged.domains {
                     if !fence.contains(&domain.key) {
                         fence.push(domain.key.clone());
                     }
                 }
             }
             for key in fence {
-                self.hold_reasons
+                self.world
+                    .hold_reasons
                     .insert(key.clone(), HoldReason::Unreadable);
                 held_scopes.insert(key);
             }
         }
         let held_window_scopes: Vec<DomainKey> = self
+            .world
             .staged
             .held_windows
             .iter()
             .filter_map(|held| self.core_homing(&held.window))
             .collect();
         for key in &held_window_scopes {
-            self.hold_reasons
+            self.world
+                .hold_reasons
                 .entry(key.clone())
                 .or_insert(HoldReason::Unreadable);
             held_scopes.insert(key.clone());
         }
         self.capture_excluded_intent();
         self.run_native_sticky_followups(issue, &held_scopes);
-        let domains = self.staged.domains.clone();
+        let domains = self.world.staged.domains.clone();
         for domain in &domains {
             if held_window_scopes.contains(&domain.key) {
                 continue;
@@ -329,11 +341,11 @@ impl WorldEngine {
             if !domain.readable {
                 continue;
             }
-            if self.floating_scopes.contains(&domain.key) {
+            if self.world.floating_scopes.contains(&domain.key) {
                 continue;
             }
-            if !self.staged.observation.inventory_complete
-                && self.retained.iter().any(|r| {
+            if !self.world.staged.observation.inventory_complete
+                && self.world.settlement.retained.iter().any(|r| {
                     matches!(&r.target.kind, TransferKind::Migration)
                         && (DomainKey {
                             output: r.source_output.clone(),
@@ -347,7 +359,7 @@ impl WorldEngine {
                             } == domain.key)
                 })
             {
-                self.hold_reasons.insert(
+                self.world.hold_reasons.insert(
                     domain.key.clone(),
                     crate::world_report::HoldReason::IncompleteInventory,
                 );
@@ -358,8 +370,8 @@ impl WorldEngine {
         }
         self.settle_intent_admissions();
         {
-            let prev = self.prior_context.prev_focused_global.clone();
-            let current_focused = self.staged.observation.focused_global.clone();
+            let prev = self.world.prior_context.prev_focused_global.clone();
+            let current_focused = self.world.staged.observation.focused_global.clone();
             if !current_focused.is_empty() && prev != current_focused {
                 let active = WindowId(current_focused.clone());
                 let _ = self.record_canonical(&active, &held_scopes, false);
@@ -367,31 +379,34 @@ impl WorldEngine {
                 // when the fail-closed record above skipped, the stale slot
                 // must not survive under the new event.
                 if self
+                    .world
+                    .focus
                     .logical_focus_cursor
                     .as_ref()
                     .is_none_or(|slot| slot.0 != current_focused)
                 {
-                    self.logical_focus_cursor = None;
+                    self.world.focus.logical_focus_cursor = None;
                 }
             } else if current_focused.is_empty() {
                 // Genuine native focus loss clears the execution-time
                 // subject. Per-workspace canonical memory
                 // (`last_active_window`) is untouched: it stays best-effort
                 // for workspace return.
-                self.logical_focus_cursor = None;
+                self.world.focus.logical_focus_cursor = None;
             }
             // Close or departure clears a slot target that left the live
             // set; unchanged re-reports keep an unlanded command choice.
-            if let Some(slot) = self.logical_focus_cursor.clone()
-                && (self.staged.closes.contains(&slot) || !self.staged.homing.contains_key(&slot))
+            if let Some(slot) = self.world.focus.logical_focus_cursor.clone()
+                && (self.world.staged.closes.contains(&slot)
+                    || !self.world.staged.homing.contains_key(&slot))
             {
-                self.logical_focus_cursor = None;
+                self.world.focus.logical_focus_cursor = None;
             }
             // A live retained request preserves its target as the cursor
             // across an unchanged-baseline report: stale observed A must
             // not overwrite pending B.
             {
-                let observed = self.staged.observation.focused_global.clone();
+                let observed = self.world.staged.observation.focused_global.clone();
                 self.preserve_live_pending_cursor(&observed);
             }
         }
@@ -420,18 +435,18 @@ impl WorldEngine {
             }
             self.mint_born_clears_v4(&pre_known, &slotted_before);
         }
-        for (key, window) in std::mem::take(&mut self.pending_forget) {
-            self.layout.forget_minimized_slot(&key, &window);
+        for (key, window) in std::mem::take(&mut self.world.settlement.pending_forget) {
+            self.world.layout.forget_minimized_slot(&key, &window);
         }
         for (key, window) in self.confirmed_minimized_rehomes() {
-            self.layout.forget_minimized_slot(&key, &window);
+            self.world.layout.forget_minimized_slot(&key, &window);
         }
-        self.command_result = None;
+        self.world.command_result = None;
         match self.gesture_act(issue, &mut held_scopes) {
             GestureOutcome::Absent | GestureOutcome::Held => {}
             GestureOutcome::Settled { committed, .. } => {
                 if committed {
-                    let was_floating = self.floating_scopes.clone();
+                    let was_floating = self.world.floating_scopes.clone();
                     self.resweep_retiled(
                         &issue.owner,
                         &issue.correlation,
@@ -451,23 +466,23 @@ impl WorldEngine {
         for effect in &effects {
             if effect.kind == EffectKind::Focus
                 && !self.record_canonical(&effect.target, &held_scopes, false)
-                && self.logical_focus_cursor.as_ref() != Some(&effect.target)
+                && self.world.focus.logical_focus_cursor.as_ref() != Some(&effect.target)
             {
-                self.logical_focus_cursor = None;
+                self.world.focus.logical_focus_cursor = None;
             }
         }
         if effects
             .iter()
             .any(|effect| effect.kind == EffectKind::Focus)
         {
-            self.staged.batch_focus_issued = true;
+            self.world.staged.batch_focus_issued = true;
         }
         if consumed {
             // Consumed sequences reconcile only, never re-execute or
             // re-validate: the result never re-emits, while retained
             // gesture preview state stays owned by the active gesture.
             crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-            let _ = self.command_result.take();
+            let _ = self.world.command_result.take();
             effects = self.drain_focus_candidates(effects, &held_scopes, report, issuing_revision);
             let reply = self.publish_v4(
                 PublishEnvelopeV4 {
@@ -503,7 +518,7 @@ impl WorldEngine {
         // publishes. Focus is the only effect kind. Trailing non-focus
         // commands never clear the surviving focus.
         if commands.is_empty() {
-            let _ = self.command_result.take();
+            let _ = self.world.command_result.take();
             crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
             effects = self.drain_focus_candidates(effects, &held_scopes, report, issuing_revision);
             let reply = self.publish_v4(
@@ -545,6 +560,7 @@ impl WorldEngine {
             // Already-consumed sequences reconcile without re-executing:
             // no effect, no result, no high-watermark motion.
             if self
+                .world
                 .command_highwater
                 .is_some_and(|mark| command_seq <= mark)
             {
@@ -555,51 +571,52 @@ impl WorldEngine {
                 first = false;
                 continue;
             }
+            if is_inline {
+                let latest_published_presentation_rev =
+                    self.world.presentation.latest_published_rev_v4;
+                if let Some(reject) = self.validate_renderer_input_v4(
+                    report.renderer_input.as_ref(),
+                    latest_published_presentation_rev,
+                ) {
+                    crate::world_engine::emit_resize_refusal(self.command_refusal_diagnostic_v4(
+                        report,
+                        command,
+                        command_seq,
+                        reject.as_str(),
+                    ));
+                    self.note_command(command_seq);
+                    let result = Some(CommandResult::Rejected { kind: reject });
+                    crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
+                    if effects
+                        .iter()
+                        .any(|effect| effect.kind == EffectKind::Focus)
+                    {
+                        self.world.staged.batch_focus_issued = true;
+                    }
+                    settlements.push(BatchSettlement {
+                        seq: command_seq,
+                        result,
+                    });
+                    first = false;
+                    continue;
+                }
+            }
             // Observation-only pre-command image per command: a refusal
             // restores exactly the post-previous-command image, so earlier
             // batch effects stay published while this command's partial
             // mutation never survives.
-            let precommand = self.clone();
-            if is_inline
-                && let Some(reject) = self.validate_renderer_input_v4(
-                    report.renderer_input.as_ref(),
-                    precommand.latest_published_presentation_rev_v4,
-                )
-            {
-                *self = precommand;
-                crate::world_engine::emit_resize_refusal(self.command_refusal_diagnostic_v4(
-                    report,
-                    command,
-                    command_seq,
-                    reject.as_str(),
-                ));
-                self.note_command(command_seq);
-                let result = Some(CommandResult::Rejected { kind: reject });
-                crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-                if effects
-                    .iter()
-                    .any(|effect| effect.kind == EffectKind::Focus)
-                {
-                    self.staged.batch_focus_issued = true;
-                }
-                settlements.push(BatchSettlement {
-                    seq: command_seq,
-                    result,
-                });
-                first = false;
-                continue;
-            }
+            let precommand = self.world.clone();
             // The first batch command reuses the contracted pre-observation
             // freeze above; every later subject re-freezes from staged
             // post-previous-command state.
             let (send_source, migration_source) = if first {
                 (frozen_send_source.clone(), frozen_migration_source.clone())
             } else {
-                let routing = RawRouting::from_staged(&self.staged);
+                let routing = RawRouting::from_staged(&self.world.staged);
                 self.freeze_command_sources(Some(command), &routing)
             };
             first = false;
-            let was_floating = self.floating_scopes.clone();
+            let was_floating = self.world.floating_scopes.clone();
             // Resolve the bookkeeping identity before execution: an
             // implicit command maps to its explicit form against the
             // current (pre-execution) subject slot.
@@ -619,34 +636,19 @@ impl WorldEngine {
                         &mut held_scopes,
                         &was_floating,
                     );
-                    let result = self.command_result.take();
+                    let result = self.world.command_result.take();
                     self.build_staged_domains();
                     self.settle_intent_admissions();
                     self.sync_toggle_float_command(&bookkeeping);
-                    self.upsert_ordinary_toggle_float_save(&bookkeeping, &result);
-                    self.restage_classification();
-                    self.build_staged_domains();
-                    if effect.kind == EffectKind::Focus {
-                        // Latest explicit focus wins: drop every unissued
-                        // prior Focus (admission or earlier batch). Canonical
-                        // command-focus failures clear `logical_focus_cursor`
-                        // inside `record_command_focus`, so non-recording
-                        // focus carriers (send/move) never wipe a valid prior
-                        // cursor.
-                        effects.retain(|existing| existing.kind != EffectKind::Focus);
-                    }
-                    effects.push(effect);
-                    crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-                    if effects
-                        .iter()
-                        .any(|effect| effect.kind == EffectKind::Focus)
-                    {
-                        self.staged.batch_focus_issued = true;
-                    }
-                    settlements.push(BatchSettlement {
-                        seq: command_seq,
+                    self.finish_command_success_tail_v4(
+                        &bookkeeping,
+                        command_seq,
                         result,
-                    });
+                        Some(effect),
+                        &held_scopes,
+                        &mut effects,
+                        &mut settlements,
+                    );
                     last_bookkeeping = Some(bookkeeping);
                 }
                 CommandApplied::NoEffect => {
@@ -659,21 +661,16 @@ impl WorldEngine {
                     self.build_staged_domains();
                     self.settle_intent_admissions();
                     self.sync_toggle_float_command(&bookkeeping);
-                    let result = self.command_result.take();
-                    self.upsert_ordinary_toggle_float_save(&bookkeeping, &result);
-                    self.restage_classification();
-                    self.build_staged_domains();
-                    crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-                    if effects
-                        .iter()
-                        .any(|effect| effect.kind == EffectKind::Focus)
-                    {
-                        self.staged.batch_focus_issued = true;
-                    }
-                    settlements.push(BatchSettlement {
-                        seq: command_seq,
+                    let result = self.world.command_result.take();
+                    self.finish_command_success_tail_v4(
+                        &bookkeeping,
+                        command_seq,
                         result,
-                    });
+                        None,
+                        &held_scopes,
+                        &mut effects,
+                        &mut settlements,
+                    );
                     last_bookkeeping = Some(bookkeeping);
                 }
                 CommandApplied::Rejected { kind, message } => {
@@ -682,11 +679,11 @@ impl WorldEngine {
                     // exactly like every pre-acceptance gate. The empty
                     // settlements leave the whole batch parked.
                     if kind == KIND_CREATION_EXHAUSTED {
-                        self.batch_base_focus.clear();
-                        self.batch_command_focus.clear();
+                        self.world.focus.batch_base_focus.clear();
+                        self.world.focus.batch_command_focus.clear();
                         return (V4RunOutcome::Rejected { kind, message }, Vec::new());
                     }
-                    *self = precommand;
+                    *self.world = precommand;
                     crate::world_engine::emit_resize_refusal(self.command_refusal_diagnostic_v4(
                         report,
                         &bookkeeping,
@@ -710,7 +707,7 @@ impl WorldEngine {
                         .iter()
                         .any(|effect| effect.kind == EffectKind::Focus)
                     {
-                        self.staged.batch_focus_issued = true;
+                        self.world.staged.batch_focus_issued = true;
                     }
                     settlements.push(BatchSettlement {
                         seq: command_seq,
@@ -748,12 +745,51 @@ impl WorldEngine {
         (self.finish_v4(report, issuing_revision, reply), settlements)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn finish_command_success_tail_v4(
+        &mut self,
+        bookkeeping: &WorldCommand,
+        command_seq: u64,
+        result: Option<CommandResult>,
+        effect: Option<crate::world_report::OneShotEffect>,
+        held_scopes: &BTreeSet<DomainKey>,
+        effects: &mut Vec<crate::world_report::OneShotEffect>,
+        settlements: &mut Vec<BatchSettlement>,
+    ) {
+        self.upsert_ordinary_toggle_float_save(bookkeeping, &result);
+        self.restage_classification();
+        self.build_staged_domains();
+        if let Some(effect) = effect {
+            if effect.kind == EffectKind::Focus {
+                // Latest explicit focus wins: drop every unissued
+                // prior Focus (admission or earlier batch). Canonical
+                // command-focus failures clear `logical_focus_cursor`
+                // inside `record_command_focus`, so non-recording
+                // focus carriers (send/move) never wipe a valid prior
+                // cursor.
+                effects.retain(|existing| existing.kind != EffectKind::Focus);
+            }
+            effects.push(effect);
+        }
+        crate::world_cursor::maybe_push_focus_follows(self, held_scopes, effects);
+        if effects
+            .iter()
+            .any(|effect| effect.kind == EffectKind::Focus)
+        {
+            self.world.staged.batch_focus_issued = true;
+        }
+        settlements.push(BatchSettlement {
+            seq: command_seq,
+            result,
+        });
+    }
+
     /// Finish one v4 accepted run: lifetime retention, membership and
     /// pager convergence, then the genuine v4 publication image. Mirrors
     /// the legacy finish tail without touching legacy replay, request, or
     /// digest bookkeeping (the admission boundary owns those): no `last_report`/`last_reply`
     /// writes, no duplicate or bounds checks.
-    fn finish_v4(
+    pub(crate) fn finish_v4(
         &mut self,
         report: &WorldReportV4,
         issuing_revision: u64,
@@ -762,14 +798,14 @@ impl WorldEngine {
         // Batch-only baseline ends with the run: clear so committed state
         // never carries an active baseline into the next capture or a
         // direct command seam (missing entry falls back to staged focus).
-        self.batch_base_focus.clear();
-        self.batch_command_focus.clear();
-        self.staged.batch_focus_issued = false;
+        self.world.focus.batch_base_focus.clear();
+        self.world.focus.batch_command_focus.clear();
+        self.world.staged.batch_focus_issued = false;
         self.prune_lifetime_state();
         self.note_focused_output();
         self.reconcile_members();
         let mut ringed: BTreeSet<DomainKey> = BTreeSet::new();
-        for (output, ring) in &self.mapping {
+        for (output, ring) in &self.world.workspace.mapping {
             for id in ring {
                 ringed.insert(DomainKey {
                     output: OutputId(output.clone()),
@@ -777,39 +813,57 @@ impl WorldEngine {
                 });
             }
         }
-        self.members.retain(|_, state| {
-            ringed.contains(&state.home) || self.displaced.contains_key(&state.home.output.0)
+        self.world.workspace.members.retain(|_, state| {
+            ringed.contains(&state.home)
+                || self
+                    .world
+                    .workspace
+                    .displaced
+                    .contains_key(&state.home.output.0)
         });
         self.latch_floating_admissions();
         // Finalized membership and floating admissions can drop windows or
-        // outputs that were still in pre-reconcile `self.members` during
+        // outputs that were still in pre-reconcile `self.world.workspace.members` during
         // `publish_v4`; re-prune and re-project the settled outcome slices
         // against finalized lifetime state before returning the reply.
         self.prune_settled_outcomes();
-        reply.operation_settled = self.operation_settled.values().cloned().collect();
-        reply.switch_settled = self.switch_settled.values().cloned().collect();
+        reply.operation_settled = self
+            .world
+            .settlement
+            .operation_settled
+            .values()
+            .cloned()
+            .collect();
+        reply.switch_settled = self
+            .world
+            .settlement
+            .switch_settled
+            .values()
+            .cloned()
+            .collect();
         // Pager retention settles against converged membership, then the
         // reply carries the retained pager image.
         self.retain_pager_presentation_v4();
         reply.presentation = self.presentation_for_publish_v4();
-        self.state_revision = issuing_revision;
+        self.world.state_revision = issuing_revision;
         reply.state_revision = issuing_revision;
         reply.presentation.rev = issuing_revision;
+        self.world.presentation.latest_published_rev_v4 = issuing_revision;
         // The prior-accepted context captures from this accepted
         // candidate's staged raw focus plus the just-published common
         // rows. Every publish path funnels here, including
         // consumed-command reports; rejected candidates never reach this
         // boundary.
-        self.prior_context = PriorAcceptedContext::capture(
-            &self.staged.observation.focused_global,
+        self.world.prior_context = PriorAcceptedContext::capture(
+            &self.world.staged.observation.focused_global,
             &reply.workspaces,
             &reply.scopes,
             &reply.windows,
         );
         if report.inventory_complete {
-            self.placement_bootstrapped = true;
+            self.world.placement_bootstrapped = true;
         }
-        if self.host_owned_workspace_domains() {
+        if self.connection.host_owned_workspace_domains() {
             self.retain_native_last_views();
         }
         if reply.command_consumed {

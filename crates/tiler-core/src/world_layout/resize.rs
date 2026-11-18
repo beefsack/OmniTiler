@@ -30,6 +30,7 @@ impl WorldLayout {
     /// a refusal never leaks focus or history changes. On success, the
     /// candidate is installed with the exact `verify_resize` commit tail and
     /// a single per-domain revision increment.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn keyboard_resize(
         &mut self,
@@ -229,6 +230,7 @@ impl WorldLayout {
     /// other tiled members are tolerated while `subject` itself must remain
     /// unflagged and exceptions must match exact homing and flags. Active focus
     /// is preserved across the resize.
+    #[cfg(test)]
     pub(crate) fn pointer_resize(
         &mut self,
         key: &DomainKey,
@@ -457,6 +459,7 @@ impl WorldLayout {
     /// local candidate with intermediate reprojection before the vertical axis
     /// derives, and any refusal leaves both axes and all domain focus/history/
     /// revision state untouched.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn pointer_resize_corner(
         &mut self,

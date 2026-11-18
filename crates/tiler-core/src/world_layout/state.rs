@@ -5,7 +5,9 @@ use crate::cursor_targeting::FreshPlacement;
 use crate::directional::{Node, NodeId, WindowId};
 use crate::geometry::Rect;
 use crate::policy::{LayoutPolicy, default_policy};
-use crate::session::{DomainKey, ExceptionFlags, ExceptionRecord, MinimizedSlot};
+#[cfg(test)]
+use crate::session::MinimizedSlot;
+use crate::session::{DomainKey, ExceptionFlags, ExceptionRecord};
 
 use super::group_alloc::GroupAllocator;
 use crate::size_hints::FixedSizePredicate;
@@ -200,6 +202,7 @@ impl WorldLayout {
     }
 
     /// Public minimize restore-slot snapshot, homed by the owning map key.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn restore_slot_snapshot(
         &self,

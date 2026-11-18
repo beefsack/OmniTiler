@@ -132,30 +132,39 @@ fn v4_shared_fields_stage() {
         held_windows,
         true,
     );
-    engine.stage_facts_v4(&report);
-    assert_eq!(engine.staged.screens.len(), 1);
-    assert_eq!(engine.staged.held_screens.len(), 1);
-    assert_eq!(engine.staged.held_windows.len(), 2);
-    assert!(engine.staged.gesture_barrier);
-    assert!(engine.staged.echoes.is_empty());
+    engine.tx(|tx| tx.stage_facts_v4(&report));
+    assert_eq!(engine.world.staged.screens.len(), 1);
+    assert_eq!(engine.world.staged.held_screens.len(), 1);
+    assert_eq!(engine.world.staged.held_windows.len(), 2);
+    assert!(engine.world.staged.gesture_barrier);
+    assert!(engine.world.staged.echoes.is_empty());
 
     // Shared content pins: minimized and normal facts stage, the closed id
     // stages, and the output-less row resolves through the retained home.
-    assert_eq!(engine.staged.facts.len(), 2);
+    assert_eq!(engine.world.staged.facts.len(), 2);
     assert!(
         engine
+            .world
             .staged
             .facts
             .contains_key(&WindowId("win-a".to_owned()))
     );
     assert!(
         engine
+            .world
             .staged
             .facts
             .contains_key(&WindowId("win-b".to_owned()))
     );
-    assert!(engine.staged.closes.contains(&WindowId("win-c".to_owned())));
+    assert!(
+        engine
+            .world
+            .staged
+            .closes
+            .contains(&WindowId("win-c".to_owned()))
+    );
     let resolved = engine
+        .world
         .staged
         .held_windows
         .iter()
@@ -172,13 +181,13 @@ fn v4_shared_fields_stage() {
 
     // No new-lane rows are carried here but the presentation still stores
     // its valid ingress verbatim.
-    assert!(engine.staged.held_native.is_empty());
-    assert!(engine.staged.held_attempts.is_empty());
+    assert!(engine.world.staged.held_native.is_empty());
+    assert!(engine.world.staged.held_attempts.is_empty());
     assert_eq!(
-        engine.staged.presentation_v4,
+        engine.world.staged.presentation_v4,
         Some(PresentationRowV4::Valid(PresentationIngressV4::default()))
     );
-    assert!(engine.staged.renderer_input.is_none());
+    assert!(engine.world.staged.renderer_input.is_none());
 }
 
 #[test]
@@ -235,19 +244,20 @@ fn v4_stages_new_lanes_verbatim() {
             win: WindowId("win-a".to_owned()),
         },
     });
-    engine.stage_facts_v4(&report);
+    engine.tx(|tx| tx.stage_facts_v4(&report));
 
-    assert_eq!(engine.staged.held_native, report.held_native);
-    assert_eq!(engine.staged.held_attempts, report.held_attempts);
+    assert_eq!(engine.world.staged.held_native, report.held_native);
+    assert_eq!(engine.world.staged.held_attempts, report.held_attempts);
     assert_eq!(
-        engine.staged.presentation_v4,
+        engine.world.staged.presentation_v4,
         Some(PresentationRowV4::Valid(ingress))
     );
-    assert_eq!(engine.staged.renderer_input, report.renderer_input);
-    assert!(engine.staged.echoes.is_empty());
+    assert_eq!(engine.world.staged.renderer_input, report.renderer_input);
+    assert!(engine.world.staged.echoes.is_empty());
     // Window diagnostics first, then the native diagnostic, then the
     // attempt row carrying `Some`; the `None` attempt row emits nothing.
     let lanes: Vec<RowDiagnosticLane> = engine
+        .world
         .staged
         .diagnostics
         .iter()
@@ -300,15 +310,16 @@ fn v4_lane_order_with_held_presentation_last() {
         diagnostic: Some(diagnostic("out-a", RowDiagnosticLane::Presentation, None)),
     };
     report.presentation = PresentationRowV4::Held(held_presentation.clone());
-    engine.stage_facts_v4(&report);
+    engine.tx(|tx| tx.stage_facts_v4(&report));
 
     // One held row per lane stages its diagnostic in lane order, with the
     // held presentation last; the stored row is verbatim, never defaulted.
     assert_eq!(
-        engine.staged.presentation_v4,
+        engine.world.staged.presentation_v4,
         Some(PresentationRowV4::Held(held_presentation.clone()))
     );
     let lanes: Vec<RowDiagnosticLane> = engine
+        .world
         .staged
         .diagnostics
         .iter()
@@ -331,12 +342,13 @@ fn v4_lane_order_with_held_presentation_last() {
         diagnostic: None,
         ..held_presentation
     });
-    engine.stage_facts_v4(&scopeless);
+    engine.tx(|tx| tx.stage_facts_v4(&scopeless));
     assert!(matches!(
-        engine.staged.presentation_v4,
+        engine.world.staged.presentation_v4,
         Some(PresentationRowV4::Held(_))
     ));
     let lanes: Vec<RowDiagnosticLane> = engine
+        .world
         .staged
         .diagnostics
         .iter()
@@ -468,11 +480,11 @@ fn v4_grades_unavailable_fact_contradiction_to_held() {
         false,
     );
     // Only Managed is unavailable, so the hold is attributable to it.
-    engine.stage_facts_v4(&report);
-    assert!(engine.staged.facts.is_empty());
-    assert_eq!(engine.staged.held_windows.len(), 1);
+    engine.tx(|tx| tx.stage_facts_v4(&report));
+    assert!(engine.world.staged.facts.is_empty());
+    assert_eq!(engine.world.staged.held_windows.len(), 1);
     assert_eq!(
-        engine.staged.diagnostics,
+        engine.world.staged.diagnostics,
         vec![conflicting_diagnostic(
             "out-a",
             RowDiagnosticLane::Window,
@@ -481,10 +493,10 @@ fn v4_grades_unavailable_fact_contradiction_to_held() {
     );
     // Supported control: permissive capabilities keep the same fact live.
     let mut supported = engine_with_caps(caps_permissive());
-    supported.stage_facts_v4(&report);
-    assert_eq!(supported.staged.facts.len(), 1);
-    assert!(supported.staged.held_windows.is_empty());
-    assert!(supported.staged.diagnostics.is_empty());
+    supported.tx(|tx| tx.stage_facts_v4(&report));
+    assert_eq!(supported.world.staged.facts.len(), 1);
+    assert!(supported.world.staged.held_windows.is_empty());
+    assert!(supported.world.staged.diagnostics.is_empty());
 }
 
 #[test]
@@ -504,11 +516,11 @@ fn v4_grades_executable_unavailable_value_to_held() {
         Vec::new(),
         false,
     );
-    engine.stage_facts_v4(&report);
-    assert!(engine.staged.facts.is_empty());
-    assert_eq!(engine.staged.held_windows.len(), 1);
+    engine.tx(|tx| tx.stage_facts_v4(&report));
+    assert!(engine.world.staged.facts.is_empty());
+    assert_eq!(engine.world.staged.held_windows.len(), 1);
     assert_eq!(
-        engine.staged.diagnostics,
+        engine.world.staged.diagnostics,
         vec![conflicting_diagnostic(
             "out-a",
             RowDiagnosticLane::Window,
@@ -516,9 +528,9 @@ fn v4_grades_executable_unavailable_value_to_held() {
         )]
     );
     let mut supported = engine_with_caps(caps_permissive());
-    supported.stage_facts_v4(&report);
-    assert_eq!(supported.staged.facts.len(), 1);
-    assert!(supported.staged.diagnostics.is_empty());
+    supported.tx(|tx| tx.stage_facts_v4(&report));
+    assert_eq!(supported.world.staged.facts.len(), 1);
+    assert!(supported.world.staged.diagnostics.is_empty());
 }
 
 #[test]
@@ -537,11 +549,11 @@ fn v4_grades_sticky_projected_fact_to_held() {
         Vec::new(),
         false,
     );
-    engine.stage_facts_v4(&report);
-    assert!(engine.staged.facts.is_empty());
-    assert_eq!(engine.staged.held_windows.len(), 1);
+    engine.tx(|tx| tx.stage_facts_v4(&report));
+    assert!(engine.world.staged.facts.is_empty());
+    assert_eq!(engine.world.staged.held_windows.len(), 1);
     assert_eq!(
-        engine.staged.diagnostics,
+        engine.world.staged.diagnostics,
         vec![conflicting_diagnostic(
             "out-a",
             RowDiagnosticLane::Window,
@@ -562,14 +574,14 @@ fn v4_grades_sticky_projected_fact_to_held() {
         false,
     );
     let mut native_free = engine_with_caps(caps_sticky_native_free());
-    native_free.stage_facts_v4(&null_report);
-    assert_eq!(native_free.staged.facts.len(), 1);
-    assert!(native_free.staged.held_windows.is_empty());
+    native_free.tx(|tx| tx.stage_facts_v4(&null_report));
+    assert_eq!(native_free.world.staged.facts.len(), 1);
+    assert!(native_free.world.staged.held_windows.is_empty());
     // Supported control keeps the non-null sticky live and classified.
     let mut supported = engine_with_caps(caps_permissive());
-    supported.stage_facts_v4(&report);
-    assert_eq!(supported.staged.facts.len(), 1);
-    assert!(supported.staged.diagnostics.is_empty());
+    supported.tx(|tx| tx.stage_facts_v4(&report));
+    assert_eq!(supported.world.staged.facts.len(), 1);
+    assert!(supported.world.staged.diagnostics.is_empty());
 }
 
 #[test]
@@ -594,23 +606,26 @@ fn v4_cursor_hit_on_capability_held_fact_keeps_hold() {
     // The initial report is valid: the hit names a typed window.
     assert_eq!(validate_report_v4_reason(&report), None);
     let original_windows = report.windows.clone();
-    engine.stage_facts_v4(&report);
+    engine.tx(|tx| tx.stage_facts_v4(&report));
     // Raw capture preserves the original facts verbatim, with the native
     // cursor lanes intact; the held-target clearing applies to the
     // effective copy only, with no surrogate target.
-    assert_eq!(engine.staged.observation.raw_windows, original_windows);
-    assert_eq!(engine.staged.observation.cursor, Some((10, 20)));
     assert_eq!(
-        engine.staged.observation.cursor_hit,
+        engine.world.staged.observation.raw_windows,
+        original_windows
+    );
+    assert_eq!(engine.world.staged.observation.cursor, Some((10, 20)));
+    assert_eq!(
+        engine.world.staged.observation.cursor_hit,
         Some(WindowId("win-a".to_owned()))
     );
     // The conflicting typed fact must not survive to staging: classified
     // fact absence is the holding invariant (no full v4 hover path is
     // wired yet).
-    assert!(engine.staged.facts.is_empty());
-    assert_eq!(engine.staged.held_windows.len(), 1);
+    assert!(engine.world.staged.facts.is_empty());
+    assert_eq!(engine.world.staged.held_windows.len(), 1);
     assert_eq!(
-        engine.staged.diagnostics,
+        engine.world.staged.diagnostics,
         vec![conflicting_diagnostic(
             "out-a",
             RowDiagnosticLane::Window,
@@ -795,13 +810,13 @@ fn v4_unsupported_sticky_attempt_emits_diagnostic_and_preserves_raw() {
         false,
     );
     report.state_attempts = vec![state_attempt("win-a", StateProperty::Sticky, true, 1)];
-    engine.stage_facts_v4(&report);
+    engine.tx(|tx| tx.stage_facts_v4(&report));
     // Raw window stays live; raw attempt stays intact, never a held row.
-    assert_eq!(engine.staged.facts.len(), 1);
-    assert!(engine.staged.held_windows.is_empty());
-    assert!(engine.staged.held_attempts.is_empty());
+    assert_eq!(engine.world.staged.facts.len(), 1);
+    assert!(engine.world.staged.held_windows.is_empty());
+    assert!(engine.world.staged.held_attempts.is_empty());
     assert_eq!(
-        engine.staged.diagnostics,
+        engine.world.staged.diagnostics,
         vec![conflicting_diagnostic(
             "out-a",
             RowDiagnosticLane::Attempt,
@@ -824,9 +839,9 @@ fn v4_unsupported_sticky_attempt_emits_diagnostic_and_preserves_raw() {
         false,
     );
     supported_report.state_attempts = vec![state_attempt("win-a", StateProperty::Sticky, true, 1)];
-    supported.stage_facts_v4(&supported_report);
-    assert!(supported.staged.diagnostics.is_empty());
-    assert!(supported.staged.held_attempts.is_empty());
+    supported.tx(|tx| tx.stage_facts_v4(&supported_report));
+    assert!(supported.world.staged.diagnostics.is_empty());
+    assert!(supported.world.staged.held_attempts.is_empty());
 }
 
 #[test]
@@ -834,7 +849,7 @@ fn v4_unsupported_attempt_does_not_settle() {
     use crate::world_report::AttemptOutcome;
     use crate::world_state::{RetainedStateBinding, RetainedStateTarget};
     let mut engine = engine_with_caps(caps_sticky_native_free());
-    engine.retained_states.insert(
+    engine.world.settlement.retained_states.insert(
         (WindowId("win-a".to_owned()), StateProperty::Sticky),
         RetainedStateBinding {
             target: RetainedStateTarget {
@@ -863,17 +878,20 @@ fn v4_unsupported_attempt_does_not_settle() {
         false,
     );
     report.state_attempts = vec![attempt.clone()];
-    engine.stage_facts_v4(&report);
+    engine.tx(|tx| tx.stage_facts_v4(&report));
     // The real staged v4 attempt is present in the capture; settlement
     // still ignores it for the unsupported property.
     assert_eq!(
-        engine.staged.observation.property_attempts,
+        engine.world.staged.observation.property_attempts,
         vec![crate::world_attempts::PropertyAttempt::from_state_attempt(
             &attempt
         )]
     );
-    engine.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::States);
+    engine
+        .tx(|tx| tx.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::States));
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
         .expect("binding retained");
@@ -907,9 +925,9 @@ fn v4_state_offroute_scope_precedence_and_unresolved() {
         false,
     );
     report.state_attempts = vec![state_attempt("win-a", StateProperty::Above, true, 1)];
-    engine.stage_facts_v4(&report);
+    engine.tx(|tx| tx.stage_facts_v4(&report));
     assert_eq!(
-        engine.staged.diagnostics,
+        engine.world.staged.diagnostics,
         vec![
             conflicting_diagnostic("out-b", RowDiagnosticLane::Window, "win-a"),
             conflicting_diagnostic("out-a", RowDiagnosticLane::Attempt, "win-a"),
@@ -935,9 +953,9 @@ fn v4_state_offroute_scope_precedence_and_unresolved() {
         false,
     );
     held_report.state_attempts = vec![state_attempt("win-held", StateProperty::Above, true, 1)];
-    held_only.stage_facts_v4(&held_report);
+    held_only.tx(|tx| tx.stage_facts_v4(&held_report));
     assert_eq!(
-        held_only.staged.diagnostics,
+        held_only.world.staged.diagnostics,
         vec![
             RowDiagnostic {
                 scope: AuthorityScope::Output(OutputId("out-b".to_owned())),
@@ -960,8 +978,8 @@ fn v4_state_offroute_scope_precedence_and_unresolved() {
         false,
     );
     ghost.state_attempts = vec![state_attempt("ghost", StateProperty::Above, true, 1)];
-    ghost_engine.stage_facts_v4(&ghost);
-    assert!(ghost_engine.staged.diagnostics.is_empty());
+    ghost_engine.tx(|tx| tx.stage_facts_v4(&ghost));
+    assert!(ghost_engine.world.staged.diagnostics.is_empty());
 }
 
 #[test]
@@ -985,8 +1003,8 @@ fn v4_state_offroute_uses_retained_home_when_carried_output_missing() {
     let mut engine = {
         let mut with_caps = engine_with_caps(HostCapabilities::default());
         // Carry over the retained membership so core_homing resolves.
-        with_caps.members = engine.members.clone();
-        with_caps.layout = engine.layout.clone();
+        with_caps.world.workspace.members = engine.world.workspace.members.clone();
+        with_caps.world.layout = engine.world.layout.clone();
         with_caps
     };
     let mut report = report_v4(
@@ -999,9 +1017,9 @@ fn v4_state_offroute_uses_retained_home_when_carried_output_missing() {
         false,
     );
     report.state_attempts = vec![state_attempt("win-r", StateProperty::Above, true, 1)];
-    engine.stage_facts_v4(&report);
+    engine.tx(|tx| tx.stage_facts_v4(&report));
     assert_eq!(
-        engine.staged.diagnostics,
+        engine.world.staged.diagnostics,
         vec![conflicting_diagnostic(
             "out-a",
             RowDiagnosticLane::Attempt,
@@ -1026,8 +1044,8 @@ fn v4_supported_attempt_emits_no_offroute() {
         state_attempt("win-a", StateProperty::Fullscreen, true, 1),
         state_attempt("win-a", StateProperty::Above, true, 1),
     ];
-    engine.stage_facts_v4(&report);
-    assert!(engine.staged.diagnostics.is_empty());
+    engine.tx(|tx| tx.stage_facts_v4(&report));
+    assert!(engine.world.staged.diagnostics.is_empty());
 }
 
 #[test]
@@ -1050,16 +1068,16 @@ fn v4_held_row_interaction_uses_graded_held_output() {
         false,
     );
     report.state_attempts = vec![state_attempt("win-a", StateProperty::Sticky, true, 1)];
-    engine.stage_facts_v4(&report);
-    assert!(engine.staged.facts.is_empty());
-    assert_eq!(engine.staged.held_windows.len(), 1);
-    assert_eq!(engine.staged.diagnostics.len(), 2);
+    engine.tx(|tx| tx.stage_facts_v4(&report));
+    assert!(engine.world.staged.facts.is_empty());
+    assert_eq!(engine.world.staged.held_windows.len(), 1);
+    assert_eq!(engine.world.staged.diagnostics.len(), 2);
     assert_eq!(
-        engine.staged.diagnostics[0],
+        engine.world.staged.diagnostics[0],
         conflicting_diagnostic("out-a", RowDiagnosticLane::Window, "win-a")
     );
     assert_eq!(
-        engine.staged.diagnostics[1],
+        engine.world.staged.diagnostics[1],
         conflicting_diagnostic("out-a", RowDiagnosticLane::Attempt, "win-a")
     );
 }
@@ -1081,10 +1099,10 @@ fn v4_staging_twice_emits_no_duplicates() {
         false,
     );
     report.state_attempts = vec![state_attempt("win-a", StateProperty::Sticky, true, 1)];
-    engine.stage_facts_v4(&report);
-    let first = engine.staged.diagnostics.clone();
-    engine.stage_facts_v4(&report);
-    assert_eq!(engine.staged.diagnostics, first);
+    engine.tx(|tx| tx.stage_facts_v4(&report));
+    let first = engine.world.staged.diagnostics.clone();
+    engine.tx(|tx| tx.stage_facts_v4(&report));
+    assert_eq!(engine.world.staged.diagnostics, first);
 }
 
 #[test]
@@ -1132,8 +1150,9 @@ fn v4_offroute_orders_before_presentation_last() {
         diagnostic: Some(diagnostic("out-a", RowDiagnosticLane::Presentation, None)),
     };
     report.presentation = PresentationRowV4::Held(held_presentation);
-    engine.stage_facts_v4(&report);
+    engine.tx(|tx| tx.stage_facts_v4(&report));
     let lanes: Vec<RowDiagnosticLane> = engine
+        .world
         .staged
         .diagnostics
         .iter()
@@ -1151,7 +1170,7 @@ fn v4_offroute_orders_before_presentation_last() {
         ]
     );
     assert_eq!(
-        engine.staged.diagnostics[4],
+        engine.world.staged.diagnostics[4],
         conflicting_diagnostic("out-a", RowDiagnosticLane::Attempt, "win-a")
     );
 }
@@ -1179,10 +1198,10 @@ fn unbound_grading_withholds_non_null_sticky_and_maximize() {
         Vec::new(),
         false,
     );
-    engine.stage_facts_v4(&report);
-    assert!(engine.staged.facts.is_empty());
-    assert_eq!(engine.staged.held_windows.len(), 2);
-    assert!(engine.staged.diagnostics.iter().all(|item| {
+    engine.tx(|tx| tx.stage_facts_v4(&report));
+    assert!(engine.world.staged.facts.is_empty());
+    assert_eq!(engine.world.staged.held_windows.len(), 2);
+    assert!(engine.world.staged.diagnostics.iter().all(|item| {
         item.kind == RowDiagnosticKind::ConflictingFact && item.row == RowDiagnosticLane::Window
     }));
 }
@@ -1206,11 +1225,12 @@ fn unbound_classification_matches_unsupported_and_rejects_permissive_default() {
             None,
             None,
         );
-        engine.stage_facts_v4(&staged_report);
-        assert_eq!(engine.staged.facts.len(), 1);
-        assert!(engine.staged.held_windows.is_empty());
-        assert!(engine.staged.diagnostics.is_empty());
+        engine.tx(|tx| tx.stage_facts_v4(&staged_report));
+        assert_eq!(engine.world.staged.facts.len(), 1);
+        assert!(engine.world.staged.held_windows.is_empty());
+        assert!(engine.world.staged.diagnostics.is_empty());
         engine
+            .world
             .staged
             .derived
             .get(&WindowId("win-a".to_owned()))

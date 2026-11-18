@@ -176,23 +176,23 @@ fn focus_targets(reply: &WorldReplyV4) -> Vec<WindowId> {
 
 /// Home domain of a linked window: the single session whose snapshot links it.
 fn home_of(engine: &WorldEngine, window: &WindowId) -> Option<DomainKey> {
-    for key in engine.layout.domain_keys() {
-        if engine.layout.is_tiled_window(&key, window) {
-            return Some(key);
-        }
-    }
-    None
+    engine
+        .world
+        .layout
+        .domain_keys()
+        .into_iter()
+        .find(|key| engine.world.layout.is_tiled_window(key, window))
 }
 
 /// Window currently named by session memory (`remembered_leaf` -> window).
 fn remembered_window(engine: &WorldEngine, key: &DomainKey) -> Option<WindowId> {
-    let leaf = engine.layout.remembered_leaf(key)?;
-    engine.layout.window_for_leaf(key, &leaf)
+    let leaf = engine.world.layout.remembered_leaf(key)?;
+    engine.world.layout.window_for_leaf(key, &leaf)
 }
 
 fn focused_window(engine: &WorldEngine, key: &DomainKey) -> Option<WindowId> {
-    let leaf = engine.layout.focus_leaf(key)?;
-    engine.layout.window_for_leaf(key, leaf)
+    let leaf = engine.world.layout.focus_leaf(key)?;
+    engine.world.layout.window_for_leaf(key, leaf)
 }
 
 fn bootstrap_two_tiled() -> (WorldEngine, DomainKey) {
@@ -475,6 +475,8 @@ fn view_return_fallback_records_effect_target_not_remembered() {
         Some(WindowId("win-a".to_owned()))
     );
     let ring = engine
+        .world
+        .workspace
         .mapping
         .get(&key.output.0)
         .cloned()
@@ -492,14 +494,14 @@ fn view_return_fallback_records_effect_target_not_remembered() {
         None,
         None,
     );
-    engine.stage_facts_v4(&probe);
-    engine.build_staged_domains();
+    engine.tx(|tx| tx.stage_facts_v4(&probe));
+    engine.tx(|tx| tx.build_staged_domains());
     let held = BTreeSet::new();
     // Leg 1: retain some other view so the return below actually changes
     // the view. The empty index resolves no candidate there; the logical
     // view still flips.
     let empty_by_id: BTreeMap<&WindowId, &EngineWindow> = BTreeMap::new();
-    let _ = engine.retain_view(11, &key.output, &other, &held, &empty_by_id);
+    let _ = engine.tx(|tx| tx.retain_view(11, &key.output, &other, &held, &empty_by_id));
     assert_eq!(
         remembered_window(&engine, &key),
         Some(WindowId("win-a".to_owned())),
@@ -541,7 +543,7 @@ fn view_return_fallback_records_effect_target_not_remembered() {
     for window in &owned {
         by_id.insert(&window.window, window);
     }
-    let applied = engine.retain_view(12, &key.output, &key.workspace.0, &held, &by_id);
+    let applied = engine.tx(|tx| tx.retain_view(12, &key.output, &key.workspace.0, &held, &by_id));
     let target = match applied {
         CommandApplied::Effect(effect) => effect.target,
         CommandApplied::NoEffect => panic!("fallback return must stage a focus effect"),
@@ -652,6 +654,7 @@ fn exception_focus_effect_leaves_memory_unchanged() {
     let before = remembered_window(&engine, &key);
     assert!(
         engine
+            .world
             .layout
             .is_exception(&key, &WindowId("win-f".to_owned())),
         "win-f is an exception lifetime"
@@ -691,7 +694,7 @@ fn held_scope_blocks_recording_but_keeps_contract() {
     let mut held = BTreeSet::new();
     held.insert(key.clone());
     assert!(
-        !engine.record_command_focus(&WindowId("win-b".to_owned()), &held),
+        !engine.tx(|tx| tx.record_command_focus(&WindowId("win-b".to_owned()), &held)),
         "held scope reports unrecorded through the seam"
     );
     assert_eq!(
@@ -700,11 +703,11 @@ fn held_scope_blocks_recording_but_keeps_contract() {
         "held scope records nothing through the seam"
     );
     assert!(
-        engine.record_command_focus(&WindowId("win-b".to_owned()), &BTreeSet::new()),
+        engine.tx(|tx| tx.record_command_focus(&WindowId("win-b".to_owned()), &BTreeSet::new())),
         "unheld retry records through the same seam"
     );
     assert!(
-        engine.record_command_focus(&WindowId("win-b".to_owned()), &BTreeSet::new()),
+        engine.tx(|tx| tx.record_command_focus(&WindowId("win-b".to_owned()), &BTreeSet::new())),
         "unheld retry records through the same seam"
     );
     assert_eq!(
@@ -718,7 +721,7 @@ fn staged_focus_of(
     engine: &WorldEngine,
     key: &DomainKey,
 ) -> (Option<DomainKey>, Option<crate::directional::NodeId>) {
-    let leaf = engine.layout().focus_leaf(key).cloned();
+    let leaf = engine.world.layout().focus_leaf(key).cloned();
     (leaf.as_ref().map(|_| key.clone()), leaf)
 }
 
@@ -860,7 +863,8 @@ fn binding_refusal_reports_unrecorded_without_mutation() {
     let before_mem = remembered_window(&engine, &key);
     let before_focus = staged_focus_of(&engine, &key);
     assert!(
-        !engine.record_command_focus(&WindowId("win-gone".to_owned()), &BTreeSet::new()),
+        !engine
+            .tx(|tx| tx.record_command_focus(&WindowId("win-gone".to_owned()), &BTreeSet::new())),
         "unknown window reports unrecorded"
     );
     assert_eq!(
@@ -1134,6 +1138,7 @@ fn float_lane_focus_leaves_memory_unchanged() {
     let key = home_of(&engine, &WindowId("win-a".to_owned())).expect("win-a linked");
     assert!(
         engine
+            .world
             .layout
             .is_exception(&key, &WindowId("win-f2".to_owned())),
         "float candidate is an exception lifetime"
@@ -1337,16 +1342,18 @@ fn local_move_direct_records_mover_without_sweep() {
         Some(12),
         Some(command.clone()),
     );
-    engine.stage_facts_v4(&probe);
-    engine.build_staged_domains();
-    let applied = engine.execute_command(
-        &test_issue(&probe),
-        12,
-        &command,
-        &BTreeSet::new(),
-        None,
-        None,
-    );
+    engine.tx(|tx| tx.stage_facts_v4(&probe));
+    engine.tx(|tx| tx.build_staged_domains());
+    let applied = engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&probe),
+            12,
+            &command,
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    });
     let target = match applied {
         CommandApplied::Effect(effect) => effect.target,
         CommandApplied::NoEffect => panic!("local move must stage a focus effect"),
@@ -1406,16 +1413,18 @@ fn swap_neighbor_move_direct_records_mover_without_sweep() {
         Some(12),
         Some(command.clone()),
     );
-    engine.stage_facts_v4(&probe);
-    engine.build_staged_domains();
-    let applied = engine.execute_command(
-        &test_issue(&probe),
-        12,
-        &command,
-        &BTreeSet::new(),
-        None,
-        None,
-    );
+    engine.tx(|tx| tx.stage_facts_v4(&probe));
+    engine.tx(|tx| tx.build_staged_domains());
+    let applied = engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&probe),
+            12,
+            &command,
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    });
     let target = match applied {
         CommandApplied::Effect(effect) => effect.target,
         CommandApplied::NoEffect => panic!("swap must stage a focus effect"),
@@ -2487,7 +2496,7 @@ fn last_active_unchanged_tile_observation_preserves_float_command() {
         &report(3, two_screens(), windows(), "win-a", None, None),
     );
     assert_eq!(
-        engine.canonical_memory(&home),
+        engine.tx(|tx| tx.canonical_memory(&home)),
         Some(WindowId("win-f".to_owned())),
         "unchanged tile re-report preserves the recorded float"
     );
@@ -2577,7 +2586,7 @@ fn last_active_closed_float_prunes_memory_no_ghost() {
     let _ = accepted(&mut engine, &close);
     assert!(
         engine
-            .canonical_memory(&home)
+            .tx(|tx| tx.canonical_memory(&home))
             .is_none_or(|w| w != WindowId("win-f".to_owned())),
         "closed float identity is pruned"
     );
@@ -2660,7 +2669,7 @@ fn last_active_no_focus_report_preserves_float_memory() {
         &report(3, two_screens(), windows(), "", None, None),
     );
     assert_eq!(
-        engine.canonical_memory(&home),
+        engine.tx(|tx| tx.canonical_memory(&home)),
         Some(WindowId("win-f".to_owned())),
         "empty focus preserves the recorded float"
     );
@@ -2759,7 +2768,7 @@ fn last_active_no_focus_empty_target_with_visible_sticky_stays_quiet() {
         "empty spare with only a visible sticky invents no focus"
     );
     assert_eq!(
-        engine.canonical_memory(&home),
+        engine.tx(|tx| tx.canonical_memory(&home)),
         Some(WindowId("win-s".to_owned())),
         "away switch preserves home sticky memory"
     );
@@ -2768,7 +2777,7 @@ fn last_active_no_focus_empty_target_with_visible_sticky_stays_quiet() {
         workspace: WorkspaceId(other.clone()),
     };
     assert_eq!(
-        engine.canonical_memory(&spare),
+        engine.tx(|tx| tx.canonical_memory(&spare)),
         None,
         "sticky records only where it was selected, never the spare it shows on"
     );
@@ -2841,7 +2850,7 @@ fn last_active_tiled_operation_focus_supersedes_stale_sticky() {
     );
     assert_eq!(focus_targets(&reply), vec![WindowId("win-s".to_owned())]);
     assert_eq!(
-        engine.canonical_memory(&home),
+        engine.tx(|tx| tx.canonical_memory(&home)),
         Some(WindowId("win-s".to_owned())),
         "precondition: sticky recorded at home"
     );
@@ -2871,7 +2880,7 @@ fn last_active_tiled_operation_focus_supersedes_stale_sticky() {
         "operation focus names a tile, got {tile:?}"
     );
     assert_eq!(
-        engine.canonical_memory(&home),
+        engine.tx(|tx| tx.canonical_memory(&home)),
         Some(tile.clone()),
         "tiled operation focus overwrites the stale sticky"
     );
@@ -2980,7 +2989,7 @@ fn last_active_send_stay_survivor_supersedes_stale_sticky() {
         "send-stay names a tile, got {survivor:?}"
     );
     assert_eq!(
-        engine.canonical_memory(&home),
+        engine.tx(|tx| tx.canonical_memory(&home)),
         Some(survivor.clone()),
         "send-stay survivor overwrites the stale sticky at home"
     );
@@ -3081,7 +3090,7 @@ fn last_active_admission_newcomer_supersedes_stale_sticky() {
         "admission names the newcomer"
     );
     assert_eq!(
-        engine.canonical_memory(&home),
+        engine.tx(|tx| tx.canonical_memory(&home)),
         Some(WindowId("win-n".to_owned())),
         "admitted newcomer overwrites the stale sticky"
     );
@@ -3194,7 +3203,7 @@ fn last_active_close_after_tile_supersession_falls_back_to_tiled() {
         "operation focus names a tile, got {tile:?}"
     );
     assert_eq!(
-        engine.canonical_memory(&home),
+        engine.tx(|tx| tx.canonical_memory(&home)),
         Some(tile.clone()),
         "tiled operation focus overwrites the stale sticky"
     );
@@ -3214,7 +3223,7 @@ fn last_active_close_after_tile_supersession_falls_back_to_tiled() {
         reply.effects
     );
     assert_eq!(
-        engine.canonical_memory(&home),
+        engine.tx(|tx| tx.canonical_memory(&home)),
         Some(WindowId("win-a".to_owned())),
         "closed tile pruned; observed tile survivor recorded, stale sticky never restored"
     );
@@ -3292,7 +3301,7 @@ fn sticky_visibility_switch_mints_no_admission_and_no_spare_memory() {
         &report(2, two_screens(), windows(), "win-a", None, None),
     );
     assert_eq!(
-        engine.canonical_memory(&home),
+        engine.tx(|tx| tx.canonical_memory(&home)),
         Some(WindowId("win-a".to_owned())),
         "precondition: tile recorded at home"
     );
@@ -3323,7 +3332,7 @@ fn sticky_visibility_switch_mints_no_admission_and_no_spare_memory() {
         obs.effects
     );
     assert_eq!(
-        engine.canonical_memory(&spare),
+        engine.tx(|tx| tx.canonical_memory(&spare)),
         None,
         "spare keeps no memory for a never-focused sticky"
     );
@@ -3338,7 +3347,7 @@ fn sticky_visibility_switch_mints_no_admission_and_no_spare_memory() {
         obs2.effects
     );
     assert_eq!(
-        engine.canonical_memory(&spare),
+        engine.tx(|tx| tx.canonical_memory(&spare)),
         None,
         "detour keeps the spare slot absent"
     );
@@ -3363,7 +3372,7 @@ fn sticky_visibility_switch_mints_no_admission_and_no_spare_memory() {
         "return names the remembered tile, never the visible sticky"
     );
     assert_eq!(
-        engine.canonical_memory(&spare),
+        engine.tx(|tx| tx.canonical_memory(&spare)),
         None,
         "return leaves the spare slot absent"
     );

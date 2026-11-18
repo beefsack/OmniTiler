@@ -34,6 +34,7 @@ impl WorldLayout {
     /// `observed_focus` is synced on a local candidate before focus checks so
     /// a refusal leaves all domain state untouched (only generation-shared
     /// group allocator serials burned during trial tree edits survive).
+    #[cfg(test)]
     pub(crate) fn local_move(
         &mut self,
         key: &DomainKey,

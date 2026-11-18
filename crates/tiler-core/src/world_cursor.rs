@@ -9,23 +9,24 @@
 //! membership. Both lanes pause under a focused fullscreen game,
 //! incomplete inventory, and gesture barriers.
 
+use crate::world_transaction::WorldTransaction;
 use std::collections::BTreeSet;
 
 use crate::directional::WindowId;
 use crate::session::DomainKey;
-use crate::world_engine::WorldEngine;
 use crate::world_report::{EffectCause, EffectKind, OneShotEffect};
 
 /// Whether the staged observation runs under a focused fullscreen game
 /// pause: the staged focused lifetime names a staged fact that is
 /// fullscreen. Normalized staged facts only. Under the pause no
 /// focus-follows effect mints and no warp point publishes.
-pub(crate) fn cursor_game_paused(engine: &WorldEngine) -> bool {
-    if engine.staged.observation.focused_global.is_empty() {
+pub(crate) fn cursor_game_paused(engine: &WorldTransaction<'_>) -> bool {
+    if engine.world.staged.observation.focused_global.is_empty() {
         return false;
     }
-    let focused = WindowId(engine.staged.observation.focused_global.clone());
+    let focused = WindowId(engine.world.staged.observation.focused_global.clone());
     engine
+        .world
         .staged
         .facts
         .get(&focused)
@@ -38,7 +39,7 @@ pub(crate) fn cursor_game_paused(engine: &WorldEngine) -> bool {
 /// a fullscreen, sticky, floating, or excluded target per the normative
 /// automatic restrictions.
 fn hover_eligible(
-    engine: &WorldEngine,
+    engine: &WorldTransaction<'_>,
     held_scopes: &BTreeSet<DomainKey>,
     home: &DomainKey,
     window: &WindowId,
@@ -46,10 +47,11 @@ fn hover_eligible(
     if held_scopes.contains(home) {
         return false;
     }
-    if engine.floating_scopes.contains(home) {
+    if engine.world.floating_scopes.contains(home) {
         return false;
     }
     if !engine
+        .world
         .staged
         .domains
         .iter()
@@ -87,9 +89,12 @@ fn hover_eligible(
 /// pixels, and overlapping floats cannot win by geometry or token order. An
 /// absent hit, a hit outside visible staged membership of the retained
 /// view, or an ineligible hit mints nothing.
-fn hover_candidate(engine: &WorldEngine, held_scopes: &BTreeSet<DomainKey>) -> Option<WindowId> {
-    let hit = engine.staged.observation.cursor_hit.clone()?;
-    let fact = engine.staged.facts.get(&hit)?;
+fn hover_candidate(
+    engine: &WorldTransaction<'_>,
+    held_scopes: &BTreeSet<DomainKey>,
+) -> Option<WindowId> {
+    let hit = engine.world.staged.observation.cursor_hit.clone()?;
+    let fact = engine.world.staged.facts.get(&hit)?;
     if fact.minimized == Some(true) {
         return None;
     }
@@ -100,10 +105,12 @@ fn hover_candidate(engine: &WorldEngine, held_scopes: &BTreeSet<DomainKey>) -> O
     {
         return None;
     }
-    let home = engine.staged.homing.get(&hit)?.clone();
+    let home = engine.world.staged.homing.get(&hit)?.clone();
     // Current-view gate: only the retained logical view of the hit
     // window's output is actually shown.
     if engine
+        .world
+        .workspace
         .views
         .get(&home.output.0)
         .is_none_or(|view| *view != home.workspace.0)
@@ -120,6 +127,7 @@ fn hover_candidate(engine: &WorldEngine, held_scopes: &BTreeSet<DomainKey>) -> O
     // Minimized, unreadable, and unhomed lifetimes never match, whatever
     // the adapter reported.
     let domain = engine
+        .world
         .staged
         .domains
         .iter()
@@ -133,7 +141,7 @@ fn hover_candidate(engine: &WorldEngine, held_scopes: &BTreeSet<DomainKey>) -> O
 /// command focus). Runs after command execution on the final staged state, so
 /// hover resolves against committed rings/views.
 pub(crate) fn maybe_push_focus_follows(
-    engine: &mut WorldEngine,
+    engine: &mut WorldTransaction<'_>,
     held_scopes: &BTreeSet<DomainKey>,
     effects: &mut Vec<OneShotEffect>,
 ) {
@@ -150,15 +158,15 @@ pub(crate) fn maybe_push_focus_follows(
         // implicit subject from post-hover core state. Only the final
         // winner publishes.
         if !engine.record_canonical(&follow.target, held_scopes, false)
-            && engine.logical_focus_cursor.as_ref() != Some(&follow.target)
+            && engine.world.focus.logical_focus_cursor.as_ref() != Some(&follow.target)
         {
-            engine.logical_focus_cursor = None;
+            engine.world.focus.logical_focus_cursor = None;
         }
         effects.push(follow);
     }
 }
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// One focus-follows-cursor effect for this staged observation, if any.
     /// Mints only when the setting is on, the inventory is complete, the normalized
     /// cursor hit names an eligible hover target, no game/gesture pause
@@ -179,16 +187,16 @@ impl WorldEngine {
         &mut self,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> Option<OneShotEffect> {
-        if !self.focus_follows_cursor_setting() {
+        if !self.connection.focus_follows_cursor_setting() {
             return None;
         }
-        if !self.staged.observation.inventory_complete {
+        if !self.world.staged.observation.inventory_complete {
             return None;
         }
         if cursor_game_paused(self) {
             return None;
         }
-        if self.staged.gesture_barrier || self.gesture.is_some() {
+        if self.world.staged.gesture_barrier || self.world.gesture.retained.is_some() {
             return None;
         }
         // Departure tracking (Q3): leaving the live hover target onto an
@@ -197,26 +205,26 @@ impl WorldEngine {
         // fresh qualifying entry even when the pending row survived while
         // away. Pauses above return without touching the memory.
         let Some(hovered) = hover_candidate(self, held_scopes) else {
-            self.ffc_last_hover = None;
+            self.world.focus.ffc_last_hover = None;
             return None;
         };
         // Focused float/sticky ownership: never steal toward the hover
         // target while native foreground names a different floating or
         // sticky window. Hover presence memory still advances, so a static
         // cursor never re-steals once the foreground clears.
-        if !self.staged.observation.focused_global.is_empty()
-            && self.staged.observation.focused_global != hovered.0
+        if !self.world.staged.observation.focused_global.is_empty()
+            && self.world.staged.observation.focused_global != hovered.0
         {
-            let focused = WindowId(self.staged.observation.focused_global.clone());
+            let focused = WindowId(self.world.staged.observation.focused_global.clone());
             let shape = self.derived_for(&focused);
             if shape.floating || shape.sticky {
-                self.ffc_last_hover = Some(hovered);
+                self.world.focus.ffc_last_hover = Some(hovered);
                 return None;
             }
         }
-        let previous = self.ffc_last_hover.clone();
-        self.ffc_last_hover = Some(hovered.clone());
-        if hovered.0 == self.staged.observation.focused_global {
+        let previous = self.world.focus.ffc_last_hover.clone();
+        self.world.focus.ffc_last_hover = Some(hovered.clone());
+        if hovered.0 == self.world.staged.observation.focused_global {
             return None;
         }
         // Q3: pointer movement over an already-pending hover target keeps
@@ -226,17 +234,22 @@ impl WorldEngine {
         // a departure (previous cleared or moved elsewhere) the same target
         // is a fresh entry and must remint below.
         if previous.as_ref() == Some(&hovered)
-            && self.pending_focus.as_ref().is_some_and(|pending| {
-                pending.cause == crate::world_report::FocusRequestCause::FocusFollowsCursor
-                    && pending.target == hovered
-            })
+            && self
+                .world
+                .focus
+                .pending_focus
+                .as_ref()
+                .is_some_and(|pending| {
+                    pending.cause == crate::world_report::FocusRequestCause::FocusFollowsCursor
+                        && pending.target == hovered
+                })
         {
             return None;
         }
         // Genuine movement or hover transition only: a static cursor over
         // an unchanged hover never re-steals focus after a keyboard
         // command moves focus elsewhere.
-        let moved = self.staged.observation.cursor != self.prev_cursor;
+        let moved = self.world.staged.observation.cursor != self.world.focus.prev_cursor;
         let transitioned = previous.as_ref() != Some(&hovered);
         if !moved && !transitioned {
             return None;
@@ -246,7 +259,7 @@ impl WorldEngine {
             id: format!("ffc-{token}"),
             kind: EffectKind::Focus,
             target: hovered,
-            issued_revision: self.state_revision + 1,
+            issued_revision: self.world.state_revision + 1,
             cause: EffectCause::FocusFollowsCursor,
             command_seq: None,
             await_shown: false,
@@ -270,20 +283,21 @@ impl WorldEngine {
         windows: &[crate::world_report::WindowDesire],
         held_scopes: &BTreeSet<DomainKey>,
     ) -> Option<(i32, i32)> {
-        if !self.cursor_warp_setting() {
+        if !self.connection.cursor_warp_setting() {
             return None;
         }
-        if !self.staged.observation.inventory_complete {
+        if !self.world.staged.observation.inventory_complete {
             return None;
         }
         if cursor_game_paused(self) {
             return None;
         }
-        if self.staged.gesture_barrier || self.gesture.is_some() {
+        if self.world.staged.gesture_barrier || self.world.gesture.retained.is_some() {
             return None;
         }
-        let cursor = self.staged.observation.cursor?;
+        let cursor = self.world.staged.observation.cursor?;
         let screens: Vec<(crate::directional::OutputId, crate::geometry::Rect)> = self
+            .world
             .staged
             .screens
             .iter()
@@ -312,6 +326,7 @@ impl WorldEngine {
             frame.y.saturating_add(frame.h / 2),
         );
         let clamped = self
+            .world
             .staged
             .screens
             .iter()

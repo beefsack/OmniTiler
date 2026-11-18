@@ -28,14 +28,16 @@ use tiler_core::world_report::{
     validate_intent_desired_reason,
 };
 use tiler_core::world_report_v4_checks::{report_digest_v4, validate_report_v4_reason};
-use tiler_core::world_sizing::{intent_desired_estimate, intent_records_estimate};
-use tiler_core::world_sizing_v4::{
-    reply_estimate_v4, reply_exact_bytes_v4, reply_upper_bound_v4, report_estimate_v4,
+use tiler_protocol::world_admission::ProtocolAdmissionGate;
+use tiler_protocol::world_admission_sizing::{
+    MAX_INTENT_DESIRED_ROW_BYTES, max_intent_desired_bound, max_intent_save_bound_v4,
+    reply_upper_bound_v4, report_estimate_v4,
 };
 use tiler_protocol::world_protocol::{
     DecodedReplyV4, ReplyWireOptionals, WorldOutcome, decode_reply_v4, decode_request,
     encode_reply_v4,
 };
+use tiler_protocol::world_reply_write::count_reply_v4_bytes;
 
 fn fixture(name: &str) -> serde_json::Value {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -128,8 +130,8 @@ fn reply_wire(reply: &WorldReplyV4) -> String {
     let wire = encode_reply_v4(&decoded).expect("reply encodes");
     assert_eq!(
         wire.len(),
-        reply_exact_bytes_v4(reply),
-        "core byte count is exact over the wire"
+        count_reply_v4_bytes(reply, &decoded.wire),
+        "protocol canonical byte count is exact over the wire"
     );
     assert_eq!(
         decode_reply_v4(&wire).expect("reply round-trips"),
@@ -562,51 +564,36 @@ fn estimates_count_escaped_bytes_and_both_arrays() {
     let escaped_encoded = encoded.replace('"', "\\\"");
     let write_json =
         format!("{{\"win\":\"w\",\"data\":\"{escaped_encoded}\"}},{{\"win\":\"x\",\"data\":null}}");
-    assert_eq!(
-        intent_records_estimate(&records),
-        19 + record_json.len(),
-        "records: empty base plus exact row bytes"
-    );
-    assert_eq!(
-        intent_desired_estimate(&writes),
-        19 + write_json.len(),
-        "writes: empty base plus exact rows with their comma"
-    );
-    // The reply estimator is exact over the canonical encoding, escapes
-    // included.
-    let mut report = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
+
+    let bare_report = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
+    let mut report = bare_report.clone();
     report.intent_records = records;
+    assert_eq!(
+        report_estimate_v4(&report) - report_estimate_v4(&bare_report),
+        record_json.len(),
+        "report estimate delta matches exact escaped record row bytes"
+    );
+
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
     let mut reply = match engine.handle_report(&report, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
-    reply.intent_desired = writes;
-    let wire = reply_wire(&reply);
-    // The reply estimator is exact over the new section (the wider reply
-    // base carries pre-existing one-count conservatism, so the witness
-    // pins the delta plus the standing upper-bound convention).
     let mut empty_reply = reply.clone();
     empty_reply.intent_desired = Vec::new();
     let empty_wire = reply_wire(&empty_reply);
+    reply.intent_desired = writes;
+    let wire = reply_wire(&reply);
     assert_eq!(
-        reply_estimate_v4(&reply) - reply_estimate_v4(&empty_reply),
         wire.len() - empty_wire.len(),
-        "reply estimate delta is exact over the new rows"
-    );
-    assert!(
-        reply_estimate_v4(&reply) >= wire.len(),
-        "reply estimate bounds the wire"
+        write_json.len(),
+        "canonical reply delta matches exact escaped write rows with their comma"
     );
     // The request estimator grows by exactly the carried rows on the record
     // lane: a maxed-out `intentRecords` section alone exceeds the 4 MiB
     // candidate budget through `report_estimate_v4`. The outbound
-    // `intentDesired` lane is not estimated here: the typed helper plus the
-    // publication commit gate refuse over-cap/invalid rows, the
-    // pre-mutation bound carries no max-write reservation, and the envelope
-    // slack covers the empty 19-byte section (see
-    // `outbound_write_rows_share_the_fixed_outer_vocabulary` and
-    // `published_replies_originate_valid_under_the_commit_gate`).
+    // `intentDesired` lane is bounded by `max_intent_desired_bound` plus
+    // the publication commit gate.
     let wire_len = envelope(serde_json::json!([])).len();
     assert!(
         report_estimate_v4(&report) >= wire_len,
@@ -713,11 +700,9 @@ fn published_replies_originate_valid_under_the_commit_gate() {
 #[test]
 fn full_map_exact_and_bound_sizing() {
     use tiler_core::intent_data::IntentData;
-    use tiler_core::world_sizing::{MAX_INTENT_DESIRED_ROW_BYTES, max_intent_desired_bound};
     // Full retained map: three max-width rows (two saves, one explicit
-    // clear) spell exact bytes through the genuine writer, the independent
-    // core count stays exact, the structural estimate bounds the wire, and
-    // the per-row max bound covers the section.
+    // clear) spell exact bytes through the genuine writer, the canonical
+    // byte count stays exact, and the per-row max bound covers the section.
     let report = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
     let mut reply = match engine.handle_report(&report, &[]).0 {
@@ -741,17 +726,10 @@ fn full_map_exact_and_bound_sizing() {
     ];
     assert_eq!(validate_intent_desired_reason(&reply.intent_desired), None);
     let wire = reply_wire(&reply);
-    assert!(
-        reply_estimate_v4(&reply) >= wire.len(),
-        "estimate bounds the full map"
-    );
     let mut empty_reply = reply.clone();
     empty_reply.intent_desired = Vec::new();
     let empty_wire = reply_wire(&empty_reply);
     let section_bytes = wire.len().saturating_sub(empty_wire.len());
-    // Section delta is the three bodies plus two commas plus the wider
-    // header delta already in the empty base: it stays under the max-row
-    // reserve plus the single closing-bracket byte conservatism.
     assert!(section_bytes <= 1 + max_intent_desired_bound(3));
     assert_eq!(
         max_intent_desired_bound(3),
@@ -814,8 +792,8 @@ fn reused_seq_with_only_intent_bytes_changed_reuses_nothing() {
 
 #[test]
 fn heavy_intent_report_refuses_oversized_without_mutation() {
-    // Typed-direct heavy section (no wire involved): the pre-mutation
-    // estimate gate refuses before any convergence or slot work, so a
+    // Typed-direct heavy section (no wire involved): the real protocol
+    // admission gate refuses before any convergence or slot work, so a
     // follow-up report still accepts on the unmutated engine.
     let mut base = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
     base.intent_records = (0..10_000)
@@ -826,7 +804,14 @@ fn heavy_intent_report_refuses_oversized_without_mutation() {
         .collect();
     assert!(report_estimate_v4(&base) > 4 * 1024 * 1024);
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    match engine.handle_report(&base, &[]).0 {
+    let gate = ProtocolAdmissionGate::new();
+    match engine
+        .handle_report_with_gate_and_prepare(&base, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .0
+    {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "oversized"),
         other => panic!("expected oversized, got {other:?}"),
     }
@@ -835,8 +820,85 @@ fn heavy_intent_report_refuses_oversized_without_mutation() {
     next.request_seq = base.request_seq + 1;
     next.observation_seq = base.observation_seq + 1;
     next.request_id = "req-2".to_owned();
-    match engine.handle_report(&next, &[]).0 {
+    match engine
+        .handle_report_with_gate_and_prepare(&next, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .0
+    {
         WorldOutcome::Accepted(_) => {}
         other => panic!("expected accepted, got {other:?}"),
     }
+}
+
+#[test]
+fn reply_upper_bound_adds_exactly_one_save_row() {
+    let toggle_report = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
+    let mut with_toggle = toggle_report.clone();
+    with_toggle.command_seq = Some(2);
+    with_toggle.command = Some(tiler_core::world_report::WorldCommand::Operation(
+        tiler_core::boundary::CoreCommand::ToggleFloat {
+            window: "win-a".to_owned(),
+            float_rect: None,
+        },
+    ));
+    let bound = max_intent_save_bound_v4(&with_toggle);
+    assert!(bound > 0);
+    assert_eq!(
+        reply_upper_bound_v4(&with_toggle, 0, 1, 1, 0, 0)
+            - reply_upper_bound_v4(&toggle_report, 0, 1, 1, 0, 0),
+        (report_estimate_v4(&with_toggle) - report_estimate_v4(&toggle_report)) + bound
+    );
+}
+
+#[test]
+fn actual_one_save_reply_fits_protocol_gate_and_upper_bound() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("bound engine");
+    let mut seed = decode_request(&envelope(serde_json::json!([]))).expect("decodes");
+    let mut win_b = seed.windows[0].clone();
+    win_b.window = WindowId("win-b".to_owned());
+    seed.windows.push(win_b);
+    let gate = ProtocolAdmissionGate::new();
+    match engine
+        .handle_report_with_gate_and_prepare(&seed, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .0
+    {
+        WorldOutcome::Accepted(_) => {}
+        other => panic!("expected accepted seed, got {other:?}"),
+    }
+
+    let mut input = seed.clone();
+    input.request_id = "req-2".to_owned();
+    input.request_seq = 2;
+    input.observation_seq = 2;
+    input.command_seq = Some(2);
+    input.command = Some(tiler_core::world_report::WorldCommand::Operation(
+        tiler_core::boundary::CoreCommand::ToggleFloat {
+            window: "win-a".to_owned(),
+            float_rect: None,
+        },
+    ));
+    let pre_bound = reply_upper_bound_v4(&input, 0, 1, input.screens.len(), 0, 0);
+    let reply = match engine
+        .handle_report_with_gate_and_prepare(&input, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .0
+    {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted toggle, got {other:?}"),
+    };
+    assert_eq!(reply.intent_desired.len(), 1);
+    assert_eq!(reply.intent_desired[0].win.0, "win-a");
+    let wire = reply_wire(&reply);
+    assert!(
+        wire.len() <= pre_bound,
+        "exact one-save reply {} fits pre-mutation upper bound {pre_bound}",
+        wire.len()
+    );
 }

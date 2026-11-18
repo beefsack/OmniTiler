@@ -20,7 +20,7 @@ use tiler_core::world_report::{
     ArrivalLocation, VisibilityReason, VisibilitySetter, WorkspaceRef, WorldReportV4,
 };
 use tiler_core::world_report_v4_checks::report_digest_v4;
-use tiler_core::world_sizing_v4::report_estimate_v4;
+use tiler_protocol::world_admission_sizing::report_estimate_v4;
 use tiler_protocol::world_protocol::decode_request;
 
 fn fixture(name: &str) -> serde_json::Value {

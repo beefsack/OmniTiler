@@ -4,6 +4,7 @@
 //! Split from [`crate::world_commands`]: this module only extends the
 //! [`crate::world_engine::WorldEngine`] `impl`.
 
+use crate::world_transaction::WorldTransaction;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::directional::{OutputId, WindowId};
@@ -12,11 +13,11 @@ use crate::session::DomainKey;
 use crate::world_commands::CommandApplied;
 use crate::world_engine::{
     KIND_TILING_TARGET, KIND_VIEW_OUTPUT, KIND_VIEW_TARGET, MSG_TILING_TARGET, MSG_VIEW_OUTPUT,
-    MSG_VIEW_TARGET, RetainedTransfer, WorldEngine,
+    MSG_VIEW_TARGET, RetainedTransfer,
 };
 use crate::world_report::{OneShotEffect, TilingMode, TransferKind, TransferTarget};
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Planner-owned per-workspace tiling toggle. The workspace must be a
     /// known logical id on `output`. Disabling releases the retained
     /// session (no frame writes while floating) and drops window transfers
@@ -30,6 +31,8 @@ impl WorldEngine {
         tiled: bool,
     ) -> CommandApplied {
         let known = self
+            .world
+            .workspace
             .mapping
             .get(&output.0)
             .is_some_and(|ring| ring.iter().any(|id| id == workspace));
@@ -48,27 +51,31 @@ impl WorldEngine {
         } else {
             TilingMode::Floating
         };
-        self.tiling.insert(key.clone(), mode);
+        self.world.workspace.tiling.insert(key.clone(), mode);
         if tiled {
-            self.floating_scopes.remove(&key);
+            self.world.floating_scopes.remove(&key);
         } else {
-            self.floating_scopes.insert(key.clone());
+            self.world.floating_scopes.insert(key.clone());
             // Release retained state: the adapter owns floating geometry.
-            self.layout.drop_domain(&key);
+            self.world.layout.drop_domain(&key);
             // Newer input wins: window transfers touching the scope settle.
-            self.retained.retain(|r| match &r.target.kind {
-                TransferKind::Window(_) => {
-                    let target_key = DomainKey {
-                        output: r.target.target_output.clone(),
-                        workspace: crate::directional::WorkspaceId(
-                            r.target.target_workspace.clone(),
-                        ),
-                    };
-                    target_key != key
-                        && !(r.source_output == key.output && r.source_workspace == key.workspace.0)
-                }
-                TransferKind::View | TransferKind::Migration => true,
-            });
+            self.world
+                .settlement
+                .retained
+                .retain(|r| match &r.target.kind {
+                    TransferKind::Window(_) => {
+                        let target_key = DomainKey {
+                            output: r.target.target_output.clone(),
+                            workspace: crate::directional::WorkspaceId(
+                                r.target.target_workspace.clone(),
+                            ),
+                        };
+                        target_key != key
+                            && !(r.source_output == key.output
+                                && r.source_workspace == key.workspace.0)
+                    }
+                    TransferKind::View | TransferKind::Migration => true,
+                });
         }
         self.note_command(command_seq);
         CommandApplied::NoEffect
@@ -125,12 +132,14 @@ impl WorldEngine {
             output: output.clone(),
             workspace: crate::directional::WorkspaceId(workspace.to_owned()),
         };
-        let rev = self.state_revision + 1;
-        let obs = self.staged.observation.observation_seq;
-        self.pending_policy_selections
+        let rev = self.world.state_revision + 1;
+        let obs = self.world.staged.observation.observation_seq;
+        self.world
+            .settlement
+            .pending_policy_selections
             .retain(|pending| pending.focus_home.output != *output);
-        self.pending_policy_selections
-            .push(crate::world_selection::PendingSelection {
+        self.world.settlement.pending_policy_selections.push(
+            crate::world_selection::PendingSelection {
                 command_seq: None,
                 parent_op: operation_id,
                 focus: None,
@@ -141,7 +150,8 @@ impl WorldEngine {
                 rev,
                 obs,
                 follow_mover: false,
-            });
+            },
+        );
     }
 
     /// Shared view retention: latest view command wins per output. The
@@ -154,10 +164,10 @@ impl WorldEngine {
         operation_id: String,
         command_seq: Option<u64>,
     ) {
-        self.retained.retain(|r| {
+        self.world.settlement.retained.retain(|r| {
             !(matches!(r.target.kind, TransferKind::View) && r.target.target_output == *output)
         });
-        self.retained.push(RetainedTransfer {
+        self.world.settlement.retained.push(RetainedTransfer {
             target: TransferTarget {
                 operation_id,
                 kind: TransferKind::View,
@@ -183,7 +193,10 @@ impl WorldEngine {
             pending_members: BTreeMap::new(),
             pending_view: None,
         });
-        self.views.insert(output.0.clone(), workspace.to_owned());
+        self.world
+            .workspace
+            .views
+            .insert(output.0.clone(), workspace.to_owned());
     }
 
     /// Retain one view target for selection/switch commands. The output must
@@ -209,13 +222,15 @@ impl WorldEngine {
         held_scopes: &BTreeSet<DomainKey>,
         by_id: &BTreeMap<&WindowId, &EngineWindow>,
     ) -> CommandApplied {
-        if !self.mapping.contains_key(&output.0) {
+        if !self.world.workspace.mapping.contains_key(&output.0) {
             return CommandApplied::Rejected {
                 kind: KIND_VIEW_OUTPUT,
                 message: MSG_VIEW_OUTPUT,
             };
         }
         let known = self
+            .world
+            .workspace
             .mapping
             .get(&output.0)
             .is_some_and(|ring| ring.iter().any(|id| id == workspace));
@@ -233,19 +248,21 @@ impl WorldEngine {
         // Affected outputs for selection authorization: shared mode fans
         // out to every live output, otherwise just the target output.
         // Departing views are captured before retention moves them.
-        let affected: Vec<OutputId> =
-            if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
-                let mut live: Vec<String> = self
-                    .staged
-                    .screens
-                    .iter()
-                    .map(|screen| screen.output.0.clone())
-                    .collect();
-                live.sort();
-                live.into_iter().map(OutputId).collect()
-            } else {
-                vec![output.clone()]
-            };
+        let affected: Vec<OutputId> = if self.connection.workspace_mode_setting()
+            == crate::workspace_scope::WorkspaceMode::Shared
+        {
+            let mut live: Vec<String> = self
+                .world
+                .staged
+                .screens
+                .iter()
+                .map(|screen| screen.output.0.clone())
+                .collect();
+            live.sort();
+            live.into_iter().map(OutputId).collect()
+        } else {
+            vec![output.clone()]
+        };
         let departing: Vec<DomainKey> = affected
             .iter()
             .filter_map(|out| {
@@ -263,7 +280,7 @@ impl WorldEngine {
         // and the selection binding (when one freezes below) retires
         // nothing. Host-owned redundant selects keep their flight for the
         // staged native proof.
-        let native_free = !self.host_owned_workspace_domains();
+        let native_free = !self.connection.host_owned_workspace_domains();
         if changed || !native_free {
             self.retain_view_inner(
                 output,
@@ -272,10 +289,18 @@ impl WorldEngine {
                 Some(command_seq),
             );
         }
-        if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
-            let canonical = self.mapping.get(&output.0).cloned().unwrap_or_default();
+        if self.connection.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared
+        {
+            let canonical = self
+                .world
+                .workspace
+                .mapping
+                .get(&output.0)
+                .cloned()
+                .unwrap_or_default();
             let live: Vec<String> = {
                 let mut live: Vec<String> = self
+                    .world
                     .staged
                     .screens
                     .iter()
@@ -285,10 +310,19 @@ impl WorldEngine {
                 live
             };
             for out in &live {
-                self.mapping.insert(out.clone(), canonical.clone());
-                self.views.insert(out.clone(), workspace.to_owned());
+                self.world
+                    .workspace
+                    .mapping
+                    .insert(out.clone(), canonical.clone());
+                self.world
+                    .workspace
+                    .views
+                    .insert(out.clone(), workspace.to_owned());
             }
-            self.history.observe_shared(&canonical, workspace);
+            self.world
+                .workspace
+                .history
+                .observe_shared(&canonical, workspace);
         }
         if !changed {
             return CommandApplied::NoEffect;
@@ -302,7 +336,7 @@ impl WorldEngine {
             workspace: crate::directional::WorkspaceId(workspace.to_owned()),
         };
         let Some(window) = self.remembered_view_focus(&target_key, held_scopes, by_id) else {
-            let rev = self.state_revision + 1;
+            let rev = self.world.state_revision + 1;
             let selected: Vec<DomainKey> = affected
                 .iter()
                 .map(|out| DomainKey {
@@ -310,18 +344,19 @@ impl WorldEngine {
                     workspace: crate::directional::WorkspaceId(workspace.to_owned()),
                 })
                 .collect();
-            self.pending_selection = Some(crate::world_selection::PendingSelection {
-                command_seq: Some(command_seq),
-                parent_op: format!("op-{command_seq}"),
-                focus: None,
-                focus_home: target_key,
-                selected,
-                departing,
-                affected_outputs: affected,
-                rev,
-                obs: self.staged.observation.observation_seq,
-                follow_mover: false,
-            });
+            self.world.settlement.pending_selection =
+                Some(crate::world_selection::PendingSelection {
+                    command_seq: Some(command_seq),
+                    parent_op: format!("op-{command_seq}"),
+                    focus: None,
+                    focus_home: target_key,
+                    selected,
+                    departing,
+                    affected_outputs: affected,
+                    rev,
+                    obs: self.world.staged.observation.observation_seq,
+                    follow_mover: false,
+                });
             return CommandApplied::NoEffect;
         };
         // Native-free suppression-capable route: an actual resolved focus
@@ -338,7 +373,7 @@ impl WorldEngine {
         // while the legacy direct effect below stays untouched.
         let eligible = self.selection_route_eligible(&window, &target_key, held_scopes)
             || self.host_selection_route_eligible(&window, &target_key, held_scopes);
-        let rev = self.state_revision + 1;
+        let rev = self.world.state_revision + 1;
         let selected: Vec<DomainKey> = affected
             .iter()
             .map(|out| DomainKey {
@@ -356,7 +391,7 @@ impl WorldEngine {
                 departing,
                 affected_outputs: affected,
                 rev,
-                obs: self.staged.observation.observation_seq,
+                obs: self.world.staged.observation.observation_seq,
                 follow_mover: false,
             }
         } else {
@@ -369,18 +404,18 @@ impl WorldEngine {
                 departing,
                 affected_outputs: affected,
                 rev,
-                obs: self.staged.observation.observation_seq,
+                obs: self.world.staged.observation.observation_seq,
                 follow_mover: false,
             }
         };
-        self.pending_selection = Some(pending);
+        self.world.settlement.pending_selection = Some(pending);
         if !eligible {
             // Best-effort memory (same contract as the direct focus lane).
             let _ = self.record_command_focus(&window, held_scopes);
             return CommandApplied::Effect(OneShotEffect::explicit_focus(
                 command_seq,
                 window,
-                self.state_revision + 1,
+                self.world.state_revision + 1,
             ));
         }
         // Best-effort memory (same contract as the direct focus lane).
@@ -409,19 +444,24 @@ impl WorldEngine {
         if held_scopes.contains(target) {
             return None;
         }
-        if self.floating_scopes.contains(target) {
+        if self.world.floating_scopes.contains(target) {
             return None;
         }
-        let staged = self.staged.domains.iter().find(|d| d.key == *target)?;
+        let staged = self
+            .world
+            .staged
+            .domains
+            .iter()
+            .find(|d| d.key == *target)?;
         if !staged.readable {
             return None;
         }
-        if let Some(window) = self.last_active_window.get(target).cloned() {
+        if let Some(window) = self.world.focus.last_active_window.get(target).cloned() {
             let eligible = by_id.get(&window).is_some_and(|row| {
                 if row.fit_excluded && !row.floating && !row.fullscreen && !row.maximized {
                     return false;
                 }
-                let Some(homing) = self.staged.homing.get(&window) else {
+                let Some(homing) = self.world.staged.homing.get(&window) else {
                     return false;
                 };
                 if held_scopes.contains(homing) {
@@ -437,11 +477,11 @@ impl WorldEngine {
                 return Some(window);
             }
         }
-        if !self.layout.contains_domain(target) {
+        if !self.world.layout.contains_domain(target) {
             return None;
         }
-        for leaf in self.layout.view_return_candidates(target) {
-            let Some(window) = self.layout.window_for_leaf(target, &leaf) else {
+        for leaf in self.world.layout.view_return_candidates(target) {
+            let Some(window) = self.world.layout.window_for_leaf(target, &leaf) else {
                 continue;
             };
             let Some(row) = by_id.get(&window) else {
@@ -474,7 +514,8 @@ impl WorldEngine {
         ctx: &crate::world_engine::RawRouting<'_>,
         output: &OutputId,
     ) -> Vec<String> {
-        if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
+        if self.connection.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared
+        {
             let mut live: Vec<String> = ctx
                 .screens
                 .iter()
@@ -482,10 +523,21 @@ impl WorldEngine {
                 .collect();
             live.sort();
             if let Some(first) = live.first() {
-                return self.mapping.get(first).cloned().unwrap_or_default();
+                return self
+                    .world
+                    .workspace
+                    .mapping
+                    .get(first)
+                    .cloned()
+                    .unwrap_or_default();
             }
         }
-        self.mapping.get(&output.0).cloned().unwrap_or_default()
+        self.world
+            .workspace
+            .mapping
+            .get(&output.0)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Selection ring plus visibility: the ring for numbered/relative
@@ -515,7 +567,7 @@ impl WorldEngine {
             return Some(output.clone());
         }
         crate::cursor_targeting::resolve_switch_output(
-            self.switch_target_setting(),
+            self.connection.switch_target_setting(),
             self.fresh_cursor_output(ctx).as_ref(),
             self.focused_output(ctx).as_ref(),
             &self.primary_first_outputs(ctx),
@@ -564,6 +616,8 @@ impl WorldEngine {
         window: &WindowId,
     ) -> Option<OutputId> {
         if let Some(home) = self
+            .world
+            .workspace
             .members
             .get(window)
             .map(|state| state.home.output.clone())

@@ -743,7 +743,7 @@ fn engine_suppresses_stable_clamp_and_clears_on_exact_match() {
         frame_row(&fourth, "w1").frame_authority,
         ScopeAuthority::Controlled
     );
-    assert!(engine.frames.is_empty());
+    assert!(engine.world.settlement.frames.is_empty());
 }
 
 #[test]
@@ -803,7 +803,7 @@ fn engine_rearms_when_staged_fact_changed_after_mismatched_readback() {
         frame_row(&second, "w1").frame_authority,
         ScopeAuthority::Controlled
     );
-    assert!(engine.frames.is_empty());
+    assert!(engine.world.settlement.frames.is_empty());
     assert_eq!(learned_of(&engine, "w1"), (None, None));
     // A re-proven short pair (readback corroborates the staged fact) still
     // pins a real clamp without learning a shrinking floor.
@@ -845,7 +845,7 @@ fn engine_rearms_when_staged_fact_changed_after_mismatched_readback() {
         frame_row(&fourth, "w1").frame_authority,
         ScopeAuthority::Controlled
     );
-    assert!(engine.frames.is_empty());
+    assert!(engine.world.settlement.frames.is_empty());
 }
 
 #[test]
@@ -989,7 +989,7 @@ fn engine_ignores_attempts_for_minimized_unknown_and_unreadable() {
             false,
         ),
     );
-    assert!(engine.frames.is_empty());
+    assert!(engine.world.settlement.frames.is_empty());
 }
 
 #[test]
@@ -1038,7 +1038,7 @@ fn engine_changed_dpi_never_suppresses_and_close_prunes() {
         frame_row(&second, "w1").frame_authority,
         ScopeAuthority::Controlled
     );
-    assert!(engine.frames.is_empty());
+    assert!(engine.world.settlement.frames.is_empty());
     // A stable clamp records, then the explicit close prunes it.
     accepted(
         &mut engine,
@@ -1057,12 +1057,12 @@ fn engine_changed_dpi_never_suppresses_and_close_prunes() {
             true,
         ),
     );
-    assert_eq!(engine.frames.len(), 1);
+    assert_eq!(engine.world.settlement.frames.len(), 1);
     accepted(
         &mut engine,
         &report(4, vec![], vec!["w1"], vec![], 3000, true),
     );
-    assert!(engine.frames.is_empty());
+    assert!(engine.world.settlement.frames.is_empty());
 }
 
 #[test]
@@ -1105,7 +1105,7 @@ fn engine_replacement_lifetime_does_not_inherit_suppression() {
             true,
         ),
     );
-    assert_eq!(engine.frames.len(), 1);
+    assert_eq!(engine.world.settlement.frames.len(), 1);
     // A replacement lifetime with the same observed frame is fresh: its own
     // pair was never recorded, so it stays controlled (never inherits w1's
     // suppression even though the observed rectangles coincide).
@@ -1186,7 +1186,7 @@ fn engine_withholds_float_token_while_suppressed() {
     assert!(row.floating);
     assert_eq!(row.frame_operation, None);
     assert_eq!(row.effective_frame, Some(target));
-    assert_eq!(engine.retained_floats.len(), 1);
+    assert_eq!(engine.world.settlement.retained_floats.len(), 1);
     // Ordinary attempts never mint a token: only the explicit one-shot
     // operation authorizes float geometry.
     let again = accepted(
@@ -1195,7 +1195,7 @@ fn engine_withholds_float_token_while_suppressed() {
     );
     let row = frame_row(&again, "w1");
     assert_eq!(row.frame_operation, None);
-    assert_eq!(engine.retained_floats.len(), 1);
+    assert_eq!(engine.world.settlement.retained_floats.len(), 1);
 }
 
 #[test]
@@ -1273,7 +1273,7 @@ fn exact_clear_then_complete_absence_prunes_consumed_watermark() {
             true,
         ),
     );
-    assert_eq!(engine.frames.len(), 1);
+    assert_eq!(engine.world.settlement.frames.len(), 1);
     accepted(
         &mut engine,
         &report(
@@ -1285,18 +1285,18 @@ fn exact_clear_then_complete_absence_prunes_consumed_watermark() {
             true,
         ),
     );
-    assert!(engine.frames.is_empty());
-    assert_eq!(engine.consumed_frames.len(), 1);
+    assert!(engine.world.settlement.frames.is_empty());
+    assert_eq!(engine.world.settlement.consumed_frames.len(), 1);
     // Complete absence without explicit close. Membership still holds w1
     // through this report's settle (reconcile runs later in the
     // pipeline), so the watermark legitimately survives one more turn —
     // same lag as suppression memory itself.
     accepted(&mut engine, &report(4, vec![], vec![], vec![], 3000, true));
-    assert_eq!(engine.consumed_frames.len(), 1);
+    assert_eq!(engine.world.settlement.consumed_frames.len(), 1);
     // Absence is now complete in membership too: both maps prune.
     accepted(&mut engine, &report(5, vec![], vec![], vec![], 4000, true));
-    assert!(engine.frames.is_empty());
-    assert!(engine.consumed_frames.is_empty());
+    assert!(engine.world.settlement.frames.is_empty());
+    assert!(engine.world.settlement.consumed_frames.is_empty());
 }
 
 #[test]
@@ -1358,7 +1358,7 @@ fn replayed_attempt_after_exact_clear_does_not_resurrect_clamp() {
         frame_row(&cleared, "w1").frame_authority,
         ScopeAuthority::Controlled
     );
-    assert!(engine.frames.is_empty());
+    assert!(engine.world.settlement.frames.is_empty());
     // New drift back to R with the redelivered old attempt: no stale
     // suppression, memory stays empty until a fresh attempt arrives.
     let replayed = accepted(
@@ -1376,7 +1376,7 @@ fn replayed_attempt_after_exact_clear_does_not_resurrect_clamp() {
         frame_row(&replayed, "w1").frame_authority,
         ScopeAuthority::Controlled
     );
-    assert!(engine.frames.is_empty());
+    assert!(engine.world.settlement.frames.is_empty());
 }
 
 #[test]
@@ -1446,7 +1446,12 @@ fn stale_pair_redelivery_does_not_clobber_newer_authority() {
             true,
         ),
     );
-    let live = engine.frames.get(&WindowId("w1".to_owned())).expect("live");
+    let live = engine
+        .world
+        .settlement
+        .frames
+        .get(&WindowId("w1".to_owned()))
+        .expect("live");
     assert_eq!((live.desired, live.observed), (desired, further));
     // Redeliver the older pair: authority must not clobber.
     let held = accepted(
@@ -1466,7 +1471,12 @@ fn stale_pair_redelivery_does_not_clobber_newer_authority() {
             true,
         ),
     );
-    let live = engine.frames.get(&WindowId("w1".to_owned())).expect("live");
+    let live = engine
+        .world
+        .settlement
+        .frames
+        .get(&WindowId("w1".to_owned()))
+        .expect("live");
     assert_eq!((live.desired, live.observed), (desired, further));
     assert_eq!(
         frame_row(&held, "w1").frame_authority,
@@ -1485,6 +1495,8 @@ pub(crate) fn two_facts() -> Vec<WindowFact> {
 
 pub(crate) fn learned_of(engine: &WorldEngine, window: &str) -> (Option<i32>, Option<i32>) {
     engine
+        .world
+        .settlement
         .learned_mins
         .get(&WindowId(window.to_owned()))
         .map(|learned| (learned.min_w, learned.min_h))
@@ -1559,7 +1571,7 @@ fn learned_growth_changes_target_layout_and_converges() {
         frame_row(&third, "w1").frame_authority,
         ScopeAuthority::Controlled
     );
-    assert!(engine.frames.is_empty());
+    assert!(engine.world.settlement.frames.is_empty());
     assert_eq!(learned_of(&engine, "w1"), (Some(grown.w), None));
 }
 
@@ -1626,7 +1638,7 @@ fn learned_async_clamp_with_exact_readback_still_converges() {
         frame_row(&third, "w1").frame_authority,
         ScopeAuthority::Controlled
     );
-    assert!(engine.frames.is_empty());
+    assert!(engine.world.settlement.frames.is_empty());
     assert_eq!(learned_of(&engine, "w1"), (Some(grown.w), None));
 }
 
@@ -1699,7 +1711,7 @@ fn learned_async_clamp_heavy_layout_converges_without_rewrites() {
         frame_row(&third, "w1").frame_authority,
         ScopeAuthority::Controlled
     );
-    assert!(engine.frames.is_empty());
+    assert!(engine.world.settlement.frames.is_empty());
     assert_eq!(learned_of(&engine, "w1"), (Some(grown.w), None));
 }
 
@@ -1836,12 +1848,12 @@ fn inverse_fact_at_target_with_mismatched_readback_clears_without_learning() {
             true,
         ),
     );
-    assert!(engine.learned_mins.is_empty());
+    assert!(engine.world.settlement.learned_mins.is_empty());
     assert_eq!(
         frame_row(&second, "w1").frame_authority,
         ScopeAuthority::Controlled
     );
-    assert!(engine.frames.is_empty());
+    assert!(engine.world.settlement.frames.is_empty());
 }
 
 #[test]
@@ -1880,7 +1892,7 @@ fn async_clockless_or_dpi_changed_never_learns() {
             true,
         ),
     );
-    assert!(engine.learned_mins.is_empty());
+    assert!(engine.world.settlement.learned_mins.is_empty());
     // Same async shape across a DPI change: neither learns nor clamps.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
@@ -1916,8 +1928,8 @@ fn async_clockless_or_dpi_changed_never_learns() {
             true,
         ),
     );
-    assert!(engine.learned_mins.is_empty());
-    assert!(engine.frames.is_empty());
+    assert!(engine.world.settlement.learned_mins.is_empty());
+    assert!(engine.world.settlement.frames.is_empty());
 }
 
 #[test]
@@ -2051,8 +2063,8 @@ fn learned_rejects_origin_mismatch_shrink_and_equal() {
             true,
         ),
     );
-    assert!(engine.learned_mins.is_empty());
-    assert_eq!(engine.frames.len(), 1);
+    assert!(engine.world.settlement.learned_mins.is_empty());
+    assert_eq!(engine.world.settlement.frames.len(), 1);
 }
 
 #[test]
@@ -2098,7 +2110,7 @@ fn learned_ignores_dpi_refused_threw() {
             ),
         );
     }
-    assert!(engine.learned_mins.is_empty());
+    assert!(engine.world.settlement.learned_mins.is_empty());
 }
 
 #[test]
@@ -2128,7 +2140,7 @@ fn learned_ignores_unreadable_float_overlay_and_gap() {
             true,
         ),
     );
-    assert!(engine.learned_mins.is_empty());
+    assert!(engine.world.settlement.learned_mins.is_empty());
     // Float lifetimes never take tile policy.
     let mut floating = fact("w1", Some(grown));
     floating.transient = Some(true);
@@ -2149,7 +2161,7 @@ fn learned_ignores_unreadable_float_overlay_and_gap() {
             true,
         ),
     );
-    assert!(engine.learned_mins.is_empty());
+    assert!(engine.world.settlement.learned_mins.is_empty());
     // Fullscreen overlays never take tile policy.
     let mut overlay = fact("w1", Some(grown));
     overlay.fullscreen = Some(true);
@@ -2170,7 +2182,7 @@ fn learned_ignores_unreadable_float_overlay_and_gap() {
             true,
         ),
     );
-    assert!(engine.learned_mins.is_empty());
+    assert!(engine.world.settlement.learned_mins.is_empty());
     // Incomplete inventory gaps never learn even with corroboration.
     accepted(
         &mut engine,
@@ -2189,7 +2201,7 @@ fn learned_ignores_unreadable_float_overlay_and_gap() {
             false,
         ),
     );
-    assert!(engine.learned_mins.is_empty());
+    assert!(engine.world.settlement.learned_mins.is_empty());
     // Minimized lifetimes record nothing at all.
     accepted(
         &mut engine,
@@ -2208,7 +2220,7 @@ fn learned_ignores_unreadable_float_overlay_and_gap() {
             true,
         ),
     );
-    assert!(engine.learned_mins.is_empty());
+    assert!(engine.world.settlement.learned_mins.is_empty());
 }
 
 #[test]
@@ -2253,7 +2265,7 @@ fn learned_replay_after_clear_does_not_relearn() {
             true,
         ),
     );
-    assert!(engine.frames.is_empty());
+    assert!(engine.world.settlement.frames.is_empty());
     assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
     // Lost-ack redelivery of the old growth attempt cannot relearn or
     // resurrect suppression.
@@ -2272,7 +2284,7 @@ fn learned_replay_after_clear_does_not_relearn() {
         frame_row(&replayed, "w1").frame_authority,
         ScopeAuthority::Controlled
     );
-    assert!(engine.frames.is_empty());
+    assert!(engine.world.settlement.frames.is_empty());
     assert_eq!(learned_of(&engine, "w1").0, Some(grown.w));
 }
 
@@ -2353,7 +2365,7 @@ fn learned_survives_pair_change_but_prunes_on_close_departure_incarnation() {
             true,
         ),
     );
-    assert!(engine.learned_mins.is_empty());
+    assert!(engine.world.settlement.learned_mins.is_empty());
     // Explicit close prunes on a fresh engine.
     let mut engine2 = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
@@ -2397,7 +2409,7 @@ fn learned_survives_pair_change_but_prunes_on_close_departure_incarnation() {
             true,
         ),
     );
-    assert!(engine2.learned_mins.is_empty());
+    assert!(engine2.world.settlement.learned_mins.is_empty());
     // Incarnation reset prunes on a fresh engine.
     let mut engine3 = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
@@ -2429,13 +2441,13 @@ fn learned_survives_pair_change_but_prunes_on_close_departure_incarnation() {
             true,
         ),
     );
-    assert!(!engine3.learned_mins.is_empty());
+    assert!(!engine3.world.settlement.learned_mins.is_empty());
     let mut reboot = report(3, two_facts(), vec![], vec![], 2000, true);
     rebind(&mut engine3, "adapter-2");
     reboot.adapter_incarnation = "adapter-2".to_owned();
     reboot.core_generation = engine3.core_generation().to_owned();
     accepted(&mut engine3, &reboot);
-    assert!(engine3.learned_mins.is_empty());
+    assert!(engine3.world.settlement.learned_mins.is_empty());
 }
 
 #[test]
@@ -2481,7 +2493,7 @@ fn learned_max_contradiction_keeps_declared_pair() {
     );
     // No learning past a contradictory declared maximum; the stable pair
     // still suppresses without moving the target.
-    assert!(engine.learned_mins.is_empty());
+    assert!(engine.world.settlement.learned_mins.is_empty());
     assert_eq!(
         frame_row(&held, "w1").frame_authority,
         ScopeAuthority::Hold(HoldReason::ConstraintClamp)
@@ -2561,8 +2573,8 @@ fn learned_smaller_stable_observation_clears_floor_without_fight() {
             true,
         ),
     );
-    assert!(engine.learned_mins.is_empty());
-    assert!(engine.frames.is_empty());
+    assert!(engine.world.settlement.learned_mins.is_empty());
+    assert!(engine.world.settlement.frames.is_empty());
     let settled = frame_row(&fourth, "w1");
     assert_eq!(settled.frame_authority, ScopeAuthority::Controlled);
     assert_eq!(settled.effective_frame.expect("tiled"), baseline);
@@ -2626,8 +2638,8 @@ fn learned_stale_replay_cannot_block_fresh_smaller_counterevidence() {
             true,
         ),
     );
-    assert!(engine.learned_mins.is_empty());
-    assert!(engine.frames.is_empty());
+    assert!(engine.world.settlement.learned_mins.is_empty());
+    assert!(engine.world.settlement.frames.is_empty());
     let settled = frame_row(&fourth, "w1");
     assert_eq!(settled.frame_authority, ScopeAuthority::Controlled);
     assert_eq!(settled.effective_frame.expect("tiled"), baseline);
@@ -2701,7 +2713,7 @@ fn learned_stale_refused_and_clockless_replays_cannot_block_clearing() {
             true,
         ),
     );
-    assert!(engine.learned_mins.is_empty());
+    assert!(engine.world.settlement.learned_mins.is_empty());
     assert_eq!(
         frame_row(&cleared, "w1").frame_authority,
         ScopeAuthority::Controlled
@@ -2755,7 +2767,7 @@ fn learned_stale_refused_and_clockless_replays_cannot_block_clearing() {
             true,
         ),
     );
-    assert!(engine2.learned_mins.is_empty());
+    assert!(engine2.world.settlement.learned_mins.is_empty());
     assert_eq!(
         frame_row(&cleared, "w1").frame_authority,
         ScopeAuthority::Controlled
@@ -2821,7 +2833,10 @@ fn learned_ignores_veto_table_flags() {
                 true,
             ),
         );
-        assert!(engine.learned_mins.is_empty(), "{flag} vetoes learning");
+        assert!(
+            engine.world.settlement.learned_mins.is_empty(),
+            "{flag} vetoes learning"
+        );
     }
 }
 
@@ -3011,7 +3026,7 @@ fn learned_zero_clock_attempt_never_learns() {
             true,
         ),
     );
-    assert!(engine.learned_mins.is_empty());
+    assert!(engine.world.settlement.learned_mins.is_empty());
     assert_eq!(
         frame_row(&held, "w1").frame_authority,
         ScopeAuthority::Hold(HoldReason::ConstraintClamp)
@@ -3274,15 +3289,25 @@ fn rapid_toggle_burst_ending_tile_reconverges() {
     );
     assert!(is_hold(&r4, "w1"), "async unfloat mismatch holds once");
     assert!(
-        engine.frames.get(&key).is_some_and(|memory| memory.clamped),
+        engine
+            .world
+            .settlement
+            .frames
+            .get(&key)
+            .is_some_and(|memory| memory.clamped),
         "clamp lane pins the async pair: {:?}",
-        engine.frames.get(&key)
+        engine.world.settlement.frames.get(&key)
     );
     assert_eq!(
-        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        engine
+            .world
+            .settlement
+            .frame_bursts
+            .get(&key)
+            .map(|entry| entry.attempts),
         Some(1),
         "first tiled spend: {:?}",
-        engine.frame_bursts.get(&key)
+        engine.world.settlement.frame_bursts.get(&key)
     );
     // cmd3 float re-arms the tiled budget and retains its placement token.
     let mut r5 = report(
@@ -3320,9 +3345,9 @@ fn rapid_toggle_burst_ending_tile_reconverges() {
         ScopeAuthority::Controlled
     );
     assert!(
-        !engine.frame_bursts.contains_key(&key),
+        !engine.world.settlement.frame_bursts.contains_key(&key),
         "float excursion re-arms the tiled burst: {:?}",
-        engine.frame_bursts.get(&key)
+        engine.world.settlement.frame_bursts.get(&key)
     );
     // Empty (C: unfloat write converged fast) -> controlled; the cmd3/cmd4
     // excursion re-armed the budget, so this exact-converge spend opens a
@@ -3349,10 +3374,15 @@ fn rapid_toggle_burst_ending_tile_reconverges() {
         ScopeAuthority::Controlled
     );
     assert_eq!(
-        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        engine
+            .world
+            .settlement
+            .frame_bursts
+            .get(&key)
+            .map(|entry| entry.attempts),
         Some(1),
         "re-armed burst spends fresh: {:?}",
-        engine.frame_bursts.get(&key)
+        engine.world.settlement.frame_bursts.get(&key)
     );
     // cmd5 float.
     let mut r8 = report(
@@ -3390,8 +3420,8 @@ fn rapid_toggle_burst_ending_tile_reconverges() {
         frame_row(&r9r, "w1").frame_authority,
         ScopeAuthority::Controlled,
         "third unfloat must not wedge: bursts={:?} frames={:?}",
-        engine.frame_bursts.get(&key),
-        engine.frames.get(&key)
+        engine.world.settlement.frame_bursts.get(&key),
+        engine.world.settlement.frames.get(&key)
     );
     // Settlement converges on the latest desired frame.
     let r10 = accepted(
@@ -3510,10 +3540,15 @@ fn rapid_toggle_odd_burst_ending_float_keeps_token() {
         ),
     );
     assert_eq!(
-        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        engine
+            .world
+            .settlement
+            .frame_bursts
+            .get(&key)
+            .map(|entry| entry.attempts),
         Some(1),
         "single tiled spend: {:?}",
-        engine.frame_bursts.get(&key)
+        engine.world.settlement.frame_bursts.get(&key)
     );
     // Core float excursion ending float.
     let floated_target = rect(100, 100, 200, 150);
@@ -3548,9 +3583,9 @@ fn rapid_toggle_odd_burst_ending_float_keeps_token() {
     assert_eq!(row.effective_frame, Some(floated_target));
     assert!(row.frame_operation.is_some());
     assert!(
-        !engine.frame_bursts.contains_key(&key),
+        !engine.world.settlement.frame_bursts.contains_key(&key),
         "float excursion re-arms: {:?}",
-        engine.frame_bursts.get(&key)
+        engine.world.settlement.frame_bursts.get(&key)
     );
     // Converged observe proves the placement: the one-shot token spends
     // while the row keeps the float target.
@@ -3569,7 +3604,7 @@ fn rapid_toggle_odd_burst_ending_float_keeps_token() {
     assert!(row.floating);
     assert_eq!(row.effective_frame, Some(floated_target));
     assert_eq!(row.frame_operation, None);
-    assert!(!engine.frame_bursts.contains_key(&key));
+    assert!(!engine.world.settlement.frame_bursts.contains_key(&key));
 }
 
 #[test]
@@ -3629,10 +3664,15 @@ fn rapid_toggle_exhausted_burst_ending_float_keeps_token() {
     );
     assert!(is_hold(&spent, "w1"), "exhausted burst holds");
     assert_eq!(
-        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        engine
+            .world
+            .settlement
+            .frame_bursts
+            .get(&key)
+            .map(|entry| entry.attempts),
         Some(2),
         "both retries spent: {:?}",
-        engine.frame_bursts.get(&key)
+        engine.world.settlement.frame_bursts.get(&key)
     );
     // Core float excursion ending float: token issued despite exhaustion.
     let floated_target = rect(100, 100, 200, 150);
@@ -3667,9 +3707,9 @@ fn rapid_toggle_exhausted_burst_ending_float_keeps_token() {
     assert_eq!(row.effective_frame, Some(floated_target));
     assert!(row.frame_operation.is_some());
     assert!(
-        !engine.frame_bursts.contains_key(&key),
+        !engine.world.settlement.frame_bursts.contains_key(&key),
         "float excursion re-arms: {:?}",
-        engine.frame_bursts.get(&key)
+        engine.world.settlement.frame_bursts.get(&key)
     );
     // Converged observe proves the placement: the one-shot token spends
     // while the row keeps the float target.
@@ -3688,7 +3728,7 @@ fn rapid_toggle_exhausted_burst_ending_float_keeps_token() {
     assert!(row.floating);
     assert_eq!(row.effective_frame, Some(floated_target));
     assert_eq!(row.frame_operation, None);
-    assert!(!engine.frame_bursts.contains_key(&key));
+    assert!(!engine.world.settlement.frame_bursts.contains_key(&key));
 }
 
 #[test]
@@ -3734,17 +3774,27 @@ fn rapid_toggle_sticky_excursion_rearms_with_gap_protection() {
         ),
     );
     assert_eq!(
-        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        engine
+            .world
+            .settlement
+            .frame_bursts
+            .get(&key)
+            .map(|entry| entry.attempts),
         Some(1),
         "single tiled spend: {:?}",
-        engine.frame_bursts.get(&key)
+        engine.world.settlement.frame_bursts.get(&key)
     );
     // Minimized gap: continuity breaks but the count survives.
     accepted(
         &mut engine,
         &report(3, vec![minimized_fact("w1")], vec![], vec![], 1100, true),
     );
-    let burst = engine.frame_bursts.get(&key).expect("gap keeps budget");
+    let burst = engine
+        .world
+        .settlement
+        .frame_bursts
+        .get(&key)
+        .expect("gap keeps budget");
     assert_eq!(burst.attempts, 1);
     assert_eq!(burst.last_change_ms, 0);
     // Transient flap with no command: keeps the budget.
@@ -3760,10 +3810,15 @@ fn rapid_toggle_sticky_excursion_rearms_with_gap_protection() {
         ),
     );
     assert_eq!(
-        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        engine
+            .world
+            .settlement
+            .frame_bursts
+            .get(&key)
+            .map(|entry| entry.attempts),
         Some(1),
         "transient flap keeps budget: {:?}",
-        engine.frame_bursts.get(&key)
+        engine.world.settlement.frame_bursts.get(&key)
     );
     // Sticky flap with no command: keeps the budget (an accepted sticky
     // command resets; a native-only fact change never does).
@@ -3779,10 +3834,15 @@ fn rapid_toggle_sticky_excursion_rearms_with_gap_protection() {
         ),
     );
     assert_eq!(
-        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        engine
+            .world
+            .settlement
+            .frame_bursts
+            .get(&key)
+            .map(|entry| entry.attempts),
         Some(1),
         "sticky flap keeps budget: {:?}",
-        engine.frame_bursts.get(&key)
+        engine.world.settlement.frame_bursts.get(&key)
     );
     // Tiled reconvergence on the exact target publishes controlled with
     // the budget intact (exact echoes never spend).
@@ -3802,10 +3862,15 @@ fn rapid_toggle_sticky_excursion_rearms_with_gap_protection() {
         ScopeAuthority::Controlled
     );
     assert_eq!(
-        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        engine
+            .world
+            .settlement
+            .frame_bursts
+            .get(&key)
+            .map(|entry| entry.attempts),
         Some(1),
         "observe keeps budget: {:?}",
-        engine.frame_bursts.get(&key)
+        engine.world.settlement.frame_bursts.get(&key)
     );
     // A fresh refusal spends the kept budget to the two-attempt cap.
     let capped = accepted(
@@ -3827,10 +3892,15 @@ fn rapid_toggle_sticky_excursion_rearms_with_gap_protection() {
     );
     assert!(is_hold(&capped, "w1"), "second attempt caps");
     assert_eq!(
-        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        engine
+            .world
+            .settlement
+            .frame_bursts
+            .get(&key)
+            .map(|entry| entry.attempts),
         Some(2),
         "two-attempt cap intact: {:?}",
-        engine.frame_bursts.get(&key)
+        engine.world.settlement.frame_bursts.get(&key)
     );
     // An accepted native SetSticky is an applied core placement
     // transition: the budget resets and sticky provenance records.
@@ -3854,12 +3924,12 @@ fn rapid_toggle_sticky_excursion_rearms_with_gap_protection() {
         stuck_settlements
     );
     assert!(
-        !engine.frame_bursts.contains_key(&key),
+        !engine.world.settlement.frame_bursts.contains_key(&key),
         "accepted sticky transition re-arms: {:?}",
-        engine.frame_bursts.get(&key)
+        engine.world.settlement.frame_bursts.get(&key)
     );
     assert_eq!(
-        engine.restored_sticky.get(&key),
+        engine.world.intent.restored_sticky.get(&key),
         Some(&false),
         "sticky records the tiled prior"
     );
@@ -3917,10 +3987,15 @@ fn composed_sticky_round_trip_rearms_burst() {
         );
     }
     assert_eq!(
-        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        engine
+            .world
+            .settlement
+            .frame_bursts
+            .get(&key)
+            .map(|entry| entry.attempts),
         Some(2),
         "spent to cap: {:?}",
-        engine.frame_bursts.get(&key)
+        engine.world.settlement.frame_bursts.get(&key)
     );
     // Accepted composed SetSticky(true) resets the exhausted budget.
     let mut sticky_on = report(
@@ -3943,12 +4018,12 @@ fn composed_sticky_round_trip_rearms_burst() {
         on_settlements
     );
     assert!(
-        !engine.frame_bursts.contains_key(&key),
+        !engine.world.settlement.frame_bursts.contains_key(&key),
         "accepted sticky-on re-arms: {:?}",
-        engine.frame_bursts.get(&key)
+        engine.world.settlement.frame_bursts.get(&key)
     );
     assert!(
-        engine.restored_sticky.contains_key(&key),
+        engine.world.intent.restored_sticky.contains_key(&key),
         "sticky provenance records"
     );
     assert!(
@@ -3984,9 +4059,9 @@ fn composed_sticky_round_trip_rearms_burst() {
         ScopeAuthority::Controlled
     );
     assert!(
-        !engine.frame_bursts.contains_key(&key),
+        !engine.world.settlement.frame_bursts.contains_key(&key),
         "accepted unfloat re-arms: {:?}",
-        engine.frame_bursts.get(&key)
+        engine.world.settlement.frame_bursts.get(&key)
     );
     // A fresh refusal spends the re-armed budget from one.
     accepted(
@@ -4007,10 +4082,15 @@ fn composed_sticky_round_trip_rearms_burst() {
         ),
     );
     assert_eq!(
-        engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+        engine
+            .world
+            .settlement
+            .frame_bursts
+            .get(&key)
+            .map(|entry| entry.attempts),
         Some(1),
         "re-armed burst spends fresh: {:?}",
-        engine.frame_bursts.get(&key)
+        engine.world.settlement.frame_bursts.get(&key)
     );
 }
 
@@ -4060,7 +4140,12 @@ fn float_command_refusal_keeps_budget_over_observation_gap() {
             ),
         );
         assert_eq!(
-            engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+            engine
+                .world
+                .settlement
+                .frame_bursts
+                .get(&key)
+                .map(|entry| entry.attempts),
             Some(1),
             "{label}: single tiled spend"
         );
@@ -4081,18 +4166,28 @@ fn float_command_refusal_keeps_budget_over_observation_gap() {
                     settlements
                 );
                 assert_eq!(
-                    engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+                    engine
+                        .world
+                        .settlement
+                        .frame_bursts
+                        .get(&key)
+                        .map(|entry| entry.attempts),
                     Some(1),
                     "{label}: refused float keeps budget: {:?}",
-                    engine.frame_bursts.get(&key)
+                    engine.world.settlement.frame_bursts.get(&key)
                 );
             }
             (WorldOutcome::Rejected { kind, message }, _) => {
                 assert_eq!(
-                    engine.frame_bursts.get(&key).map(|entry| entry.attempts),
+                    engine
+                        .world
+                        .settlement
+                        .frame_bursts
+                        .get(&key)
+                        .map(|entry| entry.attempts),
                     Some(1),
                     "{label}: snapshot refusal ({kind} {message}) keeps budget: {:?}",
-                    engine.frame_bursts.get(&key)
+                    engine.world.settlement.frame_bursts.get(&key)
                 );
             }
             other => panic!("{label}: unexpected outcome {other:?}"),
@@ -4729,6 +4824,8 @@ fn burst_accepted_exact_readback_spends_budget() {
         ),
     );
     let burst = engine
+        .world
+        .settlement
         .frame_bursts
         .get(&WindowId("w1".to_owned()))
         .expect("accepted attempt spends budget");
@@ -4756,6 +4853,8 @@ fn burst_accepted_exact_readback_spends_budget() {
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .frame_bursts
             .get(&WindowId("w1".to_owned()))
             .expect("budget retained")
@@ -4803,6 +4902,8 @@ fn burst_exact_echo_then_redrift_preserves_budget() {
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .frame_bursts
             .get(&key)
             .expect("budget spent")
@@ -4825,7 +4926,12 @@ fn burst_exact_echo_then_redrift_preserves_budget() {
         frame_row(&third, "w1").frame_authority,
         ScopeAuthority::Controlled
     );
-    let burst = engine.frame_bursts.get(&key).expect("echo keeps budget");
+    let burst = engine
+        .world
+        .settlement
+        .frame_bursts
+        .get(&key)
+        .expect("echo keeps budget");
     assert_eq!(burst.attempts, 1);
     assert_eq!(burst.observed, desired);
     // Fast redrift inside the burst: controlled, still no reset.
@@ -4846,6 +4952,8 @@ fn burst_exact_echo_then_redrift_preserves_budget() {
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .frame_bursts
             .get(&key)
             .expect("redrift keeps budget")
@@ -4872,6 +4980,8 @@ fn burst_exact_echo_then_redrift_preserves_budget() {
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .frame_bursts
             .get(&key)
             .expect("budget spent")
@@ -4946,6 +5056,8 @@ fn burst_observation_gap_never_manufactures_quiet() {
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .frame_bursts
             .get(&key)
             .expect("budget spent")
@@ -4957,7 +5069,12 @@ fn burst_observation_gap_never_manufactures_quiet() {
         &mut engine,
         &report(3, vec![minimized_fact("w1")], vec![], vec![], 6000, true),
     );
-    let burst = engine.frame_bursts.get(&key).expect("gap keeps budget");
+    let burst = engine
+        .world
+        .settlement
+        .frame_bursts
+        .get(&key)
+        .expect("gap keeps budget");
     assert_eq!(burst.attempts, 1);
     assert_eq!(burst.last_change_ms, 0);
     // Unreadable gap, still later: still broken, still kept.
@@ -4965,7 +5082,12 @@ fn burst_observation_gap_never_manufactures_quiet() {
         &mut engine,
         &report(4, vec![fact("w1", None)], vec![], vec![], 9000, true),
     );
-    let burst = engine.frame_bursts.get(&key).expect("gap keeps budget");
+    let burst = engine
+        .world
+        .settlement
+        .frame_bursts
+        .get(&key)
+        .expect("gap keeps budget");
     assert_eq!(burst.attempts, 1);
     assert_eq!(burst.last_change_ms, 0);
     // Resume on a changed frame long after: no quiet can be proven across
@@ -4987,6 +5109,8 @@ fn burst_observation_gap_never_manufactures_quiet() {
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .frame_bursts
             .get(&key)
             .expect("resume keeps budget")

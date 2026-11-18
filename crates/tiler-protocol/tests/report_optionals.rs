@@ -22,12 +22,12 @@ use tiler_core::world_report::{
     NativeWorkspaceFact, ViewAttempt, WorkspaceRef, WorldReportV4,
 };
 use tiler_core::world_report_v4_checks::report_digest_v4 as report_digest;
-use tiler_core::world_sizing_v4::reply_exact_bytes_v4;
 use tiler_protocol::world_protocol::{
     CursorHitWire, DecodedReplyV4, DecodedReportV4, GestureIngressWire, ReplyWireOptionals,
     ReportWireOptionals, WorldOutcome, decode_reply_v4, decode_request, decode_request_with_wire,
     encode_reply_v4,
 };
+use tiler_protocol::world_reply_write::count_reply_v4;
 
 fn fixture_text(name: &str) -> String {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -98,7 +98,7 @@ fn connected_engine(generation: &str, caps: HostCapabilities) -> WorldEngine {
 }
 
 /// Encode one engine-published v4 reply with the canonical reply
-/// writer; the bytes must match the independent core byte count exactly
+/// writer; the bytes must match the canonical protocol byte count exactly
 /// and round-trip through the reply decoder to the identical typed reply
 /// plus wire metadata.
 fn reply_wire(reply: &tiler_core::world_report::WorldReplyV4) -> String {
@@ -111,8 +111,8 @@ fn reply_wire(reply: &tiler_core::world_report::WorldReplyV4) -> String {
     let wire = encode_reply_v4(&decoded).expect("reply encodes");
     assert_eq!(
         wire.len(),
-        reply_exact_bytes_v4(reply),
-        "core byte count is exact over the wire"
+        count_reply_v4(reply, &decoded.wire).expect("protocol count succeeds"),
+        "protocol byte count is exact over the wire"
     );
     assert_eq!(
         decode_reply_v4(&wire).expect("reply round-trips"),

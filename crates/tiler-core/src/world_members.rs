@@ -9,11 +9,13 @@
 //! it. Transfer provenance only shields actuation lag; it never authorizes
 //! homing.
 
-use std::collections::BTreeSet;
+use crate::world_transaction::WorldTransaction;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::session::DomainKey;
+use crate::workspace_scope::DisplacedEntry;
 use crate::world_engine::WorldEngine;
 use crate::world_report::TransferKind;
 
@@ -27,17 +29,51 @@ pub(crate) struct MemberState {
     pub(crate) geometry: Option<Rect>,
 }
 
-impl WorldEngine {
+/// Rehome a retained key off a removed screen onto its displaced survivor,
+/// keeping the logical id. `None` when the key is live or no live survivor
+/// hosts it.
+pub(crate) fn rehome_displaced_in(
+    mapping: &BTreeMap<String, Vec<String>>,
+    displaced: &BTreeMap<String, DisplacedEntry>,
+    key: DomainKey,
+) -> Option<DomainKey> {
+    if mapping.contains_key(&key.output.0) {
+        return Some(key);
+    }
+    let dest = displaced.get(&key.output.0)?.dest.clone();
+    if !mapping.contains_key(&dest) {
+        return None;
+    }
+    Some(DomainKey {
+        output: OutputId(dest),
+        workspace: key.workspace,
+    })
+}
+
+/// Single-owner homing read: the retained logical home, remapped off removed
+/// screens onto the displaced survivor.
+pub(crate) fn core_homing_in(
+    members: &BTreeMap<WindowId, MemberState>,
+    mapping: &BTreeMap<String, Vec<String>>,
+    displaced: &BTreeMap<String, DisplacedEntry>,
+    window: &WindowId,
+) -> Option<DomainKey> {
+    let home = members.get(window)?.home.clone();
+    rehome_displaced_in(mapping, displaced, home)
+}
+
+impl WorldTransaction<'_> {
     /// Single-owner homing read: the retained logical home, remapped off
     /// removed screens onto the displaced survivor.
     pub(crate) fn core_homing(&self, window: &WindowId) -> Option<DomainKey> {
-        let home = self.members.get(window)?.home.clone();
-        self.rehome_displaced(home)
+        self.world.workspace.core_homing(window)
     }
 
     /// Whether `id` names a known logical workspace on `output`.
     pub(crate) fn known_workspace(&self, output: &OutputId, id: &str) -> bool {
-        self.mapping
+        self.world
+            .workspace
+            .mapping
             .get(&output.0)
             .is_some_and(|ring| ring.iter().any(|kept| kept == id))
     }
@@ -50,7 +86,7 @@ impl WorldEngine {
         if from_output == to_output {
             return;
         }
-        for state in self.members.values_mut() {
+        for state in self.world.workspace.members.values_mut() {
             if state.home.output.0 == from_output && state.home.workspace.0 == workspace {
                 state.home.output = OutputId(to_output.to_owned());
             }
@@ -60,8 +96,13 @@ impl WorldEngine {
     /// Drop members whose home output left the live set without a
     /// displacement record (true cleanup, never silent absence elsewhere).
     pub(crate) fn prune_members_off_live(&mut self, live: &BTreeSet<String>) {
-        self.members.retain(|_, state| {
-            live.contains(&state.home.output.0) || self.displaced.contains_key(&state.home.output.0)
+        self.world.workspace.members.retain(|_, state| {
+            live.contains(&state.home.output.0)
+                || self
+                    .world
+                    .workspace
+                    .displaced
+                    .contains_key(&state.home.output.0)
         });
     }
 
@@ -70,10 +111,10 @@ impl WorldEngine {
     /// tiled sends), preserving its float/minimized marks. Sticky facts
     /// never reach here (refused upstream).
     pub(crate) fn commit_send_member(&mut self, window: &WindowId, target: &DomainKey) {
-        if let Some(state) = self.members.get_mut(window) {
+        if let Some(state) = self.world.workspace.members.get_mut(window) {
             state.home = target.clone();
         } else {
-            self.members.insert(
+            self.world.workspace.members.insert(
                 window.clone(),
                 MemberState {
                     home: target.clone(),
@@ -100,22 +141,23 @@ impl WorldEngine {
     /// known workspace on the observed screen wins over desire.
     /// View switches never yank a resident observed on its retained screen.
     pub(crate) fn reconcile_members(&mut self) {
-        for id in &self.staged.closes {
-            self.members.remove(id);
+        for id in &self.world.staged.closes {
+            self.world.workspace.members.remove(id);
         }
         // Safety exclusions never enter or stay: drop even inside
         // incomplete inventories (no stale member, no stale tiled mark).
-        for id in self.staged.excluded.clone() {
-            self.members.remove(&id);
+        for id in self.world.staged.excluded.clone() {
+            self.world.workspace.members.remove(&id);
         }
         // Live set for pruning implicit closes only when complete.
         let live_outputs: BTreeSet<String> = self
+            .world
             .staged
             .screens
             .iter()
             .map(|screen| screen.output.0.clone())
             .collect();
-        for (window, fact) in &self.staged.facts.clone() {
+        for (window, fact) in &self.world.staged.facts.clone() {
             if fact.sticky == Some(true) {
                 continue;
             }
@@ -123,11 +165,16 @@ impl WorldEngine {
             if derived_member.excluded || derived_member.own_excluded {
                 continue;
             }
-            let flight_held = self.retained.iter().any(|r| match &r.target.kind {
-                TransferKind::Window(w) => w == window,
-                TransferKind::Migration => r.members.iter().any(|m| m == window),
-                TransferKind::View => false,
-            });
+            let flight_held = self
+                .world
+                .settlement
+                .retained
+                .iter()
+                .any(|r| match &r.target.kind {
+                    TransferKind::Window(w) => w == window,
+                    TransferKind::Migration => r.members.iter().any(|m| m == window),
+                    TransferKind::View => false,
+                });
             // Effective receipt: native-derived under the capability
             // (unknown/conflicting holds), adapter logical otherwise.
             let receipt = self.effective_logical_receipt(fact);
@@ -150,6 +197,8 @@ impl WorldEngine {
                 }
             });
             let home_output = self
+                .world
+                .workspace
                 .members
                 .get(window)
                 .map(|state| state.home.output.clone());
@@ -160,7 +209,7 @@ impl WorldEngine {
             // view adoption and never collapses (write authority is
             // fenced at publish; keeping the home invents no proof).
             // Unknown output never adopts: no fabricated homing.
-            let adopt = if !self.host_owned_workspace_domains()
+            let adopt = if !self.connection.host_owned_workspace_domains()
                 && receipt.is_none()
                 && home_output
                     .as_ref()
@@ -174,7 +223,7 @@ impl WorldEngine {
             } else {
                 None
             };
-            if let Some(state) = self.members.get_mut(window) {
+            if let Some(state) = self.world.workspace.members.get_mut(window) {
                 if flight_held {
                     // Outstanding membership flights shield homing: delayed
                     // arrival stays at the committed target until
@@ -209,7 +258,7 @@ impl WorldEngine {
                 // row and authorize no writes until native evidence
                 // arrives.
                 let home = observed_known.or_else(|| {
-                    if self.host_owned_workspace_domains() {
+                    if self.connection.host_owned_workspace_domains() {
                         None
                     } else {
                         fact.output.as_ref().and_then(|output| {
@@ -221,7 +270,7 @@ impl WorldEngine {
                     }
                 });
                 if let Some(home) = home {
-                    self.members.insert(
+                    self.world.workspace.members.insert(
                         window.clone(),
                         MemberState {
                             home,
@@ -233,18 +282,18 @@ impl WorldEngine {
                 }
             }
         }
-        if self.staged.observation.inventory_complete {
-            let mut present: BTreeSet<WindowId> = self.staged.facts.keys().cloned().collect();
+        if self.world.staged.observation.inventory_complete {
+            let mut present: BTreeSet<WindowId> = self.world.staged.facts.keys().cloned().collect();
             // Narrowly held rows are live presence without usable facts:
             // they never prune a retained member.
-            for held in &self.staged.held_windows {
+            for held in &self.world.staged.held_windows {
                 present.insert(held.window.clone());
             }
             // Outstanding transfer members stay across the gap: absent
             // without a close never infers closure while a flight names
             // them (arrival may lag one report behind the commit).
             let mut flight_members: BTreeSet<WindowId> = BTreeSet::new();
-            for retained in &self.retained {
+            for retained in &self.world.settlement.retained {
                 match &retained.target.kind {
                     TransferKind::Window(window) => {
                         flight_members.insert(window.clone());
@@ -257,11 +306,11 @@ impl WorldEngine {
                     TransferKind::View => {}
                 }
             }
-            self.members.retain(|window, state| {
+            self.world.workspace.members.retain(|window, state| {
                 present.contains(window)
                     || !live_outputs.contains(&state.home.output.0)
                     || flight_members.contains(window)
-                    || self.floating_scopes.contains(&state.home)
+                    || self.world.floating_scopes.contains(&state.home)
             });
         }
         self.prune_members_off_live(&live_outputs);
@@ -274,15 +323,15 @@ impl WorldEngine {
     /// confirm. Applied post-sweep, so same-turn minimize+rehome is
     /// covered too. Revision-neutral.
     pub(crate) fn confirmed_minimized_rehomes(&self) -> Vec<(DomainKey, WindowId)> {
-        if !self.staged.observation.inventory_complete {
+        if !self.world.staged.observation.inventory_complete {
             return Vec::new();
         }
         let mut out = Vec::new();
-        for (window, fact) in &self.staged.facts {
+        for (window, fact) in &self.world.staged.facts {
             if fact.minimized != Some(true) {
                 continue;
             }
-            if self.staged.closes.contains(window) {
+            if self.world.staged.closes.contains(window) {
                 continue;
             }
             let Some(output) = fact.output.clone() else {
@@ -294,28 +343,28 @@ impl WorldEngine {
             if !self.known_workspace(&output, &receipt) {
                 continue;
             }
-            let Some(dest) = self.staged.homing.get(window) else {
+            let Some(dest) = self.world.staged.homing.get(window) else {
                 continue;
             };
             if dest.output != output || dest.workspace.0 != receipt {
                 continue;
             }
-            if self.retained.iter().any(
+            if self.world.settlement.retained.iter().any(
                 |retained| matches!(&retained.target.kind, TransferKind::Window(w) if w == window),
             ) {
                 continue;
             }
-            for key in self.layout.domain_keys() {
+            for key in self.world.layout.domain_keys() {
                 if key == *dest {
                     continue;
                 }
-                if self.displaced.contains_key(&key.output.0) {
+                if self.world.workspace.displaced.contains_key(&key.output.0) {
                     continue;
                 }
-                if !self.layout.has_minimized_slot(&key, window) {
+                if !self.world.layout.has_minimized_slot(&key, window) {
                     continue;
                 }
-                if self.retained.iter().any(|retained| {
+                if self.world.settlement.retained.iter().any(|retained| {
                     matches!(retained.target.kind, TransferKind::Migration)
                         && (retained.source_workspace == key.workspace.0
                             && retained.source_output == key.output
@@ -344,16 +393,17 @@ impl WorldEngine {
         if source == target {
             return true;
         }
-        if !self.layout.contains_domain(source) {
+        if !self.world.layout.contains_domain(source) {
             return true;
         }
-        let nonempty = self.layout.tiled_count(source) > 0
-            || self.layout.exception_count(source) > 0
-            || self.layout.minimized_count(source) > 0;
+        let nonempty = self.world.layout.tiled_count(source) > 0
+            || self.world.layout.exception_count(source) > 0
+            || self.world.layout.minimized_count(source) > 0;
         if !nonempty {
             return true;
         }
         let Some(screen) = self
+            .world
             .staged
             .screens
             .iter()
@@ -364,19 +414,23 @@ impl WorldEngine {
         let Some(area) = screen.work_area else {
             return false;
         };
-        let Some(outer_gap) = Self::scale_once(self.outer_gap_setting(), screen.scale) else {
+        let Some(outer_gap) =
+            WorldEngine::scale_once(self.connection.outer_gap_setting(), screen.scale)
+        else {
             return false;
         };
         let Ok(bounds) = crate::geometry::inset_bounds(area, outer_gap) else {
             return false;
         };
-        if self.layout.contains_domain(target) {
+        if self.world.layout.contains_domain(target) {
             return false;
         }
-        let Some(gap) = Self::scale_once(self.gap_setting(), screen.scale) else {
+        let Some(gap) = WorldEngine::scale_once(self.connection.gap_setting(), screen.scale) else {
             return false;
         };
-        self.layout.can_relocate_domain(source, target, bounds, gap)
+        self.world
+            .layout
+            .can_relocate_domain(source, target, bounds, gap)
     }
 
     /// Move one retained layout domain across outputs, preserving its tree,
@@ -393,17 +447,18 @@ impl WorldEngine {
         if source == target {
             return true;
         }
-        if !self.layout.contains_domain(source) {
+        if !self.world.layout.contains_domain(source) {
             return true;
         }
-        let nonempty = self.layout.tiled_count(source) > 0
-            || self.layout.exception_count(source) > 0
-            || self.layout.minimized_count(source) > 0;
+        let nonempty = self.world.layout.tiled_count(source) > 0
+            || self.world.layout.exception_count(source) > 0
+            || self.world.layout.minimized_count(source) > 0;
         if !nonempty {
-            self.layout.drop_domain(source);
+            self.world.layout.drop_domain(source);
             return true;
         }
         let Some(screen) = self
+            .world
             .staged
             .screens
             .iter()
@@ -414,19 +469,22 @@ impl WorldEngine {
         let Some(area) = screen.work_area else {
             return false;
         };
-        let Some(outer_gap) = Self::scale_once(self.outer_gap_setting(), screen.scale) else {
+        let Some(outer_gap) =
+            WorldEngine::scale_once(self.connection.outer_gap_setting(), screen.scale)
+        else {
             return false;
         };
         let Ok(bounds) = crate::geometry::inset_bounds(area, outer_gap) else {
             return false;
         };
-        if self.layout.contains_domain(target) {
+        if self.world.layout.contains_domain(target) {
             return false;
         }
-        let Some(gap) = Self::scale_once(self.gap_setting(), screen.scale) else {
+        let Some(gap) = WorldEngine::scale_once(self.connection.gap_setting(), screen.scale) else {
             return false;
         };
-        self.layout
+        self.world
+            .layout
             .relocate_domain(source, target, bounds, gap, outer_gap)
     }
 }

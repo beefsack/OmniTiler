@@ -1,5 +1,5 @@
 //! Focus-feedback ingress: typed schema, global caps, host-arm fencing,
-//! request reuse fencing, and estimator exactness.
+//! and request reuse fencing.
 
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
@@ -11,7 +11,6 @@ use crate::world_report::{
     WorkspaceRef, WorldReportV4,
 };
 use crate::world_report_v4_checks::validate_report_v4_reason;
-use crate::world_sizing_v4::report_estimate_v4 as report_estimate;
 use crate::world_v4_support_tests::{accepted, fact, rect, report_full, screen};
 
 fn sample(obs: u64) -> VisibilitySample {
@@ -24,19 +23,6 @@ fn sample(obs: u64) -> VisibilitySample {
         },
         minimized: Some(false),
         host_hidden: Some(false),
-    }
-}
-
-fn null_sample(obs: u64) -> VisibilitySample {
-    VisibilitySample {
-        obs,
-        lifetime_matched: None,
-        visibility: VisibilityFact {
-            visible: None,
-            suppression_owned: None,
-        },
-        minimized: None,
-        host_hidden: None,
     }
 }
 
@@ -130,7 +116,7 @@ fn output_arm_with_nulls_accepts_and_preserves() {
     };
     assert_eq!(
         engine
-            .last_report_v4
+            .last_report_v4()
             .as_ref()
             .expect("last report")
             .focus_feedback,
@@ -157,7 +143,7 @@ fn native_arm_with_null_home_accepts_on_host_owned() {
     let reply = accepted(&mut engine, &with_feedback(base(1), rows.clone()));
     assert_eq!(
         engine
-            .last_report_v4
+            .last_report_v4()
             .as_ref()
             .expect("last report")
             .focus_feedback,
@@ -272,8 +258,8 @@ fn global_caps_refuse_and_boundaries_hold() {
 fn host_arm_mismatch_rejects_without_mutation() {
     let mut engine = engine();
     accepted(&mut engine, &base(1));
-    let revision = engine.state_revision;
-    let last = engine.last_report_v4.clone().expect("last report");
+    let revision = engine.state_revision();
+    let last = engine.last_report_v4().clone().expect("last report");
     match engine
         .handle_report(
             &with_feedback(
@@ -293,8 +279,8 @@ fn host_arm_mismatch_rejects_without_mutation() {
         }
         other => panic!("expected host mismatch, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision);
-    assert_eq!(engine.last_report_v4, Some(last));
+    assert_eq!(engine.state_revision(), revision);
+    assert_eq!(engine.last_report_v4(), Some(last));
     accepted(
         &mut engine,
         &with_feedback(
@@ -312,8 +298,8 @@ fn host_arm_mismatch_rejects_without_mutation() {
 fn host_owned_mirrors_arm_gate() {
     let mut engine = host_engine();
     accepted(&mut engine, &base(1));
-    let revision = engine.state_revision;
-    let last = engine.last_report_v4.clone().expect("last report");
+    let revision = engine.state_revision();
+    let last = engine.last_report_v4().clone().expect("last report");
     match engine
         .handle_report(
             &with_feedback(
@@ -334,8 +320,8 @@ fn host_owned_mirrors_arm_gate() {
         }
         other => panic!("expected host mismatch, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision);
-    assert_eq!(engine.last_report_v4, Some(last));
+    assert_eq!(engine.state_revision(), revision);
+    assert_eq!(engine.last_report_v4(), Some(last));
     accepted(
         &mut engine,
         &with_feedback(
@@ -361,11 +347,11 @@ fn changed_feedback_reuse_fences_while_exact_resend_duplicates() {
         )],
     );
     let reply = accepted(&mut engine, &first);
-    let revision = engine.state_revision;
+    let revision = engine.state_revision();
     match engine.handle_report(&first, &[]).0 {
         WorldOutcome::Duplicate(cached) => {
             assert_eq!(cached, reply);
-            assert_eq!(engine.state_revision, revision);
+            assert_eq!(engine.state_revision(), revision);
         }
         other => panic!("expected duplicate, got {other:?}"),
     }
@@ -375,177 +361,5 @@ fn changed_feedback_reuse_fences_while_exact_resend_duplicates() {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
         other => panic!("expected reused fence, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision);
-}
-
-fn b(value: Option<bool>) -> &'static str {
-    match value {
-        None => "null",
-        Some(true) => "true",
-        Some(false) => "false",
-    }
-}
-
-fn sample_literal(sample: &VisibilitySample) -> String {
-    format!(
-        "{{\"obs\":\"{}\",\"lifetimeMatched\":{},\"visibility\":{{\"visible\":{},\"suppressionOwned\":{}}},\"minimized\":{},\"hostHidden\":{}}}",
-        sample.obs,
-        b(sample.lifetime_matched),
-        b(sample.visibility.visible),
-        b(sample.visibility.suppression_owned),
-        b(sample.minimized),
-        b(sample.host_hidden),
-    )
-}
-
-fn bracket_literal(bracket: &ArrivalBracket) -> String {
-    let location = match &bracket.location {
-        ArrivalLocation::Native { home } => {
-            let home_text = home.as_ref().map_or("null".to_owned(), |home| match home {
-                WorkspaceRef::Native { output, workspace } => format!(
-                    "{{\"kind\":\"native\",\"out\":\"{}\",\"ws\":\"{}\"}}",
-                    output.0,
-                    workspace.as_str(),
-                ),
-                WorkspaceRef::Logical { output, workspace } => format!(
-                    "{{\"kind\":\"logical\",\"out\":\"{}\",\"ws\":\"{}\"}}",
-                    output.0, workspace.0,
-                ),
-            });
-            format!("\"kind\":\"native\",\"home\":{home_text}")
-        }
-        ArrivalLocation::Output { out } => {
-            let out_text = out
-                .as_ref()
-                .map_or("null".to_owned(), |out| format!("\"{}\"", out.0));
-            format!("\"kind\":\"output\",\"out\":{out_text}")
-        }
-    };
-    let frame_text = bracket.frame.map_or("null".to_owned(), |frame| {
-        format!("[{},{},{},{}]", frame.x, frame.y, frame.w, frame.h)
-    });
-    format!(
-        "{{\"win\":\"{}\",\"obs\":\"{}\",\"before\":{},{},\"frame\":{},\"after\":{}}}",
-        bracket.window.0,
-        bracket.obs,
-        sample_literal(&bracket.before),
-        location,
-        frame_text,
-        sample_literal(&bracket.after),
-    )
-}
-
-fn row_literal(row: &FocusFeedback) -> String {
-    let brackets: Vec<String> = row.arrival.iter().map(bracket_literal).collect();
-    let pre_text = row
-        .pre
-        .as_ref()
-        .map_or("null".to_owned(), |id| format!("\"{}\"", id.0));
-    let post_text = row
-        .post
-        .as_ref()
-        .map_or("null".to_owned(), |id| format!("\"{}\"", id.0));
-    format!(
-        "{{\"id\":\"{}\",\"target\":\"{}\",\"rev\":\"{}\",\"setter\":\"{}\",\"reason\":\"{}\",\"pre\":{},\"post\":{},\"foregroundProven\":{},\"arrival\":[{}],\"attemptMs\":\"{}\"}}",
-        row.id,
-        row.target.0,
-        row.revision,
-        row.setter.as_str(),
-        row.reason.as_str(),
-        pre_text,
-        post_text,
-        b(Some(row.foreground_proven)),
-        brackets.join(","),
-        row.attempt_ms,
-    )
-}
-
-#[test]
-fn estimate_delta_matches_hand_built_canonical_bytes() {
-    let bracket_out = ArrivalBracket {
-        window: WindowId("win-a".to_owned()),
-        obs: 3,
-        before: VisibilitySample {
-            obs: 3,
-            lifetime_matched: Some(true),
-            visibility: VisibilityFact {
-                visible: Some(true),
-                suppression_owned: None,
-            },
-            minimized: Some(false),
-            host_hidden: None,
-        },
-        location: ArrivalLocation::Output {
-            out: Some(OutputId("out-a".to_owned())),
-        },
-        frame: Some(rect(0, 0, 40, 90)),
-        after: VisibilitySample {
-            obs: 3,
-            lifetime_matched: None,
-            visibility: VisibilityFact {
-                visible: None,
-                suppression_owned: None,
-            },
-            minimized: None,
-            host_hidden: Some(true),
-        },
-    };
-    let row_out = FocusFeedback {
-        id: "fb-1".to_owned(),
-        target: WindowId("win-a".to_owned()),
-        revision: 7,
-        setter: VisibilitySetter::Accepted,
-        reason: VisibilityReason::Empty,
-        pre: Some(WindowId("win-f".to_owned())),
-        post: None,
-        foreground_proven: true,
-        arrival: vec![bracket_out],
-        attempt_ms: 9,
-    };
-    let bracket_native_home = ArrivalBracket {
-        window: WindowId("win-b".to_owned()),
-        obs: 44,
-        before: null_sample(44),
-        location: ArrivalLocation::Native {
-            home: Some(native_home()),
-        },
-        frame: None,
-        after: null_sample(44),
-    };
-    let mut bracket_native_null = bracket_native_home.clone();
-    bracket_native_null.window = WindowId("win-c".to_owned());
-    bracket_native_null.obs = 5;
-    bracket_native_null.location = ArrivalLocation::Native { home: None };
-    let row_native = FocusFeedback {
-        id: "fb-2".to_owned(),
-        target: WindowId("win-b".to_owned()),
-        revision: 12345,
-        setter: VisibilitySetter::NotCalled,
-        reason: VisibilityReason::Unreadable,
-        pre: None,
-        post: Some(WindowId("win-g".to_owned())),
-        foreground_proven: false,
-        arrival: vec![bracket_native_home, bracket_native_null],
-        attempt_ms: 100,
-    };
-    // The assumed canonical shapes pin every carried key, quote, comma, and
-    // arm token the estimator counts; any drift fails the delta below.
-    let literal_out = row_literal(&row_out);
-    assert_eq!(
-        literal_out,
-        "{\"id\":\"fb-1\",\"target\":\"win-a\",\"rev\":\"7\",\"setter\":\"accepted\",\"reason\":\"\",\"pre\":\"win-f\",\"post\":null,\"foregroundProven\":true,\"arrival\":[{\"win\":\"win-a\",\"obs\":\"3\",\"before\":{\"obs\":\"3\",\"lifetimeMatched\":true,\"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"minimized\":false,\"hostHidden\":null},\"kind\":\"output\",\"out\":\"out-a\",\"frame\":[0,0,40,90],\"after\":{\"obs\":\"3\",\"lifetimeMatched\":null,\"visibility\":{\"visible\":null,\"suppressionOwned\":null},\"minimized\":null,\"hostHidden\":true}}],\"attemptMs\":\"9\"}",
-    );
-    let literal_native = row_literal(&row_native);
-    assert!(literal_native.contains(
-        "\"kind\":\"native\",\"home\":{\"kind\":\"native\",\"out\":\"out-a\",\"ws\":\"ws-1\"}"
-    ));
-    assert!(literal_native.contains("\"kind\":\"native\",\"home\":null"));
-    let before = report_estimate(&base(1));
-    let with_out = with_feedback(base(1), vec![row_out.clone()]);
-    assert_eq!(report_estimate(&with_out) - before, literal_out.len());
-    let with_both = with_feedback(base(1), vec![row_out, row_native]);
-    assert_eq!(
-        report_estimate(&with_both) - report_estimate(&with_out),
-        literal_native.len() + 1,
-    );
+    assert_eq!(engine.state_revision(), revision);
 }

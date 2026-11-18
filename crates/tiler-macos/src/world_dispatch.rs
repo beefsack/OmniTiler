@@ -150,7 +150,12 @@ pub(crate) fn codec_transact(
     legs.leg(crate::stage_timing::stage::CODEC_REPORT_ENC);
     let admitted = decode_report_v4(&report_wire).map_err(|_| "codec-report-decode")?;
     legs.leg(crate::stage_timing::stage::CODEC_REPORT_DEC);
-    let outcome = session.engine_mut().handle_report(&admitted.report, &[]).0;
+    let outcome = tiler_protocol::world_admission::handle_report_checked(
+        session.engine_mut(),
+        &admitted.report,
+        &[],
+    )
+    .0;
     legs.leg(crate::stage_timing::stage::CORE);
     // Capability truth at reply decode: the production macOS host declares
     // above/warp/native-sticky false, and the engine gates all three rows

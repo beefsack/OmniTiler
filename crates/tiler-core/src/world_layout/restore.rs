@@ -334,7 +334,7 @@ pub(super) fn best_effort_rejoin(
         && axis == old_axis
         && children
             .iter()
-            .flat_map(|child| collect_leaves(child))
+            .flat_map(collect_leaves)
             .any(|leaf| live(&leaf))
     {
         let index = old_index.min(children.len());

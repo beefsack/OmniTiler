@@ -49,19 +49,28 @@ use crate::connection::{
 };
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
-use crate::gesture::GestureSettled;
 use crate::ids::{CorrelationId, GenerationId, OwnerId};
-use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
-use crate::workspace_scope::ScopeHistory;
-use crate::world_gesture::RetainedGesture;
+use crate::world_connection_state::WorldConnectionState;
+pub(crate) use crate::world_diagnostics::{
+    core_trace_enabled, diag_id, emit_focus_trace, emit_resize_refusal, format_bounded_failed,
+};
+#[cfg(test)]
+pub(crate) use crate::world_diagnostics::{
+    with_drag_preview_trace_capture, with_focus_trace_capture, with_focus_trace_disabled,
+    with_retained_state_trace_capture, with_settlement_trace_capture,
+};
 use crate::world_layout::WorldLayout;
 use crate::world_report::{
-    AuthorityScope, CommandRejectKind, CommandResult, HoldReason, ScopeAuthority, ScopeStatus,
-    TilingMode, TransferKind, TransferTarget, WindowDesire, WorkspaceDesire, WorldCommand,
-    WorldReplyV4, WorldReportV4,
+    AuthorityScope, CommandResult, HoldReason, ScopeAuthority, ScopeStatus, TilingMode,
+    TransferKind, TransferTarget, WindowDesire, WorkspaceDesire, WorldCommand, WorldReplyV4,
+    WorldReportV4,
 };
 use crate::world_run_v4::V4RunOutcome;
+pub(crate) use crate::world_staged::{
+    EventIssue, RawRouting, StagedDomain, StagedObservation, StagedReport,
+};
+use crate::world_transaction::WorldTransaction;
 
 pub(crate) const KIND_OWNER: &str = "owner-invalid";
 pub(crate) const KIND_CORRELATION: &str = "correlation-invalid";
@@ -92,7 +101,6 @@ pub(crate) const MSG_OWNER: &str = "owner is invalid";
 pub(crate) const MSG_CORRELATION: &str = "correlation id is invalid";
 pub(crate) const MSG_GENERATION: &str = "generation does not match the core generation";
 pub(crate) const MSG_OVERSIZED: &str = "request exceeds size bound";
-pub(crate) const MSG_SNAPSHOT: &str = "observation does not cover the known window set";
 pub(crate) const MSG_OBS_STALE: &str = "observation sequence is older than the accepted watermark";
 pub(crate) const MSG_SUPERSEDED: &str = "request sequence is older than the accepted request";
 pub(crate) const MSG_REUSED: &str = "request sequence reused with different input";
@@ -145,630 +153,6 @@ pub(crate) fn inset_world_domain(domain: &OutputDomain, outer_gap: i32) -> Optio
     })
 }
 
-/// Diagnostic bound for one resize-refusal stderr line, suffix included.
-const RESIZE_REFUSAL_DIAG_MAX: usize = 960;
-/// Staged domain rows rendered into one resize-refusal line.
-const RESIZE_REFUSAL_DIAG_ROWS: usize = 4;
-/// Root shares rendered into one resize-refusal line.
-const RESIZE_REFUSAL_DIAG_SHARES: usize = 8;
-/// Leaves scanned to locate the focused leaf.
-const RESIZE_REFUSAL_DIAG_LEAVES: usize = 16;
-/// Truncation marker; the byte cap reserves exactly this length.
-const RESIZE_REFUSAL_DIAG_CUT: &str = "...";
-
-/// Diagnostic bound for one generic per-command refusal stderr line, suffix
-/// included. Covers the whole rejected-command evidence (executing identity
-/// plus the verbatim internal kind); resize commands additionally keep their
-/// existing detail line below.
-const COMMAND_REFUSAL_DIAG_MAX: usize = 512;
-
-/// Sanitized opaque id for diagnostics: the validated value or `-`.
-pub(crate) fn diag_id(value: &str) -> &str {
-    if crate::bounds::is_opaque_id(value) {
-        value
-    } else {
-        "-"
-    }
-}
-
-/// Sanitized closed-vocabulary token for diagnostics: lowercase/dash or `-`.
-fn diag_token(value: &str, max: usize) -> &str {
-    if !value.is_empty()
-        && value.len() <= max
-        && value.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
-    {
-        value
-    } else {
-        "-"
-    }
-}
-
-/// Closed-vocabulary op token for a per-command refusal diagnostic: the
-/// top-level world command name, or the core `op` token for the operation
-/// route. Admission validates every shape, so every arm is reachable;
-/// `Implicit` unwraps to its payload (bookkeeping normally resolves it
-/// first, so that path only sees the raw inline spelling).
-fn diag_command_op(command: &WorldCommand) -> &'static str {
-    match command {
-        WorldCommand::Focus { .. } => "focus",
-        WorldCommand::Send { .. } => "send",
-        WorldCommand::SwitchView { .. } => "switch-view",
-        WorldCommand::SelectWorkspace { .. } => "select-workspace",
-        WorldCommand::SelectNumbered { .. } => "select-numbered",
-        WorldCommand::SelectRelative { .. } => "select-relative",
-        WorldCommand::SelectPrevious { .. } => "select-previous",
-        WorldCommand::SelectTrailing { .. } => "select-trailing",
-        WorldCommand::SendRelative { .. } => "send-relative",
-        WorldCommand::SendNumbered { .. } => "send-numbered",
-        WorldCommand::SetWorkspaceTiling { .. } => "set-workspace-tiling",
-        WorldCommand::ToggleWorkspaceTiling { .. } => "toggle-workspace-tiling",
-        WorldCommand::MigrateWorkspace { .. } => "migrate-workspace",
-        WorldCommand::FocusDirectional { .. } => "focus-directional",
-        WorldCommand::MoveDirectional { .. } => "move-directional",
-        WorldCommand::SendDirectional { .. } => "send-directional",
-        WorldCommand::MigrateDirectional { .. } => "migrate-directional",
-        WorldCommand::ToggleMaximize { .. } => "toggle-maximize",
-        WorldCommand::SetSticky { .. } => "set-sticky",
-        WorldCommand::ToggleSticky { .. } => "toggle-sticky",
-        WorldCommand::SetFullscreen { .. } => "set-fullscreen",
-        WorldCommand::ToggleFullscreen { .. } => "toggle-fullscreen",
-        WorldCommand::Operation(core) => core.op(),
-        WorldCommand::Implicit(inner) => diag_command_op(inner),
-    }
-}
-
-/// Window subject of a per-command refusal diagnostic, when the command
-/// names one. `Implicit` unwraps to its payload (a resolved bookkeeping
-/// command already carries the explicit subject).
-fn diag_command_subject(command: &WorldCommand) -> Option<&str> {
-    match command {
-        WorldCommand::Focus { window, .. }
-        | WorldCommand::Send { window, .. }
-        | WorldCommand::SendRelative { window, .. }
-        | WorldCommand::SendNumbered { window, .. }
-        | WorldCommand::FocusDirectional { window, .. }
-        | WorldCommand::MoveDirectional { window, .. }
-        | WorldCommand::SendDirectional { window, .. }
-        | WorldCommand::ToggleMaximize { window }
-        | WorldCommand::SetSticky { window, .. }
-        | WorldCommand::ToggleSticky { window }
-        | WorldCommand::SetFullscreen { window, .. }
-        | WorldCommand::ToggleFullscreen { window } => Some(window.0.as_str()),
-        WorldCommand::Operation(
-            crate::boundary::CoreCommand::Move { window, .. }
-            | crate::boundary::CoreCommand::Focus { window, .. }
-            | crate::boundary::CoreCommand::Resize { window, .. }
-            | crate::boundary::CoreCommand::PointerResize { window, .. }
-            | crate::boundary::CoreCommand::ToggleFloat { window, .. }
-            | crate::boundary::CoreCommand::ToggleOrientation { window, .. }
-            | crate::boundary::CoreCommand::SendToWorkspace { window, .. }
-            | crate::boundary::CoreCommand::SendToOutput { window, .. }
-            | crate::boundary::CoreCommand::DragDrop { window, .. }
-            | crate::boundary::CoreCommand::DragPreview { window, .. },
-        ) => Some(window.as_str()),
-        WorldCommand::Operation(_) => None,
-        WorldCommand::Implicit(inner) => diag_command_subject(inner),
-        _ => None,
-    }
-}
-
-/// Direction detail of a per-command refusal diagnostic, when the command
-/// carries one. Closed vocabulary on the wire; anything else sanitizes at
-/// the call site through [`diag_token`].
-fn diag_command_dir(command: &WorldCommand) -> Option<&str> {
-    match command {
-        WorldCommand::Focus { direction, .. }
-        | WorldCommand::FocusDirectional { direction, .. }
-        | WorldCommand::MoveDirectional { direction, .. }
-        | WorldCommand::SendDirectional { direction, .. }
-        | WorldCommand::MigrateDirectional { direction } => Some(direction.as_str()),
-        WorldCommand::Operation(
-            crate::boundary::CoreCommand::Move { direction, .. }
-            | crate::boundary::CoreCommand::Focus { direction, .. }
-            | crate::boundary::CoreCommand::Resize { direction, .. }
-            | crate::boundary::CoreCommand::PointerResize { direction, .. }
-            | crate::boundary::CoreCommand::MigrateWorkspace { direction },
-        ) => Some(direction.as_str()),
-        WorldCommand::Operation(_) => None,
-        WorldCommand::Implicit(inner) => diag_command_dir(inner),
-        _ => None,
-    }
-}
-
-/// Root tree shape for diagnostics: axis, child count, capped shares, and
-/// the focused position as a capped-DFS leaf index (not a root-child
-/// index). Nested groups stay unexpanded, so this never classifies
-/// nested-neighbor geometry and never re-derives policy selection.
-fn diag_tree(
-    node: &crate::directional::Node,
-    focus: Option<&crate::directional::NodeId>,
-) -> String {
-    fn leaves_capped(node: &crate::directional::Node, out: &mut Vec<crate::directional::NodeId>) {
-        if out.len() >= RESIZE_REFUSAL_DIAG_LEAVES {
-            return;
-        }
-        match node {
-            crate::directional::Node::Leaf { id } => out.push(id.clone()),
-            crate::directional::Node::Group { children, .. } => {
-                for child in children {
-                    leaves_capped(child, out);
-                    if out.len() >= RESIZE_REFUSAL_DIAG_LEAVES {
-                        return;
-                    }
-                }
-            }
-        }
-    }
-    let mut leaves = Vec::new();
-    leaves_capped(node, &mut leaves);
-    let focus_pos = focus.and_then(|id| leaves.iter().position(|leaf| leaf == id));
-    let shape = match node {
-        crate::directional::Node::Leaf { .. } => "leaf".to_owned(),
-        crate::directional::Node::Group {
-            axis,
-            children,
-            shares,
-            ..
-        } => {
-            let axis = match axis {
-                crate::directional::Axis::Horizontal => "H",
-                crate::directional::Axis::Vertical => "V",
-            };
-            let mut shown: Vec<String> = shares
-                .iter()
-                .take(RESIZE_REFUSAL_DIAG_SHARES)
-                .map(|s| s.to_string())
-                .collect();
-            if shares.len() > RESIZE_REFUSAL_DIAG_SHARES {
-                shown.push(format!("+{}", shares.len() - RESIZE_REFUSAL_DIAG_SHARES));
-            }
-            format!(
-                "axis:{axis}/kids:{}/shares:[{}]",
-                children.len(),
-                shown.join(",")
-            )
-        }
-    };
-    match focus_pos {
-        Some(pos) => format!("{shape}/leafIndex@{pos}"),
-        None => format!("{shape}/leafIndex@-"),
-    }
-}
-
-/// Meaningful min/max hints for diagnostics, one `-` per absent bound.
-fn diag_hints(hints: crate::size_hints::WindowSizeHints) -> String {
-    let opt = |v: Option<i32>| v.map(|n| n.to_string()).unwrap_or_else(|| "-".to_owned());
-    format!(
-        "min{}x{}/max{}x{}",
-        opt(hints.meaningful_min_w()),
-        opt(hints.meaningful_min_h()),
-        opt(hints.meaningful_max_w()),
-        opt(hints.meaningful_max_h()),
-    )
-}
-
-/// Best-effort diagnostic write; stderr failure never fails the command.
-pub(crate) fn emit_resize_refusal(line: String) {
-    use std::io::Write as _;
-    let _ = writeln!(std::io::stderr(), "{line}");
-}
-
-const TRACE_FAILED_CAP: usize = 8;
-
-fn format_bounded_failed(failed: &[WindowId]) -> (String, usize) {
-    let shown = failed
-        .iter()
-        .take(TRACE_FAILED_CAP)
-        .map(|win| diag_id(&win.0))
-        .collect::<Vec<_>>()
-        .join(",");
-    let omitted = failed.len().saturating_sub(TRACE_FAILED_CAP);
-    (shown, omitted)
-}
-
-#[cfg(test)]
-std::thread_local! {
-    static TEST_FOCUS_TRACE_SINK: std::cell::RefCell<Option<Vec<String>>> =
-        const { std::cell::RefCell::new(None) };
-    static TEST_SETTLEMENT_TRACE_SINK: std::cell::RefCell<Option<Vec<String>>> =
-        const { std::cell::RefCell::new(None) };
-    static TEST_DRAG_PREVIEW_TRACE_SINK: std::cell::RefCell<Option<Vec<String>>> =
-        const { std::cell::RefCell::new(None) };
-    static TEST_RETAINED_STATE_TRACE_SINK: std::cell::RefCell<Option<Vec<String>>> =
-        const { std::cell::RefCell::new(None) };
-    static TEST_FOCUS_TRACE_OVERRIDE: std::cell::RefCell<Option<bool>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Cached process-level `OMNITILER_TRACE=1` gate for core trace-only
-/// diagnostics (zero formatting/allocation/output when disabled).
-pub(crate) fn core_trace_enabled() -> bool {
-    #[cfg(test)]
-    if let Some(enabled) = TEST_FOCUS_TRACE_OVERRIDE.with(|flag| *flag.borrow()) {
-        return enabled;
-    }
-    #[cfg(test)]
-    if TEST_FOCUS_TRACE_SINK.with(|sink| sink.borrow().is_some())
-        || TEST_SETTLEMENT_TRACE_SINK.with(|sink| sink.borrow().is_some())
-        || TEST_DRAG_PREVIEW_TRACE_SINK.with(|sink| sink.borrow().is_some())
-        || TEST_RETAINED_STATE_TRACE_SINK.with(|sink| sink.borrow().is_some())
-    {
-        return true;
-    }
-    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var_os("OMNITILER_TRACE").is_some_and(|v| v == "1"))
-}
-
-/// Best-effort trace-only focus diagnostic write (or isolated thread-local
-/// capture in unit tests).
-pub(crate) fn emit_focus_trace(line: String) {
-    #[cfg(test)]
-    {
-        if TEST_FOCUS_TRACE_OVERRIDE.with(|flag| *flag.borrow() == Some(false)) {
-            return;
-        }
-        let captured = TEST_FOCUS_TRACE_SINK.with(|sink| {
-            let mut borrow = sink.borrow_mut();
-            if let Some(lines) = borrow.as_mut() {
-                lines.push(line.clone());
-                true
-            } else {
-                false
-            }
-        });
-        if captured {
-            return;
-        }
-    }
-    emit_resize_refusal(line);
-}
-
-/// Best-effort trace-only published-settlement diagnostic write (or isolated
-/// thread-local capture in unit tests).
-pub(crate) fn emit_settlement_trace(line: String) {
-    #[cfg(test)]
-    {
-        if TEST_FOCUS_TRACE_OVERRIDE.with(|flag| *flag.borrow() == Some(false)) {
-            return;
-        }
-        let captured = TEST_SETTLEMENT_TRACE_SINK.with(|sink| {
-            let mut borrow = sink.borrow_mut();
-            if let Some(lines) = borrow.as_mut() {
-                lines.push(line.clone());
-                true
-            } else {
-                false
-            }
-        });
-        if captured {
-            return;
-        }
-        if TEST_FOCUS_TRACE_SINK.with(|sink| sink.borrow().is_some()) {
-            return;
-        }
-    }
-    emit_resize_refusal(line);
-}
-
-/// Best-effort trace-only published drag-preview diagnostic write (or isolated
-/// thread-local capture in unit tests).
-pub(crate) fn emit_drag_preview_trace(line: String) {
-    #[cfg(test)]
-    {
-        if TEST_FOCUS_TRACE_OVERRIDE.with(|flag| *flag.borrow() == Some(false)) {
-            return;
-        }
-        let captured = TEST_DRAG_PREVIEW_TRACE_SINK.with(|sink| {
-            let mut borrow = sink.borrow_mut();
-            if let Some(lines) = borrow.as_mut() {
-                lines.push(line.clone());
-                true
-            } else {
-                false
-            }
-        });
-        if captured {
-            return;
-        }
-        if TEST_FOCUS_TRACE_SINK.with(|sink| sink.borrow().is_some())
-            || TEST_SETTLEMENT_TRACE_SINK.with(|sink| sink.borrow().is_some())
-        {
-            return;
-        }
-    }
-    emit_resize_refusal(line);
-}
-
-/// Best-effort trace-only published retained-state and pending-op diagnostic
-/// write (or isolated thread-local capture in unit tests).
-pub(crate) fn emit_retained_state_trace(line: String) {
-    #[cfg(test)]
-    {
-        if TEST_FOCUS_TRACE_OVERRIDE.with(|flag| *flag.borrow() == Some(false)) {
-            return;
-        }
-        let captured = TEST_RETAINED_STATE_TRACE_SINK.with(|sink| {
-            let mut borrow = sink.borrow_mut();
-            if let Some(lines) = borrow.as_mut() {
-                lines.push(line.clone());
-                true
-            } else {
-                false
-            }
-        });
-        if captured {
-            return;
-        }
-        if TEST_FOCUS_TRACE_SINK.with(|sink| sink.borrow().is_some())
-            || TEST_SETTLEMENT_TRACE_SINK.with(|sink| sink.borrow().is_some())
-            || TEST_DRAG_PREVIEW_TRACE_SINK.with(|sink| sink.borrow().is_some())
-        {
-            return;
-        }
-    }
-    emit_resize_refusal(line);
-}
-
-#[cfg(test)]
-pub(crate) fn with_focus_trace_capture<F: FnOnce()>(f: F) -> Vec<String> {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_FOCUS_TRACE_SINK.with(|sink| {
-                *sink.borrow_mut() = None;
-            });
-        }
-    }
-    TEST_FOCUS_TRACE_SINK.with(|sink| {
-        *sink.borrow_mut() = Some(Vec::new());
-    });
-    let _reset = Reset;
-    f();
-    TEST_FOCUS_TRACE_SINK.with(|sink| sink.borrow_mut().take().unwrap_or_default())
-}
-
-#[cfg(test)]
-pub(crate) fn with_settlement_trace_capture<F: FnOnce()>(f: F) -> Vec<String> {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_SETTLEMENT_TRACE_SINK.with(|sink| {
-                *sink.borrow_mut() = None;
-            });
-        }
-    }
-    TEST_SETTLEMENT_TRACE_SINK.with(|sink| {
-        *sink.borrow_mut() = Some(Vec::new());
-    });
-    let _reset = Reset;
-    f();
-    TEST_SETTLEMENT_TRACE_SINK.with(|sink| sink.borrow_mut().take().unwrap_or_default())
-}
-
-#[cfg(test)]
-pub(crate) fn with_drag_preview_trace_capture<F: FnOnce()>(f: F) -> Vec<String> {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_DRAG_PREVIEW_TRACE_SINK.with(|sink| {
-                *sink.borrow_mut() = None;
-            });
-        }
-    }
-    TEST_DRAG_PREVIEW_TRACE_SINK.with(|sink| {
-        *sink.borrow_mut() = Some(Vec::new());
-    });
-    let _reset = Reset;
-    f();
-    TEST_DRAG_PREVIEW_TRACE_SINK.with(|sink| sink.borrow_mut().take().unwrap_or_default())
-}
-
-#[cfg(test)]
-pub(crate) fn with_retained_state_trace_capture<F: FnOnce()>(f: F) -> Vec<String> {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_RETAINED_STATE_TRACE_SINK.with(|sink| {
-                *sink.borrow_mut() = None;
-            });
-        }
-    }
-    TEST_RETAINED_STATE_TRACE_SINK.with(|sink| {
-        *sink.borrow_mut() = Some(Vec::new());
-    });
-    let _reset = Reset;
-    f();
-    TEST_RETAINED_STATE_TRACE_SINK.with(|sink| sink.borrow_mut().take().unwrap_or_default())
-}
-
-#[cfg(test)]
-pub(crate) fn with_focus_trace_disabled<F: FnOnce()>(f: F) {
-    struct Reset(Option<bool>);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            TEST_FOCUS_TRACE_OVERRIDE.with(|flag| {
-                *flag.borrow_mut() = self.0;
-            });
-        }
-    }
-    let prev = TEST_FOCUS_TRACE_OVERRIDE.with(|flag| flag.borrow_mut().replace(false));
-    let _reset = Reset(prev);
-    f();
-}
-
-impl WorldEngine {
-    /// Diagnostic-only generic refusal line for one rejected v4 batch
-    /// command: the executing command sequence, the resolved bookkeeping
-    /// identity (op/subject/dir), the verbatim internal `kind`, the same
-    /// `parse`-or-default wire token production maps to, and the retained
-    /// focus. Pure formatting; the caller owns the stderr write and the
-    /// requester outcome is untouched. Always renders (never `None`), so
-    /// every refusal joins to its command even when the report carries no
-    /// inline command (queued entries) or the command is not a resize.
-    /// Ids pass the opaque gate, kinds/directions the closed gate; no
-    /// titles or process fields.
-    pub(crate) fn command_refusal_diagnostic_v4(
-        &self,
-        report: &WorldReportV4,
-        command: &WorldCommand,
-        command_seq: u64,
-        kind: &str,
-    ) -> String {
-        let wire = CommandRejectKind::parse(kind)
-            .unwrap_or(CommandRejectKind::OperationRefused)
-            .as_str();
-        let mut line = format!(
-            "omnitiler:command-refused req={} reqseq={} obsseq={} cmdseq={} op={} subject={} dir={} internal={} wire={wire} focused={}",
-            diag_id(&report.request_id),
-            report.request_seq,
-            report.observation_seq,
-            command_seq,
-            diag_command_op(command),
-            diag_command_subject(command).map(diag_id).unwrap_or("-"),
-            diag_command_dir(command)
-                .map(|dir| diag_token(dir, 16))
-                .unwrap_or("-"),
-            diag_token(kind, 32),
-            diag_id(&self.staged.observation.focused_global),
-        );
-        if line.len() > COMMAND_REFUSAL_DIAG_MAX {
-            let mut end = COMMAND_REFUSAL_DIAG_MAX - RESIZE_REFUSAL_DIAG_CUT.len();
-            while !line.is_char_boundary(end) {
-                end -= 1;
-            }
-            line.truncate(end);
-            line.push_str(RESIZE_REFUSAL_DIAG_CUT);
-        }
-        line
-    }
-
-    /// v4 resize detail for the actually executing command: the same staged
-    /// context as [`WorldEngine::resize_refusal_diagnostic`] but bound
-    /// to the executing (bookkeeping-resolved) command and its sequence
-    /// instead of the report's inline pair, so queued resizes keep their
-    /// detail too. `None` for non-resize commands.
-    pub(crate) fn resize_refusal_diagnostic_v4_for_command(
-        &self,
-        report: &WorldReportV4,
-        command: &WorldCommand,
-        command_seq: u64,
-        kind: &str,
-    ) -> Option<String> {
-        self.resize_refusal_line(
-            command,
-            &report.request_id,
-            report.request_seq,
-            report.observation_seq,
-            Some(command_seq),
-            kind,
-        )
-    }
-
-    fn resize_refusal_line(
-        &self,
-        command: &WorldCommand,
-        request_id: &str,
-        request_seq: u64,
-        observation_seq: u64,
-        command_seq: Option<u64>,
-        kind: &str,
-    ) -> Option<String> {
-        let WorldCommand::Operation(crate::boundary::CoreCommand::Resize {
-            window,
-            direction,
-            mode,
-            press_index,
-        }) = crate::world_report::unwrap_implicit(command)
-        else {
-            return None;
-        };
-        let subject = crate::directional::WindowId(window.clone());
-        let homing = self.staged.homing.get(&subject).cloned();
-        let homing_token = homing
-            .as_ref()
-            .map(|key| format!("{}/{}", diag_id(&key.output.0), diag_id(&key.workspace.0)))
-            .unwrap_or_else(|| "-".to_owned());
-        let (focus_leaf, tree_token) = homing
-            .as_ref()
-            .map(|key| {
-                let leaf = self.layout.focus_leaf(key);
-                let leaf_token = leaf
-                    .map(|id| diag_id(&id.0).to_owned())
-                    .unwrap_or_else(|| "-".to_owned());
-                let tree = self
-                    .layout
-                    .tree(key)
-                    .map(|node| diag_tree(node, leaf))
-                    .unwrap_or_else(|| "-".to_owned());
-                (leaf_token, tree)
-            })
-            .unwrap_or_else(|| ("-".to_owned(), "-".to_owned()));
-        let (subj_geom, subj_hints) = self
-            .staged
-            .facts
-            .get(&subject)
-            .map(|fact| {
-                let geom = fact
-                    .rect
-                    .map(|rect| format!("{},{},{}x{}", rect.x, rect.y, rect.w, rect.h))
-                    .unwrap_or_else(|| "-".to_owned());
-                let hints = fact.hints.map(diag_hints).unwrap_or_else(|| "-".to_owned());
-                (geom, hints)
-            })
-            .unwrap_or_else(|| ("-".to_owned(), "-".to_owned()));
-        let mut rows = Vec::new();
-        let mut rows_total = 0;
-        if let Some(key) = homing.as_ref()
-            && let Some(domain) = self.staged.domains.iter().find(|d| &d.key == key)
-        {
-            rows_total = domain.windows.len();
-            for row in domain.windows.iter().take(RESIZE_REFUSAL_DIAG_ROWS) {
-                rows.push(format!(
-                    "{}@{},{},{}x{}/{}",
-                    diag_id(&row.window.0),
-                    row.rect.x,
-                    row.rect.y,
-                    row.rect.w,
-                    row.rect.h,
-                    diag_hints(row.hints),
-                ));
-            }
-        }
-        let rows_shown = rows.len();
-        if rows_total > rows_shown {
-            rows.push(format!("+{}-more", rows_total - rows_shown));
-        }
-        let wire = CommandRejectKind::parse(kind)
-            .unwrap_or(CommandRejectKind::OperationRefused)
-            .as_str();
-        let mut line = format!(
-            "omnitiler:resize-refused req={} reqseq={} obsseq={} cmdseq={} op=resize subject={} dir={} mode={} press={} internal={} wire={wire} focused={} homing={homing_token} focus={focus_leaf} tree={tree_token} subjgeom={subj_geom} subjhints={subj_hints} rowsTotal={rows_total} rowsShown={rows_shown} rows=[{}]",
-            diag_id(request_id),
-            request_seq,
-            observation_seq,
-            command_seq
-                .map(|seq| seq.to_string())
-                .unwrap_or_else(|| "-".to_owned()),
-            diag_id(window),
-            diag_token(direction, 16),
-            diag_token(mode, 16),
-            press_index,
-            diag_token(kind, 32),
-            diag_id(&self.staged.observation.focused_global),
-            rows.join(" "),
-        );
-        if line.len() > RESIZE_REFUSAL_DIAG_MAX {
-            let mut end = RESIZE_REFUSAL_DIAG_MAX - RESIZE_REFUSAL_DIAG_CUT.len();
-            while !line.is_char_boundary(end) {
-                end -= 1;
-            }
-            line.truncate(end);
-            line.push_str(RESIZE_REFUSAL_DIAG_CUT);
-        }
-        Some(line)
-    }
-}
-
 /// Exact post-send source focus for one retained stay transfer (see
 /// [`WorldEngine::stay_source_focus`]): a resident source window, a
 /// proven-empty source, or an unknown/unprovable read that must refuse.
@@ -793,491 +177,25 @@ pub(crate) struct ExcludedIntent {
     pub(crate) automatic_fixed: bool,
 }
 
-/// Retained transfer plus the source homing needed for shielding and
-/// settlement. The reply projects only the [`TransferTarget`]. Policy
-/// transfers (hotplug displacement/return member moves) share the exact
-/// settlement/shielding path as command transfers; their target rows may
-/// name live-but-not-yet-observed homings, which hold when unresolvable.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RetainedTransfer {
-    pub(crate) target: TransferTarget,
-    /// Explicit original command correlation for the v4 transfer lane
-    /// (`TransferTargetV4.command_seq`): `Some` from command constructors
-    /// (continuation children inherit the originating sequence even when a
-    /// later report carries a different sequence), `None` on policy,
-    /// commandless, and gesture work. Never inferred from operation-id
-    /// spelling at projection time.
-    pub(crate) command_seq: Option<u64>,
-    /// True for hotplug policy member moves; false for command transfers.
-    pub(crate) policy: bool,
-    pub(crate) source_output: OutputId,
-    pub(crate) source_workspace: String,
-    /// Outstanding whole-workspace migration members: the relocated member
-    /// set awaiting arrival at the target homing. Empty for every other
-    /// transfer kind. Surviving members only: arrived plus
-    /// still-outstanding. Explicitly closed and externally-moved members
-    /// drop (never fought); absent without a close stays outstanding
-    /// (never inferred closed).
-    pub(crate) members: Vec<WindowId>,
-    /// Expected source-refill logical view for a Migration, stored at commit
-    /// so settlement survives early refill-child settlement. `None` when no
-    /// refill was selected or for non-migration transfers.
-    pub(crate) migration_refill: Option<String>,
-    /// True when a Migration committed with zero members
-    /// (originally empty). Distinguishes empty migrations (must still verify
-    /// target view plus source refill) from migrations whose members all
-    /// externally superseded/closed (settle to observed without fighting
-    /// newer input).
-    pub(crate) migration_initial_empty: bool,
-    /// Source ring index of the migrated id at commit, for refusal
-    /// rollback position restore (never wraps; clamped on reinsert).
-    pub(crate) migration_source_index: Option<usize>,
-    /// Core views at commit for refusal rollback reconciliation.
-    pub(crate) migration_source_view: Option<String>,
-    pub(crate) migration_target_view: Option<String>,
-    /// Latched terminal migration outcome (proven refusal or external
-    /// supersession) retained under the operation identity after its raw
-    /// attempt row is acknowledged. Separate from the no-retry
-    /// `TransferTarget.held` authority: `held` alone cannot distinguish a
-    /// possibly-executed attempt from a proven terminal one. Only
-    /// `RefusedProven`/`SupersededExternal` latch here; later readable
-    /// evidence reconciles against the latched outcome. `None` until a
-    /// terminal raw attempt arrives.
-    pub(crate) migration_terminal: Option<crate::world_report::AttemptOutcome>,
-    /// Issuing selection revision for a native-free migration binding
-    /// (`pending.rev` at commit, `None` on the legacy host-owned route
-    /// which mints no per-window selection targets). Lets terminal
-    /// refusal rollback revoke ONLY the exact parent-issued selection
-    /// binding/scopes/targets by revision, so a newer selection on the
-    /// same outputs survives a late parent refusal. Survives binding
-    /// completion (scopes/targets outlive the finite grant).
-    pub(crate) migration_selection_rev: Option<u64>,
-    /// Latest exact-correlated canonical membership evidence staged BEFORE any
-    /// readability hold (window transfer) or per-member map (migration
-    /// parent), mirroring [`RetainedFloat::pending`]: a gapped report never
-    /// erases knowledge the sequencer pending map forgets after
-    /// acknowledgement. Reconciled against later readable complete
-    /// observations; a spent operation is never re-dispatched.
-    pub(crate) pending_member: Option<crate::world_attempts::PropertyAttempt>,
-    /// Superseded published window-transfer correlations plus canonical
-    /// evidence, never native authority; latest consumption with known source
-    /// or arrival retires them.
-    pub(crate) member_predecessors: Vec<(
-        TransferTarget,
-        Option<crate::world_attempts::PropertyAttempt>,
-    )>,
-    /// Per-member latest canonical evidence for a migration parent, keyed by
-    /// member window. Latest-wins per member; pruned with the member set.
-    pub(crate) pending_members: BTreeMap<WindowId, crate::world_attempts::PropertyAttempt>,
-    /// Latest exact-correlated canonical view evidence for the owning phase
-    /// (standalone view id, follow parent, migration-target parent, refill
-    /// child id), staged before any hold for the same gap/ack survival.
-    pub(crate) pending_view: Option<crate::world_attempts::PropertyAttempt>,
-}
-
-/// Retained explicit float-placement target: one outstanding authorized
-/// frame per window, keyed by the stable command operation identity
-/// (`op-<cmdSeq>`). Sourced from the observed frame/context at command
-/// time plus the engine-committed effective rect. The window row carries
-/// the operation id explicitly; the adapter writes geometry ONLY under
-/// that token, exactly once. Settles on observation confirmation (observed
-/// frame equals the target), proven refusal from operation-correlated raw
-/// frame attempts, explicit close, a newer float intent for the same
-/// window, or generation reset. An observed frame that matches neither the
-/// source nor the target proves newer native input and supersedes without
-/// a fight. No outcome verdict is ever consumed: the adapter reports
-/// mechanical write facts only, and the core derives every verdict here.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RetainedFloat {
-    pub(crate) operation_id: String,
-    pub(crate) command_seq: u64,
-    pub(crate) window: WindowId,
-    pub(crate) target: crate::geometry::Rect,
-    pub(crate) source: Option<crate::geometry::Rect>,
-    pub(crate) output: OutputId,
-    pub(crate) workspace: String,
-    /// Latched ambiguity from a correlated raw attempt that neither
-    /// confirms nor proves refusal (accepted clamp/mismatch, throw,
-    /// unreadable proof, or DPI-invalidated write). Survives the attempt
-    /// row being acknowledged so a third frame (matching neither source
-    /// nor target) keeps holding instead of being misclassified as newer
-    /// external input. Set together with [`RetainedFloat::pending`] while
-    /// the observation is gapped, and re-evaluated against later readable
-    /// evidence: a readable preimage matching retained refusal evidence
-    /// still settles refusal, and the target still settles confirmation.
-    /// Clears only on settlement (confirmation, explicit close, proven
-    /// refusal, or a newer intent replacing it).
-    pub(crate) ambiguous: bool,
-    /// Latest exact-correlated canonical frame attempt (optional operation
-    /// id plus window plus target) staged BEFORE any readability or authority
-    /// hold, so a gapped report never erases knowledge the shared
-    /// consumed-frames watermark forgets after acknowledgement. Reconciled
-    /// against later readable complete observations: confirmation and proven
-    /// refusal still require truthful readable data, and no replay is ever
-    /// issued (neither side re-dispatches a spent operation). Replaced by
-    /// newer fresh evidence; dropped with the retained target on settlement.
-    pub(crate) pending: Option<crate::world_attempts::PropertyAttempt>,
-}
-
-/// Retained directional maximize-clear: one outstanding authorized clear
-/// per window, keyed by the stable originating command operation identity
-/// (`op-<cmdSeq>`). Binds the original intent (window, direction, home
-/// domain, displayed view, observed focus, original observation sequence)
-/// plus whether the original subject routes tiled or float. The core
-/// publishes `clear_operation` desire under that identity; the adapter
-/// dispatches the native clear at most once and reports a correlated
-/// [`ClearAttempt`](crate::world_report::ClearAttempt). A correlated
-/// accepted attempt plus complete readable unmaximized facts proves the
-/// clear; only then does the original intent resume (tiled-as-tiled or
-/// float-as-float) under the ORIGINAL operation id, in the same reply's
-/// settlement/sweep/publish ordering. No later user command consumes the
-/// binding: any same-window new intent supersedes it and re-evaluates
-/// fresh. Explicit close, complete departure, homing loss, or reset prunes
-/// it. The desire withholds on held/unreadable/gesture scopes; after an
-/// attempt the operation never re-actuates.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RetainedClear {
-    pub(crate) operation_id: String,
-    pub(crate) command_seq: u64,
-    pub(crate) window: WindowId,
-    pub(crate) direction: String,
-    pub(crate) home: DomainKey,
-    pub(crate) view: Option<String>,
-    pub(crate) focus: String,
-    /// True when the original subject routes float (floating or sticky);
-    /// false for the tiled route.
-    pub(crate) float_route: bool,
-    /// Original same-axis mode for the tiled resume path.
-    pub(crate) same_axis: crate::directional::SameAxisMove,
-    /// Latest exact-correlated canonical clear evidence staged BEFORE any
-    /// readability or authority hold, mirroring [`RetainedFloat::pending`].
-    pub(crate) pending: Option<crate::world_attempts::PropertyAttempt>,
-    /// Latched ambiguity from a correlated attempt that neither confirms
-    /// nor proves refusal (accepted mismatch, throw, unreadable proof).
-    /// Survives acknowledgement; re-evaluated against later readable
-    /// evidence. Clears only on settlement or supersession.
-    pub(crate) ambiguous: bool,
-}
-
-/// Retained commandless born maximize-clear: one outstanding authorized
-/// clear per born window, keyed by a stable core-minted operation identity
-/// (`op-born-<n>`), never a command sequence. The core publishes
-/// `clear_operation` desire under that identity; the adapter dispatches
-/// the native clear at most once and reports a correlated
-/// [`ClearAttempt`](crate::world_report::ClearAttempt). A correlated
-/// accepted attempt plus complete readable unmaximized facts proves the
-/// clear; only then does the binding retire (no directional continuation
-/// follows: the window already rides its admitted session row). Explicit
-/// close, complete departure, homing loss or superseding float intent prunes
-/// it. The desire withholds on safety/unreadable/gesture scopes, but may ride
-/// a geometry-convergence hold under independent birth property authority.
-/// After an attempt the operation never re-actuates.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RetainedBornClear {
-    pub(crate) operation_id: String,
-    pub(crate) window: WindowId,
-    pub(crate) home: DomainKey,
-    /// Latest exact-correlated canonical clear evidence staged BEFORE any
-    /// readability or authority hold, mirroring [`RetainedClear::pending`].
-    pub(crate) pending: Option<crate::world_attempts::PropertyAttempt>,
-    /// Latched ambiguity from a correlated attempt that neither confirms
-    /// nor proves refusal (accepted mismatch, throw, unreadable proof).
-    /// Survives acknowledgement; re-evaluated against later readable
-    /// evidence. Clears only on settlement.
-    pub(crate) ambiguous: bool,
-}
-/// Retained host-owned native creation: one outstanding core-owned
-/// authorization for the adapter to create exactly one native desktop for
-/// one logical workspace, executed at most once per `operation_id`
-/// (replay idempotent). The op id mints from the core serial
-/// (`op-native-<n>`), never from a command sequence: trailing spare
-/// creations are observation-caused and several outputs/workspaces can share
-/// one command. When the adapter's fresh native order shows the created
-/// desktop late, core binds it to the pending logical (never adopts it as an
-/// outside creation); an ambiguous creation holds as
-/// [`HoldReason::AmbiguousCreation`](crate::world_report::HoldReason) and
-/// never blind-recreates.
-/// Capability-named note: core owns binding and settlement.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RetainedNativeCreation {
-    pub(crate) operation_id: String,
-    pub(crate) logical_workspace: String,
-    pub(crate) target_output: OutputId,
-    /// Live native order observed when the authorization minted (strict
-    /// attempt matching compares the attempt's `before` against this).
-    pub(crate) order_before: Vec<String>,
-    /// Report clock (`monotonic_ms`) when the authorization minted (`0`
-    /// when unreported): attempts stamped before this never prove the
-    /// creation (stale) and latch ambiguity instead.
-    pub(crate) minted_ms: u64,
-    /// Latest exact-correlated raw creation attempt (op plus logical plus
-    /// output), staged for gap survival like the float/clear pending rows.
-    pub(crate) pending: Option<crate::world_report::NativeCreationAttempt>,
-    /// Latched ambiguity (refused, threw, mismatched, or colliding outside
-    /// creation): publishes `AmbiguousCreation` and never mints a blind
-    /// replacement.
-    pub(crate) ambiguous: bool,
-}
+pub(crate) use crate::world_settlement_state::{
+    RetainedBornClear, RetainedClear, RetainedFloat, RetainedNativeCreation, RetainedTransfer,
+};
 
 /// Public bounded outcome of one [`WorldEngine::handle_report`] call: the
 /// genuine v4 result.
 pub type WorldOutcome = V4RunOutcome;
 
-/// One logical workspace projected into an Engine session: the stable core
-/// id, its owning screen, and the per-report staged observation assigned by
-/// [`WorldEngine::build_staged_domains`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StagedDomain {
-    pub(crate) key: DomainKey,
-    pub(crate) bounds: Rect,
-    pub(crate) gap: i32,
-    pub(crate) outer_gap: i32,
-    /// Homed non-minimized facts with readable frames, as Engine carriers.
-    pub(crate) windows: Vec<EngineWindow>,
-    /// Adapter-observed focused lifetime homed here (empty when none):
-    /// the staged focus proof for this domain.
-    pub(crate) focused: WindowId,
-    /// Homed minimized facts (kept out of the Engine carriers; the sweep
-    /// retains their slots and publish emits explicit minimized rows).
-    pub(crate) minimized: Vec<WindowId>,
-    /// Homed facts with unreadable frames: the scope holds instead of
-    /// authorizing geometry, never a silent absence.
-    pub(crate) unreadable: Vec<WindowId>,
-    /// Explicit closes homed here.
-    pub(crate) closed: Vec<WindowId>,
-    /// False when the owning screen is incomplete or carries an unreadable
-    /// window fact: the scope becomes an explicit hold and its rows
-    /// authorize nothing.
-    pub(crate) readable: bool,
-    pub(crate) hold: Option<HoldReason>,
-}
+pub use crate::world_admit_v4::{
+    AdmissionGateDecision, CoreAdmissionGate, ExactInnerCheck, ExactInnerDecision,
+    FutureReserveGateFacts, PreflightGateFacts,
+};
 
-/// Raw per-report observation capture: verbatim report lanes staged before
-/// any classification. Both intakes populate the same boundary directly;
-/// lane, command and lifetime consumers migrate to it in later increments.
-/// No envelope admission, request/command correlation, or dispatch state
-/// lives here: only the `observation_seq` watermark is retained for
-/// observation ordering. Later helpers take explicit correlation arguments.
-/// `raw_windows` keeps every typed row in source order, including
-/// own-process and safety-excluded subjects; the classified `facts`/
-/// `derived` carriers below stay the consume-lane view.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct StagedObservation {
-    pub(crate) inventory_complete: bool,
-    pub(crate) observation_seq: u64,
-    pub(crate) raw_windows: Vec<crate::world_report::WindowFact>,
-    pub(crate) closed: Vec<WindowId>,
-    pub(crate) native: Vec<crate::world_report::NativeObservation>,
-    pub(crate) cursor: Option<(i32, i32)>,
-    pub(crate) cursor_hit: Option<WindowId>,
-    pub(crate) focused_global: String,
-    pub(crate) action_foreground: Option<OutputId>,
-    pub(crate) action_cached: Option<OutputId>,
-    pub(crate) action_outputs: Vec<OutputId>,
-    pub(crate) primary_output: Option<OutputId>,
-    pub(crate) gesture: Option<crate::gesture::GestureIngress>,
-    pub(crate) monotonic_ms: u64,
-    pub(crate) creation_attempts: Vec<crate::world_report::NativeCreationAttempt>,
-    pub(crate) property_attempts: Vec<crate::world_attempts::PropertyAttempt>,
-    /// True once wire-bound visibility `LastWrite` evidence has been
-    /// normalized into the canonical attempt lane for this staged report.
-    /// Set after classified staging (even when the report carries zero
-    /// visibility evidence) and cloned unchanged across classification
-    /// restages, so normalization is exactly once per report regardless of
-    /// whether any row produced an attempt.
-    pub(crate) visibility_normalized: bool,
-    pub(crate) focus_feedback: Vec<crate::world_report::FocusFeedback>,
-    pub(crate) intent_records: Vec<crate::world_report::IntentRecord>,
-}
-
-/// Per-report staged observation: screens as reported, one
-/// [`StagedDomain`] per known logical workspace, adapter view echoes, and
-/// the raw fact index the settlement path proves against.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct StagedReport {
-    /// Captured raw observation for this report, staged before
-    /// classification. See [`StagedObservation`].
-    pub(crate) observation: StagedObservation,
-    pub(crate) screens: Vec<crate::world_report::ScreenReport>,
-    /// Identifiable bad screen rows held narrowly, in report order.
-    pub(crate) held_screens: Vec<crate::world_report::HeldScreenRow>,
-    /// Identifiable bad window rows held narrowly, in report order.
-    pub(crate) held_windows: Vec<crate::world_report::HeldWindowRow>,
-    /// Identifiable native rows held narrowly, in report order. The legacy
-    /// intake never fills this lane (stays empty).
-    pub(crate) held_native: Vec<crate::world_report::HeldNativeRow>,
-    /// Identifiable attempt rows held narrowly, in report order. The
-    /// legacy intake never fills this lane (stays empty).
-    pub(crate) held_attempts: Vec<crate::world_report::HeldAttemptRow>,
-    /// Staged v4 presentation outcome, verbatim from the report: the valid
-    /// ingress or the held singleton row, never a defaulted ingress. `None`
-    /// for the legacy intake (v3 carries its own presentation shape).
-    pub(crate) presentation_v4: Option<crate::world_report::PresentationRowV4>,
-    /// Staged v4 renderer input, verbatim from the report with no
-    /// validation here. `None` for the legacy intake and for v4 reports
-    /// without renderer input.
-    pub(crate) renderer_input: Option<crate::world_report::RendererInput>,
-    /// Safety/own-process exclusions observed on this report: known
-    /// exclusions (staged facts classifying excluded) plus own-process
-    /// windows (dropped before facts). Never members, slots, or control:
-    /// converge removes them cleanly (never a minimize slot, never a
-    /// native close), reconciles drop them complete and incomplete, and
-    /// pending actions withhold writes/focus. Only an explicit native
-    /// close resets lifetime identity.
-    pub(crate) excluded: BTreeSet<WindowId>,
-    /// Typed narrow-hold diagnostics emitted with this report's reply:
-    /// one per held screen/window row plus one per use-time scale hold.
-    pub(crate) diagnostics: Vec<crate::world_report::RowDiagnostic>,
-    pub(crate) domains: Vec<StagedDomain>,
-    /// Non-empty adapter view echoes by output.
-    pub(crate) echoes: BTreeMap<String, String>,
-    /// Raw observed screen per fact, before any logical assignment.
-    /// `None` is unknown affinity, never a current-output guess.
-    pub(crate) fact_output: BTreeMap<WindowId, Option<OutputId>>,
-    /// Full raw facts by window id.
-    pub(crate) facts: BTreeMap<WindowId, crate::world_report::WindowFact>,
-    /// Core-derived per-window classification (see
-    /// [`crate::window_classify`]): membership, hold, and exclusion
-    /// carriers for the consume lanes. Raw facts stay the sole public
-    /// input; these carriers never leave the core.
-    pub(crate) derived: BTreeMap<WindowId, crate::window_classify::ClassifiedWindow>,
-    /// Raw explicit closes.
-    pub(crate) closes: BTreeSet<WindowId>,
-    /// Effective classified window rows for this report: the
-    /// capability-graded rows on the v4 intake, the verbatim rows on the
-    /// legacy intake. Classification-only restages consume these, never
-    /// the raw capture; the raw capture stays the ingestion boundary.
-    pub(crate) effective_windows: Vec<crate::world_report::WindowFact>,
-    /// Staged logical homing per window.
-    pub(crate) homing: BTreeMap<WindowId, DomainKey>,
-    /// Carried gesture barrier for the staged run.
-    pub(crate) gesture_barrier: bool,
-    /// Issuing revision of the accepted run that staged this report (`0`
-    /// for standalone staging probes outside `run_accepted_v4_batched`).
-    pub(crate) revision: u64,
-    /// True during `run_accepted_v4_batched` once a focus effect was
-    /// emitted for this report before `drain_focus_candidates` updates
-    /// `pending_focus`, preventing same-batch implicit fallback.
-    pub(crate) batch_focus_issued: bool,
-}
-
-/// Explicit typed event identity for command-path event construction.
-/// Threaded from the validated envelope instead of re-parsing a report.
-#[derive(Debug, Clone)]
-pub(crate) struct EventIssue {
-    pub(crate) owner: OwnerId,
-    pub(crate) correlation: CorrelationId,
-}
-
-/// Borrowed raw routing context for observation-dependent routing leaves.
-/// Built from the source report for pre-capture freezes (prior retained
-/// homes/views) or from staged state for post-capture commands (current
-/// observations). No cloning, no ingestion.
-pub(crate) struct RawRouting<'a> {
-    pub(crate) inventory_complete: bool,
-    pub(crate) cursor: Option<(i32, i32)>,
-    pub(crate) focused_global: &'a str,
-    pub(crate) action_foreground: Option<&'a OutputId>,
-    pub(crate) action_cached: Option<&'a OutputId>,
-    pub(crate) action_outputs: &'a [OutputId],
-    pub(crate) primary_output: Option<&'a OutputId>,
-    pub(crate) screens: &'a [crate::world_report::ScreenReport],
-    pub(crate) held_screens: &'a [crate::world_report::HeldScreenRow],
-}
-
-impl<'a> RawRouting<'a> {
-    pub(crate) fn from_staged(staged: &'a StagedReport) -> Self {
-        Self {
-            inventory_complete: staged.observation.inventory_complete,
-            cursor: staged.observation.cursor,
-            focused_global: staged.observation.focused_global.as_str(),
-            action_foreground: staged.observation.action_foreground.as_ref(),
-            action_cached: staged.observation.action_cached.as_ref(),
-            action_outputs: staged.observation.action_outputs.as_slice(),
-            primary_output: staged.observation.primary_output.as_ref(),
-            screens: staged.screens.as_slice(),
-            held_screens: staged.held_screens.as_slice(),
-        }
-    }
-
-    /// Genuine v4 routing constructor: the same borrowed raw lanes read
-    /// directly from the typed v4 report, never through a v4-to-legacy
-    /// conversion. The caller passes the original v4 rows so the freeze
-    /// below captures against prior retained state.
-    pub(crate) fn from_v4(report: &'a WorldReportV4) -> Self {
-        Self {
-            inventory_complete: report.inventory_complete,
-            cursor: report.cursor,
-            focused_global: report.focused_global.as_str(),
-            action_foreground: report.action_foreground.as_ref(),
-            action_cached: report.action_cached.as_ref(),
-            action_outputs: report.action_outputs.as_slice(),
-            primary_output: report.primary_output.as_ref(),
-            screens: report.screens.as_slice(),
-            held_screens: report.held_screens.as_slice(),
-        }
-    }
-}
-
-impl WorldEngine {
-    /// Freeze the pre-observation command sources against prior retained
-    /// state: the implicit send source (retained home else the action
-    /// context) and the direction-only migration source (action output plus
-    /// its retained view). Takes the command explicitly and the borrowed
-    /// raw routing built from the source report; reads retained homing and
-    /// views only. Never ingests intent, never stages observations, and
-    /// never touches downstream staged gates: call before capture/ingest
-    /// so first-tick admissions, staged rehoming, and same-report view
-    /// settlement cannot retarget the current intent. Explicit send
-    /// sources and report-only commands freeze nothing.
-    pub(crate) fn freeze_command_sources(
-        &self,
-        command: Option<&WorldCommand>,
-        routing: &RawRouting<'_>,
-    ) -> (Option<OutputId>, Option<(OutputId, String)>) {
-        // Execution-time (Implicit-wrapped) sends carry an empty placeholder
-        // window: resolve the retained subject from the pre-freeze slot
-        // first, then look up its retained home. The slot vintage is the
-        // caller's: pre-observation for the first batch command, post-prior
-        // for later per-command refreezes. An unresolvable subject freezes
-        // nothing, so execution refuses instead of falling back to action.
-        let subject = self.execution_subject();
-        let effective_send: Option<(&WindowId, &crate::world_report::SendSource)> = match command {
-            Some(WorldCommand::Implicit(inner)) => match inner.as_ref() {
-                WorldCommand::SendRelative { source, .. }
-                | WorldCommand::SendNumbered { source, .. } => {
-                    subject.as_ref().map(|slot| (slot, source))
-                }
-                _ => None,
-            },
-            Some(
-                WorldCommand::SendRelative { window, source, .. }
-                | WorldCommand::SendNumbered { window, source, .. },
-            ) => Some((window, source)),
-            _ => None,
-        };
-        let frozen_send_source = match effective_send {
-            Some((window, source)) => match source {
-                crate::world_report::SendSource::Explicit(_) => None,
-                crate::world_report::SendSource::HomeThenAction => {
-                    self.resolve_home_then_action(routing, window)
-                }
-            },
-            None => None,
-        };
-        let unwrapped = command.map(crate::world_report::unwrap_implicit);
-        let frozen_migration_source = match unwrapped {
-            Some(WorldCommand::MigrateDirectional { .. }) => {
-                let resolved = self.resolve_action_output(routing);
-                match resolved {
-                    Some(output) => self.logical_view(&output.0).map(|view| (output, view)),
-                    None => None,
-                }
-            }
-            _ => None,
-        };
-        (frozen_send_source, frozen_migration_source)
-    }
+/// Borrowed format-neutral candidate view passed to the caller's final
+/// prepare callback immediately before candidate adoption.
+pub struct PreparedCandidate<'a> {
+    pub reply: &'a WorldReplyV4,
+    pub active_gesture_id: Option<u64>,
+    pub settlements: &'a [crate::world_report::BatchSettlement],
 }
 
 /// Retained prior-accepted observation/publication facts for shared lanes.
@@ -1338,33 +256,20 @@ impl PriorAcceptedContext {
 }
 
 /// Stateful world boundary owning its layout storage.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AdmittedReplayV4 {
+    pub(crate) request_seq: u64,
+    pub(crate) digest: u64,
+    pub(crate) observation_seq: u64,
+    pub(crate) report: WorldReportV4,
+    pub(crate) reply: WorldReplyV4,
+}
+
 #[derive(Debug, Clone)]
-pub struct WorldEngine {
+pub(crate) struct WorldState {
     pub(crate) layout: WorldLayout,
-    pub(crate) core_generation: GenerationId,
-    pub(crate) core_generation_str: String,
-    generation_seed: String,
-    connection_number: u64,
-    pub(crate) adapter: Option<String>,
-    pub(crate) connection_owner: Option<OwnerId>,
-    application_identity: Option<ApplicationIdentity>,
-    capabilities: Option<HostCapabilities>,
-    pub(crate) settings: crate::settings_state::SettingsState,
-    pub(crate) initial_settings_accepted: bool,
     pub(crate) ready_latched: bool,
     pub(crate) state_revision: u64,
-    /// Typed v4 replay bookkeeping: the latest accepted v4
-    /// report, its digest, and the cached v4 reply. The digest is only a
-    /// fast pre-check; full typed input equality decides duplicates.
-    /// Written only by the internal v4 admission boundary on accepted
-    /// candidates; cleared with every fresh engine, cloned with every
-    /// staged candidate, never touched by rejected candidates.
-    pub(crate) has_last_v4: bool,
-    pub(crate) last_request_seq_v4: u64,
-    pub(crate) last_digest_v4: u64,
-    pub(crate) last_observation_seq_v4: u64,
-    pub(crate) last_report_v4: Option<WorldReportV4>,
-    pub(crate) last_reply_v4: Option<WorldReplyV4>,
     /// Retained prior-accepted observation/publication facts for shared
     /// lanes: previous raw focus plus the actually published
     /// controlled-empty workspace set. Written at `finish_v4` from the
@@ -1375,246 +280,20 @@ pub struct WorldEngine {
     /// any `command_seq` at or below it is already consumed, so eviction
     /// can never resurrect a sequence. Commandless reports never move it.
     pub(crate) command_highwater: Option<u64>,
-    pub(crate) retained: Vec<RetainedTransfer>,
-    /// Outstanding explicit float-placement targets, at most one per window.
-    /// Bounded by the window inventory itself.
-    pub(crate) retained_floats: Vec<RetainedFloat>,
-    /// Outstanding internal native-state bindings (state lane, early
-    /// increment): exact authorized targets plus retained raw evidence, spent
-    /// latches, and internal dispositions. See [`crate::world_state`]. At
-    /// most four per known lifetime (one per property), globally capped by
-    /// [`crate::world_state::MAX_RETAINED_STATE_BINDINGS`]; never a row,
-    /// slot, wire value, or membership proof.
-    pub(crate) retained_states: BTreeMap<
-        (WindowId, crate::world_report::StateProperty),
-        crate::world_state::RetainedStateBinding,
-    >,
-    /// Outstanding directional maximize-clear authorizations, at most one
-    /// per window. Bounded by the window inventory itself; each entry is
-    /// commandless (no second command consumes it), superseded by any
-    /// same-window new intent, pruned when its window closes, departs, or
-    /// loses homing. See [`RetainedClear`].
-    pub(crate) retained_clears: Vec<RetainedClear>,
-    /// Outstanding commandless born maximize-clear authorizations, at most
-    /// one per window. Bounded by the window inventory itself; each entry
-    /// is settled commandlessly (no command consumes it), superseded by
-    /// close/departure/homing loss, and never re-actuated after an
-    /// attempt. See [`RetainedBornClear`].
-    pub(crate) retained_born: Vec<RetainedBornClear>,
-    /// Core-owned born-clear operation serial: mints `op-born-<n>`
-    /// identities (never from a command sequence). Monotonic within the
-    /// generation; never reset on adapter-incarnation rotation.
-    pub(crate) born_seq: u64,
-    /// Born windows whose one-shot clear already resolved (proven,
-    /// refused, or abandoned): never re-mint for the same lifetime.
-    /// Pruned on explicit close so id reuse starts a fresh lifetime.
-    /// Retained across adapter-incarnation rotation with the engine
-    /// sessions that prove admitted lifetimes.
-    pub(crate) born_attempted: BTreeSet<WindowId>,
-    /// First-seen fullscreen births awaiting their first exit, by lifetime.
-    /// Later fullscreen on admitted tiles never enters. Pruned like
-    /// `born_attempted`.
-    pub(crate) born_held_fullscreen: BTreeSet<WindowId>,
-    /// Floating-first sightings (R-MAX-03): lifetimes first observed
-    /// floating on an untiled scope. They keep their overlay under both
-    /// born modes, and the held exit lane never bypasses this safety.
-    /// Pruned like `born_attempted`.
-    pub(crate) born_floating_first: BTreeSet<WindowId>,
-    /// Lifetimes observed non-fullscreen in this backend generation: a
-    /// later fullscreen on one of these is a managed overlay transition,
-    /// never a birth. Pruned like `born_attempted`.
-    pub(crate) born_seen_nonfullscreen: BTreeSet<WindowId>,
-    /// Lifetimes latched keep-overlay at tiled-first evaluation
-    /// ([`born_keep_latch`](crate::window_policy::born_keep_latch)) or seeded
-    /// from the startup cohort on the first accepted usable complete
-    /// inventory: a later flip to tile-on-launch never reclears them. Pruned
-    /// like `born_attempted`.
-    pub(crate) born_keep_overlay: BTreeSet<WindowId>,
-    /// Lifetime-local core-composed maximize bits (`caps.maximize == false`
-    /// only): windows whose published frame is the output work area under
-    /// the existing `Controlled` frame lane. The tile slot/allocation or
-    /// float base placement stays retained in the session; clear restores
-    /// it. No native `Maximized` target is emitted, no intent record is
-    /// written, and restart drops the bit with the engine. Pruned with the
-    /// live inventory in [`WorldEngine::finish`].
-    pub(crate) composed_maximized: BTreeSet<WindowId>,
-    /// Core-owned frame anti-fighting memory (stage 3a): per-lifetime clamp
-    /// suppression plus transient retry backoff over mechanical
-    /// [`FrameAttempt`](crate::world_report::FrameAttempt) facts. Bounded by
-    /// the window inventory itself; pruned every accepted report.
-    pub(crate) frames: BTreeMap<WindowId, crate::world_frames::FrameMemory>,
-    /// Last consumed canonical frame attempt per lifetime, retained
-    /// independently of [`Self::frames`] so an exact-match clear never
-    /// forgets what was already consumed: a lost-ack redelivery of an older
-    /// or identical write is ignored instead of resurrecting stale
-    /// suppression or clobbering newer authority. Same lifetime bound and
-    /// pruning as [`Self::frames`]; cleared on incarnation reset, fresh on a
-    /// new core generation with the engine itself.
-    pub(crate) consumed_frames: BTreeMap<WindowId, crate::world_attempts::PropertyAttempt>,
-    /// Tiled burst budget (anti-loop): consumed mechanical attempts per
-    /// lifetime and unchanged desired target inside a continuous observed
-    /// frame-change burst. Same lifetime bound and pruning as
-    /// [`Self::frames`]; cleared on incarnation reset, fresh on a new core
-    /// generation with the engine itself.
-    pub(crate) frame_bursts: BTreeMap<WindowId, crate::world_frames::FrameBurst>,
-    /// Conservative learned minimum sizes per exact lifetime (stage 3b):
-    /// proven app-held growth merged into the normalized hint path before
-    /// layout projection. Separate from transient pair suppression: exact
-    /// clears never erase these, and unrelated changes never shrink them.
-    /// Pruned with the frame maps.
-    pub(crate) learned_mins: BTreeMap<WindowId, crate::world_frames::LearnedMin>,
-    pub(crate) creation_counter: u64,
-    /// Core-owned native creation serial: mints `op-native-<n>` creation
-    /// operation ids (never from a command sequence). Monotonic within the
-    /// generation: a fresh backend incarnation (new [`WorldEngine`]) restarts
-    /// it, while an adapter-incarnation reset only clears the retained
-    /// creations and never reuses an id.
-    pub(crate) native_creation_seq: u64,
-    /// Outstanding core-owned native creation authorizations (capability
-    /// only). At most one per unbound logical workspace; stable op id until
-    /// the fresh native readback binds it or ambiguity latches. Reset on
-    /// generation/incarnation. Capability-named note: explicit desire only.
-    pub(crate) retained_creations: Vec<RetainedNativeCreation>,
-    /// Deferred option-1 source releases: `(output, workspace)` pairs whose
-    /// native backing must still release once a complete list allows it
-    /// and no creation pends on the output. Pushed when arrival-gated
-    /// release defers; drained in native intake (converge) so cleanup is
-    /// never silently settled away with a retired flight. Cleared on
-    /// generation/incarnation reset like the other native state.
-    pub(crate) pending_source_releases: Vec<(String, String)>,
-    /// Migration insertion anchors under the shared native roster:
-    /// `(target output, moved logical)` to the destination-current logical
-    /// the move landed after at commit. Keeps the authoritative
-    /// after-current position across creation settlement and re-observation
-    /// while genuine external native reorders still propagate around the
-    /// pinned row. Pruned when either side leaves the target ring; reset
-    /// with the generation like the other native state.
-    pub(crate) migration_anchors: BTreeMap<(String, String), String>,
-    pub(crate) last_views: BTreeMap<OutputId, String>,
-    /// Core-owned logical workspace rings (D2): per-screen ordered lists of
-    /// stable logical workspace ids, retained across reports. Rings converge
-    /// every accepted report through lifecycle (trailing creation/removal),
-    /// hotplug displacement, and commands (migration moves the logical id
-    /// between screens). Native observations never move ownership.
-    pub(crate) mapping: BTreeMap<String, Vec<String>>,
-    /// Host-owned native binding (capability-gated adoption): maps
-    /// `(output, native desktop id)` to the stable core logical workspace
-    /// id adopted for it. Built once per output from the first complete
-    /// `native_order` (native order preserved), extended when an outside
-    /// host creates a native desktop (inserted at native-order position).
-    /// A complete snapshot (`inventory_complete`, complete screens, and a
-    /// present native row for the output) prunes vanished ids: removal, not
-    /// rename. Partial or absent rows never delete mappings. Reset on
-    /// generation/incarnation. Empty in the native-free default.
-    pub(crate) native_map: BTreeMap<(String, String), String>,
-    /// Locally retired native desktops (host-owned only): per-output
-    /// `(output, native id)` pairs whose logical row was pruned while the
-    /// native desktop survives (occupied elsewhere or host minimum floor),
-    /// each naming the removed logical id that identifies its absence
-    /// record on the wire. No logical binding is retained outside rings:
-    /// this map is tombstone correlation only, never a live
-    /// mapping/ring/spare/occupancy member. Ordinary outside adoption
-    /// suppresses these pairs until positive output-local evidence clears
-    /// them (current-native selection or observed window arrival/presence
-    /// there), after which ordinary adoption mints a fresh logical id.
-    /// Cleared on native deletion (vanished from the complete order).
-    /// Operation-scoped migration source release also clears its vacated
-    /// pairs before the existing settled fresh-adoption path.
-    /// Never holds displaced or held units. Internal only: published solely
-    /// as existing `existence:false` workspace rows reusing the removed
-    /// logical id plus its native binding; no new wire field or format.
-    pub(crate) retired_natives: BTreeMap<(String, String), String>,
-    /// Core-owned current view per screen: the stable logical workspace id
-    /// shown, retained across reports. Commands and policy moves update it;
-    /// adapter echoes prove it.
-    pub(crate) views: BTreeMap<String, String>,
-    /// Planner-owned previous-view history (D2): per-output entries
-    /// observed from verified views only.
-    pub(crate) history: ScopeHistory,
-    /// Planner-owned hotplug displacement: removed screens mapped to their
-    /// preserved logical workspace units plus the hosting survivor.
-    pub(crate) displaced: BTreeMap<String, crate::workspace_scope::DisplacedEntry>,
-    /// Members rehomed off a removed output by this report's displacement:
-    /// every staged lifetime whose recorded home (before `rekey_members`)
-    /// sat on the removed origin's units. Cleared at the start of every
-    /// accepted run and populated only when a fresh displacement is
-    /// processed, so the discriminator never spans reports. Read by
-    /// [`WorldEngine::take_admission_focus`] to withhold fresh-admission
-    /// focus from rehomed members without touching homing, views, or
-    /// publication. Never a row, slot, or wire value.
-    pub(crate) displaced_rehomed: BTreeSet<WindowId>,
-    /// Last observed screen facts by stable output key (FULL rectangle,
-    /// work area, plus active-screen primary). Updated for every live
-    /// screen on every accepted report; removed screens keep their
-    /// disconnect-time facts while a displacement record needs placement.
-    /// Never a window frame proxy.
-    pub(crate) output_facts: BTreeMap<String, crate::workspace_scope::OutputFacts>,
-    /// Core-owned live output topology: validated FULL rectangles by stable
-    /// output id, retained from the last accepted report claiming complete
-    /// screens. Directional world commands resolve against this map through
-    /// the shared strict unique-reciprocal helper, never any carried
-    /// adjacency. A report with no screens, any incomplete screen, or a
-    /// missing/invalid/duplicate FULL rect clears the map, so
-    /// topology-dependent crossing, migration, and remap fence narrowly
-    /// until the next complete report instead of actuating on stale edges.
-    /// Unrelated window-inventory incompleteness never clears this map.
-    /// Disconnect-time facts for nearest-survivor placement stay in
-    /// [`WorldEngine::output_facts`].
-    pub(crate) live_topology: BTreeMap<String, Rect>,
-    /// Planner-owned per-workspace tiling mode (legacy Meta+Y parity):
-    /// absent means [`TilingMode::Tiled`]. Set through
-    /// [`crate::world_report::WorldCommand::SetWorkspaceTiling`], flipped
-    /// at execution time through
-    /// [`crate::world_report::WorldCommand::ToggleWorkspaceTiling`], or
-    /// seeded from the reported saved default; the adapter never decides.
-    /// Floating workspaces skip convergence and publish explicit untouched
-    /// rows (no frame writes while floating).
-    pub(crate) tiling: BTreeMap<DomainKey, TilingMode>,
-    /// Core-owned logical membership (D2): stable window-lifetime homing
-    /// independent of layout sessions. The single homing owner: floating
-    /// release, minimized/unreadable holds, and view switches never move
-    /// members except through explicit commits, truthful receipts, or
-    /// observed cross-output moves. See [`crate::world_members`].
-    pub(crate) members: BTreeMap<WindowId, crate::world_members::MemberState>,
+    pub(crate) workspace: crate::world_workspace_state::WorkspaceState,
+    pub(crate) settlement: crate::world_settlement_state::SettlementState,
+    pub(crate) focus: crate::world_focus_state::FocusState,
+    pub(crate) gesture: crate::world_gesture_state::GestureState,
+    pub(crate) runtime: crate::world_runtime_state::RuntimeState,
+    pub(crate) intent: crate::world_intent_state::IntentState,
+    pub(crate) presentation: crate::world_presentation_state::PresentationState,
     /// Floating scopes for the report currently being staged: derived from
-    /// [`WorldEngine::tiling`] at the start of every accepted run, read by
+    /// [`WorkspaceState::tiling`] at the start of every accepted run, read by
     /// the command gates and publishing.
     pub(crate) floating_scopes: BTreeSet<DomainKey>,
     /// Per-scope sweep failure classification for the report currently
-    /// being staged: [`WorldEngine::classify_sweep_hold`] reasons for scope
-    /// keys in the staged held set. Cleared at the start of every accepted
-    /// run and published by [`WorldEngine::publish_v4`]; never survives across
-    /// reports, incarnations, or generations.
+    /// being staged.
     pub(crate) hold_reasons: BTreeMap<DomainKey, HoldReason>,
-    /// Retained gesture session (stage 4a): one open native move/size
-    /// gesture bound to an exact window lifetime plus its stable adapter
-    /// gesture id. Updated per accepted gesture report; cleared on
-    /// release, cancel, Esc, close, or incarnation/generation reset.
-    /// Never a command and never consumed.
-    pub(crate) gesture: Option<RetainedGesture>,
-    /// Consumed gesture id high watermark (stage 4a at-most-once): every
-    /// incorporated terminal advances this to at least its id. Binds and
-    /// terminal replays order against this single scalar, never a map:
-    /// ids at or below it are consumed replays, ids above it are new.
-    /// Superseded only by incarnation reset, never cleared otherwise (not
-    /// on Updated/Started replays).
-    pub(crate) consumed_gesture_seq: u64,
-    /// Retained latest incorporated gesture terminal per `(adapter, gen)`.
-    /// Each newly incorporated non-stale terminal replaces it; consumed or
-    /// stale replays cannot regress its identity or replace its original
-    /// `committed` value. Generation-scoped (including after its subject
-    /// closes); fresh handshake/new generation clears it.
-    pub(crate) gesture_terminal: Option<GestureSettled>,
-    /// Retained active drag-preview overlay state per `(adapter, gen)`.
-    /// Preserved across omitted/commandless ingress and skipped replies
-    /// while current-session safety/scope/domain/neighbor fences hold;
-    /// cleared on genuine current-session Held no-preview outcomes,
-    /// release/cancel/Esc, owner staged close, or new generation.
-    pub(crate) drag_preview: Option<crate::world_report::DragPreviewV4>,
-    /// Trace-only transient reason for the current staged run's `drag_preview`
-    /// decision; populated only when `core_trace_enabled()`, emitted solely at
-    /// actual final publication/adoption.
-    pub(crate) staged_drag_preview_reason: Option<&'static str>,
     /// Fresh-placement bootstrap phase: false until the first accepted
     /// complete inventory establishes the startup lifetime set (including
     /// an empty roster). Once true, genuinely new lifetimes observed
@@ -1624,10 +303,6 @@ pub struct WorldEngine {
     /// complete baseline. Adapter rebind clears it for a new adoption
     /// baseline; retained engine sessions still shield known lifetimes.
     pub(crate) placement_bootstrapped: bool,
-    /// Minimize slots to forget after the sweep (proven-refusal cleanup:
-    /// converge may re-store the slot during the unshielded sweep, so the
-    /// forget runs after, never before).
-    pub(crate) pending_forget: Vec<(DomainKey, WindowId)>,
     /// Correlated per-command outcome staged by the command path below and
     /// consumed once by [`crate::world_engine::WorldEngine::publish_v4`] for the reply being built.
     /// `None` for observation-only replies and for operations whose result
@@ -1635,290 +310,19 @@ pub struct WorldEngine {
     /// Cleared at the start of every staged run so a previous command's
     /// result never leaks into an unrelated reply.
     pub(crate) command_result: Option<CommandResult>,
-    /// Retained latest-wins operation lifecycle outcomes keyed by
-    /// `(window, kind)` (`Clear` vs `Float`). Retained across reports
-    /// through held/minimized/incomplete omissions; pruned on proven
-    /// window lifetime departure (explicit close or complete-inventory
-    /// absence). Fresh handshake/new generation clears all owners.
-    pub(crate) operation_settled: BTreeMap<
-        (WindowId, crate::world_report::OperationKind),
-        crate::world_report::OperationEvent,
-    >,
-    /// Trace-only transient buffer of dropped operation outcomes pruned during
-    /// the current staged run; populated only when `core_trace_enabled()`,
-    /// emitted and cleared solely at actual final publication/adoption.
-    pub(crate) staged_dropped_operations: BTreeMap<
-        (WindowId, crate::world_report::OperationKind),
-        crate::world_report::OperationEvent,
-    >,
-    /// Retained latest-wins selection outcomes keyed by `OutputId`.
-    /// Retained across reports through held outputs and incomplete
-    /// inventories; pruned on proven output departure (complete-inventory
-    /// absence from live and held screens). Fresh handshake/new generation
-    /// clears all owners.
-    pub(crate) switch_settled: BTreeMap<OutputId, crate::world_report::SwitchEvent>,
-    /// Trace-only transient buffer of dropped switch outcomes pruned during
-    /// the current staged run; populated only when `core_trace_enabled()`,
-    /// emitted and cleared solely at actual final publication/adoption.
-    pub(crate) staged_dropped_switches: BTreeMap<OutputId, crate::world_report::SwitchEvent>,
-    /// Fresh-admission focus intents already emitted, by window id (D4):
-    /// at-most-once per lifetime, pruned on close so a reused id focuses
-    /// again as a fresh newcomer. Survives incarnation resets within the
-    /// generation (retained sessions persist there too); a new generation
-    /// constructs a new [`WorldEngine`].
-    pub(crate) admission_focus_spent: BTreeSet<String>,
-    /// Compact automatic-focus identity tokens by live lifetime: the first
-    /// automatic-focus candidate's issuing revision for that lifetime
-    /// (`self.state_revision + 1` at first allocation), not necessarily
-    /// the first emitted effect revision. Admission (`af-`) and
-    /// hover (`ffc-`) effects spell `prefix-token` from this map, so ids stay
-    /// within the opaque bound for maximum-length subjects. The map entry is
-    /// reused across hover transitions and observations, so a repeated hover
-    /// for the same lifetime retains its identical effect id (the adapter's
-    /// at-most-once spent fence stays authoritative). Explicit `fx-`
-    /// identities are disjoint. Entries are retained through
-    /// holds/exclusions/incomplete gaps and engine/member-known absence, and
-    /// pruned only on explicit close or proven lifetime departure.
-    /// Never a row, slot, or wire value.
-    pub(crate) automatic_focus_tokens: BTreeMap<WindowId, u64>,
-    /// One retained core-owned focus request (see
-    /// [`crate::world_close_focus`]): the frozen winning target plus its
-    /// frozen activation scope, re-emitted until satisfied, superseded,
-    /// ineligible, or refused. Reset on handshake by fresh
-    /// construction; staged clones carry it for atomic adoption.
-    pub(crate) pending_focus: Option<crate::world_close_focus::PendingFocus>,
-    /// Pending native-free selection grant between the real selection
-    /// command and publish only (see [`crate::world_selection`]): the
-    /// dispatching command plus the selected/departing homes, issuing
-    /// revision, and observation watermark. Never a row, slot, or wire
-    /// value.
-    pub(crate) pending_selection: Option<crate::world_selection::PendingSelection>,
-    /// Pending commandless policy selections, one per policy view parent
-    /// (see [`WorldEngine::retain_policy_view`]): same carrier as the
-    /// command pending above, but each keeps its own `op-dpv-*` parent
-    /// identity instead of merging. Latest per output wins. Never a row,
-    /// slot, or wire value.
-    pub(crate) pending_policy_selections: Vec<crate::world_selection::PendingSelection>,
-    /// Retained per-window native-free selection visibility authorizations
-    /// by live lifetime (see [`crate::world_selection`]): the logical home
-    /// at grant, desired shown state, and issuing revision. Never a row,
-    /// slot, or wire value.
-    pub(crate) selection_targets: BTreeMap<WindowId, crate::world_selection::SelectionTarget>,
-    /// Retained `awaitShown` selection bindings, latest per focus output
-    /// (see [`crate::world_selection`]): the emitted effect, frozen arrival
-    /// snapshot, first correlated feedback, and distinct foreground/arrival
-    /// facts. Never a row, slot, or wire value.
-    pub(crate) retained_selection: BTreeMap<OutputId, crate::world_selection::RetainedSelection>,
-    /// Retained active native-free selection scopes, latest per affected
-    /// output (see [`crate::world_selection`]): the selected/departing
-    /// homes plus the issuing revision. Survives the finite grant; cleared
-    /// only by superseding selections, the central view reconcile, or true
-    /// output loss. Never a row, slot, or wire value.
-    pub(crate) selection_scopes: BTreeMap<OutputId, crate::world_selection::SelectionScope>,
-    /// Cursor-first behavior settings retained from the latest accepted
-    /// report (2026-10-20): switch target, fresh placement, and the
-    /// stage-4b focus-follows-cursor/cursor-warp flags. Refreshed per
-    /// accepted run alongside the ingress capacity settings below; never
-    /// move existing members or reflow retained state on change.
-    pub(crate) switch_target: crate::cursor_targeting::SwitchTarget,
-    pub(crate) fresh_placement: crate::cursor_targeting::FreshPlacement,
-    pub(crate) focus_follows_cursor: bool,
-    pub(crate) cursor_warp: bool,
-    /// Normalized cursor retained from the latest accepted report, `None`
-    /// when the adapter could not read it. Seated with its observation
-    /// sequence and refreshed per accepted run, never on a separate stale
-    /// timer; an absent cursor falls back through focused output to the
-    /// primary/first readable output.
-    pub(crate) last_cursor: Option<(i32, i32)>,
-    /// Cursor of the previously accepted report (the movement baseline for
-    /// focus-follows-cursor: a static cursor never re-steals focus).
-    /// Updated alongside [`WorldEngine::last_cursor`], cleared on
-    /// adapter incarnation reset.
-    pub(crate) prev_cursor: Option<(i32, i32)>,
-    /// Last hover target the focus-follows-cursor lane observed, minted or
-    /// not: a static cursor over an unchanged hover never re-mints after a
-    /// keyboard command moves focus elsewhere. Cleared on adapter
-    /// incarnation reset.
-    pub(crate) ffc_last_hover: Option<WindowId>,
-    /// Retained last-known focused output for fresh-window homing (i3/sway
-    /// focused-output placement): genuine managed focus only, cleared on
-    /// adapter incarnation reset, filtered against live topology at use.
-    /// Never moves existing members or reflows retained state.
-    pub(crate) fresh_focus: crate::fresh_focus::FreshFocusMemory,
     /// Staged logical observation for the report currently being staged:
     /// screens, one domain per known logical workspace, view echoes, raw
     /// facts, homing, and the carried gesture barrier. Built once per
     /// accepted run and read by settling, sweeping, commands, and
     /// publishing; never survives across runs.
     pub(crate) staged: StagedReport,
-    /// Neutral retained fixed-size intent for safety-excluded lifetimes
-    /// (see [`ExcludedIntent`]). Keyed by stable lifetime; never a row,
-    /// never a slot, never a public wire value.
-    pub(crate) excluded_intent: BTreeMap<WindowId, ExcludedIntent>,
-    /// Pending opaque intent restores not yet admitted (first-admission
-    /// import only). Usable records only: non-sticky `float` `Some` rows
-    /// plus whole sticky-bearing records (`stickyPrior` `Some` with any
-    /// `float` lane, including `None`); invalid, null/null, conflicting,
-    /// and closed subjects never store. Jointly bounded with
-    /// [`Self::intent_conflicts`] by
-    /// [`crate::world_report::MAX_INTENT_RECORDS`].
-    pub(crate) pending_intent: BTreeMap<WindowId, crate::intent_data::IntentData>,
-    /// Windows with conflicting duplicate intent rows (same report distinct
-    /// raw strings, or cross-report differing values before admission).
-    /// Conflicting subjects confer no import authority. Jointly bounded
-    /// with [`Self::pending_intent`].
-    pub(crate) intent_conflicts: BTreeSet<WindowId>,
-    /// Lifetimes whose first successful admission already happened. Late
-    /// intent rows for these lifetimes are ignored forever (even through
-    /// temporary exclusion, holds, or minimize), so newer runtime intent
-    /// is never overwritten. Pruned on explicit close and proven complete
-    /// departure; reset on handshake.
-    pub(crate) intent_admitted: BTreeSet<WindowId>,
-    /// Durable explicit-float provenance for restored intentional floats
-    /// (`float:true` wins) plus successful runtime float commands. Feeds
-    /// the stage-time classifier so a restored float survives later
-    /// ordinary facts and safety exclusion/recovery with no geometry,
-    /// focus, or clear ops. Only explicit wins enter: automatic and
-    /// capacity floats never do. Cleared when the lifetime tiles again
-    /// (runtime unfloat wins), on explicit close, and on proven complete
-    /// departure; reset on handshake. Never a row, slot, or wire value.
-    pub(crate) restored_floats: BTreeSet<WindowId>,
-    /// Lifetime-scoped sticky-prior provenance for restored semantic
-    /// sticky intent: the exact `stickyPrior` bool committed only on a real
-    /// healthy float success (non-automatic exception, including healthy
-    /// floating-workspace newcomers). Feeds the stage-time classifier so a
-    /// restored sticky float survives later ordinary facts and safety
-    /// exclusion/recovery with no geometry, focus, or clear ops, and never
-    /// converts into ordinary [`Self::restored_floats`] or a tile win.
-    /// Survives record-free reports, holds, minimize, exclusion, observed
-    /// native `false`, and handoff across workspace floating/tiling;
-    /// pruned only on explicit close, proven own-process, and proven
-    /// complete departure; reset on handshake (fresh construction). Never
-    /// a row, slot, wire value, or native-fact completion. Jointly bounded
-    /// with [`Self::pending_intent`]/[`Self::intent_conflicts`] (a
-    /// pending-to-retained commit holds the joint count steady).
-    pub(crate) restored_sticky: BTreeMap<WindowId, bool>,
-    /// Retained per-window intent desire: one authoritative current target
-    /// per window lifetime, bound by `(adapter,gen,win)`. `Some` is the
-    /// exact typed save value; `None` is an explicit desired slot absence
-    /// kept after successful clear. A missing row carries no storage
-    /// authority and never deletes. Established by first accepted imports
-    /// (valid records initialize the target; late imports never overwrite
-    /// runtime intent) and by accepted runtime mutations in execution
-    /// order; refusal rollback replaces with the exact prior. Published by
-    /// projection, never drained. Pruned on own-process proof, explicit
-    /// close, proven complete departure, and handshake reset like the
-    /// other intent ledgers. Bounded by [`MAX_INTENT_DESIRED`].
-    pub(crate) intent_desired: BTreeMap<WindowId, Option<crate::intent_data::IntentData>>,
-    /// Generation-scoped fail-closed latch for exact saved-record knowledge:
-    /// set when a first-admission exact prior is lost to a bound
-    /// (`intent_desired` or joint-ledger cap) or to conflicting imports, and
-    /// reset on handshake (fresh construction). While set, native commands
-    /// refuse as unknown even if the maps later shrink, because a pruned
-    /// length can no longer prove the prior was `None`. Late ignored
-    /// imports (already admitted) and malformed records never set it;
-    /// ordinary/composed save emission is unchanged, only native prior
-    /// reads fail closed.
-    pub(crate) sticky_saved_incomplete: bool,
-    /// Stable composed-visibility authorization revision per sticky window
-    /// (issuing reply revision, retained across observation-only replies).
-    /// Plain observation never renews it; a fresh explicit command
-    /// reauthorizes. Pruned with [`Self::sticky_saved`].
-    pub(crate) sticky_visible_rev: BTreeMap<WindowId, u64>,
-    /// Lifetime-scoped save blocks for deferred sticky intent: lifetimes
-    /// with a pre-admission `stickyPrior` non-null record. A blocked
-    /// lifetime publishes no intent save, even on a later successful
-    /// runtime ToggleFloat, because sticky semantics are not implemented
-    /// yet and a null-sticky save would erase the deferred record. The
-    /// set carries no sticky contents (none are chosen); it confers no
-    /// admission or native authority. Survives admission (unlike
-    /// conflicts), holds, exclusion, minimize, and record-free reports;
-    /// dropped on explicit close, proven own-process, and proven complete
-    /// departure; reset on handshake. Jointly bounded with
-    /// [`Self::pending_intent`]/[`Self::intent_conflicts`].
-    pub(crate) intent_sticky_blocks: BTreeSet<WindowId>,
-    /// Generation-scoped saturation latch: set when a sticky block cannot
-    /// be retained at the joint cap, and suppresses every intent save
-    /// until handshake reset. Fail-closed by construction: a dropped
-    /// block would allow a save to erase deferred sticky intent.
-    pub(crate) intent_sticky_saturated: bool,
-    /// Retained v4 pager presentation order: top-to-bottom native stacking
-    /// over admitted member lifetimes plus first-paint candidates, from the
-    /// v4 `pagerOrder`/`pagerFrames` rows only. Never shares any legacy order maps; the legacy path is removed.
-    pub(crate) presentation_order_v4: Vec<WindowId>,
-    /// Retained v4 pager presentation live frames: last-known fresh frame
-    /// per roster lifetime, accumulated by every
-    /// [`WorldEngine::retain_pager_presentation_v4`] call. v4 keeps
-    /// live sources only: no float/tile fallback, never a guess.
-    pub(crate) presentation_live_v4: BTreeMap<WindowId, Rect>,
-    /// v4 pager presentation focus: the adapter-observed focused lifetime
-    /// from the latest staged v4 report.
-    pub(crate) presentation_focused_v4: Option<WindowId>,
-    /// Latest published v4 presentation revision, stamped by `publish_v4`
-    /// from its supplied issuing revision. Read by 7d renderer-input
-    /// validation BEFORE calling publication (the staged producer revision
-    /// stays a placeholder and is never read there); the stored value only
-    /// becomes authoritative when 7e adopts the publication candidate.
-    pub(crate) latest_published_presentation_rev_v4: u64,
-    /// Test-only count of [`Self::ingest_staged_intent`] executions on this
-    /// engine, including ingests whose rows the admitted latch then ignores.
-    /// Discriminates exactly-once ingestion from latch-ignored late imports
-    /// without global instrumentation.
-    #[cfg(test)]
-    pub(crate) ingest_calls: u64,
-    /// Test-only clone-shared count of [`Self::ingest_staged_intent`]
-    /// executions across every trial clone, including staged candidates
-    /// that are later discarded. Clones share the same counter, so a
-    /// discarded trial stays observable on the parent after the clone
-    /// drops; [`Self::ingest_calls`] only counts adoptions on `self`.
-    /// Never read outside tests; production behavior is unchanged.
-    #[cfg(test)]
-    pub(crate) ingest_trials: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    /// Canonical last-active identity per workspace (R-WS-09 memory):
-    /// one slot per effective domain across sticky/link migration.
-    /// Written by accepted command choices before native writes and by
-    /// changed native focus observations under the same fail-closed gates;
-    /// unchanged re-reports never overwrite. Read by view return before
-    /// the tiled MRU fallback. Pruned to the live inventory on finish.
-    /// Equal precedence for tile/float/sticky: most recent wins.
-    pub(crate) last_active_window: BTreeMap<DomainKey, WindowId>,
-    /// Execution-time logical focus cursor (retained-focus Q1): the single
-    /// execution subject for the next implicit command, separate
-    /// from native observed foreground (`staged.observation`) and from
-    /// per-workspace history (`last_active_window`). Every accepted
-    /// focus choice (explicit command, admission, hover, close)
-    /// advances it immediately in FIFO order; a live retained request
-    /// preserves its target across unchanged-baseline reports; a newer
-    /// observed focus supersedes it; refusal/ineligibility resets it to
-    /// the eligible observed focus. Non-focus and refused commands
-    /// never erase it.
-    pub(crate) logical_focus_cursor: Option<WindowId>,
-    /// Pre-batch per-domain session focus snapshot, taken once per capture
-    /// after observation incorporation and before the first batch command.
-    /// [`WorldEngine::effective_operation_focus`] prefers the live session
-    /// focus only when it moved since this snapshot (a prior batch command
-    /// established it), so unchanged native lag never erases batch intent
-    /// while genuine empty keeps its no-focus meaning.
-    pub(crate) batch_base_focus: BTreeMap<DomainKey, Option<WindowId>>,
-    /// Windows explicitly focused by an in-batch command (inserted on
-    /// successful command-time [`WorldEngine::record_command_focus`]).
-    /// Batch-only provenance for [`WorldEngine::effective_operation_focus`]:
-    /// a live session focus that matches the baseline still counts as
-    /// post-prior core state when an actual batch command established it
-    /// (an explicit Focus at the already-focused sole member changes no
-    /// session value but is still a genuine in-batch move). Cleared with
-    /// the baseline at snapshot and at run end, so genuine empty and
-    /// outside-batch retained focus still fall back to staged capture.
-    pub(crate) batch_command_focus: BTreeSet<WindowId>,
-    /// Resolved execution-time subject for the single implicit command
-    /// currently executing (set in the `WorldCommand::Implicit` arm,
-    /// restored after its recursive dispatch). Command-scoped proof for
-    /// [`WorldEngine::effective_operation_focus`]: only implicit execution
-    /// carries core-subject authority into the operation event focus, so
-    /// an unchanged lagging staged native never defeats the preserved
-    /// slot. Explicit seams never set it. `None` outside implicit
-    /// execution; refusal rollback restores the pre-command image with it.
-    pub(crate) implicit_event_focus: Option<WindowId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorldEngine {
+    pub(crate) connection: WorldConnectionState,
+    pub(crate) replay: Option<AdmittedReplayV4>,
+    pub(crate) world: WorldState,
 }
 
 impl WorldEngine {
@@ -2040,8 +444,8 @@ impl WorldEngine {
         values: Vec<(String, crate::connection::RawSettingValue)>,
     ) -> Option<SettingsReply> {
         self.handle_settings(&SettingsRequest {
-            adapter: self.adapter.clone()?,
-            generation: self.core_generation_str.clone(),
+            adapter: self.connection.adapter.clone()?,
+            generation: self.connection.core_generation_str.clone(),
             request: format!("test-settings-{revision}"),
             revision,
             values,
@@ -2055,120 +459,11 @@ impl WorldEngine {
     /// effects, or logical creation tokens across generations.
     #[must_use]
     pub fn new(core_generation: &str) -> Option<Self> {
-        let parsed = GenerationId::parse(core_generation)?;
-        let mut layout = WorldLayout::new();
-        // Fixed-size admission stays enabled for every world carrier.
-        layout.set_fixed_size_admission(true);
+        GenerationId::parse(core_generation)?;
         Some(Self {
-            layout,
-            core_generation: parsed,
-            core_generation_str: core_generation.to_owned(),
-            generation_seed: core_generation.to_owned(),
-            connection_number: 0,
-            adapter: None,
-            connection_owner: None,
-            application_identity: None,
-            capabilities: None,
-            settings: crate::settings_state::SettingsState::default(),
-            initial_settings_accepted: false,
-            ready_latched: false,
-            state_revision: 0,
-            has_last_v4: false,
-            last_request_seq_v4: 0,
-            last_digest_v4: 0,
-            last_observation_seq_v4: 0,
-            last_report_v4: None,
-            last_reply_v4: None,
-            prior_context: PriorAcceptedContext::default(),
-            command_highwater: None,
-            retained: Vec::new(),
-            retained_floats: Vec::new(),
-            retained_states: BTreeMap::new(),
-            retained_clears: Vec::new(),
-            retained_born: Vec::new(),
-            born_seq: 0,
-            born_attempted: BTreeSet::new(),
-            born_held_fullscreen: BTreeSet::new(),
-            born_floating_first: BTreeSet::new(),
-            born_seen_nonfullscreen: BTreeSet::new(),
-            born_keep_overlay: BTreeSet::new(),
-            composed_maximized: BTreeSet::new(),
-            frames: BTreeMap::new(),
-            consumed_frames: BTreeMap::new(),
-            frame_bursts: BTreeMap::new(),
-            learned_mins: BTreeMap::new(),
-            creation_counter: 0,
-            native_creation_seq: 0,
-            retained_creations: Vec::new(),
-            pending_source_releases: Vec::new(),
-            migration_anchors: BTreeMap::new(),
-            gesture: None,
-            consumed_gesture_seq: 0,
-            gesture_terminal: None,
-            drag_preview: None,
-            staged_drag_preview_reason: None,
-            last_views: BTreeMap::new(),
-            mapping: BTreeMap::new(),
-            native_map: BTreeMap::new(),
-            retired_natives: BTreeMap::new(),
-            views: BTreeMap::new(),
-            history: ScopeHistory::new(),
-            displaced: BTreeMap::new(),
-            displaced_rehomed: BTreeSet::new(),
-            output_facts: BTreeMap::new(),
-            live_topology: BTreeMap::new(),
-            tiling: BTreeMap::new(),
-            members: BTreeMap::new(),
-            floating_scopes: BTreeSet::new(),
-            hold_reasons: BTreeMap::new(),
-            pending_forget: Vec::new(),
-            command_result: None,
-            operation_settled: BTreeMap::new(),
-            staged_dropped_operations: BTreeMap::new(),
-            switch_settled: BTreeMap::new(),
-            staged_dropped_switches: BTreeMap::new(),
-            placement_bootstrapped: false,
-            admission_focus_spent: BTreeSet::new(),
-            automatic_focus_tokens: BTreeMap::new(),
-            pending_focus: None,
-            pending_selection: None,
-            pending_policy_selections: Vec::new(),
-            selection_targets: BTreeMap::new(),
-            retained_selection: BTreeMap::new(),
-            selection_scopes: BTreeMap::new(),
-            switch_target: crate::cursor_targeting::SwitchTarget::default(),
-            fresh_placement: crate::cursor_targeting::FreshPlacement::default(),
-            focus_follows_cursor: false,
-            cursor_warp: false,
-            last_cursor: None,
-            prev_cursor: None,
-            ffc_last_hover: None,
-            fresh_focus: crate::fresh_focus::FreshFocusMemory::default(),
-            staged: StagedReport::default(),
-            excluded_intent: BTreeMap::new(),
-            pending_intent: BTreeMap::new(),
-            intent_conflicts: BTreeSet::new(),
-            intent_admitted: BTreeSet::new(),
-            restored_floats: BTreeSet::new(),
-            restored_sticky: BTreeMap::new(),
-            intent_desired: BTreeMap::new(),
-            sticky_saved_incomplete: false,
-            sticky_visible_rev: BTreeMap::new(),
-            intent_sticky_blocks: BTreeSet::new(),
-            intent_sticky_saturated: false,
-            presentation_order_v4: Vec::new(),
-            presentation_live_v4: BTreeMap::new(),
-            presentation_focused_v4: None,
-            latest_published_presentation_rev_v4: 0,
-            #[cfg(test)]
-            ingest_calls: 0,
-            #[cfg(test)]
-            ingest_trials: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            last_active_window: BTreeMap::new(),
-            logical_focus_cursor: None,
-            batch_base_focus: BTreeMap::new(),
-            batch_command_focus: BTreeSet::new(),
-            implicit_event_focus: None,
+            connection: WorldConnectionState::new(core_generation),
+            replay: None,
+            world: WorldState::new(),
         })
     }
 
@@ -2221,10 +516,10 @@ impl WorldEngine {
                 Some(ProtocolKind::Malformed),
             );
         };
-        let next_number = if self.adapter.is_none() {
-            self.connection_number
+        let next_number = if self.connection.adapter.is_none() {
+            self.connection.connection_number
         } else {
-            let Some(number) = self.connection_number.checked_add(1) else {
+            let Some(number) = self.connection.connection_number.checked_add(1) else {
                 return reply(
                     request.adapter.clone(),
                     request.request.clone(),
@@ -2236,9 +531,9 @@ impl WorldEngine {
             number
         };
         let generation = if next_number == 0 {
-            self.generation_seed.clone()
+            self.connection.generation_seed.clone()
         } else {
-            format!("{}-{next_number}", self.generation_seed)
+            format!("{}-{next_number}", self.connection.generation_seed)
         };
         if GenerationId::parse(&generation).is_none() {
             return reply(
@@ -2258,14 +553,17 @@ impl WorldEngine {
                 Some(ProtocolKind::RevisionExhausted),
             );
         };
-        fresh.generation_seed.clone_from(&self.generation_seed);
-        fresh.connection_number = next_number;
-        fresh.adapter = Some(request.adapter.clone());
-        fresh.connection_owner = Some(owner);
+        fresh
+            .connection
+            .generation_seed
+            .clone_from(&self.connection.generation_seed);
+        fresh.connection.connection_number = next_number;
+        fresh.connection.adapter = Some(request.adapter.clone());
+        fresh.connection.connection_owner = Some(owner);
         // A new world generation starts with empty layout storage and a fresh
         // group allocator.
-        fresh.application_identity = Some(request.application_identity.clone());
-        fresh.capabilities = Some(request.capabilities.clone());
+        fresh.connection.application_identity = Some(request.application_identity.clone());
+        fresh.connection.capabilities = Some(request.capabilities.clone());
         *self = fresh;
         reply(
             request.adapter.clone(),
@@ -2280,121 +578,38 @@ impl WorldEngine {
     /// Stale or foreign envelopes cannot reach `SettingsState`.
     pub fn handle_settings(&mut self, request: &SettingsRequest) -> Option<SettingsReply> {
         if CorrelationId::parse(&request.request).is_none()
-            || self.adapter.as_deref() != Some(request.adapter.as_str())
-            || self.core_generation_str != request.generation
+            || self.connection.adapter.as_deref() != Some(request.adapter.as_str())
+            || self.connection.core_generation_str != request.generation
         {
             return None;
         }
-        let caps = self.capabilities.as_ref()?;
-        let reply = self.settings.process(request, caps);
+        let caps = self.connection.capabilities.as_ref()?;
+        let reply = self.connection.settings.process(request, caps);
         if reply.status == crate::connection::SettingsStatus::Accepted {
-            self.initial_settings_accepted = true;
-            self.layout
-                .set_fixed_size_predicate(self.settings.fixed_size_predicate);
-            self.layout
-                .set_fresh_placement(self.settings.fresh_placement);
-            self.switch_target = self.settings.switch_target;
-            self.fresh_placement = self.settings.fresh_placement;
-            self.focus_follows_cursor = self
-                .settings
-                .effective
-                .get(crate::settings_catalog::FIELD_FOCUS_FOLLOWS_CURSOR)
-                == Some(&crate::settings_state::EffectiveSetting::Bool(true));
-            self.cursor_warp = self
-                .settings
-                .effective
-                .get(crate::settings_catalog::FIELD_CURSOR_WARP)
-                == Some(&crate::settings_state::EffectiveSetting::Bool(true))
-                && caps.warp;
+            self.connection.initial_settings_accepted = true;
+            self.world
+                .layout
+                .set_fixed_size_predicate(self.connection.settings.fixed_size_predicate);
+            self.world
+                .layout
+                .set_fresh_placement(self.connection.settings.fresh_placement);
         }
         Some(reply)
     }
 
     #[must_use]
     pub fn capabilities(&self) -> Option<&HostCapabilities> {
-        self.capabilities.as_ref()
+        self.connection.capabilities()
     }
 
     #[must_use]
     pub fn application_identity(&self) -> Option<&ApplicationIdentity> {
-        self.application_identity.as_ref()
+        self.connection.application_identity()
     }
 
     #[must_use]
     pub fn settings(&self) -> &crate::settings_state::SettingsState {
-        &self.settings
-    }
-
-    pub(crate) fn host_owned_workspace_domains(&self) -> bool {
-        self.capabilities
-            .as_ref()
-            .is_some_and(|caps| caps.host_owned)
-    }
-
-    pub(crate) fn equal_workspace_count(&self) -> bool {
-        self.capabilities
-            .as_ref()
-            .is_some_and(|caps| caps.equal_count)
-    }
-
-    pub(crate) fn shared_native_roster(&self) -> bool {
-        self.capabilities
-            .as_ref()
-            .is_some_and(|caps| caps.host_owned && caps.shared_native_roster)
-    }
-
-    pub(crate) fn birth_clear(&self) -> bool {
-        self.capabilities
-            .as_ref()
-            .is_some_and(|caps| caps.birth_clear)
-    }
-
-    pub(crate) fn switch_target_setting(&self) -> crate::cursor_targeting::SwitchTarget {
-        self.settings.switch_target
-    }
-
-    pub(crate) fn fresh_placement_setting(&self) -> crate::cursor_targeting::FreshPlacement {
-        self.settings.fresh_placement
-    }
-
-    pub(crate) fn focus_follows_cursor_setting(&self) -> bool {
-        matches!(
-            self.settings
-                .effective
-                .get(crate::settings_catalog::FIELD_FOCUS_FOLLOWS_CURSOR),
-            Some(crate::settings_state::EffectiveSetting::Bool(true))
-        )
-    }
-
-    pub(crate) fn cursor_warp_setting(&self) -> bool {
-        matches!(
-            self.settings
-                .effective
-                .get(crate::settings_catalog::FIELD_CURSOR_WARP),
-            Some(crate::settings_state::EffectiveSetting::Bool(true))
-        ) && self.capabilities.as_ref().is_some_and(|caps| caps.warp)
-    }
-
-    pub(crate) fn gap_setting(&self) -> i32 {
-        match self
-            .settings
-            .effective
-            .get(crate::settings_catalog::FIELD_INNER_GAP)
-        {
-            Some(crate::settings_state::EffectiveSetting::Int(value)) => *value,
-            _ => 8,
-        }
-    }
-
-    pub(crate) fn outer_gap_setting(&self) -> i32 {
-        match self
-            .settings
-            .effective
-            .get(crate::settings_catalog::FIELD_OUTER_GAP)
-        {
-            Some(crate::settings_state::EffectiveSetting::Int(value)) => *value,
-            _ => 8,
-        }
+        self.connection.settings()
     }
 
     /// Scale one logical pixel setting into physical adapter units for one
@@ -2430,136 +645,59 @@ impl WorldEngine {
         Some(scaled as i32)
     }
 
-    /// Per-output physical gaps: the logical inner/outer settings scaled
-    /// once by `scale`. `None` when either scaled value overflows.
-    pub(crate) fn scaled_gaps(&self, scale: f64) -> Option<(i32, i32)> {
-        Some((
-            Self::scale_once(self.gap_setting(), scale)?,
-            Self::scale_once(self.outer_gap_setting(), scale)?,
-        ))
-    }
-
-    pub(crate) fn workspace_mode_setting(&self) -> crate::workspace_scope::WorkspaceMode {
-        self.settings.workspace_mode
-    }
-
-    pub(crate) fn fixed_size_predicate_setting(&self) -> crate::size_hints::FixedSizePredicate {
-        self.settings.fixed_size_predicate
-    }
-
-    pub(crate) fn born_maximized_setting(&self) -> crate::born_maximized::BornMaximized {
-        self.settings.born_maximized
-    }
-
-    pub(crate) fn default_tiled(&self) -> bool {
-        matches!(
-            self.settings
-                .effective
-                .get(crate::settings_catalog::FIELD_WORKSPACE_DEFAULT_TILED),
-            Some(crate::settings_state::EffectiveSetting::Bool(true))
-        )
-    }
-
     #[must_use]
     pub fn is_ready(&self) -> bool {
-        self.ready_latched
+        self.world.ready_latched
     }
 
     #[must_use]
     pub fn core_generation(&self) -> &str {
-        &self.core_generation_str
+        &self.connection.core_generation_str
     }
 
     /// Currently active retained gesture id, if any.
     #[must_use]
     pub fn active_gesture_id(&self) -> Option<u64> {
-        self.gesture.as_ref().map(|retained| retained.id)
-    }
-
-    /// Advance the consumed gesture id watermark to at least `id`.
-    /// Monotonic: replays can never move it backward.
-    pub(crate) fn consume_gesture_id(&mut self, id: u64) {
-        self.consumed_gesture_seq = self.consumed_gesture_seq.max(id);
-    }
-
-    /// Record one incorporated gesture terminal and advance the watermark.
-    /// Called per incorporated terminal ingress (release with or without
-    /// commit, cancel, Esc, explicit-close clear), including genuine first
-    /// terminals that refuse without binding. Guarded against consumed or
-    /// stale replays: an already-consumed id (`<= consumed_gesture_seq`) or
-    /// an id older than an active retained session never overwrites the
-    /// retained terminal slot.
-    pub(crate) fn record_gesture_terminal(&mut self, id: u64, committed: bool) {
-        if self.gesture_replayed(id) {
-            return;
-        }
-        self.consume_gesture_id(id);
-        if self
+        self.world
             .gesture
+            .retained
             .as_ref()
-            .is_some_and(|retained| id < retained.id)
-        {
-            return;
-        }
-        self.gesture_terminal = Some(GestureSettled { id, committed });
-    }
-
-    /// Whether one terminal ingress replays an already-settled gesture:
-    /// its stable id sits at or below the consumed watermark.
-    pub(crate) fn gesture_replayed(&self, id: u64) -> bool {
-        id <= self.consumed_gesture_seq
-    }
-
-    /// Borrow the owned layout storage (read-only inspection for in-crate
-    /// callers).
-    #[must_use]
-    pub(crate) fn layout(&self) -> &WorldLayout {
-        &self.layout
-    }
-
-    /// Fresh-placement bootstrap gate: policy routing applies only for a
-    /// genuinely new lifetime observed under complete inventory after the
-    /// startup baseline was accepted. The baseline report itself (first
-    /// complete) and every pre-bootstrap report adopt native affinity;
-    /// once bootstrapped, newcomers route even after an empty seed,
-    /// close-all, or an incomplete gap. Retained homings never re-route.
-    pub(crate) fn fresh_placement_armed_for(&self, ctx: &RawRouting<'_>) -> bool {
-        self.placement_bootstrapped && ctx.inventory_complete
+            .map(|retained| retained.id)
     }
 
     /// Retained cursor-first switch target from the latest accepted
     /// report (cursor-output default).
     #[must_use]
     pub fn switch_target(&self) -> crate::cursor_targeting::SwitchTarget {
-        self.switch_target
+        self.connection.switch_target_setting()
     }
 
     /// Retained fresh-window placement from the latest accepted report
     /// (cursor-output/last-focused default).
     #[must_use]
     pub fn fresh_placement(&self) -> crate::cursor_targeting::FreshPlacement {
-        self.fresh_placement
+        self.connection.fresh_placement_setting()
     }
 
     /// Retained focus-follows-cursor setting (default off); the stage-4b
     /// core policy in [`crate::world_cursor`] actuates it.
     #[must_use]
     pub fn focus_follows_cursor(&self) -> bool {
-        self.focus_follows_cursor
+        self.connection.focus_follows_cursor_setting()
     }
 
     /// Retained cursor-warp setting (default off); the stage-4b core
     /// policy in [`crate::world_cursor`] actuates it.
     #[must_use]
     pub fn cursor_warp(&self) -> bool {
-        self.cursor_warp
+        self.connection.cursor_warp_setting()
     }
 
     /// Normalized cursor retained from the latest accepted report, `None`
     /// when the adapter could not read it.
     #[must_use]
     pub fn last_cursor(&self) -> Option<(i32, i32)> {
-        self.last_cursor
+        self.world.focus.last_cursor
     }
 
     /// Trace-only snapshot of the last fresh focused-leg routing decision:
@@ -2574,7 +712,7 @@ impl WorldEngine {
     pub fn fresh_focus_trace(
         &self,
     ) -> (Option<String>, Option<String>, Option<String>, &'static str) {
-        let trace = &self.fresh_focus.trace;
+        let trace = &self.world.focus.fresh_focus.trace;
         (
             trace.current.as_ref().map(|output| output.0.clone()),
             trace.retained.as_ref().map(|output| output.0.clone()),
@@ -2586,7 +724,12 @@ impl WorldEngine {
     /// Outstanding retained transfer/view targets.
     #[must_use]
     pub fn retained_transfers(&self) -> Vec<TransferTarget> {
-        self.retained.iter().map(|r| r.target.clone()).collect()
+        self.world
+            .settlement
+            .retained
+            .iter()
+            .map(|r| r.target.clone())
+            .collect()
     }
 
     /// Exact post-send source focus for one retained stay transfer: the
@@ -2608,7 +751,286 @@ impl WorldEngine {
     /// `Resident` pins.
     #[must_use]
     pub fn stay_source_focus(&self, operation_id: &str, source: &DomainKey) -> StaySourceFocus {
+        self.world.stay_source_focus(operation_id, source)
+    }
+
+    /// Latest published global revision.
+    #[must_use]
+    pub fn state_revision(&self) -> u64 {
+        self.world.state_revision
+    }
+
+    /// Adapter routing projection (read-only, never a second policy):
+    /// ordered logical outputs known to the core.
+    #[must_use]
+    pub fn logical_outputs(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.world.workspace.mapping.keys().cloned().collect();
+        out.sort();
+        out
+    }
+
+    /// Adapter routing projection: ordered logical ring for one output.
+    #[must_use]
+    pub fn logical_ring(&self, output: &str) -> Vec<String> {
+        self.world
+            .workspace
+            .mapping
+            .get(output)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Adapter routing projection: retained logical view for one output.
+    #[must_use]
+    pub fn logical_view(&self, output: &str) -> Option<String> {
+        self.world.workspace.views.get(output).cloned()
+    }
+
+    /// Adapter routing projection: retained tiling mode (absent seeds tiled).
+    #[must_use]
+    pub fn logical_tiling(&self, output: &str, workspace: &str) -> TilingMode {
+        let key = DomainKey {
+            output: OutputId(output.to_owned()),
+            workspace: crate::directional::WorkspaceId(workspace.to_owned()),
+        };
+        self.world
+            .workspace
+            .tiling
+            .get(&key)
+            .copied()
+            .unwrap_or(TilingMode::Tiled)
+    }
+
+    /// Adapter routing projection: members homed to one logical workspace.
+    #[must_use]
+    pub fn logical_members(&self, output: &str, workspace: &str) -> Vec<WindowId> {
+        let mut out: Vec<WindowId> = self
+            .world
+            .workspace
+            .members
+            .iter()
+            .filter(|(_, state)| {
+                state.home.output.0 == output && state.home.workspace.0 == workspace
+            })
+            .map(|(window, _)| window.clone())
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Adapter routing projection: retained logical homing for one lifetime.
+    #[must_use]
+    pub fn adapter_homing(&self, window: &WindowId) -> Option<(String, String)> {
+        self.world
+            .workspace
+            .members
+            .get(window)
+            .map(|state| (state.home.output.0.clone(), state.home.workspace.0.clone()))
+    }
+
+    /// Adapter routing projection: all known lifetimes (sorted).
+    #[must_use]
+    pub fn logical_members_all(&self) -> Vec<WindowId> {
+        let mut out: Vec<WindowId> = self.world.workspace.members.keys().cloned().collect();
+        out.sort();
+        out
+    }
+
+    /// Adapter routing projection: retained previous-view history per output
+    /// (observed views only, never desires).
+    #[must_use]
+    pub fn logical_previous(&self, output: &str) -> Option<String> {
+        self.world.workspace.history.previous(output)
+    }
+
+    /// Accept one complete v4 report plus the parked FIFO command batch
+    /// drained inside the same capture/run/publication. This is the sole
+    /// public report ingress: the caller supplies the typed v4 report and
+    /// the ordered `(command sequence, command)` pairs, and the admitted
+    /// boundary owns admission (bound owner plus request correlation)
+    /// before delegating to the internal v4 run. An empty `queued` preserves
+    /// the existing inline report-command semantics. Returns the single
+    /// admission outcome plus one per-command settlement index-aligned with
+    /// `queued`. Any refusal adopts nothing, settles nothing, and returns
+    /// empty settlements so the caller reparks the whole batch. Missing
+    /// bound owner refuses as owner-invalid; an invalid request correlation
+    /// refuses as correlation-invalid.
+    ///
+    /// Structural admission only (no wire/reply size gating); platform and
+    /// native ingress must use [`WorldEngine::handle_report_with_gate_and_prepare`]
+    /// with a checked [`CoreAdmissionGate`].
+    pub fn handle_report(
+        &mut self,
+        report: &WorldReportV4,
+        queued: &[(u64, WorldCommand)],
+    ) -> (V4RunOutcome, Vec<crate::world_report::BatchSettlement>) {
+        self.handle_report_with_prepare(report, queued, |_| Ok::<(), std::convert::Infallible>(()))
+            .unwrap_or_else(|e| match e {})
+    }
+
+    /// Same as [`WorldEngine::handle_report`], except `prepare` runs once on
+    /// the borrowed candidate immediately before candidate adoption (including
+    /// the bootstrap pending-intent path; duplicates have no state
+    /// transition). If `prepare` returns `Err(e)`, the candidate is discarded
+    /// and `self` (world, replay, watermarks, intent) stays unchanged.
+    ///
+    /// Structural admission only (no wire/reply size gating); platform and
+    /// native ingress must use [`WorldEngine::handle_report_with_gate_and_prepare`]
+    /// with a checked [`CoreAdmissionGate`].
+    pub fn handle_report_with_prepare<E>(
+        &mut self,
+        report: &WorldReportV4,
+        queued: &[(u64, WorldCommand)],
+        prepare: impl FnOnce(PreparedCandidate<'_>) -> Result<(), E>,
+    ) -> Result<(V4RunOutcome, Vec<crate::world_report::BatchSettlement>), E> {
+        self.handle_report_with_gate_and_prepare(
+            report,
+            queued,
+            &crate::world_admit_v4::StructuralCoreAdmissionGate,
+            prepare,
+        )
+    }
+
+    /// Scoped format-neutral admission entry taking an explicit
+    /// [`CoreAdmissionGate`] alongside the final `prepare` callback.
+    pub fn handle_report_with_gate_and_prepare<E, G: CoreAdmissionGate + ?Sized>(
+        &mut self,
+        report: &WorldReportV4,
+        queued: &[(u64, WorldCommand)],
+        gate: &G,
+        prepare: impl FnOnce(PreparedCandidate<'_>) -> Result<(), E>,
+    ) -> Result<(V4RunOutcome, Vec<crate::world_report::BatchSettlement>), E> {
+        let Some(owner) = self.connection.connection_owner.clone() else {
+            return Ok((
+                V4RunOutcome::Rejected {
+                    kind: KIND_OWNER,
+                    message: MSG_OWNER,
+                },
+                Vec::new(),
+            ));
+        };
+        let correlation = match CorrelationId::parse(&report.request_id) {
+            Some(correlation) => correlation,
+            None => {
+                return Ok((
+                    V4RunOutcome::Rejected {
+                        kind: KIND_CORRELATION,
+                        message: MSG_CORRELATION,
+                    },
+                    Vec::new(),
+                ));
+            }
+        };
+        self.handle_report_v4_batched_with_gate_and_prepare(
+            report,
+            &EventIssue { owner, correlation },
+            queued,
+            gate,
+            prepare,
+        )
+    }
+}
+
+/// Test-only bridges from the public engine to its internal transaction and
+/// replay cache. Production callers use the real report boundary instead.
+#[cfg(test)]
+impl WorldEngine {
+    /// Run one closure against a fresh transaction over this engine's live
+    /// state. Test-only: mirrors the transaction the report boundary builds.
+    pub(crate) fn tx<T>(&mut self, f: impl FnOnce(&mut WorldTransaction<'_>) -> T) -> T {
+        let prev_transfers = self
+            .replay
+            .as_ref()
+            .map(|replay| replay.reply.transfers.as_slice())
+            .unwrap_or(&[]);
+        let mut tx = WorldTransaction::new(&self.connection, prev_transfers, &mut self.world);
+        f(&mut tx)
+    }
+
+    pub(crate) fn has_last_v4(&self) -> bool {
+        self.replay.is_some()
+    }
+
+    pub(crate) fn last_request_seq_v4(&self) -> u64 {
+        self.replay.as_ref().map_or(0, |r| r.request_seq)
+    }
+
+    pub(crate) fn last_report_v4(&self) -> Option<WorldReportV4> {
+        self.replay.as_ref().map(|r| r.report.clone())
+    }
+
+    pub(crate) fn last_reply_v4(&self) -> Option<WorldReplyV4> {
+        self.replay.as_ref().map(|r| r.reply.clone())
+    }
+
+    pub(crate) fn set_last_digest_v4(&mut self, digest: u64) {
+        if let Some(replay) = &mut self.replay {
+            replay.digest = digest;
+        }
+    }
+
+    pub(crate) fn clear_replay(&mut self) {
+        self.replay = None;
+    }
+
+    /// Read-only transaction helper for tests whose subject is an immutable
+    /// engine reference; clones so the observed state is not mutated.
+    pub(crate) fn tx_ro<T>(&self, f: impl FnOnce(&WorldTransaction<'_>) -> T) -> T {
+        let mut world = self.world.clone();
+        let prev_transfers = self
+            .replay
+            .as_ref()
+            .map(|replay| replay.reply.transfers.as_slice())
+            .unwrap_or(&[]);
+        let tx = WorldTransaction::new(&self.connection, prev_transfers, &mut world);
+        f(&tx)
+    }
+
+    /// Test-only adapter for the read-only cursor pause predicate.
+    pub(crate) fn cursor_game_paused(&self) -> bool {
+        self.tx_ro(crate::world_cursor::cursor_game_paused)
+    }
+
+    /// Test-only adapter for the unproven-sticky swap source predicate.
+    pub(crate) fn swap_source_unknown_sticky(&self, source: &crate::session::DomainKey) -> bool {
+        self.tx_ro(|tx| WorldTransaction::swap_source_unknown_sticky(tx, source))
+    }
+}
+
+impl WorldState {
+    #[must_use]
+    pub(crate) fn new() -> Self {
+        let mut layout = WorldLayout::new();
+        // Fixed-size admission stays enabled for every world carrier.
+        layout.set_fixed_size_admission(true);
+        Self {
+            layout,
+            ready_latched: false,
+            state_revision: 0,
+            prior_context: PriorAcceptedContext::default(),
+            command_highwater: None,
+            workspace: crate::world_workspace_state::WorkspaceState::new(),
+            settlement: crate::world_settlement_state::SettlementState::new(),
+            focus: crate::world_focus_state::FocusState::new(),
+            gesture: crate::world_gesture_state::GestureState::new(),
+            runtime: crate::world_runtime_state::RuntimeState::new(),
+            intent: crate::world_intent_state::IntentState::new(),
+            presentation: crate::world_presentation_state::PresentationState::new(),
+            floating_scopes: BTreeSet::new(),
+            hold_reasons: BTreeMap::new(),
+            placement_bootstrapped: false,
+            command_result: None,
+            staged: StagedReport::default(),
+        }
+    }
+
+    pub(crate) fn stay_source_focus(
+        &self,
+        operation_id: &str,
+        source: &DomainKey,
+    ) -> StaySourceFocus {
         let Some(retained) = self
+            .settlement
             .retained
             .iter()
             .find(|r| r.target.operation_id == operation_id)
@@ -2628,10 +1050,6 @@ impl WorldEngine {
             TransferKind::View | TransferKind::Migration => return StaySourceFocus::Unknown,
         };
         if !self.layout.contains_domain(source) {
-            // No committed domain for a retained stay source means the send
-            // emptied and retired it: proven-empty, never unknown. (A
-            // mismatched source already refused above, and a floating-only
-            // transfer with no layout change leaves its domain behind.)
             return StaySourceFocus::Empty;
         };
         if let Some(leaf) = self.layout.focus_leaf(source) {
@@ -2654,376 +1072,12 @@ impl WorldEngine {
         }
     }
 
-    /// Latest published global revision.
-    #[must_use]
-    pub fn state_revision(&self) -> u64 {
-        self.state_revision
-    }
-
-    /// Adapter routing projection (read-only, never a second policy):
-    /// ordered logical outputs known to the core.
-    #[must_use]
-    pub fn logical_outputs(&self) -> Vec<String> {
-        let mut out: Vec<String> = self.mapping.keys().cloned().collect();
-        out.sort();
-        out
-    }
-
-    /// Adapter routing projection: ordered logical ring for one output.
-    #[must_use]
-    pub fn logical_ring(&self, output: &str) -> Vec<String> {
-        self.mapping.get(output).cloned().unwrap_or_default()
-    }
-
-    /// Adapter routing projection: retained logical view for one output.
-    #[must_use]
-    pub fn logical_view(&self, output: &str) -> Option<String> {
-        self.views.get(output).cloned()
-    }
-
-    /// Adapter routing projection: retained tiling mode (absent seeds tiled).
-    #[must_use]
-    pub fn logical_tiling(&self, output: &str, workspace: &str) -> TilingMode {
-        let key = DomainKey {
-            output: OutputId(output.to_owned()),
-            workspace: crate::directional::WorkspaceId(workspace.to_owned()),
-        };
-        self.tiling.get(&key).copied().unwrap_or(TilingMode::Tiled)
-    }
-
-    /// Adapter routing projection: members homed to one logical workspace.
-    #[must_use]
-    pub fn logical_members(&self, output: &str, workspace: &str) -> Vec<WindowId> {
-        let mut out: Vec<WindowId> = self
-            .members
-            .iter()
-            .filter(|(_, state)| {
-                state.home.output.0 == output && state.home.workspace.0 == workspace
-            })
-            .map(|(window, _)| window.clone())
-            .collect();
-        out.sort();
-        out
-    }
-
-    /// Adapter routing projection: retained logical homing for one lifetime.
-    #[must_use]
-    pub fn adapter_homing(&self, window: &WindowId) -> Option<(String, String)> {
-        self.members
-            .get(window)
-            .map(|state| (state.home.output.0.clone(), state.home.workspace.0.clone()))
-    }
-
-    /// Adapter routing projection: all known lifetimes (sorted).
-    #[must_use]
-    pub fn logical_members_all(&self) -> Vec<WindowId> {
-        let mut out: Vec<WindowId> = self.members.keys().cloned().collect();
-        out.sort();
-        out
-    }
-
-    /// Adapter routing projection: retained previous-view history per output
-    /// (observed views only, never desires).
-    #[must_use]
-    pub fn logical_previous(&self, output: &str) -> Option<String> {
-        self.history.previous(output)
-    }
-
-    /// Accept one complete v4 report plus the parked FIFO command batch
-    /// drained inside the same capture/run/publication. This is the sole
-    /// public report ingress: the caller supplies the typed v4 report and
-    /// the ordered `(command sequence, command)` pairs, and the admitted
-    /// boundary owns admission (bound owner plus request correlation)
-    /// before delegating to the internal v4 run. An empty `queued` preserves
-    /// the existing inline report-command semantics. Returns the single
-    /// admission outcome plus one per-command settlement index-aligned with
-    /// `queued`. Any refusal adopts nothing, settles nothing, and returns
-    /// empty settlements so the caller reparks the whole batch. Missing
-    /// bound owner refuses as owner-invalid; an invalid request correlation
-    /// refuses as correlation-invalid.
-    pub fn handle_report(
-        &mut self,
-        report: &WorldReportV4,
-        queued: &[(u64, WorldCommand)],
-    ) -> (V4RunOutcome, Vec<crate::world_report::BatchSettlement>) {
-        let Some(owner) = self.connection_owner.clone() else {
-            return (
-                V4RunOutcome::Rejected {
-                    kind: KIND_OWNER,
-                    message: MSG_OWNER,
-                },
-                Vec::new(),
-            );
-        };
-        let correlation = match CorrelationId::parse(&report.request_id) {
-            Some(correlation) => correlation,
-            None => {
-                return (
-                    V4RunOutcome::Rejected {
-                        kind: KIND_CORRELATION,
-                        message: MSG_CORRELATION,
-                    },
-                    Vec::new(),
-                );
-            }
-        };
-        self.handle_report_v4_batched(report, &EventIssue { owner, correlation }, queued)
-    }
-
-    /// Joint intent ledger occupancy: pending restores plus conflict marks
-    /// plus sticky save blocks plus retained sticky-prior provenance share
-    /// the single [`crate::world_report::MAX_INTENT_RECORDS`] cap, so every
-    /// insert branch below (and the sticky-block insert) must gate on this,
-    /// never on a partial sum. A pending-to-retained sticky commit removes
-    /// the pending entry first, so it holds the joint count steady.
-    pub(crate) fn intent_ledger_used(&self) -> usize {
-        self.pending_intent.len()
-            + self.intent_conflicts.len()
-            + self.intent_sticky_blocks.len()
-            + self.restored_sticky.len()
-    }
-
-    /// Record one lifetime-scoped save block for deferred sticky intent.
-    /// Jointly bounded with pending/conflicts by
-    /// [`crate::world_report::MAX_INTENT_RECORDS`]: when the bound leaves
-    /// no room, the generation-scoped saturation latch trips instead and
-    /// every save is suppressed until handshake reset. Fail-closed: a
-    /// dropped block would let a save erase deferred sticky intent.
-    /// Blocks confer no admission or native authority.
-    pub(crate) fn insert_intent_sticky_block(&mut self, win: &WindowId) {
-        if self.intent_sticky_blocks.contains(win) {
-            return;
-        }
-        if self.intent_ledger_used() < crate::world_report::MAX_INTENT_RECORDS {
-            self.intent_sticky_blocks.insert(win.clone());
-        } else {
-            self.intent_sticky_saturated = true;
-        }
-    }
-
-    /// First-accepted retained desire initializer: inserts only when no
-    /// retained target exists (no late clobber of runtime intent). A cap
-    /// drop latches [`Self::sticky_saved_incomplete`] fail-closed instead
-    /// of silently losing the exact prior.
-    pub(crate) fn remember_first_sticky_saved(
-        &mut self,
-        win: &WindowId,
-        data: crate::intent_data::IntentData,
-    ) {
-        if self.intent_desired.contains_key(win) {
-            return;
-        }
-        if self.intent_desired.len() < crate::world_report::MAX_INTENT_DESIRED {
-            self.intent_desired.insert(win.clone(), Some(data));
-        } else {
-            self.sticky_saved_incomplete = true;
-        }
-    }
-
-    /// Retained desire upsert for accepted runtime mutations, in execution
-    /// order (latest-wins per window). Replacing an existing target is
-    /// always allowed; a new window refuses fail-closed at the cap via the
-    /// caller (admit gate covers it; defensive latch here never truncates
-    /// silently).
-    pub(crate) fn upsert_retained_intent_desire(
-        &mut self,
-        win: &WindowId,
-        data: Option<crate::intent_data::IntentData>,
-    ) {
-        if self.intent_desired.contains_key(win) {
-            self.intent_desired.insert(win.clone(), data);
-            return;
-        }
-        if self.intent_desired.len() < crate::world_report::MAX_INTENT_DESIRED {
-            self.intent_desired.insert(win.clone(), data);
-        } else {
-            self.sticky_saved_incomplete = true;
-        }
-    }
-
-    /// Conflicting imports invalidate any first-cached exact prior: drop
-    /// the bogus retained target and latch incomplete fail-closed.
-    pub(crate) fn drop_saved_as_conflicting(&mut self, win: &WindowId) {
-        self.intent_desired.remove(win);
-        self.sticky_saved_incomplete = true;
-    }
-
-    /// Ingest opaque intent rows from a staged observation capture, before
-    /// classification, so the classifier sees pending first-admission wins
-    /// from this same report. Reads only the capture's closed subjects,
-    /// raw window facts (for own-process pruning), and intent records.
-    /// Initial intakes call this exactly once per report before staging;
-    /// staging and command restages never ingest.
-    pub(crate) fn ingest_staged_intent(&mut self, observation: &StagedObservation) {
-        use std::collections::{BTreeMap, BTreeSet};
-        #[cfg(test)]
-        {
-            self.ingest_calls = self.ingest_calls.saturating_add(1);
-            self.ingest_trials
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        let closed: BTreeSet<&WindowId> = observation.closed.iter().collect();
-        // Explicit closes end the lifetime: drop every ledger entry and
-        // never store a closed subject. A closed id never survives even
-        // under reuse; a replacement lifetime re-initializes from its own
-        // first accepted import.
-        for id in &observation.closed {
-            self.pending_intent.remove(id);
-            self.intent_conflicts.remove(id);
-            self.intent_admitted.remove(id);
-            self.restored_floats.remove(id);
-            self.restored_sticky.remove(id);
-            self.intent_sticky_blocks.remove(id);
-            self.intent_desired.remove(id);
-            self.sticky_visible_rev.remove(id);
-        }
-        // Own-process facts prove no import authority: drop pending and
-        // conflict entries for proven-own subjects without touching
-        // unrelated safety-held windows (which must stay recoverable).
-        // Safety exclusion (`owned`/privileged) is not own-process and
-        // never prunes here.
-        let own_pid: Option<String> = self
-            .application_identity
-            .as_ref()
-            .and_then(|identity| identity.process_id.clone());
-        let mut own_proven: BTreeSet<WindowId> = BTreeSet::new();
-        if let Some(own) = own_pid.as_deref() {
-            for fact in &observation.raw_windows {
-                if fact.process_id.as_deref() == Some(own) {
-                    own_proven.insert(fact.window.clone());
-                }
-            }
-        }
-        for id in &own_proven {
-            self.pending_intent.remove(id);
-            self.intent_conflicts.remove(id);
-            self.restored_floats.remove(id);
-            self.restored_sticky.remove(id);
-            self.intent_sticky_blocks.remove(id);
-            self.intent_desired.remove(id);
-            self.sticky_visible_rev.remove(id);
-        }
-        // Group raw rows by subject; >1 distinct string is a conflict.
-        let mut grouped: BTreeMap<&WindowId, BTreeSet<&str>> = BTreeMap::new();
-        for record in &observation.intent_records {
-            if closed.contains(&record.win) {
-                continue;
-            }
-            if own_proven.contains(&record.win) {
-                continue;
-            }
-            grouped
-                .entry(&record.win)
-                .or_default()
-                .insert(record.data.as_str());
-        }
-        for (win, raws) in grouped {
-            // First-admission fence: already admitted lifetimes ignore late
-            // rows forever, even through exclusion/holds/minimize. Late
-            // rows never inhibit later runtime saves either.
-            if self.intent_admitted.contains(win) {
-                continue;
-            }
-            // Sticky-preservation scan before any conflict handling: a
-            // deferred stickyPrior non-null value in ANY duplicate row
-            // blocks later saves for this lifetime, even when the mixed
-            // rows also conflict. Sticky semantics are not implemented
-            // yet, so a null-sticky save must never overwrite them. A
-            // later non-sticky row never clears the block.
-            if raws.iter().any(|raw| {
-                matches!(
-                    crate::intent_data::decode_intent_data(raw),
-                    Ok(data) if data.sticky_prior.is_some()
-                )
-            }) {
-                self.insert_intent_sticky_block(win);
-            }
-            if self.intent_conflicts.contains(win) {
-                continue;
-            }
-            if raws.len() > 1 {
-                self.pending_intent.remove(win);
-                self.drop_saved_as_conflicting(win);
-                if self.intent_ledger_used() < crate::world_report::MAX_INTENT_RECORDS {
-                    self.intent_conflicts.insert(win.clone());
-                }
-                continue;
-            }
-            let raw = raws.iter().next().expect("grouped raw");
-            let decoded = match crate::intent_data::decode_intent_data(raw) {
-                Ok(data) => data,
-                Err(_) => continue,
-            };
-            // First-admission coherence across the null/null boundary:
-            // null/null carries no restore authority but its exact shape is
-            // still saved knowledge, so a cached shape differing from this
-            // import on either null/null side is a conflicting preimage.
-            // Drop the bogus saved prior and latch fail-closed; pending
-            // semantics below run unchanged so composed admission keeps its
-            // old behavior and only native exact knowledge fails closed.
-            // Valid-vs-valid differences keep the existing pending/conflict
-            // path. Already admitted lifetimes returned above, so late rows
-            // never latch.
-            let decoded_null = decoded.float.is_none() && decoded.sticky_prior.is_none();
-            let saved_boundary_conflict = self
-                .intent_desired
-                .get(win)
-                .and_then(|cached| *cached)
-                .is_some_and(|cached| {
-                    cached != decoded
-                        && (decoded_null
-                            || (cached.float.is_none() && cached.sticky_prior.is_none()))
-                });
-            if saved_boundary_conflict {
-                self.drop_saved_as_conflicting(win);
-            }
-            // Whole sticky-bearing records restore as a whole: sticky
-            // dominates the float lane and the prior stays the exact bool,
-            // so every `float` lane (`None`/`false`/`true`) with a non-null
-            // prior is a usable pending restore, never partly reconstructed.
-            // A null/null record carries no restore authority but its exact
-            // shape is still first-accepted saved knowledge for rollback.
-            if decoded_null {
-                if !saved_boundary_conflict {
-                    self.remember_first_sticky_saved(win, decoded);
-                }
-                continue;
-            }
-            match self.pending_intent.get(win).copied() {
-                Some(existing) if existing == decoded => {
-                    // First-accepted import establishes exact saved knowledge
-                    // when no newer runtime save exists; repeats never
-                    // clobber.
-                    if !saved_boundary_conflict {
-                        self.remember_first_sticky_saved(win, decoded);
-                    }
-                }
-                Some(_) => {
-                    self.pending_intent.remove(win);
-                    self.drop_saved_as_conflicting(win);
-                    if self.intent_ledger_used() < crate::world_report::MAX_INTENT_RECORDS {
-                        self.intent_conflicts.insert(win.clone());
-                    }
-                }
-                None => {
-                    if self.intent_ledger_used() < crate::world_report::MAX_INTENT_RECORDS {
-                        self.pending_intent.insert(win.clone(), decoded);
-                        if !saved_boundary_conflict {
-                            self.remember_first_sticky_saved(win, decoded);
-                        }
-                    } else {
-                        // Joint-ledger drop loses the exact prior even when
-                        // the saved map still has room; fail closed.
-                        self.sticky_saved_incomplete = true;
-                        self.remember_first_sticky_saved(win, decoded);
-                    }
-                }
-            }
-        }
+    pub(crate) fn layout(&self) -> &WorldLayout {
+        &self.layout
     }
 
     pub(crate) fn engine_knows_window_any(&self, window: &WindowId) -> bool {
-        self.members.contains_key(window) || self.layout.knows_window_any(window)
+        self.workspace.members.contains_key(window) || self.layout.knows_window_any(window)
     }
 
     pub(crate) fn is_tiled_window_any(&self, window: &WindowId) -> bool {
@@ -3034,38 +1088,18 @@ impl WorldEngine {
         self.layout.is_exception_window_any(window)
     }
 
-    /// Conservative pre-mutation count of retained lifetimes that can
-    /// publish a target-lane row without a live fact in this report: every
-    /// retained domain's tiled links plus exceptions plus minimize slots
-    /// (surviving a gapped previous report that left staged small), plus
-    /// retained mover rows (one per outstanding window transfer plus every
-    /// migration member). A union upper bound via the sum: deduped
-    /// lifetimes counted twice still fit.
     pub(crate) fn retained_publish_footprint(&self) -> usize {
-        let mut total = self.layout.retained_bound_count();
-        for retained in &self.retained {
-            match &retained.target.kind {
-                TransferKind::Window(_) => total = total.saturating_add(1),
-                TransferKind::Migration => {
-                    total = total.saturating_add(retained.members.len());
-                }
-                TransferKind::View => {}
-            }
-        }
-        total
+        self.layout
+            .retained_bound_count()
+            .saturating_add(self.settlement.retained_transfer_footprint())
     }
 
-    /// Pre-mutation count of newly stageable retained intent rows: distinct
-    /// save-capable windows in the inline report command plus the parked
-    /// FIFO batch that are not already carrying a retained target.
-    /// Conservative on implicit subjects (unresolved subjects count as new).
-    /// Replacements never grow the map; only genuinely new windows reserve.
     pub(crate) fn intent_desired_new_rows(
         &self,
         inline: Option<&crate::world_report::WorldCommand>,
         queued: &[(u64, crate::world_report::WorldCommand)],
     ) -> usize {
-        use crate::world_sizing_v4::is_intent_save_command_v4;
+        use crate::world_report::is_intent_save_command_v4;
         use std::collections::BTreeSet;
         let mut distinct: BTreeSet<String> = BTreeSet::new();
         let mut implicit_new: usize = 0;
@@ -3119,10 +1153,9 @@ impl WorldEngine {
         }
         if let Some(inline) = inline_key {
             distinct.remove(&inline);
-            // The inline window counted once below when new; batch distinct
-            // excludes it here so latest-wins collapse is exact.
             let inline_new = usize::from(
                 !self
+                    .intent
                     .intent_desired
                     .contains_key(&crate::directional::WindowId(inline.clone())),
             );
@@ -3130,6 +1163,7 @@ impl WorldEngine {
                 .iter()
                 .filter(|id| {
                     !self
+                        .intent
                         .intent_desired
                         .contains_key(&crate::directional::WindowId((*id).clone()))
                 })
@@ -3142,981 +1176,72 @@ impl WorldEngine {
             .iter()
             .filter(|id| {
                 !self
+                    .intent
                     .intent_desired
                     .contains_key(&crate::directional::WindowId((*id).clone()))
             })
             .count();
         batch_new.saturating_add(implicit_new)
     }
+}
 
-    /// Latch first successful admissions, commit durable intent, and keep
-    /// the exclusion ledger truthful to proven session state. Called after
-    /// each sweep (and resweep). Pending drops only on real success
-    /// (tiled for `float:false`, non-automatic exception for
-    /// `float:true`); minimized placeholders and holds retain pending.
-    /// Sessionless floating-route admissions latch separately after
-    /// membership converges (see `latch_floating_admissions`): settle
-    /// runs before reconcile creates those members.
-    /// The exclusion ledger syncs to current session truth for live
-    /// sessions only, so a successful runtime float clears a stale tile
-    /// win while exclusion gaps preserve continuity.
-    pub(crate) fn settle_intent_admissions(&mut self) {
-        // Own-process facts staged this report prove no import authority:
-        // drop pending/conflict/restored for proven-own subjects.
-        // Safety-held windows never match here and stay recoverable.
-        let own_excluded: Vec<WindowId> = self
-            .staged
-            .derived
-            .iter()
-            .filter_map(|(id, classified)| {
-                if classified.own_excluded {
-                    Some(id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        for id in own_excluded {
-            self.pending_intent.remove(&id);
-            self.intent_conflicts.remove(&id);
-            self.restored_floats.remove(&id);
-            self.restored_sticky.remove(&id);
-            self.intent_sticky_blocks.remove(&id);
-            self.intent_desired.remove(&id);
-            self.sticky_visible_rev.remove(&id);
-        }
-        // Latch first successful admissions: late rows for already
-        // admitted lifetimes are ignored forever, even through
-        // exclusion/holds/minimize. Session tiled links and
-        // floating-base session exceptions are real success;
-        // overlay-only placeholders (non-floating fullscreen/maximized
-        // births) and minimized slots alone never latch. Membership
-        // alone never proves admission either: reconcile homes rows
-        // even when held, so members latch only on staged health.
-        // Pending-only latching would miss record-free first admissions.
-        let mut known: Vec<WindowId> = Vec::new();
-        known.extend(self.layout.all_tiled_windows());
-        for (window, flags) in self.layout.all_exception_windows_with_flags() {
-            if !flags.floating && (flags.fullscreen || flags.maximized) {
-                continue;
-            }
-            known.push(window);
-        }
-        let member_windows: Vec<WindowId> = self.members.keys().cloned().collect();
-        for window in member_windows {
-            if self.staged.excluded.contains(&window) {
-                continue;
-            }
-            if self
-                .staged
-                .held_windows
-                .iter()
-                .any(|held| held.window == window)
-            {
-                continue;
-            }
-            if !self.staged.facts.contains_key(&window) {
-                continue;
-            }
-            let derived = self.derived_for(&window);
-            if derived.hold || derived.excluded || derived.own_excluded || derived.hidden {
-                continue;
-            }
-            if !derived.floating && (derived.overlay_fullscreen || derived.overlay_maximized) {
-                continue;
-            }
-            known.push(window);
-        }
-        for win in &known {
-            self.intent_admitted.insert(win.clone());
-        }
-        // Conflicts confer no winner: drop them once the lifetime admits
-        // instead of consuming the joint bound forever.
-        for win in &known {
-            self.intent_conflicts.remove(win);
-        }
-        let pending: Vec<(WindowId, crate::intent_data::IntentData)> = self
-            .pending_intent
-            .iter()
-            .map(|(id, data)| (id.clone(), *data))
-            .collect();
-        for (win, data) in pending {
-            // Sticky-bearing restores commit only the exact prior into
-            // sticky provenance, never a tile override or ordinary float:
-            // sticky dominates the float lane. Real float success is a
-            // healthy staged non-automatic exception (never a merely homed
-            // held/hidden/minimized/overlay placeholder); pending survives
-            // otherwise, exactly like the float lane below.
-            if let Some(prior) = data.sticky_prior {
-                let healthy = self.staged.facts.contains_key(&win)
-                    && !self.staged.excluded.contains(&win)
-                    && !self
-                        .staged
-                        .held_windows
-                        .iter()
-                        .any(|held| held.window == win)
-                    && {
-                        let derived = self.derived_for(&win);
-                        !derived.hold
-                            && !derived.excluded
-                            && !derived.own_excluded
-                            && !derived.hidden
-                            && (derived.floating
-                                || !(derived.overlay_fullscreen || derived.overlay_maximized))
-                    };
-                if !healthy {
-                    continue;
-                }
-                if !self.is_exception_window_any(&win)
-                    || self.layout.is_automatic_fixed_float_any(&win)
-                {
-                    continue;
-                }
-                // Pending leaves first so the retained commit holds the
-                // joint ledger count steady.
-                self.pending_intent.remove(&win);
-                self.restored_sticky.insert(win.clone(), prior);
-                self.ensure_restored_sticky_binding(&win, prior);
-                // Composed restore initializes the stable visibility
-                // revision absent-only: first safe admission authorizes,
-                // ordinary observations never renew.
-                if self.sticky_route() == crate::world_sticky::StickyRoute::Composed
-                    && !self.sticky_visible_rev.contains_key(&win)
-                {
-                    self.sticky_visible_rev.insert(win, self.state_revision + 1);
-                }
-            } else if data.float == Some(false) {
-                // Real tile success is a tiled link, not a minimized
-                // placeholder or an exception: retain pending otherwise.
-                if !self.is_tiled_window_any(&win) {
-                    continue;
-                }
-                self.layout.commit_fixed_tile_override(&win);
-                self.pending_intent.remove(&win);
-            } else if data.float == Some(true) {
-                // Real float success is a non-automatic exception: retain
-                // pending through minimized placeholders, and never
-                // promote automatic floats to explicit.
-                if !self.is_exception_window_any(&win)
-                    || self.layout.is_automatic_fixed_float_any(&win)
-                {
-                    continue;
-                }
-                self.restored_floats.insert(win.clone());
-                self.pending_intent.remove(&win);
-            }
-        }
-        // Exclusion-ledger truth sync for live layout domains only: current
-        // layout marks win over stale mirrors (e.g. a successful runtime
-        // float clears a restored tile win), while exclusion gaps with no
-        // live domain preserve continuity untouched.
-        let mut live: Vec<WindowId> = Vec::new();
-        live.extend(self.layout.all_tiled_windows());
-        live.extend(self.layout.all_exception_windows());
-        live.extend(self.layout.all_minimized_windows());
-        live.sort();
-        live.dedup();
-        for win in live {
-            let tile = self.layout.has_fixed_tile_override_any(&win);
-            let automatic = self.layout.is_automatic_fixed_float_any(&win);
-            if tile || automatic {
-                self.excluded_intent.insert(
-                    win,
-                    ExcludedIntent {
-                        tile_override: tile,
-                        automatic_fixed: automatic,
-                    },
-                );
-            } else {
-                self.excluded_intent.remove(&win);
-            }
-        }
-        // Runtime unfloat wins over restored float provenance: a lifetime
-        // the layout now proves tiled leaves the explicit-float set.
-        // Unknown/excluded lifetimes keep the mark for recovery.
-        let floated_marked: Vec<WindowId> = self.restored_floats.iter().cloned().collect();
-        for win in floated_marked {
-            if self.is_tiled_window_any(&win) {
-                self.restored_floats.remove(&win);
-            }
-        }
+impl WorldTransaction<'_> {
+    pub(crate) fn is_ready(&self) -> bool {
+        self.connection.initial_settings_accepted && self.world.ready_latched
     }
 
-    /// Latch healthy floating-route first admissions after membership
-    /// converges. Floating workspaces release their sessions, so a
-    /// floating newcomer never appears in session links at settle time
-    /// and only gains membership at reconcile (after settle). Health is
-    /// staged truth, never membership alone: held, hidden, excluded,
-    /// or overlay-only placeholders never latch. A pending true
-    /// consumes into explicit-float provenance at the observed frame
-    /// (no geometry op); a pending sticky-bearing record consumes only
-    /// its exact prior into sticky provenance (never ordinary float, never
-    /// a tile win); a pending false stays pending as the explicit
-    /// tile base for a later tiling enable (never forced tiled now).
-    pub(crate) fn latch_floating_admissions(&mut self) {
-        let candidates: Vec<(WindowId, bool)> = self
+    pub(crate) fn logical_outputs(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.world.workspace.mapping.keys().cloned().collect();
+        out.sort();
+        out
+    }
+
+    pub(crate) fn logical_ring(&self, output: &str) -> Vec<String> {
+        self.world
+            .workspace
+            .mapping
+            .get(output)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn logical_view(&self, output: &str) -> Option<String> {
+        self.world.workspace.views.get(output).cloned()
+    }
+
+    pub(crate) fn logical_tiling(&self, output: &str, workspace: &str) -> TilingMode {
+        let key = DomainKey {
+            output: OutputId(output.to_owned()),
+            workspace: crate::directional::WorkspaceId(workspace.to_owned()),
+        };
+        self.world
+            .workspace
+            .tiling
+            .get(&key)
+            .copied()
+            .unwrap_or(TilingMode::Tiled)
+    }
+
+    pub(crate) fn logical_members(&self, output: &str, workspace: &str) -> Vec<WindowId> {
+        let mut out: Vec<WindowId> = self
+            .world
+            .workspace
             .members
             .iter()
-            .filter(|(_, state)| self.floating_scopes.contains(&state.home))
-            .filter(|(id, _)| !self.intent_admitted.contains(*id))
-            .map(|(id, _)| {
-                let healthy = self.staged.facts.contains_key(id)
-                    && !self.staged.excluded.contains(id)
-                    && !self
-                        .staged
-                        .held_windows
-                        .iter()
-                        .any(|held| &held.window == id)
-                    && {
-                        let derived = self.derived_for(id);
-                        !derived.hold
-                            && !derived.excluded
-                            && !derived.own_excluded
-                            && !derived.hidden
-                            && (derived.floating
-                                || !(derived.overlay_fullscreen || derived.overlay_maximized))
-                    };
-                (id.clone(), healthy)
+            .filter(|(_, state)| {
+                state.home.output.0 == output && state.home.workspace.0 == workspace
             })
+            .map(|(window, _)| window.clone())
             .collect();
-        for (win, healthy) in candidates {
-            if !healthy {
-                continue;
-            }
-            self.intent_admitted.insert(win.clone());
-            self.intent_conflicts.remove(&win);
-            if let Some(prior) = self
-                .pending_intent
-                .get(&win)
-                .copied()
-                .and_then(|data| data.sticky_prior)
-            {
-                // Pending leaves first so the retained commit holds the
-                // joint ledger count steady.
-                self.pending_intent.remove(&win);
-                self.restored_sticky.insert(win.clone(), prior);
-                self.ensure_restored_sticky_binding(&win, prior);
-                // Composed floating restore initializes the stable
-                // visibility revision absent-only, same as the session
-                // route above.
-                if self.sticky_route() == crate::world_sticky::StickyRoute::Composed
-                    && !self.sticky_visible_rev.contains_key(&win)
-                {
-                    self.sticky_visible_rev.insert(win, self.state_revision + 1);
-                }
-            } else if self
-                .pending_intent
-                .get(&win)
-                .is_some_and(|data| data.float == Some(true))
-            {
-                self.restored_floats.insert(win.clone());
-                self.pending_intent.remove(&win);
-            }
-        }
+        out.sort();
+        out
     }
 
-    /// Resolve one command to its post-command bookkeeping identity: an
-    /// implicit (execution-time-subject) command maps to its explicit form
-    /// against the resolved subject; explicit commands clone unchanged. An
-    /// unresolvable implicit falls back to the original placeholder, which
-    /// matches no save arm (preserving mismatch/empty semantics). Call
-    /// BEFORE execution: the subject is the pre-execution slot, never
-    /// focus after the action.
-    pub(crate) fn bookkeeping_command(&self, command: &WorldCommand) -> WorldCommand {
-        match command {
-            WorldCommand::Implicit(inner) => self
-                .execution_subject()
-                .and_then(|window| crate::world_report::explicit_for_implicit(inner, window))
-                .unwrap_or_else(|| command.clone()),
-            _ => command.clone(),
-        }
-    }
-
-    /// Synchronize explicit-float provenance with a successful runtime
-    /// float toggle: a toggled-to-float non-automatic exception gains the
-    /// durable mark, a toggled-to-tile lifetime loses it. Unknown or held
-    /// subjects keep their mark. Only explicit command wins enter; generic
-    /// automatic/capacity floats never do.
-    pub(crate) fn sync_toggle_float_command(&mut self, command: &WorldCommand) {
-        let window = match crate::world_report::unwrap_implicit(command) {
-            WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
-                window, ..
-            }) => WindowId(window.clone()),
-            _ => return,
-        };
-        if self.is_tiled_window_any(&window) {
-            self.restored_floats.remove(&window);
-        } else if self.is_exception_window_any(&window)
-            && !self.layout.is_automatic_fixed_float_any(&window)
-        {
-            self.restored_floats.insert(window);
-        }
-    }
-
-    pub(crate) fn capture_excluded_intent(&mut self) {
-        // Snapshot lifetime intent before the sweep retires excluded
-        // slots: an exclusion is never a native close, so the approved
-        // fixed tile override and automatic fixed mark survive the
-        // same-lifetime gap. Only records proven intent: never
-        // overwrites a retained win with a retired-session false.
-        for id in self.staged.excluded.clone() {
-            let tile = self.layout.has_fixed_tile_override_any(&id);
-            let automatic = self.layout.is_automatic_fixed_float_any(&id);
-            if tile || automatic {
-                self.excluded_intent.insert(
-                    id,
-                    ExcludedIntent {
-                        tile_override: tile,
-                        automatic_fixed: automatic,
-                    },
-                );
-            }
-        }
-        // Explicit native closes end the lifetime: never resurrect intent
-        // for a reused id.
-        for id in self.staged.closes.clone() {
-            self.excluded_intent.remove(&id);
-        }
-    }
-
-    /// Prune every retained-authority lifetime ledger against the current
-    /// staged capture: canonical memory, exclusion/intent ledgers, the
-    /// state/focus/selection lane pruners, and lifetime-local composed
-    /// maximize. Lifetime presence reads the staged raw observation plus
-    /// the staged held rows, never the classified facts alone: only
-    /// own-process subjects are dropped from classification, while
-    /// safety-excluded facts stay classified but ineligible; both stay
-    /// lifetime evidence, and capability-held rows keep presence without
-    /// authority. A complete report drops every dead identity; an
-    /// incomplete one only drops explicit closes. Closed ids never survive
-    /// even under reuse.
-    pub(crate) fn prune_lifetime_state(&mut self) {
-        // Canonical memory prunes to the live inventory: a complete report
-        // drops every dead identity, an incomplete one only drops explicit
-        // closes. Closed ids never survive even under reuse.
-        // Owned narrow snapshots: the staged capture is re-read per region
-        // below so no observation borrow crosses the lane-pruner calls.
-        // Narrow sets stay scoped to the branch that needs them: incomplete
-        // gaps never clone the raw inventory.
-        let inventory_complete = self.staged.observation.inventory_complete;
-        if inventory_complete {
-            let live: BTreeSet<WindowId> = self
-                .staged
-                .observation
-                .raw_windows
-                .iter()
-                .map(|fact| fact.window.clone())
-                .collect();
-            let held: BTreeSet<WindowId> = self
-                .staged
-                .held_windows
-                .iter()
-                .map(|held| held.window.clone())
-                .collect();
-            self.last_active_window
-                .retain(|_, window| live.contains(window));
-            // Same lifetime bound for the exclusion ledger: a complete
-            // inventory that carries neither the fact nor the exclusion
-            // proves departure, so drop the retained intent. Explicit
-            // closes already cleared at capture time.
-            let excluded = self.staged.excluded.clone();
-            self.excluded_intent
-                .retain(|id, _| live.contains(id) || excluded.contains(id));
-            // Pending/conflict ledgers share the proven-departure
-            // fence: a complete inventory carrying neither a usable
-            // fact, a held row, nor an exclusion proves the subject
-            // departed before first success, so drop it. A carried
-            // slot row alone is not live proof: it never retains.
-            // Engine-known (admitted, minimized, exception, member)
-            // subjects stay: complete absence after admission is
-            // handled through the admitted latch and close path, never
-            // by resurrecting pending. Closed subjects were already
-            // dropped on ingest.
-            let known: BTreeSet<WindowId> = self
-                .pending_intent
-                .keys()
-                .chain(self.intent_conflicts.iter())
-                .chain(self.intent_admitted.iter())
-                .chain(self.restored_floats.iter())
-                .chain(self.restored_sticky.keys())
-                .chain(self.intent_desired.keys())
-                .filter(|id| self.engine_knows_window_any(id) || self.members.contains_key(*id))
-                .cloned()
-                .collect();
-            self.pending_intent.retain(|id, _| {
-                live.contains(id)
-                    || held.contains(id)
-                    || excluded.contains(id)
-                    || known.contains(id)
-            });
-            self.intent_conflicts.retain(|id| {
-                live.contains(id)
-                    || held.contains(id)
-                    || excluded.contains(id)
-                    || known.contains(id)
-            });
-            self.restored_floats.retain(|id| {
-                live.contains(id)
-                    || held.contains(id)
-                    || excluded.contains(id)
-                    || known.contains(id)
-            });
-            self.restored_sticky.retain(|id, _| {
-                live.contains(id)
-                    || held.contains(id)
-                    || excluded.contains(id)
-                    || known.contains(id)
-            });
-            // Admitted lifetimes end on proven complete departure
-            // (neither live, held, excluded, nor engine/member-known).
-            // Temporary exclusion/holds keep the latch so late rows
-            // stay ignored.
-            self.intent_admitted.retain(|id| {
-                live.contains(id)
-                    || held.contains(id)
-                    || excluded.contains(id)
-                    || known.contains(id)
-            });
-            self.intent_sticky_blocks.retain(|id| {
-                live.contains(id)
-                    || held.contains(id)
-                    || excluded.contains(id)
-                    || known.contains(id)
-            });
-            self.intent_desired.retain(|id, _| {
-                live.contains(id)
-                    || held.contains(id)
-                    || excluded.contains(id)
-                    || known.contains(id)
-            });
-            self.sticky_visible_rev.retain(|id, _| {
-                live.contains(id)
-                    || held.contains(id)
-                    || excluded.contains(id)
-                    || known.contains(id)
-            });
-        } else if !self.staged.observation.closed.is_empty() {
-            let closed: BTreeSet<WindowId> =
-                self.staged.observation.closed.iter().cloned().collect();
-            self.last_active_window
-                .retain(|_, window| !closed.contains(window));
-            self.excluded_intent.retain(|id, _| !closed.contains(id));
-        }
-        self.prune_state_bindings();
-        self.prune_selection_grants();
-        self.prune_selection_scopes();
-        self.prune_selection_targets();
-        self.prune_automatic_focus_tokens();
-        // Lifetime-local composed maximize follows the live inventory:
-        // a complete report drops dead identities (engine/member-known
-        // lifetimes stay like the state bindings above), explicit closes
-        // always prune, and restart drops the bit with the engine.
-        if !self.staged.observation.closed.is_empty() {
-            let closed: BTreeSet<WindowId> =
-                self.staged.observation.closed.iter().cloned().collect();
-            self.composed_maximized
-                .retain(|window| !closed.contains(window));
-        }
-        if inventory_complete {
-            let live_ref: BTreeSet<&WindowId> = self
-                .staged
-                .observation
-                .raw_windows
-                .iter()
-                .map(|fact| &fact.window)
-                .collect();
-            let held_ref: BTreeSet<&WindowId> = self
-                .staged
-                .held_windows
-                .iter()
-                .map(|held| &held.window)
-                .collect();
-            let excluded = self.staged.excluded.clone();
-            let known: BTreeSet<WindowId> = self
-                .composed_maximized
-                .iter()
-                .filter(|window| {
-                    self.engine_knows_window_any(window) || self.members.contains_key(*window)
-                })
-                .cloned()
-                .collect();
-            self.composed_maximized.retain(|window| {
-                live_ref.contains(window)
-                    || held_ref.contains(window)
-                    || excluded.contains(window)
-                    || known.contains(window)
-            });
-        }
-    }
-
-    /// Prune retained `operation_settled` and `switch_settled` outcomes when
-    /// their owner departs (Q2 A): runs before `publish_v4` projects the
-    /// reply so departed/closed owners' final outcomes are never published on
-    /// the wire. Buffers final dropped outcomes only when `OMNITILER_TRACE=1`
-    /// (`core_trace_enabled()`) so they emit solely after outbound gates
-    /// succeed at actual publication/adoption. Held, minimized, and incomplete
-    /// omissions retain their owners; `gesture_terminal` is generation-scoped
-    /// and is never pruned here.
-    pub(crate) fn prune_settled_outcomes(&mut self) {
-        let trace = core_trace_enabled();
-        if !self.staged.observation.closed.is_empty() && !self.operation_settled.is_empty() {
-            let closed: BTreeSet<WindowId> =
-                self.staged.observation.closed.iter().cloned().collect();
-            let dropped_ops = &mut self.staged_dropped_operations;
-            self.operation_settled.retain(|key, event| {
-                if closed.contains(&key.0) {
-                    if trace
-                        && (dropped_ops.len() < crate::world_report::MAX_REPLY_OPERATIONS
-                            || dropped_ops.contains_key(key))
-                    {
-                        dropped_ops.insert(key.clone(), event.clone());
-                    }
-                    false
-                } else {
-                    true
-                }
-            });
-        }
-        if !self.staged.observation.inventory_complete {
-            return;
-        }
-        if !self.operation_settled.is_empty() {
-            let live: BTreeSet<&WindowId> = self
-                .staged
-                .observation
-                .raw_windows
-                .iter()
-                .map(|fact| &fact.window)
-                .collect();
-            let held: BTreeSet<&WindowId> = self
-                .staged
-                .held_windows
-                .iter()
-                .map(|held| &held.window)
-                .collect();
-            let excluded = &self.staged.excluded;
-            let known: BTreeSet<WindowId> = self
-                .operation_settled
-                .keys()
-                .map(|(win, _)| win)
-                .filter(|win| self.engine_knows_window_any(win))
-                .cloned()
-                .collect();
-            let dropped_ops = &mut self.staged_dropped_operations;
-            self.operation_settled.retain(|key, event| {
-                let win = &key.0;
-                let keep = live.contains(win)
-                    || held.contains(win)
-                    || excluded.contains(win)
-                    || known.contains(win);
-                if !keep
-                    && trace
-                    && (dropped_ops.len() < crate::world_report::MAX_REPLY_OPERATIONS
-                        || dropped_ops.contains_key(key))
-                {
-                    dropped_ops.insert(key.clone(), event.clone());
-                }
-                keep
-            });
-        }
-        if !self.switch_settled.is_empty() {
-            let live_outputs: BTreeSet<OutputId> = self
-                .staged
-                .screens
-                .iter()
-                .map(|screen| screen.output.clone())
-                .chain(
-                    self.staged
-                        .held_screens
-                        .iter()
-                        .map(|held| held.output.clone()),
-                )
-                .collect();
-            let dropped_switches = &mut self.staged_dropped_switches;
-            self.switch_settled.retain(|output, event| {
-                let keep = live_outputs.contains(output);
-                if !keep
-                    && trace
-                    && (dropped_switches.len() < crate::world_report::MAX_REPLY_SWITCH_EVENTS
-                        || dropped_switches.contains_key(output))
-                {
-                    dropped_switches.insert(output.clone(), event.clone());
-                }
-                keep
-            });
-        }
-    }
-
-    /// Emit and clear trace-only Q2 dropped outcome diagnostics at actual
-    /// final publication/adoption, correlated to the final published reply's
-    /// `(gen, req, rev, obs)` (`OMNITILER_TRACE=1`, zero cost when disabled).
-    pub(crate) fn emit_staged_dropped_settlement_trace(
-        &mut self,
-        reply: &crate::world_report::WorldReplyV4,
-    ) {
-        if !core_trace_enabled() {
-            self.staged_dropped_operations.clear();
-            self.staged_dropped_switches.clear();
-            return;
-        }
-        let gen_str = diag_id(&reply.core_generation);
-        let req_str = diag_id(&reply.request_id);
-        let rev = reply.state_revision;
-        let obs = reply.based_on_observation_seq;
-        for event in self.staged_dropped_operations.values() {
-            emit_focus_trace(format!(
-                "omnitiler:core:trace ev=operation-settled-dropped gen={} req={} rev={} obs={} win={} kind={} op={} outcome={} cause={}",
-                gen_str,
-                req_str,
-                rev,
-                obs,
-                diag_id(&event.window.0),
-                event.kind.as_str(),
-                diag_id(&event.operation_id),
-                event.outcome.as_str(),
-                event.cause.as_deref().map_or("-", diag_id),
-            ));
-        }
-        for event in self.staged_dropped_switches.values() {
-            let (failed_shown, omitted) = format_bounded_failed(&event.failed);
-            if omitted > 0 {
-                emit_focus_trace(format!(
-                    "omnitiler:core:trace ev=switch-settled-dropped gen={} req={} rev={} obs={} out={} op={} outcome={} focus={} fallback={} failed={} failedOmitted={}",
-                    gen_str,
-                    req_str,
-                    rev,
-                    obs,
-                    diag_id(&event.output.0),
-                    diag_id(&event.operation_id),
-                    event.outcome.as_str(),
-                    event.focus.as_str(),
-                    event.fallback,
-                    failed_shown,
-                    omitted,
-                ));
-            } else {
-                emit_focus_trace(format!(
-                    "omnitiler:core:trace ev=switch-settled-dropped gen={} req={} rev={} obs={} out={} op={} outcome={} focus={} fallback={} failed={}",
-                    gen_str,
-                    req_str,
-                    rev,
-                    obs,
-                    diag_id(&event.output.0),
-                    diag_id(&event.operation_id),
-                    event.outcome.as_str(),
-                    event.focus.as_str(),
-                    event.fallback,
-                    failed_shown,
-                ));
-            }
-        }
-        self.staged_dropped_operations.clear();
-        self.staged_dropped_switches.clear();
-    }
-
-    fn pending_operation_id(
-        &self,
-        window: &WindowId,
-        kind: crate::world_report::OperationKind,
-    ) -> Option<&str> {
-        match kind {
-            crate::world_report::OperationKind::Clear => self
-                .retained_clears
-                .iter()
-                .find(|retained| &retained.window == window)
-                .map(|retained| retained.operation_id.as_str())
-                .or_else(|| {
-                    self.retained_born
-                        .iter()
-                        .find(|retained| &retained.window == window)
-                        .map(|retained| retained.operation_id.as_str())
-                }),
-            crate::world_report::OperationKind::Float => self
-                .retained_floats
-                .iter()
-                .find(|retained| &retained.window == window)
-                .map(|retained| retained.operation_id.as_str())
-                .or_else(|| {
-                    self.retained_clears
-                        .iter()
-                        .find(|retained| &retained.window == window && retained.float_route)
-                        .map(|retained| retained.operation_id.as_str())
-                }),
-        }
-    }
-
-    /// Emit trace-only per-published-reply retained settlement summary and
-    /// carried outcome rows (`OMNITILER_TRACE=1`, zero cost when disabled).
-    pub(crate) fn emit_published_settlement_trace(
-        &self,
-        prev_reply: Option<&crate::world_report::WorldReplyV4>,
-        reply: &crate::world_report::WorldReplyV4,
-        is_duplicate: bool,
-    ) {
-        if !core_trace_enabled() {
-            return;
-        }
-        let gen_str = diag_id(&reply.core_generation);
-        let req_str = diag_id(&reply.request_id);
-        let rev = reply.state_revision;
-        let obs = reply.based_on_observation_seq;
-        let gesture_state = if reply.gesture_settled.is_some() {
-            "present"
-        } else {
-            "none"
-        };
-        emit_settlement_trace(format!(
-            "omnitiler:core:trace ev=settlement-published gen={} req={} rev={} obs={} ready={} dup={} ops={} switches={} gesture={}",
-            gen_str,
-            req_str,
-            rev,
-            obs,
-            reply.ready,
-            is_duplicate,
-            reply.operation_settled.len(),
-            reply.switch_settled.len(),
-            gesture_state,
-        ));
-        if let Some(gesture) = &reply.gesture_settled {
-            let state = if !is_duplicate
-                && prev_reply.and_then(|prev| prev.gesture_settled.as_ref()) != Some(gesture)
-            {
-                "new"
-            } else {
-                "retained"
-            };
-            let pending = self
-                .gesture
-                .as_ref()
-                .map(|g| g.id.to_string())
-                .unwrap_or_else(|| "-".to_owned());
-            emit_settlement_trace(format!(
-                "omnitiler:core:trace ev=settlement-gesture gen={} req={} rev={} obs={} id={} owner={} kind=gesture outcome={} state={} pending={}",
-                gen_str,
-                req_str,
-                rev,
-                obs,
-                gesture.id,
-                gen_str,
-                if gesture.committed {
-                    "committed"
-                } else {
-                    "uncommitted"
-                },
-                state,
-                pending,
-            ));
-        }
-        for event in &reply.operation_settled {
-            let win_str = diag_id(&event.window.0);
-            let kind_str = event.kind.as_str();
-            let state = if !is_duplicate
-                && prev_reply.and_then(|prev| {
-                    prev.operation_settled
-                        .iter()
-                        .find(|prior| prior.window == event.window && prior.kind == event.kind)
-                }) != Some(event)
-            {
-                "new"
-            } else {
-                "retained"
-            };
-            let pending = self
-                .pending_operation_id(&event.window, event.kind)
-                .map_or("-", diag_id);
-            emit_settlement_trace(format!(
-                "omnitiler:core:trace ev=settlement-operation gen={} req={} rev={} obs={} key={}:{} owner={} kind={} op={} outcome={} cause={} state={} pending={}",
-                gen_str,
-                req_str,
-                rev,
-                obs,
-                win_str,
-                kind_str,
-                win_str,
-                kind_str,
-                diag_id(&event.operation_id),
-                event.outcome.as_str(),
-                event.cause.as_deref().map_or("-", diag_id),
-                state,
-                pending,
-            ));
-        }
-        for event in &reply.switch_settled {
-            let out_str = diag_id(&event.output.0);
-            let state = if !is_duplicate
-                && prev_reply.and_then(|prev| {
-                    prev.switch_settled
-                        .iter()
-                        .find(|prior| prior.output == event.output)
-                }) != Some(event)
-            {
-                "new"
-            } else {
-                "retained"
-            };
-            let pending = self
-                .retained_selection
-                .get(&event.output)
-                .map_or("-", |retained| diag_id(&retained.parent_op));
-            let (failed_shown, omitted) = format_bounded_failed(&event.failed);
-            if omitted > 0 {
-                emit_settlement_trace(format!(
-                    "omnitiler:core:trace ev=settlement-switch gen={} req={} rev={} obs={} key={} owner={} kind=switch op={} outcome={} focus={} fallback={} state={} pending={} failed={} failedOmitted={}",
-                    gen_str,
-                    req_str,
-                    rev,
-                    obs,
-                    out_str,
-                    out_str,
-                    diag_id(&event.operation_id),
-                    event.outcome.as_str(),
-                    event.focus.as_str(),
-                    event.fallback,
-                    state,
-                    pending,
-                    failed_shown,
-                    omitted,
-                ));
-            } else {
-                emit_settlement_trace(format!(
-                    "omnitiler:core:trace ev=settlement-switch gen={} req={} rev={} obs={} key={} owner={} kind=switch op={} outcome={} focus={} fallback={} state={} pending={} failed={}",
-                    gen_str,
-                    req_str,
-                    rev,
-                    obs,
-                    out_str,
-                    out_str,
-                    diag_id(&event.operation_id),
-                    event.outcome.as_str(),
-                    event.focus.as_str(),
-                    event.fallback,
-                    state,
-                    pending,
-                    failed_shown,
-                ));
-            }
-        }
-        emit_retained_state_trace(format!(
-            "omnitiler:core:trace ev=settlement-pending gen={} req={} rev={} obs={} ready={} dup={} pendingFloats={} pendingClears={} pendingBornClears={} pendingTransfers={} pendingCreations={} retainedStates={}",
-            gen_str,
-            req_str,
-            rev,
-            obs,
-            reply.ready,
-            is_duplicate,
-            self.retained_floats.len(),
-            self.retained_clears.len(),
-            self.retained_born.len(),
-            self.retained.len(),
-            self.retained_creations.len(),
-            self.retained_states.len(),
-        ));
-        for binding in self
-            .retained_states
-            .values()
-            .take(crate::world_state::MAX_RETAINED_STATE_BINDINGS)
-        {
-            let win_str = diag_id(&binding.target.window.0);
-            let prop_str = binding.target.property.as_str();
-            let latched = binding
-                .above_meta
-                .as_ref()
-                .map_or("-", |meta| if meta.latched { "1" } else { "0" });
-            let published = reply
-                .windows
-                .iter()
-                .find(|w| w.lifetime == binding.target.window)
-                .and_then(|w| {
-                    w.state
-                        .iter()
-                        .find(|s| s.property == binding.target.property)
-                });
-            let (pub_auth, pub_hold) = match published {
-                Some(target) => (
-                    target.authority.as_str(),
-                    match target.authority {
-                        crate::world_report::ScopeAuthority::Hold(reason) => reason.as_str(),
-                        _ => "-",
-                    },
-                ),
-                None => ("absent", "-"),
-            };
-            emit_retained_state_trace(format!(
-                "omnitiler:core:trace ev=retained-state gen={} req={} rev={} obs={} win={} prop={} targetRev={} targetVal={} spent={} pending={} disposition={} latched={} pubAuth={} pubHold={}",
-                gen_str,
-                req_str,
-                rev,
-                obs,
-                win_str,
-                prop_str,
-                binding.target.revision,
-                binding.target.value,
-                binding.spent,
-                binding.pending.is_some(),
-                binding.disposition.as_str(),
-                latched,
-                pub_auth,
-                pub_hold,
-            ));
-        }
-    }
-
-    /// Record the current staged run's `drag_preview` branch reason when core
-    /// tracing is enabled (zero cost when disabled).
-    pub(crate) fn set_drag_preview_trace_reason(&mut self, reason: &'static str) {
-        if core_trace_enabled() {
-            self.staged_drag_preview_reason = Some(reason);
-        }
-    }
-
-    /// Emit trace-only per-published-reply `drag_preview` decision summary
-    /// (`OMNITILER_TRACE=1`, zero cost when disabled).
-    pub(crate) fn emit_published_drag_preview_trace(
-        &self,
-        reply: &crate::world_report::WorldReplyV4,
-        is_duplicate: bool,
-    ) {
-        if !core_trace_enabled() {
-            return;
-        }
-        let gen_str = diag_id(&reply.core_generation);
-        let req_str = diag_id(&reply.request_id);
-        let rev = reply.state_revision;
-        let obs = reply.based_on_observation_seq;
-        let (preview_state, id_str, domain_out) = match &reply.drag_preview {
-            Some(preview) => (
-                "present",
-                preview.id.to_string(),
-                diag_id(&preview.domain.output.0),
-            ),
-            None => ("none", "-".to_owned(), "-"),
-        };
-        let suspended_out = reply
-            .presentation
-            .suspended_output
-            .as_ref()
-            .map(|output| diag_id(&output.0))
-            .unwrap_or("-");
-        let reason = if is_duplicate {
-            "duplicate"
-        } else if !reply.ready {
-            "bootstrap"
-        } else {
-            self.staged_drag_preview_reason.unwrap_or("unknown")
-        };
-        emit_drag_preview_trace(format!(
-            "omnitiler:core:trace ev=drag-preview gen={} req={} rev={} obs={} ready={} dup={} preview={} id={} domainOut={} suspendedOut={} reason={}",
-            gen_str,
-            req_str,
-            rev,
-            obs,
-            reply.ready,
-            is_duplicate,
-            preview_state,
-            id_str,
-            domain_out,
-            suspended_out,
-            reason,
-        ));
+    pub(crate) fn adapter_homing(&self, window: &WindowId) -> Option<(String, String)> {
+        self.world
+            .workspace
+            .members
+            .get(window)
+            .map(|state| (state.home.output.0.clone(), state.home.workspace.0.clone()))
     }
 }

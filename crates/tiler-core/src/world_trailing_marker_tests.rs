@@ -169,7 +169,7 @@ fn engine_with_mode(
     )
     .expect("generation");
     for (output, ids) in rings {
-        engine.mapping.insert(
+        engine.world.workspace.mapping.insert(
             (*output).to_owned(),
             ids.iter().map(|id| (*id).to_owned()).collect(),
         );
@@ -180,10 +180,11 @@ fn engine_with_mode(
 fn home(engine: &mut WorldEngine, window: &str, output: &str, workspace: &str) {
     let window_id = WindowId(window.to_owned());
     engine
+        .world
         .staged
         .facts
         .insert(window_id.clone(), fact(window, output, 0));
-    engine.staged.homing.insert(
+    engine.world.staged.homing.insert(
         window_id,
         DomainKey {
             output: OutputId(output.to_owned()),
@@ -195,13 +196,14 @@ fn home(engine: &mut WorldEngine, window: &str, output: &str, workspace: &str) {
 fn stage_report_gates(engine: &mut WorldEngine, report: &WorldReportV4) {
     // The marker reads inventory/screen gates from the staged observation:
     // mirror the hand-built report lanes into staged capture.
-    engine.staged.observation.inventory_complete = report.inventory_complete;
-    engine.staged.screens = report.screens.clone();
+    std::sync::Arc::make_mut(&mut engine.world.staged.observation).inventory_complete =
+        report.inventory_complete;
+    engine.world.staged.screens = report.screens.clone();
 }
 
 fn plan_marks(engine: &mut WorldEngine, output: &str) -> Vec<(String, bool)> {
     engine
-        .plan_workspaces(&[])
+        .tx(|tx| tx.plan_workspaces(&[]))
         .into_iter()
         .filter(|row| row.output.0 == output)
         .map(|row| (row.id.clone(), row.trailing))
@@ -210,7 +212,7 @@ fn plan_marks(engine: &mut WorldEngine, output: &str) -> Vec<(String, bool)> {
 
 fn pager_marks(engine: &WorldEngine, output: &str) -> Vec<(String, bool)> {
     engine
-        .presentation_for_publish_v4()
+        .tx_ro(|tx| tx.presentation_for_publish_v4())
         .pager
         .iter()
         .find(|screen| screen.output == output)
@@ -240,8 +242,8 @@ fn shared_union_occupied_elsewhere_suppresses_both_outputs() {
         false,
     );
     stage_report_gates(&mut engine, &report);
-    assert_eq!(engine.trailing_marked_id("out-a"), None);
-    assert_eq!(engine.trailing_marked_id("out-b"), None);
+    assert_eq!(engine.tx_ro(|tx| tx.trailing_marked_id("out-a")), None);
+    assert_eq!(engine.tx_ro(|tx| tx.trailing_marked_id("out-b")), None);
     assert!(
         plan_marks(&mut engine, "out-a")
             .iter()
@@ -275,7 +277,7 @@ fn occupied_tail_marks_nothing() {
         false,
     );
     stage_report_gates(&mut engine, &report);
-    assert_eq!(engine.trailing_marked_id("o"), None);
+    assert_eq!(engine.tx_ro(|tx| tx.trailing_marked_id("o")), None);
     assert!(
         plan_marks(&mut engine, "o")
             .iter()
@@ -287,8 +289,14 @@ fn occupied_tail_marks_nothing() {
 #[test]
 fn bound_visible_tail_still_marks() {
     let mut engine = engine_with(&[("o", vec!["w1", "w2"])], true);
-    engine.views.insert("o".to_owned(), "w2".to_owned());
     engine
+        .world
+        .workspace
+        .views
+        .insert("o".to_owned(), "w2".to_owned());
+    engine
+        .world
+        .settlement
         .native_map
         .insert(("o".to_owned(), "n1".to_owned()), "w2".to_owned());
     let report = report(
@@ -298,9 +306,12 @@ fn bound_visible_tail_still_marks() {
         false,
     );
     stage_report_gates(&mut engine, &report);
-    assert_eq!(engine.trailing_marked_id("o"), Some("w2".to_owned()));
+    assert_eq!(
+        engine.tx_ro(|tx| tx.trailing_marked_id("o")),
+        Some("w2".to_owned())
+    );
     let bound = engine
-        .plan_workspaces(&[])
+        .tx(|tx| tx.plan_workspaces(&[]))
         .into_iter()
         .find(|row| row.output.0 == "o" && row.id == "w2")
         .expect("bound tail row");
@@ -328,8 +339,14 @@ fn publication_final_only_over_unequal_rings() {
         true,
     );
     stage_report_gates(&mut engine, &report);
-    assert_eq!(engine.trailing_marked_id("a"), Some("w3".to_owned()));
-    assert_eq!(engine.trailing_marked_id("b"), Some("w2".to_owned()));
+    assert_eq!(
+        engine.tx_ro(|tx| tx.trailing_marked_id("a")),
+        Some("w3".to_owned())
+    );
+    assert_eq!(
+        engine.tx_ro(|tx| tx.trailing_marked_id("b")),
+        Some("w2".to_owned())
+    );
     assert_eq!(
         plan_marks(&mut engine, "a"),
         vec![
@@ -366,7 +383,10 @@ fn empty_tail_marks_the_final_spare_in_both_streams() {
         false,
     );
     stage_report_gates(&mut engine, &report);
-    assert_eq!(engine.trailing_marked_id("o"), Some("w2".to_owned()));
+    assert_eq!(
+        engine.tx_ro(|tx| tx.trailing_marked_id("o")),
+        Some("w2".to_owned())
+    );
     assert_eq!(
         plan_marks(&mut engine, "o"),
         vec![("w1".to_owned(), false), ("w2".to_owned(), true)]
@@ -387,7 +407,7 @@ fn incomplete_inventory_fails_closed_at_the_helper() {
         false,
     );
     stage_report_gates(&mut engine, &report);
-    assert_eq!(engine.trailing_marked_id("o"), None);
+    assert_eq!(engine.tx_ro(|tx| tx.trailing_marked_id("o")), None);
     assert!(
         plan_marks(&mut engine, "o")
             .iter()

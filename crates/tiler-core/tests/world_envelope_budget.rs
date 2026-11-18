@@ -348,31 +348,3 @@ fn late_command_refusal_rolls_back_without_mutation() {
     let after = ring_ids(&mut engine, 5);
     assert_eq!(before, after, "mapping untouched by the refused command");
 }
-
-#[test]
-fn oversized_request_refuses_before_any_mutation() {
-    use tiler_core::world_report::WORLD_MAX_REQUEST_BYTES;
-    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
-    let first = accepted(
-        &mut engine,
-        &report(1, vec![fact("win-a", "out-a", 0)], None, None),
-    );
-    let revision = first.state_revision;
-    // A validly shaped report past the 4 MiB request estimate refuses at
-    // the cheap gate: long opaque ids inflate the estimate past the bound
-    // while every section stays within its own cap.
-    let long = |prefix: &str, n: usize| format!("{prefix}-{n:05}-{}", "w".repeat(100));
-    let windows: Vec<WindowFact> = (0..10_000)
-        .map(|n| fact(&long("win", n), "out-a", 0))
-        .collect();
-    let big = report(2, windows, None, None);
-    assert!(tiler_core::world_sizing_v4::report_estimate_v4(&big) > WORLD_MAX_REQUEST_BYTES);
-    assert_eq!(rejected_kind(&mut engine, &big), "oversized");
-    assert_eq!(engine.state_revision(), revision);
-    assert!(engine.retained_transfers().is_empty());
-    let calm = accepted(
-        &mut engine,
-        &report(2, vec![fact("win-a", "out-a", 0)], None, None),
-    );
-    assert_eq!(calm.state_revision, revision + 1);
-}

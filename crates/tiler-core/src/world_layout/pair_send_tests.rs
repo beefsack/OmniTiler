@@ -698,3 +698,463 @@ fn same_output_capacity_send_updates_prior_source_durable_geometry() {
     assert_eq!(layout.admission_sequence(&target, &win("w1")), Some(9));
     assert!(layout.is_capacity_float(&target, &win("w1")));
 }
+
+fn collect_pair_group_ids(node: &Node, out: &mut std::collections::BTreeSet<NodeId>) {
+    if let Node::Group { id, children, .. } = node {
+        out.insert(id.clone());
+        for child in children {
+            collect_pair_group_ids(child, out);
+        }
+    }
+}
+
+fn all_layout_group_ids(layout: &WorldLayout) -> std::collections::BTreeSet<NodeId> {
+    let mut ids = std::collections::BTreeSet::new();
+    for domain in layout.domains.values() {
+        if let Some(tree) = domain.tree.as_ref() {
+            collect_pair_group_ids(tree, &mut ids);
+        }
+    }
+    ids
+}
+
+fn all_layout_node_ids(layout: &WorldLayout) -> std::collections::BTreeSet<NodeId> {
+    fn walk(node: &Node, out: &mut std::collections::BTreeSet<NodeId>) {
+        out.insert(node.id().clone());
+        if let Node::Group { children, .. } = node {
+            for child in children {
+                walk(child, out);
+            }
+        }
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    for domain in layout.domains.values() {
+        if let Some(tree) = domain.tree.as_ref() {
+            walk(tree, &mut ids);
+        }
+    }
+    ids
+}
+
+#[test]
+fn alloc_send_to_occupied_shares_counter() {
+    use crate::session::{ExceptionFlags, ObservedWindow};
+    let source = ws_key("out-1", "ws-1");
+    let target = ws_key("out-1", "ws-2");
+    let source_desc = domain_desc(&source, std_bounds(), 0);
+    let target_desc = domain_desc(&target, std_bounds(), 0);
+    let mut layout = WorldLayout::new();
+    layout
+        .domains
+        .insert(source.clone(), DomainLayout::new(std_bounds(), 0, 0));
+    layout
+        .domains
+        .insert(target.clone(), DomainLayout::new(std_bounds(), 0, 0));
+
+    let obs_for = |name: &str, k: &DomainKey| ObservedWindow {
+        window: win(name),
+        output: k.output.clone(),
+        workspace: k.workspace.clone(),
+        floating: false,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress: false,
+        hints: WindowSizeHints::none(),
+    };
+    let wide = Rect {
+        x: 0,
+        y: 0,
+        w: 100,
+        h: 50,
+    };
+
+    layout
+        .admit_window(
+            &source,
+            &win("a"),
+            ExceptionFlags::none(),
+            None,
+            wide,
+            false,
+            false,
+            &[obs_for("a", &source)],
+        )
+        .expect("admit a");
+    layout
+        .admit_window(
+            &source,
+            &win("b"),
+            ExceptionFlags::none(),
+            None,
+            wide,
+            false,
+            false,
+            &[obs_for("a", &source), obs_for("b", &source)],
+        )
+        .expect("admit b");
+    layout
+        .admit_window(
+            &target,
+            &win("d"),
+            ExceptionFlags::none(),
+            None,
+            wide,
+            false,
+            false,
+            &[obs_for("d", &target)],
+        )
+        .expect("admit d");
+    assert_eq!(
+        all_layout_group_ids(&layout),
+        std::collections::BTreeSet::from([nid("grp-0")])
+    );
+
+    let observed = vec![eng("a", &source), eng("b", &source), eng("d", &target)];
+    let focus = win("b");
+    let ctx = PairOperationContext {
+        source_domain: &source_desc,
+        target_domain: &target_desc,
+        source_outer_gap: 0,
+        target_outer_gap: None,
+        observed_focus: &focus,
+        observed: &observed,
+        closed: &[],
+    };
+    let outcome = layout
+        .run_pair_send(&ctx, &focus, true, false)
+        .expect("send to occupied");
+    assert_eq!(outcome.kind, PairSendKind::Tiled);
+    assert_eq!(
+        all_layout_group_ids(&layout),
+        std::collections::BTreeSet::from([nid("grp-1")])
+    );
+    assert_eq!(layout.group_alloc.next_value(), 2);
+    assert!(layout.is_tiled_window(&target, &win("b")));
+}
+
+#[test]
+fn alloc_send_fallback_burns_and_never_reissues_on_repeat() {
+    use crate::session::{ExceptionFlags, ObservedWindow};
+    let source = ws_key("o", "ws-1");
+    let target = ws_key("o", "ws-2");
+    let tight_bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 12,
+        h: 12,
+    };
+    let source_desc = domain_desc(&source, std_bounds(), 0);
+    let target_desc = domain_desc(&target, tight_bounds, 4);
+
+    let mut layout = WorldLayout::new();
+    layout
+        .domains
+        .insert(source.clone(), DomainLayout::new(std_bounds(), 0, 0));
+    layout
+        .domains
+        .insert(target.clone(), DomainLayout::new(tight_bounds, 4, 0));
+
+    let obs_for = |name: &str, k: &DomainKey| ObservedWindow {
+        window: win(name),
+        output: k.output.clone(),
+        workspace: k.workspace.clone(),
+        floating: false,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress: false,
+        hints: WindowSizeHints::none(),
+    };
+    let wide = Rect {
+        x: 0,
+        y: 0,
+        w: 12,
+        h: 4,
+    };
+    let tall = Rect {
+        x: 0,
+        y: 0,
+        w: 4,
+        h: 12,
+    };
+
+    layout
+        .admit_window(
+            &target,
+            &win("a"),
+            ExceptionFlags::none(),
+            None,
+            wide,
+            false,
+            false,
+            &[obs_for("a", &target)],
+        )
+        .expect("admit a");
+    layout
+        .admit_window(
+            &target,
+            &win("b"),
+            ExceptionFlags::none(),
+            None,
+            wide,
+            false,
+            false,
+            &[obs_for("a", &target), obs_for("b", &target)],
+        )
+        .expect("admit b");
+    layout
+        .admit_window(
+            &target,
+            &win("c"),
+            ExceptionFlags::none(),
+            None,
+            tall,
+            false,
+            false,
+            &[
+                obs_for("a", &target),
+                obs_for("b", &target),
+                obs_for("c", &target),
+            ],
+        )
+        .expect("admit c");
+    layout
+        .admit_window(
+            &source,
+            &win("d"),
+            ExceptionFlags::none(),
+            None,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 50,
+            },
+            false,
+            false,
+            &[obs_for("d", &source)],
+        )
+        .expect("admit d");
+    assert_eq!(
+        all_layout_group_ids(&layout),
+        std::collections::BTreeSet::from([nid("grp-0"), nid("grp-1")])
+    );
+    assert_eq!(layout.group_alloc.next_value(), 2);
+
+    let observed = vec![
+        eng("a", &target),
+        eng("b", &target),
+        eng("c", &target),
+        eng("d", &source),
+    ];
+    let focus = win("d");
+    let ctx = PairOperationContext {
+        source_domain: &source_desc,
+        target_domain: &target_desc,
+        source_outer_gap: 0,
+        target_outer_gap: None,
+        observed_focus: &focus,
+        observed: &observed,
+        closed: &[],
+    };
+    let outcome = layout
+        .run_pair_send(&ctx, &focus, true, false)
+        .expect("send fallback succeeds");
+    assert_eq!(outcome.kind, PairSendKind::Tiled);
+    // Failed ordinary wrap of c burned grp-2; largest fallback split of a minted grp-3.
+    assert_eq!(
+        all_layout_group_ids(&layout),
+        std::collections::BTreeSet::from([nid("grp-0"), nid("grp-1"), nid("grp-3")])
+    );
+    assert_eq!(layout.group_alloc.next_value(), 4);
+
+    fn send_sibling(node: &Node, leaf_id: &NodeId) -> Option<NodeId> {
+        match node {
+            Node::Leaf { .. } => None,
+            Node::Group { children, .. } => {
+                if children.len() == 2 && children.iter().any(|c| c.id() == leaf_id) {
+                    return children
+                        .iter()
+                        .find(|c| c.id() != leaf_id)
+                        .map(|c| c.id().clone());
+                }
+                children.iter().find_map(|c| send_sibling(c, leaf_id))
+            }
+        }
+    }
+    let d_leaf = layout.domain(&target).unwrap().leaves[&win("d")].clone();
+    let a_leaf = layout.domain(&target).unwrap().leaves[&win("a")].clone();
+    assert_eq!(
+        send_sibling(layout.tree(&target).unwrap(), &d_leaf),
+        Some(a_leaf.clone())
+    );
+
+    // Remove d from target, return it to source, restore anchor c, and send again:
+    // repeat burns grp-4 (ordinary) and grp-5 (fallback) and never reissues grp-3.
+    layout
+        .converge_domain(
+            &target,
+            &[
+                obs_for("a", &target),
+                obs_for("b", &target),
+                obs_for("c", &target),
+            ],
+            Some(&win("c")),
+            &std::collections::BTreeSet::new(),
+        )
+        .expect("remove d from target");
+    assert_eq!(
+        all_layout_group_ids(&layout),
+        std::collections::BTreeSet::from([nid("grp-0"), nid("grp-1")])
+    );
+    layout
+        .domains
+        .insert(source.clone(), DomainLayout::new(std_bounds(), 0, 0));
+    layout
+        .admit_window(
+            &source,
+            &win("d"),
+            ExceptionFlags::none(),
+            None,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 50,
+            },
+            false,
+            false,
+            &[obs_for("d", &source)],
+        )
+        .expect("readmit d to source");
+
+    let outcome2 = layout
+        .run_pair_send(&ctx, &focus, true, false)
+        .expect("repeat send fallback succeeds");
+    assert_eq!(outcome2.kind, PairSendKind::Tiled);
+    assert_eq!(
+        all_layout_group_ids(&layout),
+        std::collections::BTreeSet::from([nid("grp-0"), nid("grp-1"), nid("grp-5")])
+    );
+    assert_eq!(layout.group_alloc.next_value(), 6);
+    let d_leaf2 = layout.domain(&target).unwrap().leaves[&win("d")].clone();
+    assert_eq!(
+        send_sibling(layout.tree(&target).unwrap(), &d_leaf2),
+        Some(a_leaf)
+    );
+}
+
+#[test]
+fn alloc_pair_split_uses_shared_counter_for_new_groups() {
+    use crate::session::{ExceptionFlags, ObservedWindow};
+    let source = ws_key("out-1", "ws-1");
+    let target = ws_key("out-1", "ws-2");
+    let source_desc = domain_desc(&source, std_bounds(), 0);
+    let target_desc = domain_desc(&target, std_bounds(), 0);
+
+    let mut layout = WorldLayout::new();
+    layout
+        .domains
+        .insert(source.clone(), DomainLayout::new(std_bounds(), 0, 0));
+    layout
+        .domains
+        .insert(target.clone(), DomainLayout::new(std_bounds(), 0, 0));
+
+    let obs_for = |name: &str, k: &DomainKey| ObservedWindow {
+        window: win(name),
+        output: k.output.clone(),
+        workspace: k.workspace.clone(),
+        floating: false,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress: false,
+        hints: WindowSizeHints::none(),
+    };
+    let placed = Rect {
+        x: 0,
+        y: 0,
+        w: 100,
+        h: 50,
+    };
+
+    layout
+        .admit_window(
+            &source,
+            &win("win-1"),
+            ExceptionFlags::none(),
+            None,
+            placed,
+            false,
+            false,
+            &[obs_for("win-1", &source)],
+        )
+        .expect("admit win-1");
+    layout
+        .admit_window(
+            &source,
+            &win("win-2"),
+            ExceptionFlags::none(),
+            None,
+            placed,
+            false,
+            false,
+            &[obs_for("win-1", &source), obs_for("win-2", &source)],
+        )
+        .expect("admit win-2");
+    layout
+        .admit_window(
+            &target,
+            &win("win-t"),
+            ExceptionFlags::none(),
+            None,
+            placed,
+            false,
+            false,
+            &[obs_for("win-t", &target)],
+        )
+        .expect("admit win-t");
+
+    let pair = layout
+        .assemble_send_pair(&source_desc, &target_desc)
+        .expect("assemble send pair");
+    layout.install_pair(&pair, 0, None).expect("install split");
+
+    for id in all_layout_node_ids(&layout) {
+        assert!(
+            !id.0.starts_with("pair-target-"),
+            "temporary pair-target id escaped: {id:?}"
+        );
+        assert!(
+            !id.0.starts_with("pair-moved-"),
+            "temporary pair-moved id escaped: {id:?}"
+        );
+    }
+
+    // Minting after split continues the shared counter past grp-0.
+    layout
+        .admit_window(
+            &source,
+            &win("win-3"),
+            ExceptionFlags::none(),
+            None,
+            placed,
+            false,
+            false,
+            &[
+                obs_for("win-1", &source),
+                obs_for("win-2", &source),
+                obs_for("win-3", &source),
+            ],
+        )
+        .expect("admit win-3 after split");
+    assert_eq!(
+        all_layout_group_ids(&layout),
+        std::collections::BTreeSet::from([nid("grp-0"), nid("grp-1")])
+    );
+    assert_eq!(layout.group_alloc.next_value(), 2);
+}

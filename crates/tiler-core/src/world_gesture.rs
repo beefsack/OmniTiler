@@ -25,6 +25,7 @@
 //! and completion effects are core-owned through the stable gesture id
 //! and the retained terminal outcome.
 
+use crate::world_transaction::WorldTransaction;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::directional::{Axis, OutputId, WindowId, WorkspaceId};
@@ -34,9 +35,21 @@ use crate::gesture::{
 };
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, DragHoverPrior, OutputDomain};
-use crate::world_engine::{RetainedTransfer, WorldEngine};
+use crate::world_engine::RetainedTransfer;
 use crate::world_layout::{LocalOperationContext, PairOperationContext};
 use crate::world_report::{DragPreviewV4, TransferKind, TransferTarget};
+
+/// Source-first pair geometry and combined shielded observation for a
+/// cross-output preview or drop.
+type GesturePairInputs = (
+    OutputDomain,
+    OutputDomain,
+    i32,
+    i32,
+    WindowId,
+    Vec<EngineWindow>,
+    Vec<WindowId>,
+);
 
 /// Retained gesture session: one open native move/size gesture bound to an
 /// exact window lifetime plus its stable adapter gesture id. `start_frame`
@@ -71,7 +84,7 @@ pub(crate) enum GestureOutcome {
     Settled { committed: bool },
 }
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Stable gesture operation identity: the window plus its starting
     /// observation sequence. Retained transfers settle on arrival proof;
     /// the identity stays unique across reports without consuming command
@@ -105,20 +118,20 @@ impl WorldEngine {
     /// - A `Cancelled` phase with no retained session consumes its id
     ///   and records without binding (no shield for a dead gesture).
     pub(crate) fn gesture_bind(&mut self, held_scopes: &BTreeSet<DomainKey>) -> bool {
-        let staged_seq = self.staged.observation.observation_seq;
-        let ingress_owned = self.staged.observation.gesture.clone();
+        let staged_seq = self.world.staged.observation.observation_seq;
+        let ingress_owned = self.world.staged.observation.gesture.clone();
         let ingress = match ingress_owned.as_ref() {
             Some(ingress) if ingress.esc => {
                 // Host-owned Esc/cancel fact clears only the matching
                 // retained session, immediately, even before the sweep. A
                 // stale Esc for another id never clears a newer session,
                 // but still consumes its own id so a retry stays dead.
-                if let Some(retained) = self.gesture.clone()
+                if let Some(retained) = self.world.gesture.retained.clone()
                     && retained.window == ingress.window
                     && retained.id == ingress.id
                 {
-                    self.gesture = None;
-                    self.drag_preview = None;
+                    self.world.gesture.retained = None;
+                    self.world.gesture.drag_preview = None;
                     self.record_gesture_terminal(ingress.id, false);
                 } else {
                     self.record_gesture_terminal(ingress.id, false);
@@ -135,11 +148,13 @@ impl WorldEngine {
             self.set_drag_preview_trace_reason("bind-replayed");
             return false;
         }
-        if let Some(retained) = self.gesture.clone() {
+        if let Some(retained) = self.world.gesture.retained.clone() {
             if retained.window == ingress.window && retained.id == ingress.id {
                 return true;
             }
-            if ingress.id != 0 && ingress.id > self.consumed_gesture_seq && ingress.id > retained.id
+            if ingress.id != 0
+                && ingress.id > self.world.gesture.consumed_seq
+                && ingress.id > retained.id
             {
                 // Fresh id supersedes the dead/held session below: fall
                 // through and replace it.
@@ -164,7 +179,7 @@ impl WorldEngine {
         // staged homing for a genuinely new lifetime.
         let home = self
             .retained_homing(&ingress.window)
-            .or_else(|| self.staged.homing.get(&ingress.window).cloned());
+            .or_else(|| self.world.staged.homing.get(&ingress.window).cloned());
         let Some(home) = home else {
             if ingress.phase == GesturePhase::Released {
                 // Unbindable terminal still consumes its identity and
@@ -190,8 +205,8 @@ impl WorldEngine {
         // live sample), so a first Updated after a lost Started keeps the
         // true zero gate. Exact exactly when the down point was read.
         let start_cursor = ingress.start_cursor.or(ingress.cursor);
-        self.drag_preview = None;
-        self.gesture = Some(RetainedGesture {
+        self.world.gesture.drag_preview = None;
+        self.world.gesture.retained = Some(RetainedGesture {
             window: ingress.window.clone(),
             id: ingress.id,
             kind: ingress.kind,
@@ -234,24 +249,24 @@ impl WorldEngine {
         issue: &crate::world_engine::EventIssue,
         held_scopes: &mut BTreeSet<DomainKey>,
     ) -> GestureOutcome {
-        let ingress = match self.staged.observation.gesture.clone() {
+        let ingress = match self.world.staged.observation.gesture.clone() {
             Some(ingress) if ingress.esc => {
                 // Host-owned Esc/cancel fact: clears only the matching
                 // session regardless of phase. Never commits; the native
                 // move already restored. A stale Esc still consumes its
                 // own id so a retry stays dead, but never clears newer.
-                if let Some(retained) = self.gesture.clone()
+                if let Some(retained) = self.world.gesture.retained.clone()
                     && retained.window == ingress.window
                     && retained.id == ingress.id
                 {
-                    self.gesture = None;
-                    self.drag_preview = None;
+                    self.world.gesture.retained = None;
+                    self.world.gesture.drag_preview = None;
                     self.record_gesture_terminal(ingress.id, false);
                     self.set_drag_preview_trace_reason("esc-clear");
                     return GestureOutcome::Settled { committed: false };
                 }
                 self.record_gesture_terminal(ingress.id, false);
-                if self.drag_preview.is_some() {
+                if self.world.gesture.drag_preview.is_some() {
                     self.set_drag_preview_trace_reason("esc-stale-preserved");
                 } else {
                     self.set_drag_preview_trace_reason("esc-stale");
@@ -261,9 +276,9 @@ impl WorldEngine {
             Some(ingress) => Some(ingress),
             None => None,
         };
-        match (self.gesture.clone(), ingress) {
+        match (self.world.gesture.retained.clone(), ingress) {
             (None, None) => {
-                self.drag_preview = None;
+                self.world.gesture.drag_preview = None;
                 self.set_drag_preview_trace_reason("no-session");
                 GestureOutcome::Absent
             }
@@ -273,8 +288,8 @@ impl WorldEngine {
                 // and recorded there) or ran on an earlier report whose
                 // session has since cleared. Either way there is nothing
                 // to act on.
-                self.drag_preview = None;
-                if self.staged_drag_preview_reason.is_none() {
+                self.world.gesture.drag_preview = None;
+                if self.world.gesture.staged_drag_preview_reason.is_none() {
                     self.set_drag_preview_trace_reason("no-session-ingress");
                 }
                 GestureOutcome::Absent
@@ -288,16 +303,16 @@ impl WorldEngine {
                 // Retained drag_preview is preserved across omitted ingress
                 // unless current safety/scope/domain/neighbor fences
                 // invalidate it.
-                if self.staged.closes.contains(&retained.window) {
-                    self.gesture = None;
-                    self.drag_preview = None;
+                if self.world.staged.closes.contains(&retained.window) {
+                    self.world.gesture.retained = None;
+                    self.world.gesture.drag_preview = None;
                     self.record_gesture_terminal(retained.id, false);
                     self.set_drag_preview_trace_reason("subject-closed");
                     return GestureOutcome::Settled { committed: false };
                 }
-                let had_preview = self.drag_preview.is_some();
+                let had_preview = self.world.gesture.drag_preview.is_some();
                 self.prune_drag_preview(held_scopes);
-                if self.drag_preview.is_some() {
+                if self.world.gesture.drag_preview.is_some() {
                     self.set_drag_preview_trace_reason("omitted-preserved");
                 } else if !had_preview {
                     self.set_drag_preview_trace_reason("omitted-none");
@@ -320,10 +335,10 @@ impl WorldEngine {
                     ) {
                         self.record_gesture_terminal(ingress.id, false);
                     }
-                    self.gesture = Some(retained);
-                    let had_preview = self.drag_preview.is_some();
+                    self.world.gesture.retained = Some(retained);
+                    let had_preview = self.world.gesture.drag_preview.is_some();
                     self.prune_drag_preview(held_scopes);
-                    if self.drag_preview.is_some() {
+                    if self.world.gesture.drag_preview.is_some() {
                         self.set_drag_preview_trace_reason("newcomer-preserved");
                     } else if !had_preview {
                         self.set_drag_preview_trace_reason("newcomer-none");
@@ -337,9 +352,9 @@ impl WorldEngine {
                     // (bind only, no overlay at the down point); every
                     // other sample previews through the update path.
                     GesturePhase::Started
-                        if retained.start_seq == self.staged.observation.observation_seq =>
+                        if retained.start_seq == self.world.staged.observation.observation_seq =>
                     {
-                        self.drag_preview = None;
+                        self.world.gesture.drag_preview = None;
                         self.set_drag_preview_trace_reason("bind-only");
                         GestureOutcome::Held
                     }
@@ -348,8 +363,8 @@ impl WorldEngine {
                     }
                     GesturePhase::Released => self.gesture_released(issue, &ingress, held_scopes),
                     GesturePhase::Cancelled => {
-                        self.gesture = None;
-                        self.drag_preview = None;
+                        self.world.gesture.retained = None;
+                        self.world.gesture.drag_preview = None;
                         self.record_gesture_terminal(retained.id, false);
                         self.set_drag_preview_trace_reason("cancelled");
                         GestureOutcome::Settled { committed: false }
@@ -375,26 +390,22 @@ impl WorldEngine {
         home: &DomainKey,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> bool {
-        if !self.staged.observation.inventory_complete {
+        if !self.world.staged.observation.inventory_complete {
             return false;
         }
-        if self.staged.closes.contains(&ingress.window) {
+        if self.world.staged.closes.contains(&ingress.window) {
             return false;
         }
-        let Some(domain) = self.staged.domains.iter().find(|d| d.key == *home) else {
+        let Some(domain) = self.world.staged.domains.iter().find(|d| d.key == *home) else {
             return false;
         };
         if !domain.readable || held_scopes.contains(home) {
             return false;
         }
-        if self
-            .tiling
-            .get(home)
-            .is_some_and(|mode| *mode != crate::world_report::TilingMode::Tiled)
-        {
+        if self.world.workspace.is_floating(home) {
             return false;
         }
-        let Some(fact) = self.staged.facts.get(&ingress.window) else {
+        let Some(fact) = self.world.staged.facts.get(&ingress.window) else {
             return false;
         };
         let derived = self.derived_for(&ingress.window);
@@ -427,25 +438,25 @@ impl WorldEngine {
         retained: &RetainedGesture,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> bool {
-        if !self.staged.observation.inventory_complete {
+        if !self.world.staged.observation.inventory_complete {
             return false;
         }
-        if self.staged.closes.contains(&retained.window) {
+        if self.world.staged.closes.contains(&retained.window) {
             return false;
         }
-        let Some(home) = self.staged.homing.get(&retained.window) else {
+        let Some(home) = self.world.staged.homing.get(&retained.window) else {
             return false;
         };
         if home != &retained.home {
             return false;
         }
-        let Some(domain) = self.staged.domains.iter().find(|d| d.key == *home) else {
+        let Some(domain) = self.world.staged.domains.iter().find(|d| d.key == *home) else {
             return false;
         };
         if !domain.readable || held_scopes.contains(home) {
             return false;
         }
-        let Some(fact) = self.staged.facts.get(&retained.window) else {
+        let Some(fact) = self.world.staged.facts.get(&retained.window) else {
             return false;
         };
         let derived = self.derived_for(&retained.window);
@@ -472,10 +483,14 @@ impl WorldEngine {
     /// (non-sticky) exception, and no native overlay. The composed permit
     /// below keys off exactly this: ordinary floats and sticky never pass.
     fn is_owned_composed_float(&self, window: &WindowId) -> bool {
-        if self.capabilities().is_some_and(|caps| caps.maximize) {
+        if self
+            .connection
+            .capabilities()
+            .is_some_and(|caps| caps.maximize)
+        {
             return false;
         }
-        if !self.composed_maximized.contains(window) {
+        if !self.world.runtime.composed_maximized.contains(window) {
             return false;
         }
         let derived = self.derived_for(window);
@@ -485,13 +500,14 @@ impl WorldEngine {
         if derived.overlay_fullscreen || derived.overlay_maximized {
             return false;
         }
-        self.layout.is_exception_window_any(window)
+        self.world.layout.is_exception_window_any(window)
     }
 
     /// Release-frame ground truth for the retained window: the staged
     /// observed frame, when readable.
     fn gesture_release_frame(&self, retained: &RetainedGesture) -> Option<crate::geometry::Rect> {
-        self.staged
+        self.world
+            .staged
             .facts
             .get(&retained.window)
             .and_then(|fact| fact.rect)
@@ -504,13 +520,14 @@ impl WorldEngine {
     /// commits; the session holds for the terminal phase. The gesture
     /// subject itself is exempt: a focused fullscreen subject still acts.
     fn gesture_game_paused(&self, retained: &RetainedGesture) -> bool {
-        if self.staged.observation.focused_global.is_empty()
-            || self.staged.observation.focused_global == retained.window.0
+        if self.world.staged.observation.focused_global.is_empty()
+            || self.world.staged.observation.focused_global == retained.window.0
         {
             return false;
         }
-        let focused = WindowId(self.staged.observation.focused_global.clone());
-        self.staged
+        let focused = WindowId(self.world.staged.observation.focused_global.clone());
+        self.world
+            .staged
             .facts
             .get(&focused)
             .is_some_and(|fact| fact.fullscreen == Some(true))
@@ -531,23 +548,25 @@ impl WorldEngine {
         held_scopes: &BTreeSet<DomainKey>,
     ) -> GestureOutcome {
         let retained = self
+            .world
             .gesture
+            .retained
             .clone()
             .expect("updated runs with a retained session");
-        if self.staged.closes.contains(&retained.window) {
-            self.gesture = None;
-            self.drag_preview = None;
+        if self.world.staged.closes.contains(&retained.window) {
+            self.world.gesture.retained = None;
+            self.world.gesture.drag_preview = None;
             self.record_gesture_terminal(retained.id, false);
             self.set_drag_preview_trace_reason("subject-closed");
             return GestureOutcome::Settled { committed: false };
         }
         if !self.gesture_continue_fences(&retained, held_scopes) {
-            self.drag_preview = None;
+            self.world.gesture.drag_preview = None;
             self.set_drag_preview_trace_reason("continue-fence");
             return GestureOutcome::Held;
         }
         if self.gesture_game_paused(&retained) {
-            self.drag_preview = None;
+            self.world.gesture.drag_preview = None;
             self.set_drag_preview_trace_reason("game-paused");
             return GestureOutcome::Held;
         }
@@ -555,19 +574,19 @@ impl WorldEngine {
             // Owned composed floats publish no drag preview: the overlay
             // is already the work area, and the release adopts the native
             // frame. Hold the session for the terminal phase.
-            self.drag_preview = None;
+            self.world.gesture.drag_preview = None;
             self.set_drag_preview_trace_reason("owned-composed-float");
             return GestureOutcome::Held;
         }
         if retained.kind != GestureKind::Move {
-            self.drag_preview = None;
+            self.world.gesture.drag_preview = None;
             self.set_drag_preview_trace_reason("non-move");
             return GestureOutcome::Held;
         }
         let Some((cursor_x, cursor_y)) = ingress.cursor else {
             // No cursor work without a cursor: hold the session, publish
             // no overlay.
-            self.drag_preview = None;
+            self.world.gesture.drag_preview = None;
             self.set_drag_preview_trace_reason("no-cursor");
             return GestureOutcome::Held;
         };
@@ -576,7 +595,7 @@ impl WorldEngine {
             // gesture continues, the next moved sample may show. Only
             // exact sessions gate here: an implicit bind never saw the
             // down point, so its first live sample cannot prove zero.
-            self.drag_preview = None;
+            self.world.gesture.drag_preview = None;
             self.set_drag_preview_trace_reason("zero-move");
             return GestureOutcome::Held;
         }
@@ -598,27 +617,27 @@ impl WorldEngine {
                 held_scopes,
             ) {
                 Some(preview) => {
-                    if let Some(session) = self.gesture.as_mut() {
+                    if let Some(session) = self.world.gesture.retained.as_mut() {
                         session.hover = preview.hover.clone();
                     }
-                    self.drag_preview = Some(preview);
+                    self.world.gesture.drag_preview = Some(preview);
                     self.set_drag_preview_trace_reason("preview-pair");
                     GestureOutcome::Settled { committed: false }
                 }
                 None => {
-                    self.drag_preview = None;
+                    self.world.gesture.drag_preview = None;
                     GestureOutcome::Held
                 }
             };
         }
         let Some((_, inset, domain_report)) = self.gesture_local_context(&retained, held_scopes)
         else {
-            self.drag_preview = None;
+            self.world.gesture.drag_preview = None;
             self.set_drag_preview_trace_reason("local-event-none");
             return GestureOutcome::Held;
         };
         let observed = self.shielded_windows(&retained.home, &domain_report.windows);
-        match self.layout.run_local_drag_preview(
+        match self.world.layout.run_local_drag_preview(
             &inset,
             domain_report.outer_gap,
             &retained.window,
@@ -630,17 +649,17 @@ impl WorldEngine {
         ) {
             Ok(outcome) => {
                 let preview = Self::drag_preview_from_outcome(retained.id, outcome);
-                if let Some(session) = self.gesture.as_mut() {
+                if let Some(session) = self.world.gesture.retained.as_mut() {
                     session.hover = preview.hover.clone();
                 }
-                self.drag_preview = Some(preview);
+                self.world.gesture.drag_preview = Some(preview);
                 self.set_drag_preview_trace_reason("preview-local");
                 GestureOutcome::Settled { committed: false }
             }
             // Engine refusals (self/centre/outside/unchanged) and session
             // mismatches suppress the overlay but retain the session.
             Err(_) => {
-                self.drag_preview = None;
+                self.world.gesture.drag_preview = None;
                 self.set_drag_preview_trace_reason("local-engine-refused");
                 GestureOutcome::Held
             }
@@ -665,17 +684,19 @@ impl WorldEngine {
         held_scopes: &mut BTreeSet<DomainKey>,
     ) -> GestureOutcome {
         let retained = self
+            .world
             .gesture
+            .retained
             .clone()
             .expect("released runs with a retained session");
-        self.gesture = None;
-        self.drag_preview = None;
+        self.world.gesture.retained = None;
+        self.world.gesture.drag_preview = None;
         self.set_drag_preview_trace_reason("released");
         if self.gesture_game_paused(&retained) {
             self.record_gesture_terminal(retained.id, false);
             return GestureOutcome::Settled { committed: false };
         }
-        if self.staged.closes.contains(&retained.window)
+        if self.world.staged.closes.contains(&retained.window)
             || !self.gesture_continue_fences(&retained, held_scopes)
         {
             self.record_gesture_terminal(retained.id, false);
@@ -752,7 +773,10 @@ impl WorldEngine {
             }
         );
         if committed {
-            self.composed_maximized.remove(&retained.window);
+            self.world
+                .runtime
+                .composed_maximized
+                .remove(&retained.window);
         }
         self.record_gesture_terminal(retained.id, committed);
         outcome
@@ -784,6 +808,7 @@ impl WorldEngine {
             .collect();
         let home_key = retained.home.clone();
         let home_inset = self
+            .world
             .staged
             .domains
             .iter()
@@ -806,8 +831,9 @@ impl WorldEngine {
                     return GestureOutcome::Settled { committed: false };
                 };
                 let windows = self.shielded_windows(&retained.home, &domain_report.windows);
-                if self.layout.contains_domain(&domain_key)
+                if self.world.layout.contains_domain(&domain_key)
                     && self
+                        .world
                         .layout
                         .converge_retained_observation(
                             &domain_key,
@@ -820,6 +846,7 @@ impl WorldEngine {
                     return GestureOutcome::Settled { committed: false };
                 }
                 let committed = self
+                    .world
                     .layout
                     .run_local_drag_drop(
                         &inset,
@@ -873,7 +900,7 @@ impl WorldEngine {
                             };
                             self.commit_send_member(window, &target);
                         }
-                        self.retained.push(transfer);
+                        self.world.settlement.retained.push(transfer);
                         GestureOutcome::Settled { committed: true }
                     }
                     Err(_) => GestureOutcome::Settled { committed: false },
@@ -889,19 +916,13 @@ impl WorldEngine {
     /// ring head names a tiled workspace. `None` when the output owns no
     /// ring (the resolver refuses with no-view).
     fn gesture_dest_tiled(&self, output: &OutputId) -> Option<bool> {
-        let ring = self.mapping.get(&output.0)?;
+        let ring = self.world.workspace.mapping.get(&output.0)?;
         let head = ring.first()?;
         let key = DomainKey {
             output: output.clone(),
             workspace: WorkspaceId(head.clone()),
         };
-        Some(
-            self.tiling
-                .get(&key)
-                .copied()
-                .unwrap_or(crate::world_report::TilingMode::Tiled)
-                == crate::world_report::TilingMode::Tiled,
-        )
+        Some(!self.world.workspace.is_floating(&key))
     }
 
     /// Inset work-area bounds for one cross-output drop destination: the
@@ -914,6 +935,7 @@ impl WorldEngine {
     ) -> Option<crate::geometry::Rect> {
         let view = self.effective_view(output)?;
         let domain = self
+            .world
             .staged
             .domains
             .iter()
@@ -945,8 +967,9 @@ impl WorldEngine {
             return GestureOutcome::Settled { committed: false };
         };
         let windows = self.shielded_windows(&retained.home, &domain_report.windows);
-        let preconverged = if self.layout.contains_domain(&domain_key) {
+        let preconverged = if self.world.layout.contains_domain(&domain_key) {
             if self
+                .world
                 .layout
                 .converge_retained_observation(
                     &domain_key,
@@ -971,6 +994,7 @@ impl WorldEngine {
         };
         let committed = match (direction2, boundary2) {
             (None, None) => self
+                .world
                 .layout
                 .run_pointer_resize(&ctx, &retained.window, dir, boundary)
                 .is_ok(),
@@ -981,7 +1005,8 @@ impl WorldEngine {
                 if Axis::for_direction(dir) == Axis::for_direction(parsed) {
                     return GestureOutcome::Settled { committed: false };
                 }
-                self.layout
+                self.world
+                    .layout
                     .run_pointer_resize_corner(
                         &ctx,
                         &retained.window,
@@ -1036,13 +1061,16 @@ impl WorldEngine {
             return GestureOutcome::Settled { committed: false };
         };
         if target_key == retained.home {
-            if !self
-                .layout
-                .adopt_float_placement(&retained.home, &retained.window, release_frame)
-            {
+            if !self.world.layout.adopt_float_placement(
+                &retained.home,
+                &retained.window,
+                release_frame,
+            ) {
                 return GestureOutcome::Settled { committed: false };
             }
-            self.retained_floats
+            self.world
+                .settlement
+                .retained_floats
                 .retain(|held| held.window != retained.window);
             return GestureOutcome::Settled { committed: true };
         }
@@ -1054,6 +1082,7 @@ impl WorldEngine {
         // with no transfer and no minted session, matching the ordinary
         // float dragged outcome on the same observation.
         let readable = self
+            .world
             .staged
             .domains
             .iter()
@@ -1061,8 +1090,12 @@ impl WorldEngine {
         if !readable || held_scopes.contains(&target_key) {
             return GestureOutcome::Settled { committed: false };
         }
-        self.composed_maximized.remove(&retained.window);
-        if !self.layout.contains_domain(&target_key) || !self.layout.contains_domain(&retained.home)
+        self.world
+            .runtime
+            .composed_maximized
+            .remove(&retained.window);
+        if !self.world.layout.contains_domain(&target_key)
+            || !self.world.layout.contains_domain(&retained.home)
         {
             // Restage without the cleared gesture shield so the scopes
             // below converge the same unshielded staging the ordinary
@@ -1075,7 +1108,7 @@ impl WorldEngine {
             // destination reconciles its observed carrier.
             let owner = issue.owner.clone();
             let correlation = issue.correlation.clone();
-            let domains = self.staged.domains.clone();
+            let domains = self.world.staged.domains.clone();
             for domain in &domains {
                 if domain.key != target_key && domain.key != retained.home {
                     continue;
@@ -1088,7 +1121,7 @@ impl WorldEngine {
             self.settle_intent_admissions();
             return GestureOutcome::Settled { committed: false };
         }
-        if !self.layout.move_exception_float_with_placement(
+        if !self.world.layout.move_exception_float_with_placement(
             &retained.home,
             &target_key,
             &retained.window,
@@ -1097,7 +1130,9 @@ impl WorldEngine {
             return GestureOutcome::Settled { committed: false };
         }
         self.commit_send_member(&retained.window, &target_key);
-        self.retained_floats
+        self.world
+            .settlement
+            .retained_floats
             .retain(|held| held.window != retained.window);
         GestureOutcome::Settled { committed: true }
     }
@@ -1113,6 +1148,7 @@ impl WorldEngine {
             .staged_homing(window)
             .filter(|key| !held_scopes.contains(key))
             && let Some(domain) = self
+                .world
                 .staged
                 .domains
                 .iter()
@@ -1120,7 +1156,8 @@ impl WorldEngine {
         {
             return Some((key, domain.clone()));
         }
-        self.staged
+        self.world
+            .staged
             .domains
             .iter()
             .filter(|d| d.readable && !held_scopes.contains(&d.key))
@@ -1163,18 +1200,11 @@ impl WorldEngine {
         retained: &RetainedGesture,
         pointer_key: &DomainKey,
         held_scopes: &BTreeSet<DomainKey>,
-    ) -> Option<(
-        OutputDomain,
-        OutputDomain,
-        i32,
-        i32,
-        WindowId,
-        Vec<EngineWindow>,
-        Vec<WindowId>,
-    )> {
+    ) -> Option<GesturePairInputs> {
         let source_key = retained.home.clone();
         let domain_key = pointer_key.clone();
         let source_report = self
+            .world
             .staged
             .domains
             .iter()
@@ -1184,6 +1214,7 @@ impl WorldEngine {
             return None;
         }
         let domain_report = self
+            .world
             .staged
             .domains
             .iter()
@@ -1243,71 +1274,73 @@ impl WorldEngine {
 
     /// Revalidate retained `drag_preview` against current-session safety,
     /// scope, domain, and neighbor fences (including on omitted/commandless
-    /// ingress and post-command publication). Clears `self.drag_preview` to
+    /// ingress and post-command publication). Clears `self.world.gesture.drag_preview` to
     /// `None` whenever the retained gesture is absent/mismatched or any
     /// subject/domain/neighbor validity check fails.
     pub(crate) fn prune_drag_preview(&mut self, held_scopes: &BTreeSet<DomainKey>) {
-        if self.drag_preview.is_none() {
+        if self.world.gesture.drag_preview.is_none() {
             return;
         }
-        let Some(retained) = self.gesture.as_ref() else {
-            self.drag_preview = None;
+        let Some(retained) = self.world.gesture.retained.as_ref() else {
+            self.world.gesture.drag_preview = None;
             self.set_drag_preview_trace_reason("prune-no-session");
             return;
         };
-        let Some(preview) = self.drag_preview.as_ref() else {
+        let Some(preview) = self.world.gesture.drag_preview.as_ref() else {
             return;
         };
         if preview.id != retained.id
             || preview.source != retained.home
             || retained.kind != GestureKind::Move
         {
-            self.drag_preview = None;
+            self.world.gesture.drag_preview = None;
             self.set_drag_preview_trace_reason("prune-session-mismatch");
             return;
         }
         if !self.gesture_continue_fences(retained, held_scopes) {
-            self.drag_preview = None;
+            self.world.gesture.drag_preview = None;
             self.set_drag_preview_trace_reason("prune-continue-fence");
             return;
         }
         if self.gesture_game_paused(retained) {
-            self.drag_preview = None;
+            self.world.gesture.drag_preview = None;
             self.set_drag_preview_trace_reason("prune-game-paused");
             return;
         }
         if self.is_owned_composed_float(&retained.window) {
-            self.drag_preview = None;
+            self.world.gesture.drag_preview = None;
             self.set_drag_preview_trace_reason("prune-owned-composed-float");
             return;
         }
         let Some(domain_report) = self
+            .world
             .staged
             .domains
             .iter()
             .find(|d| d.readable && d.key == preview.domain)
         else {
-            self.drag_preview = None;
+            self.world.gesture.drag_preview = None;
             self.set_drag_preview_trace_reason("prune-domain-unreadable");
             return;
         };
         if held_scopes.contains(&preview.domain) {
-            self.drag_preview = None;
+            self.world.gesture.drag_preview = None;
             self.set_drag_preview_trace_reason("prune-domain-held");
             return;
         }
         if self.effective_view(&preview.domain.output).as_deref()
             != Some(preview.domain.workspace.0.as_str())
         {
-            self.drag_preview = None;
+            self.world.gesture.drag_preview = None;
             self.set_drag_preview_trace_reason("prune-domain-inactive");
             return;
         }
         let target = &preview.target;
-        let neighbor_valid = !self.staged.closes.contains(target)
-            && self.staged.homing.get(target) == Some(&preview.domain)
+        let neighbor_valid = !self.world.staged.closes.contains(target)
+            && self.world.staged.homing.get(target) == Some(&preview.domain)
             && domain_report.windows.iter().any(|w| &w.window == target)
             && self
+                .world
                 .staged
                 .facts
                 .get(target)
@@ -1323,7 +1356,7 @@ impl WorldEngine {
                     && !derived.overlay_maximized
             };
         if !neighbor_valid {
-            self.drag_preview = None;
+            self.world.gesture.drag_preview = None;
             self.set_drag_preview_trace_reason("prune-neighbor-invalid");
         }
     }
@@ -1361,7 +1394,7 @@ impl WorldEngine {
             observed: &combined,
             closed: &closed,
         };
-        match self.layout.run_pair_drag_preview(
+        match self.world.layout.run_pair_drag_preview(
             &ctx,
             &retained.window,
             x,
@@ -1398,13 +1431,19 @@ impl WorldEngine {
         // No pair attempt under a pending window flight for the mover
         // or a migration owning the destination cell: the fallback
         // refuses through the same send checks.
-        if self.retained.iter().any(|r| match &r.target.kind {
-            TransferKind::Window(w) => w == &retained.window,
-            TransferKind::View | TransferKind::Migration => false,
-        }) {
+        if self
+            .world
+            .settlement
+            .retained
+            .iter()
+            .any(|r| match &r.target.kind {
+                TransferKind::Window(w) => w == &retained.window,
+                TransferKind::View | TransferKind::Migration => false,
+            })
+        {
             return None;
         }
-        if self.retained.iter().any(|r| {
+        if self.world.settlement.retained.iter().any(|r| {
             matches!(&r.target.kind, TransferKind::Migration)
                 && r.target.target_output == *output
                 && r.target.target_workspace == workspace
@@ -1433,10 +1472,13 @@ impl WorldEngine {
             observed: &combined,
             closed: &closed,
         };
-        match self
-            .layout
-            .run_pair_drag_drop(&ctx, &retained.window, x, y, retained.hover.as_ref())
-        {
+        match self.world.layout.run_pair_drag_drop(
+            &ctx,
+            &retained.window,
+            x,
+            y,
+            retained.hover.as_ref(),
+        ) {
             Ok(_) => {
                 let transfer = RetainedTransfer {
                     target: TransferTarget {
@@ -1471,7 +1513,7 @@ impl WorldEngine {
                     };
                     self.commit_send_member(window, &target);
                 }
-                self.retained.push(transfer);
+                self.world.settlement.retained.push(transfer);
                 Some(GestureOutcome::Settled { committed: true })
             }
             Err(_) => None,
@@ -1482,7 +1524,7 @@ impl WorldEngine {
     /// keyed by lifetime, mirroring `execute_command`.
     fn staged_carriers(&self) -> Vec<EngineWindow> {
         let mut owned: Vec<EngineWindow> = Vec::new();
-        for domain in &self.staged.domains {
+        for domain in &self.world.staged.domains {
             owned.extend(domain.windows.iter().cloned());
         }
         owned
@@ -1568,13 +1610,13 @@ mod staged_pause_tests {
             None,
             None,
         );
-        engine.stage_facts_v4(&report);
+        engine.tx(|tx| tx.stage_facts_v4(&report));
         // The cursor lane pauses on a focused fullscreen game with no
         // subject exemption; the gesture lane pauses for other subjects
         // but exempts its own.
-        assert!(crate::world_cursor::cursor_game_paused(&engine));
-        assert!(engine.gesture_game_paused(&retained("win-a")));
-        assert!(!engine.gesture_game_paused(&retained("game")));
+        assert!(engine.cursor_game_paused());
+        assert!(engine.tx(|tx| tx.gesture_game_paused(&retained("win-a"))));
+        assert!(!engine.tx(|tx| tx.gesture_game_paused(&retained("game"))));
         // No-pause control: refocusing onto a plain window on the next
         // staged observation clears both predicates.
         let clear = report_full(
@@ -1587,9 +1629,9 @@ mod staged_pause_tests {
             None,
             None,
         );
-        engine.stage_facts_v4(&clear);
-        assert!(!crate::world_cursor::cursor_game_paused(&engine));
-        assert!(!engine.gesture_game_paused(&retained("win-a")));
-        assert!(!engine.gesture_game_paused(&retained("game")));
+        engine.tx(|tx| tx.stage_facts_v4(&clear));
+        assert!(!engine.cursor_game_paused());
+        assert!(!engine.tx(|tx| tx.gesture_game_paused(&retained("win-a"))));
+        assert!(!engine.tx(|tx| tx.gesture_game_paused(&retained("game"))));
     }
 }

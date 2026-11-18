@@ -44,6 +44,7 @@
 //! minimized omission, both of which keep the lifetime homed). A returning
 //! or replacement lifetime therefore re-evaluates as first-seen.
 
+use crate::world_transaction::WorldTransaction;
 use std::collections::BTreeSet;
 
 use crate::directional::WindowId;
@@ -54,17 +55,17 @@ use crate::window_policy::{
     should_clear_maximize_at_admission_with_born_mode, should_hold_born_fullscreen,
 };
 use crate::world_attempts::{PropertyAttempt, clear_accepted, clear_refused};
-use crate::world_engine::{RetainedBornClear, WorldEngine};
+use crate::world_engine::RetainedBornClear;
 use crate::world_report::{OperationOutcome, TilingMode};
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Next born operation identity. Monotonic within the generation, never
     /// reset on adapter-incarnation rotation (like `native_creation_seq`):
     /// the adapter's at-most-once spent map is generation-scoped, so a
     /// reused id could read as already dispatched.
     pub(crate) fn mint_born_operation_id(&mut self) -> String {
-        self.born_seq += 1;
-        format!("op-born-{}", self.born_seq)
+        self.world.settlement.born_seq += 1;
+        format!("op-born-{}", self.world.settlement.born_seq)
     }
 
     /// Whether the window's own birth facts authorize a maximize-clear
@@ -90,10 +91,10 @@ impl WorldEngine {
         window: &WindowId,
         home: &DomainKey,
     ) -> bool {
-        if presentation_paused || self.staged.gesture_barrier {
+        if presentation_paused || self.world.staged.gesture_barrier {
             return false;
         }
-        let Some(fact) = self.staged.facts.get(window) else {
+        let Some(fact) = self.world.staged.facts.get(window) else {
             return false;
         };
         let derived = self.derived_for(window);
@@ -117,9 +118,9 @@ impl WorldEngine {
         }
         if derived.fixed_auto
             || derived.fixed_suppress
-            || fact
-                .hints
-                .is_some_and(|hints| is_fixed_size_with(hints, self.fixed_size_predicate_setting()))
+            || fact.hints.is_some_and(|hints| {
+                is_fixed_size_with(hints, self.connection.fixed_size_predicate_setting())
+            })
         {
             return false;
         }
@@ -128,6 +129,8 @@ impl WorldEngine {
         // held-fullscreen exit carries no such intent, so the legitimate
         // exception-lane exit still passes here.
         if self
+            .world
+            .settlement
             .retained_floats
             .iter()
             .any(|held| held.window == *window)
@@ -135,6 +138,7 @@ impl WorldEngine {
             return false;
         }
         let readable = self
+            .world
             .staged
             .domains
             .iter()
@@ -143,7 +147,7 @@ impl WorldEngine {
         if !readable {
             return false;
         }
-        if self.floating_scopes.contains(home) {
+        if self.world.floating_scopes.contains(home) {
             return false;
         }
         if self.logical_tiling(&home.output.0, &home.workspace.0) != TilingMode::Tiled {
@@ -153,7 +157,7 @@ impl WorldEngine {
         // home, and an order-conflicting projection holds every scope.
         // This mirrors the accept-time fence without consulting the
         // conflated sweep-hold set. Unknown output never authorizes.
-        if self.host_owned_workspace_domains() {
+        if self.connection.host_owned_workspace_domains() {
             if self.native_order_conflict() {
                 return false;
             }
@@ -167,8 +171,8 @@ impl WorldEngine {
         }
         // Migration-gap safety: incomplete inventory with an outstanding
         // migration touching home holds, mirroring the sweep gap fence.
-        if !self.staged.observation.inventory_complete
-            && self.retained.iter().any(|r| {
+        if !self.world.staged.observation.inventory_complete
+            && self.world.settlement.retained.iter().any(|r| {
                 matches!(&r.target.kind, crate::world_report::TransferKind::Migration)
                     && (DomainKey {
                         output: r.source_output.clone(),
@@ -204,10 +208,12 @@ impl WorldEngine {
         // retained binding ever publishes, even if one somehow survived an
         // opt-out or rebind report (mint drops them; this is the publish
         // fence). The explicit directional lane never reads this gate.
-        if !self.birth_clear() {
+        if !self.connection.birth_clear() {
             return None;
         }
-        self.retained_born
+        self.world
+            .settlement
+            .retained_born
             .iter()
             .find(|retained| retained.window == *window && retained.pending.is_none())
             .filter(|retained| {
@@ -240,35 +246,44 @@ impl WorldEngine {
         // re-evaluates admitted windows as known (never a re-clear). The
         // explicit directional clear lane is untouched (separate retained
         // lane, separate settlement).
-        if !self.birth_clear() {
-            self.retained_born.clear();
-            self.born_attempted.clear();
-            self.born_held_fullscreen.clear();
-            self.born_floating_first.clear();
-            self.born_seen_nonfullscreen.clear();
-            self.born_keep_overlay.clear();
+        if !self.connection.birth_clear() {
+            self.world.settlement.retained_born.clear();
+            self.world.settlement.born_attempted.clear();
+            self.world.settlement.born_held_fullscreen.clear();
+            self.world.settlement.born_floating_first.clear();
+            self.world.settlement.born_seen_nonfullscreen.clear();
+            self.world.settlement.born_keep_overlay.clear();
             return;
         }
         // Startup adoption: on the first accepted usable complete inventory
-        // (`!self.placement_bootstrapped`), seed `born_keep_overlay` with all
+        // (`!self.world.placement_bootstrapped`), seed `born_keep_overlay` with all
         // fact and held identities so pre-existing maximized windows retain
         // their native maximize overlay (and reserved tile slot) even when
         // admission is delayed through held/minimized/unreadable/unhomed
         // states. Fullscreen-born windows still enter `born_held_fullscreen`
         // and clear on first exit (checked before `born_keep_overlay` below).
-        if !self.placement_bootstrapped {
-            for window in self.staged.facts.keys() {
-                self.born_keep_overlay.insert(window.clone());
+        if !self.world.placement_bootstrapped {
+            for window in self.world.staged.facts.keys() {
+                self.world
+                    .settlement
+                    .born_keep_overlay
+                    .insert(window.clone());
             }
-            for held in &self.staged.held_windows {
-                self.born_keep_overlay.insert(held.window.clone());
+            for held in &self.world.staged.held_windows {
+                self.world
+                    .settlement
+                    .born_keep_overlay
+                    .insert(held.window.clone());
             }
         }
         // Explicit closes prune every born lifetime set, so id reuse after
         // a close starts a fresh lifetime that may clear again.
-        for closed in self.staged.closes.clone() {
+        for closed in self.world.staged.closes.clone() {
             self.prune_born_lifetime(&closed);
-            self.retained_born.retain(|held| held.window != closed);
+            self.world
+                .settlement
+                .retained_born
+                .retain(|held| held.window != closed);
         }
         // Complete-inventory departures prune every born lifetime set (the
         // same authoritative implicit-close signal the session converge
@@ -278,23 +293,34 @@ impl WorldEngine {
         // never a departure; excluded windows never reset identity (only
         // an explicit native close does). A returning lifetime therefore
         // re-evaluates as first-seen. Gapped reports prune nothing.
-        if self.staged.observation.inventory_complete && !self.staged.gesture_barrier {
+        if self.world.staged.observation.inventory_complete && !self.world.staged.gesture_barrier {
             let held: BTreeSet<&WindowId> = self
+                .world
                 .staged
                 .held_windows
                 .iter()
                 .map(|held| &held.window)
                 .collect();
-            self.born_attempted
-                .retain(|w| self.staged.facts.contains_key(w) || held.contains(w));
-            self.born_held_fullscreen
-                .retain(|w| self.staged.facts.contains_key(w) || held.contains(w));
-            self.born_floating_first
-                .retain(|w| self.staged.facts.contains_key(w) || held.contains(w));
-            self.born_seen_nonfullscreen
-                .retain(|w| self.staged.facts.contains_key(w) || held.contains(w));
-            self.born_keep_overlay
-                .retain(|w| self.staged.facts.contains_key(w) || held.contains(w));
+            self.world
+                .settlement
+                .born_attempted
+                .retain(|w| self.world.staged.facts.contains_key(w) || held.contains(w));
+            self.world
+                .settlement
+                .born_held_fullscreen
+                .retain(|w| self.world.staged.facts.contains_key(w) || held.contains(w));
+            self.world
+                .settlement
+                .born_floating_first
+                .retain(|w| self.world.staged.facts.contains_key(w) || held.contains(w));
+            self.world
+                .settlement
+                .born_seen_nonfullscreen
+                .retain(|w| self.world.staged.facts.contains_key(w) || held.contains(w));
+            self.world
+                .settlement
+                .born_keep_overlay
+                .retain(|w| self.world.staged.facts.contains_key(w) || held.contains(w));
         }
         // Track non-fullscreen sightings: a later fullscreen on an admitted
         // tile is a managed overlay transition, never a birth. Minimized
@@ -302,20 +328,23 @@ impl WorldEngine {
         // minimized-then-restored lifetime decides on its first readable
         // report like a first sighting. Unknown fullscreen carries no
         // sighting: only proven `Some(false)` counts.
-        for (window, fact) in &self.staged.facts {
+        for (window, fact) in &self.world.staged.facts {
             let derived = self.derived_for(window);
             if derived.hidden || derived.hold || derived.excluded || fact.rect.is_none() {
                 continue;
             }
             if fact.fullscreen == Some(false) {
-                self.born_seen_nonfullscreen.insert(window.clone());
+                self.world
+                    .settlement
+                    .born_seen_nonfullscreen
+                    .insert(window.clone());
             }
         }
         // Deterministic mint order: sorted window ids.
-        let mut ids: Vec<WindowId> = self.staged.facts.keys().cloned().collect();
+        let mut ids: Vec<WindowId> = self.world.staged.facts.keys().cloned().collect();
         ids.sort_by(|a, b| a.0.cmp(&b.0));
         for window in ids {
-            let Some(fact) = self.staged.facts.get(&window).cloned() else {
+            let Some(fact) = self.world.staged.facts.get(&window).cloned() else {
                 continue;
             };
             let derived = self.derived_for(&window);
@@ -325,22 +354,31 @@ impl WorldEngine {
             if fact.rect.is_none() {
                 continue;
             }
-            if self.retained_born.iter().any(|held| held.window == window) {
+            if self
+                .world
+                .settlement
+                .retained_born
+                .iter()
+                .any(|held| held.window == window)
+            {
                 continue;
             }
-            if self.born_attempted.contains(&window) {
+            if self.world.settlement.born_attempted.contains(&window) {
                 continue;
             }
-            let Some(home) = self.staged.homing.get(&window).cloned() else {
+            let Some(home) = self.world.staged.homing.get(&window).cloned() else {
                 continue;
             };
             // Floating scopes prove floating-first and cancel held markers,
             // so the held exit lane can never bypass floating safety.
-            if self.floating_scopes.contains(&home)
+            if self.world.floating_scopes.contains(&home)
                 || self.logical_tiling(&home.output.0, &home.workspace.0) != TilingMode::Tiled
             {
-                self.born_floating_first.insert(window.clone());
-                self.born_held_fullscreen.remove(&window);
+                self.world
+                    .settlement
+                    .born_floating_first
+                    .insert(window.clone());
+                self.world.settlement.born_held_fullscreen.remove(&window);
                 continue;
             }
             if derived.sticky {
@@ -355,14 +393,17 @@ impl WorldEngine {
             // transition, never a birth.
             if derived.overlay_fullscreen {
                 if !pre_known.contains(&window)
-                    && !self.born_floating_first.contains(&window)
+                    && !self.world.settlement.born_floating_first.contains(&window)
                     && should_hold_born_fullscreen(
                         true,
                         pre_slotted.contains(&window),
-                        self.born_seen_nonfullscreen.contains(&window),
+                        self.world
+                            .settlement
+                            .born_seen_nonfullscreen
+                            .contains(&window),
                     )
                 {
-                    self.born_held_fullscreen.insert(window);
+                    self.world.settlement.born_held_fullscreen.insert(window);
                 }
                 continue;
             }
@@ -373,6 +414,7 @@ impl WorldEngine {
             // it, absence is the native-free ordinary state and still
             // counts as plain via the derived overlay.
             let plain_exit = if self
+                .connection
                 .capabilities()
                 .map(|caps| caps.maximize)
                 .unwrap_or(true)
@@ -382,13 +424,14 @@ impl WorldEngine {
                 !derived.overlay_maximized
             };
             if plain_exit {
-                self.born_held_fullscreen.remove(&window);
+                self.world.settlement.born_held_fullscreen.remove(&window);
                 continue;
             }
             // From here the window reads maximized (or maximize-unsupported
             // fullscreen-cleared): if maximize is supported, unknown already
             // held above, so only `Some(true)` reaches here.
             if self
+                .connection
                 .capabilities()
                 .map(|caps| caps.maximize)
                 .unwrap_or(true)
@@ -400,9 +443,9 @@ impl WorldEngine {
             // lane runs first and owns its marker: like the retired adapter
             // path it decides before the born lane's floating/fixed skips,
             // consuming the marker for every outcome below.
-            if self.born_held_fullscreen.contains(&window) {
-                self.born_held_fullscreen.remove(&window);
-                if self.born_floating_first.contains(&window) {
+            if self.world.settlement.born_held_fullscreen.contains(&window) {
+                self.world.settlement.born_held_fullscreen.remove(&window);
+                if self.world.settlement.born_floating_first.contains(&window) {
                     continue;
                 }
                 // A fixed exit floats automatic with no clear, like a fixed
@@ -414,8 +457,10 @@ impl WorldEngine {
                     continue;
                 }
                 let fixed_exit = fact.hints.is_some_and(|hints| {
-                    classify_born_fullscreen_exit(hints, self.fixed_size_predicate_setting())
-                        == FirstExitDisposition::FloatAutomatic
+                    classify_born_fullscreen_exit(
+                        hints,
+                        self.connection.fixed_size_predicate_setting(),
+                    ) == FirstExitDisposition::FloatAutomatic
                 });
                 if fixed_exit {
                     continue;
@@ -424,7 +469,7 @@ impl WorldEngine {
                     continue;
                 }
                 let operation_id = self.mint_born_operation_id();
-                self.retained_born.push(RetainedBornClear {
+                self.world.settlement.retained_born.push(RetainedBornClear {
                     operation_id,
                     window,
                     home,
@@ -444,7 +489,7 @@ impl WorldEngine {
             if derived.fixed_suppress
                 || derived.fixed_auto
                 || fact.hints.is_some_and(|hints| {
-                    is_fixed_size_with(hints, self.fixed_size_predicate_setting())
+                    is_fixed_size_with(hints, self.connection.fixed_size_predicate_setting())
                 })
             {
                 continue;
@@ -452,7 +497,7 @@ impl WorldEngine {
             if pre_known.contains(&window) {
                 continue;
             }
-            if self.born_floating_first.contains(&window) {
+            if self.world.settlement.born_floating_first.contains(&window) {
                 continue;
             }
             if !self.born_clear_authorized(presentation_paused, &window, &home) {
@@ -463,24 +508,30 @@ impl WorldEngine {
             // tile-on-launch never reclears it.
             if born_keep_latch(
                 true,
-                !self.born_maximized_setting().should_clear_at_admission(),
+                !self
+                    .connection
+                    .born_maximized_setting()
+                    .should_clear_at_admission(),
             ) {
-                self.born_keep_overlay.insert(window.clone());
+                self.world
+                    .settlement
+                    .born_keep_overlay
+                    .insert(window.clone());
                 continue;
             }
-            if self.born_keep_overlay.contains(&window) {
+            if self.world.settlement.born_keep_overlay.contains(&window) {
                 continue;
             }
             if should_clear_maximize_at_admission_with_born_mode(
                 false,
                 true,
                 pre_slotted.contains(&window),
-                self.born_attempted.contains(&window),
+                self.world.settlement.born_attempted.contains(&window),
                 true,
-                self.born_maximized_setting(),
+                self.connection.born_maximized_setting(),
             ) {
                 let operation_id = self.mint_born_operation_id();
-                self.retained_born.push(RetainedBornClear {
+                self.world.settlement.retained_born.push(RetainedBornClear {
                     operation_id,
                     window,
                     home,
@@ -496,11 +547,11 @@ impl WorldEngine {
     /// dropped by the caller; a returning or replacement lifetime
     /// re-evaluates as first-seen.
     fn prune_born_lifetime(&mut self, window: &WindowId) {
-        self.born_attempted.remove(window);
-        self.born_held_fullscreen.remove(window);
-        self.born_floating_first.remove(window);
-        self.born_seen_nonfullscreen.remove(window);
-        self.born_keep_overlay.remove(window);
+        self.world.settlement.born_attempted.remove(window);
+        self.world.settlement.born_held_fullscreen.remove(window);
+        self.world.settlement.born_floating_first.remove(window);
+        self.world.settlement.born_seen_nonfullscreen.remove(window);
+        self.world.settlement.born_keep_overlay.remove(window);
     }
 
     /// Settle outstanding born maximize-clears against
@@ -521,15 +572,15 @@ impl WorldEngine {
         // publish. Mint drops the same state later in the pass; this fence
         // covers direct settlement callers. Silent: no verdict attaches to
         // a lane that never ran.
-        if !self.birth_clear() {
-            self.retained_born.clear();
+        if !self.connection.birth_clear() {
+            self.world.settlement.retained_born.clear();
             return;
         }
         let mut keep: Vec<RetainedBornClear> = Vec::new();
-        for mut retained in std::mem::take(&mut self.retained_born) {
+        for mut retained in std::mem::take(&mut self.world.settlement.retained_born) {
             // Explicit close prunes even across gaps, and re-arms the id:
             // a replacement lifetime after this close may clear again.
-            if self.staged.closes.contains(&retained.window) {
+            if self.world.staged.closes.contains(&retained.window) {
                 self.emit_operation(
                     retained.operation_id.clone(),
                     retained.window.clone(),
@@ -543,7 +594,9 @@ impl WorldEngine {
             // phase before any hold; close pruned above before intake.
             // Gap bars hold with identities preserved, never settling from
             // absence and never erasing staged evidence.
-            if !self.staged.observation.inventory_complete || self.staged.gesture_barrier {
+            if !self.world.staged.observation.inventory_complete
+                || self.world.staged.gesture_barrier
+            {
                 if retained.pending.is_some() {
                     retained.ambiguous = true;
                 }
@@ -577,7 +630,7 @@ impl WorldEngine {
                 self.prune_born_lifetime(&retained.window);
                 continue;
             };
-            let Some(fact) = self.staged.facts.get(&retained.window).cloned() else {
+            let Some(fact) = self.world.staged.facts.get(&retained.window).cloned() else {
                 self.emit_operation(
                     retained.operation_id.clone(),
                     retained.window.clone(),
@@ -611,10 +664,13 @@ impl WorldEngine {
             if derived_settle.fixed_auto
                 || derived_settle.fixed_suppress
                 || fact.hints.is_some_and(|hints| {
-                    is_fixed_size_with(hints, self.fixed_size_predicate_setting())
+                    is_fixed_size_with(hints, self.connection.fixed_size_predicate_setting())
                 })
             {
-                self.born_attempted.insert(retained.window.clone());
+                self.world
+                    .settlement
+                    .born_attempted
+                    .insert(retained.window.clone());
                 self.emit_operation(
                     retained.operation_id.clone(),
                     retained.window.clone(),
@@ -628,7 +684,10 @@ impl WorldEngine {
             // is re-proven every report, so a retained desire never
             // outlives the flip.
             if derived_settle.sticky {
-                self.born_attempted.insert(retained.window.clone());
+                self.world
+                    .settlement
+                    .born_attempted
+                    .insert(retained.window.clone());
                 self.emit_operation(
                     retained.operation_id.clone(),
                     retained.window.clone(),
@@ -644,13 +703,24 @@ impl WorldEngine {
             // later tiled admission keeps its overlay with no second clear.
             if derived_settle.floating
                 || self
+                    .world
+                    .settlement
                     .retained_floats
                     .iter()
                     .any(|held| held.window == retained.window)
             {
-                self.born_floating_first.insert(retained.window.clone());
-                self.born_attempted.insert(retained.window.clone());
-                self.born_held_fullscreen.remove(&retained.window);
+                self.world
+                    .settlement
+                    .born_floating_first
+                    .insert(retained.window.clone());
+                self.world
+                    .settlement
+                    .born_attempted
+                    .insert(retained.window.clone());
+                self.world
+                    .settlement
+                    .born_held_fullscreen
+                    .remove(&retained.window);
                 self.emit_operation(
                     retained.operation_id.clone(),
                     retained.window.clone(),
@@ -667,6 +737,7 @@ impl WorldEngine {
             // Held-domain defers until authority returns (never silently
             // drops).
             let home_held = self
+                .world
                 .staged
                 .domains
                 .iter()
@@ -684,11 +755,20 @@ impl WorldEngine {
             // overlay with no second clear.
             if self.logical_tiling(&retained.home.output.0, &retained.home.workspace.0)
                 != TilingMode::Tiled
-                || self.floating_scopes.contains(&retained.home)
+                || self.world.floating_scopes.contains(&retained.home)
             {
-                self.born_floating_first.insert(retained.window.clone());
-                self.born_attempted.insert(retained.window.clone());
-                self.born_held_fullscreen.remove(&retained.window);
+                self.world
+                    .settlement
+                    .born_floating_first
+                    .insert(retained.window.clone());
+                self.world
+                    .settlement
+                    .born_attempted
+                    .insert(retained.window.clone());
+                self.world
+                    .settlement
+                    .born_held_fullscreen
+                    .remove(&retained.window);
                 self.emit_operation(
                     retained.operation_id.clone(),
                     retained.window.clone(),
@@ -702,7 +782,10 @@ impl WorldEngine {
             // overlay already holds above, so only proven `Some(true)`
             // abandons here.
             if fact.fullscreen == Some(true) {
-                self.born_held_fullscreen.insert(retained.window.clone());
+                self.world
+                    .settlement
+                    .born_held_fullscreen
+                    .insert(retained.window.clone());
                 self.emit_operation(
                     retained.operation_id.clone(),
                     retained.window.clone(),
@@ -720,7 +803,10 @@ impl WorldEngine {
                     .and_then(PropertyAttempt::as_clear)
                     .is_some_and(clear_refused)
                 {
-                    self.born_attempted.insert(retained.window.clone());
+                    self.world
+                        .settlement
+                        .born_attempted
+                        .insert(retained.window.clone());
                     self.emit_operation(
                         retained.operation_id.clone(),
                         retained.window.clone(),
@@ -747,7 +833,10 @@ impl WorldEngine {
                 .and_then(PropertyAttempt::as_clear)
                 .cloned()
             else {
-                self.born_attempted.insert(retained.window.clone());
+                self.world
+                    .settlement
+                    .born_attempted
+                    .insert(retained.window.clone());
                 self.emit_operation(
                     retained.operation_id.clone(),
                     retained.window.clone(),
@@ -757,7 +846,10 @@ impl WorldEngine {
                 continue;
             };
             if clear_refused(&pending) {
-                self.born_attempted.insert(retained.window.clone());
+                self.world
+                    .settlement
+                    .born_attempted
+                    .insert(retained.window.clone());
                 self.emit_operation(
                     retained.operation_id.clone(),
                     retained.window.clone(),
@@ -777,21 +869,26 @@ impl WorldEngine {
             // unmaximized facts. Retire silently with no continuation: the
             // window already rides its admitted session row, and the muted
             // operation never re-actuates.
-            self.born_attempted.insert(retained.window.clone());
+            self.world
+                .settlement
+                .born_attempted
+                .insert(retained.window.clone());
         }
-        self.retained_born = keep;
+        self.world.settlement.retained_born = keep;
     }
 }
 
 /// Test-only view over born retention for the focused regression suite.
 #[cfg(test)]
-impl WorldEngine {
+impl WorldTransaction<'_> {
     pub(crate) fn born_retained_len(&self) -> usize {
-        self.retained_born.len()
+        self.world.settlement.retained_born.len()
     }
 
     pub(crate) fn born_operation_for(&self, window: &WindowId) -> Option<String> {
-        self.retained_born
+        self.world
+            .settlement
+            .retained_born
             .iter()
             .find(|held| held.window == *window)
             .map(|held| held.operation_id.clone())
@@ -800,11 +897,11 @@ impl WorldEngine {
     /// Total born lifetime marks (all sets plus outstanding bindings): the
     /// boundedness gauge for the departure-prune regressions.
     pub(crate) fn born_tracked_count(&self) -> usize {
-        self.born_attempted.len()
-            + self.born_held_fullscreen.len()
-            + self.born_floating_first.len()
-            + self.born_seen_nonfullscreen.len()
-            + self.born_keep_overlay.len()
-            + self.retained_born.len()
+        self.world.settlement.born_attempted.len()
+            + self.world.settlement.born_held_fullscreen.len()
+            + self.world.settlement.born_floating_first.len()
+            + self.world.settlement.born_seen_nonfullscreen.len()
+            + self.world.settlement.born_keep_overlay.len()
+            + self.world.settlement.retained_born.len()
     }
 }

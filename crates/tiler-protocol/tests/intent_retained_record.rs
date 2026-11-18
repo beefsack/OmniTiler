@@ -17,11 +17,11 @@
 use tiler_core::directional::WindowId;
 use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{IntentDesire, WorldReplyV4, validate_intent_desired_reason};
-use tiler_core::world_sizing_v4::reply_exact_bytes_v4;
 use tiler_protocol::world_protocol::{
     DecodedReplyV4, ReplyWireOptionals, WorldOutcome, decode_reply_v4, decode_request,
     encode_reply_v4,
 };
+use tiler_protocol::world_reply_write::count_reply_v4;
 
 const SCENARIO_ID: &str = "intent-retained-journey";
 const EXPECTED_IDS: [&str; 6] = [
@@ -71,7 +71,7 @@ fn step_report_wire(
 }
 
 /// Encode one engine-published v4 reply with the canonical reply writer;
-/// the bytes must match the independent core byte count exactly and
+/// the bytes must match the canonical protocol byte count exactly and
 /// round-trip through the reply decoder to the identical typed reply
 /// plus wire metadata.
 fn reply_wire(reply: &WorldReplyV4) -> String {
@@ -84,8 +84,8 @@ fn reply_wire(reply: &WorldReplyV4) -> String {
     let wire = encode_reply_v4(&decoded).expect("reply encodes");
     assert_eq!(
         wire.len(),
-        reply_exact_bytes_v4(reply),
-        "core byte count is exact over the wire"
+        count_reply_v4(reply, &decoded.wire).expect("protocol count succeeds"),
+        "protocol byte count is exact over the wire"
     );
     assert_eq!(
         decode_reply_v4(&wire).expect("reply round-trips"),

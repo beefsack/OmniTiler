@@ -5,10 +5,10 @@
 //! directly from the staged v4 facts. No generic-over-report engine, no
 //! v4-to-legacy ingress conversion.
 
+use crate::world_transaction::WorldTransaction;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::active_group::describe_active_group_with_hints;
-use crate::directional::{Node, NodeId, OutputId, WindowId};
+use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::session::DomainKey;
 use crate::settings_catalog::{
@@ -17,7 +17,6 @@ use crate::settings_catalog::{
     FIELD_BORDER_RADIUS, FIELD_BORDER_WIDTH, FIELD_UNDERLAY_ENABLED, FIELD_UNDERLAY_EXTENSION,
 };
 use crate::settings_state::EffectiveSetting;
-use crate::size_hints::WindowSizeHints;
 use crate::visual::{group_underlay_effective_extension, group_underlay_outer_rect_px};
 use crate::world_engine::WorldEngine;
 use crate::world_presentation::{
@@ -29,16 +28,16 @@ use crate::world_report::{
     PresentationRowV4, RenderTarget, RendererInput, WorldPresentationV4,
 };
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     fn style_bool_v4(&self, field: &str, default: bool) -> bool {
-        match self.settings.effective.get(field) {
+        match self.connection.settings.effective.get(field) {
             Some(EffectiveSetting::Bool(value)) => *value,
             _ => default,
         }
     }
 
     fn style_float_v4(&self, field: &str, default: f64) -> f64 {
-        match self.settings.effective.get(field) {
+        match self.connection.settings.effective.get(field) {
             Some(EffectiveSetting::Float(value)) => *value,
             _ => default,
         }
@@ -53,7 +52,8 @@ impl WorldEngine {
         let fact_out = if ingress.foreground.is_empty() {
             None
         } else {
-            self.staged
+            self.world
+                .staged
                 .facts
                 .get(&WindowId(ingress.foreground.clone()))
                 .and_then(|fact| fact.output.clone())
@@ -76,7 +76,11 @@ impl WorldEngine {
     /// conflicting input and fail-closes as unknown (row grading owns the
     /// hold; the producer never fabricates a bool).
     fn effective_maximized_v4(&self, ingress: &PresentationIngressV4) -> Option<bool> {
-        if self.capabilities().is_some_and(|caps| caps.maximize) {
+        if self
+            .connection
+            .capabilities()
+            .is_some_and(|caps| caps.maximize)
+        {
             return ingress.foreground_maximized;
         }
         if ingress.foreground_maximized.is_some() {
@@ -86,13 +90,16 @@ impl WorldEngine {
             return None;
         }
         Some(
-            self.composed_maximized
+            self.world
+                .runtime
+                .composed_maximized
                 .contains(&WindowId(ingress.foreground.clone())),
         )
     }
 
     fn presentation_scale_v4(&self, output: &OutputId) -> Option<f64> {
-        self.staged
+        self.world
+            .staged
             .screens
             .iter()
             .find(|screen| &screen.output == output)
@@ -106,7 +113,7 @@ impl WorldEngine {
     /// signal only: sub-7 assembly must apply the [`HoldReason::Unreadable`]
     /// hold before publication. No wire lane is minted here.
     pub(crate) fn presentation_style_hold_v4(&self) -> Option<(OutputId, HoldReason)> {
-        let ingress = match &self.staged.presentation_v4 {
+        let ingress = match &self.world.staged.presentation_v4 {
             Some(PresentationRowV4::Valid(ingress)) => ingress,
             _ => return None,
         };
@@ -121,10 +128,10 @@ impl WorldEngine {
             self.style_float_v4(FIELD_BORDER_RADIUS, DEFAULT_CATALOG_BORDER_RADIUS);
         let extension_logical =
             self.style_float_v4(FIELD_UNDERLAY_EXTENSION, DEFAULT_CATALOG_UNDERLAY_EXTENSION);
-        let width = Self::scale_float_once(width_logical, scale);
-        let gap = Self::scale_float_once(gap_logical, scale);
-        let radius = Self::scale_float_once(radius_logical, scale);
-        let extension = Self::scale_float_once(
+        let width = WorldEngine::scale_float_once(width_logical, scale);
+        let gap = WorldEngine::scale_float_once(gap_logical, scale);
+        let radius = WorldEngine::scale_float_once(radius_logical, scale);
+        let extension = WorldEngine::scale_float_once(
             group_underlay_effective_extension(extension_logical, width_logical),
             scale,
         );
@@ -142,15 +149,15 @@ impl WorldEngine {
 
     /// Unconditional neutral focused-fullscreen suspension verdict (v4).
     pub(crate) fn focused_fullscreen_suspended_output_v4(&self) -> Option<OutputId> {
-        let focus = self.staged.observation.focused_global.clone();
+        let focus = self.world.staged.observation.focused_global.clone();
         if focus.is_empty() {
             return None;
         }
-        if let Some(fact) = self.staged.facts.get(&WindowId(focus.clone())) {
+        if let Some(fact) = self.world.staged.facts.get(&WindowId(focus.clone())) {
             if fact.fullscreen != Some(true) {
                 return None;
             }
-            match &self.staged.presentation_v4 {
+            match &self.world.staged.presentation_v4 {
                 Some(PresentationRowV4::Valid(ingress)) if ingress.foreground == focus => {
                     // Truthful fact output wins: a raw/staged out conflict
                     // fail-closes the border/style path only, never the
@@ -163,7 +170,7 @@ impl WorldEngine {
                 _ => return fact.output.clone(),
             }
         }
-        if let Some(PresentationRowV4::Valid(ingress)) = &self.staged.presentation_v4
+        if let Some(PresentationRowV4::Valid(ingress)) = &self.world.staged.presentation_v4
             && ingress.foreground == focus
             && ingress.foreground_fullscreen == Some(true)
         {
@@ -227,7 +234,7 @@ impl WorldEngine {
             return Self::hidden_border_v4(None);
         }
         let foreground = WindowId(ingress.foreground.clone());
-        match self.staged.derived.get(&foreground) {
+        match self.world.staged.derived.get(&foreground) {
             Some(classified) if classified.border_only => {
                 return Self::hidden_border_v4(Some(BorderHideReasonV4::Shell));
             }
@@ -249,15 +256,15 @@ impl WorldEngine {
         let Some(scale) = scale else {
             return Self::hidden_border_v4(None);
         };
-        let width = Self::scale_float_once(
+        let width = WorldEngine::scale_float_once(
             self.style_float_v4(FIELD_BORDER_WIDTH, DEFAULT_CATALOG_BORDER_WIDTH),
             scale,
         );
-        let radius = Self::scale_float_once(
+        let radius = WorldEngine::scale_float_once(
             self.style_float_v4(FIELD_BORDER_RADIUS, DEFAULT_CATALOG_BORDER_RADIUS),
             scale,
         );
-        let gap = Self::scale_float_once(
+        let gap = WorldEngine::scale_float_once(
             self.style_float_v4(FIELD_BORDER_GAP, DEFAULT_CATALOG_BORDER_GAP),
             scale,
         );
@@ -351,19 +358,15 @@ impl WorldEngine {
                 reason: GroupHideReason::Floating,
             };
         };
-        if self
-            .tiling
-            .get(&home)
-            .copied()
-            .unwrap_or(crate::world_report::TilingMode::Tiled)
-            != crate::world_report::TilingMode::Tiled
-        {
+        if self.world.workspace.is_floating(&home) {
             return PresentationUnderlay::Hidden {
                 base_revision: None,
                 reason: GroupHideReason::Floating,
             };
         }
         if self
+            .world
+            .workspace
             .members
             .get(&foreground)
             .is_some_and(|state| state.floating)
@@ -373,21 +376,23 @@ impl WorldEngine {
                 reason: GroupHideReason::Floating,
             };
         }
-        if !self.layout.contains_domain(&home) {
+        if !self.world.layout.contains_domain(&home) {
             return PresentationUnderlay::Hidden {
                 base_revision: None,
                 reason: GroupHideReason::NoGroup,
             };
         }
-        let base = self.layout.accepted_revision(&home);
+        let base = self.world.layout.accepted_revision(&home);
         let hidden = |reason| PresentationUnderlay::Hidden {
             base_revision: Some(base),
             reason,
         };
-        if self.hold_reasons.contains_key(&home) {
+        if self.world.hold_reasons.contains_key(&home) {
             return hidden(GroupHideReason::Pending);
         }
         if self
+            .world
+            .settlement
             .retained
             .iter()
             .any(|transfer| match &transfer.target.kind {
@@ -398,64 +403,39 @@ impl WorldEngine {
         {
             return hidden(GroupHideReason::Pending);
         }
-        let Some(focus_leaf) = self.layout.focus_leaf(&home).cloned() else {
-            return hidden(GroupHideReason::FocusChanged);
-        };
-        let Some(tree) = self.layout.tree(&home) else {
-            return hidden(GroupHideReason::NoGroup);
-        };
-        let leaf_to_window: BTreeMap<NodeId, WindowId> = self
-            .layout
-            .bindings(&home)
-            .map(|(window, leaf)| (leaf.clone(), window.clone()))
-            .collect();
-        match leaf_to_window.get(&focus_leaf) {
-            Some(window) if *window == foreground => {}
-            _ => return hidden(GroupHideReason::FocusChanged),
-        }
-        let staged_windows: Vec<crate::seed::EngineWindow> = self
-            .staged
-            .domains
-            .iter()
-            .find(|domain| domain.key == home)
-            .map(|domain| self.shielded_windows(&home, &domain.windows))
-            .unwrap_or_default();
-        let carried: BTreeMap<&WindowId, WindowSizeHints> = staged_windows
-            .iter()
-            .map(|entry| (&entry.window, entry.hints))
-            .collect();
-        let resolve = |leaf: &NodeId| {
-            leaf_to_window
-                .get(leaf)
-                .and_then(|window| carried.get(window))
-                .copied()
-                .unwrap_or_else(WindowSizeHints::none)
-        };
-        let Some((bounds, gap)) = self.layout.domain_geometry(&home) else {
-            return hidden(GroupHideReason::RootLeaf);
-        };
-        let Some(group) = describe_active_group_with_hints(
-            tree,
-            bounds,
-            gap,
-            &focus_leaf,
-            &leaf_to_window,
-            &resolve,
-        ) else {
-            return hidden(GroupHideReason::RootLeaf);
-        };
+        let (focus_leaf, group) =
+            match self
+                .world
+                .layout
+                .describe_active_group(&home, &foreground, || {
+                    let staged_windows: Vec<crate::seed::EngineWindow> = self
+                        .world
+                        .staged
+                        .domains
+                        .iter()
+                        .find(|domain| domain.key == home)
+                        .map(|domain| self.shielded_windows(&home, &domain.windows))
+                        .unwrap_or_default();
+                    staged_windows
+                        .into_iter()
+                        .map(|entry| (entry.window, entry.hints))
+                        .collect()
+                }) {
+                Ok(found) => found,
+                Err(reason) => return hidden(reason),
+            };
         let scale = self
             .presentation_fg_out_v4(ingress)
             .and_then(|output| self.presentation_scale_v4(&output));
         let Some(scale) = scale else {
             return hidden(GroupHideReason::NoGroup);
         };
-        let gap = Self::scale_float_once(
+        let gap = WorldEngine::scale_float_once(
             self.style_float_v4(FIELD_BORDER_GAP, DEFAULT_CATALOG_BORDER_GAP),
             scale,
         );
         let width_logical = self.style_float_v4(FIELD_BORDER_WIDTH, DEFAULT_CATALOG_BORDER_WIDTH);
-        let width = Self::scale_float_once(width_logical, scale);
+        let width = WorldEngine::scale_float_once(width_logical, scale);
         let (Some(gap), Some(width)) = (gap, width) else {
             return hidden(GroupHideReason::NoGroup);
         };
@@ -464,7 +444,7 @@ impl WorldEngine {
         }
         let extension_logical =
             self.style_float_v4(FIELD_UNDERLAY_EXTENSION, DEFAULT_CATALOG_UNDERLAY_EXTENSION);
-        let extension = Self::scale_float_once(
+        let extension = WorldEngine::scale_float_once(
             group_underlay_effective_extension(extension_logical, width_logical),
             scale,
         );
@@ -487,13 +467,14 @@ impl WorldEngine {
     }
 
     fn departed_v4(&self, window: &WindowId) -> bool {
-        if self.staged.closes.contains(window) {
+        if self.world.staged.closes.contains(window) {
             return true;
         }
-        if !self.staged.observation.inventory_complete {
+        if !self.world.staged.observation.inventory_complete {
             return false;
         }
         if self
+            .world
             .staged
             .observation
             .raw_windows
@@ -503,6 +484,7 @@ impl WorldEngine {
             return false;
         }
         if self
+            .world
             .staged
             .held_windows
             .iter()
@@ -516,7 +498,7 @@ impl WorldEngine {
     /// Retain v4 pager facts from the currently staged observation and
     /// presentation row. Reads `staged` only, never a caller report copy.
     pub(crate) fn retain_pager_presentation_v4(&mut self) {
-        let (fresh_order, fresh_frames) = match &self.staged.presentation_v4 {
+        let (fresh_order, fresh_frames) = match &self.world.staged.presentation_v4 {
             Some(PresentationRowV4::Valid(ingress)) => (
                 ingress.pager_order.clone(),
                 ingress
@@ -527,20 +509,22 @@ impl WorldEngine {
             ),
             _ => (Vec::new(), Vec::new()),
         };
-        let mut roster: BTreeSet<WindowId> = self.members.keys().cloned().collect();
+        let mut roster: BTreeSet<WindowId> = self.world.workspace.members.keys().cloned().collect();
         roster.extend(fresh_order.iter().cloned());
         for (window, _) in &fresh_frames {
             roster.insert(window.clone());
         }
         roster.extend(
-            self.staged
+            self.world
+                .staged
                 .observation
                 .raw_windows
                 .iter()
                 .map(|fact| fact.window.clone()),
         );
         roster.extend(
-            self.staged
+            self.world
+                .staged
                 .held_windows
                 .iter()
                 .map(|held| held.window.clone()),
@@ -553,7 +537,7 @@ impl WorldEngine {
                 next.push(window.clone());
             }
         }
-        for window in self.presentation_order_v4.clone() {
+        for window in self.world.presentation.order_v4.clone() {
             if roster.contains(&window) && seen.insert(window.clone()) {
                 next.push(window.clone());
             }
@@ -563,7 +547,7 @@ impl WorldEngine {
                 next.push(window.clone());
             }
         }
-        self.presentation_order_v4 = next;
+        self.world.presentation.order_v4 = next;
         let mut fresh: BTreeMap<WindowId, Rect> = BTreeMap::new();
         for (window, rect) in fresh_frames {
             if roster.contains(&window) {
@@ -571,19 +555,21 @@ impl WorldEngine {
             }
         }
         for (window, rect) in fresh {
-            self.presentation_live_v4.insert(window, rect);
+            self.world.presentation.live_v4.insert(window, rect);
         }
         let departed: Vec<WindowId> = self
-            .presentation_live_v4
+            .world
+            .presentation
+            .live_v4
             .keys()
             .filter(|window| !roster.contains(*window))
             .cloned()
             .collect();
         for window in departed {
-            self.presentation_live_v4.remove(&window);
+            self.world.presentation.live_v4.remove(&window);
         }
-        let raw_focus = self.staged.observation.focused_global.clone();
-        self.presentation_focused_v4 = if raw_focus.is_empty() {
+        let raw_focus = self.world.staged.observation.focused_global.clone();
+        self.world.presentation.focused_v4 = if raw_focus.is_empty() {
             None
         } else {
             let window = WindowId(raw_focus);
@@ -596,16 +582,18 @@ impl WorldEngine {
     }
 
     fn pager_frame_v4(&self, window: &WindowId) -> Option<Rect> {
-        if !self.members.contains_key(window) {
+        if !self.world.workspace.members.contains_key(window) {
             return None;
         }
-        self.presentation_live_v4.get(window).copied()
+        self.world.presentation.live_v4.get(window).copied()
     }
 
     #[must_use]
     pub(crate) fn presentation_pager_v4(&self, suspended: Option<&OutputId>) -> Vec<PagerScreen> {
         let focused_home = self
-            .presentation_focused_v4
+            .world
+            .presentation
+            .focused_v4
             .as_ref()
             .and_then(|window| self.adapter_homing(window));
         let mut screens = Vec::new();
@@ -619,7 +607,7 @@ impl WorldEngine {
             let current_id = view
                 .filter(|view| ring.iter().any(|id| id == view))
                 .or_else(|| ring.first().cloned());
-            let order: BTreeSet<&WindowId> = self.presentation_order_v4.iter().collect();
+            let order: BTreeSet<&WindowId> = self.world.presentation.order_v4.iter().collect();
             let mut workspaces = Vec::with_capacity(ring.len());
             for (index, id) in ring.iter().enumerate() {
                 let homed = self.logical_members(&output, id);
@@ -630,7 +618,9 @@ impl WorldEngine {
                     .cloned()
                     .collect();
                 ordered.extend(
-                    self.presentation_order_v4
+                    self.world
+                        .presentation
+                        .order_v4
                         .iter()
                         .filter(|window| homed.contains(window))
                         .rev()
@@ -669,7 +659,7 @@ impl WorldEngine {
     #[must_use]
     pub(crate) fn presentation_for_publish_v4(&self) -> WorldPresentationV4 {
         let suspended = self.focused_fullscreen_suspended_output_v4();
-        match &self.staged.presentation_v4 {
+        match &self.world.staged.presentation_v4 {
             Some(PresentationRowV4::Valid(ingress)) => WorldPresentationV4 {
                 foreground: ingress.foreground.clone(),
                 rev: 0,
@@ -730,31 +720,13 @@ impl WorldEngine {
                     output: out.clone(),
                     workspace: ws.clone(),
                 };
-                self.layout
-                    .tree(&key)
-                    .is_some_and(|tree| Self::tree_has_group_v4(tree, group))
+                self.world.layout.has_group(&key, group)
             }
         };
         if valid {
             None
         } else {
             Some(CommandRejectKind::StaleRenderTarget)
-        }
-    }
-
-    /// Whether `id` names a live group node in `tree`. Leaves share the
-    /// id namespace but never count: only `Group` arms match.
-    fn tree_has_group_v4(tree: &Node, id: &NodeId) -> bool {
-        match tree {
-            Node::Leaf { .. } => false,
-            Node::Group {
-                id: gid, children, ..
-            } => {
-                gid == id
-                    || children
-                        .iter()
-                        .any(|child| Self::tree_has_group_v4(child, id))
-            }
         }
     }
 }

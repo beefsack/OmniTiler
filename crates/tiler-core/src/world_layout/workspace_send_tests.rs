@@ -181,20 +181,16 @@ fn defer_exception(layout: &mut WorldLayout, w: &str, o: &str, ws: &str, flags: 
 
 fn send(
     layout: &mut WorldLayout,
-    src_o: &str,
-    src_ws: &str,
-    dst_o: &str,
-    dst_ws: &str,
+    source: &DomainKey,
+    target: &DomainKey,
     subject: &str,
     observed_focus: &str,
     follow: bool,
     allow_cross_output: bool,
 ) -> Result<PairSendOutcome, PairOperationFailure> {
-    let source = dk(src_o, src_ws);
-    let target = dk(dst_o, dst_ws);
-    let src_dom = dom(src_o, src_ws);
-    let dst_dom = dom(dst_o, dst_ws);
-    let observed = pair_observed(layout, &source, &target);
+    let src_dom = dom(&source.output.0, &source.workspace.0);
+    let dst_dom = dom(&target.output.0, &target.workspace.0);
+    let observed = pair_observed(layout, source, target);
     let subj = win(subject);
     let focus = win(observed_focus);
     let ctx = PairOperationContext {
@@ -311,10 +307,8 @@ fn send_follows_moved_window_into_target() {
     admit(&mut layout, "win-3", "out-1", "ws-a", 80, 120);
     let outcome = send(
         &mut layout,
-        "out-1",
-        "ws-a",
-        "out-1",
-        "ws-b",
+        &dk("out-1", "ws-a"),
+        &dk("out-1", "ws-b"),
         "win-3",
         "win-3",
         true,
@@ -340,10 +334,8 @@ fn send_follows_moved_window_into_target() {
     // now-empty source has no remaining leaf.
     let back = send(
         &mut layout,
-        "out-1",
-        "ws-b",
-        "out-1",
-        "ws-a",
+        &dk("out-1", "ws-b"),
+        &dk("out-1", "ws-a"),
         "win-3",
         "win-3",
         true,
@@ -372,10 +364,8 @@ fn occupied_target_splits_remembered_leaf() {
 
     let outcome = send(
         &mut layout,
-        "out-1",
-        "ws-a",
-        "out-1",
-        "ws-b",
+        &dk("out-1", "ws-a"),
+        &dk("out-1", "ws-b"),
         "win-2",
         "win-2",
         true,
@@ -431,10 +421,8 @@ fn refusals_fail_closed() {
     assert_eq!(
         send(
             &mut layout,
-            "out-1",
-            "ws-a",
-            "out-1",
-            "ws-b",
+            &dk("out-1", "ws-a"),
+            &dk("out-1", "ws-b"),
             "win-1",
             "win-2",
             true,
@@ -502,10 +490,8 @@ fn refusals_fail_closed() {
     assert_eq!(
         send(
             &mut layout,
-            "out-1",
-            "ws-b",
-            "out-2",
-            "ws-a",
+            &dk("out-1", "ws-b"),
+            &dk("out-2", "ws-a"),
             "win-2",
             "win-2",
             true,
@@ -526,10 +512,8 @@ fn refusals_fail_closed() {
     assert_eq!(
         send(
             &mut layout,
-            "out-1",
-            "ws-b",
-            "out-1",
-            "ws-a",
+            &dk("out-1", "ws-b"),
+            &dk("out-1", "ws-a"),
             "",
             "win-2",
             true,
@@ -574,10 +558,8 @@ fn refusals_fail_closed() {
     defer_exception(&mut layout, "win-9", "out-1", "ws-a", f_flags);
     let deferred = send(
         &mut layout,
-        "out-1",
-        "ws-a",
-        "out-1",
-        "ws-b",
+        &dk("out-1", "ws-a"),
+        &dk("out-1", "ws-b"),
         "win-9",
         "win-9",
         true,
@@ -596,10 +578,8 @@ fn stay_keeps_source_selected_with_mru_focus() {
 
     let outcome = send(
         &mut layout,
-        "out-1",
-        "ws-a",
-        "out-1",
-        "ws-b",
+        &dk("out-1", "ws-a"),
+        &dk("out-1", "ws-b"),
         "win-3",
         "win-3",
         false,
@@ -627,10 +607,8 @@ fn stay_of_sole_source_window_leaves_no_focus() {
     admit(&mut layout, "win-solo", "out-1", "ws-a", 120, 80);
     let outcome = send(
         &mut layout,
-        "out-1",
-        "ws-a",
-        "out-1",
-        "ws-b",
+        &dk("out-1", "ws-a"),
+        &dk("out-1", "ws-b"),
         "win-solo",
         "win-solo",
         false,
@@ -653,10 +631,8 @@ fn follow_and_stay_share_transfer_with_focus_only_difference() {
 
     let follow = send(
         &mut l_follow,
-        "out-1",
-        "ws-a",
-        "out-1",
-        "ws-b",
+        &dk("out-1", "ws-a"),
+        &dk("out-1", "ws-b"),
         "win-3",
         "win-3",
         true,
@@ -665,10 +641,8 @@ fn follow_and_stay_share_transfer_with_focus_only_difference() {
     .expect("follow");
     let stay = send(
         &mut l_stay,
-        "out-1",
-        "ws-a",
-        "out-1",
-        "ws-b",
+        &dk("out-1", "ws-a"),
+        &dk("out-1", "ws-b"),
         "win-3",
         "win-3",
         false,
@@ -717,10 +691,8 @@ fn post_stay_observation_keeps_native_focus_over_mru() {
     admit(&mut layout, "win-3", "out-1", "ws-a", 120, 80);
     send(
         &mut layout,
-        "out-1",
-        "ws-a",
-        "out-1",
-        "ws-b",
+        &dk("out-1", "ws-a"),
+        &dk("out-1", "ws-b"),
         "win-3",
         "win-3",
         false,
@@ -773,10 +745,8 @@ fn output_send_follow_moves_to_destination_current_workspace() {
 
     let outcome = send(
         &mut layout,
-        "out-1",
-        "ws-a",
-        "out-2",
-        "ws-a",
+        &dk("out-1", "ws-a"),
+        &dk("out-2", "ws-a"),
         "win-2",
         "win-2",
         true,
@@ -810,10 +780,8 @@ fn output_send_stay_keeps_source_mru_without_selecting_target() {
     let mut l_follow = trio();
     let follow_outcome = send(
         &mut l_follow,
-        "out-1",
-        "ws-a",
-        "out-2",
-        "ws-a",
+        &dk("out-1", "ws-a"),
+        &dk("out-2", "ws-a"),
         "win-3",
         "win-3",
         true,
@@ -823,10 +791,8 @@ fn output_send_stay_keeps_source_mru_without_selecting_target() {
     let mut l_stay = trio();
     let stay_outcome = send(
         &mut l_stay,
-        "out-1",
-        "ws-a",
-        "out-2",
-        "ws-a",
+        &dk("out-1", "ws-a"),
+        &dk("out-2", "ws-a"),
         "win-3",
         "win-3",
         false,
@@ -858,10 +824,8 @@ fn output_send_admits_at_remembered_leaf() {
 
     send(
         &mut layout,
-        "out-1",
-        "ws-a",
-        "out-2",
-        "ws-a",
+        &dk("out-1", "ws-a"),
+        &dk("out-2", "ws-a"),
         "win-2",
         "win-2",
         true,
@@ -888,10 +852,8 @@ fn output_send_scope_refusals_keep_ops_distinct() {
     assert_eq!(
         send(
             &mut layout,
-            "out-1",
-            "ws-a",
-            "out-1",
-            "ws-b",
+            &dk("out-1", "ws-a"),
+            &dk("out-1", "ws-b"),
             "win-2",
             "win-2",
             true,
@@ -956,10 +918,8 @@ fn output_send_scope_refusals_keep_ops_distinct() {
     assert_eq!(
         send(
             &mut layout,
-            "out-1",
-            "ws-a",
-            "out-2",
-            "ws-a",
+            &dk("out-1", "ws-a"),
+            &dk("out-2", "ws-a"),
             "win-2",
             "win-2",
             true,
@@ -1011,10 +971,8 @@ fn output_send_refuses_sticky_but_carries_intentional_floats() {
     assert_eq!(
         send(
             &mut s_layout,
-            "out-1",
-            "ws-a",
-            "out-2",
-            "ws-a",
+            &dk("out-1", "ws-a"),
+            &dk("out-2", "ws-a"),
             "win-f",
             "win-f",
             true,
@@ -1068,10 +1026,8 @@ fn output_send_refuses_sticky_but_carries_intentional_floats() {
     defer_exception(&mut f_layout, "win-f", "out-1", "ws-a", f_flags);
     let outcome = send(
         &mut f_layout,
-        "out-1",
-        "ws-a",
-        "out-2",
-        "ws-a",
+        &dk("out-1", "ws-a"),
+        &dk("out-2", "ws-a"),
         "win-f",
         "win-f",
         true,
@@ -1097,10 +1053,8 @@ fn output_send_uses_focus_history_when_remembered_stale() {
     admit(&mut layout, "win-b1", "out-1", "ws-b", 120, 80);
     send(
         &mut layout,
-        "out-2",
-        "ws-a",
-        "out-1",
-        "ws-b",
+        &dk("out-2", "ws-a"),
+        &dk("out-1", "ws-b"),
         "win-a3",
         "win-a3",
         true,
@@ -1113,10 +1067,8 @@ fn output_send_uses_focus_history_when_remembered_stale() {
     admit(&mut layout, "win-c2", "out-1", "ws-a", 120, 80);
     send(
         &mut layout,
-        "out-1",
-        "ws-a",
-        "out-2",
-        "ws-a",
+        &dk("out-1", "ws-a"),
+        &dk("out-2", "ws-a"),
         "win-c2",
         "win-c2",
         true,
@@ -1155,10 +1107,8 @@ fn output_send_empty_destination_admits_lone_root_follow_and_stay() {
     admit(&mut l_follow, "win-2", "out-1", "ws-a", 120, 80);
     send(
         &mut l_follow,
-        "out-1",
-        "ws-a",
-        "out-2",
-        "ws-a",
+        &dk("out-1", "ws-a"),
+        &dk("out-2", "ws-a"),
         "win-2",
         "win-2",
         true,
@@ -1183,10 +1133,8 @@ fn output_send_empty_destination_admits_lone_root_follow_and_stay() {
     admit(&mut l_stay, "solo", "out-1", "ws-a", 120, 80);
     let stay_outcome = send(
         &mut l_stay,
-        "out-1",
-        "ws-a",
-        "out-2",
-        "ws-a",
+        &dk("out-1", "ws-a"),
+        &dk("out-2", "ws-a"),
         "solo",
         "solo",
         false,

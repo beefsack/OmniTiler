@@ -156,9 +156,9 @@ fn commandless_birth_mints_and_publishes_clear() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
     let op = engine
-        .born_operation_for(&WindowId("win-born".to_owned()))
+        .tx(|tx| tx.born_operation_for(&WindowId("win-born".to_owned())))
         .expect("born binds");
     assert!(op.starts_with("op-born-"), "commandless id, got {op}");
     assert_eq!(desire_op(&reply, "win-born").as_deref(), Some(op.as_str()));
@@ -178,9 +178,13 @@ fn disabled_birth_never_mints_or_publishes() {
         None,
     );
     let reply = accepted(&mut engine, &first);
-    assert_eq!(engine.born_retained_len(), 0, "disabled mints nothing");
     assert_eq!(
-        engine.born_tracked_count(),
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "disabled mints nothing"
+    );
+    assert_eq!(
+        engine.tx(|tx| tx.born_tracked_count()),
         0,
         "disabled tracks no lifetime marks"
     );
@@ -201,7 +205,11 @@ fn disabled_fullscreen_birth_and_exit_never_bind() {
         None,
     );
     let reply = accepted(&mut engine, &first);
-    assert_eq!(engine.born_retained_len(), 0, "disabled holds nothing");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "disabled holds nothing"
+    );
     assert_eq!(desire_op(&reply, "win-fs"), None);
     let exit = report(
         2,
@@ -212,7 +220,11 @@ fn disabled_fullscreen_birth_and_exit_never_bind() {
         None,
     );
     let reply = accepted(&mut engine, &exit);
-    assert_eq!(engine.born_retained_len(), 0, "disabled exit binds nothing");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "disabled exit binds nothing"
+    );
     assert_eq!(desire_op(&reply, "win-fs"), None);
 }
 
@@ -240,7 +252,7 @@ fn disabled_deferred_conditions_mint_nothing() {
         }
         let reply = accepted(&mut engine, &deferred);
         assert_eq!(
-            engine.born_retained_len(),
+            engine.tx(|tx| tx.born_retained_len()),
             0,
             "{name}: disabled mints nothing"
         );
@@ -264,7 +276,7 @@ fn rehandshake_without_birth_clear_drops_old_binding() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
     assert!(desire_op(&first, "win-born").is_some());
     let handshake = engine.handshake(&crate::connection::HandshakeRequest {
         adapter: "adapter-1".to_owned(),
@@ -299,7 +311,11 @@ fn rehandshake_without_birth_clear_drops_old_binding() {
     );
     off.core_generation = generation;
     let reply = accepted(&mut engine, &off);
-    assert_eq!(engine.born_retained_len(), 0, "opt-out drops the binding");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "opt-out drops the binding"
+    );
     assert_eq!(desire_op(&reply, "win-born"), None);
 }
 
@@ -338,9 +354,16 @@ fn disabled_explicit_directional_clear_unaffected() {
         }),
     );
     let reply = accepted(&mut engine, &commanded);
-    assert_eq!(engine.born_retained_len(), 0, "no automatic birth beside");
-    assert_eq!(engine.retained_clears.len(), 1);
-    assert_eq!(engine.retained_clears[0].operation_id, "op-13");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "no automatic birth beside"
+    );
+    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    assert_eq!(
+        engine.world.settlement.retained_clears[0].operation_id,
+        "op-13"
+    );
     assert_eq!(
         desire_op(&reply, "win-max").as_deref(),
         Some("op-13"),
@@ -387,7 +410,7 @@ fn accepted_attempt_plus_unmaximized_proves_and_retires() {
             )],
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     assert_eq!(desire_op(&second, "win-born"), None);
     // A further report never re-mints for the same lifetime: the attempt
     // set holds at most once.
@@ -395,7 +418,7 @@ fn accepted_attempt_plus_unmaximized_proves_and_retires() {
         &mut engine,
         &report(3, 3, vec![screen("out-a", 0)], vec![cleared], None, None),
     );
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     assert_eq!(desire_op(&third, "win-born"), None);
 }
 
@@ -416,7 +439,7 @@ fn external_clear_without_attempt_abandons() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
     let cleared = WindowFact {
         maximized: Some(false),
         ..fact("win-born", "out-a", 100)
@@ -425,7 +448,7 @@ fn external_clear_without_attempt_abandons() {
         &mut engine,
         &report(2, 2, vec![screen("out-a", 0)], vec![cleared], None, None),
     );
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
 }
 
 #[test]
@@ -463,7 +486,7 @@ fn proven_refusal_retires_and_never_retries() {
             )],
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     assert_eq!(desire_op(&second, "win-born"), None);
     let third = accepted(
         &mut engine,
@@ -476,7 +499,11 @@ fn proven_refusal_retires_and_never_retries() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0, "refused never retries");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "refused never retries"
+    );
     assert_eq!(desire_op(&third, "win-born"), None);
 }
 
@@ -515,7 +542,7 @@ fn throw_latches_ambiguity_through_unchanged_reads() {
             )],
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1, "throw holds");
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1, "throw holds");
     assert_eq!(desire_op(&second, "win-born"), None, "spent withholds");
     // Unmaximized facts arrive with no new attempt: the staged throw is
     // ambiguous evidence, never external-clear proof.
@@ -527,7 +554,11 @@ fn throw_latches_ambiguity_through_unchanged_reads() {
         &mut engine,
         &report(3, 3, vec![screen("out-a", 0)], vec![cleared], None, None),
     );
-    assert_eq!(engine.born_retained_len(), 1, "ambiguity persists");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        1,
+        "ambiguity persists"
+    );
 }
 
 #[test]
@@ -564,7 +595,7 @@ fn unreadable_proof_holds_without_spend() {
             )],
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
 }
 
 #[test]
@@ -602,7 +633,11 @@ fn async_success_completes_on_later_unmaximized_facts() {
             )],
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1, "still maximized holds");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        1,
+        "still maximized holds"
+    );
     let cleared = WindowFact {
         maximized: Some(false),
         ..fact("win-born", "out-a", 100)
@@ -611,7 +646,11 @@ fn async_success_completes_on_later_unmaximized_facts() {
         &mut engine,
         &report(3, 3, vec![screen("out-a", 0)], vec![cleared], None, None),
     );
-    assert_eq!(engine.born_retained_len(), 0, "later proof retires");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "later proof retires"
+    );
 }
 
 #[test]
@@ -630,7 +669,11 @@ fn fullscreen_birth_holds_then_exit_clears() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0, "held birth never clears");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "held birth never clears"
+    );
     assert_eq!(desire_op(&first, "win-fs"), None);
     let second = accepted(
         &mut engine,
@@ -643,7 +686,7 @@ fn fullscreen_birth_holds_then_exit_clears() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1, "held exit binds");
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1, "held exit binds");
     let op = desire_op(&second, "win-fs").expect("held exit desires");
     assert!(op.starts_with("op-born-"));
     // Proof retires the exit with no re-entry into the held set.
@@ -668,7 +711,7 @@ fn fullscreen_birth_holds_then_exit_clears() {
             )],
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
 }
 
 #[test]
@@ -694,7 +737,7 @@ fn fullscreen_exit_to_plain_consumes_hold_without_clear() {
         &mut engine,
         &report(2, 2, vec![screen("out-a", 0)], vec![plain], None, None),
     );
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     let third = accepted(
         &mut engine,
         &report(
@@ -707,7 +750,7 @@ fn fullscreen_exit_to_plain_consumes_hold_without_clear() {
         ),
     );
     assert_eq!(
-        engine.born_retained_len(),
+        engine.tx(|tx| tx.born_retained_len()),
         0,
         "consumed hold never re-clears"
     );
@@ -727,7 +770,7 @@ fn later_fullscreen_on_admitted_tile_never_enters_held() {
         &mut engine,
         &report(1, 1, vec![screen("out-a", 0)], vec![plain], None, None),
     );
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     accepted(
         &mut engine,
         &report(
@@ -740,7 +783,7 @@ fn later_fullscreen_on_admitted_tile_never_enters_held() {
         ),
     );
     assert_eq!(
-        engine.born_retained_len(),
+        engine.tx(|tx| tx.born_retained_len()),
         0,
         "admitted fullscreen never holds"
     );
@@ -756,7 +799,7 @@ fn later_fullscreen_on_admitted_tile_never_enters_held() {
         ),
     );
     assert_eq!(
-        engine.born_retained_len(),
+        engine.tx(|tx| tx.born_retained_len()),
         0,
         "admitted restore never clears"
     );
@@ -779,7 +822,11 @@ fn fixed_size_birth_floats_without_clear() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0, "fixed never clears");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "fixed never clears"
+    );
     let row = reply
         .windows
         .iter()
@@ -814,7 +861,11 @@ fn fixed_fullscreen_exit_skips_clear() {
         &mut engine,
         &report(2, 2, vec![screen("out-a", 0)], vec![exit], None, None),
     );
-    assert_eq!(engine.born_retained_len(), 0, "fixed exit never clears");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "fixed exit never clears"
+    );
     assert_eq!(desire_op(&second, "win-fs"), None);
 }
 
@@ -840,7 +891,7 @@ fn keep_overlay_skips_born_but_clears_held_exit() {
     );
     let first = accepted(&mut engine, &first_report);
     assert_eq!(
-        engine.born_retained_len(),
+        engine.tx(|tx| tx.born_retained_len()),
         0,
         "keep mode never clears births"
     );
@@ -871,7 +922,7 @@ fn keep_overlay_skips_born_but_clears_held_exit() {
     );
     let exit_reply = accepted(&mut engine, &exit_report);
     assert_eq!(
-        engine.born_retained_len(),
+        engine.tx(|tx| tx.born_retained_len()),
         1,
         "held exit clears under both modes"
     );
@@ -894,7 +945,11 @@ fn keep_overlay_skips_born_but_clears_held_exit() {
         crate::born_maximized::BornMaximized::TileOnLaunch,
     );
     let flipped_reply = accepted(&mut engine, &flipped);
-    assert_eq!(engine.born_retained_len(), 0, "kept lifetime never rebinds");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "kept lifetime never rebinds"
+    );
     assert_eq!(desire_op(&flipped_reply, "win-born"), None);
 }
 
@@ -914,7 +969,7 @@ fn floating_scope_never_clears_and_latches_floating_first() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
     // Flip the workspace to floating via the retained neutral command.
     // The binding abandons on the next observation (settlement runs
     // before command execution in the toggle report itself).
@@ -946,7 +1001,11 @@ fn floating_scope_never_clears_and_latches_floating_first() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0, "tiling flip abandons");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "tiling flip abandons"
+    );
     assert_eq!(desire_op(&after_flip, "win-born"), None);
     // Re-tile the same lifetime: floating-first latches, no second clear.
     let retiled = accepted(
@@ -967,7 +1026,7 @@ fn floating_scope_never_clears_and_latches_floating_first() {
         ),
     );
     assert_eq!(
-        engine.born_retained_len(),
+        engine.tx(|tx| tx.born_retained_len()),
         0,
         "floating-first never re-clears"
     );
@@ -995,7 +1054,7 @@ fn close_prunes_and_replacement_rearms() {
     let mut closed_report = report(2, 2, vec![screen("out-a", 0)], vec![], None, None);
     closed_report.closed = vec![W("win-born".to_owned())];
     accepted(&mut engine, &closed_report);
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     let third = accepted(
         &mut engine,
         &report(
@@ -1036,7 +1095,7 @@ fn minimized_and_unreadable_hold_without_spend() {
         &mut engine,
         &report(2, 2, vec![screen("out-a", 0)], vec![minimized], None, None),
     );
-    assert_eq!(engine.born_retained_len(), 1, "minimized holds");
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1, "minimized holds");
     assert_eq!(desire_op(&second, "win-born"), None, "minimized withholds");
     let unreadable = WindowFact {
         rect: None,
@@ -1046,7 +1105,11 @@ fn minimized_and_unreadable_hold_without_spend() {
         &mut engine,
         &report(3, 3, vec![screen("out-a", 0)], vec![unreadable], None, None),
     );
-    assert_eq!(engine.born_retained_len(), 1, "unreadable holds");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        1,
+        "unreadable holds"
+    );
     // The readable retry carries the same operation id: dedup, no second
     // binding.
     let fourth = accepted(
@@ -1060,7 +1123,7 @@ fn minimized_and_unreadable_hold_without_spend() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
     assert_eq!(desire_op(&fourth, "win-born").as_deref(), Some(op.as_str()));
 }
 
@@ -1084,7 +1147,11 @@ fn gap_arrival_decides_immediately() {
     );
     gapped.inventory_complete = false;
     let reply = accepted(&mut engine, &gapped);
-    assert_eq!(engine.born_retained_len(), 1, "gap arrival still binds");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        1,
+        "gap arrival still binds"
+    );
     assert!(desire_op(&reply, "win-born").is_some());
     // The binding holds across the gap with no attempt and no spend: the
     // next readable report retries the same desire.
@@ -1098,7 +1165,11 @@ fn gap_arrival_decides_immediately() {
     );
     still_gapped.inventory_complete = false;
     accepted(&mut engine, &still_gapped);
-    assert_eq!(engine.born_retained_len(), 1, "gap holds without spend");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        1,
+        "gap holds without spend"
+    );
 }
 
 #[test]
@@ -1113,7 +1184,7 @@ fn sticky_birth_never_clears() {
         &mut engine,
         &report(1, 1, vec![screen("out-a", 0)], vec![sticky], None, None),
     );
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     assert_eq!(desire_op(&reply, "win-sticky"), None);
 }
 
@@ -1133,7 +1204,7 @@ fn fullscreen_flip_abandons_into_held_lane() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
     accepted(
         &mut engine,
         &report(
@@ -1145,7 +1216,11 @@ fn fullscreen_flip_abandons_into_held_lane() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0, "fullscreen abandons born");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "fullscreen abandons born"
+    );
     let third = accepted(
         &mut engine,
         &report(
@@ -1158,7 +1233,7 @@ fn fullscreen_flip_abandons_into_held_lane() {
         ),
     );
     assert_eq!(
-        engine.born_retained_len(),
+        engine.tx(|tx| tx.born_retained_len()),
         1,
         "exit re-binds through held lane"
     );
@@ -1188,7 +1263,7 @@ fn distinct_births_dedup_per_window() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 2);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 2);
     let opa = desire_op(&reply, "win-a").expect("a desires");
     let opb = desire_op(&reply, "win-b").expect("b desires");
     assert_ne!(opa, opb);
@@ -1206,7 +1281,11 @@ fn distinct_births_dedup_per_window() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 2, "no duplicate bindings");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        2,
+        "no duplicate bindings"
+    );
 }
 
 #[test]
@@ -1221,7 +1300,7 @@ fn later_maximize_of_admitted_tile_never_mints() {
         &mut engine,
         &report(1, 1, vec![screen("out-a", 0)], vec![plain], None, None),
     );
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     let reply = accepted(
         &mut engine,
         &report(
@@ -1233,7 +1312,11 @@ fn later_maximize_of_admitted_tile_never_mints() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0, "later maximize never mints");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "later maximize never mints"
+    );
     assert_eq!(desire_op(&reply, "win-a"), None);
 }
 
@@ -1267,7 +1350,11 @@ fn delayed_fixed_transition_abandons_without_retry() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0, "delayed fixed abandons");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "delayed fixed abandons"
+    );
     assert_eq!(desire_op(&second, "win-born"), None);
     // No retry even if hints unfix later: the resolution latched.
     let third = accepted(
@@ -1281,7 +1368,11 @@ fn delayed_fixed_transition_abandons_without_retry() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0, "abandoned never retries");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "abandoned never retries"
+    );
     assert_eq!(desire_op(&third, "win-born"), None);
 }
 
@@ -1299,7 +1390,11 @@ fn delayed_unreadable_late_admission_binds() {
         &mut engine,
         &report(1, 1, vec![screen("out-a", 0)], vec![unreadable], None, None),
     );
-    assert_eq!(engine.born_retained_len(), 0, "unreadable mints nothing");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "unreadable mints nothing"
+    );
     assert_eq!(desire_op(&first, "win-born"), None);
     let second = accepted(
         &mut engine,
@@ -1312,7 +1407,11 @@ fn delayed_unreadable_late_admission_binds() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1, "readable arrival binds late");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        1,
+        "readable arrival binds late"
+    );
     assert!(desire_op(&second, "win-born").is_some());
 }
 
@@ -1337,7 +1436,11 @@ fn implicit_departure_restore_is_not_birth() {
         &mut engine,
         &report(2, 2, vec![screen("out-a", 0)], vec![], None, None),
     );
-    assert_eq!(engine.born_tracked_count(), 0, "departure prunes all marks");
+    assert_eq!(
+        engine.tx(|tx| tx.born_tracked_count()),
+        0,
+        "departure prunes all marks"
+    );
     // Restore maximized: the retained slot proves it is no birth.
     let reply = accepted(
         &mut engine,
@@ -1350,7 +1453,11 @@ fn implicit_departure_restore_is_not_birth() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0, "restore is not a birth");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "restore is not a birth"
+    );
     assert_eq!(desire_op(&reply, "win-a"), None);
 }
 
@@ -1421,7 +1528,7 @@ fn complete_departures_bound_all_born_sets() {
         ),
     );
     assert!(
-        engine.born_tracked_count() > 0,
+        engine.tx(|tx| tx.born_tracked_count()) > 0,
         "departure test needs live marks"
     );
     // All three lifetimes depart implicitly on a complete inventory.
@@ -1429,7 +1536,11 @@ fn complete_departures_bound_all_born_sets() {
         &mut engine,
         &report(4, 4, vec![screen("out-a", 0)], vec![], None, None),
     );
-    assert_eq!(engine.born_tracked_count(), 0, "departure prunes all marks");
+    assert_eq!(
+        engine.tx(|tx| tx.born_tracked_count()),
+        0,
+        "departure prunes all marks"
+    );
 }
 
 #[test]
@@ -1459,7 +1570,11 @@ fn same_domain_cohort_clear_admission_parked_b1() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 2, "B1 parked: cohort binds");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        2,
+        "B1 parked: cohort binds"
+    );
     assert!(desire_op(&reply, "win-a").is_some());
     assert!(desire_op(&reply, "win-b").is_some());
 }
@@ -1490,7 +1605,7 @@ fn cohort_clear_publishes_held_property_tokens() {
     // proceeds. Both rows carry no allocation and hold both authorities.
     let mut engine = born_clear_engine_post_startup();
     let reply = accepted(&mut engine, &cohort_report(1, 1));
-    assert_eq!(engine.born_retained_len(), 2);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 2);
     for win in ["win-a", "win-b"] {
         let row = reply
             .windows
@@ -1572,7 +1687,11 @@ fn cohort_clear_settles_and_converges_frames() {
             ],
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0, "proof retires both");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "proof retires both"
+    );
     assert_eq!(desire_op(&second, "win-a"), None);
     assert_eq!(desire_op(&second, "win-b"), None);
     let scope = second
@@ -1602,7 +1721,7 @@ fn cohort_clear_settles_and_converges_frames() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     assert_eq!(desire_op(&third, "win-a"), None);
     assert_eq!(desire_op(&third, "win-b"), None);
 }
@@ -1617,7 +1736,7 @@ fn cohort_clear_capability_off_mints_nothing() {
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let reply = accepted(&mut engine, &cohort_report(1, 1));
     assert_eq!(
-        engine.born_retained_len(),
+        engine.tx(|tx| tx.born_retained_len()),
         0,
         "capability-off mints nothing"
     );
@@ -1632,7 +1751,11 @@ fn cohort_clear_held_for_gesture() {
     let mut gated = cohort_report(1, 1);
     gated.gesture_barrier = true;
     let reply = accepted(&mut engine, &gated);
-    assert_eq!(engine.born_retained_len(), 0, "gesture defers birth");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "gesture defers birth"
+    );
     assert_eq!(desire_op(&reply, "win-a"), None);
     assert_eq!(desire_op(&reply, "win-b"), None);
 }
@@ -1648,7 +1771,11 @@ fn cohort_clear_held_for_incomplete_screen() {
         &mut engine,
         &report(1, 1, vec![incomplete_screen], cohort_pair(), None, None),
     );
-    assert_eq!(engine.born_retained_len(), 0, "incomplete proves nothing");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "incomplete proves nothing"
+    );
     assert_eq!(desire_op(&reply, "win-a"), None);
     assert_eq!(desire_op(&reply, "win-b"), None);
 }
@@ -1660,7 +1787,11 @@ fn cohort_clear_held_for_unknown_host_owned_homing() {
     let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
     let unknown = cohort_report(1, 1);
     let reply = accepted(&mut engine, &unknown);
-    assert_eq!(engine.born_retained_len(), 0, "unknown native homing holds");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "unknown native homing holds"
+    );
     assert_eq!(desire_op(&reply, "win-a"), None);
     assert_eq!(desire_op(&reply, "win-b"), None);
 }
@@ -1684,7 +1815,11 @@ fn cohort_fullscreen_pair_holds_slotless() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0, "fullscreen never clears");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "fullscreen never clears"
+    );
     assert_eq!(desire_op(&reply, "win-a"), None);
     assert_eq!(desire_op(&reply, "win-b"), None);
 }
@@ -1700,7 +1835,11 @@ fn cohort_keep_mode_skips_born() {
     );
     let kept = cohort_report(1, 1);
     let reply = accepted(&mut engine, &kept);
-    assert_eq!(engine.born_retained_len(), 0, "keep mode never clears");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "keep mode never clears"
+    );
     assert_eq!(desire_op(&reply, "win-a"), None);
     assert_eq!(desire_op(&reply, "win-b"), None);
 }
@@ -1723,7 +1862,11 @@ fn cohort_fixed_pair_floats_without_clear() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0, "fixed never clears");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "fixed never clears"
+    );
     assert_eq!(desire_op(&reply, "win-a"), None);
     assert_eq!(desire_op(&reply, "win-b"), None);
     for win in ["win-a", "win-b"] {
@@ -1759,7 +1902,11 @@ fn cohort_minimized_pair_holds_without_spend() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0, "minimized proves nothing");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "minimized proves nothing"
+    );
     assert_eq!(desire_op(&reply, "win-a"), None);
     assert_eq!(desire_op(&reply, "win-b"), None);
 }
@@ -1787,7 +1934,11 @@ fn cohort_floating_pair_never_clears() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0, "floating never clears");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "floating never clears"
+    );
     assert_eq!(desire_op(&reply, "win-a"), None);
     assert_eq!(desire_op(&reply, "win-b"), None);
 }
@@ -1843,7 +1994,11 @@ fn migration_gap_defers_born_mint_until_complete_inventory() {
     );
     gapped.inventory_complete = false;
     let gap_reply = accepted(&mut engine, &gapped);
-    assert_eq!(engine.born_retained_len(), 0, "migration gap defers mint");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "migration gap defers mint"
+    );
     assert_eq!(desire_op(&gap_reply, "win-born"), None);
     // Complete inventory with the same facts mints the outstanding birth:
     // the retained transfer alone never gates a provable report.
@@ -1858,7 +2013,11 @@ fn migration_gap_defers_born_mint_until_complete_inventory() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1, "complete inventory mints");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        1,
+        "complete inventory mints"
+    );
     assert!(desire_op(&minted, "win-born").is_some());
 }
 
@@ -1880,7 +2039,7 @@ fn sticky_flip_abandons_with_no_retry() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
     let sticky = WindowFact {
         sticky: Some(true),
         ..born_maximized("win-born", "out-a", 100)
@@ -1889,7 +2048,11 @@ fn sticky_flip_abandons_with_no_retry() {
         &mut engine,
         &report(2, 2, vec![screen("out-a", 0)], vec![sticky], None, None),
     );
-    assert_eq!(engine.born_retained_len(), 0, "sticky flip abandons");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "sticky flip abandons"
+    );
     assert_eq!(desire_op(&flipped, "win-born"), None);
     let unsticky = accepted(
         &mut engine,
@@ -1903,7 +2066,7 @@ fn sticky_flip_abandons_with_no_retry() {
         ),
     );
     assert_eq!(
-        engine.born_retained_len(),
+        engine.tx(|tx| tx.born_retained_len()),
         0,
         "abandoned sticky never re-mints"
     );
@@ -1927,7 +2090,7 @@ fn floating_fact_flip_abandons_and_latches() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
     let floating = WindowFact {
         transient: Some(true),
         window_type: Some(crate::world_report::WindowType::Dialog),
@@ -1937,7 +2100,11 @@ fn floating_fact_flip_abandons_and_latches() {
         &mut engine,
         &report(2, 2, vec![screen("out-a", 0)], vec![floating], None, None),
     );
-    assert_eq!(engine.born_retained_len(), 0, "floating flip abandons");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "floating flip abandons"
+    );
     assert_eq!(desire_op(&flipped, "win-born"), None);
     let retiled = accepted(
         &mut engine,
@@ -1951,7 +2118,7 @@ fn floating_fact_flip_abandons_and_latches() {
         ),
     );
     assert_eq!(
-        engine.born_retained_len(),
+        engine.tx(|tx| tx.born_retained_len()),
         0,
         "floating-first latch holds, no re-mint"
     );
@@ -1992,7 +2159,11 @@ fn floating_flip_gapped_withholds_desire_then_abandons() {
     );
     gapped.inventory_complete = false;
     let held = accepted(&mut engine, &gapped);
-    assert_eq!(engine.born_retained_len(), 1, "gap holds the binding");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        1,
+        "gap holds the binding"
+    );
     assert_eq!(
         desire_op(&held, "win-born"),
         None,
@@ -2002,7 +2173,11 @@ fn floating_flip_gapped_withholds_desire_then_abandons() {
         &mut engine,
         &report(3, 3, vec![screen("out-a", 0)], vec![floating], None, None),
     );
-    assert_eq!(engine.born_retained_len(), 0, "complete flip abandons");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "complete flip abandons"
+    );
     assert_eq!(desire_op(&abandoned, "win-born"), None);
     let _ = op;
 }
@@ -2023,7 +2198,7 @@ fn sticky_flip_gapped_withholds_desire() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
     let sticky = WindowFact {
         sticky: Some(true),
         ..born_maximized("win-born", "out-a", 100)
@@ -2038,13 +2213,21 @@ fn sticky_flip_gapped_withholds_desire() {
     );
     gapped.inventory_complete = false;
     let held = accepted(&mut engine, &gapped);
-    assert_eq!(engine.born_retained_len(), 1, "gap holds the binding");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        1,
+        "gap holds the binding"
+    );
     assert_eq!(desire_op(&held, "win-born"), None);
     let abandoned = accepted(
         &mut engine,
         &report(3, 3, vec![screen("out-a", 0)], vec![sticky], None, None),
     );
-    assert_eq!(engine.born_retained_len(), 0, "complete sticky abandons");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "complete sticky abandons"
+    );
     assert_eq!(desire_op(&abandoned, "win-born"), None);
     let retiled = accepted(
         &mut engine,
@@ -2057,7 +2240,11 @@ fn sticky_flip_gapped_withholds_desire() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0, "no re-mint after sticky");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "no re-mint after sticky"
+    );
     assert_eq!(desire_op(&retiled, "win-born"), None);
 }
 
@@ -2081,8 +2268,8 @@ fn explicit_float_intent_supersedes_birth() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1);
-    engine.retained_floats.push(RetainedFloat {
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
+    engine.world.settlement.retained_floats.push(RetainedFloat {
         operation_id: "op-7".to_owned(),
         command_seq: 7,
         window: WindowId("win-born".to_owned()),
@@ -2110,7 +2297,7 @@ fn explicit_float_intent_supersedes_birth() {
         ),
     );
     assert_eq!(
-        engine.born_retained_len(),
+        engine.tx(|tx| tx.born_retained_len()),
         0,
         "session float intent abandons the birth"
     );
@@ -2126,7 +2313,7 @@ fn explicit_float_intent_supersedes_birth() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0, "no re-actuation");
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0, "no re-actuation");
     assert_eq!(desire_op(&later, "win-born"), None);
 }
 
@@ -2150,7 +2337,7 @@ fn toggle_float_on_maximized_birth_refuses_without_clear() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
     let target = Rect {
         x: 600,
         y: 400,
@@ -2182,9 +2369,13 @@ fn toggle_float_on_maximized_birth_refuses_without_clear() {
         ),
         (other, _) => panic!("expected ToggleFloat refusal, got {other:?}"),
     }
-    assert_eq!(engine.born_retained_len(), 1, "refusal keeps the binding");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        1,
+        "refusal keeps the binding"
+    );
     assert!(
-        engine.retained_floats.is_empty(),
+        engine.world.settlement.retained_floats.is_empty(),
         "refused command creates no float intent"
     );
     let third = accepted(
@@ -2198,7 +2389,7 @@ fn toggle_float_on_maximized_birth_refuses_without_clear() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
     assert!(desire_op(&third, "win-born").is_some());
 }
 
@@ -2221,7 +2412,7 @@ fn mode_flip_does_not_reclear_retained_lifetime() {
         ),
     );
     let op = desire_op(&first, "win-born").expect("desire rides");
-    assert_eq!(engine.born_retained_len(), 1);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
     set_born_policy(
         &mut engine,
         1,
@@ -2236,10 +2427,14 @@ fn mode_flip_does_not_reclear_retained_lifetime() {
         None,
     );
     accepted(&mut engine, &kept);
-    assert_eq!(engine.born_retained_len(), 1, "flip keeps the binding");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        1,
+        "flip keeps the binding"
+    );
     assert_eq!(
         engine
-            .born_operation_for(&WindowId("win-born".to_owned()))
+            .tx(|tx| tx.born_operation_for(&WindowId("win-born".to_owned())))
             .as_deref(),
         Some(op.as_str()),
         "flip never re-mints"
@@ -2255,7 +2450,7 @@ fn mode_flip_does_not_reclear_retained_lifetime() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
     assert_eq!(
         desire_op(&restored, "win-born").as_deref(),
         Some(op.as_str()),
@@ -2284,9 +2479,9 @@ fn empty_native_free_migration_retires_echoless_born_clear_proceeds() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1);
-    assert!(engine.retained.is_empty());
-    engine.retained.push(RetainedTransfer {
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
+    assert!(engine.world.settlement.retained.is_empty());
+    engine.world.settlement.retained.push(RetainedTransfer {
         target: TransferTarget {
             operation_id: "op-11".to_owned(),
             kind: TransferKind::Migration,
@@ -2322,13 +2517,17 @@ fn empty_native_free_migration_retires_echoless_born_clear_proceeds() {
     );
     gapped.inventory_complete = false;
     let held = accepted(&mut engine, &gapped);
-    assert_eq!(engine.born_retained_len(), 1, "gap holds the binding");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        1,
+        "gap holds the binding"
+    );
     assert_eq!(
         desire_op(&held, "win-born").as_deref(),
         Some("op-born-1"),
         "empty native-free migration retires echoless, token proceeds"
     );
-    engine.retained.clear();
+    engine.world.settlement.retained.clear();
     let recovered = accepted(
         &mut engine,
         &report(
@@ -2340,7 +2539,7 @@ fn empty_native_free_migration_retires_echoless_born_clear_proceeds() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 1);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
     assert!(desire_op(&recovered, "win-born").is_some());
 }
 
@@ -2360,7 +2559,7 @@ fn retained_maximized_slot_keeps_controlled_reservation() {
         &mut engine,
         &report(1, 1, vec![screen("out-a", 0)], vec![plain], None, None),
     );
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     let reply = accepted(
         &mut engine,
         &report(
@@ -2372,7 +2571,11 @@ fn retained_maximized_slot_keeps_controlled_reservation() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0, "retained slot never mints");
+    assert_eq!(
+        engine.tx(|tx| tx.born_retained_len()),
+        0,
+        "retained slot never mints"
+    );
     assert_eq!(desire_op(&reply, "win-keep"), None);
     let row = reply
         .windows
@@ -2424,7 +2627,7 @@ fn default_startup_maximized_keeps_overlay_with_reserved_slot() {
         ),
     );
     assert_eq!(
-        engine.born_retained_len(),
+        engine.tx(|tx| tx.born_retained_len()),
         0,
         "startup maximized survivor never mints a born clear"
     );
@@ -2474,7 +2677,7 @@ fn later_born_after_startup_clears_once_then_tiles() {
     assert_eq!(desire_op(&later, "win-start"), None);
     let op = desire_op(&later, "win-later").expect("later born window clears once");
     assert!(op.starts_with("op-born-"));
-    assert_eq!(engine.born_retained_len(), 1);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
     let cleared = accepted(
         &mut engine,
         &report_clears(
@@ -2495,7 +2698,7 @@ fn later_born_after_startup_clears_once_then_tiles() {
             )],
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     assert_eq!(desire_op(&cleared, "win-later"), None);
     let later_row = cleared
         .windows
@@ -2526,7 +2729,7 @@ fn keep_maximized_overlay_unchanged_startup_and_later() {
         ),
     );
     assert_eq!(desire_op(&startup, "win-start"), None);
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     let later = accepted(
         &mut engine,
         &report(
@@ -2543,7 +2746,7 @@ fn keep_maximized_overlay_unchanged_startup_and_later() {
     );
     assert_eq!(desire_op(&later, "win-start"), None);
     assert_eq!(desire_op(&later, "win-later"), None);
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     for id in ["win-start", "win-later"] {
         let row = later
             .windows
@@ -2614,7 +2817,7 @@ fn multiple_startup_maximized_survivors_keep_overlay_and_restore_slots() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     assert_eq!(desire_op(&startup, "win-a"), None);
     assert_eq!(desire_op(&startup, "win-b"), None);
     let alloc_a = startup
@@ -2676,7 +2879,7 @@ fn startup_mix_maximized_and_ordinary_tiled_no_restore_reflow() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     assert_eq!(desire_op(&startup, "win-max"), None);
     let max_alloc = startup
         .windows
@@ -2750,7 +2953,7 @@ fn startup_incomplete_then_complete_adopts_complete_cohort() {
         ),
     );
     assert_eq!(desire_op(&startup, "win-start"), None);
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     let later = accepted(
         &mut engine,
         &report(
@@ -2798,7 +3001,7 @@ fn startup_held_and_minimized_and_unhomed_preserve_presence() {
         kind: crate::world_report::RowDiagnosticKind::InvalidFact,
     }];
     let startup = accepted(&mut engine, &startup_report);
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     assert_eq!(desire_op(&startup, "win-min"), None);
     let recovered = accepted(
         &mut engine,
@@ -2815,7 +3018,7 @@ fn startup_held_and_minimized_and_unhomed_preserve_presence() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     assert_eq!(desire_op(&recovered, "win-min"), None);
     assert_eq!(desire_op(&recovered, "win-unhomed"), None);
     assert_eq!(desire_op(&recovered, "win-held"), None);
@@ -2933,7 +3136,7 @@ fn reconnect_preserves_latches_and_rehandshake_adopts_new_startup() {
     fresh_report.core_generation = generation;
     let rehand = accepted(&mut engine, &fresh_report);
     assert_eq!(desire_op(&rehand, "win-rehand"), None);
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
 }
 
 #[test]
@@ -2960,7 +3163,7 @@ fn startup_float_fixed_sticky_and_fullscreen_unchanged() {
             None,
         ),
     );
-    assert_eq!(engine.born_retained_len(), 0);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     for id in ["win-float", "win-fixed", "win-sticky", "win-fs"] {
         assert_eq!(desire_op(&startup, id), None);
     }

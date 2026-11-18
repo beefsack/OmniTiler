@@ -475,7 +475,7 @@ impl WorldSequencer {
     /// for the transport round trip). Core gates -- size, validation,
     /// generation, freshness, command consumption -- run here, unmodified.
     pub(super) fn deliver(&mut self, report: &WorldReport) -> WorldOutcome {
-        self.engine.handle_report(report, &[]).0
+        tiler_protocol::world_admission::handle_report_checked(&mut self.engine, report, &[]).0
     }
 
     /// Offer one core reply: acknowledge exactly the delivered facts the core
@@ -833,7 +833,8 @@ impl WorldSequencer {
         report: &WorldReport,
     ) -> (WorldOutcome, WorldEngine) {
         let mut candidate = self.engine.clone();
-        let outcome = candidate.handle_report(report, &[]).0;
+        let outcome =
+            tiler_protocol::world_admission::handle_report_checked(&mut candidate, report, &[]).0;
         (outcome, candidate)
     }
 

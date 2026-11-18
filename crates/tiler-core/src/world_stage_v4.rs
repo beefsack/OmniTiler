@@ -15,12 +15,16 @@
 //! narrow `conflicting-fact` holds before staging; unsupported state attempts
 //! keep their raw rows and emit `state_offroute` attempt diagnostics.
 
+use crate::world_classification::{
+    StageClassificationContext, StageClassificationInput, StateAttemptSource, classify_stage,
+};
 use crate::world_engine::{StagedObservation, StagedReport, WorldEngine};
 use crate::world_report::{
     PresentationRowV4, RendererInput, RowDiagnostic, StateProperty, WorldReportV4,
 };
 use crate::world_report_v4_checks::graded_effective_v4;
 use crate::world_state::state_property_supported;
+use crate::world_transaction::WorldTransaction;
 
 /// Read-only staged census for protocol tests: counts and verbatim rows
 /// staged from a [`WorldReportV4`] without mutating the engine.
@@ -41,7 +45,7 @@ pub struct StagedV4Census {
     pub diagnostics: Vec<RowDiagnostic>,
 }
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Stage a v4 report into [`StagedReport`]: the raw observation capture
     /// from the original typed rows, capability-graded windows and explicit
     /// closes via the shared helpers, the gesture barrier, held native rows,
@@ -58,20 +62,22 @@ impl WorldEngine {
     /// scope), then unsupported state-attempt `ConflictingFact` diagnostics
     /// in input order (raw attempts stay intact, never a held row), then the
     /// held presentation's diagnostic when it carries `Some`.
+    #[cfg(test)]
     pub(crate) fn stage_facts_v4(&mut self, report: &WorldReportV4) {
         // Classification-only restage from the original typed rows:
         // invalid and capability grading may move rows into held rows
         // while the observation keeps the original facts. Like the legacy
         // restage, this never ingests intent.
-        let observation = Self::capture_observation_v4(report);
+        let observation = WorldEngine::capture_observation_v4(report);
         let unavailable: &[crate::connection::FactName] = self
+            .connection
             .capabilities()
             .map(|capabilities| capabilities.unavailable_facts.as_slice())
             .unwrap_or(&[]);
         let native_sticky_supported =
-            state_property_supported(self.capabilities(), StateProperty::Sticky);
+            state_property_supported(self.connection.capabilities(), StateProperty::Sticky);
         let maximize_supported =
-            state_property_supported(self.capabilities(), StateProperty::Maximized);
+            state_property_supported(self.connection.capabilities(), StateProperty::Maximized);
         let graded = graded_effective_v4(
             report,
             unavailable,
@@ -91,82 +97,98 @@ impl WorldEngine {
     pub(crate) fn stage_captured_v4(
         &mut self,
         effective: &WorldReportV4,
-        observation: StagedObservation,
+        mut observation: StagedObservation,
     ) {
-        let prior_homing = self.staged.homing.clone();
-        let resolved_held = self.resolve_held_window_scopes(&effective.held_windows, &prior_homing);
-        let mut diagnostics =
-            Self::staged_screen_window_diagnostics(&effective.held_screens, &resolved_held);
-        diagnostics.extend(
-            effective
-                .held_native
-                .iter()
-                .map(|held| held.diagnostic.clone()),
-        );
-        diagnostics.extend(
-            effective
-                .held_attempts
-                .iter()
-                .filter_map(|held| held.diagnostic.clone()),
-        );
-        let state_offroute: Vec<RowDiagnostic> = effective
-            .state_attempts
-            .iter()
-            .filter(|attempt| !state_property_supported(self.capabilities(), attempt.property))
-            .filter_map(|attempt| {
-                self.state_offroute_diagnostic_for(
-                    &effective.windows,
-                    &effective.held_windows,
-                    &attempt.window,
-                )
-            })
-            .collect();
-        diagnostics.extend(state_offroute);
-        if let PresentationRowV4::Held(held) = &effective.presentation
-            && let Some(diagnostic) = &held.diagnostic
-        {
-            diagnostics.push(diagnostic.clone());
+        let derived = {
+            let ctx = StageClassificationContext::new(self.connection, self.world);
+            let input = StageClassificationInput {
+                windows: &effective.windows,
+                closed: &effective.closed,
+                held_screens: &effective.held_screens,
+                held_windows: &effective.held_windows,
+                held_native: &effective.held_native,
+                held_attempts: &effective.held_attempts,
+                presentation: Some(&effective.presentation),
+                state_attempts: StateAttemptSource::Report(&effective.state_attempts),
+            };
+            classify_stage(&ctx, input)
+        };
+        let mut held_windows = effective.held_windows.clone();
+        for (held, diag) in held_windows.iter_mut().zip(derived.held_window_diagnostics) {
+            held.diagnostic = diag;
         }
-        let mut staged = StagedReport {
-            observation,
+        observation.normalize_visibility_attempts(&derived.facts, &held_windows);
+        let staged = StagedReport {
+            observation: std::sync::Arc::new(observation),
             screens: effective.screens.clone(),
             held_screens: effective.held_screens.clone(),
-            held_windows: resolved_held,
-            diagnostics,
+            held_windows,
+            diagnostics: derived.diagnostics,
             gesture_barrier: effective.gesture_barrier,
             held_native: effective.held_native.clone(),
             held_attempts: effective.held_attempts.clone(),
             presentation_v4: Some(effective.presentation.clone()),
             renderer_input: effective.renderer_input.clone(),
-            effective_windows: effective.windows.clone(),
+            effective_windows: std::sync::Arc::new(effective.windows.clone()),
+            excluded: derived.excluded,
+            fact_output: derived.fact_output,
+            facts: derived.facts,
+            derived: derived.derived,
+            closes: derived.closes,
             ..StagedReport::default()
         };
-        self.stage_window_facts(&effective.windows, &effective.closed, &mut staged);
-        self.staged = staged;
+        self.world.staged = staged;
     }
+}
 
-    /// Stage `report` on a clone and read back the census: `self` is not
-    /// mutated. Protocol tests use this to check conservation over every
-    /// accepted v4 report fixture and scenario report without running the
-    /// engine.
+impl WorldEngine {
+    /// Stage `report` on the shared read-only classifier and read back the
+    /// census: `self` is not mutated and `self.world` is not cloned.
+    /// Protocol tests use this to check conservation over every accepted v4
+    /// report fixture and scenario report without running the engine.
     #[doc(hidden)]
     pub fn stage_report_v4_census(&self, report: &WorldReportV4) -> StagedV4Census {
-        let mut staged_engine = self.clone();
-        staged_engine.stage_facts_v4(report);
-        let staged = &staged_engine.staged;
+        let unavailable: &[crate::connection::FactName] = self
+            .connection
+            .capabilities()
+            .map(|capabilities| capabilities.unavailable_facts.as_slice())
+            .unwrap_or(&[]);
+        let native_sticky_supported =
+            state_property_supported(self.connection.capabilities(), StateProperty::Sticky);
+        let maximize_supported =
+            state_property_supported(self.connection.capabilities(), StateProperty::Maximized);
+        let graded = graded_effective_v4(
+            report,
+            unavailable,
+            native_sticky_supported,
+            maximize_supported,
+        );
+        let effective = graded.as_ref().unwrap_or(report);
+        let ctx = StageClassificationContext::new(&self.connection, &self.world);
+        let input = StageClassificationInput {
+            windows: &effective.windows,
+            closed: &effective.closed,
+            held_screens: &effective.held_screens,
+            held_windows: &effective.held_windows,
+            held_native: &effective.held_native,
+            held_attempts: &effective.held_attempts,
+            presentation: Some(&effective.presentation),
+            state_attempts: StateAttemptSource::Report(&effective.state_attempts),
+        };
+        let derived = classify_stage(&ctx, input);
         StagedV4Census {
-            screens: staged.screens.len(),
-            held_screens: staged.held_screens.len(),
-            facts: staged.facts.len(),
-            excluded: staged.excluded.len(),
-            held_windows: staged.held_windows.len(),
-            closes: staged.closes.len(),
-            held_native: staged.held_native.len(),
-            held_attempts: staged.held_attempts.len(),
-            presentation_held: matches!(staged.presentation_v4, Some(PresentationRowV4::Held(_))),
-            renderer_input: staged.renderer_input.clone(),
-            echoes: staged.echoes.len(),
-            diagnostics: staged.diagnostics.clone(),
+            screens: effective.screens.len(),
+            held_screens: effective.held_screens.len(),
+            facts: derived.facts.len(),
+            excluded: derived.excluded.len(),
+            held_windows: effective.held_windows.len(),
+            closes: derived.closes.len(),
+            held_native: effective.held_native.len(),
+            held_attempts: effective.held_attempts.len(),
+            presentation_held: matches!(effective.presentation, PresentationRowV4::Held(_)),
+            renderer_input: effective.renderer_input.clone(),
+            echoes: 0,
+            diagnostics: derived.diagnostics,
         }
     }
 }

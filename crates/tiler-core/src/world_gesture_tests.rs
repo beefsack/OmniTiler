@@ -1982,7 +1982,7 @@ fn terminal_id_zero_never_binds() {
         WorldOutcome::Rejected { .. } => {}
         other => panic!("expected rejection for id 0, got {other:?}"),
     }
-    assert!(engine.gesture_terminal.is_none());
+    assert!(engine.world.gesture.terminal.is_none());
 }
 
 #[test]
@@ -2291,7 +2291,7 @@ fn repeat_updated_and_released_same_id_has_no_replay() {
         Some((1, true))
     );
     assert_eq!(
-        engine.gesture_terminal.map(|t| (t.id, t.committed)),
+        engine.world.gesture.terminal.map(|t| (t.id, t.committed)),
         Some((1, true))
     );
     // Exact Updated replay: no session, no overlay.
@@ -2451,15 +2451,9 @@ fn missing_ingress_close_records_terminal() {
 }
 
 #[test]
-fn reply_carries_terminal_and_bounds_wire_bytes() {
-    use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
+fn reply_carries_terminal() {
     // The terminal rides the reply, not a sidechannel: id plus commit
-    // flag, exact v4 bytes carry it, and the structural estimate plus
-    // the exact encoding both fit the reply budget. No core v4
-    // canonical writer exists, so the wire-substring check becomes
-    // exact-byte accounting through `reply_exact_bytes_v4` (which pins
-    // the gesture-settled section field-by-field like the protocol
-    // `encode_reply_v4` writer).
+    // flag. Canonical wire encoding and byte bounds live in `tiler-protocol`.
     let (mut engine, ra, rb) = rig();
     let moved_a = rect(100, 0, 40, 90);
     let released = accepted(
@@ -2484,19 +2478,6 @@ fn reply_carries_terminal_and_bounds_wire_bytes() {
         released.gesture_settled.map(|t| (t.id, t.committed)),
         Some((1, true))
     );
-    let mut stripped = released.clone();
-    stripped.gesture_settled = None;
-    assert!(
-        reply_exact_bytes_v4(&released) > reply_exact_bytes_v4(&stripped),
-        "exact bytes carry the terminal"
-    );
-    let actual = reply_exact_bytes_v4(&released);
-    let estimate = reply_estimate_v4(&released);
-    assert!(
-        estimate >= actual,
-        "estimate {estimate} bounds wire {actual}"
-    );
-    assert!(actual <= crate::world_report::WORLD_MAX_REPLY_BYTES);
 }
 
 #[test]
@@ -2706,7 +2687,10 @@ fn q1_gesture_predecessor_remains_through_successor_pending_and_replaces_at_term
             committed: true,
         })
     );
-    assert!(engine.gesture.is_none(), "G1 is settled and cleared");
+    assert!(
+        engine.world.gesture.retained.is_none(),
+        "G1 is settled and cleared"
+    );
     let g1_alloc_a = row_of(&g1_terminal, "win-a")
         .allocation
         .expect("win-a allocation");
@@ -2739,7 +2723,7 @@ fn q1_gesture_predecessor_remains_through_successor_pending_and_replaces_at_term
         ),
     );
     assert_eq!(
-        engine.gesture.as_ref().map(|g| g.id),
+        engine.world.gesture.retained.as_ref().map(|g| g.id),
         Some(2),
         "G2 must be pending"
     );
@@ -2774,7 +2758,10 @@ fn q1_gesture_predecessor_remains_through_successor_pending_and_replaces_at_term
             true,
         ),
     );
-    assert_eq!(engine.gesture.as_ref().map(|g| g.id), Some(2));
+    assert_eq!(
+        engine.world.gesture.retained.as_ref().map(|g| g.id),
+        Some(2)
+    );
     assert_eq!(
         updated.gesture_settled,
         Some(crate::gesture::GestureSettled {
@@ -2831,7 +2818,10 @@ fn q1_gesture_predecessor_remains_through_successor_pending_and_replaces_at_term
             true,
         ),
     );
-    assert_eq!(engine.gesture.as_ref().map(|g| g.id), Some(2));
+    assert_eq!(
+        engine.world.gesture.retained.as_ref().map(|g| g.id),
+        Some(2)
+    );
     assert_eq!(
         stale_replay.gesture_settled,
         Some(crate::gesture::GestureSettled {
@@ -2863,7 +2853,7 @@ fn q1_gesture_predecessor_remains_through_successor_pending_and_replaces_at_term
             true,
         ),
     );
-    assert!(engine.gesture.is_none());
+    assert!(engine.world.gesture.retained.is_none());
     assert_eq!(
         g2_terminal.gesture_settled,
         Some(crate::gesture::GestureSettled {
@@ -3824,14 +3814,14 @@ fn same_output_drag_preview_on_non_first_active_workspace_succeeds() {
     let preview = previewed.drag_preview.as_ref().unwrap_or_else(|| {
         panic!(
             "same-output move on non-first active workspace must produce drag_preview; traces={traces:?}, view={:?}",
-            engine.effective_view(&OutputId("out-a".to_owned()))
+            engine.tx_ro(|tx| tx.effective_view(&OutputId("out-a".to_owned())))
         )
     });
     assert_eq!(preview.domain.output.0, "out-a");
     assert_eq!(
         preview.domain.workspace.0,
         engine
-            .effective_view(&OutputId("out-a".to_owned()))
+            .tx_ro(|tx| tx.effective_view(&OutputId("out-a".to_owned())))
             .expect("active view")
     );
     assert!(preview.rect.w > 0 && preview.rect.h > 0);
@@ -3893,7 +3883,7 @@ fn cross_output_drag_preview_selects_non_first_active_workspace_on_destination()
     assert_eq!(
         preview.domain.workspace.0,
         engine
-            .effective_view(&OutputId("out-b".to_owned()))
+            .tx_ro(|tx| tx.effective_view(&OutputId("out-b".to_owned())))
             .expect("active view on out-b")
     );
     assert!(preview.rect.w > 0 && preview.rect.h > 0);
@@ -3987,7 +3977,7 @@ fn drag_pointer_domain_staged_refuses_when_active_workspace_is_held_without_fall
     accepted(&mut engine, &seed);
 
     let active_ws = engine
-        .effective_view(&OutputId("out-b".to_owned()))
+        .tx_ro(|tx| tx.effective_view(&OutputId("out-b".to_owned())))
         .expect("active view on out-b");
     let active_key = crate::session::DomainKey {
         output: OutputId("out-b".to_owned()),
@@ -3996,7 +3986,7 @@ fn drag_pointer_domain_staged_refuses_when_active_workspace_is_held_without_fall
 
     let empty_held = std::collections::BTreeSet::new();
     let (selected, _) = engine
-        .drag_pointer_domain_staged(1500, 300, &empty_held)
+        .tx(|tx| tx.drag_pointer_domain_staged(1500, 300, &empty_held))
         .expect("unheld active workspace on out-b must be selected");
     assert_eq!(selected, active_key);
 
@@ -4004,7 +3994,7 @@ fn drag_pointer_domain_staged_refuses_when_active_workspace_is_held_without_fall
     held_scopes.insert(active_key);
     assert!(
         engine
-            .drag_pointer_domain_staged(1500, 300, &held_scopes)
+            .tx(|tx| tx.drag_pointer_domain_staged(1500, 300, &held_scopes))
             .is_none(),
         "held active workspace on out-b must refuse without falling back to inactive b0"
     );
@@ -4068,7 +4058,7 @@ fn omitted_ingress_clears_drag_preview_when_destination_effective_view_changes_w
     assert_eq!(
         preview.domain.workspace.0,
         engine
-            .effective_view(&OutputId("out-b".to_owned()))
+            .tx_ro(|tx| tx.effective_view(&OutputId("out-b".to_owned())))
             .expect("active view on out-b")
     );
 
@@ -4124,7 +4114,7 @@ fn omitted_ingress_clears_drag_preview_when_destination_effective_view_changes_w
     assert!(
         switched_reply.drag_preview.is_none(),
         "omitted ingress after destination effective_view switch must clear drag_preview; view={:?}, traces={traces:?}",
-        engine.effective_view(&OutputId("out-b".to_owned()))
+        engine.tx_ro(|tx| tx.effective_view(&OutputId("out-b".to_owned())))
     );
 }
 
@@ -4416,7 +4406,9 @@ fn failed_center_preview_retains_group_edge_stickiness() {
     assert_eq!(row_of(&center_reply, "win-c").allocation, Some(c1));
     assert_eq!(
         engine
+            .world
             .gesture
+            .retained
             .as_ref()
             .and_then(|g| g.hover.as_ref())
             .and_then(|h| h.prior.as_ref())

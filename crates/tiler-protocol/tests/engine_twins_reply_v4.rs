@@ -1,16 +1,15 @@
-//! Staged v4 reply twins (unit 6): evidence for
-//! [`reply_estimate_v4`](tiler_core::world_sizing_v4::reply_estimate_v4),
-//! [`reply_exact_bytes_v4`](tiler_core::world_sizing_v4::reply_exact_bytes_v4),
-//! and [`reply_upper_bound_v4`](tiler_core::world_sizing_v4::reply_upper_bound_v4)
+//! Staged v4 reply twins (unit 6): evidence for the canonical writer byte
+//! count (`count_reply_v4_bytes` over decoded wire optionals)
+//! and [`reply_upper_bound_v4`](tiler_protocol::world_admission_sizing::reply_upper_bound_v4)
 //! over the `test-fixtures/world-wire/v4-active` WorldReply fixtures. Offline only:
 //! no adapters, no live work, no engine.
 
 use tiler_core::world_report::{BorderPresentationV4, TransferKind, TransferTargetV4};
-use tiler_core::world_sizing::MAX_EFFECT_RESERVE_BYTES;
-use tiler_core::world_sizing_v4::{
-    reply_estimate_v4, reply_exact_bytes_v4, reply_upper_bound_v4, report_estimate_v4,
+use tiler_protocol::world_admission_sizing::{
+    MAX_EFFECT_RESERVE_BYTES, MAX_EFFECT_ROW_BYTES, reply_upper_bound_v4, report_estimate_v4,
 };
 use tiler_protocol::world_protocol::{decode_reply_v4, decode_report_v4, encode_reply_v4};
+use tiler_protocol::world_reply_write::count_reply_v4_bytes;
 
 fn reply_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -79,8 +78,8 @@ fn report_fixtures() -> Vec<ManifestFixture> {
         .collect()
 }
 
-/// Every valid-wire reply fixture: the exact twin matches the canonical
-/// writer byte-for-byte and the estimate covers it.
+/// Every valid-wire reply fixture: the canonical writer byte count matches
+/// the emitted bytes exactly.
 #[test]
 fn v4_reply_exact_matches_canonical_encoding() {
     let fixtures = reply_fixtures();
@@ -89,17 +88,10 @@ fn v4_reply_exact_matches_canonical_encoding() {
         let decoded = decode_reply_v4(&reply_text(&fixture.file)).expect("fixture decodes");
         let wire = encode_reply_v4(&decoded).expect("fixture encodes");
         assert_eq!(
-            reply_exact_bytes_v4(&decoded.reply),
+            count_reply_v4_bytes(&decoded.reply, &decoded.wire),
             wire.len(),
-            "exact matches canonical bytes {}",
+            "canonical count matches emitted bytes {}",
             fixture.id
-        );
-        assert!(
-            reply_estimate_v4(&decoded.reply) >= wire.len(),
-            "estimate covers wire {} ({} vs {})",
-            fixture.id,
-            reply_estimate_v4(&decoded.reply),
-            wire.len()
         );
     }
 }
@@ -107,7 +99,7 @@ fn v4_reply_exact_matches_canonical_encoding() {
 /// Constructed extremes: transfers with `command_seq` at `u64::MAX` and
 /// `None` across every transfer kind, plus a visible anchored border with
 /// widest outsets, largest non-negative width/radius, a full witness, and
-/// a warp point. Exact still matches the writer; the estimate still covers.
+/// a warp point. The canonical count still matches the writer.
 #[test]
 fn v4_reply_twins_cover_extreme_transfers_and_border() {
     let fixture = reply_fixtures().into_iter().next().expect("reply fixture");
@@ -164,13 +156,9 @@ fn v4_reply_twins_cover_extreme_transfers_and_border() {
     decoded.reply.cursor_warp = Some((16384, -16384));
     let wire = encode_reply_v4(&decoded).expect("extreme reply encodes");
     assert_eq!(
-        reply_exact_bytes_v4(&decoded.reply),
+        count_reply_v4_bytes(&decoded.reply, &decoded.wire),
         wire.len(),
-        "exact matches extreme canonical bytes"
-    );
-    assert!(
-        reply_estimate_v4(&decoded.reply) >= wire.len(),
-        "estimate covers extreme wire"
+        "canonical count matches extreme emitted bytes"
     );
 }
 
@@ -204,6 +192,29 @@ fn v4_reply_upper_bound_covers_report_estimate_plus_reserves() {
             fixture.id
         );
     }
+}
+
+#[test]
+fn v4_reply_exact_covers_presentation_rev_marginals_and_effect_reserve_constants() {
+    let fixture = reply_fixtures().into_iter().next().expect("reply fixture");
+    let mut zero = decode_reply_v4(&reply_text(&fixture.file)).expect("fixture decodes");
+    zero.reply.presentation.rev = 0;
+    let zero_len = encode_reply_v4(&zero).expect("zero rev encodes").len();
+    assert_eq!(count_reply_v4_bytes(&zero.reply, &zero.wire), zero_len);
+    for (rev, expected_delta) in [(0u64, 0usize), (9, 0), (10, 1), (u64::MAX, 19)] {
+        let mut rev_reply = zero.clone();
+        rev_reply.reply.presentation.rev = rev;
+        let wire = encode_reply_v4(&rev_reply).expect("rev reply encodes");
+        assert_eq!(
+            count_reply_v4_bytes(&rev_reply.reply, &rev_reply.wire),
+            wire.len()
+        );
+        assert_eq!(wire.len() - zero_len, expected_delta, "rev {rev}");
+    }
+
+    assert_eq!(MAX_EFFECT_ROW_BYTES, 294);
+    assert_eq!(MAX_EFFECT_RESERVE_BYTES, 589);
+    assert_eq!(MAX_EFFECT_RESERVE_BYTES, 2 * MAX_EFFECT_ROW_BYTES + 1);
 }
 
 // Scenario files (`test-fixtures/world-wire/v4/scenarios`) are ordered

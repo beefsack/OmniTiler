@@ -231,7 +231,12 @@ fn admission_effect_id_stays_within_opaque_bound_at_max_subject() {
     );
     // Feeding the emitted tuple back as a typed row satisfies the retained
     // request, with no new effects and no retry.
-    let pending = engine.pending_focus.clone().expect("pending request");
+    let pending = engine
+        .world
+        .focus
+        .pending_focus
+        .clone()
+        .expect("pending request");
     let emitted_id = pending.id.clone();
     let emitted_rev = pending.issued_revision;
     let live = feedback_row(
@@ -263,7 +268,7 @@ fn admission_effect_id_stays_within_opaque_bound_at_max_subject() {
         "feedback mints nothing: {settled:?}"
     );
     assert!(
-        engine.pending_focus.is_none(),
+        engine.world.focus.pending_focus.is_none(),
         "target equality satisfies the request"
     );
 }
@@ -315,7 +320,12 @@ fn hover_effect_id_stays_within_opaque_bound_at_max_subject() {
     // request, with no new effects and no retry. The cursor stays
     // static and the observed focus has caught up to the hover target, so
     // no re-mint occurs.
-    let pending = engine.pending_focus.clone().expect("pending request");
+    let pending = engine
+        .world
+        .focus
+        .pending_focus
+        .clone()
+        .expect("pending request");
     let emitted_id = pending.id.clone();
     let emitted_rev = pending.issued_revision;
     let live = feedback_row(
@@ -347,7 +357,7 @@ fn hover_effect_id_stays_within_opaque_bound_at_max_subject() {
         "feedback mints nothing: {settled:?}"
     );
     assert!(
-        engine.pending_focus.is_none(),
+        engine.world.focus.pending_focus.is_none(),
         "target equality satisfies the request"
     );
 }
@@ -404,13 +414,15 @@ fn suppressed_same_target_automatic_candidate_keeps_token_for_later_hover() {
     let minted = commanded.state_revision;
     assert_eq!(
         engine
+            .world
+            .focus
             .automatic_focus_tokens
             .get(&WindowId("win-b".to_owned())),
         Some(&minted),
         "the dropped automatic candidate retains its R2 token"
     );
     assert_eq!(
-        engine.ffc_last_hover, None,
+        engine.world.focus.ffc_last_hover, None,
         "the suppressed report never reaches the hover gate"
     );
     let hovered = accepted(
@@ -448,6 +460,8 @@ fn suppressed_same_target_automatic_candidate_keeps_token_for_later_hover() {
     );
     assert_eq!(
         engine
+            .world
+            .focus
             .automatic_focus_tokens
             .get(&WindowId("win-b".to_owned())),
         Some(&minted),
@@ -490,6 +504,8 @@ fn admission_token_is_first_issuing_revision_and_stable_across_observations() {
     assert_eq!(request.id, format!("focus-{}", reply.state_revision));
     assert!(is_opaque_id(&request.id));
     let token = *engine
+        .world
+        .focus
         .automatic_focus_tokens
         .get(&WindowId("win-b".to_owned()))
         .expect("mapping retained");
@@ -510,6 +526,8 @@ fn admission_token_is_first_issuing_revision_and_stable_across_observations() {
     }
     assert_eq!(
         engine
+            .world
+            .focus
             .automatic_focus_tokens
             .get(&WindowId("win-b".to_owned())),
         Some(&token),
@@ -619,6 +637,8 @@ fn repeated_hover_retains_token_through_move_away_and_back() {
     assert!(is_opaque_id(&first_request.id));
     let first_id = first_request.id.clone();
     let first_token = *engine
+        .world
+        .focus
         .automatic_focus_tokens
         .get(&WindowId("win-b".to_owned()))
         .expect("hover token retained");
@@ -673,6 +693,8 @@ fn repeated_hover_retains_token_through_move_away_and_back() {
     assert!(is_opaque_id(&back_request.id));
     assert_eq!(
         engine
+            .world
+            .focus
             .automatic_focus_tokens
             .get(&WindowId("win-b".to_owned())),
         Some(&first_token),
@@ -719,6 +741,8 @@ fn token_survives_incomplete_held_and_engine_known_absence() {
     accepted(&mut engine, &gap);
     assert_eq!(
         engine
+            .world
+            .focus
             .automatic_focus_tokens
             .get(&WindowId("win-b".to_owned())),
         Some(&token),
@@ -737,6 +761,8 @@ fn token_survives_incomplete_held_and_engine_known_absence() {
     accepted(&mut engine, &held);
     assert_eq!(
         engine
+            .world
+            .focus
             .automatic_focus_tokens
             .get(&WindowId("win-b".to_owned())),
         Some(&token),
@@ -750,6 +776,8 @@ fn token_survives_incomplete_held_and_engine_known_absence() {
     );
     assert_eq!(
         engine
+            .world
+            .focus
             .automatic_focus_tokens
             .get(&WindowId("win-b".to_owned())),
         Some(&token),
@@ -770,6 +798,8 @@ fn token_survives_incomplete_held_and_engine_known_absence() {
     assert!(echo.effects.is_empty(), "no replay: {echo:?}");
     assert_eq!(
         engine
+            .world
+            .focus
             .automatic_focus_tokens
             .get(&WindowId("win-b".to_owned())),
         Some(&token)
@@ -825,7 +855,11 @@ fn temporary_slot_exclusion_never_renews_the_mapping() {
         "close mints nothing: {closed_reply:?}"
     );
     assert!(
-        !engine.automatic_focus_tokens.contains_key(&target),
+        !engine
+            .world
+            .focus
+            .automatic_focus_tokens
+            .contains_key(&target),
         "explicit close prunes"
     );
     // Re-mint, then prove the exclusion arm keeps the mapping.
@@ -861,23 +895,29 @@ fn temporary_slot_exclusion_never_renews_the_mapping() {
     // the engine/member-known arm as well.
     let mut fenced = admission_engine();
     fenced
+        .world
+        .focus
         .automatic_focus_tokens
         .insert(target.clone(), readmit_request.issued_revision);
-    fenced.stage_facts_v4(&probe);
-    fenced.staged.excluded.insert(target.clone());
-    fenced.prune_automatic_focus_tokens();
+    fenced.tx(|tx| tx.stage_facts_v4(&probe));
+    fenced.world.staged.excluded.insert(target.clone());
+    fenced.tx(|tx| tx.prune_automatic_focus_tokens());
     assert_eq!(
-        fenced.automatic_focus_tokens.get(&target),
+        fenced.world.focus.automatic_focus_tokens.get(&target),
         Some(&readmit_request.issued_revision),
         "temporary slot exclusion retains the mapping"
     );
     // Clearing the exclusion then pruning drops the token: with neither
     // live, held, excluded, nor engine/member-known presence, the fence
     // is exact and never renews the mapping.
-    fenced.staged.excluded.clear();
-    fenced.prune_automatic_focus_tokens();
+    fenced.world.staged.excluded.clear();
+    fenced.tx(|tx| tx.prune_automatic_focus_tokens());
     assert!(
-        !fenced.automatic_focus_tokens.contains_key(&target),
+        !fenced
+            .world
+            .focus
+            .automatic_focus_tokens
+            .contains_key(&target),
         "exclusion-only fence drops once the exclusion lifts"
     );
 }
@@ -907,7 +947,12 @@ fn close_reuse_mints_fresh_token_and_stale_feedback_cannot_settle() {
     assert_eq!(first_request.target.0, "win-b");
     assert_eq!(first_request.id, format!("focus-{}", first.state_revision));
     assert!(is_opaque_id(&first_request.id));
-    let pending_first = engine.pending_focus.clone().expect("pending request");
+    let pending_first = engine
+        .world
+        .focus
+        .pending_focus
+        .clone()
+        .expect("pending request");
     let stale_id = pending_first.id.clone();
     let stale_rev = pending_first.issued_revision;
     let mut closed = report(3, vec![fact("win-a", "out-a", 0)], "win-a", None, None);
@@ -919,6 +964,8 @@ fn close_reuse_mints_fresh_token_and_stale_feedback_cannot_settle() {
     );
     assert!(
         !engine
+            .world
+            .focus
             .automatic_focus_tokens
             .contains_key(&WindowId("win-b".to_owned())),
         "close drops the mapping"
@@ -945,7 +992,10 @@ fn close_reuse_mints_fresh_token_and_stale_feedback_cannot_settle() {
     );
     assert_ne!(readmit_request.id, stale_id, "fresh token on reuse");
     assert!(is_opaque_id(&readmit_request.id));
-    assert!(engine.pending_focus.is_some(), "fresh pending on reuse");
+    assert!(
+        engine.world.focus.pending_focus.is_some(),
+        "fresh pending on reuse"
+    );
     // Stale feedback for the previous lifetime cannot settle the new
     // grant: full opaque tuple mismatch.
     let stale = feedback_row(
@@ -974,6 +1024,8 @@ fn close_reuse_mints_fresh_token_and_stale_feedback_cannot_settle() {
     );
     assert_eq!(
         engine
+            .world
+            .focus
             .pending_focus
             .as_ref()
             .and_then(|slot| slot.feedback.clone()),
@@ -983,7 +1035,12 @@ fn close_reuse_mints_fresh_token_and_stale_feedback_cannot_settle() {
     // Fresh feedback with the new tuple correlates but only target
     // equality satisfies: the observed focus is still elsewhere, so the
     // pending slot retains the latched row.
-    let fresh = engine.pending_focus.clone().expect("pending request");
+    let fresh = engine
+        .world
+        .focus
+        .pending_focus
+        .clone()
+        .expect("pending request");
     let live = feedback_row(
         &fresh.id,
         "win-b",
@@ -1008,7 +1065,12 @@ fn close_reuse_mints_fresh_token_and_stale_feedback_cannot_settle() {
             vec![live],
         ),
     );
-    let pending_after = engine.pending_focus.clone().expect("pending retains proof");
+    let pending_after = engine
+        .world
+        .focus
+        .pending_focus
+        .clone()
+        .expect("pending retains proof");
     assert!(pending_after.feedback.is_some());
     assert_eq!(
         pending_after.feedback.as_ref().expect("feedback").id,
@@ -1027,7 +1089,7 @@ fn close_reuse_mints_fresh_token_and_stale_feedback_cannot_settle() {
         ),
     );
     assert!(
-        engine.pending_focus.is_none(),
+        engine.world.focus.pending_focus.is_none(),
         "target equality satisfies the correlated request"
     );
 }
@@ -1058,7 +1120,7 @@ fn duplicate_cache_and_consumed_command_mint_no_new_identities() {
         assert!(is_opaque_id(&request.id));
     }
     let revision = reply.state_revision;
-    let tokens = engine.automatic_focus_tokens.clone();
+    let tokens = engine.world.focus.automatic_focus_tokens.clone();
     // An exact duplicate returns the cached reply without running the
     // producers again.
     match engine.handle_report(&arrival, &[]).0 {
@@ -1068,10 +1130,14 @@ fn duplicate_cache_and_consumed_command_mint_no_new_identities() {
         other => panic!("expected cached duplicate, got {other:?}"),
     }
     assert_eq!(
-        engine.automatic_focus_tokens, tokens,
+        engine.world.focus.automatic_focus_tokens, tokens,
         "duplicate mints nothing"
     );
-    assert_eq!(engine.state_revision, revision, "duplicate mutates nothing");
+    assert_eq!(
+        engine.state_revision(),
+        revision,
+        "duplicate mutates nothing"
+    );
     // A consumed command reconciles without re-executing or minting.
     let mut commanded = report(
         3,
@@ -1104,7 +1170,7 @@ fn duplicate_cache_and_consumed_command_mint_no_new_identities() {
         assert_eq!(request.cmd_seq, Some(7));
         assert_eq!(request.after_shown, None);
     }
-    let after_focus = engine.automatic_focus_tokens.clone();
+    let after_focus = engine.world.focus.automatic_focus_tokens.clone();
     let mut replay = commanded.clone();
     replay.request_seq = 4;
     replay.observation_seq = 4;
@@ -1118,7 +1184,7 @@ fn duplicate_cache_and_consumed_command_mint_no_new_identities() {
         "consumed command mints nothing: {consumed:?}"
     );
     assert_eq!(
-        engine.automatic_focus_tokens, after_focus,
+        engine.world.focus.automatic_focus_tokens, after_focus,
         "consumed path mints no identities"
     );
 }
@@ -1184,13 +1250,15 @@ fn rejected_command_keeps_admission_mapping_envelope_rejection_adopts_nothing() 
     assert!(is_opaque_id(&admission.id));
     assert_eq!(
         engine
+            .world
+            .focus
             .automatic_focus_tokens
             .get(&WindowId("w2".to_owned())),
         Some(&admission.issued_revision),
         "accepted observation plus rejected command retains the mapping"
     );
     let revision = reply.state_revision;
-    let tokens = engine.automatic_focus_tokens.clone();
+    let tokens = engine.world.focus.automatic_focus_tokens.clone();
     // An envelope refusal (reused sequence, changed body) adopts
     // nothing: no mapping, no revision motion.
     let mut tampered = refused.clone();
@@ -1201,11 +1269,12 @@ fn rejected_command_keeps_admission_mapping_envelope_rejection_adopts_nothing() 
         other => panic!("expected envelope rejection, got {other:?}"),
     }
     assert_eq!(
-        engine.automatic_focus_tokens, tokens,
+        engine.world.focus.automatic_focus_tokens, tokens,
         "envelope refusal adopts nothing"
     );
     assert_eq!(
-        engine.state_revision, revision,
+        engine.state_revision(),
+        revision,
         "envelope refusal mutates nothing"
     );
 }
@@ -1217,7 +1286,7 @@ fn max_revision_boundary_mints_no_unissued_identity() {
         &mut engine,
         &report(1, vec![fact("win-a", "out-a", 0)], "", None, None),
     );
-    engine.state_revision = u64::MAX - 1;
+    engine.world.state_revision = u64::MAX - 1;
     // One slot remains: the token is exactly u64::MAX, still a compact
     // valid identity and the last admissible issuing revision.
     let reply = accepted(
@@ -1242,7 +1311,7 @@ fn max_revision_boundary_mints_no_unissued_identity() {
         assert!(is_opaque_id(&request.id));
     }
     assert_eq!(reply.state_revision, u64::MAX);
-    let tokens = engine.automatic_focus_tokens.clone();
+    let tokens = engine.world.focus.automatic_focus_tokens.clone();
     // The next report refuses before staging: no new mapping, no
     // unissued identity, no mutation.
     let probe = report(
@@ -1262,6 +1331,6 @@ fn max_revision_boundary_mints_no_unissued_identity() {
         }
         other => panic!("expected revision exhaustion, got {other:?}"),
     }
-    assert_eq!(engine.automatic_focus_tokens, tokens);
-    assert_eq!(engine.state_revision, u64::MAX);
+    assert_eq!(engine.world.focus.automatic_focus_tokens, tokens);
+    assert_eq!(engine.state_revision(), u64::MAX);
 }

@@ -204,7 +204,7 @@ pub(super) fn classify_observed_windows(
         if !entry.floating || !entry.fixed_auto || entry.fixed_suppress || entry.sticky {
             continue;
         }
-        if !domains.contains_exception(*id) || automatic_fixed.contains(*id) {
+        if !domains.contains_exception(id) || automatic_fixed.contains(*id) {
             continue;
         }
         if original_override.contains(*id) || fixed_tile_override.contains(*id) {
@@ -240,7 +240,7 @@ pub(super) fn classify_observed_windows(
         if !fixed_admission || entry.sticky {
             continue;
         }
-        if originally_known.contains(*id) || domains.contains_exception(*id) {
+        if originally_known.contains(*id) || domains.contains_exception(id) {
             continue;
         }
         if !entry.fullscreen || entry.floating {
@@ -252,7 +252,7 @@ pub(super) fn classify_observed_windows(
 
     // Brand-new fixed windows float with an automatic marker.
     for (id, entry) in observed_by_id {
-        if originally_known.contains(*id) || domains.contains_exception(*id) {
+        if originally_known.contains(*id) || domains.contains_exception(id) {
             continue;
         }
         if fixed_admission

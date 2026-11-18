@@ -13,21 +13,20 @@ use crate::workspace_scope::DisplacedEntry;
 use crate::world_admit_v4::{V4Replay, classify_replay_v4};
 use crate::world_engine::{
     EventIssue, KIND_CORRELATION, KIND_GENERATION, KIND_OBS_STALE, KIND_OWNER, KIND_REPLY_SIZE,
-    KIND_REUSED, KIND_REVISION_EXHAUSTED, KIND_SNAPSHOT, KIND_SUPERSEDED, RawRouting, WorldEngine,
+    KIND_REUSED, KIND_REVISION_EXHAUSTED, KIND_SNAPSHOT, KIND_SUPERSEDED, MSG_REPLY_SIZE,
+    RawRouting, WorldEngine,
 };
 use crate::world_report::{
     AfterShown, AfterShownMember, AfterShownScope, AttemptLaneV4, AuthorityScope, BatchSettlement,
     CommandRejectKind, CommandResult, FocusRequest, FocusRequestCause, HeldAttemptRow,
     HeldWindowRow, IntentDesire, MAX_FOCUS_DEPARTING, MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED,
     MAX_FOCUS_VIEWS, PresentationIngressV4, PresentationRowV4, RowDiagnostic, RowDiagnosticKind,
-    RowDiagnosticLane, ScreenReport, SendSource, WORLD_CONTRACT_VERSION_V4, WORLD_MAX_REPLY_BYTES,
-    WindowFact, WorldCommand, WorldReportV4, retained_window_fields, validate_after_shown_reason,
+    RowDiagnosticLane, ScreenReport, SendSource, WORLD_CONTRACT_VERSION_V4, WindowFact,
+    WorldCommand, WorldReportV4, retained_window_fields, validate_after_shown_reason,
     validate_focus_request_reason,
 };
 use crate::world_report_v4_checks::{graded_effective_v4, report_digest_v4};
 use crate::world_run_v4::V4RunOutcome;
-use crate::world_sizing::max_intent_desired_bound;
-use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4, reply_upper_bound_v4};
 use crate::world_v4_support_tests::{fact, screen};
 
 fn engine() -> WorldEngine {
@@ -211,6 +210,8 @@ fn sticky_fact(window: &str, output: &str, x: i32) -> WindowFact {
 
 fn trials(engine: &WorldEngine) -> u64 {
     engine
+        .world
+        .intent
         .ingest_trials
         .load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -254,22 +255,29 @@ fn replay_classifier_splits_digest_collision_from_duplicates() {
 fn duplicate_returns_cached_reply_without_new_revision() {
     let mut engine = engine();
     let first = accepted_reply(1, admit(&mut engine, &observe(1, facts_pair(), "win-a")));
-    assert_eq!(engine.state_revision, 1);
-    assert_eq!(engine.ingest_calls, 1);
-    let revision_before = engine.state_revision;
-    let members_before = engine.members.clone();
+    assert_eq!(engine.state_revision(), 1);
+    assert_eq!(engine.world.intent.ingest_calls, 1);
+    let revision_before = engine.state_revision();
+    let members_before = engine.world.workspace.members.clone();
     match admit(&mut engine, &observe(1, facts_pair(), "win-a")) {
         V4RunOutcome::Duplicate(cached) => assert_eq!(cached, first),
         other => panic!("expected duplicate v4 admission, got {other:?}"),
     }
     assert_eq!(
-        engine.state_revision, revision_before,
+        engine.state_revision(),
+        revision_before,
         "duplicates advance no revision"
     );
-    assert_eq!(engine.members, members_before, "duplicates mutate no state");
-    assert_eq!(engine.ingest_calls, 1, "duplicates pay no ingest");
+    assert_eq!(
+        engine.world.workspace.members, members_before,
+        "duplicates mutate no state"
+    );
+    assert_eq!(
+        engine.world.intent.ingest_calls, 1,
+        "duplicates pay no ingest"
+    );
     assert!(
-        engine.command_highwater.is_none(),
+        engine.world.command_highwater.is_none(),
         "commandless duplicates consume no sequence"
     );
 }
@@ -283,8 +291,11 @@ fn reused_sequence_refuses_and_preserves_cache() {
         V4RunOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
         other => panic!("expected reused refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, 1, "refusal advances no revision");
-    assert_eq!(engine.ingest_calls, 1, "refusal ingests nothing");
+    assert_eq!(engine.state_revision(), 1, "refusal advances no revision");
+    assert_eq!(
+        engine.world.intent.ingest_calls, 1,
+        "refusal ingests nothing"
+    );
     match admit(&mut engine, &observe(1, facts_pair(), "win-a")) {
         V4RunOutcome::Duplicate(_) => {}
         other => panic!("cache survives refusal, got {other:?}"),
@@ -300,7 +311,7 @@ fn older_request_supersedes_before_observation_order() {
         V4RunOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_SUPERSEDED),
         other => panic!("expected superseded refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, 2, "refusal advances no revision");
+    assert_eq!(engine.state_revision(), 2, "refusal advances no revision");
 }
 
 #[test]
@@ -325,8 +336,11 @@ fn stale_observation_refuses_newer_request() {
         V4RunOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_OBS_STALE),
         other => panic!("expected observation-stale refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, 2, "refusal advances no revision");
-    assert_eq!(engine.ingest_calls, 2, "refusal ingests nothing");
+    assert_eq!(engine.state_revision(), 2, "refusal advances no revision");
+    assert_eq!(
+        engine.world.intent.ingest_calls, 2,
+        "refusal ingests nothing"
+    );
 }
 
 #[test]
@@ -361,7 +375,7 @@ fn fresh_consumed_command_reconciles_without_reexecution() {
         "fresh command executes: {:?}",
         executed.focus_request
     );
-    assert_eq!(engine.command_highwater, Some(1));
+    assert_eq!(engine.world.command_highwater, Some(1));
     let rerun = report(
         3,
         facts_pair(),
@@ -384,9 +398,9 @@ fn fresh_consumed_command_reconciles_without_reexecution() {
         }
         (other, _) => panic!("expected consumed v4 admission, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, 3);
+    assert_eq!(engine.state_revision(), 3);
     assert_eq!(
-        engine.command_highwater,
+        engine.world.command_highwater,
         Some(1),
         "consumed reruns consume no new sequence"
     );
@@ -417,7 +431,7 @@ fn commandless_reports_leave_highwater_alone() {
     );
     accepted_reply(3, admit(&mut engine, &observe(3, facts_pair(), "win-b")));
     assert_eq!(
-        engine.command_highwater,
+        engine.world.command_highwater,
         Some(1),
         "commandless reports never move the watermark"
     );
@@ -454,13 +468,16 @@ fn pre_ready_bootstrap_emits_no_authority() {
         }
         (other, _) => panic!("expected pre-ready bootstrap, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, 0, "bootstrap advances no revision");
+    assert_eq!(engine.state_revision(), 0, "bootstrap advances no revision");
     assert!(
-        engine.command_highwater.is_none(),
+        engine.world.command_highwater.is_none(),
         "bootstrap consumes no command"
     );
-    assert!(engine.members.is_empty(), "bootstrap sweeps nothing");
-    assert!(!engine.has_last_v4, "bootstrap populates no replay cache");
+    assert!(
+        engine.world.workspace.members.is_empty(),
+        "bootstrap sweeps nothing"
+    );
+    assert!(!engine.has_last_v4(), "bootstrap populates no replay cache");
     // A repeat bootstrap is a fresh bootstrap, never a duplicate.
     match admit(&mut engine, &incomplete) {
         V4RunOutcome::Accepted(reply) => assert!(!reply.ready),
@@ -494,8 +511,8 @@ fn bootstrap_to_ready_progression_advances_revision() {
     assert!(reply.ready, "ready runs publish readiness");
     assert_eq!(reply.state_revision, 1);
     assert_eq!(reply.presentation.rev, 1);
-    assert_eq!(engine.state_revision, 1);
-    assert!(engine.ready_latched);
+    assert_eq!(engine.state_revision(), 1);
+    assert!(engine.world.ready_latched);
 }
 
 #[test]
@@ -529,11 +546,13 @@ fn pre_ready_retains_pending_intent_then_complete_prunes() {
     }
     let win = WindowId("win-a".to_owned());
     assert!(
-        engine.pending_intent.contains_key(&win),
+        engine.world.intent.pending_intent.contains_key(&win),
         "pre-ready intent retention survives bootstrap"
     );
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-gone".to_owned())),
         "complete pre-ready inventories prune absent subjects"
@@ -554,7 +573,7 @@ fn pre_ready_retains_pending_intent_then_complete_prunes() {
         ),
     );
     assert!(
-        engine.intent_admitted.contains(&win),
+        engine.world.intent.intent_admitted.contains(&win),
         "first-admission intent admits on the ready run"
     );
     // Explicit close ends the lifetime: every ledger entry drops.
@@ -578,10 +597,10 @@ fn pre_ready_retains_pending_intent_then_complete_prunes() {
         ),
     );
     assert!(
-        !engine.pending_intent.contains_key(&win)
-            && !engine.intent_admitted.contains(&win)
-            && !engine.restored_floats.contains(&win)
-            && !engine.restored_sticky.contains_key(&win),
+        !engine.world.intent.pending_intent.contains_key(&win)
+            && !engine.world.intent.intent_admitted.contains(&win)
+            && !engine.world.intent.restored_floats.contains(&win)
+            && !engine.world.intent.restored_sticky.contains_key(&win),
         "explicit close clears departed intent ledgers"
     );
 }
@@ -622,7 +641,7 @@ fn late_import_ingests_but_admitted_latch_ignores() {
             ),
         ),
     );
-    assert_eq!(engine.ingest_calls, 1);
+    assert_eq!(engine.world.intent.ingest_calls, 1);
     let win = WindowId("win-a".to_owned());
     accepted_reply(
         2,
@@ -642,9 +661,9 @@ fn late_import_ingests_but_admitted_latch_ignores() {
             ),
         ),
     );
-    assert_eq!(engine.ingest_calls, 2);
+    assert_eq!(engine.world.intent.ingest_calls, 2);
     assert_eq!(
-        engine.restored_sticky.get(&win),
+        engine.world.intent.restored_sticky.get(&win),
         Some(&false),
         "tiled origin restores with a false prior"
     );
@@ -674,18 +693,18 @@ fn late_import_ingests_but_admitted_latch_ignores() {
         cleared_settlements
     );
     assert_eq!(
-        engine.ingest_calls, 3,
+        engine.world.intent.ingest_calls, 3,
         "the late import ingested exactly once before the latch ignored it"
     );
     assert!(
-        !engine.restored_sticky.contains_key(&win),
+        !engine.world.intent.restored_sticky.contains_key(&win),
         "clear drops sticky provenance"
     );
     assert!(
-        !engine.pending_intent.contains_key(&win),
+        !engine.world.intent.pending_intent.contains_key(&win),
         "the admitted lifetime leaves no pending late import"
     );
-    assert_eq!(engine.command_highwater, Some(2));
+    assert_eq!(engine.world.command_highwater, Some(2));
 }
 
 #[test]
@@ -711,71 +730,174 @@ fn structural_refusals_leave_original_unchanged() {
         }
         other => panic!("expected duplicate-window refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, 0, "refusals advance no revision");
-    assert_eq!(engine.ingest_calls, 0, "refusals ingest nothing");
-    assert!(engine.members.is_empty(), "refusals mutate nothing");
-    assert!(!engine.has_last_v4, "refusals populate no replay cache");
+    assert_eq!(engine.state_revision(), 0, "refusals advance no revision");
+    assert_eq!(
+        engine.world.intent.ingest_calls, 0,
+        "refusals ingest nothing"
+    );
+    assert!(
+        engine.world.workspace.members.is_empty(),
+        "refusals mutate nothing"
+    );
+    assert!(!engine.has_last_v4(), "refusals populate no replay cache");
 }
 
 #[test]
 fn prebound_reply_refusal_is_atomic_then_same_seq_fits() {
-    let mut engine = engine();
-    let mut windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)];
-    let bound_of = |windows: &[WindowFact]| {
-        let probe = report(
-            1,
-            windows.to_vec(),
-            "",
-            PresentationRowV4::Valid(ingress("")),
-            None,
-            None,
-            Vec::new(),
-        );
-        reply_upper_bound_v4(&probe, 0, 0, 1, 0, 0).saturating_add(max_intent_desired_bound(0))
+    use crate::world_admit_v4::{
+        AdmissionGateDecision, CoreAdmissionGate, ExactInnerCheck, ExactInnerDecision,
+        FutureReserveGateFacts, PreflightGateFacts,
     };
-    while bound_of(&windows) <= WORLD_MAX_REPLY_BYTES && windows.len() < 10_000 {
-        let id = windows.len();
-        windows.push(fact(&format!("win-pad-{id:05}"), "out-a", 0));
+    use crate::world_report::WorldReplyV4;
+    use std::cell::{Cell, RefCell};
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ObservedPreflight {
+        screen_count: usize,
+        domain_count: usize,
+        staged_window_count: usize,
+        intent_desired_count: usize,
+        retained_settlement_count: usize,
     }
-    assert!(
-        bound_of(&windows) > WORLD_MAX_REPLY_BYTES,
-        "padding must trip the conservative bound"
-    );
-    let oversized = report(
-        1,
-        windows,
-        "",
-        PresentationRowV4::Valid(ingress("")),
-        None,
-        None,
-        Vec::new(),
-    );
-    match admit(&mut engine, &oversized) {
-        V4RunOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REPLY_SIZE),
-        other => panic!("expected reply-oversize refusal, got {other:?}"),
+
+    struct PreflightRefusalGate {
+        refuse_preflight: Cell<bool>,
+        preflight_calls: Cell<usize>,
+        exact_calls: Cell<usize>,
+        observed: RefCell<Option<ObservedPreflight>>,
     }
-    assert_eq!(engine.state_revision, 0, "refusal advances no revision");
+
+    impl PreflightRefusalGate {
+        fn new(refuse_preflight: bool) -> Self {
+            Self {
+                refuse_preflight: Cell::new(refuse_preflight),
+                preflight_calls: Cell::new(0),
+                exact_calls: Cell::new(0),
+                observed: RefCell::new(None),
+            }
+        }
+    }
+
+    impl CoreAdmissionGate for PreflightRefusalGate {
+        fn check_request_size(&self, _report: &WorldReportV4) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+
+        fn check_preflight(
+            &self,
+            _report: &WorldReportV4,
+            facts: &PreflightGateFacts<'_>,
+        ) -> AdmissionGateDecision {
+            self.preflight_calls
+                .set(self.preflight_calls.get().saturating_add(1));
+            *self.observed.borrow_mut() = Some(ObservedPreflight {
+                screen_count: facts.screen_count,
+                domain_count: facts.domain_count,
+                staged_window_count: facts.staged_window_count,
+                intent_desired_count: facts.intent_desired_count,
+                retained_settlement_count: facts.retained_settlement_count,
+            });
+            if self.refuse_preflight.get() {
+                AdmissionGateDecision::Refuse
+            } else {
+                AdmissionGateDecision::Allow
+            }
+        }
+
+        fn check_exact_inner(&self, _reply: &WorldReplyV4) -> ExactInnerDecision {
+            self.exact_calls
+                .set(self.exact_calls.get().saturating_add(1));
+            ExactInnerDecision::Allow(ExactInnerCheck::new(0))
+        }
+
+        fn check_future_reserve(
+            &self,
+            _reply: &WorldReplyV4,
+            _facts: &FutureReserveGateFacts,
+            _exact: ExactInnerCheck,
+        ) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+    }
+
+    let mut engine = engine();
+    let req = observe(1, facts_pair(), "win-a");
+    let gate = PreflightRefusalGate::new(true);
+    let (outcome, settlements) = engine
+        .handle_report_v4_batched_with_gate_and_prepare(&req, &issue(&req), &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    assert!(settlements.is_empty());
+    assert_eq!(
+        outcome,
+        V4RunOutcome::Rejected {
+            kind: KIND_REPLY_SIZE,
+            message: MSG_REPLY_SIZE,
+        }
+    );
+    assert_eq!(gate.preflight_calls.get(), 1);
+    assert_eq!(
+        gate.exact_calls.get(),
+        0,
+        "preflight refusal stops before exact"
+    );
+    assert_eq!(
+        *gate.observed.borrow(),
+        Some(ObservedPreflight {
+            screen_count: 1,
+            domain_count: 0,
+            staged_window_count: 0,
+            intent_desired_count: 0,
+            retained_settlement_count: 0,
+        })
+    );
+    assert_eq!(engine.state_revision(), 0, "refusal advances no revision");
     assert!(
-        engine.command_highwater.is_none(),
+        engine.world.command_highwater.is_none(),
         "refused reports consume nothing"
     );
-    assert_eq!(engine.ingest_calls, 0, "refusal pays no clone");
-    assert!(engine.last_reply_v4.is_none(), "refusals cache no reply");
-    // The same sequence works once the report fits: refusal cached nothing.
-    accepted_reply(1, admit(&mut engine, &observe(1, facts_pair(), "win-a")));
+    assert_eq!(
+        engine.world.intent.ingest_calls, 0,
+        "refusal pays no ingest"
+    );
+    assert_eq!(trials(&engine), 0, "preflight refusal pays no trial");
+    assert!(!engine.has_last_v4(), "refusals populate no replay flag");
+    assert!(engine.last_reply_v4().is_none(), "refusals cache no reply");
+
+    // The same sequence works once preflight allows: refusal cached nothing.
+    gate.refuse_preflight.set(false);
+    let (retry_outcome, _) = engine
+        .handle_report_v4_batched_with_gate_and_prepare(&req, &issue(&req), &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    accepted_reply(1, retry_outcome);
+    assert_eq!(engine.state_revision(), 1);
+    assert_eq!(engine.world.intent.ingest_calls, 1);
+    assert!(engine.has_last_v4());
 }
 
 #[test]
 fn revision_exhaustion_refuses_before_mutation() {
     let mut engine = engine();
-    engine.state_revision = u64::MAX;
+    engine.world.state_revision = u64::MAX;
     match admit(&mut engine, &observe(1, facts_pair(), "win-a")) {
         V4RunOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REVISION_EXHAUSTED),
         other => panic!("expected revision exhaustion, got {other:?}"),
     }
-    assert!(engine.members.is_empty(), "exhausted runs mutate nothing");
-    assert_eq!(engine.ingest_calls, 0, "exhausted runs ingest nothing");
-    assert!(!engine.has_last_v4, "exhaustion populates no replay cache");
+    assert!(
+        engine.world.workspace.members.is_empty(),
+        "exhausted runs mutate nothing"
+    );
+    assert_eq!(
+        engine.world.intent.ingest_calls, 0,
+        "exhausted runs ingest nothing"
+    );
+    assert!(
+        !engine.has_last_v4(),
+        "exhaustion populates no replay cache"
+    );
 }
 
 #[test]
@@ -798,8 +920,8 @@ fn creation_exhaustion_discards_candidate_atomically() {
         Vec::new(),
     );
     accepted_reply(2, admit(&mut engine, &second));
-    engine.creation_counter = u64::MAX;
-    let revision_before = engine.state_revision;
+    engine.world.workspace.creation_counter = u64::MAX;
+    let revision_before = engine.state_revision();
     match admit(
         &mut engine,
         &report(
@@ -818,12 +940,13 @@ fn creation_exhaustion_discards_candidate_atomically() {
         other => panic!("exhaustion stays envelope, got {other:?}"),
     }
     assert_eq!(
-        engine.command_highwater,
+        engine.world.command_highwater,
         Some(1),
         "envelope consumes no sequence"
     );
     assert_eq!(
-        engine.state_revision, revision_before,
+        engine.state_revision(),
+        revision_before,
         "envelope mutates no revision"
     );
     // The prior cached reply survives: the refused sequence cached nothing.
@@ -831,7 +954,7 @@ fn creation_exhaustion_discards_candidate_atomically() {
         V4RunOutcome::Duplicate(_) => {}
         other => panic!("cache survives exhaustion, got {other:?}"),
     }
-    engine.creation_counter = 0;
+    engine.world.workspace.creation_counter = 0;
     accepted_reply(4, admit(&mut engine, &observe(4, single(), "win-a")));
 }
 
@@ -862,16 +985,17 @@ fn raw_capability_conflict_never_aliases_preheld_input() {
     accepted_reply(1, admit(&mut engine, &raw));
     assert!(
         engine
+            .world
             .staged
             .observation
             .raw_windows
             .iter()
             .any(|row| row == &sticky_fact),
         "capture keeps the raw conflicting row verbatim: {:?}",
-        engine.staged.observation.raw_windows
+        engine.world.staged.observation.raw_windows
     );
     assert_eq!(
-        engine.staged.observation.cursor_hit,
+        engine.world.staged.observation.cursor_hit,
         Some(WindowId("win-a".to_owned())),
         "capture keeps the raw cursor hit verbatim"
     );
@@ -898,7 +1022,7 @@ fn raw_capability_conflict_never_aliases_preheld_input() {
         other => panic!("expected reused raw conflict, got {other:?}"),
     }
     assert_eq!(
-        engine.last_report_v4.as_ref(),
+        engine.last_report_v4().as_ref(),
         Some(&raw),
         "rejections cache nothing"
     );
@@ -912,7 +1036,7 @@ fn digest_collision_still_reuses_on_raw_mismatch() {
     let accepted_report = observe(1, facts_pair(), "win-a");
     accepted_reply(1, admit(&mut engine, &accepted_report));
     let other = observe(1, facts_pair(), "win-b");
-    engine.last_digest_v4 = report_digest_v4(&other);
+    engine.set_last_digest_v4(report_digest_v4(&other));
     match admit(&mut engine, &other) {
         V4RunOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_REUSED, "digest collision reuses: {message}");
@@ -920,7 +1044,7 @@ fn digest_collision_still_reuses_on_raw_mismatch() {
         other => panic!("expected reused digest collision, got {other:?}"),
     }
     assert_eq!(
-        engine.last_report_v4.as_ref(),
+        engine.last_report_v4().as_ref(),
         Some(&accepted_report),
         "rejections cache nothing"
     );
@@ -933,9 +1057,9 @@ fn contaminated_staged_state_never_leaks_into_bootstrap() {
     let mut engine = engine();
     let mut dirty_ingress = ingress("win-a");
     dirty_ingress.pager_order = vec![WindowId("win-z".to_owned())];
-    engine.staged.presentation_v4 = Some(PresentationRowV4::Valid(dirty_ingress));
-    engine.presentation_order_v4 = vec![WindowId("win-z".to_owned())];
-    engine.presentation_live_v4.insert(
+    engine.world.staged.presentation_v4 = Some(PresentationRowV4::Valid(dirty_ingress));
+    engine.world.presentation.order_v4 = vec![WindowId("win-z".to_owned())];
+    engine.world.presentation.live_v4.insert(
         WindowId("win-z".to_owned()),
         Rect {
             x: 0,
@@ -944,7 +1068,7 @@ fn contaminated_staged_state_never_leaks_into_bootstrap() {
             h: 90,
         },
     );
-    engine.presentation_focused_v4 = Some(WindowId("win-z".to_owned()));
+    engine.world.presentation.focused_v4 = Some(WindowId("win-z".to_owned()));
     let incomplete = report_full(
         1,
         1,
@@ -967,7 +1091,7 @@ fn contaminated_staged_state_never_leaks_into_bootstrap() {
         }
         other => panic!("expected pre-ready bootstrap, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, 0, "bootstrap advances no revision");
+    assert_eq!(engine.state_revision(), 0, "bootstrap advances no revision");
 }
 
 #[test]
@@ -996,10 +1120,10 @@ fn handshake_resets_typed_admission_state() {
             ),
         ),
     );
-    assert!(engine.has_last_v4);
-    assert_eq!(engine.command_highwater, Some(1));
+    assert!(engine.has_last_v4());
+    assert_eq!(engine.world.command_highwater, Some(1));
     assert!(
-        engine.latest_published_presentation_rev_v4 > 0,
+        engine.world.presentation.latest_published_rev_v4 > 0,
         "accepted runs stamp publication"
     );
     let reply = engine.handshake(&HandshakeRequest {
@@ -1020,79 +1144,149 @@ fn handshake_resets_typed_admission_state() {
         },
     });
     assert!(reply.kind.is_none(), "handshake binds: {:?}", reply.kind);
-    assert!(!engine.has_last_v4, "handshake clears the replay flag");
+    assert!(!engine.has_last_v4(), "handshake clears the replay flag");
     assert!(
-        engine.last_reply_v4.is_none(),
+        engine.last_reply_v4().is_none(),
         "handshake clears the cached reply"
     );
-    assert_eq!(engine.state_revision, 0, "handshake resets the revision");
+    assert_eq!(engine.state_revision(), 0, "handshake resets the revision");
     assert!(
-        engine.command_highwater.is_none(),
+        engine.world.command_highwater.is_none(),
         "handshake clears the watermark"
     );
-    assert!(!engine.ready_latched, "handshake clears the ready latch");
+    assert!(
+        !engine.world.ready_latched,
+        "handshake clears the ready latch"
+    );
     assert_eq!(
-        engine.latest_published_presentation_rev_v4, 0,
+        engine.world.presentation.latest_published_rev_v4, 0,
         "handshake clears the publication stamp"
     );
 }
 
 #[test]
 fn forged_staged_reply_never_adopts() {
+    use crate::world_admit_v4::{
+        AdmissionGateDecision, CoreAdmissionGate, ExactInnerCheck, ExactInnerDecision,
+        FutureReserveGateFacts, PreflightGateFacts,
+    };
+    use crate::world_report::WorldReplyV4;
+    use std::cell::Cell;
+
+    struct ExactCheckpointGate {
+        refuse_exact: bool,
+        fail_if_exact_called: bool,
+        exact_calls: Cell<usize>,
+        future_calls: Cell<usize>,
+    }
+
+    impl ExactCheckpointGate {
+        fn refuse() -> Self {
+            Self {
+                refuse_exact: true,
+                fail_if_exact_called: false,
+                exact_calls: Cell::new(0),
+                future_calls: Cell::new(0),
+            }
+        }
+
+        fn fail_if_called() -> Self {
+            Self {
+                refuse_exact: false,
+                fail_if_exact_called: true,
+                exact_calls: Cell::new(0),
+                future_calls: Cell::new(0),
+            }
+        }
+    }
+
+    impl CoreAdmissionGate for ExactCheckpointGate {
+        fn check_request_size(&self, _report: &WorldReportV4) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+
+        fn check_preflight(
+            &self,
+            _report: &WorldReportV4,
+            _facts: &PreflightGateFacts<'_>,
+        ) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+
+        fn check_exact_inner(&self, _reply: &WorldReplyV4) -> ExactInnerDecision {
+            assert!(
+                !self.fail_if_exact_called,
+                "structural/intent refusal must fire before check_exact_inner"
+            );
+            self.exact_calls
+                .set(self.exact_calls.get().saturating_add(1));
+            if self.refuse_exact {
+                ExactInnerDecision::Refuse
+            } else {
+                ExactInnerDecision::Allow(ExactInnerCheck::new(0))
+            }
+        }
+
+        fn check_future_reserve(
+            &self,
+            _reply: &WorldReplyV4,
+            _facts: &FutureReserveGateFacts,
+            _exact: ExactInnerCheck,
+        ) -> AdmissionGateDecision {
+            self.future_calls
+                .set(self.future_calls.get().saturating_add(1));
+            AdmissionGateDecision::Allow
+        }
+    }
+
     // The finalize gate re-checks the staged reply before adoption: an
-    // oversized or intent-invalid forgery refuses and leaves the engine
-    // exactly unchanged.
+    // exact-gate refusal or intent-invalid forgery refuses and leaves the
+    // engine exactly unchanged.
     let fresh = engine();
     let first = observe(1, facts_pair(), "win-a");
     let mut staged = fresh.clone();
-    let genuine = match staged.run_accepted_v4(&first, &issue(&first), false, 1) {
+    let genuine = match staged.tx(|tx| tx.run_accepted_v4(&first, &issue(&first), false, 1)) {
         V4RunOutcome::Accepted(reply) | V4RunOutcome::CommandConsumed(reply) => reply,
         other => panic!("expected staged run, got {other:?}"),
     };
-    let mut forged = genuine;
-    let pad = RowDiagnostic {
-        scope: AuthorityScope::Output(OutputId("out-a".to_owned())),
-        row: RowDiagnosticLane::Window,
-        id: Some("p".repeat(4096)),
-        kind: RowDiagnosticKind::InvalidFact,
-    };
-    let mut batch = 64;
-    while reply_exact_bytes_v4(&forged) <= WORLD_MAX_REPLY_BYTES {
-        for _ in 0..batch {
-            forged.diagnostics.push(pad.clone());
-        }
-        batch *= 2;
-        assert!(
-            forged.diagnostics.len() < 1_000_000,
-            "padding must trip the exact size gate"
-        );
-    }
-    let estimate = reply_estimate_v4(&forged);
-    let exact = reply_exact_bytes_v4(&forged);
-    assert!(
-        exact > WORLD_MAX_REPLY_BYTES,
-        "forgery must exceed the reply cap (estimate {estimate}, exact {exact})"
-    );
     let mut engine = fresh;
     let digest = report_digest_v4(&first);
-    match engine.finalize_v4_candidate(staged, &first, digest, forged) {
-        V4RunOutcome::Rejected { kind, message } => {
-            assert_eq!(
-                kind, KIND_REPLY_SIZE,
-                "oversized forgery refuses (estimate {estimate}, exact {exact}): {message}"
-            );
+    let exact_gate = ExactCheckpointGate::refuse();
+    let prepare_called = Cell::new(false);
+    let outcome = engine
+        .finalize_v4_candidate_with_gate_and_prepare(
+            staged.world,
+            &first,
+            digest,
+            genuine,
+            &[],
+            &exact_gate,
+            |_| {
+                prepare_called.set(true);
+                Ok::<(), std::convert::Infallible>(())
+            },
+        )
+        .unwrap_or_else(|e| match e {});
+    assert_eq!(
+        outcome,
+        V4RunOutcome::Rejected {
+            kind: KIND_REPLY_SIZE,
+            message: MSG_REPLY_SIZE,
         }
-        other => panic!("expected reply-oversize refusal, got {other:?}"),
-    }
-    assert_eq!(engine.state_revision, 0, "refusal advances no revision");
+    );
+    assert_eq!(exact_gate.exact_calls.get(), 1);
+    assert_eq!(exact_gate.future_calls.get(), 0);
+    assert!(!prepare_called.get());
+    assert_eq!(engine.state_revision(), 0, "refusal advances no revision");
     assert!(
-        engine.command_highwater.is_none(),
+        engine.world.command_highwater.is_none(),
         "refusal consumes nothing"
     );
-    assert!(!engine.has_last_v4, "refusal populates no replay cache");
-    assert!(engine.last_reply_v4.is_none(), "refusal caches no reply");
+    assert!(!engine.has_last_v4(), "refusal populates no replay cache");
+    assert!(engine.last_reply_v4().is_none(), "refusal caches no reply");
+
     let mut staged = engine.clone();
-    let genuine = match staged.run_accepted_v4(&first, &issue(&first), false, 1) {
+    let genuine = match staged.tx(|tx| tx.run_accepted_v4(&first, &issue(&first), false, 1)) {
         V4RunOutcome::Accepted(reply) | V4RunOutcome::CommandConsumed(reply) => reply,
         other => panic!("expected staged run, got {other:?}"),
     };
@@ -1107,16 +1301,33 @@ fn forged_staged_reply_never_adopts() {
             data: None,
         },
     ];
-    match engine.finalize_v4_candidate(staged, &first, digest, forged) {
+    let fail_gate = ExactCheckpointGate::fail_if_called();
+    let outcome = engine
+        .finalize_v4_candidate_with_gate_and_prepare(
+            staged.world,
+            &first,
+            digest,
+            forged,
+            &[],
+            &fail_gate,
+            |_| {
+                prepare_called.set(true);
+                Ok::<(), std::convert::Infallible>(())
+            },
+        )
+        .unwrap_or_else(|e| match e {});
+    match outcome {
         V4RunOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT, "intent forgery refuses: {message}");
             assert_eq!(message, "duplicate-intent-desire");
         }
         other => panic!("expected snapshot-invalid refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, 0, "refusal advances no revision");
-    assert!(!engine.has_last_v4, "refusal populates no replay cache");
-    assert!(engine.last_reply_v4.is_none(), "refusal caches no reply");
+    assert_eq!(fail_gate.exact_calls.get(), 0);
+    assert!(!prepare_called.get());
+    assert_eq!(engine.state_revision(), 0, "refusal advances no revision");
+    assert!(!engine.has_last_v4(), "refusal populates no replay cache");
+    assert!(engine.last_reply_v4().is_none(), "refusal caches no reply");
 }
 
 fn after_shown_members(count: usize) -> Vec<AfterShownMember> {
@@ -1240,19 +1451,53 @@ fn after_shown_cap_helper_pins_each_lane() {
 
 #[test]
 fn forged_after_shown_over_cap_never_adopts() {
-    // An over-cap but byte-small projection must refuse at the finalize
-    // gate before adoption: the byte gate alone cannot catch it, so the
-    // typed cap check owns this boundary with no engine mutation, cache,
-    // or id advance.
+    use crate::world_admit_v4::{
+        AdmissionGateDecision, CoreAdmissionGate, ExactInnerDecision, FutureReserveGateFacts,
+        PreflightGateFacts,
+    };
+    use crate::world_report::WorldReplyV4;
+
+    struct FailIfExactCalledGate;
+
+    impl CoreAdmissionGate for FailIfExactCalledGate {
+        fn check_request_size(&self, _report: &WorldReportV4) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+
+        fn check_preflight(
+            &self,
+            _report: &WorldReportV4,
+            _facts: &PreflightGateFacts<'_>,
+        ) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+
+        fn check_exact_inner(&self, _reply: &WorldReplyV4) -> ExactInnerDecision {
+            panic!("focus structural cap check must refuse before check_exact_inner")
+        }
+
+        fn check_future_reserve(
+            &self,
+            _reply: &WorldReplyV4,
+            _facts: &FutureReserveGateFacts,
+            _exact: crate::world_admit_v4::ExactInnerCheck,
+        ) -> AdmissionGateDecision {
+            panic!("focus structural cap check must refuse before check_future_reserve")
+        }
+    }
+
+    // An over-cap projection must refuse at the finalize gate before
+    // check_exact_inner and before adoption: the typed cap check owns this
+    // boundary with no engine mutation, cache, or id advance.
     let fresh = engine();
     let first = observe(1, facts_pair(), "win-a");
     let mut staged = fresh.clone();
-    let genuine = match staged.run_accepted_v4(&first, &issue(&first), false, 1) {
+    let genuine = match staged.tx(|tx| tx.run_accepted_v4(&first, &issue(&first), false, 1)) {
         V4RunOutcome::Accepted(reply) | V4RunOutcome::CommandConsumed(reply) => reply,
         other => panic!("expected staged run, got {other:?}"),
     };
     let digest = report_digest_v4(&first);
-    let members_before = fresh.members.clone();
+    let members_before = fresh.world.workspace.members.clone();
     let mut engine = fresh.clone();
     let views = after_shown_scopes(MAX_FOCUS_VIEWS + 1);
     let cases: Vec<(&str, AfterShown)> = vec![
@@ -1291,31 +1536,41 @@ fn forged_after_shown_over_cap_never_adopts() {
     for (token, shown) in cases {
         let mut forged = genuine.clone();
         forged.focus_request = Some(over_cap_request(shown));
-        assert!(
-            reply_exact_bytes_v4(&forged) <= WORLD_MAX_REPLY_BYTES,
-            "{token} forgery stays under the byte gate so the cap owns it"
-        );
-        match engine.finalize_v4_candidate(staged.clone(), &first, digest, forged) {
+        let outcome = engine
+            .finalize_v4_candidate_with_gate_and_prepare(
+                staged.world.clone(),
+                &first,
+                digest,
+                forged,
+                &[],
+                &FailIfExactCalledGate,
+                |_| Ok::<(), std::convert::Infallible>(()),
+            )
+            .unwrap_or_else(|e| match e {});
+        match outcome {
             V4RunOutcome::Rejected { kind, message } => {
                 assert_eq!(kind, KIND_SNAPSHOT, "{token} refuses typed");
                 assert_eq!(message, token);
             }
             other => panic!("expected {token} refusal, got {other:?}"),
         }
-        assert_eq!(engine.state_revision, 0, "{token} advances no revision");
+        assert_eq!(engine.state_revision(), 0, "{token} advances no revision");
         assert!(
-            engine.command_highwater.is_none(),
+            engine.world.command_highwater.is_none(),
             "{token} consumes nothing"
         );
-        assert!(!engine.has_last_v4, "{token} populates no replay cache");
-        assert!(engine.last_reply_v4.is_none(), "{token} caches no reply");
-        assert_eq!(engine.members, members_before, "{token} mutates no members");
+        assert!(!engine.has_last_v4(), "{token} populates no replay cache");
+        assert!(engine.last_reply_v4().is_none(), "{token} caches no reply");
+        assert_eq!(
+            engine.world.workspace.members, members_before,
+            "{token} mutates no members"
+        );
         assert!(
-            engine.pending_focus.is_none(),
+            engine.world.focus.pending_focus.is_none(),
             "{token} poisons no focus slot"
         );
         assert_eq!(
-            engine.latest_published_presentation_rev_v4, 0,
+            engine.world.presentation.latest_published_rev_v4, 0,
             "{token} stamps no publication"
         );
     }
@@ -1328,7 +1583,7 @@ fn policy_terminal_reserve_v4_counts_displaced_unlive_rings() {
     // while its unlive mapping ring (one workspace) reserves exactly one
     // switch event of settle bound.
     let mut engine = engine();
-    engine.displaced.insert(
+    engine.world.workspace.displaced.insert(
         "out-gone".to_owned(),
         DisplacedEntry {
             workspaces: vec!["ws-a".to_owned()],
@@ -1340,19 +1595,18 @@ fn policy_terminal_reserve_v4_counts_displaced_unlive_rings() {
         },
     );
     engine
+        .world
+        .workspace
         .mapping
         .insert("out-gone".to_owned(), vec!["ws-a".to_owned()]);
     let typed = observe(1, facts_pair(), "win-a");
     assert_eq!(typed.screens.len(), 1);
-    let typed_reserve = engine.policy_terminal_reserve_v4(&typed);
+    let typed_count = engine
+        .world
+        .policy_terminal_count_v4(&typed, engine.connection.settings.workspace_mode);
     assert_eq!(
-        typed_reserve,
-        crate::world_sizing::max_switch_settle_reserve(1, 0),
-        "one unlive ring workspace reserves one switch event"
-    );
-    assert!(
-        typed_reserve > 0,
-        "populated displaced/mapping lanes must reserve"
+        typed_count, 1,
+        "one unlive ring workspace counts one switch event"
     );
 }
 
@@ -1426,7 +1680,7 @@ fn refused_numbered_send_rolls_back_trailing_create_through_boundary() {
     );
     assert!(
         engine
-            .ring_occupied(&OutputId("out-a".to_owned()))
+            .tx_ro(|tx| tx.ring_occupied(&OutputId("out-a".to_owned())))
             .contains("ws-2"),
         "trailing occupied so the numbered send must take the Create path"
     );
@@ -1474,32 +1728,35 @@ fn refused_numbered_send_rolls_back_trailing_create_through_boundary() {
         }),
         "sticky send refuses with its catalog kind"
     );
-    assert_eq!(engine.command_highwater, Some(3));
+    assert_eq!(engine.world.command_highwater, Some(3));
     assert_eq!(
-        engine.mapping, control.mapping,
+        engine.world.workspace.mapping, control.world.workspace.mapping,
         "refusal preserves the commandless mapping"
     );
     assert_eq!(
-        engine.creation_counter, control.creation_counter,
+        engine.world.workspace.creation_counter, control.world.workspace.creation_counter,
         "trailing creation rolls back to the commandless counter"
     );
     assert_eq!(
-        engine.retained, control.retained,
+        engine.world.settlement.retained, control.world.settlement.retained,
         "no transfer minted for the refused mover"
     );
     assert_eq!(
-        engine.members, control.members,
+        engine.world.workspace.members, control.world.workspace.members,
         "membership matches the commandless image"
     );
-    assert_eq!(engine.tiling, control.tiling, "created mode rolls back");
     assert_eq!(
-        engine.staged.domains, control.staged.domains,
+        engine.world.workspace.tiling, control.world.workspace.tiling,
+        "created mode rolls back"
+    );
+    assert_eq!(
+        engine.world.staged.domains, control.world.staged.domains,
         "created domain rolls back"
     );
     assert!(
-        !engine.retained.iter().any(|transfer| matches!(&transfer.target.kind, crate::world_report::TransferKind::Window(w) if w.0 == "wSticky")),
+        !engine.world.settlement.retained.iter().any(|transfer| matches!(&transfer.target.kind, crate::world_report::TransferKind::Window(w) if w.0 == "wSticky")),
         "refused sticky leaves no flight: {:?}",
-        engine.retained
+        engine.world.settlement.retained
     );
     let ids: Vec<String> = reply
         .windows
@@ -1525,7 +1782,7 @@ fn ingest_sensor_counts_adopted_and_discarded_trials() {
     // restaging stays classification-only, so each accepted entry pays
     // exactly one trial.
     let mut engine = engine();
-    assert_eq!(engine.ingest_calls, 0);
+    assert_eq!(engine.world.intent.ingest_calls, 0);
     assert_eq!(trials(&engine), 0, "fresh engine runs no trials");
     // Early refusal pays no clone and no trial.
     let mut versioned = observe(1, facts_pair(), "win-a");
@@ -1538,11 +1795,14 @@ fn ingest_sensor_counts_adopted_and_discarded_trials() {
         }
         other => panic!("expected version refusal, got {other:?}"),
     }
-    assert_eq!(engine.ingest_calls, 0, "refusals ingest nothing");
+    assert_eq!(
+        engine.world.intent.ingest_calls, 0,
+        "refusals ingest nothing"
+    );
     assert_eq!(trials(&engine), 0, "early refusal runs no trial");
     // Successful entries pay exactly one trial each, restaging included.
     accepted_reply(1, admit(&mut engine, &observe(1, facts_pair(), "win-a")));
-    assert_eq!(engine.ingest_calls, 1);
+    assert_eq!(engine.world.intent.ingest_calls, 1);
     assert_eq!(trials(&engine), 1, "one adopted entry runs one trial");
     accepted_reply(
         2,
@@ -1562,7 +1822,7 @@ fn ingest_sensor_counts_adopted_and_discarded_trials() {
             ),
         ),
     );
-    assert_eq!(engine.ingest_calls, 2);
+    assert_eq!(engine.world.intent.ingest_calls, 2);
     assert_eq!(
         trials(&engine),
         2,
@@ -1592,21 +1852,21 @@ fn ingest_sensor_counts_adopted_and_discarded_trials() {
         "occupying send executes, got {:?}",
         sent_settlements
     );
-    assert_eq!(engine.ingest_calls, 3);
+    assert_eq!(engine.world.intent.ingest_calls, 3);
     assert_eq!(trials(&engine), 3, "third entry runs its own trial");
     // A late discarded candidate still trials once on its staged clone:
     // creation exhaustion refuses only after the trial ingested, and the
     // drop adopts nothing onto `self`. Snapshot the pre-refusal image:
     // the envelope refusal must leave state, watermarks, and replay cache
     // exactly unchanged apart from the shared trial tick.
-    let saved_mapping = engine.mapping.clone();
-    let saved_retained = engine.retained.clone();
-    let saved_members = engine.members.clone();
-    let saved_highwater = engine.command_highwater;
-    let saved_revision = engine.state_revision;
-    let saved_reply = engine.last_reply_v4.clone();
-    let saved_request_seq = engine.last_request_seq_v4;
-    engine.creation_counter = u64::MAX;
+    let saved_mapping = engine.world.workspace.mapping.clone();
+    let saved_retained = engine.world.settlement.retained.clone();
+    let saved_members = engine.world.workspace.members.clone();
+    let saved_highwater = engine.world.command_highwater;
+    let saved_revision = engine.state_revision();
+    let saved_reply = engine.last_reply_v4().clone();
+    let saved_request_seq = engine.last_request_seq_v4();
+    engine.world.workspace.creation_counter = u64::MAX;
     match admit(
         &mut engine,
         &report(
@@ -1625,7 +1885,7 @@ fn ingest_sensor_counts_adopted_and_discarded_trials() {
         other => panic!("exhaustion stays envelope, got {other:?}"),
     }
     assert_eq!(
-        engine.ingest_calls, 3,
+        engine.world.intent.ingest_calls, 3,
         "discarded candidate adopts no ingest onto self"
     );
     assert_eq!(
@@ -1634,34 +1894,37 @@ fn ingest_sensor_counts_adopted_and_discarded_trials() {
         "discarded candidate still ran exactly one trial"
     );
     assert_eq!(
-        engine.mapping, saved_mapping,
+        engine.world.workspace.mapping, saved_mapping,
         "envelope refusal adopts no mapping"
     );
     assert_eq!(
-        engine.retained, saved_retained,
+        engine.world.settlement.retained, saved_retained,
         "envelope refusal adopts no transfers"
     );
     assert_eq!(
-        engine.members, saved_members,
+        engine.world.workspace.members, saved_members,
         "envelope refusal adopts no membership"
     );
     assert_eq!(
-        engine.command_highwater, saved_highwater,
+        engine.world.command_highwater, saved_highwater,
         "envelope refusal consumes no sequence"
     );
     assert_eq!(
-        engine.state_revision, saved_revision,
+        engine.state_revision(),
+        saved_revision,
         "envelope refusal advances no revision"
     );
     assert_eq!(
-        engine.last_reply_v4, saved_reply,
+        engine.last_reply_v4(),
+        saved_reply,
         "envelope refusal caches no reply"
     );
     assert_eq!(
-        engine.last_request_seq_v4, saved_request_seq,
+        engine.last_request_seq_v4(),
+        saved_request_seq,
         "envelope refusal moves no replay watermark"
     );
-    assert_eq!(engine.creation_counter, u64::MAX);
+    assert_eq!(engine.world.workspace.creation_counter, u64::MAX);
     // Replays run no trial at all. The duplicate hits the replay cache,
     // so no counter fixup is needed: the cached reply returns before any
     // creation gate reads the saturated counter.
@@ -1685,11 +1948,17 @@ fn ingest_sensor_counts_adopted_and_discarded_trials() {
         V4RunOutcome::Duplicate(_) => {}
         other => panic!("expected duplicate, got {other:?}"),
     }
-    assert_eq!(engine.ingest_calls, 3, "duplicates pay no ingest");
-    assert_eq!(trials(&engine), 4, "duplicates run no trial");
-    assert_eq!(engine.mapping, saved_mapping, "duplicate adopts no mapping");
     assert_eq!(
-        engine.command_highwater, saved_highwater,
+        engine.world.intent.ingest_calls, 3,
+        "duplicates pay no ingest"
+    );
+    assert_eq!(trials(&engine), 4, "duplicates run no trial");
+    assert_eq!(
+        engine.world.workspace.mapping, saved_mapping,
+        "duplicate adopts no mapping"
+    );
+    assert_eq!(
+        engine.world.command_highwater, saved_highwater,
         "duplicate consumes no sequence"
     );
 }
@@ -1705,7 +1974,7 @@ fn slice_7_1_invalid_screen_scale_held_no_authority() {
     bad.scale = 0.0;
     let mut invalid = observe(1, facts_pair(), "win-a");
     invalid.screens = vec![bad];
-    let revision_before = engine.state_revision;
+    let revision_before = engine.state_revision();
     match admit(&mut engine, &invalid) {
         V4RunOutcome::Accepted(reply) => {
             assert!(
@@ -1723,30 +1992,34 @@ fn slice_7_1_invalid_screen_scale_held_no_authority() {
         }
         other => panic!("expected accepted invalid screen, got {other:?}"),
     }
-    assert!(!engine.ready_latched, "invalid hold latches no readiness");
+    assert!(
+        !engine.world.ready_latched,
+        "invalid hold latches no readiness"
+    );
     assert_eq!(
-        engine.state_revision, revision_before,
+        engine.state_revision(),
+        revision_before,
         "bootstrap advances no revision"
     );
     assert!(
-        engine.command_highwater.is_none(),
+        engine.world.command_highwater.is_none(),
         "bootstrap consumes no sequence"
     );
-    assert!(!engine.has_last_v4, "bootstrap caches no replay");
+    assert!(!engine.has_last_v4(), "bootstrap caches no replay");
     assert!(
-        engine.staged.screens.is_empty() && engine.staged.held_screens.is_empty(),
+        engine.world.staged.screens.is_empty() && engine.world.staged.held_screens.is_empty(),
         "bootstrap stages no screens or holds"
     );
     // A later valid observation readies and takes authority.
     let ready = accepted_reply(2, admit(&mut engine, &observe(2, facts_pair(), "win-a")));
     assert!(ready.ready, "valid observation readies");
-    assert!(engine.ready_latched);
+    assert!(engine.world.ready_latched);
     assert_eq!(
-        engine.state_revision,
+        engine.state_revision(),
         revision_before + 1,
         "valid observation advances one revision"
     );
-    assert_eq!(engine.staged.screens.len(), 1);
+    assert_eq!(engine.world.staged.screens.len(), 1);
     // The same invalid screen on the ready path holds narrowly with no
     // staged screen authority.
     let mut bad_again = screen("out-a", 0);
@@ -1760,17 +2033,17 @@ fn slice_7_1_invalid_screen_scale_held_no_authority() {
         other => panic!("expected accepted invalid screen, got {other:?}"),
     }
     assert_eq!(
-        engine.staged.screens.len(),
+        engine.world.staged.screens.len(),
         0,
         "bad screen stages no screen"
     );
-    assert_eq!(engine.staged.held_screens.len(), 1, "bad screen held");
-    let held = &engine.staged.held_screens[0];
+    assert_eq!(engine.world.staged.held_screens.len(), 1, "bad screen held");
+    let held = &engine.world.staged.held_screens[0];
     assert_eq!(held.output.0, "out-a");
     assert_eq!(held.ordinal, 0);
     assert_eq!(held.diagnostic.kind, RowDiagnosticKind::InvalidFact);
     assert_eq!(held.diagnostic.row, RowDiagnosticLane::Screen);
-    assert!(engine.staged.diagnostics.iter().any(|diagnostic| {
+    assert!(engine.world.staged.diagnostics.iter().any(|diagnostic| {
         diagnostic.kind == RowDiagnosticKind::InvalidFact
             && diagnostic.row == RowDiagnosticLane::Screen
     }));
@@ -1788,7 +2061,7 @@ fn slice_7_1_nonfinite_scale_retained_faithfully() {
         V4RunOutcome::Accepted(_) => {}
         other => panic!("expected accepted nonfinite screen, got {other:?}"),
     }
-    let held = &engine.staged.held_screens[0];
+    let held = &engine.world.staged.held_screens[0];
     let scale = held
         .fields
         .iter()
@@ -1814,6 +2087,7 @@ fn slice_7_1_invalid_window_metadata_held_no_authority() {
     }
     assert!(
         !engine
+            .world
             .staged
             .facts
             .contains_key(&WindowId("win-bad".to_owned())),
@@ -1821,14 +2095,16 @@ fn slice_7_1_invalid_window_metadata_held_no_authority() {
     );
     assert!(
         engine
+            .world
             .staged
             .held_windows
             .iter()
             .any(|held| held.window.0 == "win-bad"),
         "bad window held: {:?}",
-        engine.staged.held_windows
+        engine.world.staged.held_windows
     );
     let held = engine
+        .world
         .staged
         .held_windows
         .iter()
@@ -1841,6 +2117,7 @@ fn slice_7_1_invalid_window_metadata_held_no_authority() {
     );
     assert!(
         engine
+            .world
             .staged
             .observation
             .raw_windows
@@ -1889,8 +2166,13 @@ fn slice_7_1_mixed_invalid_compose_with_conflict() {
         V4RunOutcome::Accepted(_) => {}
         other => panic!("expected composed invalid holds, got {other:?}"),
     }
-    assert_eq!(capped.staged.held_screens.len(), 1, "screen invalid held");
+    assert_eq!(
+        capped.world.staged.held_screens.len(),
+        1,
+        "screen invalid held"
+    );
     let kinds: Vec<RowDiagnosticKind> = capped
+        .world
         .staged
         .held_windows
         .iter()
@@ -1906,12 +2188,14 @@ fn slice_7_1_mixed_invalid_compose_with_conflict() {
     );
     assert!(
         !capped
+            .world
             .staged
             .facts
             .contains_key(&WindowId("win-bad".to_owned()))
     );
     assert!(
         !capped
+            .world
             .staged
             .facts
             .contains_key(&WindowId("win-c".to_owned()))
@@ -1923,8 +2207,8 @@ fn slice_7_1_structural_still_refuses_before_mutation() {
     let mut engine = engine();
     let mut duplicated = observe(1, facts_pair(), "win-a");
     duplicated.windows.push(fact("win-a", "out-a", 0));
-    let revision_before = engine.state_revision;
-    let calls_before = engine.ingest_calls;
+    let revision_before = engine.state_revision();
+    let calls_before = engine.world.intent.ingest_calls;
     match admit(&mut engine, &duplicated) {
         V4RunOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT);
@@ -1932,9 +2216,9 @@ fn slice_7_1_structural_still_refuses_before_mutation() {
         }
         other => panic!("expected duplicate refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision_before);
-    assert_eq!(engine.ingest_calls, calls_before);
-    assert!(!engine.has_last_v4);
+    assert_eq!(engine.state_revision(), revision_before);
+    assert_eq!(engine.world.intent.ingest_calls, calls_before);
+    assert!(!engine.has_last_v4());
 
     let mut hidden = observe(1, facts_pair(), "win-a");
     hidden.windows[0].owner = Some(WindowId("bad owner".to_owned()));
@@ -1943,8 +2227,8 @@ fn slice_7_1_structural_still_refuses_before_mutation() {
         V4RunOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_SNAPSHOT),
         other => panic!("expected hidden id refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision_before);
-    assert!(!engine.has_last_v4);
+    assert_eq!(engine.state_revision(), revision_before);
+    assert!(!engine.has_last_v4());
 
     let mut overlap = observe(1, facts_pair(), "win-a");
     overlap.closed = vec![WindowId("win-a".to_owned())];
@@ -1955,16 +2239,16 @@ fn slice_7_1_structural_still_refuses_before_mutation() {
         }
         other => panic!("expected closed overlap refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision_before);
-    assert!(!engine.has_last_v4);
+    assert_eq!(engine.state_revision(), revision_before);
+    assert!(!engine.has_last_v4());
 }
 
 #[test]
 fn slice_7_1_envelope_fencing_refuses_before_mutation() {
     let mut engine = engine();
     let base = observe(1, facts_pair(), "win-a");
-    let revision_before = engine.state_revision;
-    let calls_before = engine.ingest_calls;
+    let revision_before = engine.state_revision();
+    let calls_before = engine.world.intent.ingest_calls;
 
     let mut bad_adapter = base.clone();
     bad_adapter.adapter_incarnation = "adapter-other".to_owned();
@@ -1999,21 +2283,25 @@ fn slice_7_1_envelope_fencing_refuses_before_mutation() {
     }
 
     assert_eq!(
-        engine.state_revision, revision_before,
+        engine.state_revision(),
+        revision_before,
         "envelope refuses no revision"
     );
     assert_eq!(
-        engine.ingest_calls, calls_before,
+        engine.world.intent.ingest_calls, calls_before,
         "envelope refuses no ingest"
     );
-    assert!(!engine.has_last_v4, "envelope refuses no cache");
-    assert!(engine.members.is_empty(), "envelope refuses no mutation");
+    assert!(!engine.has_last_v4(), "envelope refuses no cache");
+    assert!(
+        engine.world.workspace.members.is_empty(),
+        "envelope refuses no mutation"
+    );
 }
 
 #[test]
 fn slice_7_1_held_native_capability_fence() {
     let mut engine = engine();
-    assert!(!engine.host_owned_workspace_domains());
+    assert!(!engine.connection.host_owned_workspace_domains());
     let mut held_native = observe(1, facts_pair(), "win-a");
     held_native.held_native = vec![crate::world_report::HeldNativeRow {
         output: OutputId("out-a".to_owned()),
@@ -2029,7 +2317,7 @@ fn slice_7_1_held_native_capability_fence() {
             kind: RowDiagnosticKind::InvalidFact,
         },
     }];
-    let revision_before = engine.state_revision;
+    let revision_before = engine.state_revision();
     match admit(&mut engine, &held_native) {
         V4RunOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT);
@@ -2037,8 +2325,8 @@ fn slice_7_1_held_native_capability_fence() {
         }
         other => panic!("expected held native fence, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision_before);
-    assert!(!engine.has_last_v4);
+    assert_eq!(engine.state_revision(), revision_before);
+    assert!(!engine.has_last_v4());
 }
 
 #[test]
@@ -2052,12 +2340,12 @@ fn slice_7_1_raw_invalid_never_aliases_preheld() {
         other => panic!("expected accepted raw invalid, got {other:?}"),
     }
     let mut preheld = observe(1, vec![fact("win-a", "out-a", 0)], "win-a");
-    preheld.held_windows = engine.staged.held_windows.clone();
+    preheld.held_windows = engine.world.staged.held_windows.clone();
     match admit(&mut engine, &preheld) {
         V4RunOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
         other => panic!("expected reused raw mismatch, got {other:?}"),
     }
-    assert_eq!(engine.last_report_v4.as_ref(), Some(&raw));
+    assert_eq!(engine.last_report_v4().as_ref(), Some(&raw));
 }
 
 fn workspace_ref_value(native: bool) -> RawSettingValue {
@@ -2134,17 +2422,17 @@ fn slice_7_1_held_member_logical_accepted_native_refused() {
         other => panic!("expected accepted logical held member, got {other:?}"),
     }
     assert_eq!(
-        engine.staged.held_attempts.len(),
+        engine.world.staged.held_attempts.len(),
         1,
         "logical held member stages"
     );
-    assert_eq!(engine.state_revision, 2);
+    assert_eq!(engine.state_revision(), 2);
     // A held member row retaining a native `pre` reference is still
     // native evidence and refuses without capability.
     let mut native = observe(3, facts_pair(), "win-a");
     native.held_attempts = vec![held_member_row(true, false)];
-    let revision_before = engine.state_revision;
-    let calls_before = engine.ingest_calls;
+    let revision_before = engine.state_revision();
+    let calls_before = engine.world.intent.ingest_calls;
     match admit(&mut engine, &native) {
         V4RunOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT);
@@ -2152,10 +2440,11 @@ fn slice_7_1_held_member_logical_accepted_native_refused() {
         }
         other => panic!("expected held native member fence, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision_before);
-    assert_eq!(engine.ingest_calls, calls_before);
+    assert_eq!(engine.state_revision(), revision_before);
+    assert_eq!(engine.world.intent.ingest_calls, calls_before);
     assert_eq!(
-        engine.last_request_seq_v4, 2,
+        engine.last_request_seq_v4(),
+        2,
         "refusal adopts no replay cache"
     );
     // Held view rows stay native-only: any held view attempt refuses.
@@ -2168,7 +2457,7 @@ fn slice_7_1_held_member_logical_accepted_native_refused() {
         }
         other => panic!("expected held view fence, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision_before);
+    assert_eq!(engine.state_revision(), revision_before);
 }
 
 #[test]
@@ -2230,8 +2519,8 @@ fn slice_7_1_invalid_screen_not_routing_authority() {
     let graded = graded_effective_v4(&invalid, &[], true, true).expect("grades invalid screen");
     let effective_routing = RawRouting::from_v4(&graded);
     assert_ne!(
-        engine.freeze_command_sources(Some(&command), &raw_routing),
-        engine.freeze_command_sources(Some(&command), &effective_routing),
+        engine.tx_ro(|tx| tx.freeze_command_sources(Some(&command), &raw_routing)),
+        engine.tx_ro(|tx| tx.freeze_command_sources(Some(&command), &effective_routing)),
         "raw invalid screen perturbs frozen sources"
     );
     // Wiring check: the admitted run matches the effective-equivalent
@@ -2268,7 +2557,7 @@ fn slice_7_1_invalid_screen_not_routing_authority() {
         "invalid screen freezes as its held equivalent"
     );
     assert_eq!(
-        engine.command_highwater, control_engine.command_highwater,
+        engine.world.command_highwater, control_engine.world.command_highwater,
         "invalid screen consumes as its held equivalent"
     );
 }
@@ -2281,7 +2570,7 @@ fn slice_7_1_mixed_invalid_structural_refused_atomically() {
     // observation; the invalid lane alone would bootstrap instead.
     let mut engine = engine();
     accepted_reply(1, admit(&mut engine, &observe(1, facts_pair(), "win-a")));
-    let calls_after_ready = engine.ingest_calls;
+    let calls_after_ready = engine.world.intent.ingest_calls;
     // Bad scale plus a duplicate window: grading bails on the
     // structural defect, so the invalid lane names the refusal.
     let mut bad = screen("out-a", 0);
@@ -2296,14 +2585,15 @@ fn slice_7_1_mixed_invalid_structural_refused_atomically() {
         }
         other => panic!("expected mixed refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, 1);
-    assert_eq!(engine.ingest_calls, calls_after_ready);
+    assert_eq!(engine.state_revision(), 1);
+    assert_eq!(engine.world.intent.ingest_calls, calls_after_ready);
     assert_eq!(
-        engine.last_request_seq_v4, 1,
+        engine.last_request_seq_v4(),
+        1,
         "mixed refusal caches nothing"
     );
     assert!(
-        engine.staged.held_screens.is_empty() && engine.staged.held_windows.is_empty(),
+        engine.world.staged.held_screens.is_empty() && engine.world.staged.held_windows.is_empty(),
         "mixed refusal stages no holds"
     );
     // Bad window metadata plus duplicate screens: structural refusal wins.
@@ -2318,9 +2608,9 @@ fn slice_7_1_mixed_invalid_structural_refused_atomically() {
         }
         other => panic!("expected duplicate-screen refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, 1);
-    assert_eq!(engine.ingest_calls, calls_after_ready);
-    assert_eq!(engine.last_request_seq_v4, 1);
+    assert_eq!(engine.state_revision(), 1);
+    assert_eq!(engine.world.intent.ingest_calls, calls_after_ready);
+    assert_eq!(engine.last_request_seq_v4(), 1);
     // Out-of-range held ordinals refuse without adoption.
     let mut ordinal = observe(2, facts_pair(), "win-a");
     ordinal.held_windows = vec![HeldWindowRow {
@@ -2338,14 +2628,14 @@ fn slice_7_1_mixed_invalid_structural_refused_atomically() {
         }
         other => panic!("expected held ordinal refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, 1);
-    assert_eq!(engine.last_request_seq_v4, 1);
+    assert_eq!(engine.state_revision(), 1);
+    assert_eq!(engine.last_request_seq_v4(), 1);
 }
 
 #[test]
 fn slice_7_1_invalid_version_and_unbound_owner_refused() {
     let mut engine = engine();
-    let revision_before = engine.state_revision;
+    let revision_before = engine.state_revision();
     let mut version = observe(1, facts_pair(), "win-a");
     // Non-v4 wire version on a v4-typed report; see structural_refusals.
     version.contract_version = 3;
@@ -2356,8 +2646,8 @@ fn slice_7_1_invalid_version_and_unbound_owner_refused() {
         }
         other => panic!("expected version refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision_before);
-    assert!(!engine.has_last_v4);
+    assert_eq!(engine.state_revision(), revision_before);
+    assert!(!engine.has_last_v4());
     let mut unbound = WorldEngine::new("gen-1").expect("generation");
     let base = observe(1, facts_pair(), "win-a");
     match unbound.handle_report_v4(
@@ -2386,8 +2676,8 @@ fn slice_7_1_invalid_window_hit_refused_atomically() {
     let mut invalid = observe(2, vec![fact("win-a", "out-a", 0), bad], "win-a");
     invalid.cursor = Some((10, 20));
     invalid.cursor_hit = Some(WindowId("win-bad".to_owned()));
-    let revision_before = engine.state_revision;
-    let calls_before = engine.ingest_calls;
+    let revision_before = engine.state_revision();
+    let calls_before = engine.world.intent.ingest_calls;
     match admit(&mut engine, &invalid) {
         V4RunOutcome::Rejected { kind, message } => {
             assert_eq!(kind, KIND_SNAPSHOT);
@@ -2395,11 +2685,265 @@ fn slice_7_1_invalid_window_hit_refused_atomically() {
         }
         other => panic!("expected cursor-hit refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision_before);
-    assert_eq!(engine.ingest_calls, calls_before);
-    assert_eq!(engine.last_request_seq_v4, 1, "refusal caches nothing");
+    assert_eq!(engine.state_revision(), revision_before);
+    assert_eq!(engine.world.intent.ingest_calls, calls_before);
+    assert_eq!(engine.last_request_seq_v4(), 1, "refusal caches nothing");
     assert!(
-        engine.staged.held_windows.is_empty(),
+        engine.world.staged.held_windows.is_empty(),
         "refusal stages no holds"
     );
+}
+
+#[test]
+fn prepare_callback_refusal_discards_ready_and_bootstrap_candidates() {
+    use crate::world_report::IntentRecord;
+
+    // 1. Bootstrap path: prepare refusal leaves pending intent and replay untouched.
+    let mut boot = engine();
+    let mut pre_ready = observe(1, Vec::new(), "");
+    pre_ready.screens.clear();
+    pre_ready.inventory_complete = false;
+    pre_ready.intent_records.push(IntentRecord {
+        win: WindowId("win-boot".to_owned()),
+        data: encode_intent_data(&IntentData::new(Some(true), None)),
+    });
+    let mut boot_prepare_calls = 0usize;
+    let boot_err = boot.handle_report_with_prepare(&pre_ready, &[], |candidate| {
+        boot_prepare_calls += 1;
+        assert!(!candidate.reply.ready);
+        assert!(candidate.settlements.is_empty());
+        Err("late-boot-refusal")
+    });
+    assert!(matches!(boot_err, Err("late-boot-refusal")));
+    assert_eq!(boot_prepare_calls, 1);
+    assert!(
+        boot.world.intent.intent_desired.is_empty(),
+        "bootstrap pending intent must not install when prepare fails"
+    );
+    assert!(!boot.has_last_v4(), "bootstrap must not advance replay");
+
+    // Next bootstrap report succeeds and installs pending intent without advancing replay.
+    let boot_ok = boot
+        .handle_report_with_prepare(&pre_ready, &[], |_| Ok::<(), &str>(()))
+        .expect("bootstrap prepare ok");
+    assert!(matches!(boot_ok.0, V4RunOutcome::Accepted(ref r) if !r.ready));
+    assert!(
+        boot.world
+            .intent
+            .intent_desired
+            .contains_key(&WindowId("win-boot".to_owned()))
+    );
+    assert!(
+        !boot.has_last_v4(),
+        "bootstrap still does not advance replay"
+    );
+
+    // 2. Ready path: prepare refusal discards staged world and replay.
+    let mut ready = engine();
+    let r1 = observe(1, facts_pair(), "win-a");
+    accepted_reply(1, admit(&mut ready, &r1));
+    assert_eq!(ready.state_revision(), 1);
+    assert_eq!(ready.last_request_seq_v4(), 1);
+
+    let r2 = observe(2, facts_pair(), "win-b");
+    let mut ready_prepare_calls = 0usize;
+    let ready_err = ready.handle_report_with_prepare(&r2, &[], |candidate| {
+        ready_prepare_calls += 1;
+        assert!(candidate.reply.ready);
+        assert_eq!(candidate.reply.state_revision, 2);
+        Err("late-ready-refusal")
+    });
+    assert!(matches!(ready_err, Err("late-ready-refusal")));
+    assert_eq!(ready_prepare_calls, 1);
+    assert_eq!(ready.state_revision(), 1);
+    assert_eq!(ready.last_request_seq_v4(), 1);
+
+    // 3. Duplicate path: prepare is never called, returns cached reply.
+    let mut dup_prepare_calls = 0usize;
+    let dup = ready
+        .handle_report_with_prepare(&r1, &[], |_| {
+            dup_prepare_calls += 1;
+            Ok::<(), &str>(())
+        })
+        .expect("duplicate");
+    assert_eq!(dup_prepare_calls, 0, "duplicate must not invoke prepare");
+    assert!(matches!(dup.0, V4RunOutcome::Duplicate(_)));
+    assert_eq!(ready.state_revision(), 1);
+}
+
+#[test]
+fn admission_gate_checkpoint_order_and_refusal_mapping() {
+    use crate::world_admit_v4::{
+        AdmissionGateDecision, CoreAdmissionGate, ExactInnerCheck, ExactInnerDecision,
+        FutureReserveGateFacts, PreflightGateFacts,
+    };
+    use crate::world_engine::{KIND_OVERSIZED, KIND_REPLY_SIZE, MSG_OVERSIZED, MSG_REPLY_SIZE};
+    use crate::world_report::WorldReplyV4;
+    use std::cell::RefCell;
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum RefuseAt {
+        None,
+        RequestSize,
+        Preflight,
+        ExactInner,
+        FutureReserve,
+    }
+
+    struct RecordingGate {
+        refuse_at: RefuseAt,
+        log: RefCell<Vec<&'static str>>,
+        preflight_screens: RefCell<Option<usize>>,
+    }
+
+    impl RecordingGate {
+        fn new(refuse_at: RefuseAt) -> Self {
+            Self {
+                refuse_at,
+                log: RefCell::new(Vec::new()),
+                preflight_screens: RefCell::new(None),
+            }
+        }
+    }
+
+    impl CoreAdmissionGate for RecordingGate {
+        fn check_request_size(&self, _report: &WorldReportV4) -> AdmissionGateDecision {
+            self.log.borrow_mut().push("request_size");
+            if self.refuse_at == RefuseAt::RequestSize {
+                AdmissionGateDecision::Refuse
+            } else {
+                AdmissionGateDecision::Allow
+            }
+        }
+
+        fn check_preflight(
+            &self,
+            _report: &WorldReportV4,
+            facts: &PreflightGateFacts<'_>,
+        ) -> AdmissionGateDecision {
+            self.log.borrow_mut().push("preflight");
+            *self.preflight_screens.borrow_mut() = Some(facts.screen_count);
+            if self.refuse_at == RefuseAt::Preflight {
+                AdmissionGateDecision::Refuse
+            } else {
+                AdmissionGateDecision::Allow
+            }
+        }
+
+        fn check_exact_inner(&self, _reply: &WorldReplyV4) -> ExactInnerDecision {
+            self.log.borrow_mut().push("exact_inner");
+            if self.refuse_at == RefuseAt::ExactInner {
+                ExactInnerDecision::Refuse
+            } else {
+                ExactInnerDecision::Allow(ExactInnerCheck::new(0))
+            }
+        }
+
+        fn check_future_reserve(
+            &self,
+            _reply: &WorldReplyV4,
+            _facts: &FutureReserveGateFacts,
+            _exact: ExactInnerCheck,
+        ) -> AdmissionGateDecision {
+            self.log.borrow_mut().push("future_reserve");
+            if self.refuse_at == RefuseAt::FutureReserve {
+                AdmissionGateDecision::Refuse
+            } else {
+                AdmissionGateDecision::Allow
+            }
+        }
+    }
+
+    // 1. Bootstrap path invokes request_size -> preflight -> exact_inner -> prepare.
+    let mut boot = engine();
+    let mut pre_ready = observe(1, Vec::new(), "");
+    pre_ready.screens.clear();
+    pre_ready.inventory_complete = false;
+    let boot_gate = RecordingGate::new(RefuseAt::None);
+    let (boot_outcome, _) = boot
+        .handle_report_with_gate_and_prepare(&pre_ready, &[], &boot_gate, |_| {
+            boot_gate.log.borrow_mut().push("prepare");
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    assert!(matches!(boot_outcome, V4RunOutcome::Accepted(ref r) if !r.ready));
+    assert_eq!(
+        *boot_gate.log.borrow(),
+        vec!["request_size", "preflight", "exact_inner", "prepare"]
+    );
+    assert_eq!(*boot_gate.preflight_screens.borrow(), Some(0));
+
+    // 2. Ready path invokes request_size -> preflight -> exact_inner -> future_reserve -> prepare.
+    let mut ready = engine();
+    let r1 = observe(1, facts_pair(), "win-a");
+    let ready_gate = RecordingGate::new(RefuseAt::None);
+    let (ready_outcome, _) = ready
+        .handle_report_with_gate_and_prepare(&r1, &[], &ready_gate, |_| {
+            ready_gate.log.borrow_mut().push("prepare");
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    assert!(matches!(ready_outcome, V4RunOutcome::Accepted(ref r) if r.ready));
+    assert_eq!(
+        *ready_gate.log.borrow(),
+        vec![
+            "request_size",
+            "preflight",
+            "exact_inner",
+            "future_reserve",
+            "prepare",
+        ]
+    );
+    assert_eq!(*ready_gate.preflight_screens.borrow(), Some(1));
+    assert_eq!(ready.state_revision(), 1);
+    assert_eq!(ready.last_request_seq_v4(), 1);
+
+    // 3. Refusal at each hook stops subsequent hooks and maps to the static core refusal.
+    let r2 = observe(2, facts_pair(), "win-b");
+    let cases = [
+        (
+            RefuseAt::RequestSize,
+            KIND_OVERSIZED,
+            MSG_OVERSIZED,
+            vec!["request_size"],
+        ),
+        (
+            RefuseAt::Preflight,
+            KIND_REPLY_SIZE,
+            MSG_REPLY_SIZE,
+            vec!["request_size", "preflight"],
+        ),
+        (
+            RefuseAt::ExactInner,
+            KIND_REPLY_SIZE,
+            MSG_REPLY_SIZE,
+            vec!["request_size", "preflight", "exact_inner"],
+        ),
+        (
+            RefuseAt::FutureReserve,
+            KIND_REPLY_SIZE,
+            MSG_REPLY_SIZE,
+            vec!["request_size", "preflight", "exact_inner", "future_reserve"],
+        ),
+    ];
+    for (refuse_at, expected_kind, expected_msg, expected_log) in cases {
+        let gate = RecordingGate::new(refuse_at);
+        let (outcome, settlements) = ready
+            .handle_report_with_gate_and_prepare(&r2, &[], &gate, |_| {
+                gate.log.borrow_mut().push("prepare");
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .unwrap_or_else(|e| match e {});
+        assert!(settlements.is_empty());
+        assert_eq!(
+            outcome,
+            V4RunOutcome::Rejected {
+                kind: expected_kind,
+                message: expected_msg,
+            }
+        );
+        assert_eq!(*gate.log.borrow(), expected_log);
+        assert_eq!(ready.state_revision(), 1);
+        assert_eq!(ready.last_request_seq_v4(), 1);
+    }
 }

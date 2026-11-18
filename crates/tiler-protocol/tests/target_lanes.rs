@@ -14,10 +14,11 @@ use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::world_report::{
     HoldReason, ScopeAuthority, StateProperty, StateTarget, VisibilityTarget, WindowDesire,
 };
-use tiler_core::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
+use tiler_protocol::world_admission_sizing::MAX_TARGET_LANES_PER_WINDOW;
 use tiler_protocol::world_protocol::{
     DecodedReplyV4, ReplyWireOptionals, decode_reply_v4, encode_reply_v4,
 };
+use tiler_protocol::world_reply_write::count_reply_v4;
 
 fn fixture_text(name: &str) -> String {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -105,24 +106,25 @@ fn v4_writer_spells_crafted_target_lanes_with_exact_bytes() {
     let wire = encode_reply_v4(&decoded).expect("reply encodes");
     assert_eq!(
         wire.len(),
-        reply_exact_bytes_v4(&decoded.reply),
-        "core byte count is exact over crafted lanes"
+        count_reply_v4(&decoded.reply, &decoded.wire).expect("protocol count succeeds"),
+        "protocol byte count is exact over crafted lanes"
     );
     assert_eq!(
         decode_reply_v4(&wire).expect("reply round-trips"),
         decoded,
         "wire round-trips to the identical typed reply and metadata"
     );
+    let win1 = wire
+        .find(&format!("\"win\":\"{}\"", "a.9_".repeat(32)))
+        .expect("win1 in wire");
+    let start = win1 + wire[win1..].find(",\"cmdSeq\":").expect("win1 cmdSeq");
+    let end = start + wire[start..].find("]}").expect("win1 state close");
+    let lanes = &wire[start..end + 1];
     assert!(
-        reply_estimate_v4(&decoded.reply) >= wire.len(),
-        "structural estimate covers crafted lanes"
-    );
-    let mut lanes = String::new();
-    tiler_core::world_sizing::encode_window_target_lanes(&mut lanes, &decoded.reply.windows[1]);
-    assert_eq!(
-        tiler_core::world_sizing::window_target_lanes_estimate(&decoded.reply.windows[1]),
+        lanes.len() <= MAX_TARGET_LANES_PER_WINDOW,
+        "crafted lanes {} bounded by per-window reserve {}",
         lanes.len(),
-        "lane estimate stays exact on crafted lanes"
+        MAX_TARGET_LANES_PER_WINDOW
     );
     assert!(lanes.contains("\"cmdSeq\":\"18446744073709551615\""));
     assert!(lanes.contains(
@@ -138,6 +140,283 @@ fn v4_writer_spells_crafted_target_lanes_with_exact_bytes() {
         wire.contains(&format!("\"win\":\"{}\"", "a.9_".repeat(32))),
         "boundary-length lifetime rides the wire byte-exact"
     );
+}
+
+#[test]
+fn max_legal_target_lane_width_combinations_match_exact_bytes() {
+    let mut decoded: DecodedReplyV4 =
+        decode_reply_v4(&fixture_text("reply-observe")).expect("observe decodes");
+    decoded.wire = ReplyWireOptionals {
+        suspended_output_present: decoded.reply.presentation.suspended_output.is_some(),
+    };
+
+    let lane_window = |command_seq, visibility, visibility_authority, state| WindowDesire {
+        lifetime: WindowId("win-a".to_owned()),
+        output: OutputId("out".to_owned()),
+        workspace: "ws-a".to_owned(),
+        allocation: None,
+        effective_frame: None,
+        frame_authority: ScopeAuthority::Untouched,
+        membership_authority: ScopeAuthority::Untouched,
+        floating: false,
+        float_origin: None,
+        frame_operation: None,
+        clear_operation: None,
+        command_seq,
+        visibility,
+        visibility_authority,
+        state,
+    };
+
+    let measure_lanes = |decoded: &mut DecodedReplyV4, window: WindowDesire| -> usize {
+        decoded.reply.windows = vec![window];
+        let wire = encode_reply_v4(decoded).expect("reply encodes");
+        assert_eq!(
+            wire.len(),
+            count_reply_v4(&decoded.reply, &decoded.wire).expect("protocol count succeeds"),
+            "protocol byte count exact"
+        );
+        assert_eq!(
+            decode_reply_v4(&wire).expect("reply round-trips"),
+            *decoded,
+            "wire round-trips to identical reply"
+        );
+        let start = wire.find(",\"cmdSeq\":").expect("cmdSeq lane");
+        let end = start + wire[start..].find("]}").expect("state close");
+        wire[start..end + 1].len()
+    };
+
+    // Engine defaults: null correlation (94) and u64::MAX correlation (112).
+    assert_eq!(
+        measure_lanes(
+            &mut decoded,
+            lane_window(None, None, ScopeAuthority::Untouched, Vec::new()),
+        ),
+        94
+    );
+    assert_eq!(
+        measure_lanes(
+            &mut decoded,
+            lane_window(Some(u64::MAX), None, ScopeAuthority::Untouched, Vec::new()),
+        ),
+        112
+    );
+
+    // Common controlled show with empty state: 32 + 74 + 31 + 21 + 11 = 169.
+    let max_show = Some(VisibilityTarget {
+        shown: true,
+        revision: u64::MAX,
+        fallback: false,
+    });
+    assert_eq!(
+        measure_lanes(
+            &mut decoded,
+            lane_window(
+                Some(u64::MAX),
+                max_show.clone(),
+                ScopeAuthority::Controlled,
+                Vec::new()
+            ),
+        ),
+        169
+    );
+
+    let max_hold = ScopeAuthority::Hold(HoldReason::IncompleteInventory);
+    let sticky_max = StateTarget {
+        property: StateProperty::Sticky,
+        value: false,
+        authority: max_hold,
+        command_seq: Some(u64::MAX),
+    };
+    let fullscreen_max = StateTarget {
+        property: StateProperty::Fullscreen,
+        value: false,
+        authority: max_hold,
+        command_seq: Some(u64::MAX),
+    };
+    let maximized_max = StateTarget {
+        property: StateProperty::Maximized,
+        value: false,
+        authority: max_hold,
+        command_seq: Some(u64::MAX),
+    };
+    let above_commandless_max = StateTarget {
+        property: StateProperty::Above,
+        value: false,
+        authority: max_hold,
+        command_seq: None,
+    };
+
+    // 1-row sticky-only max: 296.
+    assert_eq!(
+        measure_lanes(
+            &mut decoded,
+            lane_window(
+                Some(u64::MAX),
+                max_show.clone(),
+                max_hold,
+                vec![sticky_max.clone()],
+            ),
+        ),
+        296
+    );
+    // 2-row sticky + fullscreen max: 414.
+    assert_eq!(
+        measure_lanes(
+            &mut decoded,
+            lane_window(
+                Some(u64::MAX),
+                max_show.clone(),
+                max_hold,
+                vec![sticky_max.clone(), fullscreen_max.clone()],
+            ),
+        ),
+        414
+    );
+    // 3-row sticky + fullscreen + maximized max: 531.
+    assert_eq!(
+        measure_lanes(
+            &mut decoded,
+            lane_window(
+                Some(u64::MAX),
+                max_show.clone(),
+                max_hold,
+                vec![
+                    sticky_max.clone(),
+                    fullscreen_max.clone(),
+                    maximized_max.clone(),
+                ],
+            ),
+        ),
+        531
+    );
+    // 4-row max legal combination (commandless above + three state rows): 626 == MAX_TARGET_LANES_PER_WINDOW.
+    let four_row_len = measure_lanes(
+        &mut decoded,
+        lane_window(
+            Some(u64::MAX),
+            max_show,
+            max_hold,
+            vec![
+                sticky_max,
+                fullscreen_max,
+                maximized_max,
+                above_commandless_max,
+            ],
+        ),
+    );
+    assert_eq!(four_row_len, 626);
+    assert_eq!(MAX_TARGET_LANES_PER_WINDOW, 626);
+
+    // Authority and property matrix: every authority/hold reason, property, and seq boundary round-trips and counts exact.
+    let authorities = [
+        ScopeAuthority::Controlled,
+        ScopeAuthority::Untouched,
+        ScopeAuthority::Hold(HoldReason::Unreadable),
+        ScopeAuthority::Hold(HoldReason::IncompleteInventory),
+        ScopeAuthority::Hold(HoldReason::GestureBarrier),
+        ScopeAuthority::Hold(HoldReason::RefusedTarget),
+        ScopeAuthority::Hold(HoldReason::AmbiguousCreation),
+        ScopeAuthority::Hold(HoldReason::OccupiedRemoval),
+        ScopeAuthority::Hold(HoldReason::ConstraintClamp),
+        ScopeAuthority::Hold(HoldReason::Minimized),
+    ];
+    for authority in authorities {
+        for seq in [None, Some(0), Some(u64::MAX)] {
+            let len = measure_lanes(
+                &mut decoded,
+                lane_window(
+                    seq,
+                    Some(VisibilityTarget {
+                        shown: false,
+                        revision: u64::MAX,
+                        fallback: true,
+                    }),
+                    authority,
+                    vec![
+                        StateTarget {
+                            property: StateProperty::Fullscreen,
+                            value: false,
+                            authority,
+                            command_seq: seq,
+                        },
+                        StateTarget {
+                            property: StateProperty::Above,
+                            value: true,
+                            authority,
+                            command_seq: None,
+                        },
+                    ],
+                ),
+            );
+            assert!(
+                len <= MAX_TARGET_LANES_PER_WINDOW,
+                "lane width {len} exceeds reserve {MAX_TARGET_LANES_PER_WINDOW}"
+            );
+        }
+    }
+}
+
+#[test]
+fn v4_writer_spells_clear_op_and_untouched_target_lanes() {
+    let mut decoded: DecodedReplyV4 =
+        decode_reply_v4(&fixture_text("reply-observe")).expect("observe decodes");
+    let base = || WindowDesire {
+        lifetime: WindowId("win-a".to_owned()),
+        output: OutputId("out".to_owned()),
+        workspace: "ws-a".to_owned(),
+        allocation: None,
+        effective_frame: None,
+        frame_authority: ScopeAuthority::Untouched,
+        membership_authority: ScopeAuthority::Untouched,
+        floating: false,
+        float_origin: None,
+        frame_operation: None,
+        clear_operation: None,
+        command_seq: None,
+        visibility: None,
+        visibility_authority: ScopeAuthority::Untouched,
+        state: Vec::new(),
+    };
+    let cases = [
+        (
+            Some("op-13"),
+            Some(13),
+            "\"clear_op\":\"op-13\",\"cmdSeq\":\"13\",\"visibility\":null,\
+             \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\"state\":[]",
+        ),
+        (
+            None,
+            Some(13),
+            "\"clear_op\":\"\",\"cmdSeq\":\"13\",\"visibility\":null,\
+             \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\"state\":[]",
+        ),
+        (
+            Some("op-born-1"),
+            None,
+            "\"clear_op\":\"op-born-1\",\"cmdSeq\":null,\"visibility\":null,\
+             \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\"state\":[]",
+        ),
+    ];
+    for (clear_op, command_seq, expected_tail) in cases {
+        let mut row = base();
+        row.clear_operation = clear_op.map(str::to_owned);
+        row.command_seq = command_seq;
+        decoded.reply.windows = vec![row];
+        decoded.wire = ReplyWireOptionals {
+            suspended_output_present: decoded.reply.presentation.suspended_output.is_some(),
+        };
+        let wire = encode_reply_v4(&decoded).expect("reply encodes");
+        assert_eq!(
+            wire.len(),
+            count_reply_v4(&decoded.reply, &decoded.wire).expect("protocol count succeeds"),
+        );
+        assert_eq!(decode_reply_v4(&wire).expect("reply round-trips"), decoded,);
+        assert!(
+            wire.contains(expected_tail),
+            "missing exact tail {expected_tail} in {wire}"
+        );
+    }
 }
 
 #[test]
@@ -239,9 +518,27 @@ fn immutable_fixtures_decode_to_code_spelled_target_suffix() {
                 })
                 .collect(),
         };
-        // Encode with the real writer: lane fields only.
-        let mut actual = String::new();
-        tiler_core::world_sizing::encode_window_target_lanes(&mut actual, &desire);
+        // Encode with the genuine v4 reply writer and slice the actual
+        // target-lane subsection from the first window row.
+        let mut decoded = decode_reply_v4(&wire).expect("fixture decodes");
+        let mut desire = desire;
+        desire.lifetime = decoded.reply.windows[0].lifetime.clone();
+        desire.output = decoded.reply.windows[0].output.clone();
+        desire.workspace = decoded.reply.windows[0].workspace.clone();
+        decoded.reply.windows = vec![desire];
+        let encoded = encode_reply_v4(&decoded).expect("reply encodes");
+        let enc_windows_open = encoded
+            .find("\"windows\":[")
+            .unwrap_or_else(|| panic!("{name} encoded windows array"));
+        let enc_start = encoded
+            .find(",\"cmdSeq\":")
+            .unwrap_or_else(|| panic!("{name} encoded cmdSeq lane"));
+        assert!(enc_start > enc_windows_open);
+        let enc_after = &encoded[enc_start..];
+        let enc_end = enc_after
+            .find("]}")
+            .unwrap_or_else(|| panic!("{name} encoded state close"));
+        let actual = &enc_after[..enc_end + 1];
         // Raw suffix slice: the reply's first `,"cmdSeq":` opens the first
         // window's suffix (no row boundary between the windows array open
         // and it), and the first `]}` after it closes the state array

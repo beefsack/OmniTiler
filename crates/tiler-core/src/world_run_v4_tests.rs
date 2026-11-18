@@ -184,8 +184,11 @@ fn observe(seq: u64, windows: Vec<WindowFact>, focused: &str) -> WorldReportV4 {
 }
 
 fn run(engine: &mut WorldEngine, report: &WorldReportV4, consumed: bool) -> V4RunOutcome {
-    let issuing = engine.state_revision.checked_add(1).expect("test issuing");
-    engine.run_accepted_v4(report, &issue(report.request_seq), consumed, issuing)
+    let issuing = engine
+        .state_revision()
+        .checked_add(1)
+        .expect("test issuing");
+    engine.tx(|tx| tx.run_accepted_v4(report, &issue(report.request_seq), consumed, issuing))
 }
 
 fn run_with_settlements(
@@ -193,8 +196,13 @@ fn run_with_settlements(
     report: &WorldReportV4,
     consumed: bool,
 ) -> (V4RunOutcome, Vec<BatchSettlement>) {
-    let issuing = engine.state_revision.checked_add(1).expect("test issuing");
-    engine.run_accepted_v4_batched(report, &issue(report.request_seq), consumed, issuing, &[])
+    let issuing = engine
+        .state_revision()
+        .checked_add(1)
+        .expect("test issuing");
+    engine.tx(|tx| {
+        tx.run_accepted_v4_batched(report, &issue(report.request_seq), consumed, issuing, &[])
+    })
 }
 
 fn accepted_reply(report_seq: u64, outcome: V4RunOutcome) -> crate::world_report::WorldReplyV4 {
@@ -294,8 +302,8 @@ fn observation_only_pure_v4_run_publishes_genuine_reply() {
     let reply = accepted_reply(1, outcome);
     assert_eq!(reply.state_revision, 1);
     assert_eq!(reply.presentation.rev, 1);
-    assert_eq!(engine.state_revision, 1);
-    assert_eq!(engine.latest_published_presentation_rev_v4, 1);
+    assert_eq!(engine.state_revision(), 1);
+    assert_eq!(engine.world.presentation.latest_published_rev_v4, 1);
     assert!(!reply.scopes.is_empty());
     assert!(
         reply
@@ -309,9 +317,9 @@ fn observation_only_pure_v4_run_publishes_genuine_reply() {
             .iter()
             .any(|window| window.lifetime.0 == "win-b")
     );
-    assert_eq!(engine.prior_context.prev_focused_global, "win-a");
+    assert_eq!(engine.world.prior_context.prev_focused_global, "win-a");
     assert!(
-        !engine.prior_context.empty_controlled.is_empty(),
+        !engine.world.prior_context.empty_controlled.is_empty(),
         "accepted controlled-empty workspaces persist for shared lanes"
     );
 }
@@ -337,15 +345,20 @@ fn first_admission_intent_ingests_once_before_classification() {
     accepted_reply(1, outcome);
     let win = WindowId("win-a".to_owned());
     assert!(
-        engine.intent_admitted.contains(&win),
+        engine.world.intent.intent_admitted.contains(&win),
         "first-admission intent admits the same report it arrives on"
     );
     assert!(
-        engine.restored_floats.contains(&win),
+        engine.world.intent.restored_floats.contains(&win),
         "pending float converts on healthy float success"
     );
     assert!(
-        engine.members.get(&win).is_some_and(|state| state.floating),
+        engine
+            .world
+            .workspace
+            .members
+            .get(&win)
+            .is_some_and(|state| state.floating),
         "classifier saw the pending first-admission win before staging"
     );
 }
@@ -416,7 +429,7 @@ fn composed_sticky_clear_restages_and_keeps_tile_save() {
         set_on_settlements
     );
     assert_eq!(
-        engine.restored_sticky.get(&win),
+        engine.world.intent.restored_sticky.get(&win),
         Some(&false),
         "tiled origin restores with a false prior"
     );
@@ -447,15 +460,17 @@ fn composed_sticky_clear_restages_and_keeps_tile_save() {
         cleared_settlements
     );
     assert!(
-        !engine.restored_sticky.contains_key(&win),
+        !engine.world.intent.restored_sticky.contains_key(&win),
         "clear drops sticky provenance"
     );
     assert!(
-        !engine.pending_intent.contains_key(&win),
+        !engine.world.intent.pending_intent.contains_key(&win),
         "the admitted lifetime leaves no pending late import"
     );
     assert_eq!(
         engine
+            .world
+            .intent
             .intent_desired
             .get(&win)
             .and_then(|entry| entry.as_ref()),
@@ -509,7 +524,7 @@ fn ordinary_focus_command_dispatches_effect() {
     assert_eq!(request.cmd_seq, Some(1));
     assert_eq!(settlements.len(), 1);
     assert!(settlements[0].result.is_none());
-    assert_eq!(engine.command_highwater, Some(1));
+    assert_eq!(engine.world.command_highwater, Some(1));
 }
 
 #[test]
@@ -584,8 +599,9 @@ fn consumed_rerun_with_new_observation_reconciles_without_revalidation() {
             false,
         ),
     );
-    let latest = engine.latest_published_presentation_rev_v4;
+    let latest = engine.world.presentation.latest_published_rev_v4;
     let home = engine
+        .world
         .staged
         .homing
         .get(&WindowId("win-b".to_owned()))
@@ -601,7 +617,7 @@ fn consumed_rerun_with_new_observation_reconciles_without_revalidation() {
     };
     let mut rerun_windows = facts_pair();
     rerun_windows.push(fact("w2", "out-a", 300));
-    let issuing = engine.state_revision.checked_add(1).expect("issuing");
+    let issuing = engine.state_revision().checked_add(1).expect("issuing");
     let rerun = report(
         3,
         rerun_windows,
@@ -612,7 +628,7 @@ fn consumed_rerun_with_new_observation_reconciles_without_revalidation() {
         Some(stale),
         Vec::new(),
     );
-    match engine.run_accepted_v4_batched(&rerun, &issue(3), true, issuing, &[]) {
+    match engine.tx(|tx| tx.run_accepted_v4_batched(&rerun, &issue(3), true, issuing, &[])) {
         (V4RunOutcome::CommandConsumed(reply), settlements) => {
             assert!(reply.command_consumed);
             assert!(
@@ -630,8 +646,8 @@ fn consumed_rerun_with_new_observation_reconciles_without_revalidation() {
             );
             assert_eq!(reply.state_revision, issuing);
             assert_eq!(reply.presentation.rev, issuing);
-            assert_eq!(engine.latest_published_presentation_rev_v4, issuing);
-            assert_eq!(engine.state_revision, issuing);
+            assert_eq!(engine.world.presentation.latest_published_rev_v4, issuing);
+            assert_eq!(engine.state_revision(), issuing);
             assert!(
                 reply.windows.iter().any(|row| row.lifetime.0 == "w2"),
                 "new observation publishes through the consumed lane: {:?}",
@@ -650,13 +666,14 @@ fn consumed_command_skips_renderer_validation() {
         run(&mut engine, &observe(1, facts_pair(), "win-a"), false),
     );
     let home = engine
+        .world
         .staged
         .homing
         .get(&WindowId("win-b".to_owned()))
         .expect("homed window")
         .clone();
     let stale = RendererInput {
-        rev: engine.latest_published_presentation_rev_v4 + 9,
+        rev: engine.world.presentation.latest_published_rev_v4 + 9,
         target: RenderTarget::Window {
             out: home.output.clone(),
             ws: home.workspace.clone(),
@@ -751,7 +768,7 @@ fn refused_command_preserves_observation_without_command_mutation() {
     );
     assert!(
         engine
-            .ring_occupied(&OutputId("out-a".to_owned()))
+            .tx_ro(|tx| tx.ring_occupied(&OutputId("out-a".to_owned())))
             .contains("ws-2"),
         "trailing occupied so the numbered send must take the Create path"
     );
@@ -800,30 +817,30 @@ fn refused_command_preserves_observation_without_command_mutation() {
         }),
         "sticky send refuses"
     );
-    assert_eq!(engine.command_highwater, Some(3));
+    assert_eq!(engine.world.command_highwater, Some(3));
     assert_eq!(
-        engine.mapping, control.mapping,
+        engine.world.workspace.mapping, control.world.workspace.mapping,
         "refusal preserves the commandless image"
     );
     assert_eq!(
-        engine.creation_counter, control.creation_counter,
+        engine.world.workspace.creation_counter, control.world.workspace.creation_counter,
         "creation counter matches the commandless image"
     );
     assert_eq!(
-        engine.retained, control.retained,
+        engine.world.settlement.retained, control.world.settlement.retained,
         "no transfer minted for the refused mover"
     );
     assert_eq!(
-        engine.members, control.members,
+        engine.world.workspace.members, control.world.workspace.members,
         "membership matches the commandless image"
     );
     assert!(
         !engine
-            .retained
+            .world.settlement.retained
             .iter()
             .any(|transfer| matches!(&transfer.target.kind, crate::world_report::TransferKind::Window(w) if w.0 == "wSticky")),
         "refused sticky leaves no flight: {:?}",
-        engine.retained
+        engine.world.settlement.retained
     );
     let ids: Vec<String> = reply
         .windows
@@ -839,11 +856,17 @@ fn refused_command_preserves_observation_without_command_mutation() {
         "closed lifetime drops from published rows: {ids:?}"
     );
     assert!(
-        !engine.engine_knows_window_any(&WindowId("wClose".to_owned())),
+        !engine
+            .world
+            .engine_knows_window_any(&WindowId("wClose".to_owned())),
         "closed lifetime drops from sessions"
     );
     assert!(
-        !engine.members.contains_key(&WindowId("wClose".to_owned())),
+        !engine
+            .world
+            .workspace
+            .members
+            .contains_key(&WindowId("wClose".to_owned())),
         "closed lifetime drops from membership"
     );
     let w2 = reply
@@ -870,6 +893,8 @@ fn refused_command_preserves_observation_without_command_mutation() {
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .consumed_frames
             .get(&WindowId("w0".to_owned()))
             .and_then(crate::world_attempts::PropertyAttempt::as_frame)
@@ -910,7 +935,7 @@ fn frozen_migration_source_refuses_without_fallback() {
             kind: CommandRejectKind::MigrationRefused
         })
     );
-    assert_eq!(engine.command_highwater, Some(1));
+    assert_eq!(engine.world.command_highwater, Some(1));
 }
 
 #[test]
@@ -970,7 +995,7 @@ fn frozen_new_view_refuses_despite_same_report_creation() {
         }),
         "same-report view cannot authorize the frozen intent"
     );
-    assert_eq!(engine.command_highwater, Some(1));
+    assert_eq!(engine.world.command_highwater, Some(1));
     assert!(
         engine.logical_view("out-zzz").is_some(),
         "convergence created the same-report source view, yet the refusal stands"
@@ -985,13 +1010,14 @@ fn renderer_valid_target_proceeds_to_normal_command_gates() {
         run(&mut engine, &observe(1, facts_pair(), "win-a"), false),
     );
     let home = engine
+        .world
         .staged
         .homing
         .get(&WindowId("win-a".to_owned()))
         .expect("homed window")
         .clone();
     let renderer = RendererInput {
-        rev: engine.latest_published_presentation_rev_v4,
+        rev: engine.world.presentation.latest_published_rev_v4,
         target: RenderTarget::Workspace {
             out: home.output.clone(),
             ws: home.workspace.clone(),
@@ -1033,13 +1059,14 @@ fn renderer_unissued_revision_refuses_command() {
         run(&mut engine, &observe(1, facts_pair(), "win-a"), false),
     );
     let home = engine
+        .world
         .staged
         .homing
         .get(&WindowId("win-b".to_owned()))
         .expect("homed window")
         .clone();
     let stale = RendererInput {
-        rev: engine.latest_published_presentation_rev_v4 + 1,
+        rev: engine.world.presentation.latest_published_rev_v4 + 1,
         target: RenderTarget::Window {
             out: home.output.clone(),
             ws: home.workspace.clone(),
@@ -1078,9 +1105,9 @@ fn renderer_unissued_revision_refuses_command() {
             .any(|effect| effect.command_seq == Some(1)),
         "refused commands dispatch nothing"
     );
-    assert_eq!(engine.command_highwater, Some(1));
+    assert_eq!(engine.world.command_highwater, Some(1));
     assert_eq!(
-        engine.latest_published_presentation_rev_v4, 2,
+        engine.world.presentation.latest_published_rev_v4, 2,
         "publication stamps its own revision after the refusal"
     );
 }
@@ -1096,13 +1123,14 @@ fn renderer_older_unchanged_target_executes_after_intervening_observation() {
         run(&mut engine, &observe(1, facts_pair(), "win-a"), false),
     );
     let home = engine
+        .world
         .staged
         .homing
         .get(&WindowId("win-b".to_owned()))
         .expect("homed window")
         .clone();
     let older = RendererInput {
-        rev: engine.latest_published_presentation_rev_v4,
+        rev: engine.world.presentation.latest_published_rev_v4,
         target: RenderTarget::Window {
             out: home.output.clone(),
             ws: home.workspace.clone(),
@@ -1114,7 +1142,7 @@ fn renderer_older_unchanged_target_executes_after_intervening_observation() {
         run(&mut engine, &observe(2, facts_pair(), "win-a"), false),
     );
     assert_eq!(
-        engine.latest_published_presentation_rev_v4, 2,
+        engine.world.presentation.latest_published_rev_v4, 2,
         "intervening observation advances the published revision"
     );
     let (reply_outcome, reply_settlements) = run_with_settlements(
@@ -1168,13 +1196,14 @@ fn renderer_target_rehomed_during_genuine_run_refuses_as_stale() {
         run(&mut engine, &observe(1, facts_pair(), "win-a"), false),
     );
     let old_home = engine
+        .world
         .staged
         .homing
         .get(&WindowId("win-a".to_owned()))
         .expect("homed window")
         .clone();
     let old_renderer = RendererInput {
-        rev: engine.latest_published_presentation_rev_v4,
+        rev: engine.world.presentation.latest_published_rev_v4,
         target: RenderTarget::Window {
             out: old_home.output.clone(),
             ws: old_home.workspace.clone(),
@@ -1208,6 +1237,8 @@ fn renderer_target_rehomed_during_genuine_run_refuses_as_stale() {
         moved_settlements
     );
     let new_home = engine
+        .world
+        .workspace
         .core_homing(&WindowId("win-a".to_owned()))
         .expect("rehomed window");
     assert_ne!(new_home, old_home, "the genuine run rehomed the target");
@@ -1235,7 +1266,7 @@ fn renderer_target_rehomed_during_genuine_run_refuses_as_stale() {
             kind: CommandRejectKind::StaleRenderTarget
         })
     );
-    assert_eq!(engine.command_highwater, Some(2));
+    assert_eq!(engine.world.command_highwater, Some(2));
     assert!(!reply.windows.is_empty(), "refusal still publishes rows");
     for window in &reply.windows {
         assert_eq!(
@@ -1254,13 +1285,14 @@ fn renderer_equal_revision_with_exact_row_executes() {
         run(&mut engine, &observe(1, facts_pair(), "win-a"), false),
     );
     let home = engine
+        .world
         .staged
         .homing
         .get(&WindowId("win-b".to_owned()))
         .expect("homed window")
         .clone();
     let renderer = RendererInput {
-        rev: engine.latest_published_presentation_rev_v4,
+        rev: engine.world.presentation.latest_published_rev_v4,
         target: RenderTarget::Window {
             out: home.output.clone(),
             ws: home.workspace.clone(),
@@ -1619,20 +1651,23 @@ fn prior_context_and_stamp_progress_across_runs() {
     );
     assert_eq!(reply.state_revision, 2);
     assert_eq!(reply.presentation.rev, 2);
-    assert_eq!(engine.state_revision, 2);
-    assert_eq!(engine.prior_context.prev_focused_global, "win-b");
+    assert_eq!(engine.state_revision(), 2);
+    assert_eq!(engine.world.prior_context.prev_focused_global, "win-b");
 }
 
 #[test]
 fn exhausted_revision_refuses_admitted_candidate() {
     let mut engine = engine();
-    engine.state_revision = u64::MAX;
+    engine.world.state_revision = u64::MAX;
     let report = observe(1, facts_pair(), "win-a");
-    match engine.run_accepted_v4(&report, &issue(1), false, 1) {
+    match engine.tx(|tx| tx.run_accepted_v4(&report, &issue(1), false, 1)) {
         V4RunOutcome::Rejected { kind, .. } => assert_eq!(kind, "revision-exhausted"),
         other => panic!("expected revision exhaustion, got {other:?}"),
     }
-    assert!(engine.members.is_empty(), "exhausted runs mutate nothing");
+    assert!(
+        engine.world.workspace.members.is_empty(),
+        "exhausted runs mutate nothing"
+    );
 }
 
 #[test]
@@ -1640,7 +1675,7 @@ fn creation_exhaustion_propagates_as_envelope_refusal() {
     let mut engine = engine();
     let single = || vec![fact("win-a", "out-a", 0)];
     accepted_reply(1, run(&mut engine, &observe(1, single(), "win-a"), false));
-    engine.creation_counter = u64::MAX;
+    engine.world.workspace.creation_counter = u64::MAX;
     // Occupy the live trailing empty with a same-output send so the next
     // trailing selection must create (the exhaustion path) instead of
     // reusing. The sole window relocates its session onto the target.
@@ -1669,7 +1704,7 @@ fn creation_exhaustion_propagates_as_envelope_refusal() {
         "occupying send executes, got {:?}",
         occupy_settlements
     );
-    let revision_before = engine.state_revision;
+    let revision_before = engine.state_revision();
     let outcome = run(
         &mut engine,
         &report(
@@ -1691,12 +1726,13 @@ fn creation_exhaustion_propagates_as_envelope_refusal() {
         other => panic!("exhaustion stays envelope, got {other:?}"),
     }
     assert_eq!(
-        engine.command_highwater,
+        engine.world.command_highwater,
         Some(1),
         "envelope consumes no sequence"
     );
     assert_eq!(
-        engine.state_revision, revision_before,
+        engine.state_revision(),
+        revision_before,
         "envelope mutates no revision"
     );
 }
@@ -1765,17 +1801,17 @@ fn migration_unknown_minimized_refuses_before_engine_commit() {
         }),
         "unknown minimized sticky refuses migration"
     );
-    assert_eq!(engine.command_highwater, Some(1));
+    assert_eq!(engine.world.command_highwater, Some(1));
     assert_eq!(
-        engine.mapping, control.mapping,
+        engine.world.workspace.mapping, control.world.workspace.mapping,
         "refusal preserves the commandless image"
     );
     assert_eq!(
-        engine.members, control.members,
+        engine.world.workspace.members, control.world.workspace.members,
         "membership matches the commandless image"
     );
     assert_eq!(
-        engine.retained, control.retained,
+        engine.world.settlement.retained, control.world.settlement.retained,
         "no migration flight survives the refusal"
     );
     let target_key = crate::session::DomainKey {
@@ -1783,7 +1819,7 @@ fn migration_unknown_minimized_refuses_before_engine_commit() {
         workspace: crate::directional::WorkspaceId(source_view.clone()),
     };
     assert!(
-        !engine.layout.contains_domain(&target_key),
+        !engine.world.layout.contains_domain(&target_key),
         "target session absent after refusal"
     );
     let source_key = crate::session::DomainKey {
@@ -1791,7 +1827,7 @@ fn migration_unknown_minimized_refuses_before_engine_commit() {
         workspace: crate::directional::WorkspaceId(source_view),
     };
     assert!(
-        engine.layout.contains_domain(&source_key),
+        engine.world.layout.contains_domain(&source_key),
         "source session intact after refusal"
     );
     let ids: Vec<String> = reply
@@ -1950,6 +1986,8 @@ fn retained_all_desktop_core_sticky_on_off_roundtrip() {
         ),
     );
     let home = engine
+        .world
+        .workspace
         .core_homing(&WindowId("win-s".to_owned()))
         .expect("win-s admitted with a retained home");
     let sibling_first = first
@@ -2001,6 +2039,8 @@ fn retained_all_desktop_core_sticky_on_off_roundtrip() {
         on_reply.windows
     );
     let on_rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-s".to_owned()), StateProperty::Sticky))
         .expect("on binding")
@@ -2027,6 +2067,8 @@ fn retained_all_desktop_core_sticky_on_off_roundtrip() {
     }];
     let all_desktop = accepted_reply(3, run(&mut engine, &on_proof, false));
     let on_binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-s".to_owned()), StateProperty::Sticky))
         .expect("on binding");
@@ -2034,8 +2076,11 @@ fn retained_all_desktop_core_sticky_on_off_roundtrip() {
     assert!(on_binding.spent, "on-proof correlates");
     // Collected here, asserted only after the off command below so a
     // fencing regression fails at the off command with ScopeHeld proof.
-    let on_home = engine.core_homing(&WindowId("win-s".to_owned()));
-    let on_hold = engine.hold_reasons.clone();
+    let on_home = engine
+        .world
+        .workspace
+        .core_homing(&WindowId("win-s".to_owned()));
+    let on_hold = engine.world.hold_reasons.clone();
     let on_target = all_desktop
         .windows
         .iter()
@@ -2075,9 +2120,9 @@ fn retained_all_desktop_core_sticky_on_off_roundtrip() {
         "positive all-desktop never re-homes"
     );
     assert!(
-        on_hold.is_empty() && !engine.hold_reasons.contains_key(&home),
+        on_hold.is_empty() && !engine.world.hold_reasons.contains_key(&home),
         "retained all-desktop home fences nothing: before={on_hold:?} after={:?}",
-        engine.hold_reasons
+        engine.world.hold_reasons
     );
     for (tag, slot) in [("subject", on_target), ("sibling", on_sibling)] {
         let row = slot.unwrap_or_else(|| panic!("{tag} publishes while all-desktop"));
@@ -2105,6 +2150,8 @@ fn retained_all_desktop_core_sticky_on_off_roundtrip() {
         off_reply.windows
     );
     let rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-s".to_owned()), StateProperty::Sticky))
         .expect("off binding")
@@ -2132,12 +2179,16 @@ fn retained_all_desktop_core_sticky_on_off_roundtrip() {
     }];
     let cleared = accepted_reply(5, run(&mut engine, &proof, false));
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-s".to_owned()), StateProperty::Sticky))
         .expect("binding");
     assert_eq!(binding.disposition, AttemptOutcome::Applied);
     assert!(binding.sticky_meta.as_ref().expect("meta").followup_done);
     let member = engine
+        .world
+        .workspace
         .members
         .get(&WindowId("win-s".to_owned()))
         .expect("member");
@@ -2170,6 +2221,8 @@ fn retained_all_desktop_unknown_membership_still_fenced() {
     );
     accepted_reply(1, run(&mut engine, &first, false));
     let home = engine
+        .world
+        .workspace
         .core_homing(&WindowId("win-a".to_owned()))
         .expect("win-a admitted");
     let second = host_report(
@@ -2183,6 +2236,8 @@ fn retained_all_desktop_unknown_membership_still_fenced() {
     );
     let reply = accepted_reply(2, run(&mut engine, &second, false));
     let kept = engine
+        .world
+        .workspace
         .core_homing(&WindowId("win-a".to_owned()))
         .expect("unknown keeps its retained home");
     assert_eq!(kept, home, "unknown never collapses");
@@ -2225,6 +2280,8 @@ fn retained_all_desktop_newcomer_cannot_invent_home() {
     );
     assert!(
         engine
+            .world
+            .workspace
             .core_homing(&WindowId("win-new".to_owned()))
             .is_none(),
         "newcomer invents no retained home"
@@ -2258,6 +2315,8 @@ fn retained_all_desktop_native_sticky_off_no_prior_on() {
     );
     assert!(
         engine
+            .world
+            .workspace
             .members
             .get(&WindowId("win-f".to_owned()))
             .expect("float member")
@@ -2281,13 +2340,17 @@ fn retained_all_desktop_native_sticky_off_no_prior_on() {
         ),
     );
     let home = engine
+        .world
+        .workspace
         .core_homing(&WindowId("win-f".to_owned()))
         .expect("adopted win-f keeps its home");
     // Collected here, asserted only after the off command below so a
     // fencing regression fails at the off command with ScopeHeld proof.
-    let adopted_hold = engine.hold_reasons.clone();
+    let adopted_hold = engine.world.hold_reasons.clone();
     assert!(
         engine
+            .world
+            .workspace
             .members
             .get(&WindowId("win-f".to_owned()))
             .expect("member")
@@ -2320,9 +2383,9 @@ fn retained_all_desktop_native_sticky_off_no_prior_on() {
         off_settlements
     );
     assert!(
-        adopted_hold.is_empty() && !engine.hold_reasons.contains_key(&home),
+        adopted_hold.is_empty() && !engine.world.hold_reasons.contains_key(&home),
         "adopted native sticky fences nothing: before={adopted_hold:?} after={:?}",
-        engine.hold_reasons
+        engine.world.hold_reasons
     );
     assert_eq!(
         sticky_state_row(&off_reply, "win-f"),
@@ -2331,6 +2394,8 @@ fn retained_all_desktop_native_sticky_off_no_prior_on() {
         off_reply.windows
     );
     let rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-f".to_owned()), StateProperty::Sticky))
         .expect("off binding")
@@ -2357,12 +2422,16 @@ fn retained_all_desktop_native_sticky_off_no_prior_on() {
     }];
     accepted_reply(4, run(&mut engine, &proof, false));
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-f".to_owned()), StateProperty::Sticky))
         .expect("binding");
     assert_eq!(binding.disposition, AttemptOutcome::Applied);
     assert!(
         engine
+            .world
+            .workspace
             .members
             .get(&WindowId("win-f".to_owned()))
             .expect("member")
@@ -2398,6 +2467,8 @@ fn retained_all_desktop_unknown_sticky_missing_membership_still_fenced() {
             ),
         );
         let home = engine
+            .world
+            .workspace
             .core_homing(&WindowId("win-a".to_owned()))
             .expect("win-a admitted");
         let mut unknown = fact("win-a", "out-a", 0);
@@ -2417,7 +2488,10 @@ fn retained_all_desktop_unknown_sticky_missing_membership_still_fenced() {
             ),
         );
         assert_eq!(
-            engine.core_homing(&WindowId("win-a".to_owned())),
+            engine
+                .world
+                .workspace
+                .core_homing(&WindowId("win-a".to_owned())),
             Some(home.clone()),
             "{tag}: unknown keeps its retained home"
         );
@@ -2636,11 +2710,15 @@ fn restage_classification_preserves_native_echo_across_same_batch_command() {
         V4RunOutcome::Accepted(_)
     ));
     let l1 = engine
+        .world
+        .workspace
         .views
         .get("out-a")
         .expect("initial retained view on out-a")
         .clone();
     let l2 = engine
+        .world
+        .workspace
         .mapping
         .get("out-a")
         .expect("ring on out-a")
@@ -2665,7 +2743,7 @@ fn restage_classification_preserves_native_echo_across_same_batch_command() {
         engine.handle_report(&switch, &[]).0,
         V4RunOutcome::Accepted(_)
     ));
-    assert_eq!(engine.views.get("out-a"), Some(&l2));
+    assert_eq!(engine.world.workspace.views.get("out-a"), Some(&l2));
 
     // Same-batch command sequence on a report where native current is still
     // HOST_N1 (l1) != retained view (l2): ToggleFloat triggers
@@ -2693,12 +2771,12 @@ fn restage_classification_preserves_native_echo_across_same_batch_command() {
     assert_eq!(settlements.len(), 2);
 
     assert_eq!(
-        engine.known_echo(&out_a),
+        engine.tx_ro(|tx| tx.known_echo(&out_a)),
         Some(l1.clone()),
         "native echo must survive restage_classification"
     );
     assert_eq!(
-        engine.effective_view(&out_a),
+        engine.tx_ro(|tx| tx.effective_view(&out_a)),
         Some(l1),
         "effective_view must keep native echo over retained view"
     );

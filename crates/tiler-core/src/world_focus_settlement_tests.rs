@@ -216,7 +216,12 @@ fn explicit_grant(engine: &mut WorldEngine, seq: u64, window: &str) -> PendingFo
         reply.effects.is_empty(),
         "focus never publishes as wire effects: {reply:?}"
     );
-    engine.pending_focus.clone().expect("pending slot")
+    engine
+        .world
+        .focus
+        .pending_focus
+        .clone()
+        .expect("pending slot")
 }
 
 fn bootstrap_two(engine: &mut WorldEngine) {
@@ -235,7 +240,12 @@ fn bootstrap_two(engine: &mut WorldEngine) {
 
 /// Pending-slot read helpers: the single owner retains at most one row.
 fn pending(engine: &WorldEngine) -> PendingFocus {
-    engine.pending_focus.clone().expect("pending slot")
+    engine
+        .world
+        .focus
+        .pending_focus
+        .clone()
+        .expect("pending slot")
 }
 
 /// Verdict of the latched first row, if any: absence reads `None`.
@@ -282,7 +292,7 @@ fn explicit_grant_settles_proven_without_arrival_or_current_focus() {
         ),
         vec![row.clone()],
     );
-    let memory = engine.last_active_window.clone();
+    let memory = engine.world.focus.last_active_window.clone();
     let domain = memory
         .keys()
         .next()
@@ -316,11 +326,11 @@ fn explicit_grant_settles_proven_without_arrival_or_current_focus() {
     );
     assert!(reply.effects.is_empty());
     assert!(
-        engine.pending_focus.is_none(),
+        engine.world.focus.pending_focus.is_none(),
         "observing the target satisfies the slot"
     );
     assert_eq!(
-        engine.last_active_window.get(&domain),
+        engine.world.focus.last_active_window.get(&domain),
         Some(&WindowId("w1".to_owned()))
     );
     // A further observation-only followup keeps that memory with no retry.
@@ -337,7 +347,7 @@ fn explicit_grant_settles_proven_without_arrival_or_current_focus() {
     );
     assert!(reply.effects.is_empty());
     assert_eq!(
-        engine.last_active_window.get(&domain),
+        engine.world.focus.last_active_window.get(&domain),
         Some(&WindowId("w1".to_owned()))
     );
 }
@@ -905,7 +915,7 @@ fn terminal_no_call_retires_the_single_slot() {
         ),
     );
     assert!(
-        engine.pending_focus.is_none(),
+        engine.world.focus.pending_focus.is_none(),
         "terminal no-call retires the slot"
     );
 }
@@ -1063,7 +1073,10 @@ fn observation_revisions_retain_pending_slot_until_delayed_feedback() {
             vec![row],
         ),
     );
-    assert!(engine.pending_focus.is_none(), "refusal retires the slot");
+    assert!(
+        engine.world.focus.pending_focus.is_none(),
+        "refusal retires the slot"
+    );
 }
 
 #[test]
@@ -1378,7 +1391,10 @@ fn settle_under_sweep_hold_and_held_presence_retains() {
             None,
         ),
     );
-    assert!(engine.pending_focus.is_none(), "close prunes the slot");
+    assert!(
+        engine.world.focus.pending_focus.is_none(),
+        "close prunes the slot"
+    );
 }
 
 #[test]
@@ -1397,8 +1413,12 @@ fn never_known_target_prunes_single_slot() {
     let mut ghost = grant.clone();
     ghost.target = WindowId("w-ghost".to_owned());
     ghost.id = "fx-ghost".to_owned();
-    engine.pending_focus = Some(ghost);
-    assert!(!engine.engine_knows_window_any(&WindowId("w-ghost".to_owned())));
+    engine.world.focus.pending_focus = Some(ghost);
+    assert!(
+        !engine
+            .world
+            .engine_knows_window_any(&WindowId("w-ghost".to_owned()))
+    );
     accepted(
         &mut engine,
         &report(
@@ -1411,7 +1431,7 @@ fn never_known_target_prunes_single_slot() {
         ),
     );
     assert!(
-        engine.pending_focus.is_none(),
+        engine.world.focus.pending_focus.is_none(),
         "departure prunes the ghost slot"
     );
 }
@@ -1432,7 +1452,10 @@ fn explicit_close_prunes_and_reused_id_cannot_match_old_grant() {
             None,
         ),
     );
-    assert!(engine.pending_focus.is_none(), "explicit close prunes");
+    assert!(
+        engine.world.focus.pending_focus.is_none(),
+        "explicit close prunes"
+    );
     // Reused id returns as a newcomer with a fresh opaque batch; the old
     // tuple (old issuing revision) cannot latch the new slot.
     let reply = accepted(
@@ -1486,7 +1509,7 @@ fn accepted_report_rejected_command_retains_feedback_settlement() {
     let mut engine = test_engine();
     bootstrap_two(&mut engine);
     let grant = explicit_grant(&mut engine, 2, "w0");
-    let revision = engine.state_revision;
+    let revision = engine.state_revision();
     let row = feedback_row(
         &grant.id,
         "w0",
@@ -1516,9 +1539,9 @@ fn accepted_report_rejected_command_retains_feedback_settlement() {
             kind: crate::world_report::CommandRejectKind::FocusUnknown
         })
     );
-    assert!(engine.state_revision > revision);
+    assert!(engine.state_revision() > revision);
     assert!(
-        engine.pending_focus.is_none(),
+        engine.world.focus.pending_focus.is_none(),
         "refusal retirement survives the command rollback"
     );
 }
@@ -1528,8 +1551,8 @@ fn envelope_rejection_adopts_nothing() {
     let mut engine = test_engine();
     bootstrap_two(&mut engine);
     let _ = explicit_grant(&mut engine, 2, "w0");
-    let revision = engine.state_revision;
-    let retained = engine.pending_focus.clone();
+    let revision = engine.state_revision();
+    let retained = engine.world.focus.pending_focus.clone();
     // Same request sequence with changed content fences as reused: the
     // staged candidate (and its settlement) drops without adoption.
     let mut reused = report(2, vec![fact("w0", "out-a", 0)], "", vec![], None, None);
@@ -1550,8 +1573,8 @@ fn envelope_rejection_adopts_nothing() {
         }
         other => panic!("expected reused fence, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision);
-    assert_eq!(engine.pending_focus, retained);
+    assert_eq!(engine.state_revision(), revision);
+    assert_eq!(engine.world.focus.pending_focus, retained);
 }
 
 #[test]
@@ -1623,12 +1646,12 @@ fn duplicate_replay_keeps_settlement_unchanged() {
         )],
     );
     let reply = accepted(&mut engine, &settled);
-    let revision = engine.state_revision;
+    let revision = engine.state_revision();
     match engine.handle_report(&settled, &[]).0 {
         WorldOutcome::Duplicate(cached) => assert_eq!(cached, reply),
         other => panic!("expected duplicate, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision);
+    assert_eq!(engine.state_revision(), revision);
     let slot = pending(&engine);
     assert_eq!(
         classify_focus_feedback(&slot.target, slot.feedback.as_ref().expect("feedback")),
@@ -1641,7 +1664,7 @@ fn failed_attempt_keeps_accepted_memory_with_no_retry_or_side_effects() {
     let mut engine = test_engine();
     bootstrap_two(&mut engine);
     let grant = explicit_grant(&mut engine, 2, "w0");
-    let memory = engine.last_active_window.clone();
+    let memory = engine.world.focus.last_active_window.clone();
     let row = feedback_row(
         &grant.id,
         "w0",
@@ -1667,10 +1690,13 @@ fn failed_attempt_keeps_accepted_memory_with_no_retry_or_side_effects() {
             vec![row],
         ),
     );
-    assert!(engine.pending_focus.is_none(), "refusal retires the slot");
+    assert!(
+        engine.world.focus.pending_focus.is_none(),
+        "refusal retires the slot"
+    );
     // No accepted-choice rollback, no retry, no transfers or operation
     // events on the followup observation.
-    assert_eq!(engine.last_active_window, memory);
+    assert_eq!(engine.world.focus.last_active_window, memory);
     let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &report(
@@ -1682,7 +1708,7 @@ fn failed_attempt_keeps_accepted_memory_with_no_retry_or_side_effects() {
             None,
         ),
     );
-    assert_eq!(engine.last_active_window, memory);
+    assert_eq!(engine.world.focus.last_active_window, memory);
     assert!(reply.effects.is_empty(), "no focus retry: {reply:?}");
     assert!(reply.transfers.is_empty());
     assert!(reply.operation_settled.is_empty());

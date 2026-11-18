@@ -185,6 +185,7 @@ fn composed_tile_toggle_selects_work_area_and_restores_base() {
     // Raw facts never rewritten.
     assert_eq!(
         engine
+            .world
             .staged
             .facts
             .get(&WindowId("win-a".to_owned()))
@@ -441,6 +442,8 @@ fn composed_some_false_conflicts_fail_closed() {
     }
     assert!(
         !engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "refusal mints no overlay intent"
@@ -471,6 +474,8 @@ fn unsupported_nonnull_maximized_grades_conflicting_and_recovers_on_null() {
     assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "overlay bit set over the legitimate null"
@@ -492,6 +497,7 @@ fn unsupported_nonnull_maximized_grades_conflicting_and_recovers_on_null() {
         );
         assert!(
             engine
+                .world
                 .staged
                 .held_windows
                 .iter()
@@ -510,6 +516,8 @@ fn unsupported_nonnull_maximized_grades_conflicting_and_recovers_on_null() {
         );
         assert!(
             engine
+                .world
+                .runtime
                 .composed_maximized
                 .contains(&WindowId("win-a".to_owned())),
             "graded conflict retains the bit without a write"
@@ -592,6 +600,8 @@ fn composed_tiled_fullscreen_toggle_clears_native_and_withholds_frame_until_exit
     assert_eq!(maximize_result(&replaced_settlements), (true, true, false));
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "requested composed intent retained while the native clear is pending"
@@ -675,6 +685,8 @@ fn composed_fullscreen_unexitable_or_unknown_refuses_without_intent_change() {
         );
         assert!(
             !engine
+                .world
+                .runtime
                 .composed_maximized
                 .contains(&WindowId("win-a".to_owned())),
             "refusal mints no overlay intent"
@@ -724,6 +736,8 @@ fn composed_fullscreen_without_caps_refuses_unsupported_without_intent_change() 
     );
     assert!(
         !engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -838,6 +852,8 @@ fn composed_max_on_revokes_stale_same_window_float_placement() {
     assert!(row.frame_operation.is_none());
     assert!(
         engine
+            .world
+            .settlement
             .retained_floats
             .iter()
             .all(|held| held.window != WindowId("win-a".to_owned())),
@@ -845,6 +861,8 @@ fn composed_max_on_revokes_stale_same_window_float_placement() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_floats
             .iter()
             .any(|held| held.window == WindowId("win-b".to_owned())),
@@ -918,6 +936,8 @@ fn composed_float_suppressed_pair_holds_clamp_without_retry() {
 
 fn fullscreen_revision(engine: &WorldEngine, window: &str) -> u64 {
     engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId(window.to_owned()), StateProperty::Fullscreen))
         .expect("pending fullscreen entry")
@@ -984,6 +1004,8 @@ fn composed_tiled_full_entry_pending_withholds_base_frame_until_exit() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "pending entry retains the composed bit"
@@ -1096,6 +1118,8 @@ fn composed_float_full_entry_pending_withholds_restore_token_until_exit() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "pending entry retains the composed bit"
@@ -1134,6 +1158,8 @@ fn composed_float_full_entry_pending_withholds_restore_token_until_exit() {
     }
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "refusal retains the bit"
@@ -1212,6 +1238,8 @@ fn composed_tiled_max_off_while_full_entry_pending_refuses_without_intent_change
     }
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "refusal retains the bit"
@@ -1271,6 +1299,8 @@ fn composed_max_on_revokes_stale_pending_fullscreen_entry() {
     assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     assert!(
         !engine
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen)),
         "stale fullscreen entry revoked by the explicit composed command"
@@ -1334,6 +1364,8 @@ fn toggle_on(engine: &mut WorldEngine, base_a_allocation: &mut Option<Rect>) {
     *base_a_allocation = desire(&toggled, "win-a").allocation;
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "overlay bit set before the gesture"
@@ -1374,6 +1406,8 @@ fn composed_committed_move_clears_bit_before_reflow() {
     assert!(start_settlements.is_empty());
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "start binds without clearing"
@@ -1403,6 +1437,8 @@ fn composed_committed_move_clears_bit_before_reflow() {
     );
     assert!(
         !engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "committed move clears the bit"
@@ -1500,6 +1536,8 @@ fn composed_committed_resize_clears_bit() {
     );
     assert!(
         !engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "committed resize clears the bit"
@@ -1550,6 +1588,8 @@ fn composed_noop_release_retains_bit() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "no-op snap-back retains the bit"
@@ -1621,6 +1661,8 @@ fn composed_cancel_retains_bit() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "cancel retains the bit"
@@ -1676,6 +1718,8 @@ fn composed_refused_drop_retains_bit() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "refused drop retains the bit"
@@ -1733,6 +1777,8 @@ fn composed_clamped_frame_readback_retains_bit() {
     let reply = accepted(&mut engine, &clamped_report);
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "clamped readback retains the bit"
@@ -1758,7 +1804,9 @@ fn composed_close_retires_bit_and_restart_births_ordinary() {
     closed_report.closed = vec![WindowId("win-a".to_owned())];
     accepted(&mut eng, &closed_report);
     assert!(
-        !eng.composed_maximized
+        !eng.world
+            .runtime
+            .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "close retires the bit"
     );
@@ -1767,6 +1815,8 @@ fn composed_close_retires_bit_and_restart_births_ordinary() {
     let mut restarted = engine();
     assert!(
         !restarted
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "fresh engine carries no overlay"
@@ -1817,6 +1867,8 @@ fn composed_rehandshake_drops_bit() {
     );
     assert!(
         !engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "rehandshake runtime drops the bit"
@@ -1854,6 +1906,8 @@ fn float_compose_on(engine: &mut WorldEngine) -> Rect {
     assert_eq!(desire(&toggled, "win-a").effective_frame, Some(work_area()));
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "overlay bit set before the float gesture"
@@ -1884,6 +1938,8 @@ fn composed_float_committed_move_adopts_release() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "start binds without clearing"
@@ -1913,6 +1969,8 @@ fn composed_float_committed_move_adopts_release() {
     );
     assert!(
         !engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "committed float move clears the bit"
@@ -1931,6 +1989,8 @@ fn composed_float_committed_move_adopts_release() {
     assert!(row.frame_operation.is_none(), "no placement token");
     assert!(
         engine
+            .world
+            .settlement
             .retained_floats
             .iter()
             .all(|held| held.window != WindowId("win-a".to_owned())),
@@ -1991,6 +2051,8 @@ fn composed_float_committed_resize_adopts_release() {
     );
     assert!(
         !engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "committed float resize clears the bit"
@@ -2030,6 +2092,8 @@ fn composed_float_noop_release_retains_bit() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "no-op snap-back retains the bit"
@@ -2087,6 +2151,8 @@ fn composed_float_cancel_retains_bit() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "cancel retains the bit"
@@ -2151,6 +2217,8 @@ fn composed_float_cursorless_resize_retains_bit() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "cursor-less resize retains the bit"
@@ -2211,6 +2279,8 @@ fn composed_float_unknown_output_release_retains_bit() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "unknown-output float release retains the bit"
@@ -2268,6 +2338,8 @@ fn composed_float_cross_output_release_clears_and_rehomes() {
     assert_eq!(desire(&toggled, "win-a").effective_frame, Some(work_area()));
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -2290,6 +2362,8 @@ fn composed_float_cross_output_release_clears_and_rehomes() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "start binds without clearing"
@@ -2321,6 +2395,8 @@ fn composed_float_cross_output_release_clears_and_rehomes() {
     );
     assert!(
         !engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "cross-output float move clears the bit"
@@ -2339,6 +2415,8 @@ fn composed_float_cross_output_release_clears_and_rehomes() {
     assert!(row.frame_operation.is_none(), "no placement token");
     assert!(
         engine
+            .world
+            .settlement
             .retained_floats
             .iter()
             .all(|held| held.window != WindowId("win-a".to_owned())),
@@ -2346,7 +2424,7 @@ fn composed_float_cross_output_release_clears_and_rehomes() {
     );
     assert_eq!(
         engine
-            .staged_homing(&WindowId("win-a".to_owned()))
+            .tx(|tx| tx.staged_homing(&WindowId("win-a".to_owned())))
             .expect("homing")
             .output
             .0,
@@ -2459,6 +2537,8 @@ fn composed_empty_output_drag_matches_ordinary_float_outcome() {
     assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     assert!(
         composed
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -2483,6 +2563,8 @@ fn composed_empty_output_drag_matches_ordinary_float_outcome() {
     // The explicit drag clears the bit regardless of destination session.
     assert!(
         !composed
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "explicit empty-output drag clears the bit"
@@ -2534,6 +2616,8 @@ fn composed_empty_output_drag_matches_ordinary_float_outcome() {
     );
     assert!(
         !composed
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "quiet follow-up keeps the bit cleared"
@@ -2585,6 +2669,8 @@ fn ordinary_float_gesture_refuses_without_session() {
     accepted(&mut engine, &bootstrap(3, vec![settled_fact], "win-a"));
     assert!(
         !engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "ordinary float carries no overlay bit"
@@ -2612,6 +2698,8 @@ fn ordinary_float_gesture_refuses_without_session() {
     );
     assert!(
         !engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "ordinary float refusal mints no overlay"
@@ -2646,6 +2734,8 @@ fn composed_float_clamped_frame_readback_retains_bit() {
     let reply = accepted(&mut engine, &clamped_report);
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "clamped readback retains the bit"
@@ -2859,6 +2949,8 @@ fn composed_tiled_focus_crosses_adjacent_output() {
         assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
         assert!(
             engine
+                .world
+                .runtime
                 .composed_maximized
                 .contains(&WindowId("win-a".to_owned()))
         );
@@ -2880,6 +2972,8 @@ fn composed_tiled_focus_crosses_adjacent_output() {
         expect_explicit_focus(&reply, "win-c", 2);
         assert!(
             engine
+                .world
+                .runtime
                 .composed_maximized
                 .contains(&WindowId("win-a".to_owned())),
             "cross focus retains the bit ({dir})"
@@ -2888,7 +2982,7 @@ fn composed_tiled_focus_crosses_adjacent_output() {
         assert_eq!(row.effective_frame, Some(work_area()));
         assert_eq!(row.clear_operation, None, "no native clear minted");
         assert!(row.state.is_empty(), "no native state target");
-        assert!(engine.retained_clears.is_empty());
+        assert!(engine.world.settlement.retained_clears.is_empty());
     }
 }
 
@@ -2923,6 +3017,8 @@ fn composed_float_focus_single_output_retains() {
     assert!(focus_effect_targets(&reply).is_empty());
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "retain keeps the bit"
@@ -3005,6 +3101,8 @@ fn composed_float_focus_crosses_to_remembered_target() {
         assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
         assert!(
             engine
+                .world
+                .runtime
                 .composed_maximized
                 .contains(&WindowId("win-a".to_owned())),
             "overlay bit set before the cross ({dir})"
@@ -3064,6 +3162,8 @@ fn composed_float_focus_crosses_to_remembered_target() {
         expect_explicit_focus(&reply, "win-t", 5);
         assert!(
             engine
+                .world
+                .runtime
                 .composed_maximized
                 .contains(&WindowId("win-a".to_owned())),
             "cross focus retains the bit ({dir})"
@@ -3072,7 +3172,7 @@ fn composed_float_focus_crosses_to_remembered_target() {
         assert_eq!(row.effective_frame, Some(work_area()));
         assert_eq!(row.clear_operation, None, "no native clear minted");
         assert!(row.state.is_empty(), "no native state target");
-        assert!(engine.retained_clears.is_empty());
+        assert!(engine.world.settlement.retained_clears.is_empty());
     }
 }
 
@@ -3205,6 +3305,8 @@ fn composed_float_cross_preserves_destination_bit() {
         for held in ["win-a", "win-t"] {
             assert!(
                 engine
+                    .world
+                    .runtime
                     .composed_maximized
                     .contains(&WindowId(held.to_owned())),
                 "{held} bit preserved through float cross ({dir})"
@@ -3316,6 +3418,8 @@ fn composed_tiled_cross_preserves_destination_bit() {
         for held in ["win-a", "win-c"] {
             assert!(
                 engine
+                    .world
+                    .runtime
                     .composed_maximized
                     .contains(&WindowId(held.to_owned())),
                 "{held} bit preserved through the cross ({dir})"
@@ -3360,6 +3464,8 @@ fn composed_tiled_focus_no_vertical_neighbor_and_single_output_refuse_unchanged(
         }
         assert!(
             single
+                .world
+                .runtime
                 .composed_maximized
                 .contains(&WindowId("win-a".to_owned()))
         );
@@ -3378,6 +3484,8 @@ fn composed_tiled_focus_no_vertical_neighbor_and_single_output_refuse_unchanged(
     }
     assert!(
         single
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -3410,6 +3518,8 @@ fn composed_tiled_focus_no_vertical_neighbor_and_single_output_refuse_unchanged(
         }
         assert!(
             horiz
+                .world
+                .runtime
                 .composed_maximized
                 .contains(&WindowId("win-a".to_owned()))
         );
@@ -3433,6 +3543,8 @@ fn composed_tiled_move_clears_bit_without_native_clear() {
     assert_eq!(desire(&toggled, "win-a").effective_frame, Some(work_area()));
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "overlay bit set before the move"
@@ -3456,11 +3568,16 @@ fn composed_tiled_move_clears_bit_without_native_clear() {
     );
     assert!(
         !engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "ordinary move clears the bit locally"
     );
-    assert!(engine.retained_clears.is_empty(), "no native clear bound");
+    assert!(
+        engine.world.settlement.retained_clears.is_empty(),
+        "no native clear bound"
+    );
     assert!(
         settlements.first().is_some_and(|s| s.result.is_none()),
         "tiled success carries None result: {settlements:?}"
@@ -3507,11 +3624,13 @@ fn composed_move_fullscreen_refuses_without_clear() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "fullscreen refusal retains the bit"
     );
-    assert!(engine.retained_clears.is_empty());
+    assert!(engine.world.settlement.retained_clears.is_empty());
 }
 
 #[test]
@@ -3531,6 +3650,8 @@ fn composed_move_latest_home_refusal_restores_bit() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -3555,6 +3676,8 @@ fn composed_move_latest_home_refusal_restores_bit() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -3572,6 +3695,8 @@ fn composed_move_latest_home_refusal_restores_bit() {
     }
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "latest-home refusal restores the cleared bit"
@@ -3590,6 +3715,8 @@ fn b9_float_unfloat_clears_bit_and_tiles() {
     );
     assert!(
         !engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "intentional unfloat clears the bit"
@@ -3605,7 +3732,7 @@ fn b9_float_unfloat_clears_bit_and_tiles() {
     assert!(!row.floating, "unfloat tiles");
     assert_eq!(row.clear_operation, None);
     assert_eq!(row.frame_operation, None);
-    assert!(engine.retained_clears.is_empty());
+    assert!(engine.world.settlement.retained_clears.is_empty());
 }
 
 #[test]
@@ -3629,6 +3756,8 @@ fn b9_unreadable_hints_refuses_with_bit_retained() {
     }
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "hints refusal retains the bit"
@@ -3659,21 +3788,25 @@ fn b9_held_scope_refusal_retains_cleared_bit() {
         None,
         None,
     );
-    engine.stage_facts_v4(&probe);
-    engine.build_staged_domains();
-    match engine.execute_command(
-        &test_issue(&probe),
-        3,
-        &toggle_float("win-a"),
-        &BTreeSet::new(),
-        None,
-        None,
-    ) {
+    engine.tx(|tx| tx.stage_facts_v4(&probe));
+    engine.tx(|tx| tx.build_staged_domains());
+    match engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&probe),
+            3,
+            &toggle_float("win-a"),
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    }) {
         CommandApplied::Rejected { kind, .. } => assert_eq!(kind, KIND_OPERATION),
         _ => panic!("unreadable scope refuses"),
     }
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "scope refusal retains the bit"
@@ -3695,6 +3828,8 @@ fn composed_tiled_move_unreadable_topology_retains_bit() {
     toggle_on(&mut engine, &mut _alloc);
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -3714,22 +3849,26 @@ fn composed_tiled_move_unreadable_topology_retains_bit() {
         None,
         None,
     );
-    engine.stage_facts_v4(&probe);
-    engine.build_staged_domains();
-    engine.retain_live_topology();
-    match engine.execute_command(
-        &test_issue(&probe),
-        2,
-        &move_dir("win-a", "right"),
-        &BTreeSet::new(),
-        None,
-        None,
-    ) {
+    engine.tx(|tx| tx.stage_facts_v4(&probe));
+    engine.tx(|tx| tx.build_staged_domains());
+    engine.tx(|tx| tx.retain_live_topology());
+    match engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&probe),
+            2,
+            &move_dir("win-a", "right"),
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    }) {
         CommandApplied::Rejected { kind, .. } => assert_eq!(kind, KIND_OPERATION),
         _ => panic!("unreadable topology refuses"),
     }
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "topology refusal retains the bit"
@@ -3783,6 +3922,8 @@ fn composed_tiled_send_preserves_bit_and_recomputes_destination() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "send preserves the bit"
@@ -3805,6 +3946,8 @@ fn composed_tiled_send_preserves_bit_and_recomputes_destination() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "arrival preserves the bit"
@@ -3874,6 +4017,8 @@ fn composed_float_send_preserves_bit_and_recomputes_destination() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "send preserves the bit"
@@ -3893,6 +4038,8 @@ fn composed_float_send_preserves_bit_and_recomputes_destination() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "arrival preserves the bit"
@@ -3957,6 +4104,8 @@ fn composed_work_area_change_recomputes_tile_in_place() {
     let recomputed = accepted(&mut engine, &rescreen);
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "work-area change preserves the bit"
@@ -3985,6 +4134,8 @@ fn composed_work_area_change_recomputes_float_and_retains_base() {
     let recomputed = accepted(&mut engine, &rescreen);
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "work-area change preserves the bit"
@@ -4033,6 +4184,8 @@ fn composed_incomplete_inventory_refuses_without_recovery() {
     }
     assert!(
         !engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "refusal mints no overlay intent"
@@ -4099,6 +4252,8 @@ fn composed_float_unreadable_hints_refuses_toggle_without_intent_change() {
     }
     assert!(
         !engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "refusal mints no overlay intent"
@@ -4137,6 +4292,8 @@ fn composed_float_unreadable_hints_refuses_toggle_without_intent_change() {
     }
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "refusal retains the bit"
@@ -4179,6 +4336,8 @@ fn composed_tiled_unreadable_hints_holds_admission() {
     }
     assert!(
         !engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "refusal mints no overlay intent"
@@ -4218,6 +4377,8 @@ fn tile_with_bit_toggle_float_refuses_not_tiled() {
     }
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "refusal retains the bit"
@@ -4254,21 +4415,26 @@ fn composed_float_move_constrained_halfsnap_restores_base_with_token() {
     );
     assert!(
         !engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "native parity: the overlay clears before ordinary policy, no remaximize"
     );
-    assert!(engine.retained_clears.is_empty(), "no native clear bound");
+    assert!(
+        engine.world.settlement.retained_clears.is_empty(),
+        "no native clear bound"
+    );
     let row = desire(&reply, "win-a");
     assert!(row.state.is_empty(), "no native state target");
     assert_eq!(row.clear_operation, None, "no clear desire published");
     assert_eq!(
-        engine.retained_floats.len(),
+        engine.world.settlement.retained_floats.len(),
         1,
         "base restore authorized: {:?}",
-        engine.retained_floats
+        engine.world.settlement.retained_floats
     );
-    let held = &engine.retained_floats[0];
+    let held = &engine.world.settlement.retained_floats[0];
     assert_eq!(held.window, WindowId("win-a".to_owned()));
     assert_eq!(held.target, float_base, "restore returns to the base");
     assert_eq!(held.operation_id, "op-3");
@@ -4304,16 +4470,21 @@ fn composed_float_move_halfsnap_applies_half_token() {
     );
     assert!(
         !engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "ordinary composed float move clears the bit"
     );
-    assert!(engine.retained_clears.is_empty(), "no native clear bound");
+    assert!(
+        engine.world.settlement.retained_clears.is_empty(),
+        "no native clear bound"
+    );
     let half =
         crate::world_directional::float_half_snap_rect(work_area(), 8, "right").expect("half");
     assert_ne!(half, float_base, "half differs from the base");
-    assert_eq!(engine.retained_floats.len(), 1);
-    let held = &engine.retained_floats[0];
+    assert_eq!(engine.world.settlement.retained_floats.len(), 1);
+    let held = &engine.world.settlement.retained_floats[0];
     assert_eq!(held.target, half, "success carries exactly the half");
     assert_eq!(held.operation_id, "op-3");
     assert_eq!(held.command_seq, 3);
@@ -4351,16 +4522,21 @@ fn composed_float_move_unreadable_work_area_retains_bit_without_token() {
     );
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "unavailable-authority preflight retains the bit"
     );
     assert!(
-        engine.retained_floats.is_empty(),
+        engine.world.settlement.retained_floats.is_empty(),
         "no token without authority: {:?}",
-        engine.retained_floats
+        engine.world.settlement.retained_floats
     );
-    assert!(engine.retained_clears.is_empty(), "no deferred clear");
+    assert!(
+        engine.world.settlement.retained_clears.is_empty(),
+        "no deferred clear"
+    );
     // Commandless recovery retains the bit: no autorecovery, no deferred
     // work.
     let mut observed_fact = cfact("win-a", "out-a", 0);
@@ -4370,12 +4546,14 @@ fn composed_float_move_unreadable_work_area_retains_bit_without_token() {
     assert!(quiet_settlements.is_empty());
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "recovery retains the bit"
     );
-    assert!(engine.retained_floats.is_empty());
-    assert!(engine.retained_clears.is_empty());
+    assert!(engine.world.settlement.retained_floats.is_empty());
+    assert!(engine.world.settlement.retained_clears.is_empty());
     // A fresh move with readable geometry clears normally.
     let mut fresh_fact = cfact("win-a", "out-a", 0);
     fresh_fact.rect = Some(work_area());
@@ -4389,6 +4567,8 @@ fn composed_float_move_unreadable_work_area_retains_bit_without_token() {
     );
     assert!(
         !engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "fresh move clears normally"

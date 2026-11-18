@@ -32,26 +32,147 @@ use std::collections::BTreeSet;
 use crate::connection::RawSettingValue;
 use crate::ids::CorrelationId;
 use crate::world_engine::{
-    EventIssue, KIND_CORRELATION, KIND_GENERATION, KIND_OBS_STALE, KIND_OVERSIZED, KIND_OWNER,
-    KIND_REPLY_SIZE, KIND_REUSED, KIND_REVISION_EXHAUSTED, KIND_SNAPSHOT, KIND_SUPERSEDED,
-    MSG_CORRELATION, MSG_GENERATION, MSG_OBS_STALE, MSG_OVERSIZED, MSG_OWNER, MSG_REPLY_SIZE,
-    MSG_REUSED, MSG_REVISION_EXHAUSTED, MSG_SUPERSEDED, WorldEngine,
+    AdmittedReplayV4, EventIssue, KIND_CORRELATION, KIND_GENERATION, KIND_OBS_STALE,
+    KIND_OVERSIZED, KIND_OWNER, KIND_REPLY_SIZE, KIND_REUSED, KIND_REVISION_EXHAUSTED,
+    KIND_SNAPSHOT, KIND_SUPERSEDED, MSG_CORRELATION, MSG_GENERATION, MSG_OBS_STALE, MSG_OVERSIZED,
+    MSG_OWNER, MSG_REPLY_SIZE, MSG_REUSED, MSG_REVISION_EXHAUSTED, MSG_SUPERSEDED,
+    PreparedCandidate, WorldEngine, WorldState,
 };
 use crate::world_presentation::{GroupHideReason, PresentationUnderlay};
 use crate::world_report::{
-    AttemptLaneV4, BatchSettlement, BorderPresentationV4, WORLD_CONTRACT_VERSION_V4,
-    WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldCommand, WorldPresentationV4,
-    WorldReplyV4, WorldReportV4, validate_focus_request_reason, validate_intent_desired_reason,
+    AttemptLaneV4, BatchSettlement, BorderPresentationV4, WORLD_CONTRACT_VERSION_V4, WorldCommand,
+    WorldPresentationV4, WorldReplyV4, WorldReportV4, validate_focus_request_reason,
+    validate_intent_desired_reason,
 };
 use crate::world_report_v4_checks::{
     graded_effective_v4, report_digest_v4, validate_report_v4_reason,
 };
 use crate::world_run_v4::V4RunOutcome;
-use crate::world_sizing::max_intent_desired_bound;
-use crate::world_sizing_v4::{
-    max_intent_save_batch_bound_v4, reply_estimate_v4, reply_exact_bytes_v4, reply_upper_bound_v4,
-    report_estimate_v4,
-};
+use crate::world_transaction::WorldTransaction;
+
+/// Format-neutral decision returned by [`CoreAdmissionGate`] checkpoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmissionGateDecision {
+    Allow,
+    Refuse,
+    Reject {
+        kind: &'static str,
+        message: &'static str,
+    },
+}
+
+/// Ephemeral exact-inner measurement produced by
+/// [`CoreAdmissionGate::check_exact_inner`] and consumed once by
+/// [`CoreAdmissionGate::check_future_reserve`] within the same candidate check.
+/// Intentionally non-`Copy` so counts cannot be retained or reused across
+/// invocations.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ExactInnerCheck(usize);
+
+impl ExactInnerCheck {
+    #[must_use]
+    pub fn new(bytes: usize) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        self.0
+    }
+}
+
+/// Decision returned by [`CoreAdmissionGate::check_exact_inner`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum ExactInnerDecision {
+    Allow(ExactInnerCheck),
+    Refuse,
+    Reject {
+        kind: &'static str,
+        message: &'static str,
+    },
+}
+
+/// Borrowed preflight inputs and count-only world facts supplied to
+/// [`CoreAdmissionGate::check_preflight`] after all cheap structural, replay,
+/// observation, and command-pair gates pass.
+#[derive(Debug, Clone, Copy)]
+pub struct PreflightGateFacts<'a> {
+    pub effective_command: Option<&'a WorldCommand>,
+    pub effective_queued: &'a [(u64, WorldCommand)],
+    pub retained_settlement_count: usize,
+    pub domain_count: usize,
+    pub screen_count: usize,
+    pub staged_window_count: usize,
+    pub retained_publish_footprint: usize,
+    pub intent_desired_count: usize,
+    pub operation_slot_count: usize,
+    pub switch_output_count: usize,
+    pub switch_failed_count: usize,
+    pub issuing_selection_count: usize,
+    pub policy_terminal_count: usize,
+}
+
+/// Count-only staged settlement facts supplied to
+/// [`CoreAdmissionGate::check_future_reserve`] after the exact current-inner
+/// gate and staged pending operation slot hard cap pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FutureReserveGateFacts {
+    pub operation_slot_count: usize,
+    pub switch_output_count: usize,
+    pub switch_failed_count: usize,
+}
+
+/// Scoped synchronous format-neutral admission gate over borrowed reports,
+/// replies, and typed count/fact bundles. Core maps `Refuse` to the static
+/// fixed refusal at each checkpoint.
+pub trait CoreAdmissionGate {
+    fn check_request_size(&self, report: &WorldReportV4) -> AdmissionGateDecision;
+    fn check_preflight(
+        &self,
+        report: &WorldReportV4,
+        facts: &PreflightGateFacts<'_>,
+    ) -> AdmissionGateDecision;
+    fn check_exact_inner(&self, reply: &WorldReplyV4) -> ExactInnerDecision;
+    fn check_future_reserve(
+        &self,
+        reply: &WorldReplyV4,
+        facts: &FutureReserveGateFacts,
+        exact: ExactInnerCheck,
+    ) -> AdmissionGateDecision;
+}
+
+/// Structural no-op admission gate used by direct typed core entries
+/// (`handle_report`, `handle_report_with_prepare`, and core test helpers).
+/// Structural admission only; platform/native ingress must supply a checked
+/// [`CoreAdmissionGate`] (such as `tiler_protocol::world_admission::ProtocolAdmissionGate`).
+pub(crate) struct StructuralCoreAdmissionGate;
+
+impl CoreAdmissionGate for StructuralCoreAdmissionGate {
+    fn check_request_size(&self, _report: &WorldReportV4) -> AdmissionGateDecision {
+        AdmissionGateDecision::Allow
+    }
+
+    fn check_preflight(
+        &self,
+        _report: &WorldReportV4,
+        _facts: &PreflightGateFacts<'_>,
+    ) -> AdmissionGateDecision {
+        AdmissionGateDecision::Allow
+    }
+
+    fn check_exact_inner(&self, _reply: &WorldReplyV4) -> ExactInnerDecision {
+        ExactInnerDecision::Allow(ExactInnerCheck::new(0))
+    }
+
+    fn check_future_reserve(
+        &self,
+        _reply: &WorldReplyV4,
+        _facts: &FutureReserveGateFacts,
+        _exact: ExactInnerCheck,
+    ) -> AdmissionGateDecision {
+        AdmissionGateDecision::Allow
+    }
+}
 
 /// Pure v4 replay verdict over request identity: the digest is only a fast
 /// pre-check, so the caller passes full typed input equality alongside it.
@@ -147,70 +268,92 @@ impl WorldEngine {
         issue: &EventIssue,
         queued: &[(u64, WorldCommand)],
     ) -> (V4RunOutcome, Vec<BatchSettlement>) {
+        self.handle_report_v4_batched_with_gate_and_prepare(
+            report,
+            issue,
+            queued,
+            &StructuralCoreAdmissionGate,
+            |_| Ok::<(), std::convert::Infallible>(()),
+        )
+        .unwrap_or_else(|e| match e {})
+    }
+
+    pub(crate) fn handle_report_v4_batched_with_gate_and_prepare<
+        E,
+        G: CoreAdmissionGate + ?Sized,
+    >(
+        &mut self,
+        report: &WorldReportV4,
+        issue: &EventIssue,
+        queued: &[(u64, WorldCommand)],
+        gate: &G,
+        prepare: impl FnOnce(PreparedCandidate<'_>) -> Result<(), E>,
+    ) -> Result<(V4RunOutcome, Vec<BatchSettlement>), E> {
         // Internal admitted-envelope defense: the bound adapter, generation,
         // owner, and request correlation must match before any estimate,
         // grading, validation, or mutation. The caller owns public
         // admission; this internal boundary re-checks the already-admitted
         // context so a stale or foreign envelope never reaches the run.
-        if self.adapter.as_deref() != Some(report.adapter_incarnation.as_str()) {
-            return (
+        if self.connection.adapter.as_deref() != Some(report.adapter_incarnation.as_str()) {
+            return Ok((
                 V4RunOutcome::Rejected {
                     kind: KIND_OWNER,
                     message: MSG_OWNER,
                 },
                 Vec::new(),
-            );
+            ));
         }
-        if report.core_generation != self.core_generation_str {
-            return (
+        if report.core_generation != self.connection.core_generation_str {
+            return Ok((
                 V4RunOutcome::Rejected {
                     kind: KIND_GENERATION,
                     message: MSG_GENERATION,
                 },
                 Vec::new(),
-            );
+            ));
         }
-        let Some(bound_owner) = self.connection_owner.clone() else {
-            return (
+        let Some(bound_owner) = self.connection.connection_owner.clone() else {
+            return Ok((
                 V4RunOutcome::Rejected {
                     kind: KIND_OWNER,
                     message: MSG_OWNER,
                 },
                 Vec::new(),
-            );
+            ));
         };
         if issue.owner != bound_owner {
-            return (
+            return Ok((
                 V4RunOutcome::Rejected {
                     kind: KIND_OWNER,
                     message: MSG_OWNER,
                 },
                 Vec::new(),
-            );
+            ));
         }
         if issue.correlation.as_str() != report.request_id {
-            return (
+            return Ok((
                 V4RunOutcome::Rejected {
                     kind: KIND_CORRELATION,
                     message: MSG_CORRELATION,
                 },
                 Vec::new(),
-            );
+            ));
         }
         // Core-owned grading for the typed path: invalid scale/identity and
         // metadata/process rows become narrow holds like their
         // protocol-decoded twins, then unavailable-fact contradictions hold,
         // before any estimate, validation, or mutation.
         let unavailable: &[crate::connection::FactName] = self
+            .connection
             .capabilities()
             .map(|capabilities| capabilities.unavailable_facts.as_slice())
             .unwrap_or(&[]);
         let native_sticky_supported = crate::world_state::state_property_supported(
-            self.capabilities(),
+            self.connection.capabilities(),
             crate::world_report::StateProperty::Sticky,
         );
         let maximize_supported = crate::world_state::state_property_supported(
-            self.capabilities(),
+            self.connection.capabilities(),
             crate::world_report::StateProperty::Maximized,
         );
         let graded_effective = graded_effective_v4(
@@ -267,108 +410,108 @@ impl WorldEngine {
             || !report.view_attempts.is_empty()
             || !report.creation_attempts.is_empty()
             || held_native_evidence;
-        if native_evidence && !self.host_owned_workspace_domains() {
-            return (
+        if native_evidence && !self.connection.host_owned_workspace_domains() {
+            return Ok((
                 V4RunOutcome::Rejected {
                     kind: KIND_SNAPSHOT,
                     message: "native-without-capability",
                 },
                 Vec::new(),
-            );
+            ));
         }
-        let host_owned = self.host_owned_workspace_domains();
+        let host_owned = self.connection.host_owned_workspace_domains();
         let arrival_host_mismatch = report.focus_feedback.iter().any(|row| {
             row.arrival
                 .iter()
                 .any(|bracket| bracket.location.is_native() != host_owned)
         });
         if arrival_host_mismatch {
-            return (
+            return Ok((
                 V4RunOutcome::Rejected {
                     kind: KIND_SNAPSHOT,
                     message: "arrival-host-mismatch",
                 },
                 Vec::new(),
-            );
+            ));
         }
-        if report_estimate_v4(report) > WORLD_MAX_REQUEST_BYTES {
-            return (
-                V4RunOutcome::Rejected {
-                    kind: KIND_OVERSIZED,
-                    message: MSG_OVERSIZED,
-                },
-                Vec::new(),
-            );
+        match gate.check_request_size(report) {
+            AdmissionGateDecision::Allow => {}
+            AdmissionGateDecision::Refuse => {
+                return Ok((
+                    V4RunOutcome::Rejected {
+                        kind: KIND_OVERSIZED,
+                        message: MSG_OVERSIZED,
+                    },
+                    Vec::new(),
+                ));
+            }
+            AdmissionGateDecision::Reject { kind, message } => {
+                return Ok((V4RunOutcome::Rejected { kind, message }, Vec::new()));
+            }
         }
         if let Some(reason) = validate_report_v4_reason(effective) {
-            return (
+            return Ok((
                 V4RunOutcome::Rejected {
                     kind: KIND_SNAPSHOT,
                     // Fixed check vocabulary, never payload bytes.
                     message: reason,
                 },
                 Vec::new(),
-            );
+            ));
         }
         let digest = report_digest_v4(report);
-        if self.has_last_v4 {
+        if let Some(replay) = &self.replay {
             // Fast digest pre-check first; full typed input equality
             // decides, never the digest alone.
-            let reports_equal = self
-                .last_report_v4
-                .as_ref()
-                .is_some_and(|last| last == report);
+            let reports_equal = replay.report == *report;
             match classify_replay_v4(
                 report.request_seq,
                 digest,
-                self.has_last_v4,
-                self.last_request_seq_v4,
-                self.last_digest_v4,
+                true,
+                replay.request_seq,
+                replay.digest,
                 reports_equal,
             ) {
                 V4Replay::Fresh => {}
                 V4Replay::Stale => {
-                    return (
+                    return Ok((
                         V4RunOutcome::Rejected {
                             kind: KIND_SUPERSEDED,
                             message: MSG_SUPERSEDED,
                         },
                         Vec::new(),
-                    );
+                    ));
                 }
                 V4Replay::Reused => {
-                    return (
+                    return Ok((
                         V4RunOutcome::Rejected {
                             kind: KIND_REUSED,
                             message: MSG_REUSED,
                         },
                         Vec::new(),
-                    );
+                    ));
                 }
                 V4Replay::Duplicate => {
-                    let Some(cached) = self.last_reply_v4.clone() else {
-                        return (
-                            V4RunOutcome::Rejected {
-                                kind: KIND_SUPERSEDED,
-                                message: MSG_SUPERSEDED,
-                            },
-                            Vec::new(),
-                        );
-                    };
-                    self.emit_published_settlement_trace(None, &cached, true);
-                    self.emit_published_drag_preview_trace(&cached, true);
-                    return (V4RunOutcome::Duplicate(cached), Vec::new());
+                    let cached = replay.reply.clone();
+                    self.world
+                        .emit_published_settlement_trace(None, &cached, true);
+                    self.world.emit_published_drag_preview_trace(&cached, true);
+                    return Ok((V4RunOutcome::Duplicate(cached), Vec::new()));
                 }
             }
         }
-        if self.has_last_v4 && report.observation_seq < self.last_observation_seq_v4 {
-            return (
+        if self
+            .replay
+            .as_ref()
+            .is_some_and(|replay| report.observation_seq < replay.observation_seq)
+        {
+            return Ok((
                 V4RunOutcome::Rejected {
                     kind: KIND_OBS_STALE,
                     message: MSG_OBS_STALE,
                 },
                 Vec::new(),
-            );
+            ));
         }
         // Fresh reports carrying an already-consumed command sequence
         // reconcile observation but never re-execute the command. The
@@ -377,15 +520,15 @@ impl WorldEngine {
         // gates so an already-consumed inline command never reserves new
         // operation or intent slots.
         let consumed = match (report.command_seq, report.command.as_ref()) {
-            (Some(seq), Some(_)) => self.command_highwater.is_some_and(|mark| seq <= mark),
+            (Some(seq), Some(_)) => self.world.command_highwater.is_some_and(|mark| seq <= mark),
             (Some(_), None) | (None, Some(_)) => {
-                return (
+                return Ok((
                     V4RunOutcome::Rejected {
                         kind: KIND_SNAPSHOT,
                         message: "command-pair-invalid",
                     },
                     Vec::new(),
-                );
+                ));
             }
             (None, None) => false,
         };
@@ -403,46 +546,47 @@ impl WorldEngine {
         // selection terminal reserves. The intent term budgets the entire
         // map (including explicit null clears) transactionally, never
         // truncation; the exact-encoded staged reply stays the backstop.
-        let retained_len = self.retained.len() + self.retained_floats.len();
-        let created_len = report.screens.len();
-        let staged_windows = self
-            .staged
-            .facts
-            .len()
-            .saturating_add(self.staged.held_windows.len());
-        if reply_upper_bound_v4(
-            report,
-            retained_len,
-            self.layout.domain_keys().len(),
-            created_len,
-            staged_windows,
-            self.retained_publish_footprint(),
-        )
-        .saturating_add(max_intent_desired_bound(self.intent_desired.len()))
-        .saturating_add(self.operation_settle_reserve(effective_command, effective_queued))
-        .saturating_add(self.switch_settle_reserve())
-        // A select-family command can mint one zero-obligation issuing
-        // terminal while old bindings settle in the same report; reserve
-        // it alongside the retained bindings, never from lane slack.
-        .saturating_add(self.switch_issuing_reserve(effective_command))
-        // Commandless policy views can mint at most one zero-obligation
-        // terminal per fresh displaced/returned workspace at publish;
-        // bound the placements knowable before convergence.
-        .saturating_add(self.policy_terminal_reserve_v4(report))
-        // Potential retained-map growth: the inline bound above covers at
-        // most the report command; queued intent-changing commands reserve
-        // additional targets (distinct explicit plus implicit max-width).
-        // These are admission bounds, not a publication/drain queue.
-        .saturating_add(max_intent_save_batch_bound_v4(effective_queued))
-            > WORLD_MAX_REPLY_BYTES
-        {
-            return (
-                V4RunOutcome::Rejected {
-                    kind: KIND_REPLY_SIZE,
-                    message: MSG_REPLY_SIZE,
-                },
-                Vec::new(),
-            );
+        let operation_slot_count = self
+            .world
+            .operation_settle_slot_count(effective_command, effective_queued);
+        let (switch_output_count, switch_failed_count) = self.world.switch_settle_counts();
+        let preflight_facts = PreflightGateFacts {
+            effective_command,
+            effective_queued,
+            retained_settlement_count: self.world.settlement.retained.len()
+                + self.world.settlement.retained_floats.len(),
+            domain_count: self.world.layout.domain_keys().len(),
+            screen_count: report.screens.len(),
+            staged_window_count: self
+                .world
+                .staged
+                .facts
+                .len()
+                .saturating_add(self.world.staged.held_windows.len()),
+            retained_publish_footprint: self.world.retained_publish_footprint(),
+            intent_desired_count: self.world.intent.intent_desired.len(),
+            operation_slot_count,
+            switch_output_count,
+            switch_failed_count,
+            issuing_selection_count: self.world.switch_issuing_count(effective_command),
+            policy_terminal_count: self
+                .world
+                .policy_terminal_count_v4(report, self.connection.workspace_mode_setting()),
+        };
+        match gate.check_preflight(report, &preflight_facts) {
+            AdmissionGateDecision::Allow => {}
+            AdmissionGateDecision::Refuse => {
+                return Ok((
+                    V4RunOutcome::Rejected {
+                        kind: KIND_REPLY_SIZE,
+                        message: MSG_REPLY_SIZE,
+                    },
+                    Vec::new(),
+                ));
+            }
+            AdmissionGateDecision::Reject { kind, message } => {
+                return Ok((V4RunOutcome::Rejected { kind, message }, Vec::new()));
+            }
         }
         // Fixed rowcap: the whole physical retained map plus genuinely new
         // rows from accepted imports, the inline command, and the parked
@@ -465,49 +609,54 @@ impl WorldEngine {
                 .map(|record| &record.win)
                 .collect::<BTreeSet<_>>()
                 .iter()
-                .filter(|id| !self.intent_desired.contains_key(**id))
+                .filter(|id| !self.world.intent.intent_desired.contains_key(**id))
                 .count();
             let total_rows = self
+                .world
+                .intent
                 .intent_desired
                 .len()
                 .saturating_add(import_new)
-                .saturating_add(self.intent_desired_new_rows(effective_command, effective_queued));
+                .saturating_add(
+                    self.world
+                        .intent_desired_new_rows(effective_command, effective_queued),
+                );
             if total_rows > crate::world_report::MAX_INTENT_DESIRED {
-                return (
+                return Ok((
                     V4RunOutcome::Rejected {
                         kind: KIND_SNAPSHOT,
                         message: "section-over-cap",
                     },
                     Vec::new(),
-                );
+                ));
             }
         }
-        if self.operation_settle_slot_count(effective_command, effective_queued)
-            > crate::world_report::MAX_REPLY_OPERATIONS
-        {
-            return (
+        if operation_slot_count > crate::world_report::MAX_REPLY_OPERATIONS {
+            return Ok((
                 V4RunOutcome::Rejected {
                     kind: KIND_SNAPSHOT,
                     message: "section-over-cap",
                 },
                 Vec::new(),
-            );
+            ));
         }
         // Counter exhaustion refuses and re-bootstraps under a new
         // generation; it never wraps in place.
-        if self.state_revision == u64::MAX {
-            return (
+        if self.world.state_revision == u64::MAX {
+            return Ok((
                 V4RunOutcome::Rejected {
                     kind: KIND_REVISION_EXHAUSTED,
                     message: MSG_REVISION_EXHAUSTED,
                 },
                 Vec::new(),
-            );
+            ));
         }
         // Readiness keys on the effective graded report, never the raw
         // input: an invalid-held screen alone is not a usable screen.
         let usable_initial_observation = usable_initial_observation_v4(effective);
-        if !self.initial_settings_accepted || (!self.ready_latched && !usable_initial_observation) {
+        if !self.connection.initial_settings_accepted
+            || (!self.world.ready_latched && !usable_initial_observation)
+        {
             // Bootstrap still ingests validated intent rows on a staged
             // candidate so records delivered in incomplete pre-ready
             // inventories survive until the first usable fact, then adopts
@@ -518,8 +667,18 @@ impl WorldEngine {
             // cannot exhaust the joint bound before ready; retention
             // pre-ready is bounded pending data, never report or write
             // authority.
-            let mut staged = self.clone();
-            staged.ingest_staged_intent(&Self::capture_observation_v4(report));
+            let mut staged_intent = self.world.intent.clone();
+            let own_pid = self
+                .connection
+                .application_identity
+                .as_ref()
+                .and_then(|identity| identity.process_id.as_deref());
+            staged_intent.ingest_rows(
+                own_pid,
+                &report.closed,
+                &report.windows,
+                &report.intent_records,
+            );
             if report.inventory_complete {
                 let live: BTreeSet<crate::directional::WindowId> = report
                     .windows
@@ -531,182 +690,217 @@ impl WorldEngine {
                     .iter()
                     .map(|held| held.window.clone())
                     .collect();
-                staged
-                    .pending_intent
-                    .retain(|id, _| live.contains(id) || held.contains(id));
-                staged
-                    .intent_conflicts
-                    .retain(|id| live.contains(id) || held.contains(id));
-                staged
-                    .restored_floats
-                    .retain(|id| live.contains(id) || held.contains(id));
-                staged
-                    .restored_sticky
-                    .retain(|id, _| live.contains(id) || held.contains(id));
-                staged
-                    .intent_admitted
-                    .retain(|id| live.contains(id) || held.contains(id));
-                staged
-                    .intent_sticky_blocks
-                    .retain(|id| live.contains(id) || held.contains(id));
-                staged
-                    .intent_desired
-                    .retain(|id, _| live.contains(id) || held.contains(id));
+                staged_intent.retain_pre_ready_complete(&live, &held);
             }
-            let reply = staged.bootstrap_reply_v4(report, &issue.correlation);
-            if let Some(refused) = Self::refuse_outbound_v4(&reply) {
-                return (refused, Vec::new());
+            let reply =
+                Self::bootstrap_reply_v4(self.world.state_revision, report, &issue.correlation);
+            if let Err((kind, message)) = Self::refuse_outbound_v4(&reply, gate) {
+                return Ok((V4RunOutcome::Rejected { kind, message }, Vec::new()));
             }
-            staged.emit_published_settlement_trace(self.last_reply_v4.as_ref(), &reply, false);
-            staged.emit_published_drag_preview_trace(&reply, false);
-            *self = staged;
-            return (V4RunOutcome::Accepted(reply), Vec::new());
+            prepare(PreparedCandidate {
+                reply: &reply,
+                active_gesture_id: self.world.gesture.retained.as_ref().map(|r| r.id),
+                settlements: &[],
+            })?;
+            self.world.emit_published_settlement_trace(
+                self.replay.as_ref().map(|replay| &replay.reply),
+                &reply,
+                false,
+            );
+            self.world.emit_published_drag_preview_trace(&reply, false);
+            self.world.intent = staged_intent;
+            return Ok((V4RunOutcome::Accepted(reply), Vec::new()));
         }
         // Stage everything past this point on a clone. Exact-encoding
         // overflow (or any late failure) drops the candidate; `self` is
         // adopted only after the staged reply encodes within budget. Only
         // reports passing every cheap gate pay for the clone.
-        let mut staged = self.clone();
+        let mut staged = self.world.clone();
         if usable_initial_observation {
             staged.ready_latched = true;
         }
-        let (outcome, settlements) = staged.run_accepted_v4_batched(
-            report,
-            issue,
-            consumed,
-            self.state_revision + 1,
-            queued,
-        );
+        let next_revision = self.world.state_revision + 1;
+        let prev_transfers = self
+            .replay
+            .as_ref()
+            .map(|replay| replay.reply.transfers.as_slice())
+            .unwrap_or(&[]);
+        let (outcome, settlements) =
+            WorldTransaction::new(&self.connection, prev_transfers, &mut staged)
+                .run_accepted_v4_batched(report, issue, consumed, next_revision, queued);
         match outcome {
             V4RunOutcome::Accepted(reply) | V4RunOutcome::CommandConsumed(reply) => {
                 let consumed_reply = reply.command_consumed;
-                match self.finalize_v4_candidate(staged, report, digest, reply) {
+                match self.finalize_v4_candidate_with_gate_and_prepare(
+                    staged,
+                    report,
+                    digest,
+                    reply,
+                    &settlements,
+                    gate,
+                    prepare,
+                )? {
                     V4RunOutcome::Accepted(reply) => {
                         debug_assert!(!consumed_reply);
-                        (V4RunOutcome::Accepted(reply), settlements)
+                        Ok((V4RunOutcome::Accepted(reply), settlements))
                     }
                     V4RunOutcome::CommandConsumed(reply) => {
                         debug_assert!(consumed_reply);
-                        (V4RunOutcome::CommandConsumed(reply), settlements)
+                        Ok((V4RunOutcome::CommandConsumed(reply), settlements))
                     }
-                    V4RunOutcome::Duplicate(reply) => (V4RunOutcome::Duplicate(reply), Vec::new()),
-                    rejected => (rejected, Vec::new()),
+                    V4RunOutcome::Duplicate(reply) => {
+                        Ok((V4RunOutcome::Duplicate(reply), Vec::new()))
+                    }
+                    rejected => Ok((rejected, Vec::new())),
                 }
             }
             V4RunOutcome::Duplicate(_) => {
                 // Staged runs never duplicate: the latest duplicate returns
                 // above, before staging.
-                (
+                Ok((
                     V4RunOutcome::Rejected {
                         kind: KIND_SUPERSEDED,
                         message: MSG_SUPERSEDED,
                     },
                     Vec::new(),
-                )
+                ))
             }
-            rejected => (rejected, Vec::new()),
+            rejected => Ok((rejected, Vec::new())),
         }
     }
 
     /// Outbound gates over one staged v4 reply: intent-lane validity and
-    /// the exact canonical size bound. Returns the refusal when the reply
-    /// must not publish or cache, `None` when it may adopt.
-    fn refuse_outbound_v4(reply: &WorldReplyV4) -> Option<V4RunOutcome> {
+    /// the exact canonical size bound. Returns `Err((kind, message))` when the
+    /// reply must not publish or cache, `Ok(ExactInnerCheck)` when it may proceed.
+    fn refuse_outbound_v4<G: CoreAdmissionGate + ?Sized>(
+        reply: &WorldReplyV4,
+        gate: &G,
+    ) -> Result<ExactInnerCheck, (&'static str, &'static str)> {
         // Fixed check vocabulary, never payload.
         if let Some(reason) = validate_intent_desired_reason(&reply.intent_desired) {
-            return Some(V4RunOutcome::Rejected {
-                kind: KIND_SNAPSHOT,
-                message: reason,
-            });
+            return Err((KIND_SNAPSHOT, reason));
         }
         // Frozen `afterShown` section caps mirror the protocol encoder:
         // an over-cap projection refuses before adoption so a typed
         // rejection leaves the engine exactly unchanged instead of
         // poisoning the retained slot past the byte gate.
         if let Some(reason) = validate_focus_request_reason(&reply.focus_request) {
-            return Some(V4RunOutcome::Rejected {
-                kind: KIND_SNAPSHOT,
-                message: reason,
-            });
+            return Err((KIND_SNAPSHOT, reason));
         }
         if reply.operation_settled.len() > crate::world_report::MAX_REPLY_OPERATIONS
             || reply.switch_settled.len() > crate::world_report::MAX_REPLY_SWITCH_EVENTS
         {
-            return Some(V4RunOutcome::Rejected {
-                kind: KIND_SNAPSHOT,
-                message: "section-over-cap",
-            });
+            return Err((KIND_SNAPSHOT, "section-over-cap"));
         }
-        if reply_estimate_v4(reply) > WORLD_MAX_REPLY_BYTES
-            || reply_exact_bytes_v4(reply) > WORLD_MAX_REPLY_BYTES
-        {
-            return Some(V4RunOutcome::Rejected {
-                kind: KIND_REPLY_SIZE,
-                message: MSG_REPLY_SIZE,
-            });
+        match gate.check_exact_inner(reply) {
+            ExactInnerDecision::Allow(exact) => Ok(exact),
+            ExactInnerDecision::Refuse => Err((KIND_REPLY_SIZE, MSG_REPLY_SIZE)),
+            ExactInnerDecision::Reject { kind, message } => Err((kind, message)),
         }
-        None
     }
 
     /// Adopt one staged v4 candidate after the outbound gates pass:
     /// install the candidate, refresh the typed replay cache, and return
     /// the publication verdict. A refused candidate leaves `self` (state,
     /// watermarks, cache) exactly unchanged.
+    #[cfg(test)]
     pub(crate) fn finalize_v4_candidate(
         &mut self,
-        mut staged: WorldEngine,
+        staged: WorldState,
         report: &WorldReportV4,
         digest: u64,
         reply: WorldReplyV4,
     ) -> V4RunOutcome {
-        if let Some(refused) = Self::refuse_outbound_v4(&reply) {
-            return refused;
-        }
+        self.finalize_v4_candidate_with_gate_and_prepare(
+            staged,
+            report,
+            digest,
+            reply,
+            &[],
+            &StructuralCoreAdmissionGate,
+            |_| Ok::<(), std::convert::Infallible>(()),
+        )
+        .unwrap_or_else(|e| match e {})
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn finalize_v4_candidate_with_gate_and_prepare<E, G: CoreAdmissionGate + ?Sized>(
+        &mut self,
+        mut staged: WorldState,
+        report: &WorldReportV4,
+        digest: u64,
+        reply: WorldReplyV4,
+        settlements: &[BatchSettlement],
+        gate: &G,
+        prepare: impl FnOnce(PreparedCandidate<'_>) -> Result<(), E>,
+    ) -> Result<V4RunOutcome, E> {
+        let exact_inner = match Self::refuse_outbound_v4(&reply, gate) {
+            Ok(exact) => exact,
+            Err((kind, message)) => return Ok(V4RunOutcome::Rejected { kind, message }),
+        };
         // Staged runs can mint automatic born-clear obligations without a
         // command; enforce the shared 1,024-slot cap and future terminal
         // byte budget on `staged` before adoption without double-counting
         // already-encoded `operation_settled`/`switch_settled` sections.
-        if staged.operation_settle_slot_count(None, &[]) > crate::world_report::MAX_REPLY_OPERATIONS
-        {
-            return V4RunOutcome::Rejected {
+        let staged_op_slots = staged.operation_settle_slot_count(None, &[]);
+        if staged_op_slots > crate::world_report::MAX_REPLY_OPERATIONS {
+            return Ok(V4RunOutcome::Rejected {
                 kind: KIND_SNAPSHOT,
                 message: "section-over-cap",
-            };
+            });
         }
-        let future_op_delta = staged.operation_settle_reserve(None, &[]).saturating_sub(
-            crate::world_sizing::operation_settled_estimate(&reply.operation_settled),
-        );
-        let future_switch_delta = staged.switch_settle_reserve().saturating_sub(
-            crate::world_sizing::switch_settled_estimate(&reply.switch_settled),
-        );
-        let future_reserve = future_op_delta.saturating_add(future_switch_delta);
-        if reply_estimate_v4(&reply).saturating_add(future_reserve) > WORLD_MAX_REPLY_BYTES
-            || reply_exact_bytes_v4(&reply).saturating_add(future_reserve) > WORLD_MAX_REPLY_BYTES
-        {
-            return V4RunOutcome::Rejected {
-                kind: KIND_REPLY_SIZE,
-                message: MSG_REPLY_SIZE,
-            };
+        let (staged_switch_outputs, staged_switch_failed) = staged.switch_settle_counts();
+        let future_facts = FutureReserveGateFacts {
+            operation_slot_count: staged_op_slots,
+            switch_output_count: staged_switch_outputs,
+            switch_failed_count: staged_switch_failed,
+        };
+        match gate.check_future_reserve(&reply, &future_facts, exact_inner) {
+            AdmissionGateDecision::Allow => {}
+            AdmissionGateDecision::Refuse => {
+                return Ok(V4RunOutcome::Rejected {
+                    kind: KIND_REPLY_SIZE,
+                    message: MSG_REPLY_SIZE,
+                });
+            }
+            AdmissionGateDecision::Reject { kind, message } => {
+                return Ok(V4RunOutcome::Rejected { kind, message });
+            }
         }
-        staged.emit_staged_dropped_settlement_trace(&reply);
-        staged.emit_published_settlement_trace(self.last_reply_v4.as_ref(), &reply, false);
+        let active_gesture_id = staged.gesture.retained.as_ref().map(|retained| retained.id);
+        prepare(PreparedCandidate {
+            reply: &reply,
+            active_gesture_id,
+            settlements,
+        })?;
+        staged
+            .settlement
+            .emit_staged_dropped_settlement_trace(&reply);
+        staged.emit_published_settlement_trace(
+            self.replay.as_ref().map(|replay| &replay.reply),
+            &reply,
+            false,
+        );
         staged.emit_published_drag_preview_trace(&reply, false);
         let consumed_reply = reply.command_consumed;
-        *self = staged;
+        self.world = staged;
         // Typed replay cache: mirrors the legacy finish tail, including
         // consumed-command reports; rejected candidates never reach here.
-        if report.observation_seq > self.last_observation_seq_v4 || !self.has_last_v4 {
-            self.last_observation_seq_v4 = report.observation_seq;
-        }
-        self.has_last_v4 = true;
-        self.last_request_seq_v4 = report.request_seq;
-        self.last_digest_v4 = digest;
-        self.last_report_v4 = Some(report.clone());
-        self.last_reply_v4 = Some(reply.clone());
+        let observation_seq = match &self.replay {
+            Some(prev) => prev.observation_seq.max(report.observation_seq),
+            None => report.observation_seq,
+        };
+        self.replay = Some(AdmittedReplayV4 {
+            request_seq: report.request_seq,
+            digest,
+            observation_seq,
+            report: report.clone(),
+            reply: reply.clone(),
+        });
         if consumed_reply {
-            V4RunOutcome::CommandConsumed(reply)
+            Ok(V4RunOutcome::CommandConsumed(reply))
         } else {
-            V4RunOutcome::Accepted(reply)
+            Ok(V4RunOutcome::Accepted(reply))
         }
     }
 
@@ -716,7 +910,7 @@ impl WorldEngine {
     /// presentation (hidden border/underlay, empty pager) is constructed
     /// explicitly so retained staged/pager state can never leak in.
     fn bootstrap_reply_v4(
-        &self,
+        state_revision: u64,
         report: &WorldReportV4,
         correlation: &CorrelationId,
     ) -> WorldReplyV4 {
@@ -726,7 +920,7 @@ impl WorldEngine {
         // pre-ready gate above stays the single enforcing boundary.
         let presentation = WorldPresentationV4 {
             foreground: String::new(),
-            rev: self.state_revision,
+            rev: state_revision,
             suspended_output: None,
             border: BorderPresentationV4 {
                 visible: false,
@@ -749,7 +943,7 @@ impl WorldEngine {
             core_generation: report.core_generation.clone(),
             request_id: correlation.as_str().to_owned(),
             based_on_observation_seq: report.observation_seq,
-            state_revision: self.state_revision,
+            state_revision,
             ready: false,
             command_consumed: false,
             scopes: Vec::new(),
@@ -792,7 +986,7 @@ impl WorldEngine {
         &mut self,
         report: &WorldReportV4,
     ) -> Result<WorldReplyV4, (&'static str, &'static str)> {
-        let owner = match self.connection_owner.clone() {
+        let owner = match self.connection.connection_owner.clone() {
             Some(owner) => owner,
             None => return Err((KIND_SNAPSHOT, "test-issue-unbound")),
         };

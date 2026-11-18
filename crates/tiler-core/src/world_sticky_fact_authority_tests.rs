@@ -128,6 +128,7 @@ fn composed_null_admits_while_nonnull_conflicts_narrowly() {
         reply.diagnostics
     );
     let held: Vec<&str> = engine
+        .world
         .staged
         .held_windows
         .iter()
@@ -136,7 +137,7 @@ fn composed_null_admits_while_nonnull_conflicts_narrowly() {
     assert!(held.contains(&"win-false"), "raw retained: {held:?}");
     assert!(held.contains(&"win-true"), "raw retained: {held:?}");
     assert!(!held.contains(&"win-composed"), "{held:?}");
-    for held_row in engine.staged.held_windows.iter() {
+    for held_row in engine.world.staged.held_windows.iter() {
         if held_row.window.0 == "win-false" || held_row.window.0 == "win-true" {
             assert_eq!(held_row.kind, RowDiagnosticKind::ConflictingFact);
             let sticky = held_row
@@ -157,18 +158,24 @@ fn composed_null_admits_while_nonnull_conflicts_narrowly() {
     assert!(!members.iter().any(|member| member.0 == "win-true"));
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-false".to_owned())),
         "pending explicit intent retained, not consumed"
     );
     assert!(
         !engine
+            .world
+            .intent
             .intent_admitted
             .contains(&WindowId("win-false".to_owned())),
         "conflicted placeholder never latches admission"
     );
     assert!(
         !engine
+            .world
+            .intent
             .intent_admitted
             .contains(&WindowId("win-true".to_owned())),
         "conflicted placeholder never latches admission"
@@ -565,12 +572,16 @@ fn conflict_recovery_consumes_pending_and_seals_admission() {
     );
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-r".to_owned())),
         "conflict retains pending tile intent"
     );
     assert!(
         !engine
+            .world
+            .intent
             .intent_admitted
             .contains(&WindowId("win-r".to_owned())),
         "conflict never latches admission"
@@ -603,20 +614,24 @@ fn conflict_recovery_consumes_pending_and_seals_admission() {
     );
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-r".to_owned())),
         "recovery consumes pending tile intent"
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_admitted
             .contains(&WindowId("win-r".to_owned())),
         "recovery seals admission"
     );
     assert!(
-        engine.staged.held_windows.is_empty(),
+        engine.world.staged.held_windows.is_empty(),
         "recovery holds nothing: {:?}",
-        engine.staged.held_windows
+        engine.world.staged.held_windows
     );
     // An exact duplicate of the recovery returns the cached reply.
     match engine.handle_report(&recovery, &[]).0 {
@@ -651,12 +666,16 @@ fn conflict_recovery_consumes_pending_and_seals_admission() {
     );
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-r".to_owned())),
         "admitted lifetime ignores late rows"
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_admitted
             .contains(&WindowId("win-r".to_owned())),
         "admission persists through late rows"
@@ -696,6 +715,7 @@ fn native_false_null_toggle_float_save_preserved() {
         ),
     );
     let tiled = engine
+        .world
         .layout
         .is_tiled_window_any(&WindowId("win-a".to_owned()));
     assert!(tiled, "composed-null win-a tiles before toggle");
@@ -726,6 +746,7 @@ fn native_false_null_toggle_float_save_preserved() {
         reply.intent_desired
     );
     let floated = engine
+        .world
         .layout
         .is_exception_window_any(&WindowId("win-a".to_owned()));
     assert!(floated, "toggle floats the composed-null window");

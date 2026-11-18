@@ -282,21 +282,23 @@ fn global_unique_swap_preserves_nonempty_units() {
         workspace: crate::directional::WorkspaceId(view_b.clone()),
     };
     let snap_a: Vec<String> = engine
+        .world
         .layout()
         .tiled_windows(&src_a)
         .map(|window| window.0.clone())
         .collect();
     let snap_b: Vec<String> = engine
+        .world
         .layout()
         .tiled_windows(&src_b)
         .map(|window| window.0.clone())
         .collect();
     assert!(snap_a.len() >= 2, "source a tiled: {snap_a:?}");
     assert!(snap_b.len() >= 2, "source b tiled: {snap_b:?}");
-    let tree_a = engine.layout().tree(&src_a).cloned();
-    let tree_b = engine.layout().tree(&src_b).cloned();
-    let focus_a = engine.layout().focus_leaf(&src_a).cloned();
-    let focus_b = engine.layout().focus_leaf(&src_b).cloned();
+    let tree_a = engine.world.layout().tree(&src_a).cloned();
+    let tree_b = engine.world.layout().tree(&src_b).cloned();
+    let focus_a = engine.world.layout().focus_leaf(&src_a).cloned();
+    let focus_b = engine.world.layout().focus_leaf(&src_b).cloned();
 
     // Swap: select out-b's workspace on out-a.
     let swapped = accepted(
@@ -433,6 +435,7 @@ fn global_unique_swap_preserves_nonempty_units() {
     };
     let mut pre_a: Vec<String> = snap_a;
     let mut post_a: Vec<String> = engine
+        .world
         .layout()
         .tiled_windows(&tgt_a)
         .map(|window| window.0.clone())
@@ -442,6 +445,7 @@ fn global_unique_swap_preserves_nonempty_units() {
     assert_eq!(pre_a, post_a, "tiled membership preserved");
     let mut pre_b: Vec<String> = snap_b;
     let mut post_b: Vec<String> = engine
+        .world
         .layout()
         .tiled_windows(&tgt_b)
         .map(|window| window.0.clone())
@@ -450,22 +454,22 @@ fn global_unique_swap_preserves_nonempty_units() {
     post_b.sort();
     assert_eq!(pre_b, post_b, "tiled membership preserved");
     assert_eq!(
-        engine.layout().tree(&tgt_a),
+        engine.world.layout().tree(&tgt_a),
         tree_a.as_ref(),
         "tree/shares preserved"
     );
     assert_eq!(
-        engine.layout().tree(&tgt_b),
+        engine.world.layout().tree(&tgt_b),
         tree_b.as_ref(),
         "tree/shares preserved"
     );
     assert_eq!(
-        engine.layout().focus_leaf(&tgt_a),
+        engine.world.layout().focus_leaf(&tgt_a),
         focus_a.as_ref(),
         "remembered focus leaf preserved"
     );
     assert_eq!(
-        engine.layout().focus_leaf(&tgt_b),
+        engine.world.layout().focus_leaf(&tgt_b),
         focus_b.as_ref(),
         "remembered focus leaf preserved"
     );
@@ -965,24 +969,30 @@ fn global_unique_swap_failed_stay_keeps_world_unchanged() {
         output: OutputId("out-a".to_owned()),
         workspace: crate::directional::WorkspaceId(view_b.clone()),
     };
-    assert!(!engine.layout().contains_domain(&src_b));
-    let before_tiled: Vec<_> = engine.layout().tiled_windows(&src_a).cloned().collect();
+    assert!(!engine.world.layout().contains_domain(&src_b));
+    let before_tiled: Vec<_> = engine
+        .world
+        .layout()
+        .tiled_windows(&src_a)
+        .cloned()
+        .collect();
     let before_exceptions: Vec<_> = engine
+        .world
         .layout()
         .exception_windows_with_flags(&src_a)
         .collect();
-    let before_tree = engine.layout().tree(&src_a).cloned();
-    let before_focus = engine.layout().focus_leaf(&src_a).cloned();
-    let before_rev = engine.layout().accepted_revision(&src_a);
+    let before_tree = engine.world.layout().tree(&src_a).cloned();
+    let before_focus = engine.world.layout().focus_leaf(&src_a).cloned();
+    let before_rev = engine.world.layout().accepted_revision(&src_a);
 
     // Snapshot world state before the refused swap.
-    let mapping = engine.mapping.clone();
-    let views = engine.views.clone();
-    let history = engine.history.clone();
-    let members = engine.members.clone();
-    let tiling = engine.tiling.clone();
-    let floating = engine.floating_scopes.clone();
-    let retained = engine.retained.clone();
+    let mapping = engine.world.workspace.mapping.clone();
+    let views = engine.world.workspace.views.clone();
+    let history = engine.world.workspace.history.clone();
+    let members = engine.world.workspace.members.clone();
+    let tiling = engine.world.workspace.tiling.clone();
+    let floating = engine.world.floating_scopes.clone();
+    let retained = engine.world.settlement.retained.clone();
 
     let swap_report = report(
         4,
@@ -998,14 +1008,16 @@ fn global_unique_swap_failed_stay_keeps_world_unchanged() {
         }),
     );
     let held = BTreeSet::new();
-    match engine.execute_command(
-        &test_issue(&swap_report),
-        12,
-        swap_report.command.as_ref().expect("command"),
-        &held,
-        None,
-        None,
-    ) {
+    match engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&swap_report),
+            12,
+            swap_report.command.as_ref().expect("command"),
+            &held,
+            None,
+            None,
+        )
+    }) {
         CommandApplied::Rejected { kind, message } => {
             assert_eq!(kind, KIND_MIGRATION);
             assert_eq!(message, MSG_MIGRATION);
@@ -1016,18 +1028,19 @@ fn global_unique_swap_failed_stay_keeps_world_unchanged() {
     }
     // The refusal leaves mapping/views/history, layout domains, members, and
     // retained flights exactly as before: no partial commit.
-    assert_eq!(engine.mapping, mapping);
-    assert_eq!(engine.views, views);
-    assert_eq!(engine.history, history);
-    assert_eq!(engine.members, members);
-    assert_eq!(engine.tiling, tiling);
-    assert_eq!(engine.floating_scopes, floating);
-    assert_eq!(engine.retained, retained);
-    assert!(!engine.layout().contains_domain(&tgt_a));
-    assert!(!engine.layout().contains_domain(&tgt_b));
-    assert!(!engine.layout().contains_domain(&src_b));
+    assert_eq!(engine.world.workspace.mapping, mapping);
+    assert_eq!(engine.world.workspace.views, views);
+    assert_eq!(engine.world.workspace.history, history);
+    assert_eq!(engine.world.workspace.members, members);
+    assert_eq!(engine.world.workspace.tiling, tiling);
+    assert_eq!(engine.world.floating_scopes, floating);
+    assert_eq!(engine.world.settlement.retained, retained);
+    assert!(!engine.world.layout().contains_domain(&tgt_a));
+    assert!(!engine.world.layout().contains_domain(&tgt_b));
+    assert!(!engine.world.layout().contains_domain(&src_b));
     assert_eq!(
         engine
+            .world
             .layout()
             .tiled_windows(&src_a)
             .cloned()
@@ -1036,14 +1049,18 @@ fn global_unique_swap_failed_stay_keeps_world_unchanged() {
     );
     assert_eq!(
         engine
+            .world
             .layout()
             .exception_windows_with_flags(&src_a)
             .collect::<Vec<_>>(),
         before_exceptions
     );
-    assert_eq!(engine.layout().tree(&src_a).cloned(), before_tree);
-    assert_eq!(engine.layout().focus_leaf(&src_a).cloned(), before_focus);
-    assert_eq!(engine.layout().accepted_revision(&src_a), before_rev);
+    assert_eq!(engine.world.layout().tree(&src_a).cloned(), before_tree);
+    assert_eq!(
+        engine.world.layout().focus_leaf(&src_a).cloned(),
+        before_focus
+    );
+    assert_eq!(engine.world.layout().accepted_revision(&src_a), before_rev);
 
     // Restore proven sticky=false on win-a1: the successful sessionless-B
     // stay path works through the public boundary.

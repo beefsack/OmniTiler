@@ -1259,7 +1259,10 @@ fn ordinary_maximized_null_without_maximize_stays_controlled() {
         "no broad revocation: {:?}",
         reply.scopes
     );
-    assert!(engine.retained_clears.is_empty(), "no retained clear");
+    assert!(
+        engine.world.settlement.retained_clears.is_empty(),
+        "no retained clear"
+    );
 
     // Supported capability: same null holds the dependent domain, still no
     // unsafe geometry and no clear; the other output stays controlled.
@@ -1328,5 +1331,147 @@ fn ordinary_maximized_null_without_maximize_stays_controlled() {
         held.windows.iter().all(|row| row.clear_operation.is_none()),
         "supported null authorizes no clear: {:?}",
         held.windows
+    );
+}
+
+#[test]
+fn generation_group_allocator_burns_across_trials_and_resets_only_on_rehandshake() {
+    use crate::directional::{Node, NodeId, WorkspaceId};
+    use crate::session::DomainKey;
+    use std::collections::BTreeSet;
+
+    fn collect_groups(node: &Node, out: &mut BTreeSet<NodeId>) {
+        if let Node::Group { id, children, .. } = node {
+            out.insert(id.clone());
+            for child in children {
+                collect_groups(child, out);
+            }
+        }
+    }
+
+    fn engine_groups(engine: &WorldEngine) -> BTreeSet<NodeId> {
+        let mut out = BTreeSet::new();
+        for ws in engine.logical_ring("out-1") {
+            let key = DomainKey {
+                output: OutputId("out-1".into()),
+                workspace: WorkspaceId(ws),
+            };
+            if let Some(tree) = engine.world.layout().tree(&key) {
+                collect_groups(tree, &mut out);
+            }
+        }
+        out
+    }
+
+    let mut engine = WorldEngine::new("gen-1").unwrap();
+    let mut first = handshake("adapter-1");
+    first.capabilities.host_owned = false;
+    first.capabilities.equal_count = false;
+    let gen1 = engine.handshake(&first).generation.expect("gen-1");
+    engine
+        .handle_settings(&SettingsRequest {
+            adapter: first.adapter.clone(),
+            generation: gen1.clone(),
+            request: "settings-1".into(),
+            revision: 1,
+            values: Vec::new(),
+        })
+        .expect("settings accepted");
+
+    let mut r1 = report(1, true);
+    r1.core_generation = gen1.clone();
+    r1.windows = vec![
+        identity_fact(
+            "win-a",
+            None,
+            Some("example"),
+            Some("foreign-1"),
+            "Synthetic",
+        ),
+        identity_fact(
+            "win-b",
+            None,
+            Some("example"),
+            Some("foreign-2"),
+            "Synthetic",
+        ),
+    ];
+    r1.focused_global = "win-b".into();
+    r1.foreground_known = true;
+    accepted_reply(&mut engine, &r1);
+    let groups_after_r1 = engine_groups(&engine);
+    assert_eq!(groups_after_r1, BTreeSet::from([NodeId("grp-0".into())]));
+
+    // Repeated settings on the same binding never reset the counter.
+    let repeat_settings = engine
+        .handle_settings(&SettingsRequest {
+            adapter: first.adapter.clone(),
+            generation: gen1.clone(),
+            request: "settings-2".into(),
+            revision: 2,
+            values: Vec::new(),
+        })
+        .expect("repeat settings accepted");
+    assert_eq!(repeat_settings.status, SettingsStatus::Accepted);
+
+    // Discarded staged clone burns serials on the generation-shared counter.
+    let mut staged = engine.clone();
+    let mut r2 = r1.clone();
+    r2.observation_seq = 2;
+    r2.request_seq = 2;
+    r2.request_id = "report-2".into();
+    r2.windows.push(identity_fact(
+        "win-c",
+        None,
+        Some("example"),
+        Some("foreign-3"),
+        "Synthetic",
+    ));
+    accepted_reply(&mut staged, &r2);
+    let staged_groups = engine_groups(&staged);
+    assert!(staged_groups.contains(&NodeId("grp-1".into())));
+    drop(staged);
+
+    // Refused re-handshake (malformed identity) preserves generation and burned serials.
+    let mut bad_hs = handshake("adapter-2");
+    bad_hs.application_identity.app_id = Some(String::new());
+    let bad_reply = engine.handshake(&bad_hs);
+    assert_eq!(bad_reply.kind, Some(ProtocolKind::Malformed));
+    assert_eq!(engine.core_generation(), gen1);
+
+    // Live follow-up report continues past the burned staged serial (mints grp-2, not grp-1).
+    let mut r2_live = r2.clone();
+    r2_live.core_generation = gen1.clone();
+    accepted_reply(&mut engine, &r2_live);
+    let live_groups = engine_groups(&engine);
+    assert!(!live_groups.contains(&NodeId("grp-1".into())));
+    assert!(live_groups.contains(&NodeId("grp-2".into())));
+
+    // Valid re-handshake mints a distinct core generation and restarts at grp-0.
+    let mut second = handshake("adapter-2");
+    second.capabilities.host_owned = false;
+    second.capabilities.equal_count = false;
+    let gen2 = engine
+        .handshake(&second)
+        .generation
+        .expect("fresh generation");
+    assert_ne!(gen2, gen1);
+    assert_eq!(engine.core_generation(), gen2);
+    engine
+        .handle_settings(&SettingsRequest {
+            adapter: second.adapter,
+            generation: gen2.clone(),
+            request: "settings-3".into(),
+            revision: 1,
+            values: Vec::new(),
+        })
+        .expect("gen2 settings accepted");
+    let mut r_new = r1;
+    r_new.adapter_incarnation = "adapter-2".into();
+    r_new.core_generation = gen2;
+    accepted_reply(&mut engine, &r_new);
+    assert_eq!(
+        engine_groups(&engine),
+        BTreeSet::from([NodeId("grp-0".into())])
     );
 }

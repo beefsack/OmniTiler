@@ -6,6 +6,7 @@ license = "MIT"
 
 [dependencies]
 tiler-core = { path = "../tiler-core" }
+ryu = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 

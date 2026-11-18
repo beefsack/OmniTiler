@@ -229,7 +229,7 @@ fn floating_toggle_keeps_membership_across_view_switch_and_unchanged_report() {
         workspace: crate::directional::WorkspaceId(view_a.clone()),
     };
     assert!(
-        !engine.layout().contains_domain(&float_key),
+        !engine.world.layout().contains_domain(&float_key),
         "toggle releases the layout session (old homing source is empty)"
     );
     let scope = toggled
@@ -1029,17 +1029,22 @@ fn dialog_hints_null_stays_float_member_without_frame_write() {
     // Known float membership: staged fact keeps raw None, derived floats.
     assert!(
         engine
+            .world
             .staged
             .facts
             .get(&WindowId("win-d".to_owned()))
             .is_some_and(|fact| fact.hints.is_none()),
         "raw hints stay None, never defaulted"
     );
-    let derived = engine.derived_for(&WindowId("win-d".to_owned()));
+    let derived = engine.tx(|tx| tx.derived_for(&WindowId("win-d".to_owned())));
     assert!(!derived.hold, "{derived:?}");
     assert!(derived.floating, "{derived:?}");
     assert!(
-        engine.members.contains_key(&WindowId("win-d".to_owned())),
+        engine
+            .world
+            .workspace
+            .members
+            .contains_key(&WindowId("win-d".to_owned())),
         "float keeps membership"
     );
     // Healthy sibling scope stays controlled with a live row.
@@ -1073,6 +1078,8 @@ fn dialog_hints_null_stays_float_member_without_frame_write() {
 
     // Readable hints then unreadable again: no home/authority churn.
     let home = engine
+        .world
+        .workspace
         .members
         .get(&WindowId("win-d".to_owned()))
         .expect("member")
@@ -1117,6 +1124,8 @@ fn dialog_hints_null_stays_float_member_without_frame_write() {
     );
     assert_eq!(
         engine
+            .world
+            .workspace
             .members
             .get(&WindowId("win-d".to_owned()))
             .expect("member")
@@ -1166,6 +1175,7 @@ fn dialog_hints_null_stays_float_member_without_frame_write() {
     }
     assert!(
         engine
+            .world
             .staged
             .facts
             .get(&WindowId("win-d".to_owned()))
@@ -1193,7 +1203,7 @@ fn ordinary_hints_null_fresh_admission_stays_held() {
     );
     // Classification hold: no usable membership row, never a fabricated
     // controlled float/tile.
-    let derived = engine.derived_for(&WindowId("win-u".to_owned()));
+    let derived = engine.tx(|tx| tx.derived_for(&WindowId("win-u".to_owned())));
     assert!(derived.hold, "{derived:?}");
     assert!(!derived.floating, "{derived:?}");
     assert!(
@@ -1233,6 +1243,7 @@ fn hints_null_float_move_refuses_without_side_effects() {
     );
     assert!(
         engine
+            .world
             .staged
             .facts
             .get(&WindowId("win-d".to_owned()))
@@ -1266,14 +1277,14 @@ fn hints_null_float_move_refuses_without_side_effects() {
         other => panic!("expected directional refusal, got {other:?}"),
     }
     assert!(
-        engine.retained_floats.is_empty(),
+        engine.world.settlement.retained_floats.is_empty(),
         "no placement: {:?}",
-        engine.retained_floats
+        engine.world.settlement.retained_floats
     );
     assert!(
-        engine.retained_clears.is_empty(),
+        engine.world.settlement.retained_clears.is_empty(),
         "no clear kickoff: {:?}",
-        engine.retained_clears
+        engine.world.settlement.retained_clears
     );
     let row = row_of(&reply, "win-d");
     assert!(row.frame_operation.is_none(), "{row:?}");
@@ -1333,14 +1344,14 @@ fn hints_null_float_move_refuses_without_side_effects() {
         other => panic!("expected directional refusal, got {other:?}"),
     }
     assert!(
-        cleared_engine.retained_clears.is_empty(),
+        cleared_engine.world.settlement.retained_clears.is_empty(),
         "no clear kickoff: {:?}",
-        cleared_engine.retained_clears
+        cleared_engine.world.settlement.retained_clears
     );
     assert!(
-        cleared_engine.retained_floats.is_empty(),
+        cleared_engine.world.settlement.retained_floats.is_empty(),
         "{:?}",
-        cleared_engine.retained_floats
+        cleared_engine.world.settlement.retained_floats
     );
 
     // Readable unconstrained recovers: the same half-snap authorizes.
@@ -1372,10 +1383,10 @@ fn hints_null_float_move_refuses_without_side_effects() {
         other => panic!("expected applied, got {other:?}"),
     }
     assert_eq!(
-        engine.retained_floats.len(),
+        engine.world.settlement.retained_floats.len(),
         1,
         "{:?}",
-        engine.retained_floats
+        engine.world.settlement.retained_floats
     );
     assert_eq!(
         row_of(&reply, "win-d").frame_operation.as_deref(),
@@ -1428,9 +1439,9 @@ fn hints_null_float_move_refuses_without_side_effects() {
         other => panic!("expected constraints refusal, got {other:?}"),
     }
     assert!(
-        capped_engine.retained_floats.is_empty(),
+        capped_engine.world.settlement.retained_floats.is_empty(),
         "{:?}",
-        capped_engine.retained_floats
+        capped_engine.world.settlement.retained_floats
     );
 }
 
@@ -1459,6 +1470,8 @@ fn retained_explicit_automatic_null_cycle_keeps_home() {
         row_of(&reply, "win-a")
     );
     let home = engine
+        .world
+        .workspace
         .members
         .get(&WindowId("win-a".to_owned()))
         .expect("member")
@@ -1484,11 +1497,15 @@ fn retained_explicit_automatic_null_cycle_keeps_home() {
         "latch keeps float: {reply:?}"
     );
     assert!(
-        engine.derived_for(&WindowId("win-a".to_owned())).fixed_auto,
+        engine
+            .tx(|tx| tx.derived_for(&WindowId("win-a".to_owned())))
+            .fixed_auto,
         "automatic latch retained while null"
     );
     assert_eq!(
         engine
+            .world
+            .workspace
             .members
             .get(&WindowId("win-a".to_owned()))
             .expect("member")
@@ -1518,11 +1535,15 @@ fn retained_explicit_automatic_null_cycle_keeps_home() {
     );
     assert!(row_of(&reply, "win-a").floating, "{reply:?}");
     assert!(
-        engine.derived_for(&WindowId("win-a".to_owned())).fixed_auto,
+        engine
+            .tx(|tx| tx.derived_for(&WindowId("win-a".to_owned())))
+            .fixed_auto,
         "automatic origin retained after recovery"
     );
     assert_eq!(
         engine
+            .world
+            .workspace
             .members
             .get(&WindowId("win-a".to_owned()))
             .expect("member")
@@ -1563,6 +1584,8 @@ fn retained_explicit_automatic_null_cycle_keeps_home() {
     );
     assert!(row_of(&floated, "win-e").floating, "{floated:?}");
     let home = explicit
+        .world
+        .workspace
         .members
         .get(&WindowId("win-e".to_owned()))
         .expect("member")
@@ -1589,6 +1612,8 @@ fn retained_explicit_automatic_null_cycle_keeps_home() {
     );
     assert_eq!(
         explicit
+            .world
+            .workspace
             .members
             .get(&WindowId("win-e".to_owned()))
             .expect("member")
@@ -1596,9 +1621,11 @@ fn retained_explicit_automatic_null_cycle_keeps_home() {
         home
     );
     assert!(
-        !explicit.derived_for(&WindowId("win-e".to_owned())).hold,
+        !explicit
+            .tx(|tx| tx.derived_for(&WindowId("win-e".to_owned())))
+            .hold,
         "{:?}",
-        explicit.derived_for(&WindowId("win-e".to_owned()))
+        explicit.tx(|tx| tx.derived_for(&WindowId("win-e".to_owned())))
     );
     assert!(
         row_of(&reply, "win-e").frame_operation.is_none(),
@@ -1626,6 +1653,8 @@ fn retained_explicit_automatic_null_cycle_keeps_home() {
     assert!(row.clear_operation.is_none(), "{row:?}");
     assert_eq!(
         explicit
+            .world
+            .workspace
             .members
             .get(&WindowId("win-e".to_owned()))
             .expect("member")
@@ -1684,6 +1713,8 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
         Some("op-11")
     );
     let home = engine
+        .world
+        .workspace
         .members
         .get(&WindowId("win-d".to_owned()))
         .expect("member")
@@ -1708,6 +1739,8 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
     );
     assert_eq!(
         engine
+            .world
+            .workspace
             .members
             .get(&WindowId("win-d".to_owned()))
             .expect("member")
@@ -1722,12 +1755,15 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
     );
     assert!(row.clear_operation.is_none(), "{row:?}");
     assert_eq!(
-        engine.retained_floats.len(),
+        engine.world.settlement.retained_floats.len(),
         1,
         "{:?}",
-        engine.retained_floats
+        engine.world.settlement.retained_floats
     );
-    assert_eq!(engine.retained_floats[0].operation_id, "op-11");
+    assert_eq!(
+        engine.world.settlement.retained_floats[0].operation_id,
+        "op-11"
+    );
     let healthy = row_of(&reply, "win-t");
     assert_eq!(
         healthy.membership_authority,
@@ -1757,12 +1793,15 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
         "same op resumes: {reply:?}"
     );
     assert_eq!(
-        engine.retained_floats.len(),
+        engine.world.settlement.retained_floats.len(),
         1,
         "{:?}",
-        engine.retained_floats
+        engine.world.settlement.retained_floats
     );
-    assert_eq!(engine.retained_floats[0].operation_id, "op-11");
+    assert_eq!(
+        engine.world.settlement.retained_floats[0].operation_id,
+        "op-11"
+    );
 
     // Maximized float parallel: NeedClear binds, null withholds, readable resumes same op.
     let mut max_engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
@@ -1830,13 +1869,20 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
     );
     assert!(row.frame_operation.is_none(), "{row:?}");
     assert_eq!(
-        max_engine.retained_clears.len(),
+        max_engine.world.settlement.retained_clears.len(),
         1,
         "{:?}",
-        max_engine.retained_clears
+        max_engine.world.settlement.retained_clears
     );
-    assert_eq!(max_engine.retained_clears[0].operation_id, "op-12");
-    assert!(max_engine.retained_clears[0].pending.is_none());
+    assert_eq!(
+        max_engine.world.settlement.retained_clears[0].operation_id,
+        "op-12"
+    );
+    assert!(
+        max_engine.world.settlement.retained_clears[0]
+            .pending
+            .is_none()
+    );
     let reply = accepted(
         &mut max_engine,
         &report(
@@ -1877,9 +1923,11 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
         row_of(&reply, "win-m")
     );
     assert!(
-        max_engine.retained_clears[0].pending.is_some(),
+        max_engine.world.settlement.retained_clears[0]
+            .pending
+            .is_some(),
         "attempt staged: {:?}",
-        max_engine.retained_clears
+        max_engine.world.settlement.retained_clears
     );
     let reply = accepted(
         &mut max_engine,

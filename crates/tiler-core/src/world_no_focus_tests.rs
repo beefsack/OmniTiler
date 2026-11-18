@@ -122,7 +122,7 @@ fn target_tree_shape(
         output: OutputId(output.to_owned()),
         workspace: WorkspaceId(view),
     };
-    let tree = engine.layout.tree(&key).cloned();
+    let tree = engine.world.layout.tree(&key).cloned();
     (key, tree)
 }
 
@@ -147,6 +147,7 @@ fn dfs_windows_of(
         .iter()
         .map(|leaf| {
             engine
+                .world
                 .layout
                 .window_for_leaf(key, leaf)
                 .expect("link")
@@ -592,7 +593,10 @@ fn no_focus_seeded_target_prefers_newer_seeded_leaf() {
         dfs_windows_of(&tree, &engine, &target_key),
         vec!["win-b2", "win-b1"]
     );
-    let seeded = engine.layout.cross_output_history_newest_first(&target_key);
+    let seeded = engine
+        .world
+        .layout
+        .cross_output_history_newest_first(&target_key);
     assert_eq!(
         seeded,
         vec![
@@ -1354,6 +1358,7 @@ fn no_focus_held_source_refuses_without_mutation() {
         workspace: WorkspaceId(view_a),
     };
     let owned: Vec<crate::seed::EngineWindow> = engine
+        .world
         .staged
         .domains
         .iter()
@@ -1381,10 +1386,10 @@ fn no_focus_held_source_refuses_without_mutation() {
         Some("out-a"),
         None,
     );
-    engine.stage_facts_v4(&probe);
-    engine.build_staged_domains();
+    engine.tx(|tx| tx.stage_facts_v4(&probe));
+    engine.tx(|tx| tx.build_staged_domains());
     let revision_before = engine.state_revision();
-    match engine.focus_directional_no_focus(11, Direction::Right, &held, &by_id) {
+    match engine.tx(|tx| tx.focus_directional_no_focus(11, Direction::Right, &held, &by_id)) {
         crate::world_commands::CommandApplied::Rejected { kind, .. } => {
             assert_eq!(kind, "scope-held")
         }

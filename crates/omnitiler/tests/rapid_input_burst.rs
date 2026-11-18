@@ -838,8 +838,9 @@ fn rapid_input_batch_saves_canonical_bytes_fit_reserve() {
     use tiler_core::directional::WindowId;
     use tiler_core::intent_data::IntentData;
     use tiler_core::world_report::{IntentDesire, WorldCommand};
-    use tiler_core::world_sizing::MAX_INTENT_DESIRED_ROW_BYTES;
-    use tiler_core::world_sizing_v4::max_intent_save_batch_bound_v4;
+    use tiler_protocol::world_admission_sizing::{
+        MAX_INTENT_DESIRED_ROW_BYTES, max_intent_save_batch_bound_v4,
+    };
     use tiler_protocol::world_protocol::{decode_reply_v4, encode_reply_v4};
 
     let id_a = format!("a{:0127}", 1);

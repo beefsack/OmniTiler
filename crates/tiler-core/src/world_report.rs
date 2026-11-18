@@ -8,21 +8,12 @@
 //! codec share one shape.
 //!
 //! The [`WorldEngine`] owns the transition; this module owns shapes,
-//! validation, and freshness. Sizing and the canonical encoding live in
-//! [`crate::world_sizing`] and re-export here, so downstream paths
-//! (`world_engine`, protocol codec) keep one stable import root.
+//! validation, and freshness. Wire sizing and canonical encoding live in
+//! `tiler-protocol`.
 //!
 //! Contract version 3 is logical-first plus the required neutral
 //! all-native-window occupancy lane on every native row (complete,
 //! readable, or explicit unknown; strict coverage of each ordered id).
-
-pub use crate::world_sizing::{
-    MAX_INTENT_DESIRED_DATA_JSON, MAX_INTENT_DESIRED_ROW_BYTES, NonFiniteNumber,
-    encode_finite_json_number, encode_held_screen_canonical, encode_held_window_canonical,
-    encode_screen_canonical, encode_window_canonical, int_len, json_number_len, json_string_len,
-    max_intent_desired_bound, push_json_number, push_raw_setting_value, push_row_diagnostic,
-    raw_setting_value_len, u64_len, usize_len,
-};
 
 use std::collections::BTreeSet;
 
@@ -48,10 +39,6 @@ pub const WORLD_CONTRACT_VERSION: u32 = 4;
 /// refused, identifiable bad rows held narrowly). Equals
 /// [`WORLD_CONTRACT_VERSION`]: the public contract is v4.
 pub const WORLD_CONTRACT_VERSION_V4: u32 = 4;
-/// D4 selected transport budget: 4 MiB request AND reply.
-pub const WORLD_MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
-/// D4 selected transport budget: 4 MiB request AND reply.
-pub const WORLD_MAX_REPLY_BYTES: usize = 4 * 1024 * 1024;
 
 /// Typed authority target; wire encoding is a closed tagged record.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -2258,8 +2245,8 @@ pub enum WorldCommand {
     /// Native fullscreen toggle: flip the readable native fullscreen fact
     /// at command-execution time. An unconfirmed target is not a native fact.
     ToggleFullscreen { window: WindowId },
-    /// Existing operation route: one [`CoreCommand`] executed against the
-    /// homing (or first readable) domain through the full [`CoreEvent`].
+    /// Execute one [`CoreCommand`] through the world-owned layout against
+    /// the homing (or first readable) domain.
     /// `SendToWorkspace`/`SendToOutput` retain a window transfer exactly
     /// like [`WorldCommand::Send`]; directional focus emits one effect;
     /// read-only queries reconcile only. Cross-output drag sources,
@@ -3042,7 +3029,11 @@ pub(crate) fn graded_held_window_row(fact: &WindowFact, ordinal: usize) -> HeldW
 /// `hints`, `visibility`, and `lastWrite` objects in schema order. Used by
 /// both the invalid and the conflicting graders: one retention, two
 /// diagnostics.
-pub(crate) fn retained_window_fields(
+///
+/// Transition: temporarily `pub` so `tiler_protocol` reuses the structural
+/// field mapping for canonical window row emission without duplicating it
+/// before raw hold ownership moves.
+pub fn retained_window_fields(
     fact: &WindowFact,
 ) -> Vec<(String, crate::connection::RawSettingValue)> {
     use crate::connection::RawSettingValue;
@@ -3531,6 +3522,19 @@ pub fn unwrap_implicit(command: &WorldCommand) -> &WorldCommand {
         WorldCommand::Implicit(inner) => inner,
         other => other,
     }
+}
+
+/// True when one queued command can replace a retained intent target: `SetSticky`,
+/// `ToggleSticky`, or the sticky-clearing `ToggleFloat`, explicit or
+/// execution-time. Every other command reserves nothing.
+#[must_use]
+pub fn is_intent_save_command_v4(command: &WorldCommand) -> bool {
+    matches!(
+        unwrap_implicit(command),
+        WorldCommand::SetSticky { .. }
+            | WorldCommand::ToggleSticky { .. }
+            | WorldCommand::Operation(CoreCommand::ToggleFloat { .. })
+    )
 }
 
 /// Build the explicit command for one resolved execution-time subject:

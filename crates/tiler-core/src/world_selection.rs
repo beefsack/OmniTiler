@@ -55,13 +55,14 @@ use crate::world_attempts::{
     PropertyAttempt, RetentionPolicy, VisibilityAttemptEvidence, retain_candidate,
     retain_matching_attempt, view_evidence_matches, visibility_evidence_matches,
 };
-use crate::world_engine::WorldEngine;
+use crate::world_engine::WorldState;
 use crate::world_focus::{FocusVerdict, classify_focus_feedback};
 use crate::world_report::{
     AfterShown, AfterShownMember, AfterShownScope, EffectKind, FocusFeedback, HeldScreenRow,
     HoldReason, OneShotEffect, ScopeAuthority, ScreenReport, SwitchEvent, SwitchFocus,
     SwitchOutcome, TransferKind, VisibilityTarget, WindowDesire, WorldCommand,
 };
+use crate::world_transaction::WorldTransaction;
 
 /// Minimal carrier between the real selection command and publish only:
 /// the dispatching command, the resolved focus target (if any) and its
@@ -289,7 +290,7 @@ fn selection_known_outputs(
         .collect()
 }
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Whether one resolved selection focus target may take the
     /// native-free suppression-capable route: no host-owned domains,
     /// handshake suppression support, and a known-safe per-window preimage
@@ -306,16 +307,17 @@ impl WorldEngine {
         home: &DomainKey,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> bool {
-        if self.host_owned_workspace_domains() {
+        if self.connection.host_owned_workspace_domains() {
             return false;
         }
         if !self
+            .connection
             .capabilities()
             .is_some_and(|caps| caps.window_suppression)
         {
             return false;
         }
-        if self.restored_sticky.contains_key(window) {
+        if self.world.intent.restored_sticky.contains_key(window) {
             return false;
         }
         if held_scopes.contains(home) {
@@ -324,7 +326,7 @@ impl WorldEngine {
         if self.is_held_window(window) || self.is_excluded_window(window) {
             return false;
         }
-        let Some(fact) = self.staged.facts.get(window) else {
+        let Some(fact) = self.world.staged.facts.get(window) else {
             return false;
         };
         if fact.suppression_available != Some(true) {
@@ -333,7 +335,7 @@ impl WorldEngine {
         if fact.visibility.visible.is_none() || fact.visibility.suppression_owned.is_none() {
             return false;
         }
-        let owned_supported = self.capabilities().is_none_or(|caps| {
+        let owned_supported = self.connection.capabilities().is_none_or(|caps| {
             !caps
                 .unavailable_facts
                 .contains(&crate::connection::FactName::Owned)
@@ -350,7 +352,10 @@ impl WorldEngine {
         {
             return false;
         }
-        let maximize_supported = self.capabilities().is_some_and(|caps| caps.maximize);
+        let maximize_supported = self
+            .connection
+            .capabilities()
+            .is_some_and(|caps| caps.maximize);
         if maximize_supported && fact.maximized != Some(false) {
             return false;
         }
@@ -373,29 +378,44 @@ impl WorldEngine {
     /// non-focus route completes nothing and leaves the dropped scope
     /// without stale controlled targets.
     pub(crate) fn prune_selection_for_outputs(&mut self, affected: &[OutputId]) {
-        self.selection_scopes
+        self.world
+            .settlement
+            .selection_scopes
             .retain(|output, _| !affected.contains(output));
-        self.selection_targets
+        self.world
+            .settlement
+            .selection_targets
             .retain(|_, entry| !affected.contains(&entry.home.output));
-        self.retained_selection
+        self.world
+            .settlement
+            .retained_selection
             .retain(|output, _| !affected.contains(output));
-        if self.pending_selection.as_ref().is_some_and(|pending| {
-            pending
-                .affected_outputs
-                .iter()
-                .any(|out| affected.contains(out))
-        }) {
-            self.pending_selection = None;
+        if self
+            .world
+            .settlement
+            .pending_selection
+            .as_ref()
+            .is_some_and(|pending| {
+                pending
+                    .affected_outputs
+                    .iter()
+                    .any(|out| affected.contains(out))
+            })
+        {
+            self.world.settlement.pending_selection = None;
         }
         // Latest intent wins over policy carriers too: a command on an
         // overlapping output supersedes the policy pending there (policy
         // never supersedes a command).
-        self.pending_policy_selections.retain(|pending| {
-            !pending
-                .affected_outputs
-                .iter()
-                .any(|out| affected.contains(out))
-        });
+        self.world
+            .settlement
+            .pending_policy_selections
+            .retain(|pending| {
+                !pending
+                    .affected_outputs
+                    .iter()
+                    .any(|out| affected.contains(out))
+            });
     }
 
     /// Whether one resolved selection focus target may take the
@@ -413,7 +433,7 @@ impl WorldEngine {
         home: &DomainKey,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> bool {
-        if !self.host_owned_workspace_domains() {
+        if !self.connection.host_owned_workspace_domains() {
             return false;
         }
         if held_scopes.contains(home) {
@@ -422,7 +442,7 @@ impl WorldEngine {
         if self.is_held_window(window) || self.is_excluded_window(window) {
             return false;
         }
-        let Some(fact) = self.staged.facts.get(window) else {
+        let Some(fact) = self.world.staged.facts.get(window) else {
             return false;
         };
         if fact.minimized == Some(true) {
@@ -445,10 +465,10 @@ impl WorldEngine {
         if self.is_held_window(window) || self.is_excluded_window(window) {
             return true;
         }
-        if self.restored_sticky.contains_key(window) {
+        if self.world.intent.restored_sticky.contains_key(window) {
             return true;
         }
-        let Some(fact) = self.staged.facts.get(window) else {
+        let Some(fact) = self.world.staged.facts.get(window) else {
             return true;
         };
         if fact.owned == Some(true) {
@@ -480,15 +500,17 @@ impl WorldEngine {
     /// prove a change. A pending new select applies after this reconcile,
     /// so `retain_view`'s own prune still owns the superseding intent.
     pub(crate) fn reconcile_selection_scopes(&mut self, held_scopes: &BTreeSet<DomainKey>) {
-        if self.selection_scopes.is_empty() || !self.staged.observation.inventory_complete {
+        if self.world.settlement.selection_scopes.is_empty()
+            || !self.world.staged.observation.inventory_complete
+        {
             return;
         }
         let mut stale: Vec<OutputId> = Vec::new();
-        for (output, scope) in &self.selection_scopes {
+        for (output, scope) in &self.world.settlement.selection_scopes {
             if scope.selected.iter().any(|home| held_scopes.contains(home)) {
                 continue;
             }
-            let own_flight = self.retained.iter().any(|retained| {
+            let own_flight = self.world.settlement.retained.iter().any(|retained| {
                 matches!(retained.target.kind, TransferKind::View)
                     && scope.selected.iter().any(|home| {
                         home.output == retained.target.target_output
@@ -527,25 +549,29 @@ impl WorldEngine {
                 // (no effect) keeps the existing removal; selected-covered
                 // via the scope (not the native view_targets map) so both
                 // lanes share one guard.
-                let departing_echo = self.retained_selection.values().any(|binding| {
-                    binding.effect.is_some()
-                        && scope.rev == binding.rev
-                        && scope
-                            .selected
-                            .iter()
-                            .any(|selected| binding.selected.contains(selected))
-                        && scope
-                            .departing
-                            .iter()
-                            .any(|home| home.output == *output && home.workspace.0 == current)
-                });
+                let departing_echo =
+                    self.world
+                        .settlement
+                        .retained_selection
+                        .values()
+                        .any(|binding| {
+                            binding.effect.is_some()
+                                && scope.rev == binding.rev
+                                && scope
+                                    .selected
+                                    .iter()
+                                    .any(|selected| binding.selected.contains(selected))
+                                && scope.departing.iter().any(|home| {
+                                    home.output == *output && home.workspace.0 == current
+                                })
+                        });
                 if departing_echo {
                     // Explicit superseding View flight to the departing
                     // home restores the prior supersession drop: a
                     // redundant select back home mints a fresh View flight
                     // via retain_view_inner, while a follow keeps no view
                     // flight at all.
-                    let superseding_view = self.retained.iter().any(|retained| {
+                    let superseding_view = self.world.settlement.retained.iter().any(|retained| {
                         matches!(retained.target.kind, TransferKind::View)
                             && retained.target.target_output == *output
                             && retained.target.target_workspace == current
@@ -568,37 +594,43 @@ impl WorldEngine {
                 // focusless form keeps key-only removal). Key-proven-gated
                 // so a superseding redundant select back home (key itself
                 // stale) still drops.
-                let outstanding = self.retained_selection.iter().any(|(key, binding)| {
-                    if binding.effect.is_none() && !binding.view_targets.is_empty() {
-                        return false;
-                    }
-                    let covers = binding.view_targets.contains_key(output)
-                        || (binding.view_targets.is_empty()
-                            && *output != *key
-                            && binding.affected.contains(output));
-                    if !covers {
-                        return false;
-                    }
-                    if !scope
-                        .departing
+                let outstanding =
+                    self.world
+                        .settlement
+                        .retained_selection
                         .iter()
-                        .any(|home| home.output == *output && home.workspace.0 == current)
-                    {
-                        return false;
-                    }
-                    if let Some(home) = binding.view_targets.get(key) {
-                        return self.effective_view(key).as_ref() == Some(&home.workspace.0);
-                    }
-                    // Native-free cover: the key output already shows its
-                    // frozen selected home.
-                    binding
-                        .selected
-                        .iter()
-                        .find(|home| home.output == *key)
-                        .is_some_and(|home| {
-                            self.effective_view(key).as_ref() == Some(&home.workspace.0)
-                        })
-                });
+                        .any(|(key, binding)| {
+                            if binding.effect.is_none() && !binding.view_targets.is_empty() {
+                                return false;
+                            }
+                            let covers = binding.view_targets.contains_key(output)
+                                || (binding.view_targets.is_empty()
+                                    && *output != *key
+                                    && binding.affected.contains(output));
+                            if !covers {
+                                return false;
+                            }
+                            if !scope
+                                .departing
+                                .iter()
+                                .any(|home| home.output == *output && home.workspace.0 == current)
+                            {
+                                return false;
+                            }
+                            if let Some(home) = binding.view_targets.get(key) {
+                                return self.effective_view(key).as_ref()
+                                    == Some(&home.workspace.0);
+                            }
+                            // Native-free cover: the key output already shows its
+                            // frozen selected home.
+                            binding
+                                .selected
+                                .iter()
+                                .find(|home| home.output == *key)
+                                .is_some_and(|home| {
+                                    self.effective_view(key).as_ref() == Some(&home.workspace.0)
+                                })
+                        });
                 if outstanding {
                     continue;
                 }
@@ -616,6 +648,8 @@ impl WorldEngine {
         // bindings keep key-only removal. Departing echoes never reach
         // this filter: they stay out of stale above.
         let covered: Vec<OutputId> = self
+            .world
+            .settlement
             .retained_selection
             .iter()
             .filter(|(key, binding)| {
@@ -635,12 +669,14 @@ impl WorldEngine {
             .map(|(key, _)| key.clone())
             .collect();
         for output in &stale {
-            self.selection_scopes.remove(output);
-            self.selection_targets
+            self.world.settlement.selection_scopes.remove(output);
+            self.world
+                .settlement
+                .selection_targets
                 .retain(|_, entry| entry.home.output != *output);
         }
         for output in covered {
-            self.retained_selection.remove(&output);
+            self.world.settlement.retained_selection.remove(&output);
         }
     }
 
@@ -657,11 +693,16 @@ impl WorldEngine {
         // view_targets obligate it. Effect-gated: native-free bindings
         // leave view_targets empty and focusless bindings mint no effect,
         // so both keep key-only lookup.
-        let binding = match self.retained_selection.get(output) {
+        let binding = match self.world.settlement.retained_selection.get(output) {
             Some(binding) => binding,
-            None => match self.retained_selection.values().find(|binding| {
-                binding.effect.is_some() && binding.view_targets.contains_key(output)
-            }) {
+            None => match self
+                .world
+                .settlement
+                .retained_selection
+                .values()
+                .find(|binding| {
+                    binding.effect.is_some() && binding.view_targets.contains_key(output)
+                }) {
                 Some(binding) => binding,
                 None => return false,
             },
@@ -676,7 +717,7 @@ impl WorldEngine {
         else {
             return false;
         };
-        let host_owned = self.host_owned_workspace_domains();
+        let host_owned = self.connection.host_owned_workspace_domains();
         // Production view_targets freeze host-owned only: native proof
         // only, never logical echoes.
         let echo = self.native_echo_for(output);
@@ -692,10 +733,16 @@ impl WorldEngine {
     /// keep the issuing revision; later facts never rewrite it.
     pub(crate) fn apply_pending_selection(&mut self) {
         let mut pendings: Vec<PendingSelection> = Vec::new();
-        if let Some(pending) = self.pending_selection.clone() {
+        if let Some(pending) = self.world.settlement.pending_selection.clone() {
             pendings.push(pending);
         }
-        pendings.extend(self.pending_policy_selections.iter().cloned());
+        pendings.extend(
+            self.world
+                .settlement
+                .pending_policy_selections
+                .iter()
+                .cloned(),
+        );
         for pending in &pendings {
             self.apply_one_pending_selection(pending);
         }
@@ -704,7 +751,9 @@ impl WorldEngine {
     /// Carry one pending selection into the retained per-window target
     /// map, same grant rules for command and policy carriers.
     fn apply_one_pending_selection(&mut self, pending: &PendingSelection) {
-        self.selection_targets
+        self.world
+            .settlement
+            .selection_targets
             .retain(|_, entry| !pending.affected_outputs.contains(&entry.home.output));
         // Host-owned (focus-bearing and focusless alike) freezes native
         // selector obligations only:
@@ -712,12 +761,13 @@ impl WorldEngine {
         // permitted for native-homed windows, and decorating publishes
         // nothing on this lane), so an empty target set here is the
         // obligation set, never a gap.
-        if self.host_owned_workspace_domains() {
+        if self.connection.host_owned_workspace_domains() {
             return;
         }
         let selected: BTreeSet<DomainKey> = pending.selected.iter().cloned().collect();
         let departing: BTreeSet<DomainKey> = pending.departing.iter().cloned().collect();
         let mut homed: Vec<(WindowId, DomainKey)> = self
+            .world
             .staged
             .homing
             .iter()
@@ -735,7 +785,7 @@ impl WorldEngine {
             if self.selection_member_blocked(&window) {
                 continue;
             }
-            self.selection_targets.insert(
+            self.world.settlement.selection_targets.insert(
                 window,
                 SelectionTarget {
                     home,
@@ -751,9 +801,9 @@ impl WorldEngine {
         // the existing completion. Membership still settles independently
         // through the Migration flight plus the frozen arrival brackets;
         // this grant never self-confirms it.
-        if !self.host_owned_workspace_domains() {
+        if !self.connection.host_owned_workspace_domains() {
             let op = pending.parent_op.clone();
-            let target = self.retained.iter().find_map(|retained| {
+            let target = self.world.settlement.retained.iter().find_map(|retained| {
                 if matches!(&retained.target.kind, TransferKind::Migration)
                     && retained.target.operation_id == op
                 {
@@ -769,6 +819,8 @@ impl WorldEngine {
             });
             if let Some(target) = target {
                 let movers: Vec<WindowId> = self
+                    .world
+                    .settlement
                     .retained
                     .iter()
                     .find(|retained| {
@@ -781,7 +833,7 @@ impl WorldEngine {
                     if self.selection_member_blocked(&window) {
                         continue;
                     }
-                    self.selection_targets.insert(
+                    self.world.settlement.selection_targets.insert(
                         window,
                         SelectionTarget {
                             home: target.clone(),
@@ -803,18 +855,18 @@ impl WorldEngine {
     /// live selection scopes, so a dropped finite grant never blocks a
     /// surviving output's policy and no new effect is resurrected.
     pub(crate) fn admit_selection_late_members(&mut self) {
-        if self.host_owned_workspace_domains() {
+        if self.connection.host_owned_workspace_domains() {
             return;
         }
-        if self.selection_scopes.is_empty() {
+        if self.world.settlement.selection_scopes.is_empty() {
             return;
         }
-        let rev = self.state_revision + 1;
+        let rev = self.world.state_revision + 1;
         let mut grants: Vec<(WindowId, DomainKey, bool)> = Vec::new();
-        for scope in self.selection_scopes.values() {
+        for scope in self.world.settlement.selection_scopes.values() {
             for home in scope.selected.iter().chain(scope.departing.iter()) {
                 let shown = scope.selected.contains(home);
-                for (window, homed) in &self.staged.homing {
+                for (window, homed) in &self.world.staged.homing {
                     if homed != home {
                         continue;
                     }
@@ -823,10 +875,12 @@ impl WorldEngine {
                     // below instead of inheriting the old revision.
                     // Same-home entries keep their revision untouched.
                     let stale = self
+                        .world
+                        .settlement
                         .selection_targets
                         .get(window)
                         .is_some_and(|entry| entry.home != *homed);
-                    if !stale && self.selection_targets.contains_key(window) {
+                    if !stale && self.world.settlement.selection_targets.contains_key(window) {
                         continue;
                     }
                     if self.selection_member_blocked(window) {
@@ -838,7 +892,9 @@ impl WorldEngine {
         }
         grants.sort();
         for (window, home, shown) in grants {
-            self.selection_targets
+            self.world
+                .settlement
+                .selection_targets
                 .insert(window, SelectionTarget { home, shown, rev });
         }
     }
@@ -857,10 +913,11 @@ impl WorldEngine {
         held_scopes: &BTreeSet<DomainKey>,
         windows: &mut [WindowDesire],
     ) {
-        if self.host_owned_workspace_domains() {
+        if self.connection.host_owned_workspace_domains() {
             return;
         }
         let caps_ok = self
+            .connection
             .capabilities()
             .is_some_and(|caps| caps.window_suppression);
         for desire in windows.iter_mut() {
@@ -868,13 +925,14 @@ impl WorldEngine {
                 continue;
             }
             let window = desire.lifetime.clone();
-            let Some(entry) = self.selection_targets.get(&window) else {
+            let Some(entry) = self.world.settlement.selection_targets.get(&window) else {
                 continue;
             };
             if desire.output != entry.home.output || desire.workspace != entry.home.workspace.0 {
                 continue;
             }
             if self
+                .world
                 .staged
                 .facts
                 .get(&window)
@@ -891,6 +949,7 @@ impl WorldEngine {
             let excluded_lane =
                 self.is_excluded_window(&window) || derived.excluded || derived.own_excluded;
             let domain_readable = self
+                .world
                 .staged
                 .domains
                 .iter()
@@ -903,8 +962,8 @@ impl WorldEngine {
             // still prove membership independently, never this desire).
             // Every other gate below still applies.
             let committed_mover = !homing_current
-                && !self.host_owned_workspace_domains()
-                && self.retained.iter().any(|retained| {
+                && !self.connection.host_owned_workspace_domains()
+                && self.world.settlement.retained.iter().any(|retained| {
                     matches!(&retained.target.kind, TransferKind::Migration)
                         && retained.members.contains(&window)
                         && retained.target.target_output == entry.home.output
@@ -921,16 +980,17 @@ impl WorldEngine {
                 current_view.is_some_and(|view| view != entry.home.workspace.0)
             };
             let mut controlled = caps_ok
-                && self.staged.observation.inventory_complete
-                && !self.staged.gesture_barrier
+                && self.world.staged.observation.inventory_complete
+                && !self.world.staged.gesture_barrier
                 && !held_scopes.contains(&entry.home)
                 && !self.is_held_window(&window)
                 && !excluded_lane
                 && domain_readable
                 && (homing_current || committed_mover)
                 && view_current
-                && (self.engine_knows_window_any(&window) || self.members.contains_key(&window));
-            match self.staged.facts.get(&window) {
+                && (self.world.engine_knows_window_any(&window)
+                    || self.world.workspace.members.contains_key(&window));
+            match self.world.staged.facts.get(&window) {
                 Some(fact) => {
                     if fact.suppression_available != Some(true) {
                         controlled = false;
@@ -940,7 +1000,7 @@ impl WorldEngine {
                     {
                         controlled = false;
                     }
-                    let owned_supported = self.capabilities().is_none_or(|caps| {
+                    let owned_supported = self.connection.capabilities().is_none_or(|caps| {
                         !caps
                             .unavailable_facts
                             .contains(&crate::connection::FactName::Owned)
@@ -968,7 +1028,10 @@ impl WorldEngine {
                     {
                         controlled = false;
                     }
-                    let maximize_supported = self.capabilities().is_some_and(|caps| caps.maximize);
+                    let maximize_supported = self
+                        .connection
+                        .capabilities()
+                        .is_some_and(|caps| caps.maximize);
                     if maximize_supported && fact.maximized != Some(false) {
                         controlled = false;
                     }
@@ -990,18 +1053,19 @@ impl WorldEngine {
             desire.visibility = Some(target);
             if excluded_lane {
                 desire.visibility_authority = ScopeAuthority::Untouched;
-            } else if self.staged.gesture_barrier {
+            } else if self.world.staged.gesture_barrier {
                 desire.visibility_authority = ScopeAuthority::Hold(HoldReason::GestureBarrier);
-            } else if !self.staged.observation.inventory_complete {
+            } else if !self.world.staged.observation.inventory_complete {
                 desire.visibility_authority = ScopeAuthority::Hold(HoldReason::IncompleteInventory);
             } else if self
+                .world
                 .staged
                 .facts
                 .get(&window)
                 .is_some_and(|fact| fact.minimized == Some(true))
             {
                 desire.visibility_authority = ScopeAuthority::Hold(HoldReason::Minimized);
-            } else if let Some(reason) = self.hold_reasons.get(&entry.home).copied() {
+            } else if let Some(reason) = self.world.hold_reasons.get(&entry.home).copied() {
                 desire.visibility_authority = ScopeAuthority::Hold(reason);
             } else {
                 desire.visibility_authority = ScopeAuthority::Hold(HoldReason::Unreadable);
@@ -1053,6 +1117,7 @@ impl WorldEngine {
                 continue;
             }
             if self
+                .world
                 .staged
                 .facts
                 .get(&row.lifetime)
@@ -1088,6 +1153,7 @@ impl WorldEngine {
                 let blocked =
                     derived.excluded || derived.own_excluded || derived.hold || derived.hidden;
                 let minimized = self
+                    .world
                     .staged
                     .facts
                     .get(&focus)
@@ -1130,10 +1196,12 @@ impl WorldEngine {
         windows: &[WindowDesire],
     ) {
         let mut pendings: Vec<PendingSelection> = Vec::new();
-        if let Some(pending) = self.pending_selection.take() {
+        if let Some(pending) = self.world.settlement.pending_selection.take() {
             pendings.push(pending);
         }
-        pendings.extend(std::mem::take(&mut self.pending_policy_selections));
+        pendings.extend(std::mem::take(
+            &mut self.world.settlement.pending_policy_selections,
+        ));
         for pending in pendings {
             self.freeze_one_selection(effects, windows, pending);
         }
@@ -1166,7 +1234,7 @@ impl WorldEngine {
         // latches here. Each binding keeps its own frozen copy: later
         // supersession of the global slot never rewrites it, and
         // member/visibility obligations are untouched.
-        if let (Some(slot), Some(repr)) = (self.pending_focus.as_ref(), effect.as_mut())
+        if let (Some(slot), Some(repr)) = (self.world.focus.pending_focus.as_ref(), effect.as_mut())
             && slot.cause == crate::world_report::FocusRequestCause::ExplicitCommand
             && slot.cmd_seq == pending.command_seq
             && slot.target == repr.target
@@ -1193,7 +1261,7 @@ impl WorldEngine {
             if selected.is_empty() && departing.is_empty() {
                 continue;
             }
-            self.selection_scopes.insert(
+            self.world.settlement.selection_scopes.insert(
                 output.clone(),
                 SelectionScope {
                     selected,
@@ -1203,7 +1271,7 @@ impl WorldEngine {
             );
         }
         let focus_output = pending.focus_home.output.clone();
-        let host_owned = self.host_owned_workspace_domains();
+        let host_owned = self.connection.host_owned_workspace_domains();
         let mut members: Vec<FrozenArrivalMember> = Vec::new();
         if effect.is_some() {
             if host_owned {
@@ -1219,6 +1287,8 @@ impl WorldEngine {
                 // grant. Ordinary selectors keep the Controlled rule.
                 let parent_op = pending.parent_op.clone();
                 let committed_movers: BTreeSet<WindowId> = self
+                    .world
+                    .settlement
                     .retained
                     .iter()
                     .find(|retained| {
@@ -1254,13 +1324,17 @@ impl WorldEngine {
                     if committed_movers.contains(&row.lifetime) {
                         if row.visibility_authority != ScopeAuthority::Controlled
                             && !self
+                                .world
+                                .settlement
                                 .selection_targets
                                 .get(&row.lifetime)
                                 .is_some_and(|entry| entry.home == pending.focus_home)
                         {
                             continue;
                         }
-                        let Some(entry) = self.selection_targets.get(&row.lifetime) else {
+                        let Some(entry) =
+                            self.world.settlement.selection_targets.get(&row.lifetime)
+                        else {
                             continue;
                         };
                         members.push(FrozenArrivalMember {
@@ -1292,27 +1366,30 @@ impl WorldEngine {
         // the surviving scopes with their own revision and never join.
         // Host-owned focusless freezes native obligations only, never
         // per-window members (no LastWrite is permitted there).
-        let mut switch_members: Vec<SwitchMember> = if self.host_owned_workspace_domains() {
-            Vec::new()
-        } else {
-            self.selection_targets
-                .iter()
-                .filter(|(_, entry)| pending.affected_outputs.contains(&entry.home.output))
-                .map(|(window, entry)| SwitchMember {
-                    window: window.clone(),
-                    home: entry.home.clone(),
-                    shown: entry.shown,
-                    rev: entry.rev,
-                })
-                .collect()
-        };
+        let mut switch_members: Vec<SwitchMember> =
+            if self.connection.host_owned_workspace_domains() {
+                Vec::new()
+            } else {
+                self.world
+                    .settlement
+                    .selection_targets
+                    .iter()
+                    .filter(|(_, entry)| pending.affected_outputs.contains(&entry.home.output))
+                    .map(|(window, entry)| SwitchMember {
+                        window: window.clone(),
+                        home: entry.home.clone(),
+                        shown: entry.shown,
+                        rev: entry.rev,
+                    })
+                    .collect()
+            };
         switch_members.sort_by(|a, b| a.window.cmp(&b.window));
         // Host-owned bindings (focusless and focus-bearing alike): per
         // affected output the selected home proving via the native
         // selector readback. Native-free bindings leave this empty
         // (visibility obligations alone decide).
         let mut view_targets: BTreeMap<OutputId, DomainKey> = BTreeMap::new();
-        if self.host_owned_workspace_domains() {
+        if self.connection.host_owned_workspace_domains() {
             for output in &pending.affected_outputs {
                 if let Some(home) = pending
                     .selected
@@ -1332,7 +1409,7 @@ impl WorldEngine {
         let affected = pending.affected_outputs.clone();
         let focus_key = pending.focus.clone();
         let focus_seq = pending.command_seq;
-        self.retained_selection.insert(
+        self.world.settlement.retained_selection.insert(
             pending.focus_home.output.clone(),
             RetainedSelection {
                 effect,
@@ -1360,21 +1437,32 @@ impl WorldEngine {
         // copy. Direct/directional explicit winners have no binding and
         // keep `None`.
         if let (Some(focus), Some(focus_seq)) = (focus_key, focus_seq) {
-            let matches = self.pending_focus.as_ref().is_some_and(|slot| {
+            let matches = self.world.focus.pending_focus.as_ref().is_some_and(|slot| {
                 slot.cause == crate::world_report::FocusRequestCause::ExplicitCommand
                     && slot.cmd_seq == Some(focus_seq)
                     && slot.target == focus
                     && slot.after_shown.is_none()
             });
             if matches
-                && let Some(output) = self.pending_focus.as_ref().map(|slot| slot.output.clone())
-                && let Some(binding) = self.retained_selection.get(&output).cloned()
+                && let Some(output) = self
+                    .world
+                    .focus
+                    .pending_focus
+                    .as_ref()
+                    .map(|slot| slot.output.clone())
+                && let Some(binding) = self
+                    .world
+                    .settlement
+                    .retained_selection
+                    .get(&output)
+                    .cloned()
                 && binding.effect.as_ref().is_some_and(|effect| {
                     effect.command_seq == Some(focus_seq) && effect.target == focus
                 })
             {
-                let projection = binding.after_shown_projection(&self.selection_scopes);
-                if let Some(slot) = self.pending_focus.as_mut() {
+                let projection =
+                    binding.after_shown_projection(&self.world.settlement.selection_scopes);
+                if let Some(slot) = self.world.focus.pending_focus.as_mut() {
                     slot.after_shown = Some(projection);
                 }
             }
@@ -1385,11 +1473,16 @@ impl WorldEngine {
         // carries its terminal through the common predicate below, command
         // and policy carriers alike (no timer, poll, or artificial future
         // wake; policy issuing terminals size pre-mutation via
-        // `policy_terminal_reserve_v4`). Host-owned focusless never completes
+        // `policy_terminal_count_v4`). Host-owned focusless never completes
         // here: its native obligation still reads Pending with no raw yet.
         // No evidence latches here: same-report raw facts would guess a
         // future issuing revision.
-        if let Some(binding) = self.retained_selection.get(&focus_output).cloned()
+        if let Some(binding) = self
+            .world
+            .settlement
+            .retained_selection
+            .get(&focus_output)
+            .cloned()
             && let Some(event) =
                 selection_terminal(&focus_output, &binding, NativeSelectionProof::Pending)
         {
@@ -1407,20 +1500,21 @@ impl WorldEngine {
     /// latch no feedback.
     pub(crate) fn settle_selection_feedback(&mut self) {
         let homing: BTreeMap<WindowId, DomainKey> = self
+            .world
             .staged
             .homing
             .iter()
             .map(|(window, home)| (window.clone(), home.clone()))
             .collect();
-        let report_obs = self.staged.observation.observation_seq;
+        let report_obs = self.world.staged.observation.observation_seq;
         // Minimal native binding context for the arrival proof: the
         // host-owned flag selects the Native arm and the map translates
         // the observed native home through this engine's own bindings.
         // Cloned once per report ahead of the per-binding mutable borrow.
-        let host_owned = self.host_owned_workspace_domains();
-        let native_map = self.native_map.clone();
-        let attempts = &self.staged.observation.property_attempts;
-        for binding in self.retained_selection.values_mut() {
+        let host_owned = self.connection.host_owned_workspace_domains();
+        let native_map = self.world.settlement.native_map.clone();
+        let attempts = &self.world.staged.observation.property_attempts;
+        for binding in self.world.settlement.retained_selection.values_mut() {
             // First exact-correlated canonical view evidence per obligated
             // output latches here (same pre-rollback position as feedback and
             // LastWrite): the sequencer pending map forgets acknowledged
@@ -1459,7 +1553,7 @@ impl WorldEngine {
             if binding.feedback.is_some() {
                 continue;
             }
-            for row in &self.staged.observation.focus_feedback {
+            for row in &self.world.staged.observation.focus_feedback {
                 if row.id == effect.id
                     && row.target == effect.target
                     && row.revision == effect.issued_revision
@@ -1507,7 +1601,7 @@ impl WorldEngine {
     /// are cloned into the returned pending rows.
     fn index_visibility_switches(&self) -> BTreeMap<WindowId, &PropertyAttempt> {
         let mut index: BTreeMap<WindowId, &PropertyAttempt> = BTreeMap::new();
-        for attempt in &self.staged.observation.property_attempts {
+        for attempt in &self.world.staged.observation.property_attempts {
             if let Some(evidence) = attempt.as_visibility() {
                 index.entry(evidence.window.clone()).or_insert(attempt);
             }
@@ -1585,12 +1679,18 @@ impl WorldEngine {
     /// bindings already complete at the issuing reply; they never reach
     /// this settle.
     pub(crate) fn settle_selection_switch(&mut self) {
-        if self.retained_selection.is_empty() {
+        if self.world.settlement.retained_selection.is_empty() {
             return;
         }
-        let report_obs = self.staged.observation.observation_seq;
-        let closed: BTreeSet<WindowId> = self.staged.closes.iter().cloned().collect();
-        let outputs: Vec<OutputId> = self.retained_selection.keys().cloned().collect();
+        let report_obs = self.world.staged.observation.observation_seq;
+        let closed: BTreeSet<WindowId> = self.world.staged.closes.iter().cloned().collect();
+        let outputs: Vec<OutputId> = self
+            .world
+            .settlement
+            .retained_selection
+            .keys()
+            .cloned()
+            .collect();
         // Keyed intake for the whole phase: build the borrowed window index
         // once, prepare each binding's pending rows, then drop the borrow before
         // any per-output mutable policy work. Per-output policy order below is
@@ -1599,7 +1699,7 @@ impl WorldEngine {
         let mut pending_by_output: BTreeMap<OutputId, Vec<(WindowId, PropertyAttempt)>> =
             BTreeMap::new();
         for output in &outputs {
-            if let Some(binding) = self.retained_selection.get(output) {
+            if let Some(binding) = self.world.settlement.retained_selection.get(output) {
                 let pending = Self::correlate_visibility_switches(&index, binding);
                 if !pending.is_empty() {
                     pending_by_output.insert(output.clone(), pending);
@@ -1608,7 +1708,7 @@ impl WorldEngine {
         }
         drop(index);
         for output in outputs {
-            let issuing_obs = match self.retained_selection.get(&output) {
+            let issuing_obs = match self.world.settlement.retained_selection.get(&output) {
                 Some(binding) => binding.obs,
                 None => continue,
             };
@@ -1618,13 +1718,13 @@ impl WorldEngine {
             // graded/held precedence and latches once at this receipt.
             let pending = pending_by_output.remove(&output).unwrap_or_default();
             let native_proof = {
-                let binding = match self.retained_selection.get(&output) {
+                let binding = match self.world.settlement.retained_selection.get(&output) {
                     Some(binding) => binding.clone(),
                     None => continue,
                 };
                 self.selection_native_proof(&binding)
             };
-            let Some(binding) = self.retained_selection.get_mut(&output) else {
+            let Some(binding) = self.world.settlement.retained_selection.get_mut(&output) else {
                 continue;
             };
             let focus_closed = binding
@@ -1671,7 +1771,7 @@ impl WorldEngine {
             // verdicts hold (never a failure); every verdict present
             // terminates, confirmed or failed, without retry.
             let proof = native_proof;
-            let event = match self.retained_selection.get(&output) {
+            let event = match self.world.settlement.retained_selection.get(&output) {
                 Some(current) => selection_terminal(&output, current, proof),
                 None => continue,
             };
@@ -1702,7 +1802,7 @@ impl WorldEngine {
         if binding.view_targets.is_empty() {
             return NativeSelectionProof::Proven;
         }
-        let host_owned = self.host_owned_workspace_domains();
+        let host_owned = self.connection.host_owned_workspace_domains();
         let mut refused = false;
         for (output, home) in &binding.view_targets {
             let target = home.workspace.0.as_str();
@@ -1713,6 +1813,7 @@ impl WorldEngine {
                 continue;
             }
             let fresh = self
+                .world
                 .staged
                 .observation
                 .property_attempts
@@ -1738,6 +1839,7 @@ impl WorldEngine {
             }
             let pre = self.effective_view_pre(attempt, host_owned);
             let complete_screen = self
+                .world
                 .staged
                 .screens
                 .iter()
@@ -1745,9 +1847,9 @@ impl WorldEngine {
                 .map(|screen| screen.complete);
             if pre.is_some()
                 && echo.as_deref() == pre.as_deref()
-                && self.staged.observation.inventory_complete
+                && self.world.staged.observation.inventory_complete
                 && complete_screen == Some(true)
-                && !self.staged.gesture_barrier
+                && !self.world.staged.gesture_barrier
             {
                 refused = true;
                 continue;
@@ -1768,54 +1870,52 @@ impl WorldEngine {
     /// issuing point.
     fn stage_selection_terminal(&mut self, output: &OutputId, event: SwitchEvent) {
         let parent = event.operation_id.clone();
-        self.retained_selection.remove(output);
-        self.retained.retain(|retained| {
+        self.world.settlement.retained_selection.remove(output);
+        self.world.settlement.retained.retain(|retained| {
             !(retained.target.operation_id == parent
                 && matches!(retained.target.kind, TransferKind::View))
         });
-        self.switch_settled.insert(output.clone(), event);
+        self.world
+            .settlement
+            .switch_settled
+            .insert(output.clone(), event);
     }
+}
 
-    /// Pre-mutation worst-case reserve for retained and simultaneous switch
-    /// outcomes: covers the union of `switch_settled` (already retained) and
-    /// `retained_selection` (pending bindings that may settle or replace
-    /// their output's slot with a failed list up to `switch_members.len()`).
-    /// Zero when neither map holds any entry.
-    pub(crate) fn switch_settle_reserve(&self) -> usize {
-        if self.retained_selection.is_empty() && self.switch_settled.is_empty() {
-            return 0;
+impl WorldState {
+    /// Count of `(output_count, total_failed_rows)` for retained and
+    /// simultaneous switch outcomes across `switch_settled` and
+    /// `retained_selection`.
+    pub(crate) fn switch_settle_counts(&self) -> (usize, usize) {
+        if self.settlement.retained_selection.is_empty()
+            && self.settlement.switch_settled.is_empty()
+        {
+            return (0, 0);
         }
         let mut count = 0usize;
         let mut failed = 0usize;
-        for (output, binding) in &self.retained_selection {
+        for (output, binding) in &self.settlement.retained_selection {
             count += 1;
             let existing = self
+                .settlement
                 .switch_settled
                 .get(output)
                 .map_or(0, |event| event.failed.len());
             failed = failed.saturating_add(binding.switch_members.len().max(existing));
         }
-        for (output, event) in &self.switch_settled {
-            if !self.retained_selection.contains_key(output) {
+        for (output, event) in &self.settlement.switch_settled {
+            if !self.settlement.retained_selection.contains_key(output) {
                 count += 1;
                 failed = failed.saturating_add(event.failed.len());
             }
         }
-        crate::world_sizing::max_switch_settle_reserve(count, failed)
+        (count, failed)
     }
 
-    /// Pre-mutation reserve for the at-most-one zero-obligation issuing
-    /// terminal a select-family command can mint while old bindings settle:
-    /// a focusless select with no frozen members, no feedback gate, and no
-    /// native obligation completes synchronously into the issuing reply
-    /// through the shared terminal predicate, and it needs no retained
-    /// binding, so [`Self::switch_settle_reserve`] alone would undercount
-    /// the simultaneous case. Conservative: at most one empty terminal for
-    /// the commands that route through [`WorldEngine::retain_view`] plus
-    /// whole-workspace migrations (an empty native-free migration freezes
-    /// a focusless zero-obligation binding the same way); every other
-    /// report reserves nothing beyond the retained bindings.
-    pub(crate) fn switch_issuing_reserve(&self, command: Option<&WorldCommand>) -> usize {
+    /// Count of zero-obligation issuing terminals (`0` or `1`) a
+    /// select-family or whole-workspace migration command can mint while old
+    /// bindings settle.
+    pub(crate) fn switch_issuing_count(&self, command: Option<&WorldCommand>) -> usize {
         let selects = matches!(
             command,
             Some(
@@ -1829,46 +1929,48 @@ impl WorldEngine {
                     | WorldCommand::MigrateDirectional { .. }
             )
         );
-        if selects {
-            crate::world_sizing::max_switch_settle_reserve(1, 0)
-        } else {
-            0
-        }
+        usize::from(selects)
     }
 
-    /// Pre-mutation upper bound over one v4 report over the v4 screen lane.
-    /// Shares the input-only live-output core in
-    /// [`Self::policy_terminal_reserve_for_live`]; no legacy report is built.
-    pub(crate) fn policy_terminal_reserve_v4(
+    /// Count of policy-view terminal switch events knowable before
+    /// convergence over one v4 report's screen lane.
+    pub(crate) fn policy_terminal_count_v4(
         &self,
         report: &crate::world_report::WorldReportV4,
+        workspace_mode: crate::workspace_scope::WorkspaceMode,
     ) -> usize {
         let live: BTreeSet<&str> = report
             .screens
             .iter()
             .map(|screen| screen.output.0.as_str())
             .collect();
-        self.policy_terminal_reserve_for_live(&live)
+        self.policy_terminal_count_for_live(&live, workspace_mode)
     }
 
-    fn policy_terminal_reserve_for_live(&self, live: &BTreeSet<&str>) -> usize {
-        if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
+    fn policy_terminal_count_for_live(
+        &self,
+        live: &BTreeSet<&str>,
+        workspace_mode: crate::workspace_scope::WorkspaceMode,
+    ) -> usize {
+        if workspace_mode == crate::workspace_scope::WorkspaceMode::Shared {
             return 0;
         }
         let mut bound: usize = 0;
-        for (origin, entry) in &self.displaced {
+        for (origin, entry) in &self.workspace.displaced {
             if live.contains(origin.as_str()) {
                 bound = bound.saturating_add(entry.workspaces.len());
             }
         }
-        for (output, ring) in &self.mapping {
+        for (output, ring) in &self.workspace.mapping {
             if !live.contains(output.as_str()) {
                 bound = bound.saturating_add(ring.len());
             }
         }
-        crate::world_sizing::max_switch_settle_reserve(bound, 0)
+        bound
     }
+}
 
+impl WorldTransaction<'_> {
     /// Prune retained selection bindings on explicit close or proven
     /// complete departure of the focus target (focus-bearing only) or any
     /// frozen member, or on true output loss (grounded complete inventory
@@ -1879,35 +1981,44 @@ impl WorldEngine {
     /// targets persist independently. Pruning drops the binding without
     /// claiming readiness.
     pub(crate) fn prune_selection_grants(&mut self) {
-        let observation = &self.staged.observation;
+        let observation = &self.world.staged.observation;
         if !observation.closed.is_empty() {
             let closed: BTreeSet<WindowId> = observation.closed.iter().cloned().collect();
-            self.retained_selection.retain(|_, binding| {
-                if binding
-                    .effect
-                    .as_ref()
-                    .is_some_and(|effect| closed.contains(&effect.target))
-                {
-                    return false;
-                }
-                if binding
-                    .members
-                    .iter()
-                    .any(|member| closed.contains(&member.window))
-                {
-                    return false;
-                }
-                !binding
-                    .switch_members
-                    .iter()
-                    .any(|member| closed.contains(&member.window))
-            });
+            self.world
+                .settlement
+                .retained_selection
+                .retain(|_, binding| {
+                    if binding
+                        .effect
+                        .as_ref()
+                        .is_some_and(|effect| closed.contains(&effect.target))
+                    {
+                        return false;
+                    }
+                    if binding
+                        .members
+                        .iter()
+                        .any(|member| closed.contains(&member.window))
+                    {
+                        return false;
+                    }
+                    !binding
+                        .switch_members
+                        .iter()
+                        .any(|member| closed.contains(&member.window))
+                });
         }
         if observation.inventory_complete {
-            let live = selection_known_outputs(&self.staged.screens, &self.staged.held_screens);
-            self.retained_selection.retain(|output, _| {
-                live.contains(output) || self.displaced.contains_key(&output.0)
-            });
+            let live = selection_known_outputs(
+                &self.world.staged.screens,
+                &self.world.staged.held_screens,
+            );
+            self.world
+                .settlement
+                .retained_selection
+                .retain(|output, _| {
+                    live.contains(output) || self.world.workspace.displaced.contains_key(&output.0)
+                });
         }
         if !observation.inventory_complete {
             return;
@@ -1918,13 +2029,16 @@ impl WorldEngine {
             .map(|fact| &fact.window)
             .collect();
         let held: BTreeSet<&WindowId> = self
+            .world
             .staged
             .held_windows
             .iter()
             .map(|held| &held.window)
             .collect();
-        let excluded = self.staged.excluded.clone();
+        let excluded = self.world.staged.excluded.clone();
         let known: BTreeSet<WindowId> = self
+            .world
+            .settlement
             .retained_selection
             .values()
             .flat_map(|binding| {
@@ -1936,23 +2050,27 @@ impl WorldEngine {
                     .chain(binding.members.iter().map(|member| member.window.clone()))
             })
             .filter(|target| {
-                self.members.contains_key(target) || self.engine_knows_window_any(target)
+                self.world.workspace.members.contains_key(target)
+                    || self.world.engine_knows_window_any(target)
             })
             .collect();
-        self.retained_selection.retain(|_, binding| {
-            binding
-                .effect
-                .as_ref()
-                .map(|effect| effect.target.clone())
-                .into_iter()
-                .chain(binding.members.iter().map(|member| member.window.clone()))
-                .all(|target| {
-                    live.contains(&target)
-                        || held.contains(&target)
-                        || excluded.contains(&target)
-                        || known.contains(&target)
-                })
-        });
+        self.world
+            .settlement
+            .retained_selection
+            .retain(|_, binding| {
+                binding
+                    .effect
+                    .as_ref()
+                    .map(|effect| effect.target.clone())
+                    .into_iter()
+                    .chain(binding.members.iter().map(|member| member.window.clone()))
+                    .all(|target| {
+                        live.contains(&target)
+                            || held.contains(&target)
+                            || excluded.contains(&target)
+                            || known.contains(&target)
+                    })
+            });
     }
 
     /// Prune active selection scopes on true output loss only (complete
@@ -1962,12 +2080,14 @@ impl WorldEngine {
     /// never clear scopes here (closes drop only the finite grant, views
     /// reconcile centrally before publication).
     pub(crate) fn prune_selection_scopes(&mut self) {
-        if !self.staged.observation.inventory_complete {
+        if !self.world.staged.observation.inventory_complete {
             return;
         }
-        let live = selection_known_outputs(&self.staged.screens, &self.staged.held_screens);
-        self.selection_scopes
-            .retain(|output, _| live.contains(output) || self.displaced.contains_key(&output.0));
+        let live =
+            selection_known_outputs(&self.world.staged.screens, &self.world.staged.held_screens);
+        self.world.settlement.selection_scopes.retain(|output, _| {
+            live.contains(output) || self.world.workspace.displaced.contains_key(&output.0)
+        });
     }
 
     /// Prune retained per-window selection visibility authorizations.
@@ -1979,26 +2099,34 @@ impl WorldEngine {
     /// exclusions, incomplete inventories, and unknown homings preserve
     /// the entry without granting authority.
     pub(crate) fn prune_selection_targets(&mut self) {
-        let observation = &self.staged.observation;
+        let observation = &self.world.staged.observation;
         if !observation.closed.is_empty() {
             let closed: BTreeSet<WindowId> = observation.closed.iter().cloned().collect();
-            self.selection_targets
+            self.world
+                .settlement
+                .selection_targets
                 .retain(|window, _| !closed.contains(window));
         }
-        let live_outputs = selection_known_outputs(&self.staged.screens, &self.staged.held_screens);
+        let live_outputs =
+            selection_known_outputs(&self.world.staged.screens, &self.world.staged.held_screens);
         let lost: BTreeSet<OutputId> = if observation.inventory_complete {
-            self.selection_targets
+            self.world
+                .settlement
+                .selection_targets
                 .values()
                 .map(|entry| entry.home.output.clone())
                 .filter(|output| {
-                    !live_outputs.contains(output) && !self.displaced.contains_key(&output.0)
+                    !live_outputs.contains(output)
+                        && !self.world.workspace.displaced.contains_key(&output.0)
                 })
                 .collect()
         } else {
             BTreeSet::new()
         };
         if !lost.is_empty() {
-            self.selection_targets
+            self.world
+                .settlement
+                .selection_targets
                 .retain(|_, entry| !lost.contains(&entry.home.output));
         }
         if observation.inventory_complete {
@@ -2008,42 +2136,53 @@ impl WorldEngine {
                 .map(|fact| &fact.window)
                 .collect();
             let held: BTreeSet<&WindowId> = self
+                .world
                 .staged
                 .held_windows
                 .iter()
                 .map(|held| &held.window)
                 .collect();
-            let excluded = self.staged.excluded.clone();
+            let excluded = self.world.staged.excluded.clone();
             let known: BTreeSet<WindowId> = self
+                .world
+                .settlement
                 .selection_targets
                 .keys()
                 .filter(|window| {
-                    self.members.contains_key(*window) || self.engine_knows_window_any(window)
+                    self.world.workspace.members.contains_key(*window)
+                        || self.world.engine_knows_window_any(window)
                 })
                 .cloned()
                 .collect();
-            self.selection_targets.retain(|window, entry| {
-                if lost.contains(&entry.home.output) {
-                    return false;
-                }
-                if let Some(homed) = self.staged.homing.get(window) {
-                    return homed == &entry.home;
-                }
-                live.contains(window)
-                    || held.contains(window)
-                    || excluded.contains(window)
-                    || known.contains(window)
-            });
+            self.world
+                .settlement
+                .selection_targets
+                .retain(|window, entry| {
+                    if lost.contains(&entry.home.output) {
+                        return false;
+                    }
+                    if let Some(homed) = self.world.staged.homing.get(window) {
+                        return homed == &entry.home;
+                    }
+                    live.contains(window)
+                        || held.contains(window)
+                        || excluded.contains(window)
+                        || known.contains(window)
+                });
         } else {
-            self.selection_targets.retain(|window, entry| {
-                if lost.contains(&entry.home.output) {
-                    return false;
-                }
-                self.staged
-                    .homing
-                    .get(window)
-                    .is_none_or(|homed| homed == &entry.home)
-            });
+            self.world
+                .settlement
+                .selection_targets
+                .retain(|window, entry| {
+                    if lost.contains(&entry.home.output) {
+                        return false;
+                    }
+                    self.world
+                        .staged
+                        .homing
+                        .get(window)
+                        .is_none_or(|homed| homed == &entry.home)
+                });
         }
     }
 }

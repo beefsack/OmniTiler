@@ -116,12 +116,12 @@ fn assert_save(reply: &crate::world_report::WorldReplyV4, win: &str, data: &str)
 
 fn is_tiled(engine: &WorldEngine, win: &str) -> bool {
     let id = WindowId(win.to_owned());
-    engine.layout.is_tiled_window_any(&id)
+    engine.world.layout.is_tiled_window_any(&id)
 }
 
 fn is_floated(engine: &WorldEngine, win: &str) -> bool {
     let id = WindowId(win.to_owned());
-    engine.layout.is_exception_window_any(&id)
+    engine.world.layout.is_exception_window_any(&id)
 }
 
 fn row_for<'a>(
@@ -234,6 +234,8 @@ fn toggle_tile_to_float_emits_true_save() {
     }
     assert!(
         engine
+            .world
+            .intent
             .restored_floats
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -277,6 +279,8 @@ fn toggle_float_to_tile_emits_false_save_for_ordinary_nonfixed() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         !engine
+            .world
+            .intent
             .restored_floats
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -483,7 +487,7 @@ fn refused_unknown_window_preserves_state_for_retry() {
             None,
         ),
     );
-    let revision = engine.state_revision;
+    let revision = engine.state_revision();
     let bad = report_full(
         2,
         2,
@@ -508,8 +512,8 @@ fn refused_unknown_window_preserves_state_for_retry() {
         }
         other => panic!("expected refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision + 1, "refusal issues");
-    assert_eq!(engine.command_highwater, Some(2));
+    assert_eq!(engine.state_revision(), revision + 1, "refusal issues");
+    assert_eq!(engine.world.command_highwater, Some(2));
     // The consumed sequence stays consumed; a fresh user press works once
     // the window exists.
     let retry = toggle_report(
@@ -536,7 +540,7 @@ fn held_scope_toggle_refuses_without_mutation() {
             None,
         ),
     );
-    let revision = engine.state_revision;
+    let revision = engine.state_revision();
     let mut held_screen = screen("out-a", 0);
     held_screen.complete = false;
     let held = report_full(
@@ -559,8 +563,8 @@ fn held_scope_toggle_refuses_without_mutation() {
         ),
         other => panic!("expected held refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision + 1, "held refusal issues");
-    assert_eq!(engine.command_highwater, Some(2));
+    assert_eq!(engine.state_revision(), revision + 1, "held refusal issues");
+    assert_eq!(engine.world.command_highwater, Some(2));
     let retry = toggle_report(
         3,
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
@@ -585,7 +589,7 @@ fn hints_null_toggle_refuses_without_mutation() {
             None,
         ),
     );
-    let revision = engine.state_revision;
+    let revision = engine.state_revision();
     let mut unreadable = fact("win-a", "out-a", 0);
     unreadable.hints = None;
     let refused = report_full(
@@ -608,8 +612,8 @@ fn hints_null_toggle_refuses_without_mutation() {
         ),
         other => panic!("expected refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision + 1, "refusal issues");
-    assert_eq!(engine.command_highwater, Some(2));
+    assert_eq!(engine.state_revision(), revision + 1, "refusal issues");
+    assert_eq!(engine.world.command_highwater, Some(2));
     let retry = toggle_report(
         3,
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
@@ -727,6 +731,7 @@ fn rehandshake_tile_save_restores_without_resave() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
@@ -764,18 +769,24 @@ fn sticky_restore_blocks_save_and_clears_later_toggle_with_hold() {
     assert!(is_floated(&engine, "win-a"), "sticky restores as float");
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned()))
     );
     assert_eq!(
-        engine.restored_sticky.get(&WindowId("win-a".to_owned())),
+        engine
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-a".to_owned())),
         Some(&false)
     );
-    assert!(engine.pending_intent.is_empty());
+    assert!(engine.world.intent.pending_intent.is_empty());
     // ToggleFloat against the restored subject clears sticky through the
     // native hold path: tile-base save, runtime stays floated, provenance
     // and block intact until settlement.
-    let sticky_prior = engine.restored_sticky.clone();
+    let sticky_prior = engine.world.intent.restored_sticky.clone();
     let cleared = accepted(
         &mut engine,
         &toggle_report(
@@ -784,10 +795,15 @@ fn sticky_restore_blocks_save_and_clears_later_toggle_with_hold() {
         ),
     );
     assert_save(&cleared, "win-a", &tile_false());
-    assert_eq!(engine.restored_sticky, sticky_prior, "provenance intact");
+    assert_eq!(
+        engine.world.intent.restored_sticky, sticky_prior,
+        "provenance intact"
+    );
     assert!(is_floated(&engine, "win-a"), "still floated during hold");
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned())),
         "clear preserves the save block"
@@ -834,10 +850,14 @@ fn sticky_toggle_clearhold_preserves_float_with_nonsticky_retry() {
     );
     assert!(is_floated(&engine, "win-a"));
     assert_eq!(
-        engine.restored_sticky.get(&WindowId("win-a".to_owned())),
+        engine
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-a".to_owned())),
         Some(&false)
     );
-    let sticky_prior = engine.restored_sticky.clone();
+    let sticky_prior = engine.world.intent.restored_sticky.clone();
     let cleared = accepted(
         &mut engine,
         &toggle_report(
@@ -846,7 +866,10 @@ fn sticky_toggle_clearhold_preserves_float_with_nonsticky_retry() {
         ),
     );
     assert_save(&cleared, "win-a", &tile_false());
-    assert_eq!(engine.restored_sticky, sticky_prior, "provenance intact");
+    assert_eq!(
+        engine.world.intent.restored_sticky, sticky_prior,
+        "provenance intact"
+    );
     assert!(is_floated(&engine, "win-a"), "exception survives clearhold");
     assert!(!is_tiled(&engine, "win-a"), "never retiled by clearhold");
     let retry = accepted(
@@ -887,6 +910,8 @@ fn earlier_report_sticky_row_blocks_later_toggle_save() {
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -894,7 +919,11 @@ fn earlier_report_sticky_row_blocks_later_toggle_save() {
     // as a semantic float with the exact prior, never a tile.
     assert!(is_floated(&engine, "win-a"));
     assert_eq!(
-        engine.restored_sticky.get(&WindowId("win-a".to_owned())),
+        engine
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-a".to_owned())),
         Some(&true)
     );
     // Record-free report preserves the block through admission.
@@ -913,13 +942,15 @@ fn earlier_report_sticky_row_blocks_later_toggle_save() {
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned()))
     );
     // ToggleFloat against the restored sticky subject clears through the
     // native hold path: tile-base save, runtime stays floated, provenance
     // and block intact until settlement.
-    let sticky_prior = engine.restored_sticky.clone();
+    let sticky_prior = engine.world.intent.restored_sticky.clone();
     let cleared = accepted(
         &mut engine,
         &toggle_report(
@@ -928,10 +959,15 @@ fn earlier_report_sticky_row_blocks_later_toggle_save() {
         ),
     );
     assert_save(&cleared, "win-a", &tile_false());
-    assert_eq!(engine.restored_sticky, sticky_prior, "provenance intact");
+    assert_eq!(
+        engine.world.intent.restored_sticky, sticky_prior,
+        "provenance intact"
+    );
     assert!(is_floated(&engine, "win-a"), "still floated during hold");
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned())),
         "clear preserves the block"
@@ -962,17 +998,24 @@ fn mixed_duplicate_conflicting_sticky_rows_block_and_conflict() {
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned())),
         "sticky scan runs before conflict handling"
     );
     assert!(
         !engine
+            .world
+            .intent
             .intent_conflicts
             .contains(&WindowId("win-a".to_owned())),
         "successful admission clears conflicts, unlike blocks"
     );
-    assert!(engine.pending_intent.is_empty(), "no partial restore");
+    assert!(
+        engine.world.intent.pending_intent.is_empty(),
+        "no partial restore"
+    );
     let reply = accepted(
         &mut engine,
         &toggle_report(
@@ -1009,6 +1052,8 @@ fn later_nonsticky_row_does_not_unblock() {
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -1030,6 +1075,8 @@ fn later_nonsticky_row_does_not_unblock() {
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned())),
         "later non-sticky never clears the block"
@@ -1037,7 +1084,7 @@ fn later_nonsticky_row_does_not_unblock() {
     assert!(is_floated(&engine, "win-a"), "sticky restore floats");
     // ToggleFloat against the restored subject clears through the native
     // hold path: tile-base save, runtime stays floated.
-    let sticky_prior = engine.restored_sticky.clone();
+    let sticky_prior = engine.world.intent.restored_sticky.clone();
     let cleared = accepted(
         &mut engine,
         &toggle_report(
@@ -1046,7 +1093,10 @@ fn later_nonsticky_row_does_not_unblock() {
         ),
     );
     assert_save(&cleared, "win-a", &tile_false());
-    assert_eq!(engine.restored_sticky, sticky_prior, "provenance intact");
+    assert_eq!(
+        engine.world.intent.restored_sticky, sticky_prior,
+        "provenance intact"
+    );
     assert!(is_floated(&engine, "win-a"), "still floated during hold");
 }
 
@@ -1068,6 +1118,8 @@ fn late_sticky_after_admission_does_not_block_runtime_save() {
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_admitted
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -1089,6 +1141,8 @@ fn late_sticky_after_admission_does_not_block_runtime_save() {
     );
     assert!(
         !engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned())),
         "late sticky after admission is ignored"
@@ -1139,6 +1193,8 @@ fn sticky_block_survives_minimize_and_record_free_reports() {
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned())),
         "minimize keeps the block"
@@ -1159,7 +1215,7 @@ fn sticky_block_survives_minimize_and_record_free_reports() {
     // ToggleFloat against the restored sticky subject clears through the
     // native hold path: tile-base save, runtime stays floated, block and
     // provenance intact.
-    let sticky_prior = engine.restored_sticky.clone();
+    let sticky_prior = engine.world.intent.restored_sticky.clone();
     let cleared = accepted(
         &mut engine,
         &toggle_report(
@@ -1168,10 +1224,15 @@ fn sticky_block_survives_minimize_and_record_free_reports() {
         ),
     );
     assert_save(&cleared, "win-a", &tile_false());
-    assert_eq!(engine.restored_sticky, sticky_prior, "provenance intact");
+    assert_eq!(
+        engine.world.intent.restored_sticky, sticky_prior,
+        "provenance intact"
+    );
     assert!(is_floated(&engine, "win-a"), "still floated during hold");
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -1213,6 +1274,8 @@ fn sticky_block_survives_exclusion_gap() {
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned())),
         "exclusion keeps the block"
@@ -1232,7 +1295,7 @@ fn sticky_block_survives_exclusion_gap() {
     );
     // ToggleFloat against the restored sticky subject clears through the
     // native hold path: tile-base save, runtime stays floated.
-    let sticky_prior = engine.restored_sticky.clone();
+    let sticky_prior = engine.world.intent.restored_sticky.clone();
     let cleared = accepted(
         &mut engine,
         &toggle_report(
@@ -1241,7 +1304,10 @@ fn sticky_block_survives_exclusion_gap() {
         ),
     );
     assert_save(&cleared, "win-a", &tile_false());
-    assert_eq!(engine.restored_sticky, sticky_prior, "provenance intact");
+    assert_eq!(
+        engine.world.intent.restored_sticky, sticky_prior,
+        "provenance intact"
+    );
     assert!(is_floated(&engine, "win-a"), "still floated during hold");
 }
 
@@ -1266,6 +1332,8 @@ fn close_prunes_sticky_block_and_new_lifetime_saves() {
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -1283,6 +1351,8 @@ fn close_prunes_sticky_block_and_new_lifetime_saves() {
     accepted(&mut engine, &closed);
     assert!(
         !engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned())),
         "explicit close ends the lifetime block"
@@ -1331,6 +1401,8 @@ fn own_process_fact_prunes_sticky_block() {
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -1351,6 +1423,8 @@ fn own_process_fact_prunes_sticky_block() {
     );
     assert!(
         !engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned())),
         "proven own-process drops the block"
@@ -1395,6 +1469,8 @@ fn complete_absence_prunes_footprint_free_sticky_block() {
     accepted(&mut engine, &gapped);
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned())),
         "incomplete gap retains the orphan block"
@@ -1414,6 +1490,8 @@ fn complete_absence_prunes_footprint_free_sticky_block() {
     );
     assert!(
         !engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned())),
         "proven complete departure drops the footprint-free block"
@@ -1441,6 +1519,8 @@ fn bootstrap_ingest_prunes_absent_sticky_on_complete() {
     assert!(!boot.ready, "incomplete first report bootstraps");
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-x".to_owned())),
         "bootstrap ingests sticky blocks"
@@ -1460,6 +1540,8 @@ fn bootstrap_ingest_prunes_absent_sticky_on_complete() {
     );
     assert!(
         !engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-x".to_owned())),
         "complete inventory without the subject prunes"
@@ -1470,7 +1552,7 @@ fn bootstrap_ingest_prunes_absent_sticky_on_complete() {
 fn joint_bound_overflow_latches_saturated_fail_closed() {
     let mut engine = engine();
     for i in 0..crate::world_report::MAX_INTENT_RECORDS {
-        engine.pending_intent.insert(
+        engine.world.intent.pending_intent.insert(
             WindowId(format!("win-{i:05}")),
             crate::intent_data::IntentData::new(Some(false), None),
         );
@@ -1491,9 +1573,14 @@ fn joint_bound_overflow_latches_saturated_fail_closed() {
             vec![record("win-new", &sticky_float())],
         ),
     );
-    assert!(engine.intent_sticky_saturated, "overflow latches");
+    assert!(
+        engine.world.intent.intent_sticky_saturated,
+        "overflow latches"
+    );
     assert!(
         !engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-new".to_owned())),
         "no room means no block, never a dropped save gate"
@@ -1513,17 +1600,17 @@ fn joint_bound_overflow_latches_saturated_fail_closed() {
     assert!(is_floated(&engine, "win-a"), "command still wins");
     let _ = rehandshake(&mut engine);
     assert!(
-        !engine.intent_sticky_saturated,
+        !engine.world.intent.intent_sticky_saturated,
         "handshake resets the latch"
     );
-    assert!(engine.intent_sticky_blocks.is_empty());
+    assert!(engine.world.intent.intent_sticky_blocks.is_empty());
 }
 
 #[test]
 fn joint_bound_holds_one_block_then_latches() {
     let mut engine = engine();
     for i in 0..crate::world_report::MAX_INTENT_RECORDS - 1 {
-        engine.pending_intent.insert(
+        engine.world.intent.pending_intent.insert(
             WindowId(format!("win-{i:05}")),
             crate::intent_data::IntentData::new(Some(false), None),
         );
@@ -1544,22 +1631,24 @@ fn joint_bound_holds_one_block_then_latches() {
             vec![record("win-a", &sticky_float())],
         ),
     );
-    assert!(!engine.intent_sticky_saturated);
+    assert!(!engine.world.intent.intent_sticky_saturated);
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned()))
     );
     // The first report's finish prunes the filler (not live, not known),
     // so refill to the joint cap before the second sticky row.
     for i in 0..crate::world_report::MAX_INTENT_RECORDS - 1 {
-        engine.pending_intent.insert(
+        engine.world.intent.pending_intent.insert(
             WindowId(format!("win-refill-{i:05}")),
             crate::intent_data::IntentData::new(Some(true), None),
         );
     }
     assert_eq!(
-        engine.intent_ledger_used(),
+        engine.tx(|tx| tx.intent_ledger_used()),
         crate::world_report::MAX_INTENT_RECORDS
     );
     accepted(
@@ -1578,9 +1667,14 @@ fn joint_bound_holds_one_block_then_latches() {
             vec![record("win-b", &sticky_tile())],
         ),
     );
-    assert!(engine.intent_sticky_saturated, "full ledger latches");
+    assert!(
+        engine.world.intent.intent_sticky_saturated,
+        "full ledger latches"
+    );
     assert!(
         !engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-b".to_owned()))
     );
@@ -1627,6 +1721,8 @@ fn joint_cap_sticky_occupancy_fails_conflict_allocs_closed() {
     accepted(&mut engine, &partial);
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .get(&WindowId("win-p".to_owned()))
             .is_some_and(|data| data.float == Some(false))
@@ -1635,13 +1731,13 @@ fn joint_cap_sticky_occupancy_fails_conflict_allocs_closed() {
     // provenance plus one pending plus filler. Restored sticky counts, so
     // the filler leaves room for exactly the joint total.
     for i in 0..crate::world_report::MAX_INTENT_RECORDS - 3 {
-        engine.pending_intent.insert(
+        engine.world.intent.pending_intent.insert(
             WindowId(format!("win-fill-{i:06}")),
             crate::intent_data::IntentData::new(Some(false), None),
         );
     }
     assert_eq!(
-        engine.intent_ledger_used(),
+        engine.tx(|tx| tx.intent_ledger_used()),
         crate::world_report::MAX_INTENT_RECORDS
     );
     let mut minimized = fact("win-d", "out-a", 200);
@@ -1685,50 +1781,69 @@ fn joint_cap_sticky_occupancy_fails_conflict_allocs_closed() {
     // slot, so its conflict fits. win-t: sticky finds no room and latches.
     assert!(
         !engine
+            .world
+            .intent
             .intent_conflicts
             .contains(&WindowId("win-d".to_owned())),
         "duplicate conflict refused fail-closed"
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_conflicts
             .contains(&WindowId("win-p".to_owned())),
         "freed slot admits the differing-value conflict"
     );
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-d".to_owned()))
     );
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-p".to_owned()))
     );
-    assert!(engine.intent_sticky_saturated, "sticky overflow latches");
+    assert!(
+        engine.world.intent.intent_sticky_saturated,
+        "sticky overflow latches"
+    );
     assert!(
         !engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-t".to_owned()))
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-s".to_owned())),
         "existing block survives"
     );
     assert_eq!(
-        engine.intent_ledger_used(),
+        engine.tx(|tx| tx.intent_ledger_used()),
         crate::world_report::MAX_INTENT_RECORDS
     );
     // No arbitrary restore authority from the refused rows.
     assert!(
         !engine
+            .world
+            .intent
             .restored_floats
             .contains(&WindowId("win-d".to_owned()))
     );
     assert!(
         !engine
+            .world
+            .intent
             .restored_floats
             .contains(&WindowId("win-p".to_owned()))
     );
@@ -1777,12 +1892,16 @@ fn joint_cap_room_inserts_duplicate_and_cross_report_conflicts() {
     accepted(&mut engine, &dup);
     assert!(
         engine
+            .world
+            .intent
             .intent_conflicts
             .contains(&WindowId("win-d".to_owned())),
         "raw duplicate stores with room"
     );
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-d".to_owned()))
     );
@@ -1803,6 +1922,8 @@ fn joint_cap_room_inserts_duplicate_and_cross_report_conflicts() {
     accepted(&mut engine, &first);
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-p".to_owned()))
     );
@@ -1826,288 +1947,123 @@ fn joint_cap_room_inserts_duplicate_and_cross_report_conflicts() {
     accepted(&mut engine, &second);
     assert!(
         engine
+            .world
+            .intent
             .intent_conflicts
             .contains(&WindowId("win-p".to_owned())),
         "differing cross-report value stores with room"
     );
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-p".to_owned()))
     );
-    assert!(engine.intent_ledger_used() <= crate::world_report::MAX_INTENT_RECORDS);
+    assert!(engine.tx(|tx| tx.intent_ledger_used()) <= crate::world_report::MAX_INTENT_RECORDS);
     assert!(
         !engine
+            .world
+            .intent
             .restored_floats
             .contains(&WindowId("win-d".to_owned()))
     );
     assert!(
         !engine
+            .world
+            .intent
             .restored_floats
             .contains(&WindowId("win-p".to_owned()))
     );
 }
 
-#[test]
-fn save_data_canonical_widths_match_bound_constant() {
-    assert_eq!(float_true().len(), 39);
-    assert_eq!(tile_false().len(), 40);
-    assert_eq!(crate::world_sizing::json_string_len(&float_true()), 47);
-    // Ordinary tile (false,null) is 40 raw bytes -> 48 quoted; the 49
-    // reserve covers the wider rollback (false,false) shape.
-    assert_eq!(crate::world_sizing::json_string_len(&tile_false()), 48);
-    assert_eq!(crate::world_sizing::MAX_INTENT_DESIRED_DATA_JSON, 49);
-}
+#[cfg(test)]
+mod preflight_gate_helpers {
+    use std::cell::{Cell, RefCell};
 
-#[test]
-fn max_bound_reserves_one_row_only_for_toggle_float() {
-    use crate::world_sizing::json_string_len;
-    use crate::world_sizing_v4::max_intent_save_bound_v4 as max_intent_save_bound;
-    let toggle = report_full(
-        1,
-        1,
-        vec![screen("out-a", 0)],
-        vec![],
-        vec![],
-        "",
-        Some(1),
-        Some(toggle("win-a")),
-    );
-    assert_eq!(
-        max_intent_save_bound(&toggle),
-        16 + json_string_len("win-a") + 49
-    );
-    // A window id needing escapes still bounds exactly.
-    let mut quoted = toggle.clone();
-    quoted.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: "w\"in\\q".to_owned(),
-        float_rect: None,
-    }));
-    assert_eq!(
-        max_intent_save_bound(&quoted),
-        16 + json_string_len("w\"in\\q") + 49
-    );
-    // A valid max-length opaque id reserves the documented maximum row:
-    // 16 punctuation plus the 130-byte quoted id plus the 49-byte value.
-    let mut maxed = toggle.clone();
-    maxed.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: "w".repeat(128),
-        float_rect: None,
-    }));
-    assert_eq!(max_intent_save_bound(&maxed), 195);
-    let plain = report_full(
-        1,
-        1,
-        vec![screen("out-a", 0)],
-        vec![],
-        vec![],
-        "",
-        None,
-        None,
-    );
-    assert_eq!(max_intent_save_bound(&plain), 0);
-    let focus = report_full(
-        1,
-        1,
-        vec![screen("out-a", 0)],
-        vec![],
-        vec![],
-        "",
-        Some(1),
-        Some(WorldCommand::Focus {
-            window: WindowId("win-a".to_owned()),
-            direction: "left".to_owned(),
-        }),
-    );
-    assert_eq!(max_intent_save_bound(&focus), 0);
-}
-
-#[test]
-fn max_bound_reserves_one_save_row_for_sticky_commands() {
-    use crate::world_sizing::json_string_len;
-    use crate::world_sizing_v4::max_intent_save_bound_v4 as max_intent_save_bound;
-    let sticky = |command: WorldCommand| {
-        report_full(
-            1,
-            1,
-            vec![screen("out-a", 0)],
-            vec![],
-            vec![],
-            "",
-            Some(1),
-            Some(command),
-        )
+    use crate::world_engine::{
+        AdmissionGateDecision, CoreAdmissionGate, ExactInnerCheck, ExactInnerDecision,
+        FutureReserveGateFacts, PreflightGateFacts,
     };
-    let set = sticky(WorldCommand::SetSticky {
-        window: WindowId("win-a".to_owned()),
-        value: true,
-    });
-    assert_eq!(
-        max_intent_save_bound(&set),
-        16 + json_string_len("win-a") + 49
-    );
-    let toggle = sticky(WorldCommand::ToggleSticky {
-        window: WindowId("win-a".to_owned()),
-    });
-    assert_eq!(
-        max_intent_save_bound(&toggle),
-        16 + json_string_len("win-a") + 49
-    );
-    // A window id needing escapes still bounds exactly.
-    let mut quoted = set.clone();
-    quoted.command = Some(WorldCommand::ToggleSticky {
-        window: WindowId("w\"in\\q".to_owned()),
-    });
-    assert_eq!(
-        max_intent_save_bound(&quoted),
-        16 + json_string_len("w\"in\\q") + 49
-    );
-    // A valid max-length opaque id reserves the documented maximum row:
-    // 16 punctuation plus the 130-byte quoted id plus the 49-byte value.
-    let mut maxed = set.clone();
-    maxed.command = Some(WorldCommand::SetSticky {
-        window: WindowId("w".repeat(128)),
-        value: false,
-    });
-    assert_eq!(max_intent_save_bound(&maxed), 195);
-    // Non-save commands reserve nothing.
-    let plain = report_full(
-        1,
-        1,
-        vec![screen("out-a", 0)],
-        vec![],
-        vec![],
-        "",
-        None,
-        None,
-    );
-    assert_eq!(max_intent_save_bound(&plain), 0);
-    let view = sticky(WorldCommand::SelectTrailing {
-        output: Some(OutputId("out-a".to_owned())),
-    });
-    assert_eq!(max_intent_save_bound(&view), 0);
-    let focus = sticky(WorldCommand::Focus {
-        window: WindowId("win-a".to_owned()),
-        direction: "left".to_owned(),
-    });
-    assert_eq!(max_intent_save_bound(&focus), 0);
-}
+    use crate::world_report::{WorldCommand, WorldReplyV4, WorldReportV4};
 
-#[test]
-fn sticky_save_canonical_widths_match_bound_constant() {
-    use crate::world_sizing::json_string_len;
-    // Sticky-on `(Some(true), prior)`, sticky-off
-    // `(prior, None)`, and the sticky-clearing toggle `(Some(false),
-    // None)`. The widest escaped forms need the full 49-byte reserve
-    // (covered by the (false,false) rollback shape, not these 48s).
-    let on_tiled = encode_intent_data(&IntentData::new(Some(true), Some(false)));
-    let on_float = encode_intent_data(&IntentData::new(Some(true), Some(true)));
-    let off = encode_intent_data(&IntentData::new(Some(false), None));
-    assert_eq!(on_float.len(), 39);
-    assert_eq!(on_tiled.len(), 40);
-    assert_eq!(off.len(), 40);
-    assert_eq!(json_string_len(&on_float), 47);
-    assert_eq!(json_string_len(&on_tiled), 48);
-    assert_eq!(json_string_len(&off), 48);
-    assert_eq!(
-        crate::world_sizing::MAX_INTENT_DESIRED_DATA_JSON,
-        49,
-        "sticky canonical width"
-    );
-}
+    #[derive(Debug, Default)]
+    pub(super) struct ObservedPreflight {
+        pub(super) effective_command: Option<WorldCommand>,
+        pub(super) domain_count: usize,
+        pub(super) screen_count: usize,
+        pub(super) staged_window_count: usize,
+        pub(super) retained_publish_footprint: usize,
+        pub(super) intent_desired_count: usize,
+        pub(super) report_windows_len: usize,
+    }
 
-#[test]
-fn reply_upper_bound_adds_exactly_one_save_row() {
-    use crate::world_sizing_v4::{
-        max_intent_save_bound_v4 as max_intent_save_bound,
-        reply_upper_bound_v4 as reply_upper_bound, report_estimate_v4 as report_estimate,
-    };
-    let windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)];
-    let toggle = toggle_report(2, windows.clone());
-    let plain = report_full(
-        2,
-        2,
-        vec![screen("out-a", 0)],
-        windows,
-        vec![],
-        "",
-        None,
-        None,
-    );
-    let bound = max_intent_save_bound(&toggle);
-    assert!(bound > 0);
-    assert_eq!(
-        reply_upper_bound(&toggle, 0, 1, 1, 0, 0) - reply_upper_bound(&plain, 0, 1, 1, 0, 0),
-        (report_estimate(&toggle) - report_estimate(&plain)) + bound
-    );
-}
+    pub(super) struct LocalPreflightGate {
+        pub(super) refuse_request_size: Cell<bool>,
+        pub(super) refuse_preflight: Cell<bool>,
+        pub(super) observed: RefCell<Option<ObservedPreflight>>,
+    }
 
-#[test]
-fn actual_one_save_reply_fits_estimate_with_exact_row() {
-    use crate::world_sizing::{intent_desired_estimate, json_string_len};
-    use crate::world_sizing_v4::{
-        reply_estimate_v4 as reply_estimate, reply_exact_bytes_v4,
-        reply_upper_bound_v4 as reply_upper_bound,
-    };
-    let mut engine = engine();
-    accepted(
-        &mut engine,
-        &report_full(
-            1,
-            1,
-            vec![screen("out-a", 0)],
-            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
-            vec![],
-            "",
-            None,
-            None,
-        ),
-    );
-    let input = toggle_report(
-        2,
-        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
-    );
-    // Pre-mutation upper bound for this exact input, read the way the
-    // commit gate reads it (retained/logical counts before any mutation).
-    let pre_bound = reply_upper_bound(
-        &input,
-        engine.retained.len() + engine.retained_floats.len(),
-        engine.layout.domain_keys().len(),
-        input.screens.len(),
-        engine.staged.facts.len() + engine.staged.held_windows.len(),
-        engine.retained_publish_footprint(),
-    );
-    let reply = accepted(&mut engine, &input);
-    assert_save(&reply, "win-a", &float_true());
-    let data = reply.intent_desired[0].data.expect("save data");
-    // Section header `,"intentDesired":[` is 18 plus the closing `]` (19
-    // empty); the header is one byte wider than the old `intentWrites` lane.
-    assert_eq!(
-        intent_desired_estimate(&reply.intent_desired),
-        19 + 16 + json_string_len("win-a") + json_string_len(&encode_intent_data(&data))
-    );
-    // Exact v4 reply bytes (length arithmetic mirroring the protocol
-    // `encode_reply_v4` writer field-by-field; no core v4 writer exists).
-    // The save payload itself is already pinned typed by `assert_save`
-    // above; the wire-substring check has no typed-v4-writer counterpart.
-    let actual = reply_exact_bytes_v4(&reply);
-    assert!(
-        reply_estimate(&reply) >= actual,
-        "estimate {} covers actual {}",
-        reply_estimate(&reply),
-        actual
-    );
-    assert!(
-        actual <= pre_bound,
-        "exact one-save reply {} fits the pre-mutation upper bound {pre_bound}",
-        actual
-    );
+    impl LocalPreflightGate {
+        pub(super) fn new(refuse_request_size: bool, refuse_preflight: bool) -> Self {
+            Self {
+                refuse_request_size: Cell::new(refuse_request_size),
+                refuse_preflight: Cell::new(refuse_preflight),
+                observed: RefCell::new(None),
+            }
+        }
+    }
+
+    impl CoreAdmissionGate for LocalPreflightGate {
+        fn check_request_size(&self, _report: &WorldReportV4) -> AdmissionGateDecision {
+            if self.refuse_request_size.get() {
+                AdmissionGateDecision::Refuse
+            } else {
+                AdmissionGateDecision::Allow
+            }
+        }
+
+        fn check_preflight(
+            &self,
+            report: &WorldReportV4,
+            facts: &PreflightGateFacts<'_>,
+        ) -> AdmissionGateDecision {
+            *self.observed.borrow_mut() = Some(ObservedPreflight {
+                effective_command: facts.effective_command.cloned(),
+                domain_count: facts.domain_count,
+                screen_count: facts.screen_count,
+                staged_window_count: facts.staged_window_count,
+                retained_publish_footprint: facts.retained_publish_footprint,
+                intent_desired_count: facts.intent_desired_count,
+                report_windows_len: report.windows.len(),
+            });
+            if self.refuse_preflight.get() {
+                AdmissionGateDecision::Refuse
+            } else {
+                AdmissionGateDecision::Allow
+            }
+        }
+
+        fn check_exact_inner(&self, _reply: &WorldReplyV4) -> ExactInnerDecision {
+            ExactInnerDecision::Allow(ExactInnerCheck::new(0))
+        }
+
+        fn check_future_reserve(
+            &self,
+            _reply: &WorldReplyV4,
+            _facts: &FutureReserveGateFacts,
+            _exact: ExactInnerCheck,
+        ) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+    }
 }
 
 #[test]
 fn oversized_toggle_report_rejected_without_mutation() {
-    use crate::world_report::WORLD_MAX_REQUEST_BYTES;
-    use crate::world_sizing_v4::report_estimate_v4 as report_estimate;
+    // Request-size refusal before any mutation with a save command, plus
+    // retry recovery once the gate allows. Protocol sizing crossing lives in
+    // `tiler-protocol/tests/world_envelope_budget.rs`.
     let mut engine = engine();
     accepted(
         &mut engine,
@@ -2122,56 +2078,53 @@ fn oversized_toggle_report_rejected_without_mutation() {
             None,
         ),
     );
-    let revision = engine.state_revision;
-    let mut windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)];
-    for i in 0..1500 {
-        let mut padded = fact(&format!("win-pad-{i:04}"), "out-a", 0);
-        padded.title = Some("t".repeat(3000));
-        windows.push(padded);
-    }
-    let oversized = report_full(
+    let revision = engine.state_revision();
+    let report = toggle_report(
         2,
-        2,
-        vec![screen("out-a", 0)],
-        windows,
-        vec![],
-        "",
-        Some(2),
-        Some(toggle("win-a")),
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
     );
-    assert!(
-        report_estimate(&oversized) > WORLD_MAX_REQUEST_BYTES,
-        "fixture really is oversized"
-    );
-    match engine.handle_report(&oversized, &[]).0 {
+    let gate = preflight_gate_helpers::LocalPreflightGate::new(true, false);
+    match engine
+        .handle_report_with_gate_and_prepare(&report, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .0
+    {
         WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_OVERSIZED);
         }
         other => panic!("expected oversized, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision, "oversized mutates nothing");
-    assert!(engine.command_highwater.is_none(), "command unconsumed");
-    // The same save command still works once the report fits.
-    let retry = toggle_report(
-        2,
-        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
+    assert_eq!(
+        engine.state_revision(),
+        revision,
+        "oversized mutates nothing"
     );
-    let reply = accepted(&mut engine, &retry);
+    assert!(
+        engine.world.command_highwater.is_none(),
+        "command unconsumed"
+    );
+    gate.refuse_request_size.set(false);
+    let reply = match engine
+        .handle_report_with_gate_and_prepare(&report, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .0
+    {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted retry, got {other:?}"),
+    };
     assert_save(&reply, "win-a", &float_true());
 }
 
 #[test]
 fn reply_bound_toggle_report_rejected_without_mutation() {
-    // Pre-mutation REPLY bound refusal (not the request-size gate): the
-    // report itself fits, but the worst-case reply does not. The padding
-    // is tuned so the bound WITHOUT the save row still fits while the
-    // bound WITH the ToggleFloat save row exceeds it, proving the new
-    // reservation is the discriminator.
-    use crate::world_report::WORLD_MAX_REPLY_BYTES;
-    use crate::world_sizing_v4::{
-        max_intent_save_bound_v4 as max_intent_save_bound,
-        reply_upper_bound_v4 as reply_upper_bound, report_estimate_v4 as report_estimate,
-    };
+    // Local format-neutral preflight gate proves factual counts supplied for
+    // a ToggleFloat save report and atomicity of private intent state on
+    // preflight refusal, plus retry recovery. Protocol bound crossing lives
+    // in `tiler-protocol/tests/world_envelope_budget.rs`.
     let mut engine = engine();
     accepted(
         &mut engine,
@@ -2186,120 +2139,73 @@ fn reply_bound_toggle_report_rejected_without_mutation() {
             None,
         ),
     );
-    let save_bound = max_intent_save_bound(&toggle_report(2, Vec::new()));
-    assert_eq!(save_bound, 72);
-    let logical = engine.layout.domain_keys().len();
-    let bound_of = |windows: &[crate::world_report::WindowFact]| {
-        let report = report_full(
-            2,
-            2,
-            vec![screen("out-a", 0)],
-            windows.to_vec(),
-            vec![],
-            "",
-            Some(2),
-            Some(toggle("win-a")),
-        );
-        reply_upper_bound(
-            &report,
-            0,
-            logical,
-            1,
-            0,
-            engine.retained_publish_footprint(),
-        )
-    };
-    // Coarse: drop small pad windows until the saveless bound fits.
-    let mut windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)];
-    for i in 0..2200 {
-        windows.push(fact(&format!("win-pad-{i:05}"), "out-a", 0));
-    }
-    while bound_of(&windows) - save_bound > WORLD_MAX_REPLY_BYTES {
-        windows.pop();
-    }
-    // Fine: grow one bounded title on an existing pad window - each
-    // ASCII title byte adds exactly one to estimate and bound alike (plus
-    // 2 for the null-to-string swap: absent titles count `null` as 4 while
-    // a string counts its quotes) - landing the saveless bound within one
-    // save row below the cap.
-    let deficit = WORLD_MAX_REPLY_BYTES
-        .saturating_sub(70)
-        .saturating_sub(bound_of(&windows) - save_bound)
-        + 2;
-    windows[2].title = Some("t".repeat(deficit));
-    let report = report_full(
+    let report = toggle_report(
         2,
-        2,
-        vec![screen("out-a", 0)],
-        windows,
-        vec![],
-        "",
-        Some(2),
-        Some(toggle("win-a")),
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
     );
-    let without_save = reply_upper_bound(
-        &report,
-        0,
-        logical,
-        1,
-        0,
-        engine.retained_publish_footprint(),
-    ) - save_bound;
-    assert!(
-        report_estimate(&report) <= crate::world_report::WORLD_MAX_REQUEST_BYTES,
-        "request itself fits; only the reply bound trips"
-    );
-    assert!(
-        without_save <= WORLD_MAX_REPLY_BYTES,
-        "saveless bound fits: {without_save}"
-    );
-    assert!(
-        without_save + save_bound > WORLD_MAX_REPLY_BYTES,
-        "save row is the discriminator: {without_save} + {save_bound}"
-    );
-    let revision = engine.state_revision;
-    let admitted = engine.intent_admitted.clone();
-    let pending = engine.pending_intent.clone();
-    let conflicts = engine.intent_conflicts.clone();
-    let blocks = engine.intent_sticky_blocks.clone();
-    let restored = engine.restored_floats.clone();
-    match engine.handle_report(&report, &[]).0 {
+    let revision = engine.state_revision();
+    let admitted = engine.world.intent.intent_admitted.clone();
+    let pending = engine.world.intent.pending_intent.clone();
+    let conflicts = engine.world.intent.intent_conflicts.clone();
+    let blocks = engine.world.intent.intent_sticky_blocks.clone();
+    let restored = engine.world.intent.restored_floats.clone();
+    let expected_domains = engine.world.layout.domain_keys().len();
+    let expected_staged = engine.world.staged.facts.len() + engine.world.staged.held_windows.len();
+    let expected_retained = engine.world.retained_publish_footprint();
+    let gate = preflight_gate_helpers::LocalPreflightGate::new(false, true);
+    match engine
+        .handle_report_with_gate_and_prepare(&report, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .0
+    {
         WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
         }
         other => panic!("expected reply-oversize, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
-    assert!(engine.command_highwater.is_none(), "command unconsumed");
-    assert_eq!(engine.intent_admitted, admitted);
-    assert_eq!(engine.pending_intent, pending);
-    assert_eq!(engine.intent_conflicts, conflicts);
-    assert_eq!(engine.intent_sticky_blocks, blocks);
-    assert_eq!(engine.restored_floats, restored);
-    assert!(is_tiled(&engine, "win-a") && is_tiled(&engine, "win-b"));
-    // The same save command still works once the report fits.
-    let retry = toggle_report(
-        2,
-        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
+    {
+        let observed = gate.observed.borrow();
+        let observed = observed.as_ref().expect("preflight observed facts");
+        assert_eq!(observed.effective_command, Some(toggle("win-a")));
+        assert_eq!(observed.domain_count, expected_domains);
+        assert_eq!(observed.screen_count, 1);
+        assert_eq!(observed.staged_window_count, expected_staged);
+        assert_eq!(observed.retained_publish_footprint, expected_retained);
+        assert_eq!(observed.intent_desired_count, 0);
+    }
+    assert_eq!(engine.state_revision(), revision, "refusal mutates nothing");
+    assert!(
+        engine.world.command_highwater.is_none(),
+        "command unconsumed"
     );
-    let reply = accepted(&mut engine, &retry);
+    assert_eq!(engine.world.intent.intent_admitted, admitted);
+    assert_eq!(engine.world.intent.pending_intent, pending);
+    assert_eq!(engine.world.intent.intent_conflicts, conflicts);
+    assert_eq!(engine.world.intent.intent_sticky_blocks, blocks);
+    assert_eq!(engine.world.intent.restored_floats, restored);
+    assert!(is_tiled(&engine, "win-a") && is_tiled(&engine, "win-b"));
+    gate.refuse_preflight.set(false);
+    let reply = match engine
+        .handle_report_with_gate_and_prepare(&report, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .0
+    {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted retry, got {other:?}"),
+    };
     assert_save(&reply, "win-a", &float_true());
 }
 
 #[test]
 fn reply_bound_target_lanes_rejected_without_mutation() {
-    // Pre-mutation REPLY bound refusal driven by the outbound target-lane
-    // reservation (not the request-size gate): the report itself fits, but
-    // the worst-case reply does not. The padding is tuned so the bound
-    // WITHOUT the per-published-window lane term still fits while the
-    // bound WITH it exceeds the cap, proving the new reservation is the
-    // discriminator. The engine then refuses before any mutation and the
-    // same inventory still accepts once the report fits.
-    use crate::world_report::WORLD_MAX_REPLY_BYTES;
-    use crate::world_sizing::MAX_TARGET_LANES_PER_WINDOW;
-    use crate::world_sizing_v4::{
-        reply_upper_bound_v4 as reply_upper_bound, report_estimate_v4 as report_estimate,
-    };
+    // Local format-neutral preflight gate proves window/staged/retained
+    // factual counts and non-mutation on preflight refusal, plus retry
+    // recovery. Protocol target-lane bound crossing lives in
+    // `tiler-protocol/tests/world_envelope_budget.rs`.
     let mut engine = engine();
     accepted(
         &mut engine,
@@ -2314,47 +2220,13 @@ fn reply_bound_target_lanes_rejected_without_mutation() {
             None,
         ),
     );
-    let logical = engine.layout.domain_keys().len();
-    let staged = engine.staged.facts.len() + engine.staged.held_windows.len();
-    let retained = engine.retained_publish_footprint();
-    let lanes_of = |windows_len: usize, held_len: usize| {
-        windows_len
-            .saturating_add(held_len)
-            .saturating_add(staged)
-            .saturating_add(retained)
-            .saturating_mul(MAX_TARGET_LANES_PER_WINDOW)
-    };
-    let bound_of = |windows: &[crate::world_report::WindowFact]| {
-        let report = report_full(
-            2,
-            2,
-            vec![screen("out-a", 0)],
-            windows.to_vec(),
-            vec![],
-            "",
-            None,
-            None,
-        );
-        reply_upper_bound(&report, 0, logical, 1, staged, retained)
-    };
-    // Coarse: drop small pad windows until the laneless bound fits.
+    let expected_domains = engine.world.layout.domain_keys().len();
+    let expected_staged = engine.world.staged.facts.len() + engine.world.staged.held_windows.len();
+    let expected_retained = engine.world.retained_publish_footprint();
     let mut windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)];
-    for i in 0..2200 {
+    for i in 0..8 {
         windows.push(fact(&format!("win-pad-{i:05}"), "out-a", 0));
     }
-    while bound_of(&windows) - lanes_of(windows.len(), 0) > WORLD_MAX_REPLY_BYTES {
-        windows.pop();
-    }
-    // Fine: grow one bounded title on an existing pad window - each ASCII
-    // title byte adds exactly one to estimate and bound alike (plus 2 for
-    // the null-to-string swap: absent titles count `null` as 4 while a
-    // string counts its quotes) - landing the laneless bound within one
-    // lane term below the cap.
-    let deficit = WORLD_MAX_REPLY_BYTES
-        .saturating_sub(111)
-        .saturating_sub(bound_of(&windows) - lanes_of(windows.len(), 0))
-        + 2;
-    windows[2].title = Some("t".repeat(deficit));
     let report = report_full(
         2,
         2,
@@ -2365,31 +2237,36 @@ fn reply_bound_target_lanes_rejected_without_mutation() {
         None,
         None,
     );
-    let lanes = lanes_of(report.windows.len(), report.held_windows.len());
-    let without_lanes = reply_upper_bound(&report, 0, logical, 1, staged, retained) - lanes;
-    assert!(
-        report_estimate(&report) <= crate::world_report::WORLD_MAX_REQUEST_BYTES,
-        "request itself fits; only the reply bound trips"
-    );
-    assert!(
-        without_lanes <= WORLD_MAX_REPLY_BYTES,
-        "laneless bound fits: {without_lanes}"
-    );
-    assert!(
-        without_lanes + lanes > WORLD_MAX_REPLY_BYTES,
-        "lane term is the discriminator: {without_lanes} + {lanes}"
-    );
-    let revision = engine.state_revision;
-    match engine.handle_report(&report, &[]).0 {
+    let revision = engine.state_revision();
+    let gate = preflight_gate_helpers::LocalPreflightGate::new(false, true);
+    match engine
+        .handle_report_with_gate_and_prepare(&report, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .0
+    {
         WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
         }
         other => panic!("expected reply-oversize, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision, "refusal mutates nothing");
-    assert!(engine.command_highwater.is_none(), "command unconsumed");
+    {
+        let observed = gate.observed.borrow();
+        let observed = observed.as_ref().expect("preflight observed facts");
+        assert_eq!(observed.report_windows_len, 10);
+        assert_eq!(observed.domain_count, expected_domains);
+        assert_eq!(observed.screen_count, 1);
+        assert_eq!(observed.staged_window_count, expected_staged);
+        assert_eq!(observed.retained_publish_footprint, expected_retained);
+    }
+    assert_eq!(engine.state_revision(), revision, "refusal mutates nothing");
+    assert!(
+        engine.world.command_highwater.is_none(),
+        "command unconsumed"
+    );
     assert!(is_tiled(&engine, "win-a") && is_tiled(&engine, "win-b"));
-    // The same inventory still accepts once the report fits.
+    gate.refuse_preflight.set(false);
     let retry = report_full(
         2,
         2,
@@ -2400,7 +2277,13 @@ fn reply_bound_target_lanes_rejected_without_mutation() {
         None,
         None,
     );
-    match engine.handle_report(&retry, &[]).0 {
+    match engine
+        .handle_report_with_gate_and_prepare(&retry, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .0
+    {
         WorldOutcome::Accepted(_) | WorldOutcome::CommandConsumed(_) => {}
         other => panic!("expected accepted retry, got {other:?}"),
     }

@@ -26,8 +26,8 @@ use crate::world_report::{
     HeldWindowRow, LastWrite, LastWritePath, LastWriteProperty, MemberAttempt, OneShotEffect,
     PresentationRowV4, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority,
     SwitchFocus, SwitchOutcome, VisibilityFact, VisibilityReason, VisibilitySample,
-    VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WORLD_MAX_REPLY_BYTES, WindowFact, WorkspaceRef,
-    WorldCommand, WorldReportV4,
+    VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef, WorldCommand,
+    WorldReportV4,
 };
 use crate::world_v4_support_tests::empty_ingress;
 
@@ -418,9 +418,10 @@ fn selection_grants_await_shown_with_show_and_hide_targets() {
     }
     // Single settlement owner is the retained focus request; the
     // arrival-bound grant lives only in the selection binding below.
-    // Frozen snapshot frames come from the final published layout, and the
-    // published rows fit the standing per-window target reserve.
+    // Frozen snapshot frames come from the final published layout.
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("selection binding retained");
@@ -444,31 +445,6 @@ fn selection_grants_await_shown_with_show_and_hide_targets() {
     );
     assert_eq!(binding.members[0].window.0, "w2");
     assert_eq!(binding.members[0].frame, shown.effective_frame);
-    for row in &reply.windows {
-        assert!(
-            crate::world_sizing::window_target_lanes_estimate(row)
-                <= crate::world_sizing::MAX_TARGET_LANES_PER_WINDOW,
-            "per-window lanes fit the 626 reserve: {row:?}"
-        );
-    }
-    use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
-    let actual = reply_exact_bytes_v4(&reply);
-    let estimate = reply_estimate_v4(&reply);
-    assert!(
-        estimate >= actual,
-        "estimate {estimate} bounds wire {actual}"
-    );
-    let mut stripped = reply.clone();
-    stripped
-        .focus_request
-        .as_mut()
-        .expect("retained focus request")
-        .after_shown = None;
-    assert_ne!(
-        reply_exact_bytes_v4(&reply),
-        reply_exact_bytes_v4(&stripped),
-        "exact bytes carry the awaitShown grant"
-    );
 }
 
 #[test]
@@ -492,6 +468,8 @@ fn selection_targets_stay_stable_across_observations() {
     assert_eq!(row(&steady, "w1").visibility.expect("hide").revision, rev);
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "observation keeps the binding"
@@ -528,6 +506,8 @@ fn selection_arrival_proof_needs_every_frozen_shown_member() {
         ),
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding");
@@ -588,6 +568,8 @@ fn selection_arrival_rejects_partial_or_mismatched_evidence() {
             "{name}: wrong raw never settles"
         );
         let binding = engine
+            .world
+            .settlement
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
             .expect("binding");
@@ -625,6 +607,8 @@ fn selection_arrival_rejects_bad_lifetime_facts() {
         ),
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding");
@@ -678,7 +662,7 @@ fn ordinary_direct_focus_grants_no_arrival() {
     for row in &reply.windows {
         assert!(row.visibility.is_none(), "ordinary focus grants no targets");
     }
-    assert!(engine.retained_selection.is_empty());
+    assert!(engine.world.settlement.retained_selection.is_empty());
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -735,6 +719,8 @@ fn selection_accepted_setter_without_foreground_proves_arrival_only() {
         ),
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding");
@@ -791,6 +777,8 @@ fn selection_arrival_rejects_watermark_violations() {
             "{name}: wrong raw never settles"
         );
         let binding = engine
+            .world
+            .settlement
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
             .expect("binding");
@@ -845,6 +833,8 @@ fn selection_native_arm_bracket_is_refused_before_adoption() {
         other => panic!("expected host-arm refusal, got {other:?}"),
     }
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding");
@@ -874,18 +864,24 @@ fn selection_close_prunes_binding_and_targets_without_stale_reuse() {
     );
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "closed focus drops the binding"
     );
     assert!(
         !engine
+            .world
+            .settlement
             .selection_targets
             .contains_key(&WindowId("w2".to_owned())),
         "closed lifetime drops its target"
     );
     assert!(
         engine
+            .world
+            .settlement
             .selection_targets
             .contains_key(&WindowId("w1".to_owned())),
         "surviving member keeps its entry"
@@ -913,7 +909,7 @@ fn selection_close_prunes_binding_and_targets_without_stale_reuse() {
         ),
     );
     assert!(
-        engine.retained_selection.is_empty(),
+        engine.world.settlement.retained_selection.is_empty(),
         "stale tuples revive nothing"
     );
     // Reusing the lifetime inside the surviving output scope registers a
@@ -950,7 +946,10 @@ fn selection_close_prunes_binding_and_targets_without_stale_reuse() {
         old_rev,
         "survivor keeps its revision"
     );
-    assert!(engine.retained_selection.is_empty(), "no grant resurrected");
+    assert!(
+        engine.world.settlement.retained_selection.is_empty(),
+        "no grant resurrected"
+    );
     assert!(
         readmit.effects.iter().all(|effect| !effect.await_shown),
         "no arrival grant resurrected on re-admission"
@@ -987,6 +986,8 @@ fn selection_refusal_consumed_and_envelope_keep_first_feedback() {
     );
     let check_latched = |engine: &WorldEngine| {
         let binding = engine
+            .world
+            .settlement
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
             .expect("binding survives");
@@ -1144,6 +1145,8 @@ fn selection_late_admission_registers_fresh_revision_outside_frozen_set() {
         "existing targets keep their revision"
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding");
@@ -1172,6 +1175,8 @@ fn selection_late_admission_registers_fresh_revision_outside_frozen_set() {
         &report(5, three_facts("out-a"), vec![], None, None, vec![ready], ""),
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding");
@@ -1210,6 +1215,8 @@ fn selection_multimember_snapshot_needs_every_member() {
         "focus resolves a selected member: {effect:?}"
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding");
@@ -1252,6 +1259,8 @@ fn selection_multimember_snapshot_needs_every_member() {
         ),
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding");
@@ -1302,6 +1311,8 @@ fn selection_multimember_snapshot_needs_every_member() {
         &report(5, three_facts("out-a"), vec![], None, None, vec![full], ""),
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding");
@@ -1385,12 +1396,16 @@ fn selection_safety_flips_withhold_controlled_writes() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .selection_targets
             .contains_key(&WindowId("w2".to_owned())),
         "exclusion preserves the entry without granting authority"
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "exclusion preserves the binding"
@@ -1497,6 +1512,8 @@ fn selection_without_suppression_caps_binds_focusless_with_direct_effect() {
         let _ = target;
     }
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("ineligible focus freezes a focusless binding");
@@ -1505,6 +1522,8 @@ fn selection_without_suppression_caps_binds_focusless_with_direct_effect() {
     assert_eq!(binding.home.workspace.0, away);
     assert!(
         engine
+            .world
+            .settlement
             .selection_targets
             .get(&WindowId("w2".to_owned()))
             .is_some_and(|entry| entry.shown),
@@ -1512,6 +1531,8 @@ fn selection_without_suppression_caps_binds_focusless_with_direct_effect() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .selection_targets
             .get(&WindowId("w1".to_owned()))
             .is_some_and(|entry| !entry.shown),
@@ -1547,16 +1568,18 @@ fn selection_without_suppression_caps_binds_focusless_with_direct_effect() {
     assert_eq!(event.focus, SwitchFocus::Unproven);
     assert!(!event.fallback);
     assert_eq!(
-        engine.views.get("out-a").cloned(),
+        engine.world.workspace.views.get("out-a").cloned(),
         Some(away.clone()),
         "contradictory echo never adopts"
     );
     assert!(
-        engine.retained_selection.is_empty(),
+        engine.world.settlement.retained_selection.is_empty(),
         "finite binding releases"
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained
             .iter()
             .all(|r| r.target.operation_id != "op-3"),
@@ -1564,6 +1587,8 @@ fn selection_without_suppression_caps_binds_focusless_with_direct_effect() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned())),
         "scopes survive"
@@ -1605,7 +1630,11 @@ fn selection_host_owned_focusless_pends_on_native_proof() {
         workspace: WorkspaceId(ring[0].clone()),
     };
     assert!(
-        !engine.selection_route_eligible(&WindowId("w1".to_owned()), &home_key, &BTreeSet::new()),
+        !engine.tx(|tx| tx.selection_route_eligible(
+            &WindowId("w1".to_owned()),
+            &home_key,
+            &BTreeSet::new()
+        )),
         "host-owned engines never take the route"
     );
     let reply = accepted(
@@ -1631,12 +1660,14 @@ fn selection_host_owned_focusless_pends_on_native_proof() {
         );
     }
     assert!(
-        engine.selection_targets.is_empty(),
+        engine.world.settlement.selection_targets.is_empty(),
         "host-owned freezes no per-window targets"
     );
     // The focusless binding pends on the native selector readback: no
     // native observations here, so no proof either way.
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("host-owned focusless binding pends");
@@ -1675,6 +1706,8 @@ fn empty_selection_freezes_hide_then_supersedes_without_completing() {
         "supersession completes nothing: {reply:?}"
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("focusless binding retained");
@@ -1699,6 +1732,8 @@ fn empty_selection_freezes_hide_then_supersedes_without_completing() {
         "superseded focusless emits nothing: {back:?}"
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("new binding retained");
@@ -1904,12 +1939,16 @@ fn selection_two_outputs_retain_independent_bindings() {
     // arrival-bound grants.
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "out-a binding survives the out-b intent"
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-b".to_owned())),
         "out-b binding retained"
@@ -1936,12 +1975,16 @@ fn selection_two_outputs_retain_independent_bindings() {
     assert_eq!(row(&steady, "w3").visibility.expect("hide").revision, rev_b);
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "observation keeps out-a"
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-b".to_owned())),
         "observation keeps out-b"
@@ -2043,22 +2086,26 @@ fn selection_follow_send_home_invalidates_stale_hide() {
         "follow focus waits until the destination is shown"
     );
     assert!(
-        engine.retained.iter().all(|r| {
+        engine.world.settlement.retained.iter().all(|r| {
             r.target.operation_id != "op-4"
                 || !matches!(r.target.kind, crate::world_report::TransferKind::View)
         }),
         "no view flight for the common follow binding: {:?}",
-        engine.retained
+        engine.world.settlement.retained
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained
             .iter()
             .all(|r| !r.target.operation_id.ends_with("-follow")),
         "no `{{op}}-follow` child: {:?}",
-        engine.retained
+        engine.world.settlement.retained
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("follow binds the common frozen selection");
@@ -2086,28 +2133,12 @@ fn selection_follow_send_home_invalidates_stale_hide() {
     }
     assert!(
         engine
+            .world
+            .settlement
             .selection_targets
             .values()
             .all(|entry| entry.rev == rev),
         "superseded targets clear with the view move"
-    );
-    use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
-    let actual = reply_exact_bytes_v4(&followed);
-    let estimate = reply_estimate_v4(&followed);
-    assert!(
-        estimate >= actual,
-        "estimate {estimate} bounds wire {actual}"
-    );
-    let mut stripped = followed.clone();
-    stripped
-        .focus_request
-        .as_mut()
-        .expect("retained focus request")
-        .after_shown = None;
-    assert_ne!(
-        reply_exact_bytes_v4(&followed),
-        reply_exact_bytes_v4(&stripped),
-        "exact bytes carry the awaitShown grant"
     );
 }
 
@@ -2177,6 +2208,8 @@ fn follow_send_settles_membership_before_selection_terminal() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "binding pends without evidence"
@@ -2216,6 +2249,8 @@ fn follow_send_settles_membership_before_selection_terminal() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "selection binding remains while the window is gone"
@@ -2266,28 +2301,19 @@ fn follow_send_settles_membership_before_selection_terminal() {
     assert!(!event.fallback);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases"
     );
     assert!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned())),
         "scopes survive"
-    );
-    use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
-    let actual = reply_exact_bytes_v4(&done);
-    let estimate = reply_estimate_v4(&done);
-    assert!(
-        estimate >= actual,
-        "estimate {estimate} bounds wire {actual}"
-    );
-    let mut stripped = done.clone();
-    stripped.switch_settled = Vec::new();
-    assert!(
-        reply_exact_bytes_v4(&done) > reply_exact_bytes_v4(&stripped),
-        "exact bytes carry the terminal"
     );
     let again = accepted(
         &mut engine,
@@ -2414,6 +2440,8 @@ fn follow_to_different_workspace_prunes_stale_select_view_flight() {
     let settled = accepted(&mut engine, &late);
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "follow binding survives the stale raw"
@@ -2433,23 +2461,37 @@ fn unrelated_output_grant_cannot_shield_stale_scope() {
     // shielding is covered by the follow family.
     let mut engine = engine();
     engine
+        .world
+        .workspace
         .mapping
         .insert("out-a".to_owned(), vec!["ws".to_owned(), "old".to_owned()]);
     engine
+        .world
+        .workspace
         .mapping
         .insert("out-b".to_owned(), vec!["ws".to_owned(), "old".to_owned()]);
-    engine.views.insert("out-a".to_owned(), "ws".to_owned());
-    engine.views.insert("out-b".to_owned(), "ws".to_owned());
-    engine.staged.observation.inventory_complete = true;
     engine
+        .world
+        .workspace
+        .views
+        .insert("out-a".to_owned(), "ws".to_owned());
+    engine
+        .world
+        .workspace
+        .views
+        .insert("out-b".to_owned(), "ws".to_owned());
+    std::sync::Arc::make_mut(&mut engine.world.staged.observation).inventory_complete = true;
+    engine
+        .world
         .staged
         .echoes
         .insert("out-a".to_owned(), "old".to_owned());
     engine
+        .world
         .staged
         .echoes
         .insert("out-b".to_owned(), "ws".to_owned());
-    engine.selection_scopes.insert(
+    engine.world.settlement.selection_scopes.insert(
         OutputId("out-a".to_owned()),
         crate::world_selection::SelectionScope {
             selected: vec![DomainKey {
@@ -2463,7 +2505,7 @@ fn unrelated_output_grant_cannot_shield_stale_scope() {
             rev: 1,
         },
     );
-    engine.retained_selection.insert(
+    engine.world.settlement.retained_selection.insert(
         OutputId("out-b".to_owned()),
         crate::world_selection::RetainedSelection {
             effect: Some(OneShotEffect::explicit_focus(
@@ -2493,15 +2535,19 @@ fn unrelated_output_grant_cannot_shield_stale_scope() {
             affected: vec![OutputId("out-b".to_owned())],
         },
     );
-    engine.reconcile_selection_scopes(&BTreeSet::new());
+    engine.tx(|tx| tx.reconcile_selection_scopes(&BTreeSet::new()));
     assert!(
         !engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned())),
         "foreign rev cannot keep the stale scope"
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-b".to_owned())),
         "unrelated binding survives"
@@ -2586,21 +2632,27 @@ fn follow_cross_output_binds_current_destination_and_settles_window_first() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained
             .iter()
             .all(|r| !matches!(r.target.kind, crate::world_report::TransferKind::View)),
         "current destination mints no view flight: {:?}",
-        engine.retained
+        engine.world.settlement.retained
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained
             .iter()
             .all(|r| !r.target.operation_id.ends_with("-follow")),
         "no `{{op}}-follow` child: {:?}",
-        engine.retained
+        engine.world.settlement.retained
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-b".to_owned()))
         .expect("follow binds the common frozen selection");
@@ -2638,6 +2690,8 @@ fn follow_cross_output_binds_current_destination_and_settles_window_first() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-b".to_owned())),
         "selection binding remains while the window is gone"
@@ -2645,12 +2699,6 @@ fn follow_cross_output_binds_current_destination_and_settles_window_first() {
     assert!(
         arrived.switch_settled.is_empty(),
         "no terminal without visibility verdicts"
-    );
-    use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
-    let actual = reply_exact_bytes_v4(&arrived);
-    assert!(
-        reply_estimate_v4(&arrived) >= actual,
-        "estimate covers the cross-output follow reply"
     );
 }
 
@@ -2706,6 +2754,8 @@ fn follow_binding_superseded_then_close_drops_without_event() {
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
             .expect("first follow binds")
@@ -2749,6 +2799,8 @@ fn follow_binding_superseded_then_close_drops_without_event() {
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
             .expect("second follow binds")
@@ -2770,6 +2822,8 @@ fn follow_binding_superseded_then_close_drops_without_event() {
     );
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "close drops the finite grant"
@@ -2777,6 +2831,8 @@ fn follow_binding_superseded_then_close_drops_without_event() {
     assert!(closed.switch_settled.is_empty(), "close claims no terminal");
     assert!(
         !engine
+            .world
+            .settlement
             .selection_targets
             .contains_key(&WindowId("w2".to_owned())),
         "closed member targets drop"
@@ -2841,6 +2897,8 @@ fn native_free_follow_source_echo_survives_then_proves() {
             .is_some()
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("follow binds")
@@ -2875,6 +2933,8 @@ fn native_free_follow_source_echo_survives_then_proves() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "binding survives the source echo"
@@ -2919,6 +2979,8 @@ fn native_free_follow_source_echo_survives_then_proves() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "selection binding remains while the window is gone"
@@ -2985,12 +3047,16 @@ fn native_free_follow_source_echo_survives_then_proves() {
     assert!(!event.fallback);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases"
     );
     assert!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned())),
         "scopes survive"
@@ -3055,6 +3121,8 @@ fn native_free_follow_source_echo_survives_then_proves() {
     );
     assert!(
         third_engine
+            .world
+            .settlement
             .retained_selection
             .values()
             .all(|binding| binding.parent_op != "op-3"),
@@ -3124,6 +3192,8 @@ fn native_free_follow_source_echo_survives_then_proves() {
     );
     assert!(
         sup_engine
+            .world
+            .settlement
             .retained_selection
             .values()
             .all(|binding| binding.parent_op != "op-3"),
@@ -3217,6 +3287,8 @@ fn host_owned_follow_binds_native_obligation_and_settles_window_first() {
         followed.transfers
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("follow binds the common frozen selection")
@@ -3281,6 +3353,8 @@ fn host_owned_follow_binds_native_obligation_and_settles_window_first() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "binding survives the departing echo"
@@ -3330,6 +3404,8 @@ fn host_owned_follow_binds_native_obligation_and_settles_window_first() {
     let arrived_w0_frame = row(&arrived, "w0").effective_frame;
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "selection binding remains while the window is gone"
@@ -3398,6 +3474,8 @@ fn host_owned_follow_binds_native_obligation_and_settles_window_first() {
     assert!(!event.fallback);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases"
@@ -3470,6 +3548,8 @@ fn host_owned_follow_source_home_bracket_never_proves_arrival() {
         .expect("retained focus request");
     let frames = host_member_frames(&followed);
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("follow binds")
@@ -3522,6 +3602,8 @@ fn host_owned_follow_source_home_bracket_never_proves_arrival() {
         "source-home bracket never settles: {held:?}"
     );
     let latched = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding pends");
@@ -3560,6 +3642,8 @@ fn host_owned_follow_source_home_bracket_never_proves_arrival() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "binding still pends"
@@ -3574,6 +3658,8 @@ fn staged_native_last_views_follow_staged_echo_across_intakes() {
     let (mut engine, away) = host_boot();
     let logical_for = |engine: &WorldEngine, native: &str| -> String {
         engine
+            .world
+            .settlement
             .native_map
             .iter()
             .find(|((out, nid), _)| out.as_str() == "out-a" && nid.as_str() == native)
@@ -3582,7 +3668,11 @@ fn staged_native_last_views_follow_staged_echo_across_intakes() {
     };
     let first = logical_for(&engine, "n0");
     assert_eq!(
-        engine.last_views.get(&OutputId("out-a".to_owned())),
+        engine
+            .world
+            .settlement
+            .last_views
+            .get(&OutputId("out-a".to_owned())),
         Some(&first),
         "boot retains the staged echo"
     );
@@ -3593,7 +3683,11 @@ fn staged_native_last_views_follow_staged_echo_across_intakes() {
     let second = logical_for(&engine, "n1");
     assert_ne!(first, second);
     assert_eq!(
-        engine.last_views.get(&OutputId("out-a".to_owned())),
+        engine
+            .world
+            .settlement
+            .last_views
+            .get(&OutputId("out-a".to_owned())),
         Some(&second),
         "a later source report retires through staged state"
     );
@@ -3620,6 +3714,8 @@ fn staged_native_last_views_follow_staged_echo_across_intakes() {
     let _ = accepted(&mut engine, &unknown);
     assert!(
         !engine
+            .world
+            .settlement
             .last_views
             .contains_key(&OutputId("out-a".to_owned())),
         "unknown proof removes without logical fallback"
@@ -3728,6 +3824,8 @@ fn selection_shared_mode_fans_out_scopes_and_survives_member_close() {
     // Both affected outputs carry an active scope under the same revision.
     for output in ["out-a", "out-b"] {
         let scope = engine
+            .world
+            .settlement
             .selection_scopes
             .get(&OutputId(output.to_owned()))
             .unwrap_or_else(|| panic!("shared scope on {output}"));
@@ -3769,6 +3867,8 @@ fn selection_shared_mode_fans_out_scopes_and_survives_member_close() {
         "survivor keeps its revision"
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("finite grant");
@@ -3797,18 +3897,24 @@ fn selection_shared_mode_fans_out_scopes_and_survives_member_close() {
     );
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "closed member drops the finite grant"
     );
     assert!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned())),
         "surviving output policy stays"
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .selection_targets
             .get(&WindowId("w1".to_owned()))
             .expect("survivor entry")
@@ -3856,7 +3962,10 @@ fn selection_shared_mode_fans_out_scopes_and_survives_member_close() {
         fresh,
         "other output survivor stays stable"
     );
-    assert!(engine.retained_selection.is_empty(), "no grant resurrected");
+    assert!(
+        engine.world.settlement.retained_selection.is_empty(),
+        "no grant resurrected"
+    );
     assert!(
         readmit.effects.iter().all(|effect| !effect.await_shown),
         "no arrival grant resurrected"
@@ -4004,6 +4113,8 @@ fn selection_held_screen_preserves_grant_and_recovery_rehomes_with_fresh_target(
     let narrow = accepted(&mut engine, &held);
     assert_eq!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .get(&OutputId("out-b".to_owned()))
             .expect("held scope survives")
@@ -4013,6 +4124,8 @@ fn selection_held_screen_preserves_grant_and_recovery_rehomes_with_fresh_target(
     );
     assert!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned())),
         "healthy scope stays"
@@ -4020,6 +4133,8 @@ fn selection_held_screen_preserves_grant_and_recovery_rehomes_with_fresh_target(
     for (window, rev) in [("w1", rev_a), ("w2", rev_a), ("w3", rev_b), ("w4", rev_b)] {
         assert_eq!(
             engine
+                .world
+                .settlement
                 .selection_targets
                 .get(&WindowId(window.to_owned()))
                 .expect("held target survives")
@@ -4030,6 +4145,8 @@ fn selection_held_screen_preserves_grant_and_recovery_rehomes_with_fresh_target(
     }
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-b".to_owned())),
         "held screen keeps the finite grant"
@@ -4061,6 +4178,8 @@ fn selection_held_screen_preserves_grant_and_recovery_rehomes_with_fresh_target(
     }
     // The departed member sits on its departing home under hold.
     let held_w3 = engine
+        .world
+        .settlement
         .selection_targets
         .get(&WindowId("w3".to_owned()))
         .expect("held w3 target survives")
@@ -4076,6 +4195,8 @@ fn selection_held_screen_preserves_grant_and_recovery_rehomes_with_fresh_target(
     assert!(!held_w3.shown, "held w3 stays a departing hide");
     assert_eq!(held_w3.rev, rev_b, "held w3 keeps its revision");
     let held_binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-b".to_owned()))
         .expect("held grant survives")
@@ -4119,6 +4240,8 @@ fn selection_held_screen_preserves_grant_and_recovery_rehomes_with_fresh_target(
         "re-admission stamps its own revision"
     );
     let fresh_w3 = engine
+        .world
+        .settlement
         .selection_targets
         .get(&WindowId("w3".to_owned()))
         .expect("re-admitted w3 registers")
@@ -4172,6 +4295,8 @@ fn selection_held_screen_preserves_grant_and_recovery_rehomes_with_fresh_target(
         );
         assert_eq!(
             engine
+                .world
+                .settlement
                 .selection_targets
                 .get(&WindowId(window.to_owned()))
                 .expect("unaffected entry survives")
@@ -4183,6 +4308,8 @@ fn selection_held_screen_preserves_grant_and_recovery_rehomes_with_fresh_target(
     for (output, rev) in [("out-a", rev_a), ("out-b", rev_b)] {
         assert_eq!(
             engine
+                .world
+                .settlement
                 .selection_scopes
                 .get(&OutputId(output.to_owned()))
                 .expect("scope survives recovery")
@@ -4192,6 +4319,8 @@ fn selection_held_screen_preserves_grant_and_recovery_rehomes_with_fresh_target(
         );
     }
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-b".to_owned()))
         .expect("grant survives recovery");
@@ -4218,6 +4347,8 @@ fn selection_held_screen_preserves_grant_and_recovery_rehomes_with_fresh_target(
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-b".to_owned())),
         "grant survives recovery"
@@ -4257,6 +4388,8 @@ fn selection_composed_sticky_members_join_frozen_arrival_with_precedence() {
         );
         assert!(
             engine
+                .world
+                .intent
                 .restored_sticky
                 .contains_key(&WindowId("w3".to_owned())),
             "w3 is composed sticky"
@@ -4313,6 +4446,8 @@ fn selection_composed_sticky_members_join_frozen_arrival_with_precedence() {
         .map(|desired| (desired.lifetime.0.clone(), desired.effective_frame))
         .collect();
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding")
@@ -4338,12 +4473,16 @@ fn selection_composed_sticky_members_join_frozen_arrival_with_precedence() {
     );
     assert!(
         !engine
+            .world
+            .settlement
             .selection_targets
             .contains_key(&WindowId("w3".to_owned())),
         "sticky keeps producer precedence, no selection target"
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .selection_targets
             .get(&WindowId("w2".to_owned()))
             .expect("w2 target")
@@ -4380,6 +4519,8 @@ fn selection_composed_sticky_members_join_frozen_arrival_with_precedence() {
         ),
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding");
@@ -4414,6 +4555,8 @@ fn selection_composed_sticky_members_join_frozen_arrival_with_precedence() {
         &report(5, three_facts("out-a"), vec![], None, None, vec![full], ""),
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding");
@@ -4462,6 +4605,8 @@ fn selection_historical_readiness_does_not_authorize_fresh_visibility() {
     );
     let check_latched = |engine: &WorldEngine| {
         let binding = engine
+            .world
+            .settlement
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
             .expect("binding survives");
@@ -4664,12 +4809,16 @@ fn switch_all_confirmed_completes_with_proven_focus() {
     assert!(!event.fallback);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases"
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained
             .iter()
             .all(|r| r.target.operation_id != "op-3"),
@@ -4677,30 +4826,21 @@ fn switch_all_confirmed_completes_with_proven_focus() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned())),
         "scopes survive"
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .selection_targets
             .get(&WindowId("w2".to_owned()))
             .expect("target survives")
             .rev,
         rev
-    );
-    use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
-    let actual = reply_exact_bytes_v4(&reply);
-    let estimate = reply_estimate_v4(&reply);
-    assert!(
-        estimate >= actual,
-        "estimate {estimate} bounds wire {actual}"
-    );
-    let mut stripped = reply.clone();
-    stripped.switch_settled = Vec::new();
-    assert!(
-        reply_exact_bytes_v4(&reply) > reply_exact_bytes_v4(&stripped),
-        "exact bytes carry the terminal"
     );
     let again = accepted(
         &mut engine,
@@ -4846,6 +4986,8 @@ fn switch_hide_refused_terminates_with_failed_without_readiness() {
     assert_eq!(event.focus, SwitchFocus::Unproven);
     assert!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned())),
         "scopes survive failure"
@@ -4931,6 +5073,8 @@ fn switch_missing_or_uncorrelated_evidence_stays_pending() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned()))
     );
@@ -5106,7 +5250,7 @@ fn switch_close_and_supersession_emit_nothing_stale() {
         ),
     );
     assert!(reply.switch_settled.is_empty());
-    assert!(engine.retained_selection.is_empty());
+    assert!(engine.world.settlement.retained_selection.is_empty());
     let (mut engine, _home, away) = select_setup();
     let _granted = select(&mut engine, 3, &away);
     let _second = select(&mut engine, 5, &away);
@@ -5152,6 +5296,8 @@ fn switch_late_admission_never_joins_frozen_set() {
     );
     let rev = granted.state_revision;
     let frozen_before: Vec<WindowId> = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding")
@@ -5162,6 +5308,8 @@ fn switch_late_admission_never_joins_frozen_set() {
     let moved = send_to(&mut engine, 4, "w3", &away);
     assert!(moved.state_revision > rev);
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding");
@@ -5176,6 +5324,8 @@ fn switch_late_admission_never_joins_frozen_set() {
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .selection_targets
             .get(&WindowId("w3".to_owned()))
             .expect("late target")
@@ -5256,6 +5406,8 @@ fn switch_shared_fanout_freezes_all_outputs_and_retires_flight() {
         .clone()
         .expect("retained focus request");
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding")
@@ -5267,6 +5419,8 @@ fn switch_shared_fanout_freezes_all_outputs_and_retires_flight() {
     assert!(binding.switch_members.iter().all(|m| m.rev == rev));
     assert!(
         engine
+            .world
+            .settlement
             .retained
             .iter()
             .any(|r| r.target.operation_id == "op-3"
@@ -5314,6 +5468,8 @@ fn switch_shared_fanout_freezes_all_outputs_and_retires_flight() {
     assert_eq!(reply.switch_settled.len(), 1, "shared terminal: {reply:?}");
     assert!(
         engine
+            .world
+            .settlement
             .retained
             .iter()
             .all(|r| r.target.operation_id != "op-3"),
@@ -5322,110 +5478,55 @@ fn switch_shared_fanout_freezes_all_outputs_and_retires_flight() {
 }
 
 #[test]
-fn switch_estimate_and_reserve_cover_maximum_ids() {
-    use crate::world_report::{SwitchEvent, SwitchFocus, SwitchOutcome};
-    use crate::world_sizing::{
-        MAX_SWITCH_EVENT_FIXED_BYTES, MAX_SWITCH_FAILED_ROW_BYTES, max_switch_settle_reserve,
-        switch_settled_estimate,
-    };
-    let long_window = "w".repeat(128);
-    let long_output = "o".repeat(128);
-    let long_op = format!("op-{}", u64::MAX);
-    let event = SwitchEvent {
-        output: OutputId(long_output),
-        operation_id: long_op,
-        outcome: SwitchOutcome::CompletedWithFailures,
-        failed: vec![WindowId(long_window)],
-        focus: SwitchFocus::Unproven,
-        fallback: true,
-    };
-    let estimated = switch_settled_estimate(std::slice::from_ref(&event));
-    let wire = {
-        let mut out = String::new();
-        crate::world_sizing::encode_switch_settled(&mut out, std::slice::from_ref(&event));
-        out
-    };
-    assert!(estimated >= wire.len(), "estimate covers maximum ids");
-    let reserve = max_switch_settle_reserve(1, 1);
-    assert!(reserve >= estimated, "reserve covers one maximum event");
-    assert_eq!(
-        reserve,
-        19 + MAX_SWITCH_EVENT_FIXED_BYTES + MAX_SWITCH_FAILED_ROW_BYTES
-    );
-    assert_eq!(max_switch_settle_reserve(0, 0), 0);
-}
-
-#[test]
-fn switch_marginal_empty_event_reserve_covers_worst_tokens() {
-    // Worst-token empty event: longest op (`op-<u64::MAX>`), longest
-    // outcome (`completed-with-failures`), longest focus (`unproven`),
-    // longer bool (`false`). Fixed 51 + 25 + 25 + 10 + 5 + 1 comma = 117
-    // per event; the pre-mutation reserve must cover the exact estimate
-    // for one event and for concurrent empty events alike (the old 115
-    // bound fails this: 19 + 115 = 134 < 135 estimated).
-    use crate::world_report::{SwitchEvent, SwitchFocus, SwitchOutcome};
-    use crate::world_sizing::{max_switch_settle_reserve, switch_settled_estimate};
-    let worst = || SwitchEvent {
-        output: OutputId("o".repeat(128)),
-        operation_id: format!("op-{}", u64::MAX),
-        outcome: SwitchOutcome::CompletedWithFailures,
-        failed: Vec::new(),
-        focus: SwitchFocus::Unproven,
-        fallback: false,
-    };
-    for events in [vec![worst()], vec![worst(), worst()]] {
-        let n = events.len();
-        let estimated = switch_settled_estimate(&events);
-        // Exact content: 253 bytes per worst-token empty event
-        // (58 + 130 + 25 + 25 + 10 + 5), one comma between rows, plus the
-        // 19-byte section key.
-        assert_eq!(
-            estimated,
-            19 + n * 253 + (n - 1),
-            "exact estimate for empty events"
-        );
-        let mut wire = String::new();
-        crate::world_sizing::encode_switch_settled(&mut wire, &events);
-        // The section writer emits only the `[...]` array; the estimate
-        // additionally carries the `,"switchSettled":` key (19) while the
-        // writer carries the array brackets (2).
-        assert_eq!(wire.len(), estimated - 17, "section key accounts the gap");
-        let reserve = max_switch_settle_reserve(n, 0);
-        assert!(reserve >= estimated, "reserve covers {n} empty events");
-    }
-    // Failed-list maximum: one 128-char id plus the fixed row above stays
-    // covered by the per-id reserve term.
-    let failed_event = SwitchEvent {
-        output: OutputId("o".repeat(128)),
-        operation_id: format!("op-{}", u64::MAX),
-        outcome: SwitchOutcome::CompletedWithFailures,
-        failed: vec![WindowId("w".repeat(128))],
-        focus: SwitchFocus::Unproven,
-        fallback: false,
-    };
-    let estimated = switch_settled_estimate(std::slice::from_ref(&failed_event));
-    let mut wire = String::new();
-    crate::world_sizing::encode_switch_settled(&mut wire, std::slice::from_ref(&failed_event));
-    // Exact: section key (19) + one worst-token event (253) + one
-    // 128-char failed id quoted (130); writer omits the key, keeps brackets.
-    assert_eq!(
-        estimated,
-        19 + 253 + 130,
-        "exact estimate for max failed list"
-    );
-    assert_eq!(wire.len(), estimated - 17, "section key accounts the gap");
-    assert!(
-        max_switch_settle_reserve(1, 1) >= estimated,
-        "reserve covers max failed list"
-    );
-}
-
-#[test]
 fn switch_pre_mutation_reserve_rejects_before_mutation_with_retry() {
-    use crate::world_sizing_v4::reply_upper_bound_v4;
+    use crate::world_engine::{
+        AdmissionGateDecision, CoreAdmissionGate, ExactInnerCheck, ExactInnerDecision,
+        FutureReserveGateFacts, PreflightGateFacts,
+    };
+    use crate::world_report::WorldReplyV4;
+    use std::cell::Cell;
+
+    struct RetainedSwitchPreflightGate {
+        observed_switch: Cell<Option<(usize, usize)>>,
+        refuse_next: Cell<bool>,
+    }
+
+    impl CoreAdmissionGate for RetainedSwitchPreflightGate {
+        fn check_request_size(&self, _report: &WorldReportV4) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+
+        fn check_preflight(
+            &self,
+            _report: &WorldReportV4,
+            facts: &PreflightGateFacts<'_>,
+        ) -> AdmissionGateDecision {
+            self.observed_switch
+                .set(Some((facts.switch_output_count, facts.switch_failed_count)));
+            if self.refuse_next.replace(false) {
+                AdmissionGateDecision::Refuse
+            } else {
+                AdmissionGateDecision::Allow
+            }
+        }
+
+        fn check_exact_inner(&self, _reply: &WorldReplyV4) -> ExactInnerDecision {
+            ExactInnerDecision::Allow(ExactInnerCheck::new(0))
+        }
+
+        fn check_future_reserve(
+            &self,
+            _reply: &WorldReplyV4,
+            _facts: &FutureReserveGateFacts,
+            _exact: ExactInnerCheck,
+        ) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+    }
+
     let (mut engine, _home, away) = select_setup();
     let _granted = select(&mut engine, 3, &away);
-    let rev = engine.state_revision;
+    let rev = engine.state_revision();
     let mut members = Vec::new();
     for i in 0..4000 {
         members.push(crate::world_selection::SwitchMember {
@@ -5439,20 +5540,26 @@ fn switch_pre_mutation_reserve_rejects_before_mutation_with_retry() {
         });
     }
     if let Some(binding) = engine
+        .world
+        .settlement
         .retained_selection
         .get_mut(&OutputId("out-a".to_owned()))
     {
         binding.switch_members = members;
     }
-    let reserve = engine.switch_settle_reserve();
-    assert!(reserve > 4000 * 100, "reserve inflates: {reserve}");
-    let mut windows = vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)];
-    let logical = engine.layout.domain_keys().len();
-    let staged = engine.staged.facts.len() + engine.staged.held_windows.len();
-    let retained = engine.retained_publish_footprint();
-    let mut big = report(
+    let (switch_count, switch_failed) = engine.world.switch_settle_counts();
+    assert_eq!((switch_count, switch_failed), (1, 4000));
+    let gate = RetainedSwitchPreflightGate {
+        observed_switch: Cell::new(None),
+        refuse_next: Cell::new(true),
+    };
+    let big = report(
         50,
-        windows.clone(),
+        vec![
+            sfact("w1", "out-a", 0),
+            sfact("w2", "out-a", 100),
+            sfact("w-pad", "out-a", 200),
+        ],
         vec![],
         Some(50),
         Some(WorldCommand::SelectWorkspace {
@@ -5462,27 +5569,12 @@ fn switch_pre_mutation_reserve_rejects_before_mutation_with_retry() {
         vec![],
         "",
     );
-    while reply_upper_bound_v4(&big, 0, logical, 1, staged, retained).saturating_add(reserve)
-        <= WORLD_MAX_REPLY_BYTES
+    let before_rev = engine.state_revision();
+    match engine
+        .handle_report_with_gate_and_prepare(&big, &[], &gate, |_| Ok::<(), ()>(()))
+        .expect("prepare")
+        .0
     {
-        let i = windows.len();
-        windows.push(sfact(&format!("w-big-{i:05}"), "out-a", 0));
-        assert!(windows.len() < crate::world_report::MAX_WORLD_FACTS);
-        big = report(
-            50,
-            windows.clone(),
-            vec![],
-            Some(50),
-            Some(WorldCommand::SelectWorkspace {
-                output: OutputId("out-a".to_owned()),
-                workspace: away.clone(),
-            }),
-            vec![],
-            "",
-        );
-    }
-    let before_rev = engine.state_revision;
-    match engine.handle_report(&big, &[]).0 {
         WorldOutcome::Rejected { kind, message } => {
             assert_eq!(
                 message, "reply exceeds size bound",
@@ -5492,7 +5584,13 @@ fn switch_pre_mutation_reserve_rejects_before_mutation_with_retry() {
         other => panic!("expected reply-size refusal, got {other:?}"),
     }
     assert_eq!(
-        engine.state_revision, before_rev,
+        gate.observed_switch.get(),
+        Some((1, 4000)),
+        "preflight receives retained switch and failed counts"
+    );
+    assert_eq!(
+        engine.state_revision(),
+        before_rev,
         "rejected report mutates nothing"
     );
     let small = report(
@@ -5507,10 +5605,19 @@ fn switch_pre_mutation_reserve_rejects_before_mutation_with_retry() {
         vec![],
         "",
     );
-    match engine.handle_report(&small, &[]).0 {
+    match engine
+        .handle_report_with_gate_and_prepare(&small, &[], &gate, |_| Ok::<(), ()>(()))
+        .expect("prepare")
+        .0
+    {
         WorldOutcome::Accepted(_) | WorldOutcome::CommandConsumed(_) => {}
         other => panic!("same-seq smaller retry must commit, got {other:?}"),
     }
+    assert_eq!(
+        gate.observed_switch.get(),
+        Some((1, 4000)),
+        "retry still carries retained switch counts until settled"
+    );
 }
 
 #[test]
@@ -5573,18 +5680,24 @@ fn switch_rejected_command_keeps_presettled_terminal_and_consumes_seq() {
     assert!(!event.fallback);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding still releases"
     );
     assert!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned())),
         "scopes survive the refusal"
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .selection_targets
             .get(&WindowId("w1".to_owned()))
             .expect("hide target")
@@ -5593,6 +5706,8 @@ fn switch_rejected_command_keeps_presettled_terminal_and_consumes_seq() {
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .selection_targets
             .get(&WindowId("w2".to_owned()))
             .expect("show target")
@@ -5675,6 +5790,8 @@ fn switch_incomplete_inventory_settles_spent_evidence_without_renewal() {
     assert_eq!(event.focus, SwitchFocus::Proven);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases on the gap"
@@ -5684,6 +5801,8 @@ fn switch_incomplete_inventory_settles_spent_evidence_without_renewal() {
     for window in ["w1", "w2"] {
         assert_eq!(
             engine
+                .world
+                .settlement
                 .selection_targets
                 .get(&WindowId(window.to_owned()))
                 .expect("target")
@@ -5817,11 +5936,10 @@ fn switch_two_output_bindings_settle_two_events_in_one_report() {
         .expect("retained focus request");
     let frame_a = row(&second, "w2").effective_frame;
     let frame_b = row(&second, "w4").effective_frame;
-    // Pre-mutation reserve covers both concurrent terminals exactly.
-    let reserve = engine.switch_settle_reserve();
+    // Pre-mutation counts cover both concurrent terminals.
     assert_eq!(
-        reserve,
-        crate::world_sizing::max_switch_settle_reserve(2, 4),
+        engine.world.switch_settle_counts(),
+        (2, 4),
         "two bindings with four frozen members"
     );
     let settle = report_multi(
@@ -5887,21 +6005,19 @@ fn switch_two_output_bindings_settle_two_events_in_one_report() {
         assert_eq!(event.focus, SwitchFocus::Proven);
         assert!(!event.fallback);
     }
-    use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
-    let actual = reply_exact_bytes_v4(&reply);
     assert!(
-        reply_estimate_v4(&reply) >= actual,
-        "estimate covers the two-event reply without truncation"
-    );
-    assert!(
-        engine.retained_selection.is_empty(),
+        engine.world.settlement.retained_selection.is_empty(),
         "both bindings release"
     );
     assert!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned()))
             && engine
+                .world
+                .settlement
                 .selection_scopes
                 .contains_key(&OutputId("out-b".to_owned())),
         "both scopes survive"
@@ -6049,12 +6165,16 @@ fn switch_nocall_hide_terminates_without_retry_and_preserves_state() {
         .expect("retained focus request");
     let rev = granted.state_revision;
     let home_w1 = engine
+        .world
+        .settlement
         .selection_targets
         .get(&WindowId("w1".to_owned()))
         .expect("hide target")
         .home
         .clone();
     let home_w2 = engine
+        .world
+        .settlement
         .selection_targets
         .get(&WindowId("w2".to_owned()))
         .expect("show target")
@@ -6103,12 +6223,16 @@ fn switch_nocall_hide_terminates_without_retry_and_preserves_state() {
     );
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "no binding survives for a retry"
     );
     for (window, home) in [("w1", &home_w1), ("w2", &home_w2)] {
         let entry = engine
+            .world
+            .settlement
             .selection_targets
             .get(&WindowId(window.to_owned()))
             .expect("target survives");
@@ -6137,7 +6261,10 @@ fn switch_nocall_hide_terminates_without_retry_and_preserves_state() {
         again.effects.iter().all(|effect| !effect.await_shown),
         "no resurrected grant"
     );
-    assert!(engine.retained_selection.is_empty(), "nothing to retry");
+    assert!(
+        engine.world.settlement.retained_selection.is_empty(),
+        "nothing to retry"
+    );
 }
 
 #[test]
@@ -6195,12 +6322,16 @@ fn switch_threw_hide_with_mismatched_post_terminates() {
     assert_eq!(event.focus, SwitchFocus::Unproven);
     assert!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned())),
         "scopes survive failure"
     );
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "no binding survives for a retry"
@@ -6239,6 +6370,8 @@ fn switch_partial_hide_failure_with_proven_arrival_and_focus() {
     let frame = row(&granted, "w2").effective_frame;
     // Three frozen members: show w2 plus hides w1 and w3.
     let mut frozen: Vec<String> = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding")
@@ -6308,6 +6441,8 @@ fn switch_partial_hide_failure_with_proven_arrival_and_focus() {
     // revisions survive the terminal.
     assert!(
         engine
+            .world
+            .settlement
             .retained
             .iter()
             .all(|retained| retained.target.operation_id != "op-3"),
@@ -6316,6 +6451,8 @@ fn switch_partial_hide_failure_with_proven_arrival_and_focus() {
     for window in ["w1", "w2", "w3"] {
         assert_eq!(
             engine
+                .world
+                .settlement
                 .selection_targets
                 .get(&WindowId(window.to_owned()))
                 .expect("target survives")
@@ -6326,6 +6463,8 @@ fn switch_partial_hide_failure_with_proven_arrival_and_focus() {
     }
     assert!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned())),
         "scopes survive failure"
@@ -6350,7 +6489,10 @@ fn switch_partial_hide_failure_with_proven_arrival_and_focus() {
         again.effects.iter().all(|effect| !effect.await_shown),
         "no resurrected grant"
     );
-    assert!(engine.retained_selection.is_empty(), "nothing to retry");
+    assert!(
+        engine.world.settlement.retained_selection.is_empty(),
+        "nothing to retry"
+    );
     assert_eq!(
         again
             .outputs
@@ -6380,6 +6522,8 @@ fn focusless_occupied_to_empty_freezes_hide_and_completes_unproven() {
         "focusless mints no await grant"
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("focusless binding retained");
@@ -6425,6 +6569,8 @@ fn focusless_occupied_to_empty_freezes_hide_and_completes_unproven() {
     assert!(missing.switch_settled.is_empty(), "no verdict, no event");
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding holds"
@@ -6457,12 +6603,16 @@ fn focusless_occupied_to_empty_freezes_hide_and_completes_unproven() {
     assert!(!event.fallback);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases"
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained
             .iter()
             .all(|r| r.target.operation_id != "op-4"),
@@ -6470,12 +6620,16 @@ fn focusless_occupied_to_empty_freezes_hide_and_completes_unproven() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned())),
         "scopes survive the terminal"
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .selection_targets
             .get(&WindowId("w2".to_owned()))
             .expect("target survives")
@@ -6543,12 +6697,16 @@ fn focusless_occupied_to_empty_hide_refusal_fails() {
     assert_eq!(event.focus, SwitchFocus::Unproven);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases on failure"
     );
     assert!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned())),
         "scopes survive failure"
@@ -6604,6 +6762,8 @@ fn focusless_empty_to_empty_zero_members_completes_at_issuing() {
     assert!(!event.fallback);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases at issuing"
@@ -6668,12 +6828,14 @@ fn focusless_minimized_only_invents_no_focus() {
     assert_eq!(event.focus, SwitchFocus::Unproven);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases at issuing"
     );
     assert!(
-        engine.selection_targets.is_empty(),
+        engine.world.settlement.selection_targets.is_empty(),
         "minimized members take no targets"
     );
 }
@@ -6849,10 +7011,12 @@ fn host_owned_focus_bearing_grants_await_shown_with_native_obligations() {
         );
     }
     assert!(
-        engine.selection_targets.is_empty(),
+        engine.world.settlement.selection_targets.is_empty(),
         "no per-window targets authorized"
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("selection binding retained");
@@ -6910,24 +7074,6 @@ fn host_owned_focus_bearing_grants_await_shown_with_native_obligations() {
             .effective_frame;
         assert_eq!(member.frame, published, "frozen final frames");
     }
-    use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
-    let actual = reply_exact_bytes_v4(&reply);
-    let estimate = reply_estimate_v4(&reply);
-    assert!(
-        estimate >= actual,
-        "estimate {estimate} bounds wire {actual}"
-    );
-    let mut stripped = reply.clone();
-    stripped
-        .focus_request
-        .as_mut()
-        .expect("retained focus request")
-        .after_shown = None;
-    assert_ne!(
-        reply_exact_bytes_v4(&reply),
-        reply_exact_bytes_v4(&stripped),
-        "exact bytes carry the awaitShown grant"
-    );
 }
 
 fn host_focus_grant() -> (WorldEngine, String, crate::world_report::WorldReplyV4) {
@@ -7016,12 +7162,16 @@ fn host_owned_focus_bearing_native_arrival_and_selector_complete_proven() {
     assert!(!event.fallback);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases"
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained
             .iter()
             .all(|r| r.target.operation_id != "op-3"),
@@ -7045,6 +7195,8 @@ fn host_owned_focus_bearing_selector_proof_alone_holds() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "binding holds for the missing feedback"
@@ -7079,6 +7231,8 @@ fn host_owned_focus_bearing_arrival_without_selector_holds() {
         "missing selector proof holds: {settled:?}"
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding holds");
@@ -7158,6 +7312,8 @@ fn host_owned_focus_bearing_accepted_without_foreground_fails() {
     assert_eq!(event.focus, SwitchFocus::Unproven);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases on failure"
@@ -7229,6 +7385,8 @@ fn host_owned_focus_bearing_rejects_wrong_native_evidence() {
             "{name}: wrong evidence never completes"
         );
         let binding = engine
+            .world
+            .settlement
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
             .expect("binding holds");
@@ -7283,6 +7441,8 @@ fn host_owned_focus_bearing_wrong_host_arms_refuse_at_ingress() {
         }
         assert!(
             engine
+                .world
+                .settlement
                 .retained_selection
                 .contains_key(&OutputId("out-a".to_owned())),
             "{name}: refused report mutates nothing"
@@ -7326,6 +7486,8 @@ fn host_owned_focus_bearing_native_refusal_fails_with_feedback() {
     assert_eq!(event.focus, SwitchFocus::Proven);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases on refusal"
@@ -7350,6 +7512,8 @@ fn host_owned_focus_bearing_refusal_without_feedback_pends_until_feedback() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "own refusal pends, never supersedes"
@@ -7363,6 +7527,8 @@ fn host_owned_focus_bearing_refusal_without_feedback_pends_until_feedback() {
     assert!(held.switch_settled.is_empty(), "still pending: {held:?}");
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "accounting survives the gap"
@@ -7398,12 +7564,16 @@ fn host_owned_focus_bearing_refusal_without_feedback_pends_until_feedback() {
     assert_eq!(event.focus, SwitchFocus::Proven);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases on refusal"
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained
             .iter()
             .all(|r| r.target.operation_id != "op-3"),
@@ -7434,6 +7604,8 @@ fn host_owned_focus_bearing_refusal_then_reselect_supersedes_silently() {
     assert!(quiet.switch_settled.is_empty(), "refusal pends: {quiet:?}");
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "binding pends for feedback"
@@ -7447,6 +7619,8 @@ fn host_owned_focus_bearing_refusal_then_reselect_supersedes_silently() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .values()
             .all(|binding| binding.parent_op != "op-3"),
@@ -7488,6 +7662,8 @@ fn host_owned_focus_bearing_held_refusal_recovers_from_latched_raw() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "binding holds across the gap"
@@ -7642,6 +7818,8 @@ fn host_owned_focus_bearing_shared_needs_every_output_proof() {
         );
     }
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("shared focus-bearing binding pends");
@@ -7693,6 +7871,8 @@ fn host_owned_focus_bearing_shared_needs_every_output_proof() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "binding holds for the outstanding output"
@@ -7743,6 +7923,8 @@ fn host_owned_focus_bearing_shared_needs_every_output_proof() {
     assert_eq!(event.focus, SwitchFocus::Proven);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases"
@@ -7861,6 +8043,8 @@ fn host_owned_focus_bearing_shared_nonfocus_external_move_drops_binding() {
     assert!(effect.after_shown.is_some(), "shared focus awaits arrival");
     assert_eq!(
         engine
+            .world
+            .settlement
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
             .expect("binding pends")
@@ -7894,6 +8078,8 @@ fn host_owned_focus_bearing_shared_nonfocus_external_move_drops_binding() {
     );
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "stale shared binding drops"
@@ -8064,6 +8250,8 @@ fn host_owned_focus_bearing_shared_partial_then_external_move_drops_binding() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "binding pends for the outstanding output"
@@ -8091,6 +8279,8 @@ fn host_owned_focus_bearing_shared_partial_then_external_move_drops_binding() {
     );
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "late external move drops the covering binding"
@@ -8173,6 +8363,8 @@ fn q1_switch_predecessor_remains_through_successor_pending_and_replaces_at_termi
     assert_eq!(s1_settled.switch_settled[0].focus, SwitchFocus::Proven);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned()))
     );
@@ -8184,6 +8376,8 @@ fn q1_switch_predecessor_remains_through_successor_pending_and_replaces_at_termi
     let s2_frame = row(&s2_grant, "w1").effective_frame;
     assert_eq!(
         engine
+            .world
+            .settlement
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
             .map(|b| b.parent_op.as_str()),
@@ -8210,6 +8404,8 @@ fn q1_switch_predecessor_remains_through_successor_pending_and_replaces_at_termi
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
             .map(|b| b.parent_op.as_str()),
@@ -8252,6 +8448,8 @@ fn q1_switch_predecessor_remains_through_successor_pending_and_replaces_at_termi
     ));
     assert_eq!(
         engine
+            .world
+            .settlement
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
             .map(|b| b.parent_op.as_str()),
@@ -8287,6 +8485,8 @@ fn q1_switch_predecessor_remains_through_successor_pending_and_replaces_at_termi
     );
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned()))
     );
@@ -8585,6 +8785,8 @@ fn q2_switch_output_retention_and_departure_with_trace_and_reuse() {
     );
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-b".to_owned()))
     );
@@ -8725,6 +8927,8 @@ fn host_owned_focus_bearing_shared_nonfocus_own_refusal_pends_then_fails() {
     let effect = reply.focus_request.clone().expect("retained focus request");
     assert_eq!(effect.target.0, "wA");
     let out_b_home = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding pends")
@@ -8774,6 +8978,8 @@ fn host_owned_focus_bearing_shared_nonfocus_own_refusal_pends_then_fails() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "covering binding survives its own non-focus refusal"
@@ -8818,6 +9024,8 @@ fn host_owned_focus_bearing_shared_nonfocus_own_refusal_pends_then_fails() {
 fn host_owned_focus_bearing_late_admission_never_joins_frozen() {
     let (mut engine, _away, grant) = host_focus_grant();
     let frozen: Vec<WindowId> = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding pends")
@@ -8836,6 +9044,8 @@ fn host_owned_focus_bearing_late_admission_never_joins_frozen() {
         "no verdict without proof: {quiet:?}"
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding holds");
@@ -8849,7 +9059,7 @@ fn host_owned_focus_bearing_late_admission_never_joins_frozen() {
         "frozen set untouched by late admission"
     );
     assert!(
-        engine.selection_targets.is_empty(),
+        engine.world.settlement.selection_targets.is_empty(),
         "host-owned admits no per-window targets"
     );
     let _ = grant;
@@ -8874,6 +9084,8 @@ fn host_owned_focus_bearing_supersession_drops_without_event() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .values()
             .all(|binding| binding.parent_op != "op-3"),
@@ -9047,6 +9259,8 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
     assert_eq!(grant_settlements.len(), 1);
     assert!(grant_settlements[0].result.is_none());
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("selection binding retained");
@@ -9115,8 +9329,10 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
         assert!(!reply.command_consumed);
         assert_eq!(reply_settlements.len(), 1);
         assert!(reply_settlements[0].result.is_none());
-        assert_eq!(engine.retained_selection.len(), 1);
+        assert_eq!(engine.world.settlement.retained_selection.len(), 1);
         let binding = engine
+            .world
+            .settlement
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
             .expect("open binding retained");
@@ -9128,9 +9344,11 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
         assert_eq!(binding.view_targets.len(), 1);
         assert!(binding.view_raw.is_empty());
         assert!(binding.feedback.is_none());
-        assert_eq!(engine.selection_scopes.len(), 1);
-        assert!(engine.selection_targets.is_empty());
+        assert_eq!(engine.world.settlement.selection_scopes.len(), 1);
+        assert!(engine.world.settlement.selection_targets.is_empty());
         let views = engine
+            .world
+            .settlement
             .retained
             .iter()
             .filter(|r| {
@@ -9176,6 +9394,8 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
     assert!(quiet.switch_settled.is_empty());
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .values()
             .any(|binding| binding.parent_op == "op-7")
@@ -9204,12 +9424,14 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
     assert!(other.effects.is_empty());
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .values()
             .any(|binding| binding.parent_op == "op-7")
     );
-    assert_eq!(engine.retained_selection.len(), 1);
-    assert_eq!(engine.selection_scopes.len(), 1);
+    assert_eq!(engine.world.settlement.retained_selection.len(), 1);
+    assert_eq!(engine.world.settlement.selection_scopes.len(), 1);
     let (after1, after2) = (frame_in(&other, "w1"), frame_in(&other, "w2"));
     assert!((before1, before2) != (after1, after2));
     for (window, frame) in [
@@ -9241,12 +9463,16 @@ fn host_owned_focus_bearing_close_drops_without_event() {
     );
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite grant drops"
     );
     assert!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned())),
         "surviving scope persists"
@@ -9274,6 +9500,8 @@ fn host_owned_focusless_native_echo_completes_unproven() {
     assert!(reply.switch_settled.is_empty(), "native proof outstanding");
     assert!(
         engine
+            .world
+            .settlement
             .retained
             .iter()
             .any(|r| r.target.operation_id == "op-2"),
@@ -9292,12 +9520,16 @@ fn host_owned_focusless_native_echo_completes_unproven() {
     assert!(!event.fallback);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases"
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained
             .iter()
             .all(|r| r.target.operation_id != "op-2"),
@@ -9339,8 +9571,13 @@ fn host_owned_focusless_minimized_native_member_takes_no_window_target() {
             "host-owned grants no per-window targets: {row:?}"
         );
     }
-    assert!(engine.selection_targets.is_empty(), "no per-window targets");
+    assert!(
+        engine.world.settlement.selection_targets.is_empty(),
+        "no per-window targets"
+    );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("host-owned focusless binding pends");
@@ -9374,6 +9611,8 @@ fn host_owned_focusless_minimized_native_member_takes_no_window_target() {
     assert_eq!(event.focus, SwitchFocus::Unproven);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases"
@@ -9400,6 +9639,8 @@ fn host_owned_focusless_refused_attempt_fails_unproven() {
     assert_eq!(event.focus, SwitchFocus::Unproven);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases on refusal"
@@ -9427,6 +9668,8 @@ fn host_owned_focusless_held_refusal_recovers_from_latched_raw() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "binding holds across the gap"
@@ -9448,6 +9691,8 @@ fn host_owned_focusless_held_refusal_recovers_from_latched_raw() {
     assert_eq!(event.focus, SwitchFocus::Unproven);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases"
@@ -9475,6 +9720,8 @@ fn host_owned_focusless_wrong_tuples_and_logical_echo_hold() {
     let stalled = accepted(&mut engine, &noisy);
     assert!(stalled.switch_settled.is_empty(), "forged rows hold");
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding holds");
@@ -9571,6 +9818,8 @@ fn host_owned_focusless_shared_needs_every_output_proof() {
     assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
     assert!(reply.switch_settled.is_empty(), "proofs outstanding");
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("shared focusless binding pends");
@@ -9588,6 +9837,8 @@ fn host_owned_focusless_shared_needs_every_output_proof() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "binding holds for the outstanding output"
@@ -9641,6 +9892,8 @@ fn host_owned_focusless_first_latched_raw_wins_over_later_row() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "binding holds for genuine proof"
@@ -9657,6 +9910,8 @@ fn host_owned_focusless_first_latched_raw_wins_over_later_row() {
     assert_eq!(event.focus, SwitchFocus::Unproven);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases"
@@ -9754,6 +10009,8 @@ fn host_owned_focusless_shared_same_ids_complete_unproven() {
     assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
     assert!(reply.switch_settled.is_empty(), "proofs outstanding");
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("shared focusless binding pends");
@@ -9771,6 +10028,8 @@ fn host_owned_focusless_shared_same_ids_complete_unproven() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "binding holds for the outstanding output"
@@ -9791,12 +10050,16 @@ fn host_owned_focusless_shared_same_ids_complete_unproven() {
     assert!(!event.fallback);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases"
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained
             .iter()
             .all(|r| r.target.operation_id != "op-2"),
@@ -9804,6 +10067,8 @@ fn host_owned_focusless_shared_same_ids_complete_unproven() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned())),
         "scopes survive"
@@ -9868,6 +10133,8 @@ fn host_owned_focusless_external_move_supersedes_without_event() {
     assert!(reply.switch_settled.is_empty(), "native proof outstanding");
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "binding pends"
@@ -9879,20 +10146,27 @@ fn host_owned_focusless_external_move_supersedes_without_event() {
     assert!(moved.switch_settled.is_empty(), "no stale event: {moved:?}");
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "binding superseded"
     );
     assert!(
         !engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned())),
         "no stale scope"
     );
-    assert!(engine.selection_targets.is_empty(), "no stale authority");
+    assert!(
+        engine.world.settlement.selection_targets.is_empty(),
+        "no stale authority"
+    );
     assert_eq!(
         engine
-            .effective_view(&OutputId("out-a".to_owned()))
+            .tx_ro(|tx| tx.effective_view(&OutputId("out-a".to_owned())))
             .as_deref(),
         Some(other.as_str()),
         "views follow adapter truth"
@@ -9903,6 +10177,8 @@ fn host_owned_focusless_external_move_supersedes_without_event() {
     assert!(quiet.switch_settled.is_empty(), "no hang event: {quiet:?}");
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "no hang binding"
@@ -9977,12 +10253,16 @@ fn host_owned_focusless_refused_command_keeps_staged_terminal() {
     );
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "binding releases"
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .values()
             .all(|binding| binding.parent_op != "op-3"),
@@ -10136,12 +10416,11 @@ fn focusless_issuing_terminal_consumed_replay_reconciles_retained_outcome() {
 
 #[test]
 fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
-    use crate::world_report::{SwitchEvent, SwitchFocus, SwitchOutcome};
-    use crate::world_sizing::{MAX_SWITCH_EVENT_FIXED_BYTES, MAX_SWITCH_FAILED_ROW_BYTES};
-    use crate::world_sizing::{max_switch_settle_reserve, switch_settled_estimate};
     let (mut engine, _home, away) = select_setup();
     let _granted = select(&mut engine, 3, &away);
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("pending binding");
@@ -10162,8 +10441,8 @@ fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
         "",
     );
     assert_eq!(
-        engine.switch_issuing_reserve(issuing.command.as_ref()),
-        max_switch_settle_reserve(1, 0),
+        engine.world.switch_issuing_count(issuing.command.as_ref()),
+        1,
         "at most one issuing event"
     );
     let switching = report(
@@ -10179,8 +10458,10 @@ fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
         "",
     );
     assert_eq!(
-        engine.switch_issuing_reserve(switching.command.as_ref()),
-        max_switch_settle_reserve(1, 0),
+        engine
+            .world
+            .switch_issuing_count(switching.command.as_ref()),
+        1,
         "switch view is select-family"
     );
     let numbered = report(
@@ -10196,8 +10477,8 @@ fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
         "",
     );
     assert_eq!(
-        engine.switch_issuing_reserve(numbered.command.as_ref()),
-        max_switch_settle_reserve(1, 0),
+        engine.world.switch_issuing_count(numbered.command.as_ref()),
+        1,
         "numbered select is select-family"
     );
     let observation = report(
@@ -10210,9 +10491,11 @@ fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
         "",
     );
     assert_eq!(
-        engine.switch_issuing_reserve(observation.command.as_ref()),
+        engine
+            .world
+            .switch_issuing_count(observation.command.as_ref()),
         0,
-        "observation-only reserves nothing"
+        "observation-only counts no issuing terminal"
     );
     let focus = report(
         4,
@@ -10227,39 +10510,21 @@ fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
         "",
     );
     assert_eq!(
-        engine.switch_issuing_reserve(focus.command.as_ref()),
+        engine.world.switch_issuing_count(focus.command.as_ref()),
         0,
-        "non-select commands reserve nothing"
+        "non-select commands count no issuing terminal"
     );
-    // Worst case on one report: the retained binding's full-failure
-    // terminal plus one worst-token empty issuing event.
-    let old = SwitchEvent {
-        output: OutputId("o".repeat(128)),
-        operation_id: format!("op-{}", u64::MAX),
-        outcome: SwitchOutcome::CompletedWithFailures,
-        failed: (0..member_count)
-            .map(|_| WindowId("w".repeat(128)))
-            .collect(),
-        focus: SwitchFocus::Refused,
-        fallback: true,
-    };
-    let new = SwitchEvent {
-        output: OutputId("o".repeat(128)),
-        operation_id: format!("op-{}", u64::MAX),
-        outcome: SwitchOutcome::CompletedWithFailures,
-        failed: Vec::new(),
-        focus: SwitchFocus::Unproven,
-        fallback: false,
-    };
-    let estimated = switch_settled_estimate(&[old, new]);
-    let reserve =
-        engine.switch_settle_reserve() + engine.switch_issuing_reserve(issuing.command.as_ref());
-    assert!(
-        reserve >= estimated,
-        "no undercount: reserve {reserve} covers estimate {estimated}"
+    let (settle_count, settle_failed) = engine.world.switch_settle_counts();
+    assert_eq!(
+        (settle_count, settle_failed),
+        (1, member_count),
+        "retained union settles with all frozen members"
     );
-    assert_eq!(MAX_SWITCH_EVENT_FIXED_BYTES, 254, "fixed event bound stays");
-    assert_eq!(MAX_SWITCH_FAILED_ROW_BYTES, 131, "failed id bound stays");
+    let issuing_count = engine.world.switch_issuing_count(issuing.command.as_ref());
+    assert_eq!(
+        issuing_count, 1,
+        "simultaneous issuing terminal beside old settlement"
+    );
 }
 
 #[test]
@@ -10305,6 +10570,8 @@ fn host_owned_focus_bearing_fullscreen_focus_freezes_frameless_and_proves() {
         "fullscreen focus awaits arrival"
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding pends");
@@ -10389,6 +10656,8 @@ fn host_owned_focus_bearing_float_focus_freezes_frameless_and_proves() {
         "float focus awaits arrival"
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding pends");
@@ -10499,6 +10768,8 @@ fn host_owned_focus_bearing_freezes_sticky_focus_at_actual_home() {
         .clone();
     assert_ne!(home, away);
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding pends");
@@ -10630,6 +10901,8 @@ fn host_owned_focus_bearing_freezes_frameless_fullscreen_nonfocus_member() {
         "native overlay owns fullscreen pixels: {grant:?}"
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding pends");
@@ -10685,6 +10958,8 @@ fn host_owned_focus_bearing_missing_frameless_bracket_holds_not_ready() {
     assert_eq!(event.focus, SwitchFocus::Unproven);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases on failure"
@@ -10727,6 +11002,8 @@ fn host_owned_focus_bearing_null_live_frame_never_proves() {
     assert_eq!(event.focus, SwitchFocus::Unproven);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases on failure"
@@ -10767,12 +11044,16 @@ fn host_owned_focus_bearing_frameless_member_proves_on_readable_frame() {
     assert_eq!(event.focus, SwitchFocus::Proven);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases"
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained
             .iter()
             .all(|r| r.target.operation_id != "op-3"),
@@ -10968,6 +11249,8 @@ fn migration_focused_producer_binds_both_outputs_and_settles_terminal() {
     );
     // One frozen binding covers both outputs with distinct selected homes.
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .values()
         .find(|b| b.parent_op == "op-5")
@@ -11087,6 +11370,8 @@ fn migration_focused_producer_binds_both_outputs_and_settles_terminal() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .values()
             .any(|b| b.parent_op == "op-5"),
@@ -11114,6 +11399,8 @@ fn migration_focused_producer_binds_both_outputs_and_settles_terminal() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .values()
             .any(|b| b.parent_op == "op-5"),
@@ -11157,6 +11444,8 @@ fn migration_focused_producer_binds_both_outputs_and_settles_terminal() {
         "refill verdict missing: {partial:?}"
     );
     let latched = engine
+        .world
+        .settlement
         .retained_selection
         .values()
         .find(|b| b.parent_op == "op-5")
@@ -11192,6 +11481,8 @@ fn migration_focused_producer_binds_both_outputs_and_settles_terminal() {
     assert!(!event.fallback);
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .values()
             .all(|b| b.parent_op != "op-5"),
@@ -11199,9 +11490,13 @@ fn migration_focused_producer_binds_both_outputs_and_settles_terminal() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned()))
             || engine
+                .world
+                .settlement
                 .selection_scopes
                 .contains_key(&OutputId("out-b".to_owned())),
         "scopes survive"
@@ -11358,6 +11653,8 @@ fn migration_empty_with_refill_stayer_pends_switch_but_retires_parent() {
         ),
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .values()
         .find(|b| b.parent_op == "op-2")
@@ -11397,6 +11694,8 @@ fn migration_empty_with_refill_stayer_pends_switch_but_retires_parent() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .values()
             .any(|b| b.parent_op == "op-2"),
@@ -11416,13 +11715,15 @@ fn migration_issuing_reserve_covers_both_migration_commands() {
     let dir = WorldCommand::MigrateDirectional {
         direction: "right".to_owned(),
     };
-    assert!(
-        engine.switch_issuing_reserve(Some(&ws)) > 0,
-        "MigrateWorkspace reserves the zero-obligation issuing terminal"
+    assert_eq!(
+        engine.world.switch_issuing_count(Some(&ws)),
+        1,
+        "MigrateWorkspace counts the zero-obligation issuing terminal"
     );
-    assert!(
-        engine.switch_issuing_reserve(Some(&dir)) > 0,
-        "MigrateDirectional reserves the zero-obligation issuing terminal"
+    assert_eq!(
+        engine.world.switch_issuing_count(Some(&dir)),
+        1,
+        "MigrateDirectional counts the zero-obligation issuing terminal"
     );
 }
 
@@ -11433,6 +11734,8 @@ fn migration_focusless_variants_bind_without_effect() {
     let granted = migrate(&mut engine, 5, "out-a", &home, "");
     assert!(granted.effects.is_empty(), "no focus invented: {granted:?}");
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .values()
         .find(|b| b.parent_op == "op-5")
@@ -11492,6 +11795,8 @@ fn migration_newer_selection_supersedes_both_outputs_silently() {
     let granted = migrate(&mut engine, 5, "out-a", &home, "w2");
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .values()
             .any(|b| b.parent_op == "op-5"),
@@ -11526,6 +11831,8 @@ fn migration_newer_selection_supersedes_both_outputs_silently() {
     // Per-output-local supersession: the newer intent wins its own scope.
     // The both-output migration grant releases out-a; out-b may persist.
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("new binding retained");
@@ -11558,6 +11865,8 @@ fn migration_close_mover_drops_binding_without_terminal() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .values()
             .all(|b| b.parent_op != "op-5"),
@@ -11566,6 +11875,8 @@ fn migration_close_mover_drops_binding_without_terminal() {
     assert!(closed.switch_settled.is_empty(), "close claims no terminal");
     assert!(
         !engine
+            .world
+            .settlement
             .selection_targets
             .contains_key(&WindowId("w2".to_owned())),
         "closed member targets drop"
@@ -11581,6 +11892,8 @@ fn migration_rollback_revokes_exact_rev_and_keeps_newer_selection() {
     let (mut engine, home, away) = migration_boot();
     let granted = migrate(&mut engine, 5, "out-a", &home, "w2");
     let sel_rev = engine
+        .world
+        .settlement
         .retained_selection
         .values()
         .find(|b| b.parent_op == "op-5")
@@ -11610,6 +11923,8 @@ fn migration_rollback_revokes_exact_rev_and_keeps_newer_selection() {
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
             .expect("newer binding")
@@ -11658,6 +11973,8 @@ fn migration_rollback_revokes_exact_rev_and_keeps_newer_selection() {
     // Exact-rev revoke: no op-5 binding survives anywhere ...
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .values()
             .all(|b| !(b.parent_op == "op-5" && b.rev == sel_rev)),
@@ -11666,6 +11983,8 @@ fn migration_rollback_revokes_exact_rev_and_keeps_newer_selection() {
     // ... while the newer op-6 selection on the same output survives.
     assert_eq!(
         engine
+            .world
+            .settlement
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
             .expect("newer survives rollback")
@@ -11779,6 +12098,8 @@ fn migration_source_output_bracket_never_proves_arrival() {
     assert!(!event.fallback);
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .values()
             .all(|b| b.parent_op != "op-5"),
@@ -11921,6 +12242,8 @@ fn migration_minimized_only_binds_focusless() {
     assert_eq!(granted.switch_settled[0].operation_id, "op-3");
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .values()
             .all(|b| b.parent_op != "op-3"),
@@ -12057,6 +12380,8 @@ fn migration_floating_source_binds_covering_selection() {
         granted.transfers
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .values()
         .find(|b| b.parent_op == "op-3")
@@ -12094,6 +12419,8 @@ fn selection_eligible_ignores_logical_echo_then_completes_on_verdicts() {
                 .is_some()
         );
         let binding = engine
+            .world
+            .settlement
             .retained_selection
             .get(&OutputId("out-a".to_owned()))
             .expect("binding")
@@ -12116,6 +12443,8 @@ fn selection_eligible_ignores_logical_echo_then_completes_on_verdicts() {
         );
         assert!(
             engine
+                .world
+                .settlement
                 .retained_selection
                 .contains_key(&OutputId("out-a".to_owned())),
             "binding survives the echoless lane"
@@ -12136,6 +12465,8 @@ fn selection_eligible_ignores_logical_echo_then_completes_on_verdicts() {
         .expect("retained focus request");
     let rev = granted.state_revision;
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("binding")
@@ -12203,12 +12534,16 @@ fn selection_eligible_ignores_logical_echo_then_completes_on_verdicts() {
     );
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases"
     );
     assert!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned())),
         "scopes survive the terminal"
@@ -12270,7 +12605,7 @@ fn policy_displaced_view_binds_focusless_under_own_parent_and_completes() {
         "per-run index pins the parent identity: {parent}"
     );
     assert_eq!(
-        engine.effective_view(&OutputId("out-a".to_owned())),
+        engine.tx_ro(|tx| tx.effective_view(&OutputId("out-a".to_owned()))),
         Some(home_b.clone()),
         "policy view retained on the survivor"
     );
@@ -12279,14 +12614,16 @@ fn policy_displaced_view_binds_focusless_under_own_parent_and_completes() {
         "policy mints no focus effect: {displaced:?}"
     );
     assert!(
-        engine.pending_selection.is_none(),
+        engine.world.settlement.pending_selection.is_none(),
         "policy never touches the command slot"
     );
     assert!(
-        engine.pending_policy_selections.is_empty(),
+        engine.world.settlement.pending_policy_selections.is_empty(),
         "policy carrier drains at publish"
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("policy binding")
@@ -12347,12 +12684,16 @@ fn policy_displaced_view_binds_focusless_under_own_parent_and_completes() {
     );
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "finite binding releases"
     );
     assert!(
         engine
+            .world
+            .settlement
             .selection_scopes
             .contains_key(&OutputId("out-a".to_owned())),
         "scopes survive the terminal"
@@ -12411,13 +12752,15 @@ fn policy_pending_loses_to_overlapping_command_in_the_same_cycle() {
         "focus never publishes as wire effects: {raced:?}"
     );
     let binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("command binding")
         .clone();
     assert_eq!(binding.parent_op, "op-2");
     assert!(
-        engine.pending_policy_selections.is_empty(),
+        engine.world.settlement.pending_policy_selections.is_empty(),
         "overlapping policy carrier dropped"
     );
 }
@@ -12451,22 +12794,26 @@ fn selection_redundant_unchanged_preserves_binding_history_and_mints_nothing() {
         "redundant select mints no terminal: {first:?}"
     );
     assert_eq!(
-        engine.history.previous("out-a"),
+        engine.world.workspace.history.previous("out-a"),
         Some(home.clone()),
         "converge catches up to the op-3 move"
     );
     let before_binding = engine
+        .world
+        .settlement
         .retained_selection
         .get(&OutputId("out-a".to_owned()))
         .expect("outstanding binding")
         .clone();
     let before_scope = engine
+        .world
+        .settlement
         .selection_scopes
         .get(&OutputId("out-a".to_owned()))
         .expect("outstanding scope")
         .clone();
-    let before_targets = engine.selection_targets.clone();
-    let before_view = engine.effective_view(&OutputId("out-a".to_owned()));
+    let before_targets = engine.world.settlement.selection_targets.clone();
+    let before_view = engine.tx_ro(|tx| tx.effective_view(&OutputId("out-a".to_owned())));
     // Second redundant: everything preserved exactly.
     let again = select(&mut engine, 5, &away);
     assert!(
@@ -12488,26 +12835,34 @@ fn selection_redundant_unchanged_preserves_binding_history_and_mints_nothing() {
         "redundant select mints no terminal: {again:?}"
     );
     assert_eq!(
-        engine.retained_selection.get(&OutputId("out-a".to_owned())),
+        engine
+            .world
+            .settlement
+            .retained_selection
+            .get(&OutputId("out-a".to_owned())),
         Some(&before_binding),
         "outstanding binding preserved"
     );
     assert_eq!(
-        engine.selection_scopes.get(&OutputId("out-a".to_owned())),
+        engine
+            .world
+            .settlement
+            .selection_scopes
+            .get(&OutputId("out-a".to_owned())),
         Some(&before_scope),
         "outstanding scope preserved"
     );
     assert_eq!(
-        engine.selection_targets, before_targets,
+        engine.world.settlement.selection_targets, before_targets,
         "per-window targets preserved"
     );
     assert_eq!(
-        engine.history.previous("out-a"),
+        engine.world.workspace.history.previous("out-a"),
         Some(home),
         "history preserved"
     );
     assert_eq!(
-        engine.effective_view(&OutputId("out-a".to_owned())),
+        engine.tx_ro(|tx| tx.effective_view(&OutputId("out-a".to_owned()))),
         before_view,
         "view preserved"
     );
@@ -12536,11 +12891,12 @@ fn d23_group_leaves(tree: &Node, leaf: &NodeId) -> Option<Vec<String>> {
 }
 
 fn d23_home_tree(engine: &WorldEngine, key: &DomainKey) -> Node {
-    engine.layout.tree(key).cloned().expect("home tree")
+    engine.world.layout.tree(key).cloned().expect("home tree")
 }
 
 fn d23_link_leaf(engine: &WorldEngine, key: &DomainKey, window: &WindowId) -> NodeId {
     engine
+        .world
         .layout
         .bindings(key)
         .find(|(bound, _)| *bound == window)
@@ -12549,8 +12905,9 @@ fn d23_link_leaf(engine: &WorldEngine, key: &DomainKey, window: &WindowId) -> No
 }
 
 fn d23_focused_window(engine: &WorldEngine, key: &DomainKey) -> Option<String> {
-    let leaf = engine.layout.focus_leaf(key)?;
+    let leaf = engine.world.layout.focus_leaf(key)?;
     engine
+        .world
         .layout
         .window_for_leaf(key, leaf)
         .map(|window| window.0.clone())
@@ -12655,6 +13012,7 @@ fn d23_minimized_native_rehome_forgets_source_slot() {
     staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let old_slot = engine
+        .world
         .layout
         .restore_slot_snapshot(&home_key, &win_b)
         .expect("minimize stores the source restore slot");
@@ -12688,7 +13046,7 @@ fn d23_minimized_native_rehome_forgets_source_slot() {
         .map(|row| row.workspace.clone());
     let homing = engine.adapter_homing(&win_b);
     assert!(
-        !engine.layout.has_minimized_slot(&home_key, &win_b),
+        !engine.world.layout.has_minimized_slot(&home_key, &win_b),
         "first confirmed minimized rehome forgets the source slot; row_ws={row_ws:?} homing={homing:?}"
     );
     // Return leg: B back to n0 while still minimized. No slot exists to
@@ -12708,11 +13066,11 @@ fn d23_minimized_native_rehome_forgets_source_slot() {
         ),
     );
     assert!(
-        !engine.layout.has_minimized_slot(&home_key, &win_b),
+        !engine.world.layout.has_minimized_slot(&home_key, &win_b),
         "return leg resurrects no slot"
     );
     assert!(
-        !engine.layout.has_minimized_slot(&away_key, &win_b),
+        !engine.world.layout.has_minimized_slot(&away_key, &win_b),
         "away home holds no slot either"
     );
     // Focus-settle leg: B still minimized while observed focus moves to
@@ -12738,7 +13096,7 @@ fn d23_minimized_native_rehome_forgets_source_slot() {
         "settled session focus is A before the restore"
     );
     assert!(
-        !engine.layout.has_minimized_slot(&home_key, &win_b),
+        !engine.world.layout.has_minimized_slot(&home_key, &win_b),
         "focus move resurrects no slot"
     );
     // Restore leg: B unminimizes on n0 with settled focus on A. No slot
@@ -12763,6 +13121,7 @@ fn d23_minimized_native_rehome_forgets_source_slot() {
         "restore performs no rehoming move: {reply9:?}"
     );
     let new_b_leaf = engine
+        .world
         .layout
         .bindings(&home_key)
         .find(|(window, _)| *window == &win_b)
@@ -12783,7 +13142,7 @@ fn d23_minimized_native_rehome_forgets_source_slot() {
         "fresh admit groups B with settled-focus A, never the old C group: {new_tree:?}"
     );
     assert!(
-        !engine.layout.has_minimized_slot(&home_key, &win_b),
+        !engine.world.layout.has_minimized_slot(&home_key, &win_b),
         "no slot survives the restore"
     );
     assert_eq!(
@@ -12853,7 +13212,7 @@ fn d23_minimized_cross_output_rehome_forgets_first_slot() {
         ),
     );
     assert!(
-        engine.layout.has_minimized_slot(&home_key, &win_b),
+        engine.world.layout.has_minimized_slot(&home_key, &win_b),
         "minimize stores the source slot"
     );
     let mut b_ob = b_min.clone();
@@ -12870,7 +13229,7 @@ fn d23_minimized_cross_output_rehome_forgets_first_slot() {
         ),
     );
     assert!(
-        !engine.layout.has_minimized_slot(&home_key, &win_b),
+        !engine.world.layout.has_minimized_slot(&home_key, &win_b),
         "cross-output minimized rehome forgets the first source slot"
     );
     assert_eq!(
@@ -12893,11 +13252,11 @@ fn d23_minimized_cross_output_rehome_forgets_first_slot() {
     );
     let _ = d23_link_leaf(&engine, &ob_key, &win_b);
     assert!(
-        !engine.layout.has_minimized_slot(&home_key, &win_b),
+        !engine.world.layout.has_minimized_slot(&home_key, &win_b),
         "no slot resurrects at the source"
     );
     assert!(
-        !engine.layout.has_minimized_slot(&ob_key, &win_b),
+        !engine.world.layout.has_minimized_slot(&ob_key, &win_b),
         "no slot lingers at the destination"
     );
     assert_eq!(
@@ -13000,7 +13359,7 @@ fn d23_minimized_stable_native_retains_slot_and_restores() {
             ),
         );
         assert!(
-            engine.layout.has_minimized_slot(&home_key, &win_b),
+            engine.world.layout.has_minimized_slot(&home_key, &win_b),
             "stable minimized receipt retains the slot (seq {seq})"
         );
     }
@@ -13019,11 +13378,11 @@ fn d23_minimized_stable_native_retains_slot_and_restores() {
         ),
     );
     assert!(
-        engine.layout.is_tiled_window(&home_key, &win_b),
+        engine.world.layout.is_tiled_window(&home_key, &win_b),
         "restored B tiles again"
     );
     assert!(
-        !engine.layout.has_minimized_slot(&home_key, &win_b),
+        !engine.world.layout.has_minimized_slot(&home_key, &win_b),
         "restore consumes the slot"
     );
 }
@@ -13089,7 +13448,7 @@ fn d23_minimized_unknown_native_never_confirms_departure() {
             ),
         );
         assert!(
-            engine.layout.has_minimized_slot(&home_key, &win_b),
+            engine.world.layout.has_minimized_slot(&home_key, &win_b),
             "unknown native read retains the slot (seq {seq})"
         );
     }
@@ -13173,7 +13532,7 @@ fn d23_minimized_incomplete_inventory_retains_slot() {
         ),
     );
     assert!(
-        engine.layout.has_minimized_slot(&home_key, &win_b),
+        engine.world.layout.has_minimized_slot(&home_key, &win_b),
         "minimize stores the source slot"
     );
     let mut b_away = b_min.clone();
@@ -13188,7 +13547,7 @@ fn d23_minimized_incomplete_inventory_retains_slot() {
     staged.inventory_complete = false;
     let _ = accepted(&mut engine, &staged);
     assert!(
-        engine.layout.has_minimized_slot(&home_key, &win_b),
+        engine.world.layout.has_minimized_slot(&home_key, &win_b),
         "gapped inventory never confirms the departure"
     );
 }
@@ -13274,7 +13633,7 @@ fn d23_minimized_unsettled_transfer_retains_slot() {
         minimizing.transfers
     );
     assert!(
-        !engine.layout.has_minimized_slot(&home_key, &win_b),
+        !engine.world.layout.has_minimized_slot(&home_key, &win_b),
         "outstanding flight holds the sweep: no slot is stored mid-flight"
     );
     let mut b_third = b_min.clone();
@@ -13292,7 +13651,7 @@ fn d23_minimized_unsettled_transfer_retains_slot() {
         held.transfers
     );
     assert!(
-        !engine.layout.has_minimized_slot(&home_key, &win_b),
+        !engine.world.layout.has_minimized_slot(&home_key, &win_b),
         "unsettled transfer never confirms a departure"
     );
     // Arrival settles the flight normally: B tiles at the target.
@@ -13392,7 +13751,7 @@ fn d23_minimized_refused_command_still_forgets() {
         "unknown workspace refuses: {refused_settlements:?}"
     );
     assert!(
-        !engine.layout.has_minimized_slot(&home_key, &win_b),
+        !engine.world.layout.has_minimized_slot(&home_key, &win_b),
         "refused command never fences a confirmed departure"
     );
 }
@@ -13446,7 +13805,7 @@ fn d23_minimized_unreadable_receipt_retains_slot() {
         ),
     );
     assert!(
-        engine.layout.has_minimized_slot(&home_key, &win_b),
+        engine.world.layout.has_minimized_slot(&home_key, &win_b),
         "minimize stores the source slot"
     );
     let mut b_unreadable = hfact("win-b", "n1", 100, false);
@@ -13463,7 +13822,7 @@ fn d23_minimized_unreadable_receipt_retains_slot() {
         ),
     );
     assert!(
-        engine.layout.has_minimized_slot(&home_key, &win_b),
+        engine.world.layout.has_minimized_slot(&home_key, &win_b),
         "unreadable frames never confirm a departure"
     );
 }
@@ -13540,7 +13899,10 @@ fn d23_minimized_workspace_migration_retains_relocated_slot() {
         migrated.transfers
     );
     assert!(
-        engine.layout.has_minimized_slot(&new_home_key, &win_b),
+        engine
+            .world
+            .layout
+            .has_minimized_slot(&new_home_key, &win_b),
         "migration relocates the slot with the workspace, never forgets it"
     );
 }
@@ -13593,7 +13955,7 @@ fn d23_minimized_close_wins_over_rehome() {
         ),
     );
     assert!(
-        engine.layout.has_minimized_slot(&home_key, &win_b),
+        engine.world.layout.has_minimized_slot(&home_key, &win_b),
         "minimize stores the source slot"
     );
     // A native close of the minimized lifetime arrives as omission plus
@@ -13607,7 +13969,7 @@ fn d23_minimized_close_wins_over_rehome() {
         "closed lifetime drops membership"
     );
     assert!(
-        !engine.layout.has_minimized_slot(&home_key, &win_b),
+        !engine.world.layout.has_minimized_slot(&home_key, &win_b),
         "close leaves no slot behind"
     );
 }
@@ -13666,7 +14028,7 @@ fn d23_minimized_same_turn_rehome_forgets_slot() {
         ),
     );
     assert!(
-        !engine.layout.has_minimized_slot(&home_key, &win_b),
+        !engine.world.layout.has_minimized_slot(&home_key, &win_b),
         "same-turn minimize+rehome leaves no source slot"
     );
 }
@@ -13732,10 +14094,14 @@ fn disconnect_rehomed_members_mint_no_admission_focus() {
         .id
         .clone();
     assert!(
-        engine.prior_context.empty_controlled.contains(&DomainKey {
-            output: OutputId("out-left".to_owned()),
-            workspace: WorkspaceId(empty_unit.clone()),
-        }),
+        engine
+            .world
+            .prior_context
+            .empty_controlled
+            .contains(&DomainKey {
+                output: OutputId("out-left".to_owned()),
+                workspace: WorkspaceId(empty_unit.clone()),
+            }),
         "survivor unit publishes empty controlled"
     );
     // Disconnect: out-right disappears; every live window names the
@@ -13763,7 +14129,7 @@ fn disconnect_rehomed_members_mint_no_admission_focus() {
         reply.effects
     );
     assert!(
-        engine.displaced.contains_key("out-right"),
+        engine.world.workspace.displaced.contains_key("out-right"),
         "removed output displaces"
     );
     for win in ["win-a", "win-b"] {

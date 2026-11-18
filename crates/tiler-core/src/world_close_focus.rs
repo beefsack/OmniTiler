@@ -13,11 +13,11 @@
 //! Non-focus commands (including refused ones, in any batch) never cancel
 //! the pending request.
 
+use crate::world_transaction::WorldTransaction;
 use std::collections::BTreeMap;
 
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::session::DomainKey;
-use crate::world_engine::WorldEngine;
 use crate::world_focus::{FocusVerdict, classify_focus_feedback};
 use crate::world_report::{
     AfterShown, FocusFeedback, FocusRequest, FocusRequestCause, VisibilityReason, VisibilitySetter,
@@ -110,7 +110,7 @@ fn focus_feedback_retires(pending: &PendingFocus, row: &FocusFeedback) -> bool {
     ) && terminal_no_call(row.reason)
 }
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Execution-time subject for the next implicit command: the single
     /// logical cursor when a logical focus decision owns it. When the
     /// cursor is empty and no focus decision from this report or live
@@ -132,27 +132,27 @@ impl WorldEngine {
     /// no subject, so execution refuses it as focus-unknown exactly as
     /// before. Read-only: no state is written here.
     pub(crate) fn execution_subject(&self) -> Option<WindowId> {
-        if let Some(cursor) = self.logical_focus_cursor.clone() {
+        if let Some(cursor) = self.world.focus.logical_focus_cursor.clone() {
             return Some(cursor);
         }
-        if self.staged.batch_focus_issued {
+        if self.world.staged.batch_focus_issued {
             return None;
         }
         // A retained request owns the subject while the cursor slot reads
         // empty, except on a strictly newer accepted report whose pending
         // target is unavailable (where observed live bound foreground acts
         // without canceling or overriding the retained request).
-        if let Some(pending) = self.pending_focus.as_ref() {
-            let pending_unavailable = self.staged.closes.contains(&pending.target)
-                || self.staged.excluded.contains(&pending.target)
-                || !self.staged.facts.contains_key(&pending.target)
-                || !self.staged.homing.contains_key(&pending.target);
-            let newer_report = self.staged.revision > pending.issued_revision;
+        if let Some(pending) = self.world.focus.pending_focus.as_ref() {
+            let pending_unavailable = self.world.staged.closes.contains(&pending.target)
+                || self.world.staged.excluded.contains(&pending.target)
+                || !self.world.staged.facts.contains_key(&pending.target)
+                || !self.world.staged.homing.contains_key(&pending.target);
+            let newer_report = self.world.staged.revision > pending.issued_revision;
             if !(pending_unavailable && newer_report) {
                 return None;
             }
         }
-        let observed = self.staged.observation.focused_global.clone();
+        let observed = self.world.staged.observation.focused_global.clone();
         if observed.is_empty() {
             return None;
         }
@@ -162,10 +162,10 @@ impl WorldEngine {
         // generation, and owner) carries the fact, assigns it logical
         // homing, and has not closed or excluded it. Stale, unknown,
         // unbound, held, or excluded foreground stays unresolved.
-        if self.staged.closes.contains(&window)
-            || self.staged.excluded.contains(&window)
-            || !self.staged.facts.contains_key(&window)
-            || !self.staged.homing.contains_key(&window)
+        if self.world.staged.closes.contains(&window)
+            || self.world.staged.excluded.contains(&window)
+            || !self.world.staged.facts.contains_key(&window)
+            || !self.world.staged.homing.contains_key(&window)
         {
             return None;
         }
@@ -179,15 +179,15 @@ impl WorldEngine {
     pub(crate) fn reset_cursor_to_observed(&mut self, observed: &str) {
         let eligible = !observed.is_empty() && {
             let window = WindowId(observed.to_owned());
-            !self.staged.closes.contains(&window)
-                && !self.staged.excluded.contains(&window)
-                && self.staged.homing.contains_key(&window)
+            !self.world.staged.closes.contains(&window)
+                && !self.world.staged.excluded.contains(&window)
+                && self.world.staged.homing.contains_key(&window)
         };
         if eligible {
             let window = WindowId(observed.to_owned());
-            self.logical_focus_cursor = Some(window);
+            self.world.focus.logical_focus_cursor = Some(window);
         } else {
-            self.logical_focus_cursor = None;
+            self.world.focus.logical_focus_cursor = None;
         }
     }
 
@@ -202,11 +202,11 @@ impl WorldEngine {
         let eligible = !observed.is_empty()
             && report.windows.iter().any(|fact| fact.window == window)
             && !report.closed.contains(&window)
-            && !self.staged.excluded.contains(&window);
+            && !self.world.staged.excluded.contains(&window);
         if eligible {
-            self.logical_focus_cursor = Some(window);
+            self.world.focus.logical_focus_cursor = Some(window);
         } else {
-            self.logical_focus_cursor = None;
+            self.world.focus.logical_focus_cursor = None;
         }
     }
 
@@ -214,19 +214,19 @@ impl WorldEngine {
     /// unchanged-baseline report: stale observed A must not overwrite
     /// pending B.
     pub(crate) fn preserve_live_pending_cursor(&mut self, observed: &str) {
-        let Some(pending) = self.pending_focus.clone() else {
+        let Some(pending) = self.world.focus.pending_focus.clone() else {
             return;
         };
         if observed != pending.baseline_focused {
             return;
         }
-        if self.staged.closes.contains(&pending.target)
-            || self.staged.excluded.contains(&pending.target)
-            || !self.staged.homing.contains_key(&pending.target)
+        if self.world.staged.closes.contains(&pending.target)
+            || self.world.staged.excluded.contains(&pending.target)
+            || !self.world.staged.homing.contains_key(&pending.target)
         {
             return;
         }
-        self.logical_focus_cursor = Some(pending.target);
+        self.world.focus.logical_focus_cursor = Some(pending.target);
     }
     /// Freeze the positive-close survivor before `converge_logical_pre`
     /// rewrites history: retire the existing row on terminal ingress facts,
@@ -259,7 +259,7 @@ impl WorldEngine {
         // empty first domain must not veto a focused close elsewhere. A
         // nonempty prior focus was proven known by report validation.
         let cohort: std::collections::BTreeSet<WindowId> = report.closed.iter().cloned().collect();
-        let prior = self.prior_context.prev_focused_global.clone();
+        let prior = self.world.prior_context.prev_focused_global.clone();
         if prior.is_empty() {
             return;
         }
@@ -278,7 +278,7 @@ impl WorldEngine {
         // Background close on a non-current workspace/Space reflows only:
         // no activation, no request. The gate only applies where the core
         // tracks a current view for the output.
-        if let Some(current) = self.views.get(&source.output.0)
+        if let Some(current) = self.world.workspace.views.get(&source.output.0)
             && current != &source.workspace.0
         {
             return;
@@ -287,10 +287,11 @@ impl WorldEngine {
         // cohort: newest-first history, then deterministic layout order.
         // Tiled links only, never float/sticky/fullscreen broadening.
         let survivor = self
+            .world
             .layout
             .view_return_candidates(&source)
             .into_iter()
-            .filter_map(|leaf| self.layout.window_for_leaf(&source, &leaf))
+            .filter_map(|leaf| self.world.layout.window_for_leaf(&source, &leaf))
             .find(|window| !cohort.contains(window));
         let survivor = match survivor {
             Some(survivor) => survivor,
@@ -329,13 +330,13 @@ impl WorldEngine {
         // A distinct newly qualifying close supersedes the old slot; the
         // same pending close observed again keeps its id (no repeated
         // correction for the same close).
-        if let Some(pending) = self.pending_focus.as_ref()
+        if let Some(pending) = self.world.focus.pending_focus.as_ref()
             && pending.cause == FocusRequestCause::PositiveClose
             && pending.target == survivor
         {
             return;
         }
-        self.pending_focus = Some(PendingFocus {
+        self.world.focus.pending_focus = Some(PendingFocus {
             id: format!("focus-{issuing_revision}"),
             target: survivor.clone(),
             output: source.output.clone(),
@@ -345,12 +346,12 @@ impl WorldEngine {
             cmd_seq: None,
             after_shown: None,
             baseline_focused: report.focused_global.clone(),
-            view_basis: self.views.clone(),
+            view_basis: self.world.workspace.views.clone(),
             feedback: None,
         });
         // The accepted close choice advances the execution-time cursor
         // immediately, like every other accepted focus choice.
-        self.logical_focus_cursor = Some(survivor);
+        self.world.focus.logical_focus_cursor = Some(survivor);
     }
 
     /// Whether the same-report non-target fallback is an eligible
@@ -364,14 +365,14 @@ impl WorldEngine {
         if self.core_homing(&fallback).as_ref() != Some(source) {
             return false;
         }
-        let tiled = self.layout.is_tiled_window(source, &fallback);
+        let tiled = self.world.layout.is_tiled_window(source, &fallback);
         if !tiled {
             return false;
         }
-        if self.staged.excluded.contains(&fallback) {
+        if self.world.staged.excluded.contains(&fallback) {
             return false;
         }
-        match self.staged.facts.get(&fallback) {
+        match self.world.staged.facts.get(&fallback) {
             Some(fact) => {
                 fact.minimized != Some(true)
                     && fact.host_hidden != Some(true)
@@ -392,21 +393,21 @@ impl WorldEngine {
     /// or a view change or target loss making the target ineligible
     /// supersedes (Q1).
     pub(crate) fn retire_pending_focus(&mut self, report: &WorldReportV4) {
-        let Some(mut pending) = self.pending_focus.clone() else {
+        let Some(mut pending) = self.world.focus.pending_focus.clone() else {
             return;
         };
         if report.focused_global == pending.target.0 {
             if crate::world_engine::core_trace_enabled() {
                 emit_pending_focus_trace(
                     report,
-                    self.staged.revision,
+                    self.world.staged.revision,
                     &pending,
                     "equality",
                     "already-target",
                 );
             }
-            self.pending_focus = None;
-            self.logical_focus_cursor = Some(pending.target);
+            self.world.focus.pending_focus = None;
+            self.world.focus.logical_focus_cursor = Some(pending.target);
             return;
         }
         // Latch the first exact-tuple correlated row once, within and
@@ -438,24 +439,30 @@ impl WorldEngine {
                 } else {
                     row.setter.as_str()
                 };
-                emit_pending_focus_trace(report, self.staged.revision, &pending, decision, reason);
+                emit_pending_focus_trace(
+                    report,
+                    self.world.staged.revision,
+                    &pending,
+                    decision,
+                    reason,
+                );
             }
-            self.pending_focus = None;
+            self.world.focus.pending_focus = None;
             self.reset_cursor_to_report_observed(report);
             return;
         }
-        self.pending_focus = Some(pending.clone());
+        self.world.focus.pending_focus = Some(pending.clone());
         if report.closed.iter().any(|id| id == &pending.target) {
             if crate::world_engine::core_trace_enabled() {
                 emit_pending_focus_trace(
                     report,
-                    self.staged.revision,
+                    self.world.staged.revision,
                     &pending,
                     "no-call",
                     "target-closed",
                 );
             }
-            self.pending_focus = None;
+            self.world.focus.pending_focus = None;
             self.reset_cursor_to_report_observed(report);
             return;
         }
@@ -470,13 +477,13 @@ impl WorldEngine {
             if crate::world_engine::core_trace_enabled() {
                 emit_pending_focus_trace(
                     report,
-                    self.staged.revision,
+                    self.world.staged.revision,
                     &pending,
                     "no-call",
                     "focus-unproven",
                 );
             }
-            self.pending_focus = None;
+            self.world.focus.pending_focus = None;
             self.reset_cursor_to_report_observed(report);
             return;
         }
@@ -484,33 +491,36 @@ impl WorldEngine {
             if crate::world_engine::core_trace_enabled() {
                 emit_pending_focus_trace(
                     report,
-                    self.staged.revision,
+                    self.world.staged.revision,
                     &pending,
                     "no-call",
                     "baseline-changed",
                 );
             }
-            self.pending_focus = None;
+            self.world.focus.pending_focus = None;
             self.reset_cursor_to_report_observed(report);
             return;
         }
         // View/output drift supersedes: any change in the frozen basis.
-        if self.views != pending.view_basis
-            && pending
-                .view_basis
-                .iter()
-                .any(|(out, ws)| self.views.get(out).is_none_or(|current| current != ws))
+        if self.world.workspace.views != pending.view_basis
+            && pending.view_basis.iter().any(|(out, ws)| {
+                self.world
+                    .workspace
+                    .views
+                    .get(out)
+                    .is_none_or(|current| current != ws)
+            })
         {
             if crate::world_engine::core_trace_enabled() {
                 emit_pending_focus_trace(
                     report,
-                    self.staged.revision,
+                    self.world.staged.revision,
                     &pending,
                     "no-call",
                     "view-drift",
                 );
             }
-            self.pending_focus = None;
+            self.world.focus.pending_focus = None;
             self.reset_cursor_to_report_observed(report);
         }
     }
@@ -534,13 +544,21 @@ impl WorldEngine {
         // for the same target. Other causes keep the id when observing the
         // same pending event again.
         let keep = cause != FocusRequestCause::FocusFollowsCursor
-            && self.pending_focus.as_ref().is_some_and(|pending| {
-                &pending.target == target && pending.cause == cause && pending.cmd_seq == cmd_seq
-            });
+            && self
+                .world
+                .focus
+                .pending_focus
+                .as_ref()
+                .is_some_and(|pending| {
+                    &pending.target == target
+                        && pending.cause == cause
+                        && pending.cmd_seq == cmd_seq
+                });
         if keep {
             return;
         }
         let home = self
+            .world
             .staged
             .homing
             .get(target)
@@ -549,7 +567,7 @@ impl WorldEngine {
         let Some(home) = home else {
             return;
         };
-        self.pending_focus = Some(PendingFocus {
+        self.world.focus.pending_focus = Some(PendingFocus {
             id: format!("focus-{issuing_revision}"),
             target: target.clone(),
             output: home.output.clone(),
@@ -559,7 +577,7 @@ impl WorldEngine {
             cmd_seq,
             after_shown: None,
             baseline_focused: baseline_focused.to_owned(),
-            view_basis: self.views.clone(),
+            view_basis: self.world.workspace.views.clone(),
             feedback: None,
         });
     }
@@ -602,7 +620,7 @@ impl WorldEngine {
         // row whose issuing revision predates this report is retained state,
         // never a same-report candidate.
         let fresh_close: Option<(FocusRequestCause, Option<u64>, WindowId)> =
-            self.pending_focus.as_ref().and_then(|pending| {
+            self.world.focus.pending_focus.as_ref().and_then(|pending| {
                 if pending.cause == FocusRequestCause::PositiveClose
                     && pending.issued_revision == issuing_revision
                 {
@@ -668,7 +686,7 @@ impl WorldEngine {
     /// the frozen set: a request that already carries one keeps it, and
     /// parent settlement cannot erase the copy.
     pub(crate) fn freeze_focus_after_shown(&mut self) {
-        let Some(pending) = self.pending_focus.clone() else {
+        let Some(pending) = self.world.focus.pending_focus.clone() else {
             return;
         };
         if pending.cause != FocusRequestCause::ExplicitCommand || pending.after_shown.is_some() {
@@ -678,6 +696,8 @@ impl WorldEngine {
             return;
         };
         let Some(binding) = self
+            .world
+            .settlement
             .retained_selection
             .values()
             .find(|binding| {
@@ -689,8 +709,9 @@ impl WorldEngine {
         else {
             return;
         };
-        if let Some(slot) = self.pending_focus.as_mut() {
-            slot.after_shown = Some(binding.after_shown_projection(&self.selection_scopes));
+        if let Some(slot) = self.world.focus.pending_focus.as_mut() {
+            slot.after_shown =
+                Some(binding.after_shown_projection(&self.world.settlement.selection_scopes));
         }
     }
 
@@ -706,7 +727,7 @@ impl WorldEngine {
     /// alternate search or request; unrelated survivor geometry still
     /// reflows independently through the sweep.
     pub(crate) fn validate_pending_focus(&mut self) {
-        let Some(pending) = self.pending_focus.clone() else {
+        let Some(pending) = self.world.focus.pending_focus.clone() else {
             return;
         };
         let source = DomainKey {
@@ -719,28 +740,31 @@ impl WorldEngine {
         // keeps its frozen retained-source strictness; other causes accept
         // either staged or retained homing for the frozen scope.
         let core_ok = self.core_homing(&pending.target).as_ref() == Some(&source);
-        let staged_ok = self.staged.homing.get(&pending.target) == Some(&source);
+        let staged_ok = self.world.staged.homing.get(&pending.target) == Some(&source);
         let homing_ok = core_ok || (staged_ok && pending.cause != FocusRequestCause::PositiveClose);
         if !homing_ok {
-            self.pending_focus = None;
-            let observed = self.staged.observation.focused_global.clone();
+            self.world.focus.pending_focus = None;
+            let observed = self.world.staged.observation.focused_global.clone();
             self.reset_cursor_to_observed(&observed);
             return;
         }
-        if self.views != pending.view_basis
-            && pending
-                .view_basis
-                .iter()
-                .any(|(out, ws)| self.views.get(out).is_none_or(|current| current != ws))
+        if self.world.workspace.views != pending.view_basis
+            && pending.view_basis.iter().any(|(out, ws)| {
+                self.world
+                    .workspace
+                    .views
+                    .get(out)
+                    .is_none_or(|current| current != ws)
+            })
         {
-            self.pending_focus = None;
-            let observed = self.staged.observation.focused_global.clone();
+            self.world.focus.pending_focus = None;
+            let observed = self.world.staged.observation.focused_global.clone();
             self.reset_cursor_to_observed(&observed);
             return;
         }
-        if self.staged.excluded.contains(&pending.target) {
-            self.pending_focus = None;
-            let observed = self.staged.observation.focused_global.clone();
+        if self.world.staged.excluded.contains(&pending.target) {
+            self.world.focus.pending_focus = None;
+            let observed = self.world.staged.observation.focused_global.clone();
             self.reset_cursor_to_observed(&observed);
             return;
         }
@@ -752,24 +776,25 @@ impl WorldEngine {
             return;
         }
         let readable = self
+            .world
             .staged
             .domains
             .iter()
             .find(|domain| domain.key == source)
             .is_some_and(|domain| domain.readable);
-        if !readable || self.hold_reasons.contains_key(&source) {
-            self.pending_focus = None;
-            let observed = self.staged.observation.focused_global.clone();
+        if !readable || self.world.hold_reasons.contains_key(&source) {
+            self.world.focus.pending_focus = None;
+            let observed = self.world.staged.observation.focused_global.clone();
             self.reset_cursor_to_observed(&observed);
             return;
         }
-        if let Some(fact) = self.staged.facts.get(&pending.target)
+        if let Some(fact) = self.world.staged.facts.get(&pending.target)
             && (fact.minimized == Some(true)
                 || fact.host_hidden == Some(true)
                 || fact.fullscreen == Some(true))
         {
-            self.pending_focus = None;
-            let observed = self.staged.observation.focused_global.clone();
+            self.world.focus.pending_focus = None;
+            let observed = self.world.staged.observation.focused_global.clone();
             self.reset_cursor_to_observed(&observed);
             return;
         }
@@ -780,26 +805,28 @@ impl WorldEngine {
         // explicit decisions keep their exemption above.
         if self.derived_for(&pending.target).sticky
             || self
+                .world
                 .staged
                 .facts
                 .get(&pending.target)
                 .is_some_and(|fact| fact.sticky == Some(true))
         {
-            self.pending_focus = None;
-            let observed = self.staged.observation.focused_global.clone();
+            self.world.focus.pending_focus = None;
+            let observed = self.world.staged.observation.focused_global.clone();
             self.reset_cursor_to_observed(&observed);
             return;
         }
         if self.derived_for(&pending.target).floating
             && (self.derived_for(&pending.target).overlay_maximized
                 || self
+                    .world
                     .staged
                     .facts
                     .get(&pending.target)
                     .is_some_and(|fact| fact.maximized == Some(true)))
         {
-            self.pending_focus = None;
-            let observed = self.staged.observation.focused_global.clone();
+            self.world.focus.pending_focus = None;
+            let observed = self.world.staged.observation.focused_global.clone();
             self.reset_cursor_to_observed(&observed);
             return;
         }
@@ -812,8 +839,8 @@ impl WorldEngine {
         // focus.
         let derived = self.derived_for(&pending.target);
         if derived.hidden || derived.hold || derived.excluded {
-            self.pending_focus = None;
-            let observed = self.staged.observation.focused_global.clone();
+            self.world.focus.pending_focus = None;
+            let observed = self.world.staged.observation.focused_global.clone();
             self.reset_cursor_to_observed(&observed);
             return;
         }
@@ -822,26 +849,26 @@ impl WorldEngine {
             && !derived.overlay_fullscreen
             && !derived.overlay_maximized
         {
-            self.pending_focus = None;
-            let observed = self.staged.observation.focused_global.clone();
+            self.world.focus.pending_focus = None;
+            let observed = self.world.staged.observation.focused_global.clone();
             self.reset_cursor_to_observed(&observed);
             return;
         }
-        if self.floating_scopes.contains(&source) {
-            self.pending_focus = None;
-            let observed = self.staged.observation.focused_global.clone();
+        if self.world.floating_scopes.contains(&source) {
+            self.world.focus.pending_focus = None;
+            let observed = self.world.staged.observation.focused_global.clone();
             self.reset_cursor_to_observed(&observed);
             return;
         }
-        let sibling_protected = self.staged.domains.iter().any(|domain| {
+        let sibling_protected = self.world.staged.domains.iter().any(|domain| {
             domain.key == source
                 && domain.windows.iter().any(|window| {
                     window.window != pending.target && (window.fullscreen || window.maximized)
                 })
         });
         if sibling_protected {
-            self.pending_focus = None;
-            let observed = self.staged.observation.focused_global.clone();
+            self.world.focus.pending_focus = None;
+            let observed = self.world.staged.observation.focused_global.clone();
             self.reset_cursor_to_observed(&observed);
             return;
         }
@@ -851,33 +878,37 @@ impl WorldEngine {
         // can only reach here past the same-report fallback fence and
         // hover winners past the producer gate, so this retained
         // revalidation never authorizes a second mechanism.
-        if !self.staged.observation.focused_global.is_empty()
-            && self.staged.observation.focused_global != pending.target.0
+        if !self.world.staged.observation.focused_global.is_empty()
+            && self.world.staged.observation.focused_global != pending.target.0
         {
-            let focused = WindowId(self.staged.observation.focused_global.clone());
+            let focused = WindowId(self.world.staged.observation.focused_global.clone());
             let shape = self.derived_for(&focused);
             if shape.floating || shape.sticky {
-                self.pending_focus = None;
-                let observed = self.staged.observation.focused_global.clone();
+                self.world.focus.pending_focus = None;
+                let observed = self.world.staged.observation.focused_global.clone();
                 self.reset_cursor_to_observed(&observed);
                 return;
             }
         }
         if crate::world_cursor::cursor_game_paused(self) {
-            self.pending_focus = None;
-            let observed = self.staged.observation.focused_global.clone();
+            self.world.focus.pending_focus = None;
+            let observed = self.world.staged.observation.focused_global.clone();
             self.reset_cursor_to_observed(&observed);
             return;
         }
-        if self.staged.gesture_barrier {
-            self.pending_focus = None;
-            let observed = self.staged.observation.focused_global.clone();
+        if self.world.staged.gesture_barrier {
+            self.world.focus.pending_focus = None;
+            let observed = self.world.staged.observation.focused_global.clone();
             self.reset_cursor_to_observed(&observed);
         }
     }
 
     /// Current retained focus request for the reply lane, if any.
     pub(crate) fn pending_focus_request(&self) -> Option<FocusRequest> {
-        self.pending_focus.as_ref().map(PendingFocus::as_request)
+        self.world
+            .focus
+            .pending_focus
+            .as_ref()
+            .map(PendingFocus::as_request)
     }
 }

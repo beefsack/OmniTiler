@@ -23,10 +23,11 @@ use tiler_core::world_report::{
     ScopeAuthority, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
     WorldReplyV4, WorldReportV4,
 };
-use tiler_core::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
+use tiler_protocol::world_admission_sizing::max_switch_settle_reserve;
 use tiler_protocol::world_protocol::{
     DecodedReplyV4, ReplyWireOptionals, decode_reply_v4, decode_request, encode_reply_v4,
 };
+use tiler_protocol::world_reply_write::count_reply_v4;
 
 fn fixture_text(name: &str) -> String {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -90,9 +91,9 @@ fn reply_wire(reply: &WorldReplyV4) -> String {
     };
     let wire = encode_reply_v4(&decoded).expect("reply encodes");
     assert_eq!(
+        count_reply_v4(reply, &decoded.wire).expect("protocol count succeeds"),
         wire.len(),
-        reply_exact_bytes_v4(reply),
-        "core byte count is exact over the wire"
+        "protocol exact byte count matches wire"
     );
     assert_eq!(
         decode_reply_v4(&wire).expect("reply round-trips"),
@@ -218,14 +219,9 @@ fn selection_reply_spells_through_v4_writer() {
         .expect("selection dependencies");
     assert_eq!((shown.op.as_str(), shown.obs), ("op-3", 3));
 
-    // The v4 writer spells the actual producer reply, with the independent
-    // core byte count exact and a decoder roundtrip to the identical typed
-    // reply, and the structural estimate covers it.
+    // The v4 writer spells the actual producer reply, with the protocol
+    // byte count exact and a decoder roundtrip to the identical typed reply.
     let wire = reply_wire(&reply);
-    assert!(
-        reply_estimate_v4(&reply) >= wire.len(),
-        "estimate covers the selection reply"
-    );
     assert!(
         wire.contains("\"afterShown\":{"),
         "wire carries the frozen dependencies"
@@ -392,20 +388,18 @@ fn selection_reply_carries_switch_terminal_through_v4_writer() {
         ),
         "exact canonical event row in frozen key order"
     );
-    // Marginal switch lane is exact against its wire bytes (the estimate
-    // carries the 17-byte section framing while the section writer keeps
-    // the 2 array brackets), and the whole-reply estimate bounds the wire.
-    let mut section = String::new();
-    tiler_core::world_sizing::encode_switch_settled(&mut section, &settled.switch_settled);
-    let estimated = tiler_core::world_sizing::switch_settled_estimate(&settled.switch_settled);
-    assert_eq!(
-        estimated,
-        section.len() + 17,
-        "section framing accounts the gap"
-    );
+    // Actual encoded switchSettled subsection stays bounded by the protocol
+    // switch-settle reserve.
+    let start = wire
+        .find(",\"switchSettled\":[")
+        .expect("switchSettled section");
+    let end = start + wire[start..].find(']').expect("switchSettled close") + 1;
+    let section = &wire[start..end];
     assert!(
-        reply_estimate_v4(&settled) >= wire.len(),
-        "estimate covers the terminal reply"
+        section.len() <= max_switch_settle_reserve(settled.switch_settled.len(), 0),
+        "switchSettled section {} bounded by reserve {}",
+        section.len(),
+        max_switch_settle_reserve(settled.switch_settled.len(), 0)
     );
     // A later commandless report retains the same completed outcome.
     let again = accepted(&mut engine, &report(5, None, None, ""));

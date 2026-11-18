@@ -42,6 +42,7 @@ impl WorldLayout {
     /// Observed focus is intentionally not synchronized here. On refusal,
     /// retained domain state is untouched while any generation-shared
     /// group-allocator burns from unfloat admission trials survive.
+    #[cfg(test)]
     pub(crate) fn toggle_float(
         &mut self,
         key: &DomainKey,

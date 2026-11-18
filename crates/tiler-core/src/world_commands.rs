@@ -6,6 +6,7 @@
 //! entry points stay on [`crate::world_engine::WorldEngine`]; this module
 //! only extends its `impl`.
 
+use crate::world_transaction::WorldTransaction;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::boundary::CoreCommand;
@@ -31,7 +32,7 @@ use crate::world_report::{
     CommandResult, OneShotEffect, SendSource, TransferKind, TransferTarget, WorldCommand,
 };
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Execute one fresh command after the sweep. Returns the emitted
     /// one-shot effect, if any. Every accepted command advances the
     /// monotonic command high-watermark; commandless reports never move it.
@@ -63,7 +64,7 @@ impl WorldEngine {
                 | WorldCommand::Operation(CoreCommand::Move { .. })
         );
         let mut owned: Vec<EngineWindow> = Vec::new();
-        for domain in &self.staged.domains {
+        for domain in &self.world.staged.domains {
             if directional_move {
                 owned.extend(self.shielded_windows(&domain.key, &domain.windows));
             } else {
@@ -93,7 +94,11 @@ impl WorldEngine {
                 // ever resolve to the homed live subject, never a foreign
                 // window. Restored after dispatch (and by refusal rollback),
                 // so it never leaks into sibling commands.
-                let previous = self.implicit_event_focus.replace(resolved.clone());
+                let previous = self
+                    .world
+                    .focus
+                    .implicit_event_focus
+                    .replace(resolved.clone());
                 // The implicit maximize bypasses the settled-native focus
                 // gate (retained core focus is the subject proof); every
                 // other implicit command maps to its explicit form and
@@ -117,7 +122,7 @@ impl WorldEngine {
                         message: MSG_FOCUS,
                     }
                 };
-                self.implicit_event_focus = previous;
+                self.world.focus.implicit_event_focus = previous;
                 applied
             }
             WorldCommand::Focus { window, direction } => {
@@ -146,8 +151,8 @@ impl WorldEngine {
                     };
                 }
                 let known = by_id.contains_key(window)
-                    || self.layout.is_tiled_window_any(window)
-                    || self.layout.is_exception_window_any(window);
+                    || self.world.layout.is_tiled_window_any(window)
+                    || self.world.layout.is_exception_window_any(window);
                 if !known {
                     return CommandApplied::Rejected {
                         kind: KIND_FOCUS,
@@ -161,7 +166,7 @@ impl WorldEngine {
                 CommandApplied::Effect(OneShotEffect::explicit_focus(
                     command_seq,
                     window.clone(),
-                    self.state_revision + 1,
+                    self.world.state_revision + 1,
                 ))
             }
             WorldCommand::Send {
@@ -186,11 +191,11 @@ impl WorldEngine {
                 // Global-unique visible-elsewhere swap: selecting a target
                 // visible on another output exchanges the two views instead
                 // of duplicating the selection, with scoped numbering kept.
-                if self.workspace_mode_setting()
+                if self.connection.workspace_mode_setting()
                     == crate::workspace_scope::WorkspaceMode::GlobalUnique
                 {
                     let mut current_by_output: BTreeMap<String, String> = BTreeMap::new();
-                    for screen in &self.staged.screens {
+                    for screen in &self.world.staged.screens {
                         if let Some(view) = self.effective_view(&screen.output) {
                             current_by_output.insert(screen.output.0.clone(), view);
                         }
@@ -239,26 +244,36 @@ impl WorldEngine {
                                 message: MSG_MIGRATION,
                             };
                         }
-                        let has_domain_a = self.layout.contains_domain(&src_a);
-                        let has_domain_b = self.layout.contains_domain(&src_b);
+                        let has_domain_a = self.world.layout.contains_domain(&src_a);
+                        let has_domain_b = self.world.layout.contains_domain(&src_b);
                         if !has_domain_a
                             && !has_domain_b
                             && members_a.is_empty()
                             && members_b.is_empty()
                         {
                             let next = crate::workspace_scope::apply_swap_assignments(
-                                &self.mapping,
+                                &self.world.workspace.mapping,
                                 &plan,
                             );
-                            self.mapping = next;
-                            self.views
+                            self.world.workspace.mapping = next;
+                            self.world
+                                .workspace
+                                .views
                                 .insert(plan.active_output.clone(), plan.target.clone());
-                            self.views
+                            self.world
+                                .workspace
+                                .views
                                 .insert(plan.other_output.clone(), plan.active_current.clone());
                             for out in [&plan.active_output, &plan.other_output] {
-                                let ring = self.mapping.get(out).cloned().unwrap_or_default();
-                                if let Some(cur) = self.views.get(out).cloned() {
-                                    self.history.observe(out, &cur, &ring);
+                                let ring = self
+                                    .world
+                                    .workspace
+                                    .mapping
+                                    .get(out)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                if let Some(cur) = self.world.workspace.views.get(out).cloned() {
+                                    self.world.workspace.history.observe(out, &cur, &ring);
                                 }
                             }
                             self.note_command(command_seq);
@@ -279,7 +294,7 @@ impl WorldEngine {
                             .any(|key| held_scopes.contains(*key));
                         let screens_complete = self.screen_complete(&out_a) == Some(true)
                             && self.screen_complete(&out_b) == Some(true);
-                        if !self.staged.observation.inventory_complete
+                        if !self.world.staged.observation.inventory_complete
                             || !screens_complete
                             || held_touched
                         {
@@ -288,8 +303,8 @@ impl WorldEngine {
                                 message: MSG_MIGRATION,
                             };
                         }
-                        if self.layout.contains_domain(&tgt_a)
-                            || self.layout.contains_domain(&tgt_b)
+                        if self.world.layout.contains_domain(&tgt_a)
+                            || self.world.layout.contains_domain(&tgt_b)
                         {
                             return CommandApplied::Rejected {
                                 kind: KIND_MIGRATION,
@@ -299,17 +314,23 @@ impl WorldEngine {
                         // Target geometry from the staged screens (inset
                         // work areas, matching the migration commit).
                         let target_geo = |out: &OutputId| {
-                            self.staged
+                            self.world
+                                .staged
                                 .screens
                                 .iter()
                                 .find(|screen| screen.output == *out)
                                 .and_then(|screen| {
                                     let area = screen.work_area?;
-                                    let outer_gap =
-                                        Self::scale_once(self.outer_gap_setting(), screen.scale)?;
+                                    let outer_gap = WorldEngine::scale_once(
+                                        self.connection.outer_gap_setting(),
+                                        screen.scale,
+                                    )?;
                                     let inset =
                                         crate::geometry::inset_bounds(area, outer_gap).ok()?;
-                                    let gap = Self::scale_once(self.gap_setting(), screen.scale)?;
+                                    let gap = WorldEngine::scale_once(
+                                        self.connection.gap_setting(),
+                                        screen.scale,
+                                    )?;
                                     Some((inset, gap, outer_gap))
                                 })
                         };
@@ -326,12 +347,12 @@ impl WorldEngine {
                             };
                         };
                         let sticky_windows: BTreeSet<WindowId> = self
+                            .world
                             .staged
                             .facts
                             .iter()
-                            .filter_map(|(window, fact)| {
-                                (fact.sticky != Some(false)).then(|| window.clone())
-                            })
+                            .filter(|(_, fact)| fact.sticky != Some(false))
+                            .map(|(window, _)| window.clone())
                             .collect();
                         let side_a = WorkspaceSwapSide {
                             source: src_a.clone(),
@@ -354,6 +375,7 @@ impl WorldEngine {
                         // views gate changed false, so capture before swap.
                         let swap_focus = self.remembered_view_focus(&src_b, held_scopes, &by_id);
                         if self
+                            .world
                             .layout
                             .swap_workspaces(&side_a, &side_b, &sticky_windows)
                             .is_err()
@@ -366,31 +388,43 @@ impl WorldEngine {
                         // Commit mapping/views/history (existing
                         // parked-history semantics: out-of-scope previous
                         // entries invalidate via observe).
-                        let next =
-                            crate::workspace_scope::apply_swap_assignments(&self.mapping, &plan);
-                        self.mapping = next;
-                        self.views
+                        let next = crate::workspace_scope::apply_swap_assignments(
+                            &self.world.workspace.mapping,
+                            &plan,
+                        );
+                        self.world.workspace.mapping = next;
+                        self.world
+                            .workspace
+                            .views
                             .insert(plan.active_output.clone(), plan.target.clone());
-                        self.views
+                        self.world
+                            .workspace
+                            .views
                             .insert(plan.other_output.clone(), plan.active_current.clone());
                         for out in [&plan.active_output, &plan.other_output] {
-                            let ring = self.mapping.get(out).cloned().unwrap_or_default();
-                            if let Some(cur) = self.views.get(out).cloned() {
-                                self.history.observe(out, &cur, &ring);
+                            let ring = self
+                                .world
+                                .workspace
+                                .mapping
+                                .get(out)
+                                .cloned()
+                                .unwrap_or_default();
+                            if let Some(cur) = self.world.workspace.views.get(out).cloned() {
+                                self.world.workspace.history.observe(out, &cur, &ring);
                             }
                         }
                         // Tiling modes and floating scopes follow the ids.
-                        let mode_a = self.tiling.remove(&src_a);
-                        let mode_b = self.tiling.remove(&src_b);
+                        let mode_a = self.world.workspace.tiling.remove(&src_a);
+                        let mode_b = self.world.workspace.tiling.remove(&src_b);
                         if let Some(mode) = mode_a {
-                            self.tiling.insert(tgt_a.clone(), mode);
+                            self.world.workspace.tiling.insert(tgt_a.clone(), mode);
                         }
                         if let Some(mode) = mode_b {
-                            self.tiling.insert(tgt_b.clone(), mode);
+                            self.world.workspace.tiling.insert(tgt_b.clone(), mode);
                         }
                         for (src, tgt) in [(&src_a, &tgt_a), (&src_b, &tgt_b)] {
-                            if self.floating_scopes.remove(src) {
-                                self.floating_scopes.insert(tgt.clone());
+                            if self.world.floating_scopes.remove(src) {
+                                self.world.floating_scopes.insert(tgt.clone());
                             }
                         }
                         // Single-owner membership follows both logical ids.
@@ -402,7 +436,7 @@ impl WorldEngine {
                         // desire at the target; unchanged reports hold
                         // without flap, arrival plus view echoes settle.
                         if !members_a.is_empty() {
-                            self.retained.push(RetainedTransfer {
+                            self.world.settlement.retained.push(RetainedTransfer {
                                 target: TransferTarget {
                                     operation_id: format!("op-{command_seq}-swap-a"),
                                     kind: TransferKind::Migration,
@@ -430,7 +464,7 @@ impl WorldEngine {
                             });
                         }
                         if !members_b.is_empty() {
-                            self.retained.push(RetainedTransfer {
+                            self.world.settlement.retained.push(RetainedTransfer {
                                 target: TransferTarget {
                                     operation_id: format!("op-{command_seq}-swap-b"),
                                     kind: TransferKind::Migration,
@@ -473,7 +507,7 @@ impl WorldEngine {
                                     CommandApplied::Effect(OneShotEffect::explicit_focus(
                                         command_seq,
                                         window,
-                                        self.state_revision + 1,
+                                        self.world.state_revision + 1,
                                     ))
                                 }
                                 None => CommandApplied::NoEffect,
@@ -486,7 +520,7 @@ impl WorldEngine {
             }
             WorldCommand::SelectNumbered { output, index } => {
                 let Some(resolved) = self.resolve_selection_output(
-                    &crate::world_engine::RawRouting::from_staged(&self.staged),
+                    &crate::world_engine::RawRouting::from_staged(&self.world.staged),
                     output.as_ref(),
                 ) else {
                     return CommandApplied::Rejected {
@@ -496,7 +530,7 @@ impl WorldEngine {
                 };
                 let Some(target) = self
                     .resolve_selection_ring(
-                        &crate::world_engine::RawRouting::from_staged(&self.staged),
+                        &crate::world_engine::RawRouting::from_staged(&self.world.staged),
                         &resolved,
                     )
                     .and_then(|ring| resolve_numbered(&ring, *index))
@@ -510,7 +544,7 @@ impl WorldEngine {
             }
             WorldCommand::SelectRelative { output, delta } => {
                 let Some(resolved) = self.resolve_selection_output(
-                    &crate::world_engine::RawRouting::from_staged(&self.staged),
+                    &crate::world_engine::RawRouting::from_staged(&self.world.staged),
                     output.as_ref(),
                 ) else {
                     return CommandApplied::Rejected {
@@ -521,7 +555,7 @@ impl WorldEngine {
                 let current = self.effective_view(&resolved).unwrap_or_default();
                 let Some(target) = self
                     .resolve_selection_ring(
-                        &crate::world_engine::RawRouting::from_staged(&self.staged),
+                        &crate::world_engine::RawRouting::from_staged(&self.world.staged),
                         &resolved,
                     )
                     .and_then(|ring| resolve_relative_step(&ring, &current, *delta))
@@ -535,7 +569,7 @@ impl WorldEngine {
             }
             WorldCommand::SelectPrevious { output } => {
                 let Some(resolved) = self.resolve_selection_output(
-                    &crate::world_engine::RawRouting::from_staged(&self.staged),
+                    &crate::world_engine::RawRouting::from_staged(&self.world.staged),
                     output.as_ref(),
                 ) else {
                     return CommandApplied::Rejected {
@@ -545,13 +579,20 @@ impl WorldEngine {
                 };
                 // Shared mode walks the one shared history over the
                 // unified order; scoped modes use the per-output entry.
-                if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
+                if self.connection.workspace_mode_setting()
+                    == crate::workspace_scope::WorkspaceMode::Shared
+                {
                     let live: Vec<String> = self.selection_ring(
-                        &crate::world_engine::RawRouting::from_staged(&self.staged),
+                        &crate::world_engine::RawRouting::from_staged(&self.world.staged),
                         &resolved,
                     );
                     let current = self.effective_view(&resolved).unwrap_or_default();
-                    match self.history.resolve_shared_for(&live, &current) {
+                    match self
+                        .world
+                        .workspace
+                        .history
+                        .resolve_shared_for(&live, &current)
+                    {
                         PreviousTarget::Select(target) => {
                             self.retain_view(command_seq, &resolved, &target, held_scopes, &by_id)
                         }
@@ -562,14 +603,15 @@ impl WorldEngine {
                     }
                 } else {
                     let live: Vec<String> = self.selection_ring(
-                        &crate::world_engine::RawRouting::from_staged(&self.staged),
+                        &crate::world_engine::RawRouting::from_staged(&self.world.staged),
                         &resolved,
                     );
                     let current = self.effective_view(&resolved).unwrap_or_default();
-                    match self
-                        .history
-                        .resolve_previous_for(&resolved.0, &live, &current)
-                    {
+                    match self.world.workspace.history.resolve_previous_for(
+                        &resolved.0,
+                        &live,
+                        &current,
+                    ) {
                         PreviousTarget::Select(target) => {
                             self.retain_view(command_seq, &resolved, &target, held_scopes, &by_id)
                         }
@@ -584,7 +626,7 @@ impl WorldEngine {
             }
             WorldCommand::SelectTrailing { output } => {
                 let Some(resolved) = self.resolve_selection_output(
-                    &crate::world_engine::RawRouting::from_staged(&self.staged),
+                    &crate::world_engine::RawRouting::from_staged(&self.world.staged),
                     output.as_ref(),
                 ) else {
                     return CommandApplied::Rejected {
@@ -593,7 +635,7 @@ impl WorldEngine {
                     };
                 };
                 let ring = self.selection_ring(
-                    &crate::world_engine::RawRouting::from_staged(&self.staged),
+                    &crate::world_engine::RawRouting::from_staged(&self.world.staged),
                     &resolved,
                 );
                 let occupied = self.ring_occupied(&resolved);
@@ -605,8 +647,8 @@ impl WorldEngine {
                     TrailingSelection::Create => {
                         // Trailing workspaces exist immediately in the
                         // logical contract: mint, then select.
-                        let created =
-                            self.create_trailing_workspace(&resolved, self.default_tiled());
+                        let created = self
+                            .create_trailing_workspace(&resolved, self.connection.default_tiled());
                         let Some(logical) = created else {
                             return CommandApplied::Rejected {
                                 kind: KIND_CREATION_EXHAUSTED,
@@ -648,7 +690,7 @@ impl WorldEngine {
                     }
                 };
                 let ring = self.send_ring(
-                    &crate::world_engine::RawRouting::from_staged(&self.staged),
+                    &crate::world_engine::RawRouting::from_staged(&self.world.staged),
                     &source_row.output,
                 );
                 let Some(target_workspace) = resolve_relative_send(&ring, &current, *delta) else {
@@ -818,13 +860,13 @@ impl WorldEngine {
         held_scopes: &BTreeSet<DomainKey>,
         check_focus: bool,
     ) -> CommandApplied {
-        if check_focus && self.staged.observation.focused_global != window.0 {
+        if check_focus && self.world.staged.observation.focused_global != window.0 {
             return CommandApplied::Rejected {
                 kind: KIND_FOCUS,
                 message: MSG_FOCUS,
             };
         }
-        let Some(home) = self.staged.homing.get(window).cloned() else {
+        let Some(home) = self.world.staged.homing.get(window).cloned() else {
             return CommandApplied::Rejected {
                 kind: KIND_FOCUS,
                 message: MSG_FOCUS,
@@ -837,6 +879,7 @@ impl WorldEngine {
             };
         }
         if !self
+            .world
             .staged
             .domains
             .iter()
@@ -847,13 +890,15 @@ impl WorldEngine {
                 message: MSG_OPERATION,
             };
         }
-        let Some(fact) = self.staged.facts.get(window) else {
+        let Some(fact) = self.world.staged.facts.get(window) else {
             return CommandApplied::Rejected {
                 kind: KIND_FOCUS,
                 message: MSG_FOCUS,
             };
         };
         if self
+            .world
+            .settlement
             .retained
             .iter()
             .any(|transfer| matches!(&transfer.target.kind, TransferKind::Window(w) if w == window))
@@ -863,7 +908,11 @@ impl WorldEngine {
                 message: MSG_IN_FLIGHT,
             };
         }
-        if !self.capabilities().is_some_and(|caps| caps.maximize) {
+        if !self
+            .connection
+            .capabilities()
+            .is_some_and(|caps| caps.maximize)
+        {
             // Core-composed route: a lifetime-local owned bit selects the
             // work-area frame under the existing per-row frame lane.
             return self.execute_composed_maximize(command_seq, window, home);
@@ -887,7 +936,7 @@ impl WorldEngine {
             };
         }
         let (Some(fullscreen), Some(maximized)) = (fact.fullscreen, fact.maximized) else {
-            self.command_result = Some(CommandResult::Rejected {
+            self.world.command_result = Some(CommandResult::Rejected {
                 kind: crate::world_report::CommandRejectKind::StateUnknown,
             });
             self.note_command(command_seq);
@@ -898,21 +947,24 @@ impl WorldEngine {
     }
 }
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Retained member set for one global-unique swap side: the single-owner
     /// core membership homed at the source (tiled, float, minimized alike;
     /// floating scopes carry no session) plus staged facts homed there.
-    pub(crate) fn swap_source_unknown_sticky(engine: &WorldEngine, source: &DomainKey) -> bool {
+    pub(crate) fn swap_source_unknown_sticky(
+        engine: &WorldTransaction<'_>,
+        source: &DomainKey,
+    ) -> bool {
         // Raw unknown sticky (missing fact or `None`) must reject actions
         // requiring proven non-sticky, never silently swap a partial
         // subset. Proven sticky stays out; proven non-sticky moves.
         let mut candidates: Vec<WindowId> = Vec::new();
-        for (window, state) in &engine.members {
+        for (window, state) in &engine.world.workspace.members {
             if state.home == *source {
                 candidates.push(window.clone());
             }
         }
-        for domain in &engine.staged.domains {
+        for domain in &engine.world.staged.domains {
             if domain.key != *source {
                 continue;
             }
@@ -925,6 +977,7 @@ impl WorldEngine {
         candidates.dedup();
         candidates.iter().any(|window| {
             !engine
+                .world
                 .staged
                 .facts
                 .get(window)
@@ -935,14 +988,17 @@ impl WorldEngine {
     /// Sticky facts stay out: they are adapter-owned all-desktop lifetimes,
     /// never swapped member state. Sorted and deduplicated for deterministic
     /// settlement.
-    pub(crate) fn swap_source_members(engine: &WorldEngine, source: &DomainKey) -> Vec<WindowId> {
+    pub(crate) fn swap_source_members(
+        engine: &WorldTransaction<'_>,
+        source: &DomainKey,
+    ) -> Vec<WindowId> {
         let mut members: Vec<WindowId> = Vec::new();
-        for (window, state) in &engine.members {
+        for (window, state) in &engine.world.workspace.members {
             if state.home == *source {
                 members.push(window.clone());
             }
         }
-        for domain in &engine.staged.domains {
+        for domain in &engine.world.staged.domains {
             if domain.key != *source {
                 continue;
             }
@@ -953,6 +1009,7 @@ impl WorldEngine {
         }
         members.retain(|window| {
             !engine
+                .world
                 .staged
                 .facts
                 .get(window)
@@ -988,14 +1045,15 @@ impl WorldEngine {
     ) -> CommandApplied {
         // Shared mode refuses whole-workspace migration with a reason
         // before any writes and no native settings mutation.
-        if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
+        if self.connection.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared
+        {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
                 message: MSG_MIGRATION_SHARED,
             };
         }
         // Partial inventory fences: members and views must prove fully.
-        if !self.staged.observation.inventory_complete {
+        if !self.world.staged.observation.inventory_complete {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
                 message: MSG_MIGRATION_INVENTORY,
@@ -1015,6 +1073,8 @@ impl WorldEngine {
         // membership remap (no retained session, no tree to relocate),
         // so only genuinely held scopes refuse here.
         let homed_source = self
+            .world
+            .workspace
             .mapping
             .get(&source_output.0)
             .is_some_and(|ring| ring.iter().any(|id| id == workspace));
@@ -1024,7 +1084,12 @@ impl WorldEngine {
                 message: MSG_MIGRATION_SOURCE,
             };
         }
-        let source_staged = self.staged.domains.iter().find(|d| d.key == source_key);
+        let source_staged = self
+            .world
+            .staged
+            .domains
+            .iter()
+            .find(|d| d.key == source_key);
         let source_readable = source_staged.is_some_and(|d| d.readable);
         let target_complete = self.screen_complete(target_output) == Some(true);
         if !source_readable {
@@ -1047,7 +1112,7 @@ impl WorldEngine {
         }
         // One flight per source workspace: a retained migration still
         // awaiting arrival fences a second commit.
-        if self.retained.iter().any(|r| {
+        if self.world.settlement.retained.iter().any(|r| {
             matches!(&r.target.kind, TransferKind::Migration)
                 && r.source_output == *source_output
                 && r.source_workspace == workspace
@@ -1059,7 +1124,13 @@ impl WorldEngine {
         }
         // Target residue refuses as occupied: a homed fact at the target
         // key means newer external input already claims it.
-        if self.staged.homing.values().any(|key| key == &target_key) {
+        if self
+            .world
+            .staged
+            .homing
+            .values()
+            .any(|key| key == &target_key)
+        {
             return CommandApplied::Rejected {
                 kind: KIND_MIGRATION,
                 message: MSG_MIGRATION_RESIDUE,
@@ -1077,6 +1148,7 @@ impl WorldEngine {
         // Target scope geometry: the target screen's work area with its
         // own gaps. Inset exhaustion refuses with no mutation.
         let target_screen = self
+            .world
             .staged
             .screens
             .iter()
@@ -1084,8 +1156,8 @@ impl WorldEngine {
         let Some((work_area, gap, outer_gap)) = target_screen.and_then(|screen| {
             Some((
                 screen.work_area,
-                Self::scale_once(self.gap_setting(), screen.scale)?,
-                Self::scale_once(self.outer_gap_setting(), screen.scale)?,
+                WorldEngine::scale_once(self.connection.gap_setting(), screen.scale)?,
+                WorldEngine::scale_once(self.connection.outer_gap_setting(), screen.scale)?,
             ))
         }) else {
             return CommandApplied::Rejected {
@@ -1154,7 +1226,7 @@ impl WorldEngine {
         // shared collector), and the authoritative mapping/refill/
         // retained-transfer commit below runs unchanged. No focus or
         // frame writes either way.
-        if self.floating_scopes.contains(&source_key) {
+        if self.world.floating_scopes.contains(&source_key) {
             // Unknown sticky never silently omits a member: reject with
             // no partial mutation instead of claiming a partial success.
             if Self::swap_source_unknown_sticky(self, &source_key) {
@@ -1169,6 +1241,8 @@ impl WorldEngine {
                 .filter(|window| {
                     self.derived_for(window).floating
                         || self
+                            .world
+                            .workspace
                             .members
                             .get(*window)
                             .is_some_and(|state| state.floating)
@@ -1186,7 +1260,7 @@ impl WorldEngine {
             );
         }
         let observed = self.shielded_windows(&source_key, &source_staged.windows);
-        match self.layout.migrate_workspace(
+        match self.world.layout.migrate_workspace(
             &inset_source,
             source_staged.outer_gap,
             &source_staged.focused,
@@ -1203,14 +1277,14 @@ impl WorldEngine {
                 // attempt reporting. Raw facts stay distinct; the derived
                 // lane decides hidden.
                 let mut members = outcome.members;
-                for (window, homed) in &self.staged.homing {
+                for (window, homed) in &self.world.staged.homing {
                     // Unknown sticky never silently includes or omits: a
                     // homed hidden-lane lifetime without proven sticky
                     // state refuses with no partial mutation.
                     if homed == &source_key
                         && !members.iter().any(|member| member == window)
                         && self.derived_for(window).hidden
-                        && self.staged.facts.get(window).is_some_and(|fact| {
+                        && self.world.staged.facts.get(window).is_some_and(|fact| {
                             fact.sticky != Some(true) && fact.sticky != Some(false)
                         })
                     {
@@ -1220,11 +1294,12 @@ impl WorldEngine {
                         };
                     }
                 }
-                for (window, homed) in &self.staged.homing {
+                for (window, homed) in &self.world.staged.homing {
                     if homed == &source_key
                         && !members.iter().any(|member| member == window)
                         && self.derived_for(window).hidden
                         && self
+                            .world
                             .staged
                             .facts
                             .get(window)
@@ -1276,7 +1351,7 @@ impl WorldEngine {
             output: target_output.clone(),
             workspace: crate::directional::WorkspaceId(workspace.to_owned()),
         };
-        self.command_result = Some(CommandResult::Migration {
+        self.world.command_result = Some(CommandResult::Migration {
             direction: match direction_token {
                 "left" => Direction::Left,
                 "right" => Direction::Right,
@@ -1293,46 +1368,59 @@ impl WorldEngine {
         // (target plus the actual source view) instead of the refill
         // View child plus logical echo gates. Only host-owned migrations
         // keep the legacy refill-child path.
-        let selection_route = !self.host_owned_workspace_domains();
+        let selection_route = !self.connection.host_owned_workspace_domains();
         // Authoritative ring move: the logical id changes screens,
         // landing after the target's current view (append when the
         // target view is unknown). Tiling mode follows the id.
         let source_index = self
+            .world
+            .workspace
             .mapping
             .get(&source_output.0)
             .and_then(|ring| ring.iter().position(|id| id == workspace));
-        let prev_source_view = self.views.get(&source_output.0).cloned();
-        let prev_target_view = self.views.get(&target_output.0).cloned();
-        if let Some(ring) = self.mapping.get_mut(&source_output.0) {
+        let prev_source_view = self.world.workspace.views.get(&source_output.0).cloned();
+        let prev_target_view = self.world.workspace.views.get(&target_output.0).cloned();
+        if let Some(ring) = self.world.workspace.mapping.get_mut(&source_output.0) {
             ring.retain(|id| id != workspace);
         }
         let anchor_view = self.effective_view(target_output);
         let insert_at = anchor_view
             .clone()
             .and_then(|view| {
-                self.mapping
+                self.world
+                    .workspace
+                    .mapping
                     .get(&target_output.0)
                     .and_then(|ring| ring.iter().position(|id| id == &view))
                     .map(|pos| pos + 1)
             })
             .unwrap_or_else(|| {
-                self.mapping
+                self.world
+                    .workspace
+                    .mapping
                     .get(&target_output.0)
                     .map(Vec::len)
                     .unwrap_or(0)
             });
         {
-            let ring = self.mapping.entry(target_output.0.clone()).or_default();
+            let ring = self
+                .world
+                .workspace
+                .mapping
+                .entry(target_output.0.clone())
+                .or_default();
             let at = insert_at.min(ring.len());
             ring.insert(at, workspace.to_owned());
         }
         // Shared roster: pin the authoritative after-current position so
         // creation settlement and re-observation keep the moved row put
         // while genuine external native reorders still move the rest.
-        if self.shared_native_roster()
+        if self.connection.shared_native_roster()
             && let Some(anchor) = anchor_view
         {
-            self.migration_anchors
+            self.world
+                .settlement
+                .migration_anchors
                 .insert((target_output.0.clone(), workspace.to_owned()), anchor);
         }
         self.carry_tiling(workspace, &source_output.0, &target_output.0);
@@ -1341,35 +1429,43 @@ impl WorldEngine {
         // commit reply publishes the floating target as a tiled scope
         // until the next report recomputes it, stalling the flight
         // mid-actuation and dropping arrived members from the rows.
-        if self.floating_scopes.remove(&DomainKey {
+        if self.world.floating_scopes.remove(&DomainKey {
             output: source_output.clone(),
             workspace: crate::directional::WorkspaceId(workspace.to_owned()),
         }) {
-            self.floating_scopes.insert(DomainKey {
+            self.world.floating_scopes.insert(DomainKey {
                 output: target_output.clone(),
                 workspace: crate::directional::WorkspaceId(workspace.to_owned()),
             });
         }
-        self.views
+        self.world
+            .workspace
+            .views
             .insert(target_output.0.clone(), workspace.to_owned());
         // The emptied source shows the refill (or a fresh trailing
         // when nothing remains); views always name a ring member.
         let refill = self.logical_source_refill(source_output, workspace);
         if self
+            .world
+            .workspace
             .mapping
             .get(&source_output.0)
             .is_some_and(Vec::is_empty)
         {
-            self.create_trailing_workspace(source_output, self.default_tiled());
+            self.create_trailing_workspace(source_output, self.connection.default_tiled());
         }
         let source_view = refill.clone().unwrap_or_else(|| {
-            self.mapping
+            self.world
+                .workspace
+                .mapping
                 .get(&source_output.0)
                 .and_then(|ring| ring.first().cloned())
                 .unwrap_or_default()
         });
         if !source_view.is_empty() {
-            self.views
+            self.world
+                .workspace
+                .views
                 .insert(source_output.0.clone(), source_view.clone());
         }
         // The actual source view is frozen here (before any retained
@@ -1409,7 +1505,7 @@ impl WorldEngine {
             // a member), and minimized/ineligible subjects resolve to no
             // focus with no fallback member. Never invents activation.
             let focus = {
-                let foreground = self.staged.observation.focused_global.clone();
+                let foreground = self.world.staged.observation.focused_global.clone();
                 let candidate = WindowId(foreground);
                 if !candidate.0.is_empty()
                     && members.contains(&candidate)
@@ -1420,7 +1516,7 @@ impl WorldEngine {
                     None
                 }
             };
-            let rev = self.state_revision + 1;
+            let rev = self.world.state_revision + 1;
             Some(crate::world_selection::PendingSelection {
                 command_seq: Some(command_seq),
                 parent_op: format!("op-{command_seq}"),
@@ -1430,7 +1526,7 @@ impl WorldEngine {
                 departing,
                 affected_outputs: affected,
                 rev,
-                obs: self.staged.observation.observation_seq,
+                obs: self.world.staged.observation.observation_seq,
                 follow_mover: false,
             })
         } else {
@@ -1442,13 +1538,13 @@ impl WorldEngine {
             // selection authorization and prune stale View flights
             // (no `{op}-refill` child rides this route).
             self.prune_selection_for_outputs(&pending.affected_outputs);
-            self.retained.retain(|retained| {
+            self.world.settlement.retained.retain(|retained| {
                 !(matches!(&retained.target.kind, TransferKind::View)
                     && pending
                         .affected_outputs
                         .contains(&retained.target.target_output))
             });
-            self.pending_selection = Some(pending);
+            self.world.settlement.pending_selection = Some(pending);
         }
         // R-WS-12 source-refill actuation: retain the core-chosen
         // refill view on the source output so the adapter shows it
@@ -1458,11 +1554,11 @@ impl WorldEngine {
         // native-free selection route owns both views through the
         // frozen binding instead and mints no refill child.
         if !selection_route && let Some(refill) = refill.clone() {
-            self.retained.retain(|r| {
+            self.world.settlement.retained.retain(|r| {
                 !(matches!(&r.target.kind, TransferKind::View)
                     && r.target.target_output == *source_output)
             });
-            self.retained.push(RetainedTransfer {
+            self.world.settlement.retained.push(RetainedTransfer {
                 target: TransferTarget {
                     operation_id: format!("op-{command_seq}-refill"),
                     kind: TransferKind::View,
@@ -1499,7 +1595,7 @@ impl WorldEngine {
         // next-report wake just to retire it. Native-owned empty
         // migrations still retain the parent for their view-proof path.
         if !(selection_route && initial_empty) {
-            self.retained.push(RetainedTransfer {
+            self.world.settlement.retained.push(RetainedTransfer {
                 target: TransferTarget {
                     operation_id: format!("op-{command_seq}"),
                     kind: TransferKind::Migration,

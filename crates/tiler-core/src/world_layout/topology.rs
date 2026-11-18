@@ -156,21 +156,9 @@ pub(super) fn validate_domain_topology_with_focus(
 }
 
 impl WorldLayout {
-    /// Node ids across every retained domain (group and leaf). Node identity
-    /// is domain-scoped, so ids may repeat across domains.
-    #[must_use]
-    pub(super) fn all_node_ids(&self) -> BTreeSet<NodeId> {
-        let mut ids = BTreeSet::new();
-        for domain in self.domains.values() {
-            if let Some(tree) = &domain.tree {
-                collect_node_ids(tree, &mut ids);
-            }
-        }
-        ids
-    }
-
     /// Reject any retained domain with malformed topology. An empty layout
     /// has no malformed data and validates.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn validate_topology(&self) -> bool {
         self.domains

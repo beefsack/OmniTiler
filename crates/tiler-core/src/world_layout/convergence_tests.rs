@@ -565,3 +565,343 @@ fn converge_refuses_cross_homing() {
     assert_eq!(d1_after.accepted_revision, 0);
     assert!(d1_after.leaves.contains_key(&WindowId("win-a".to_owned())));
 }
+
+fn conv_group_ids(node: &Node, out: &mut BTreeSet<NodeId>) {
+    if let Node::Group { id, children, .. } = node {
+        out.insert(id.clone());
+        for child in children {
+            conv_group_ids(child, out);
+        }
+    }
+}
+
+fn domain_conv_group_ids(layout: &WorldLayout, k: &DomainKey) -> BTreeSet<NodeId> {
+    let mut ids = BTreeSet::new();
+    if let Some(tree) = layout.tree(k) {
+        conv_group_ids(tree, &mut ids);
+    }
+    ids
+}
+
+#[test]
+fn alloc_restore_rejoin_mints_fresh_never_reissues() {
+    let k = key();
+    let mut layout = WorldLayout::new();
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 120,
+        h: 80,
+    };
+    layout
+        .domains
+        .insert(k.clone(), DomainLayout::new(bounds, 0, 0));
+
+    let obs_list = |names: &[&str]| -> Vec<ObservedWindow> {
+        names
+            .iter()
+            .map(|name| observed_window(name, false))
+            .collect()
+    };
+
+    layout
+        .converge_domain(
+            &k,
+            &obs_list(&["win-a"]),
+            Some(&WindowId("win-a".to_owned())),
+            &BTreeSet::new(),
+        )
+        .expect("converge a");
+    layout
+        .converge_domain(
+            &k,
+            &obs_list(&["win-a", "win-b"]),
+            Some(&WindowId("win-b".to_owned())),
+            &BTreeSet::new(),
+        )
+        .expect("converge ab");
+    layout
+        .converge_domain(
+            &k,
+            &obs_list(&["win-a", "win-b", "win-c"]),
+            Some(&WindowId("win-c".to_owned())),
+            &BTreeSet::new(),
+        )
+        .expect("converge abc");
+
+    let seeded_groups = domain_conv_group_ids(&layout, &k);
+    assert_eq!(seeded_groups.len(), 2);
+    let seeded_next = layout.group_alloc.next_value();
+
+    // Omit win-b: bare absence stores a restore slot.
+    layout
+        .converge_domain(
+            &k,
+            &obs_list(&["win-a", "win-c"]),
+            Some(&WindowId("win-c".to_owned())),
+            &BTreeSet::new(),
+        )
+        .expect("omit win-b");
+    assert!(
+        layout
+            .domain(&k)
+            .unwrap()
+            .minimized_slots
+            .contains_key(&WindowId("win-b".to_owned())),
+        "omission stores a restore slot"
+    );
+
+    // Admit win-d so restore cannot take the exact-tree path and must regroup.
+    layout
+        .admit_window(
+            &k,
+            &WindowId("win-d".to_owned()),
+            ExceptionFlags::none(),
+            None,
+            bounds,
+            false,
+            false,
+            &obs_list(&["win-a", "win-c", "win-d"]),
+        )
+        .expect("admit win-d");
+    let pre_restore = domain_conv_group_ids(&layout, &k);
+    let pre_next = layout.group_alloc.next_value();
+    assert!(pre_next > seeded_next);
+
+    layout
+        .converge_domain(
+            &k,
+            &obs_list(&["win-a", "win-c", "win-d", "win-b"]),
+            Some(&WindowId("win-b".to_owned())),
+            &BTreeSet::new(),
+        )
+        .expect("restore win-b");
+    assert!(
+        !layout
+            .domain(&k)
+            .unwrap()
+            .minimized_slots
+            .contains_key(&WindowId("win-b".to_owned())),
+        "slot consumed by restore"
+    );
+    let post_restore = domain_conv_group_ids(&layout, &k);
+    let fresh: Vec<NodeId> = post_restore.difference(&pre_restore).cloned().collect();
+    assert_eq!(fresh.len(), 1, "restore regroups exactly one fresh group");
+    assert!(
+        !seeded_groups.contains(&fresh[0]),
+        "restored group never reissues a seeded id: {:?}",
+        fresh[0]
+    );
+    assert_eq!(
+        layout.group_alloc.next_value(),
+        pre_next + 1,
+        "restore burns exactly one serial"
+    );
+    assert_eq!(layout.tiled_count(&k), 4);
+
+    // Explicitly close win-b and re-observe: fresh admission mints a group
+    // never seen before.
+    let mut seen = seeded_groups;
+    seen.extend(pre_restore);
+    seen.extend(post_restore);
+    let restore_next = layout.group_alloc.next_value();
+
+    let carried: Vec<EngineWindow> = ["win-a", "win-c", "win-d"]
+        .into_iter()
+        .map(engine_window)
+        .collect();
+    layout
+        .converge_retained_observation(
+            &k,
+            &carried,
+            &WindowId("win-c".to_owned()),
+            &[WindowId("win-b".to_owned())],
+        )
+        .expect("close win-b");
+
+    layout
+        .converge_domain(
+            &k,
+            &obs_list(&["win-a", "win-c", "win-d", "win-b"]),
+            Some(&WindowId("win-b".to_owned())),
+            &BTreeSet::new(),
+        )
+        .expect("remint win-b");
+    let repeat_groups = domain_conv_group_ids(&layout, &k);
+    let live_fresh: Vec<NodeId> = repeat_groups
+        .iter()
+        .filter(|id| !seen.contains(*id))
+        .cloned()
+        .collect();
+    assert_eq!(live_fresh.len(), 1);
+    assert!(live_fresh[0].0.starts_with("grp-"));
+    assert!(layout.group_alloc.next_value() > restore_next);
+    assert_eq!(layout.tiled_count(&k), 4);
+}
+
+#[test]
+fn alloc_exhausted_converge_refuses_instead_of_floating() {
+    let k = key();
+    let mut layout = tiled_layout();
+    layout.group_alloc = super::super::group_alloc::GroupAllocator::test_with_next(u64::MAX);
+    let observed = vec![observed_window("w1", false), observed_window("w2", false)];
+    let err = layout
+        .converge_domain(
+            &k,
+            &observed,
+            Some(&WindowId("w1".to_owned())),
+            &BTreeSet::new(),
+        )
+        .expect_err("exhausted converge refuses");
+    assert_eq!(
+        err,
+        LayoutFailure::Semantics(RefusalKind::MalformedTopology),
+        "fail-closed refusal, got {err:?}"
+    );
+    assert!(
+        !layout.is_capacity_float(&k, &WindowId("w2".to_owned())),
+        "exhausted newcomer never silently floats"
+    );
+    assert!(!layout.is_exception(&k, &WindowId("w2".to_owned())));
+    assert_eq!(layout.tiled_count(&k), 1);
+}
+
+#[test]
+fn victims_sort_newest_first_with_untracked_last() {
+    use crate::directional::Axis;
+    let k = key();
+    let mut layout = WorldLayout::new();
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 100,
+        h: 100,
+    };
+    let mut domain = DomainLayout::new(bounds, 1, 0);
+    let names = ["untracked-b", "oldest", "newest", "untracked-a", "middle"];
+    domain.tree = Some(Node::Group {
+        id: NodeId("root".to_owned()),
+        axis: Axis::Horizontal,
+        children: names
+            .iter()
+            .map(|n| leaf_node(&format!("leaf-{n}")))
+            .collect(),
+        shares: vec![1; 5],
+    });
+    for n in &names {
+        domain
+            .leaves
+            .insert(WindowId((*n).to_owned()), NodeId(format!("leaf-{n}")));
+    }
+    domain
+        .admission_order
+        .insert(WindowId("oldest".to_owned()), 0);
+    domain
+        .admission_order
+        .insert(WindowId("middle".to_owned()), 1);
+    domain
+        .admission_order
+        .insert(WindowId("newest".to_owned()), 2);
+    domain.focused_leaf = Some(NodeId("leaf-oldest".to_owned()));
+    domain.focus_stack = names.iter().map(|n| NodeId(format!("leaf-{n}"))).collect();
+    layout.domains.insert(k.clone(), domain);
+
+    let observed: Vec<EngineWindow> = names.iter().map(|n| engine_window(n)).collect();
+    // Gap 25 on 100px width with 5 leaves cannot project (4*25 = 100), so
+    // repair evicts newest-first until 4 leaves remain (3*25 = 75 < 100).
+    layout
+        .update_domain_gaps(&k, bounds, 25, 0, &WindowId("oldest".to_owned()), &observed)
+        .expect("repair evicts one victim");
+    assert!(layout.is_capacity_float(&k, &WindowId("newest".to_owned())));
+    assert_eq!(layout.tiled_count(&k), 4);
+
+    // Gap 34 on 100px width needs 2 evictions (2*34 = 68 < 100, 3*34 = 102):
+    // evicts newest then middle, leaving oldest and both untracked tiled.
+    layout
+        .update_domain_gaps(&k, bounds, 34, 0, &WindowId("oldest".to_owned()), &observed)
+        .expect("repair evicts second victim");
+    assert!(layout.is_capacity_float(&k, &WindowId("middle".to_owned())));
+    assert!(layout.is_tiled_window(&k, &WindowId("oldest".to_owned())));
+
+    // Gap 50 on 100px width needs 3 evictions (1*50 < 100, 2*50 = 100):
+    // evicts oldest next, keeping untracked last.
+    layout
+        .update_domain_gaps(
+            &k,
+            bounds,
+            50,
+            0,
+            &WindowId("untracked-a".to_owned()),
+            &observed,
+        )
+        .expect("repair evicts oldest before untracked");
+    assert!(layout.is_capacity_float(&k, &WindowId("oldest".to_owned())));
+    assert!(layout.is_tiled_window(&k, &WindowId("untracked-a".to_owned())));
+    assert!(layout.is_tiled_window(&k, &WindowId("untracked-b".to_owned())));
+
+    // Gap 50 on 50px width leaves 1 survivor: untracked-b (identity descending)
+    // evicts before untracked-a.
+    let narrow = Rect { w: 50, ..bounds };
+    layout
+        .update_domain_gaps(
+            &k,
+            narrow,
+            50,
+            0,
+            &WindowId("untracked-a".to_owned()),
+            &observed,
+        )
+        .expect("repair breaks untracked tie descending");
+    assert!(layout.is_capacity_float(&k, &WindowId("untracked-b".to_owned())));
+    assert!(layout.is_tiled_window(&k, &WindowId("untracked-a".to_owned())));
+}
+
+#[test]
+fn victims_break_sequence_ties_by_identity_descending() {
+    use crate::directional::Axis;
+    let k = key();
+    let mut layout = WorldLayout::new();
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 100,
+        h: 100,
+    };
+    let mut domain = DomainLayout::new(bounds, 1, 0);
+    let names = ["a", "c", "b"];
+    domain.tree = Some(Node::Group {
+        id: NodeId("root".to_owned()),
+        axis: Axis::Horizontal,
+        children: names
+            .iter()
+            .map(|n| leaf_node(&format!("leaf-{n}")))
+            .collect(),
+        shares: vec![1; 3],
+    });
+    for n in &names {
+        domain
+            .leaves
+            .insert(WindowId((*n).to_owned()), NodeId(format!("leaf-{n}")));
+        domain.admission_order.insert(WindowId((*n).to_owned()), 7);
+    }
+    domain.focused_leaf = Some(NodeId("leaf-a".to_owned()));
+    domain.focus_stack = names.iter().map(|n| NodeId(format!("leaf-{n}"))).collect();
+    layout.domains.insert(k.clone(), domain);
+
+    let observed: Vec<EngineWindow> = names.iter().map(|n| engine_window(n)).collect();
+    // Gap 50 on 100px width with 3 leaves (2*50 = 100) evicts 1 victim: "c" first.
+    layout
+        .update_domain_gaps(&k, bounds, 50, 0, &WindowId("a".to_owned()), &observed)
+        .expect("repair evicts c first");
+    assert!(layout.is_capacity_float(&k, &WindowId("c".to_owned())));
+    assert!(layout.is_tiled_window(&k, &WindowId("b".to_owned())));
+    assert!(layout.is_tiled_window(&k, &WindowId("a".to_owned())));
+
+    // Gap 50 on 50px width evicts "b" next, leaving "a".
+    let narrow = Rect { w: 50, ..bounds };
+    layout
+        .update_domain_gaps(&k, narrow, 50, 0, &WindowId("a".to_owned()), &observed)
+        .expect("repair evicts b second");
+    assert!(layout.is_capacity_float(&k, &WindowId("b".to_owned())));
+    assert!(layout.is_tiled_window(&k, &WindowId("a".to_owned())));
+}

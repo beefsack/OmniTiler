@@ -57,39 +57,6 @@ fn report_clears(
     report
 }
 
-/// Row-tail wire span: `"clear_op":"{op}"` plus the shared canonical lane
-/// encoding of the row's correlation tail (`cmdSeq`, visibility, state).
-/// The v4 lane has no full-reply canonical encoder in core (wire encoding
-/// lives in the protocol crate), but this span is version-independent:
-/// the same shared [`WindowDesire`](crate::world_report::WindowDesire)
-/// type through the same shared
-/// [`encode_window_target_lanes`](crate::world_sizing::encode_window_target_lanes).
-fn row_tail_wire(row: &crate::world_report::WindowDesire) -> String {
-    let mut out = String::from("\"clear_op\":\"");
-    out.push_str(row.clear_operation.as_deref().unwrap_or_default());
-    out.push('"');
-    crate::world_sizing::encode_window_target_lanes(&mut out, row);
-    out
-}
-
-/// Frozen target suffix within a row-tail span: from the row's `,"cmdSeq":`
-/// through the state-array close (the first `]` after it); no earlier
-/// array sits inside the suffix (the single `[` opens the state array).
-/// Asserts the slicing assumption instead of trusting it.
-fn row_suffix(tail: &str) -> &str {
-    let start = tail
-        .find(",\"cmdSeq\":")
-        .expect("cmdSeq lane after the clear token");
-    let after_start = &tail[start..];
-    let end = after_start.find(']').expect("state close");
-    assert_eq!(
-        after_start[..end].matches('[').count(),
-        1,
-        "no earlier array inside the suffix"
-    );
-    &after_start[..end + 1]
-}
-
 #[test]
 fn commandless_clear_continuation_float() {
     // Float route: the maximized move binds under op-13 and publishes
@@ -140,8 +107,11 @@ fn commandless_clear_continuation_float() {
         outcome_str(&settlements[0].result),
         Some("move-maximize-clear")
     );
-    assert_eq!(engine.retained_clears.len(), 1);
-    assert_eq!(engine.retained_clears[0].operation_id, "op-13");
+    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    assert_eq!(
+        engine.world.settlement.retained_clears[0].operation_id,
+        "op-13"
+    );
     assert_eq!(
         desire(&reply, "win-max").clear_operation.as_deref(),
         Some("op-13"),
@@ -167,11 +137,14 @@ fn commandless_clear_continuation_float() {
         ),
     );
     assert!(
-        engine.retained_clears.is_empty(),
+        engine.world.settlement.retained_clears.is_empty(),
         "proof consumes the binding exactly once"
     );
-    assert_eq!(engine.retained_floats.len(), 1);
-    assert_eq!(engine.retained_floats[0].operation_id, "op-13");
+    assert_eq!(engine.world.settlement.retained_floats.len(), 1);
+    assert_eq!(
+        engine.world.settlement.retained_floats[0].operation_id,
+        "op-13"
+    );
     let row = desire(&reply, "win-max");
     assert_eq!(row.frame_operation.as_deref(), Some("op-13"));
     assert_eq!(row.effective_frame, Some(rect(404, 8, 388, 544)));
@@ -209,7 +182,7 @@ fn commandless_clear_continuation_float() {
         ),
     );
     assert!(
-        engine.retained_floats.is_empty(),
+        engine.world.settlement.retained_floats.is_empty(),
         "arrival confirms the float"
     );
     assert_eq!(
@@ -318,7 +291,7 @@ fn commandless_clear_continuation_tiled() {
         outcome_str(&settlements[0].result),
         Some("move-maximize-clear")
     );
-    assert!(!engine.retained_clears[0].float_route);
+    assert!(!engine.world.settlement.retained_clears[0].float_route);
     let (reply, follow_settlements) = accepted_with_settlements(
         &mut engine,
         &report_clears(
@@ -337,7 +310,7 @@ fn commandless_clear_continuation_tiled() {
         ),
     );
     assert!(
-        engine.retained_clears.is_empty(),
+        engine.world.settlement.retained_clears.is_empty(),
         "proof consumes the binding exactly once"
     );
     assert!(
@@ -404,7 +377,7 @@ fn clear_external_clear_alone_abandons_without_continuation() {
             }),
         ),
     );
-    assert_eq!(engine.retained_clears.len(), 1);
+    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
     let reply = accepted(
         &mut engine,
         &report_clears(
@@ -417,13 +390,13 @@ fn clear_external_clear_alone_abandons_without_continuation() {
         ),
     );
     assert!(
-        engine.retained_clears.is_empty(),
+        engine.world.settlement.retained_clears.is_empty(),
         "external clear abandons the binding"
     );
     assert!(
-        engine.retained_floats.is_empty(),
+        engine.world.settlement.retained_floats.is_empty(),
         "no continuation without proof, got {:?}",
-        engine.retained_floats
+        engine.world.settlement.retained_floats
     );
     assert_eq!(
         desire(&reply, "win-max").frame_operation,
@@ -500,11 +473,11 @@ fn clear_refusal_retires_and_still_maximized_holds() {
         ),
     );
     assert!(
-        engine.retained_clears.is_empty(),
+        engine.world.settlement.retained_clears.is_empty(),
         "proven refusal retires with no loop"
     );
     assert!(
-        engine.retained_floats.is_empty(),
+        engine.world.settlement.retained_floats.is_empty(),
         "refusal authorizes nothing"
     );
     assert_eq!(
@@ -557,7 +530,7 @@ fn clear_refusal_retires_and_still_maximized_holds() {
         ),
     );
     assert_eq!(
-        engine.retained_clears.len(),
+        engine.world.settlement.retained_clears.len(),
         1,
         "still-maximized holds with the binding intact"
     );
@@ -567,7 +540,7 @@ fn clear_refusal_retires_and_still_maximized_holds() {
         "no re-actuation after an attempt"
     );
     assert!(
-        engine.retained_floats.is_empty(),
+        engine.world.settlement.retained_floats.is_empty(),
         "unchanged maximized is never success"
     );
 }
@@ -638,11 +611,11 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
         ),
     );
     assert_eq!(
-        engine.retained_clears.len(),
+        engine.world.settlement.retained_clears.len(),
         1,
         "throw latches ambiguity with no retry"
     );
-    assert!(engine.retained_clears[0].ambiguous);
+    assert!(engine.world.settlement.retained_clears[0].ambiguous);
     assert_eq!(
         desire(&reply, "win-max").clear_operation,
         None,
@@ -665,16 +638,19 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
         ),
     );
     assert_eq!(
-        engine.retained_clears.len(),
+        engine.world.settlement.retained_clears.len(),
         1,
         "ambiguous hold persists with binding and pending unchanged"
     );
-    assert!(engine.retained_clears[0].ambiguous);
-    assert_eq!(engine.retained_clears[0].operation_id, "op-13");
+    assert!(engine.world.settlement.retained_clears[0].ambiguous);
+    assert_eq!(
+        engine.world.settlement.retained_clears[0].operation_id,
+        "op-13"
+    );
     assert!(
-        engine.retained_floats.is_empty(),
+        engine.world.settlement.retained_floats.is_empty(),
         "no continuation without accepted proof, got {:?}",
-        engine.retained_floats
+        engine.world.settlement.retained_floats
     );
     assert_eq!(
         desire(&reply, "win-max").frame_operation,
@@ -736,9 +712,12 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
         Some("move-float-applied"),
         "fresh intent works independently under its own op"
     );
-    assert_eq!(engine.retained_clears.len(), 0);
-    assert_eq!(engine.retained_floats.len(), 1);
-    assert_eq!(engine.retained_floats[0].operation_id, "op-15");
+    assert_eq!(engine.world.settlement.retained_clears.len(), 0);
+    assert_eq!(engine.world.settlement.retained_floats.len(), 1);
+    assert_eq!(
+        engine.world.settlement.retained_floats[0].operation_id,
+        "op-15"
+    );
 }
 
 #[test]
@@ -803,12 +782,12 @@ fn clear_unknown_current_focus_holds_not_abandons() {
         ),
     );
     assert_eq!(
-        engine.retained_clears.len(),
+        engine.world.settlement.retained_clears.len(),
         1,
         "unknown current focus holds with identities preserved"
     );
     assert!(
-        engine.retained_floats.is_empty(),
+        engine.world.settlement.retained_floats.is_empty(),
         "no continuation on unknown focus"
     );
     assert!(
@@ -864,7 +843,7 @@ fn clear_empty_original_focus_abandons_on_known_other() {
             }),
         ),
     );
-    assert_eq!(engine.retained_clears[0].focus, "");
+    assert_eq!(engine.world.settlement.retained_clears[0].focus, "");
     // Unknown current focus holds first (no contradiction yet).
     let reply = accepted(
         &mut engine,
@@ -883,9 +862,13 @@ fn clear_empty_original_focus_abandons_on_known_other() {
             )],
         ),
     );
-    assert_eq!(engine.retained_clears.len(), 1, "unknown holds");
     assert_eq!(
-        engine.retained_clears[0].focus, "",
+        engine.world.settlement.retained_clears.len(),
+        1,
+        "unknown holds"
+    );
+    assert_eq!(
+        engine.world.settlement.retained_clears[0].focus, "",
         "retained focus stays immutable, never latched"
     );
     assert!(reply.operation_settled.is_empty());
@@ -903,10 +886,13 @@ fn clear_empty_original_focus_abandons_on_known_other() {
         ),
     );
     assert!(
-        engine.retained_clears.is_empty(),
+        engine.world.settlement.retained_clears.is_empty(),
         "known wrong focus retires promptly"
     );
-    assert!(engine.retained_floats.is_empty(), "nothing resumes later");
+    assert!(
+        engine.world.settlement.retained_floats.is_empty(),
+        "nothing resumes later"
+    );
     assert!(
         reply.operation_settled.iter().any(|event| {
             event.operation_id == "op-13"
@@ -979,9 +965,12 @@ fn clear_unknown_baseline_subject_focus_continues() {
             )],
         ),
     );
-    assert!(engine.retained_clears.is_empty());
-    assert_eq!(engine.retained_floats.len(), 1);
-    assert_eq!(engine.retained_floats[0].operation_id, "op-13");
+    assert!(engine.world.settlement.retained_clears.is_empty());
+    assert_eq!(engine.world.settlement.retained_floats.len(), 1);
+    assert_eq!(
+        engine.world.settlement.retained_floats[0].operation_id,
+        "op-13"
+    );
     assert!(
         reply.operation_settled.iter().any(|event| {
             event.operation_id == "op-13"
@@ -1037,7 +1026,10 @@ fn clear_known_non_subject_baseline_retires_promptly() {
             }),
         ),
     );
-    assert_eq!(engine.retained_clears[0].focus, "win-target");
+    assert_eq!(
+        engine.world.settlement.retained_clears[0].focus,
+        "win-target"
+    );
     // Unchanged non-subject focus still retires: never its subject's.
     let reply = accepted(
         &mut engine,
@@ -1057,10 +1049,13 @@ fn clear_known_non_subject_baseline_retires_promptly() {
         ),
     );
     assert!(
-        engine.retained_clears.is_empty(),
+        engine.world.settlement.retained_clears.is_empty(),
         "non-subject baseline retires promptly, never lingers"
     );
-    assert!(engine.retained_floats.is_empty(), "nothing resumes");
+    assert!(
+        engine.world.settlement.retained_floats.is_empty(),
+        "nothing resumes"
+    );
     assert!(
         reply.operation_settled.iter().any(|event| {
             event.operation_id == "op-13"
@@ -1137,8 +1132,14 @@ fn clear_changed_focus_view_domain_abandons() {
             )],
         ),
     );
-    assert!(engine.retained_clears.is_empty(), "focus change abandons");
-    assert!(engine.retained_floats.is_empty(), "no continuation raced");
+    assert!(
+        engine.world.settlement.retained_clears.is_empty(),
+        "focus change abandons"
+    );
+    assert!(
+        engine.world.settlement.retained_floats.is_empty(),
+        "no continuation raced"
+    );
     assert!(
         reply.operation_settled.iter().any(|event| {
             event.operation_id == "op-13"
@@ -1155,11 +1156,13 @@ fn clear_changed_focus_view_domain_abandons() {
     // view. The old views-echo setup never moved the view.
     bind(&mut engine, 5, 15);
     let spare = engine
+        .world
+        .workspace
         .mapping
         .get("out-a")
         .expect("ring retained")
         .iter()
-        .find(|id| Some(*id) != engine.retained_clears[0].view.as_ref())
+        .find(|id| Some(*id) != engine.world.settlement.retained_clears[0].view.as_ref())
         .expect("spare workspace exists")
         .clone();
     let selected = report_full(
@@ -1193,8 +1196,14 @@ fn clear_changed_focus_view_domain_abandons() {
             )],
         ),
     );
-    assert!(engine.retained_clears.is_empty(), "view change abandons");
-    assert!(engine.retained_floats.is_empty(), "no continuation raced");
+    assert!(
+        engine.world.settlement.retained_clears.is_empty(),
+        "view change abandons"
+    );
+    assert!(
+        engine.world.settlement.retained_floats.is_empty(),
+        "no continuation raced"
+    );
     assert!(
         reply.operation_settled.iter().any(|event| {
             event.operation_id == "op-15"
@@ -1227,8 +1236,14 @@ fn clear_changed_focus_view_domain_abandons() {
             )],
         ),
     );
-    assert!(engine.retained_clears.is_empty(), "homing change abandons");
-    assert!(engine.retained_floats.is_empty(), "no continuation raced");
+    assert!(
+        engine.world.settlement.retained_clears.is_empty(),
+        "homing change abandons"
+    );
+    assert!(
+        engine.world.settlement.retained_floats.is_empty(),
+        "no continuation raced"
+    );
     assert!(
         reply.operation_settled.iter().any(|event| {
             event.operation_id == "op-17"
@@ -1278,7 +1293,7 @@ fn clear_close_prunes_and_abandoned_binding_never_reapplies() {
             }),
         ),
     );
-    assert_eq!(engine.retained_clears.len(), 1);
+    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
     // Explicit close prunes even with a correlated attempt attached.
     let mut closed = report_clears(
         3,
@@ -1296,8 +1311,14 @@ fn clear_close_prunes_and_abandoned_binding_never_reapplies() {
     );
     closed.closed = vec![WindowId("win-max".to_owned())];
     accepted(&mut engine, &closed);
-    assert!(engine.retained_clears.is_empty(), "close prunes");
-    assert!(engine.retained_floats.is_empty(), "close settles");
+    assert!(
+        engine.world.settlement.retained_clears.is_empty(),
+        "close prunes"
+    );
+    assert!(
+        engine.world.settlement.retained_floats.is_empty(),
+        "close settles"
+    );
     // A later independent intent in the same direction binds fresh and
     // proceeds on its own proof, unaffected by the abandoned binding.
     let (_reply, settlements) = accepted_with_settlements(
@@ -1322,8 +1343,11 @@ fn clear_close_prunes_and_abandoned_binding_never_reapplies() {
         outcome_str(&settlements[0].result),
         Some("move-maximize-clear")
     );
-    assert_eq!(engine.retained_clears.len(), 1);
-    assert_eq!(engine.retained_clears[0].operation_id, "op-15");
+    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    assert_eq!(
+        engine.world.settlement.retained_clears[0].operation_id,
+        "op-15"
+    );
 }
 
 #[test]
@@ -1364,7 +1388,10 @@ fn clear_same_window_new_intent_supersedes_without_consuming() {
             }),
         ),
     );
-    assert_eq!(engine.retained_clears[0].operation_id, "op-13");
+    assert_eq!(
+        engine.world.settlement.retained_clears[0].operation_id,
+        "op-13"
+    );
     // A same-window move in another direction supersedes: the old op
     // never continues, the fresh intent binds under its own op.
     let (_reply, settlements) = accepted_with_settlements(
@@ -1389,9 +1416,12 @@ fn clear_same_window_new_intent_supersedes_without_consuming() {
         outcome_str(&settlements[0].result),
         Some("move-maximize-clear")
     );
-    assert_eq!(engine.retained_clears.len(), 1);
-    assert_eq!(engine.retained_clears[0].operation_id, "op-14");
-    assert_eq!(engine.retained_clears[0].direction, "left");
+    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    assert_eq!(
+        engine.world.settlement.retained_clears[0].operation_id,
+        "op-14"
+    );
+    assert_eq!(engine.world.settlement.retained_clears[0].direction, "left");
     // Proof for the SUPERSEDED op-13 can never continue anything. The
     // subject is still maximized (op-14 never dispatched), so op-14
     // holds untouched while the stale op-13 proof reads as absent.
@@ -1412,11 +1442,15 @@ fn clear_same_window_new_intent_supersedes_without_consuming() {
             )],
         ),
     );
-    assert_eq!(engine.retained_clears.len(), 1, "op-14 survives");
+    assert_eq!(
+        engine.world.settlement.retained_clears.len(),
+        1,
+        "op-14 survives"
+    );
     assert!(
-        engine.retained_floats.is_empty(),
+        engine.world.settlement.retained_floats.is_empty(),
         "superseded op-13 proof authorizes nothing, got {:?}",
-        engine.retained_floats
+        engine.world.settlement.retained_floats
     );
     assert_eq!(
         desire(&reply, "win-max").frame_operation,
@@ -1469,7 +1503,7 @@ fn clear_same_report_proof_and_new_intent_supersedes_before_continuation() {
             }),
         ),
     );
-    assert_eq!(engine.retained_clears.len(), 1);
+    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
     // Same report: old proof + fresh same-window move right (op-14).
     // Facts unmaximized, so the fresh intent needs no clear and runs
     // tiled; the old op-13 must never resume.
@@ -1522,7 +1556,7 @@ fn clear_same_report_proof_and_new_intent_supersedes_before_continuation() {
         reply.transfers
     );
     assert!(
-        engine.retained_clears.is_empty(),
+        engine.world.settlement.retained_clears.is_empty(),
         "fresh unmaximized intent binds no clear, old superseded"
     );
 }
@@ -1735,7 +1769,7 @@ fn clear_send_supersedes_without_consuming() {
             }),
         ),
     );
-    assert_eq!(engine.retained_clears.len(), 1);
+    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
     let reply = accepted(
         &mut engine,
         &report_full(
@@ -1754,11 +1788,11 @@ fn clear_send_supersedes_without_consuming() {
         ),
     );
     assert!(
-        engine.retained_clears.is_empty(),
+        engine.world.settlement.retained_clears.is_empty(),
         "same-window send supersedes the binding"
     );
     assert!(
-        engine.retained_floats.is_empty(),
+        engine.world.settlement.retained_floats.is_empty(),
         "supersession authorizes no clear continuation"
     );
     assert!(
@@ -1812,7 +1846,7 @@ fn clear_same_report_refused_intent_still_supersedes() {
             }),
         ),
     );
-    assert_eq!(engine.retained_clears.len(), 1);
+    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
     // Same report: old accepted proof plus a fresh same-window move on
     // a now-fullscreen subject. The new command refuses
     // (`move-refused-fullscreen`), yet the old binding still
@@ -1871,11 +1905,11 @@ fn clear_same_report_refused_intent_still_supersedes() {
         reply.transfers
     );
     assert!(
-        engine.retained_floats.is_empty(),
+        engine.world.settlement.retained_floats.is_empty(),
         "refused continuation authorizes nothing"
     );
     assert!(
-        engine.retained_clears.is_empty(),
+        engine.world.settlement.retained_clears.is_empty(),
         "refused fresh intent binds no clear and old is gone"
     );
 }
@@ -1941,7 +1975,7 @@ fn clear_held_and_unreadable_withhold_without_weakening() {
     gapped.inventory_complete = false;
     let reply = accepted(&mut engine, &gapped);
     assert_eq!(
-        engine.retained_clears.len(),
+        engine.world.settlement.retained_clears.len(),
         1,
         "gap holds with identities preserved"
     );
@@ -1961,7 +1995,7 @@ fn clear_held_and_unreadable_withhold_without_weakening() {
     );
     gestured.gesture_barrier = true;
     let reply = accepted(&mut engine, &gestured);
-    assert_eq!(engine.retained_clears.len(), 1);
+    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
     assert_eq!(
         desire(&reply, "win-max").clear_operation,
         None,
@@ -2034,9 +2068,13 @@ fn clear_held_domain_defers_continuation_until_authority_returns() {
             )],
         ),
     );
-    assert_eq!(engine.retained_clears.len(), 1, "held defers, never drops");
+    assert_eq!(
+        engine.world.settlement.retained_clears.len(),
+        1,
+        "held defers, never drops"
+    );
     assert!(
-        engine.retained_floats.is_empty(),
+        engine.world.settlement.retained_floats.is_empty(),
         "no continuation while held"
     );
     assert!(
@@ -2057,8 +2095,8 @@ fn clear_held_domain_defers_continuation_until_authority_returns() {
             Vec::new(),
         ),
     );
-    assert!(engine.retained_clears.is_empty());
-    assert_eq!(engine.retained_floats.len(), 1);
+    assert!(engine.world.settlement.retained_clears.is_empty());
+    assert_eq!(engine.world.settlement.retained_floats.len(), 1);
     assert!(
         reply.operation_settled.iter().any(|event| {
             event.operation_id == "op-13"
@@ -2138,9 +2176,12 @@ fn clear_continuation_refusal_observable_with_original_op() {
             )],
         ),
     );
-    assert!(engine.retained_clears.is_empty(), "refusal retires");
     assert!(
-        engine.retained_floats.is_empty(),
+        engine.world.settlement.retained_clears.is_empty(),
+        "refusal retires"
+    );
+    assert!(
+        engine.world.settlement.retained_floats.is_empty(),
         "refused continuation authorizes nothing"
     );
     assert_eq!(
@@ -2204,7 +2245,7 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
         Some("focus-float-retained")
     );
     assert!(
-        engine.retained_clears.is_empty(),
+        engine.world.settlement.retained_clears.is_empty(),
         "focus fences without binding a clear"
     );
     let (_reply, settlements) = accepted_with_settlements(
@@ -2229,8 +2270,8 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
         outcome_str(&settlements[0].result),
         Some("move-maximize-clear")
     );
-    assert_eq!(engine.retained_clears.len(), 1);
-    let retained = &engine.retained_clears[0];
+    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    let retained = &engine.world.settlement.retained_clears[0];
     assert_eq!(retained.window, WindowId("win-max".to_owned()));
     assert_eq!(retained.direction, "right");
     assert_eq!(retained.operation_id, "op-13");
@@ -2413,7 +2454,7 @@ fn float_settled_outcomes_retain_and_replay_cached() {
     );
     let reply = accepted(&mut engine, &confirming);
     assert!(
-        engine.retained_floats.is_empty(),
+        engine.world.settlement.retained_floats.is_empty(),
         "arrival confirms the float"
     );
     assert!(
@@ -2494,20 +2535,6 @@ fn desire_cmdseq_explicit_clear_retained_across_observation_only_replies() {
     let row = desire(&reply, "win-max");
     assert_eq!(row.clear_operation.as_deref(), Some("op-13"));
     assert_eq!(row.command_seq, Some(13), "explicit token carries origin");
-    // Wire bytes: the frozen target suffix rides directly after the
-    // clear token with the quoted original sequence.
-    let tail = row_tail_wire(row);
-    assert!(tail.contains(
-        "\"clear_op\":\"op-13\",\"cmdSeq\":\"13\",\"visibility\":null,\
-         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
-         \"state\":[]"
-    ));
-    assert_eq!(
-        row_suffix(&tail),
-        ",\"cmdSeq\":\"13\",\"visibility\":null,\
-         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
-         \"state\":[]"
-    );
     // No new visibility or state authority on any branch.
     for row in &reply.windows {
         assert_eq!(
@@ -2543,18 +2570,9 @@ fn desire_cmdseq_explicit_clear_retained_across_observation_only_replies() {
         Some(13),
         "retained across observation-only"
     );
-    let tail = row_tail_wire(row);
-    assert!(tail.contains(
-        "\"clear_op\":\"op-13\",\"cmdSeq\":\"13\",\"visibility\":null,\
-         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
-         \"state\":[]"
-    ));
-    assert_eq!(
-        row_suffix(&tail),
-        ",\"cmdSeq\":\"13\",\"visibility\":null,\
-         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
-         \"state\":[]"
-    );
+    assert_eq!(row.visibility, None);
+    assert_eq!(row.visibility_authority, ScopeAuthority::Untouched);
+    assert!(row.state.is_empty());
 }
 
 #[test]
@@ -2614,7 +2632,11 @@ fn desire_cmdseq_cleared_with_withheld_or_spent_token() {
     );
     gapped.inventory_complete = false;
     let reply = accepted(&mut engine, &gapped);
-    assert_eq!(engine.retained_clears.len(), 1, "gap keeps the binding");
+    assert_eq!(
+        engine.world.settlement.retained_clears.len(),
+        1,
+        "gap keeps the binding"
+    );
     let row = desire(&reply, "win-max");
     assert_eq!(row.clear_operation, None);
     assert_eq!(row.command_seq, None, "withheld token carries no sequence");
@@ -2629,7 +2651,7 @@ fn desire_cmdseq_cleared_with_withheld_or_spent_token() {
     );
     gestured.gesture_barrier = true;
     let reply = accepted(&mut engine, &gestured);
-    assert_eq!(engine.retained_clears.len(), 1);
+    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
     let row = desire(&reply, "win-max");
     assert_eq!(row.clear_operation, None);
     assert_eq!(row.command_seq, None, "withheld token carries no sequence");
@@ -2653,7 +2675,7 @@ fn desire_cmdseq_cleared_with_withheld_or_spent_token() {
         ),
     );
     assert_eq!(
-        engine.retained_clears.len(),
+        engine.world.settlement.retained_clears.len(),
         1,
         "unproven holds, never retires"
     );
@@ -2736,20 +2758,9 @@ fn desire_cmdseq_float_continuation_preserves_original_seq() {
         row.float_origin, None,
         "ordinary float carries no origin: {row:?}"
     );
-    // Tail bytes: the spent clear publishes nothing while the continued
-    // float keeps the original quoted sequence after the frame token.
-    let tail = row_tail_wire(row);
-    assert!(tail.contains(
-        "\"clear_op\":\"\",\"cmdSeq\":\"13\",\"visibility\":null,\
-         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
-         \"state\":[]"
-    ));
-    assert_eq!(
-        row_suffix(&tail),
-        ",\"cmdSeq\":\"13\",\"visibility\":null,\
-         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
-         \"state\":[]"
-    );
+    assert_eq!(row.visibility, None);
+    assert_eq!(row.visibility_authority, ScopeAuthority::Untouched);
+    assert!(row.state.is_empty());
     // Frame arrival confirms the float: both tokens withdraw, no sequence.
     let arrived = || WindowFact {
         rect: Some(rect(404, 8, 388, 544)),
@@ -2769,6 +2780,7 @@ fn desire_cmdseq_float_continuation_preserves_original_seq() {
     );
     let row = desire(&reply, "win-max");
     assert_eq!(row.frame_operation, None);
+    assert_eq!(row.clear_operation, None);
     assert_eq!(row.command_seq, None, "confirmed desire withdraws sequence");
     assert!(
         row.floating,
@@ -2778,19 +2790,9 @@ fn desire_cmdseq_float_continuation_preserves_original_seq() {
         row.float_origin, None,
         "ordinary float carries no origin: {row:?}"
     );
-    // Tail bytes: both tokens spent means a null correlation suffix.
-    let tail = row_tail_wire(row);
-    assert!(tail.contains(
-        "\"clear_op\":\"\",\"cmdSeq\":null,\"visibility\":null,\
-         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
-         \"state\":[]"
-    ));
-    assert_eq!(
-        row_suffix(&tail),
-        ",\"cmdSeq\":null,\"visibility\":null,\
-         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
-         \"state\":[]"
-    );
+    assert_eq!(row.visibility, None);
+    assert_eq!(row.visibility_authority, ScopeAuthority::Untouched);
+    assert!(row.state.is_empty());
 }
 
 #[test]
@@ -2901,19 +2903,6 @@ fn desire_cmdseq_born_clear_is_commandless() {
         .expect("born binds a clear token");
     assert!(op.starts_with("op-born-"), "commandless id, got {op}");
     assert_eq!(row.command_seq, None, "born clear carries no sequence");
-    // Tail bytes: commandless born token rides with a null correlation.
-    let tail = row_tail_wire(row);
-    assert!(tail.contains(&format!(
-        "\"clear_op\":\"{op}\",\"cmdSeq\":null,\"visibility\":null,\
-         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
-         \"state\":[]"
-    )));
-    assert_eq!(
-        row_suffix(&tail),
-        ",\"cmdSeq\":null,\"visibility\":null,\
-         \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\
-         \"state\":[]"
-    );
     assert_eq!(row.visibility, None);
     assert_eq!(row.visibility_authority, ScopeAuthority::Untouched);
     assert!(row.state.is_empty());
@@ -2986,7 +2975,7 @@ fn newer_clear_intent_supersedes_retained_float_placement() {
         desire(&reply, "win-a").frame_operation.as_deref(),
         Some("op-9")
     );
-    assert_eq!(engine.retained_floats.len(), 1);
+    assert_eq!(engine.world.settlement.retained_floats.len(), 1);
     // R3: observation-only maximized report; the placement is still
     // outstanding with its frame unchanged.
     let maximized_a = || WindowFact {
@@ -3034,10 +3023,10 @@ fn newer_clear_intent_supersedes_retained_float_placement() {
         Some("move-maximize-clear")
     );
     assert!(
-        engine.retained_floats.is_empty(),
+        engine.world.settlement.retained_floats.is_empty(),
         "newer clear intent drops the stale placement"
     );
-    assert_eq!(engine.retained_clears.len(), 1);
+    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
     let row = desire(&reply, "win-a");
     assert_eq!(
         row.frame_operation, None,
@@ -3099,8 +3088,11 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             }),
         ),
     );
-    assert_eq!(engine.retained_clears.len(), 1);
-    assert_eq!(engine.retained_clears[0].operation_id, "op-13");
+    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    assert_eq!(
+        engine.world.settlement.retained_clears[0].operation_id,
+        "op-13"
+    );
 
     // Settle clear -> ClearContinuedFloat under op-13, and float resumes under op-13.
     let continued = accepted(
@@ -3120,9 +3112,12 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             )],
         ),
     );
-    assert!(engine.retained_clears.is_empty());
-    assert_eq!(engine.retained_floats.len(), 1);
-    assert_eq!(engine.retained_floats[0].operation_id, "op-13");
+    assert!(engine.world.settlement.retained_clears.is_empty());
+    assert_eq!(engine.world.settlement.retained_floats.len(), 1);
+    assert_eq!(
+        engine.world.settlement.retained_floats[0].operation_id,
+        "op-13"
+    );
     assert_eq!(
         continued.operation_settled.len(),
         1,
@@ -3154,7 +3149,7 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             Vec::new(),
         ),
     );
-    assert!(engine.retained_floats.is_empty());
+    assert!(engine.world.settlement.retained_floats.is_empty());
     assert_eq!(float_done.operation_settled.len(), 2);
     assert!(float_done.operation_settled.iter().any(|ev| {
         ev.window.0 == "win-max"
@@ -3192,8 +3187,11 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             }),
         ),
     );
-    assert_eq!(engine.retained_clears.len(), 1);
-    assert_eq!(engine.retained_clears[0].operation_id, "op-14");
+    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    assert_eq!(
+        engine.world.settlement.retained_clears[0].operation_id,
+        "op-14"
+    );
     assert_eq!(
         desire(&p2_admitted, "win-max").clear_operation.as_deref(),
         Some("op-14")
@@ -3216,8 +3214,11 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             None,
         ),
     );
-    assert_eq!(engine.retained_clears.len(), 1);
-    assert_eq!(engine.retained_clears[0].operation_id, "op-14");
+    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    assert_eq!(
+        engine.world.settlement.retained_clears[0].operation_id,
+        "op-14"
+    );
     assert_eq!(
         while_pending.operation_settled, float_done.operation_settled,
         "Q1: predecessor clear outcome remains while P2 is pending"
@@ -3252,7 +3253,7 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
         refused_settlements[0].result,
         Some(CommandResult::Rejected { .. })
     ));
-    assert_eq!(engine.retained_clears.len(), 1);
+    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
     assert_eq!(refused_cmd.operation_settled, float_done.operation_settled);
 
     // Settle P2 via external clear -> replaces (win-max, clear) with op-14 while
@@ -3272,7 +3273,7 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             Vec::new(),
         ),
     );
-    assert!(engine.retained_clears.is_empty());
+    assert!(engine.world.settlement.retained_clears.is_empty());
     assert!(p2_settled.operation_settled.iter().any(|ev| {
         ev.window.0 == "win-max"
             && ev.kind == OperationKind::Clear
@@ -3336,7 +3337,7 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             None,
         ),
     );
-    assert!(f_engine.retained_floats.is_empty());
+    assert!(f_engine.world.settlement.retained_floats.is_empty());
     assert_eq!(p1_settled.operation_settled.len(), 1);
     assert_eq!(p1_settled.operation_settled[0].operation_id, "op-21");
 
@@ -3359,8 +3360,11 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
     let p2_target = desire(&p2_float, "win-subject")
         .effective_frame
         .expect("p2 target frame");
-    assert_eq!(f_engine.retained_floats.len(), 1);
-    assert_eq!(f_engine.retained_floats[0].operation_id, "op-22");
+    assert_eq!(f_engine.world.settlement.retained_floats.len(), 1);
+    assert_eq!(
+        f_engine.world.settlement.retained_floats[0].operation_id,
+        "op-22"
+    );
 
     // Observation-only while P2 is still at P1's rect: P1 remains readable, P2 stays pending.
     let f_pending = accepted(
@@ -3374,8 +3378,11 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             None,
         ),
     );
-    assert_eq!(f_engine.retained_floats.len(), 1);
-    assert_eq!(f_engine.retained_floats[0].operation_id, "op-22");
+    assert_eq!(f_engine.world.settlement.retained_floats.len(), 1);
+    assert_eq!(
+        f_engine.world.settlement.retained_floats[0].operation_id,
+        "op-22"
+    );
     assert_eq!(
         f_pending.operation_settled, p1_settled.operation_settled,
         "Q1: predecessor float op-21 remains readable while op-22 is pending"
@@ -3402,7 +3409,7 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             None,
         ),
     );
-    assert!(f_engine.retained_floats.is_empty());
+    assert!(f_engine.world.settlement.retained_floats.is_empty());
     assert_eq!(p2_done.operation_settled.len(), 1);
     assert_eq!(p2_done.operation_settled[0].operation_id, "op-22");
     assert_eq!(
@@ -3700,8 +3707,8 @@ fn q2_operation_settled_retains_holds_minimize_incomplete_and_prunes_departure_w
     );
     assert_eq!(desire(&reused, "win-max").clear_operation, None);
     assert_eq!(desire(&reused, "win-max").frame_operation, None);
-    assert!(engine.retained_clears.is_empty());
-    assert!(engine.retained_floats.is_empty());
+    assert!(engine.world.settlement.retained_clears.is_empty());
+    assert!(engine.world.settlement.retained_floats.is_empty());
 
     // 5. Explicit close (even under incomplete inventory) prunes win-other;
     //    disabled trace emits zero lines.

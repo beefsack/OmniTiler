@@ -11,32 +11,11 @@ use crate::directional::WindowId;
 use crate::seed::EngineWindow;
 use crate::session::DomainKey;
 use crate::world_attempts::{PropertyAttempt, clear_accepted, clear_refused};
-use crate::world_engine::{RetainedClear, RetainedFloat, WorldEngine};
+use crate::world_engine::{RetainedClear, RetainedFloat, WorldEngine, WorldState};
 use crate::world_report::{OperationEvent, OperationOutcome, WorldCommand};
+use crate::world_transaction::WorldTransaction;
 
-impl WorldEngine {
-    /// One reused terminal-event emitter for every retained-operation
-    /// verdict (clear and float alike): updates the `(window, kind)` slot
-    /// in `operation_settled` latest-wins. Holds emit nothing; the binding
-    /// simply persists.
-    pub(crate) fn emit_operation(
-        &mut self,
-        operation_id: String,
-        window: WindowId,
-        outcome: OperationOutcome,
-        cause: Option<&str>,
-    ) {
-        let kind = outcome.kind();
-        let event = OperationEvent {
-            window: window.clone(),
-            kind,
-            operation_id,
-            outcome,
-            cause: cause.map(str::to_owned),
-        };
-        self.operation_settled.insert((window, kind), event);
-    }
-
+impl WorldState {
     /// Occupied plus pending-reserved `(window, kind)` operation slots across
     /// the retained map, in-flight clear/float bindings, and any new
     /// operation-capable commands in the inline/queued batch. Two phase slots
@@ -51,19 +30,19 @@ impl WorldEngine {
         use crate::world_report::OperationKind;
         use std::collections::BTreeSet;
         let mut slots: BTreeSet<(&str, OperationKind)> = BTreeSet::new();
-        for (window, kind) in self.operation_settled.keys() {
+        for (window, kind) in self.settlement.operation_settled.keys() {
             slots.insert((window.0.as_str(), *kind));
         }
-        for retained in &self.retained_clears {
+        for retained in &self.settlement.retained_clears {
             slots.insert((retained.window.0.as_str(), OperationKind::Clear));
             if retained.float_route {
                 slots.insert((retained.window.0.as_str(), OperationKind::Float));
             }
         }
-        for retained in &self.retained_floats {
+        for retained in &self.settlement.retained_floats {
             slots.insert((retained.window.0.as_str(), OperationKind::Float));
         }
-        for retained in &self.retained_born {
+        for retained in &self.settlement.retained_born {
             slots.insert((retained.window.0.as_str(), OperationKind::Clear));
         }
         let mut implicit_slots = 0usize;
@@ -100,21 +79,36 @@ impl WorldEngine {
         }
         slots.len().saturating_add(implicit_slots)
     }
+}
 
-    /// Pre-mutation byte reserve for retained and pending operation outcomes.
-    #[must_use]
-    pub(crate) fn operation_settle_reserve(
-        &self,
-        command: Option<&WorldCommand>,
-        queued: &[(u64, WorldCommand)],
-    ) -> usize {
-        crate::world_sizing::max_operation_settle_reserve(
-            self.operation_settle_slot_count(command, queued),
-        )
+impl WorldTransaction<'_> {
+    /// One reused terminal-event emitter for every retained-operation
+    /// verdict (clear and float alike): updates the `(window, kind)` slot
+    /// in `operation_settled` latest-wins. Holds emit nothing; the binding
+    /// simply persists.
+    pub(crate) fn emit_operation(
+        &mut self,
+        operation_id: String,
+        window: WindowId,
+        outcome: OperationOutcome,
+        cause: Option<&str>,
+    ) {
+        let kind = outcome.kind();
+        let event = OperationEvent {
+            window: window.clone(),
+            kind,
+            operation_id,
+            outcome,
+            cause: cause.map(str::to_owned),
+        };
+        self.world
+            .settlement
+            .operation_settled
+            .insert((window, kind), event);
     }
 }
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Settle outstanding directional maximize-clears against
     /// operation-correlated canonical clear evidence plus the staged
     /// observation, staged by the shared clear phase. Runs first in
@@ -176,9 +170,9 @@ impl WorldEngine {
         } else {
             current_command.and_then(crate::world_operations::command_window)
         };
-        for mut retained in std::mem::take(&mut self.retained_clears) {
+        for mut retained in std::mem::take(&mut self.world.settlement.retained_clears) {
             // Explicit close prunes even across gaps.
-            if self.staged.closes.contains(&retained.window) {
+            if self.world.staged.closes.contains(&retained.window) {
                 self.emit_operation(
                     retained.operation_id.clone(),
                     retained.window.clone(),
@@ -204,7 +198,9 @@ impl WorldEngine {
             }
             // Gap bars hold with identities preserved, never settling from
             // absence and never erasing staged evidence.
-            if !self.staged.observation.inventory_complete || self.staged.gesture_barrier {
+            if !self.world.staged.observation.inventory_complete
+                || self.world.staged.gesture_barrier
+            {
                 if retained.pending.is_some() {
                     retained.ambiguous = true;
                 }
@@ -234,7 +230,7 @@ impl WorldEngine {
                 );
                 continue;
             };
-            let Some(fact) = self.staged.facts.get(&retained.window).cloned() else {
+            let Some(fact) = self.world.staged.facts.get(&retained.window).cloned() else {
                 self.emit_operation(
                     retained.operation_id.clone(),
                     retained.window.clone(),
@@ -274,6 +270,7 @@ impl WorldEngine {
             // authority returns (never silently drops). The staged home
             // domain unreadable means the scope holds.
             let home_held = self
+                .world
                 .staged
                 .domains
                 .iter()
@@ -314,7 +311,7 @@ impl WorldEngine {
             // baseline naming a non-subject window retires promptly with
             // `baseline-non-subject`: no stale intent survives to resume
             // later under a focus that was never its subject.
-            let current_focus = self.staged.observation.focused_global.as_str();
+            let current_focus = self.world.staged.observation.focused_global.as_str();
             let original_focus = retained.focus.as_str();
             if current_focus.is_empty() {
                 if original_focus.is_empty() {
@@ -467,6 +464,7 @@ impl WorldEngine {
                 }
                 // Held effective domain defers until authority returns.
                 let effective_held = self
+                    .world
                     .staged
                     .domains
                     .iter()
@@ -480,6 +478,7 @@ impl WorldEngine {
                     continue;
                 }
                 let Some(screen) = self
+                    .world
                     .staged
                     .screens
                     .iter()
@@ -502,7 +501,9 @@ impl WorldEngine {
                     );
                     continue;
                 };
-                let Some(gap) = Self::scale_once(self.gap_setting(), screen.scale) else {
+                let Some(gap) =
+                    WorldEngine::scale_once(self.connection.gap_setting(), screen.scale)
+                else {
                     // Unscalable geometry refuses the continuation without
                     // mutation, never a clamped gap.
                     self.emit_operation(
@@ -535,9 +536,11 @@ impl WorldEngine {
                     );
                     continue;
                 }
-                self.retained_floats
+                self.world
+                    .settlement
+                    .retained_floats
                     .retain(|held| held.window != retained.window);
-                self.retained_floats.push(RetainedFloat {
+                self.world.settlement.retained_floats.push(RetainedFloat {
                     operation_id: retained.operation_id.clone(),
                     command_seq: retained.command_seq,
                     window: retained.window.clone(),
@@ -576,6 +579,7 @@ impl WorldEngine {
                     continue;
                 };
                 let owned: std::collections::BTreeMap<WindowId, EngineWindow> = self
+                    .world
                     .staged
                     .domains
                     .iter()
@@ -588,6 +592,7 @@ impl WorldEngine {
                     })
                     .collect();
                 let held_scopes: std::collections::BTreeSet<DomainKey> = self
+                    .world
                     .staged
                     .domains
                     .iter()
@@ -684,7 +689,7 @@ impl WorldEngine {
                 };
                 // Fallible commands must not leak a stale directional
                 // result into this observation-only reply.
-                self.command_result = None;
+                self.world.command_result = None;
                 match applied {
                     crate::world_commands::CommandApplied::Rejected { kind, .. }
                         if kind == crate::world_engine::KIND_SCOPE_HELD =>
@@ -714,6 +719,6 @@ impl WorldEngine {
                 );
             }
         }
-        self.retained_clears = keep;
+        self.world.settlement.retained_clears = keep;
     }
 }

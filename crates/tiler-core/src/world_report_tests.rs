@@ -11,7 +11,6 @@ use crate::ids::NativeWorkspaceId;
 use crate::world_report_v4_checks::{
     grade_invalid_screens_v4, report_digest_v4, validate_report_v4_reason,
 };
-use crate::world_sizing_v4::report_estimate_v4;
 
 fn logical_ref(output: &str, workspace: &str) -> WorkspaceRef {
     WorkspaceRef::Logical {
@@ -844,33 +843,6 @@ fn fullscreen_commands_validate_typed_subjects_and_digest_distinct() {
 }
 
 #[test]
-fn estimator_stays_total_on_nonfinite_typed_facts_before_validation() {
-    // Finding A: the request estimator runs before validation, so a
-    // malicious typed carrier (non-finite scale, non-finite held number)
-    // must bound without panic and without encoding a `null`.
-    use crate::connection::RawSettingValue;
-    let mut report = test_report();
-    report.screens[0].scale = f64::NAN;
-    report.held_screens.push(HeldScreenRow {
-        output: OutputId("out-held".to_owned()),
-        ordinal: 1,
-        fields: vec![("scale".to_owned(), RawSettingValue::Number(f64::INFINITY))],
-        diagnostic: RowDiagnostic {
-            scope: AuthorityScope::Output(OutputId("out-held".to_owned())),
-            row: RowDiagnosticLane::Screen,
-            id: Some("out-held".to_owned()),
-            kind: RowDiagnosticKind::InvalidFact,
-        },
-    });
-    let bound = report_estimate_v4(&report);
-    assert!(bound > 0);
-    assert_eq!(
-        validate_report_v4_reason(&report),
-        Some("screen-scale-invalid")
-    );
-}
-
-#[test]
 fn grade_invalid_screens_leaves_valid_reports_untouched() {
     let report = test_report();
     assert!(validate_report_v4_reason(&report).is_none());
@@ -880,8 +852,7 @@ fn grade_invalid_screens_leaves_valid_reports_untouched() {
 #[test]
 fn grade_invalid_screens_retains_nonfinite_fact_without_null_spelling() {
     // Finding B: a directly constructed non-finite scale grades to a
-    // narrow hold with the original fact retained. The checked canonical
-    // writers refuse to spell the retained fact (never a silent `null`).
+    // narrow hold with the original fact retained.
     let mut report = test_report();
     report.screens[0].scale = f64::NAN;
     assert_eq!(
@@ -903,8 +874,6 @@ fn grade_invalid_screens_retains_nonfinite_fact_without_null_spelling() {
         .find(|(key, _)| key == "scale")
         .expect("scale fact retained");
     assert!(matches!(scale.1, crate::connection::RawSettingValue::Number(v) if v.is_nan()));
-    assert!(encode_held_screen_canonical(held).is_err());
-    assert!(encode_screen_canonical(&report.screens[0]).is_err());
     assert!(validate_report_v4_reason(&graded).is_none());
 }
 
@@ -1119,40 +1088,6 @@ fn screen_section_cap_counts_valid_plus_held_rows() {
         Some("section-over-cap")
     );
     assert!(grade_invalid_screens_v4(&all_held).is_none());
-}
-
-#[test]
-fn estimator_does_not_collapse_structure_around_nonfinite_held_scalars() {
-    // A held value mixing a large carried string with one non-finite
-    // scalar must still count every carried structure/text byte: only the
-    // bad scalar itself falls back to the `null` width. Measured as the
-    // exact held-row delta so the surrounding report bytes cannot mask an
-    // undercount.
-    use crate::connection::RawSettingValue;
-    let big = "s".repeat(1000);
-    let nested = RawSettingValue::Object(vec![
-        ("big".to_owned(), RawSettingValue::String(big.clone())),
-        ("bad".to_owned(), RawSettingValue::Number(f64::NAN)),
-    ]);
-    let mut report = test_report();
-    let before = report_estimate_v4(&report);
-    report.held_screens.push(HeldScreenRow {
-        output: OutputId("out-held".to_owned()),
-        ordinal: 1,
-        fields: vec![("extra".to_owned(), nested)],
-        diagnostic: RowDiagnostic {
-            scope: AuthorityScope::Output(OutputId("out-held".to_owned())),
-            row: RowDiagnosticLane::Screen,
-            id: Some("out-held".to_owned()),
-            kind: RowDiagnosticKind::InvalidFact,
-        },
-    });
-    let nested_estimate = 2
-        + (json_string_len("big") + 1 + json_string_len(&big))
-        + 1
-        + (json_string_len("bad") + 1 + 4);
-    let expected_delta = 2 + (json_string_len("extra") + 1 + nested_estimate);
-    assert_eq!(report_estimate_v4(&report) - before, expected_delta);
 }
 
 #[test]

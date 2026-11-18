@@ -54,12 +54,12 @@ fn tile_false() -> String {
 
 fn is_tiled(engine: &WorldEngine, win: &str) -> bool {
     let id = WindowId(win.to_owned());
-    engine.layout.is_tiled_window_any(&id)
+    engine.world.layout.is_tiled_window_any(&id)
 }
 
 fn is_floated(engine: &WorldEngine, win: &str) -> bool {
     let id = WindowId(win.to_owned());
-    engine.layout.is_exception_window_any(&id)
+    engine.world.layout.is_exception_window_any(&id)
 }
 
 fn row_for<'a>(
@@ -135,6 +135,7 @@ fn restore_tile_false_nonfixed_survives_hints_and_exclusion() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned())),
         "explicit tile must commit a real override"
@@ -232,6 +233,8 @@ fn pending_survives_held_and_gap_then_admits() {
     assert!(!is_tiled(&engine, "win-a"));
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );
@@ -359,8 +362,8 @@ fn invalid_records_confer_no_authority() {
         assert!(reply.intent_desired.is_empty(), "{data}");
         // Fixed hints with no usable override float automatically.
         assert!(is_floated(&engine, "win-a"), "{data}");
-        assert!(engine.pending_intent.is_empty(), "{data}");
-        assert!(engine.intent_conflicts.is_empty(), "{data}");
+        assert!(engine.world.intent.pending_intent.is_empty(), "{data}");
+        assert!(engine.world.intent.intent_conflicts.is_empty(), "{data}");
     }
 }
 
@@ -397,7 +400,7 @@ fn valid_null_and_sticky_records_initialize_retained_desire() {
         assert_eq!(reply.intent_desired[0].data, Some(decoded), "{data}");
         // Fixed hints still float; the retained desire is independent.
         assert!(is_floated(&engine, "win-a"), "{data}");
-        assert!(engine.intent_conflicts.is_empty(), "{data}");
+        assert!(engine.world.intent.intent_conflicts.is_empty(), "{data}");
     }
 }
 
@@ -428,6 +431,7 @@ fn conflicting_duplicates_confer_no_winner() {
     assert!(is_floated(&engine, "win-a"));
     assert!(
         !engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
@@ -451,6 +455,7 @@ fn conflicting_duplicates_confer_no_winner() {
     assert!(reply.intent_desired.is_empty());
     assert!(
         !engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
@@ -478,6 +483,8 @@ fn pre_first_fact_incomplete_record_admits_on_complete() {
     assert!(reply.intent_desired.is_empty());
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );
@@ -536,6 +543,8 @@ fn own_process_record_restores_nothing() {
     assert!(reply.intent_desired.is_empty());
     assert!(
         !engine
+            .world
+            .workspace
             .members
             .contains_key(&WindowId("win-self".to_owned()))
     );
@@ -562,6 +571,8 @@ fn close_and_complete_departure_prune() {
     );
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );
@@ -583,6 +594,8 @@ fn close_and_complete_departure_prune() {
     assert!(reply.intent_desired.is_empty());
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );
@@ -605,6 +618,8 @@ fn close_and_complete_departure_prune() {
     );
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-z".to_owned()))
     );
@@ -626,10 +641,15 @@ fn close_and_complete_departure_prune() {
     assert!(reply.intent_desired.is_empty(), "{reply:?}");
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-z".to_owned()))
     );
-    assert!(engine.intent_desired.is_empty(), "pruned on departure");
+    assert!(
+        engine.world.intent.intent_desired.is_empty(),
+        "pruned on departure"
+    );
 }
 
 #[test]
@@ -701,9 +721,9 @@ fn duplicate_and_oversize_are_non_mutating() {
 
     // A fresh generation resets the ledger.
     let fresh = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
-    assert!(fresh.pending_intent.is_empty());
-    assert!(fresh.intent_conflicts.is_empty());
-    assert!(fresh.intent_admitted.is_empty());
+    assert!(fresh.world.intent.pending_intent.is_empty());
+    assert!(fresh.world.intent.intent_conflicts.is_empty());
+    assert!(fresh.world.intent.intent_admitted.is_empty());
 }
 
 #[test]
@@ -729,9 +749,12 @@ fn complete_record_only_orphan_never_retains() {
         ),
     );
     assert!(reply.intent_desired.is_empty(), "{reply:?}");
-    assert!(engine.pending_intent.is_empty());
-    assert!(engine.intent_conflicts.is_empty());
-    assert!(engine.intent_desired.is_empty(), "pruned footprint-free");
+    assert!(engine.world.intent.pending_intent.is_empty());
+    assert!(engine.world.intent.intent_conflicts.is_empty());
+    assert!(
+        engine.world.intent.intent_desired.is_empty(),
+        "pruned footprint-free"
+    );
     assert!(!is_tiled(&engine, "win-a"));
 
     // Incomplete inventory retains the orphan; a complete departure prunes it.
@@ -752,6 +775,8 @@ fn complete_record_only_orphan_never_retains() {
     );
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-b".to_owned()))
     );
@@ -769,10 +794,10 @@ fn complete_record_only_orphan_never_retains() {
         ),
     );
     assert!(reply.intent_desired.is_empty());
-    assert!(engine.pending_intent.is_empty());
-    assert!(engine.intent_conflicts.is_empty());
-    assert!(engine.intent_admitted.is_empty());
-    assert!(engine.restored_floats.is_empty());
+    assert!(engine.world.intent.pending_intent.is_empty());
+    assert!(engine.world.intent.intent_conflicts.is_empty());
+    assert!(engine.world.intent.intent_admitted.is_empty());
+    assert!(engine.world.intent.restored_floats.is_empty());
 }
 
 #[test]
@@ -823,9 +848,12 @@ fn retained_desire_discriminator_live_publishes_departed_never_does() {
         ),
     );
     assert!(reply.intent_desired.is_empty(), "{reply:?}");
-    assert!(departed.pending_intent.is_empty());
-    assert!(departed.intent_conflicts.is_empty());
-    assert!(departed.intent_desired.is_empty(), "pruned footprint-free");
+    assert!(departed.world.intent.pending_intent.is_empty());
+    assert!(departed.world.intent.intent_conflicts.is_empty());
+    assert!(
+        departed.world.intent.intent_desired.is_empty(),
+        "pruned footprint-free"
+    );
 }
 
 #[test]
@@ -865,6 +893,8 @@ fn restored_true_float_durable_through_second_fact_and_exclusion() {
     assert!(is_floated(&engine, "win-a"));
     assert!(
         engine
+            .world
+            .intent
             .restored_floats
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -895,6 +925,8 @@ fn restored_true_float_durable_through_second_fact_and_exclusion() {
     assert!(is_floated(&engine, "win-a"));
     assert!(
         engine
+            .world
+            .intent
             .restored_floats
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -933,6 +965,8 @@ fn restored_true_float_durable_through_second_fact_and_exclusion() {
     assert!(is_floated(&engine, "win-auto"));
     assert!(
         !engine
+            .world
+            .intent
             .restored_floats
             .contains(&WindowId("win-auto".to_owned()))
     );
@@ -980,6 +1014,8 @@ fn restored_true_float_durable_through_second_fact_and_exclusion() {
     assert!(is_floated(&engine, "win-a"));
     assert!(
         engine
+            .world
+            .intent
             .restored_floats
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -1013,6 +1049,7 @@ fn restored_false_then_user_float_clears_override_and_survives_exclusion() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
@@ -1043,11 +1080,14 @@ fn restored_false_then_user_float_clears_override_and_survives_exclusion() {
     assert!(is_floated(&engine, "win-a"));
     assert!(
         !engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
     assert!(
         engine
+            .world
+            .intent
             .restored_floats
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -1090,6 +1130,7 @@ fn restored_false_then_user_float_clears_override_and_survives_exclusion() {
     assert!(is_floated(&engine, "win-a"));
     assert!(
         !engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
@@ -1116,6 +1157,8 @@ fn restored_false_minimized_then_fixed_stays_tiled() {
     );
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );
@@ -1143,11 +1186,14 @@ fn restored_false_minimized_then_fixed_stays_tiled() {
     assert!(!is_tiled(&engine, "win-a"));
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );
     assert!(
         !engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
@@ -1175,6 +1221,7 @@ fn restored_false_minimized_then_fixed_stays_tiled() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
@@ -1217,6 +1264,7 @@ fn restored_false_minimized_then_fixed_stays_tiled() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
@@ -1243,6 +1291,8 @@ fn own_process_prunes_pending_and_conflict_clears_on_admission() {
     );
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-self".to_owned()))
     );
@@ -1268,6 +1318,8 @@ fn own_process_prunes_pending_and_conflict_clears_on_admission() {
     assert!(reply.intent_desired.is_empty());
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-self".to_owned()))
     );
@@ -1298,6 +1350,8 @@ fn own_process_prunes_pending_and_conflict_clears_on_admission() {
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_conflicts
             .contains(&WindowId("win-c".to_owned()))
     );
@@ -1315,9 +1369,10 @@ fn own_process_prunes_pending_and_conflict_clears_on_admission() {
         ),
     );
     assert!(reply.intent_desired.is_empty());
-    assert!(engine.intent_conflicts.is_empty());
+    assert!(engine.world.intent.intent_conflicts.is_empty());
     assert!(
         !engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-c".to_owned()))
     );
@@ -1341,6 +1396,7 @@ fn own_process_prunes_pending_and_conflict_clears_on_admission() {
     assert!(reply.intent_desired.is_empty());
     assert!(
         !engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-c".to_owned()))
     );
@@ -1405,6 +1461,8 @@ fn restored_true_unfloat_clears_and_late_record_stays_ignored() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         !engine
+            .world
+            .intent
             .restored_floats
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -1438,6 +1496,8 @@ fn restored_true_unfloat_clears_and_late_record_stays_ignored() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         !engine
+            .world
+            .intent
             .restored_floats
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -1482,13 +1542,13 @@ fn hints_null_record_still_admits_and_joint_bound_holds() {
     // Joint pending/conflict storage never exceeds the contract bound.
     let mut bounded = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     for i in 0..crate::world_report::MAX_INTENT_RECORDS {
-        bounded.pending_intent.insert(
+        bounded.world.intent.pending_intent.insert(
             WindowId(format!("win-{i:05}")),
             crate::intent_data::IntentData::new(Some(false), None),
         );
     }
     assert_eq!(
-        bounded.pending_intent.len(),
+        bounded.world.intent.pending_intent.len(),
         crate::world_report::MAX_INTENT_RECORDS
     );
     let reply = accepted(
@@ -1509,11 +1569,13 @@ fn hints_null_record_still_admits_and_joint_bound_holds() {
     );
     assert!(reply.intent_desired.is_empty());
     assert!(
-        bounded.pending_intent.len() + bounded.intent_conflicts.len()
+        bounded.world.intent.pending_intent.len() + bounded.world.intent.intent_conflicts.len()
             <= crate::world_report::MAX_INTENT_RECORDS
     );
     assert!(
         !bounded
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-new".to_owned()))
     );
@@ -1537,7 +1599,7 @@ fn rehandshake_resets_intent_ledgers() {
         &mut engine,
         &with_records(incomplete, vec![record("win-a", &tile_false())]),
     );
-    assert!(!engine.pending_intent.is_empty());
+    assert!(!engine.world.intent.pending_intent.is_empty());
     let reply = engine.handshake(&crate::connection::HandshakeRequest {
         adapter: "adapter-2".to_owned(),
         request: "handshake-2".to_owned(),
@@ -1563,10 +1625,10 @@ fn rehandshake_resets_intent_ledgers() {
         },
     });
     assert!(reply.kind.is_none());
-    assert!(engine.pending_intent.is_empty());
-    assert!(engine.intent_conflicts.is_empty());
-    assert!(engine.intent_admitted.is_empty());
-    assert!(engine.restored_floats.is_empty());
+    assert!(engine.world.intent.pending_intent.is_empty());
+    assert!(engine.world.intent.intent_conflicts.is_empty());
+    assert!(engine.world.intent.intent_admitted.is_empty());
+    assert!(engine.world.intent.restored_floats.is_empty());
 }
 
 #[test]
@@ -1643,17 +1705,22 @@ fn floating_pending_false_survives_tiling_enable_as_explicit_tile() {
     assert!(!is_tiled(&engine, "win-n"));
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-n".to_owned())),
         "floating mode retains the explicit tile base without tiling"
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_admitted
             .contains(&WindowId("win-n".to_owned()))
     );
     assert!(
         !engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-n".to_owned()))
     );
@@ -1688,11 +1755,14 @@ fn floating_pending_false_survives_tiling_enable_as_explicit_tile() {
     assert!(is_tiled(&engine, "win-n"));
     assert!(
         engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-n".to_owned()))
     );
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-n".to_owned()))
     );
@@ -1777,21 +1847,27 @@ fn floating_pending_true_stays_intentional_across_tiling_changes() {
         Some(IntentData::new(Some(true), None))
     );
     assert!(
-        engine.pending_intent.is_empty(),
+        engine.world.intent.pending_intent.is_empty(),
         "floating success consumes pending true"
     );
     assert!(
         engine
+            .world
+            .intent
             .restored_floats
             .contains(&WindowId("win-n".to_owned()))
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_admitted
             .contains(&WindowId("win-n".to_owned()))
     );
     assert!(
         engine
+            .world
+            .workspace
             .members
             .get(&WindowId("win-n".to_owned()))
             .is_some_and(|state| state.floating)
@@ -1831,6 +1907,8 @@ fn floating_pending_true_stays_intentional_across_tiling_changes() {
     assert!(is_floated(&engine, "win-n"));
     assert!(
         engine
+            .world
+            .intent
             .restored_floats
             .contains(&WindowId("win-n".to_owned()))
     );
@@ -1861,9 +1939,11 @@ fn hints_null_twice_without_record_then_first_admissible_imports() {
     );
     assert!(reply.intent_desired.is_empty());
     assert!(!is_tiled(&engine, "win-a"));
-    assert!(engine.pending_intent.is_empty());
+    assert!(engine.world.intent.pending_intent.is_empty());
     assert!(
         !engine
+            .world
+            .intent
             .intent_admitted
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -1887,6 +1967,8 @@ fn hints_null_twice_without_record_then_first_admissible_imports() {
     assert!(!is_tiled(&engine, "win-a"));
     assert!(
         !engine
+            .world
+            .intent
             .intent_admitted
             .contains(&WindowId("win-a".to_owned())),
         "held membership alone must never latch admission"
@@ -1917,15 +1999,18 @@ fn hints_null_twice_without_record_then_first_admissible_imports() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_admitted
             .contains(&WindowId("win-a".to_owned()))
     );
-    assert!(engine.pending_intent.is_empty());
+    assert!(engine.world.intent.pending_intent.is_empty());
 }
 
 #[test]
@@ -1992,12 +2077,19 @@ fn floating_workspace_first_admission_ignores_late_record() {
     assert!(reply.intent_desired.is_empty());
     assert!(
         engine
+            .world
+            .intent
             .intent_admitted
             .contains(&WindowId("win-new".to_owned())),
         "floating-mode first admission still latches the fence; admitted={:?} pending={:?} members={:?}",
-        engine.intent_admitted,
-        engine.pending_intent.keys().collect::<Vec<_>>(),
-        engine.members.keys().collect::<Vec<_>>(),
+        engine.world.intent.intent_admitted,
+        engine
+            .world
+            .intent
+            .pending_intent
+            .keys()
+            .collect::<Vec<_>>(),
+        engine.world.workspace.members.keys().collect::<Vec<_>>(),
     );
     // Late valid tile record for win-new confers nothing: no pending, no win.
     let reply = accepted(
@@ -2019,17 +2111,22 @@ fn floating_workspace_first_admission_ignores_late_record() {
     assert!(reply.intent_desired.is_empty());
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-new".to_owned())),
         "late record must not enter pending"
     );
     assert!(
         !engine
+            .world
+            .intent
             .restored_floats
             .contains(&WindowId("win-new".to_owned()))
     );
     assert!(
         !engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-new".to_owned()))
     );
@@ -2056,6 +2153,8 @@ fn pending_false_exclusion_gains_fixed_hints_then_recovers_tiled() {
     );
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );
@@ -2085,11 +2184,14 @@ fn pending_false_exclusion_gains_fixed_hints_then_recovers_tiled() {
     assert!(!is_tiled(&engine, "win-a"));
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );
     assert!(
         !engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
@@ -2119,11 +2221,14 @@ fn pending_false_exclusion_gains_fixed_hints_then_recovers_tiled() {
     assert!(!is_tiled(&engine, "win-a"));
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );
     assert!(
         !engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
@@ -2151,11 +2256,14 @@ fn pending_false_exclusion_gains_fixed_hints_then_recovers_tiled() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );
@@ -2182,11 +2290,14 @@ fn pending_false_hints_null_and_omission_then_success() {
     );
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );
     assert!(
         !engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
@@ -2207,11 +2318,14 @@ fn pending_false_hints_null_and_omission_then_success() {
     assert!(reply.intent_desired.is_empty());
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );
     assert!(
         !engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
@@ -2241,11 +2355,14 @@ fn pending_false_hints_null_and_omission_then_success() {
     assert!(!is_tiled(&engine, "win-a"));
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );
     assert!(
         !engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
@@ -2273,11 +2390,14 @@ fn pending_false_hints_null_and_omission_then_success() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned()))
     );
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );
@@ -2326,6 +2446,8 @@ fn same_report_true_restore_with_unfloat_then_late_ignored() {
     );
     assert!(
         !engine
+            .world
+            .intent
             .restored_floats
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -2359,11 +2481,15 @@ fn same_report_true_restore_with_unfloat_then_late_ignored() {
     assert!(is_tiled(&engine, "win-a"));
     assert!(
         !engine
+            .world
+            .intent
             .restored_floats
             .contains(&WindowId("win-a".to_owned()))
     );
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );

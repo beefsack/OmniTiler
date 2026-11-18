@@ -189,18 +189,18 @@ fn seeded(
         ),
     );
     let staged = report_v4(base + 2, screens, windows, focused, ingress);
-    engine.stage_facts_v4(&staged);
-    engine.retain_pager_presentation_v4();
+    engine.tx(|tx| tx.stage_facts_v4(&staged));
+    engine.tx(|tx| tx.retain_pager_presentation_v4());
     view_a
 }
 
 fn stage_v4(engine: &mut WorldEngine, report: &WorldReportV4) {
-    engine.stage_facts_v4(report);
-    engine.retain_pager_presentation_v4();
+    engine.tx(|tx| tx.stage_facts_v4(report));
+    engine.tx(|tx| tx.retain_pager_presentation_v4());
 }
 
 fn staged_ingress(engine: &WorldEngine) -> PresentationIngressV4 {
-    match &engine.staged.presentation_v4 {
+    match &engine.world.staged.presentation_v4 {
         Some(PresentationRowV4::Valid(ingress)) => ingress.clone(),
         other => panic!("expected valid staged ingress, got {other:?}"),
     }
@@ -222,7 +222,7 @@ fn genuine_descriptor_positive() {
         ingress_v4("win-a"),
     );
     let ingress = staged_ingress(&engine);
-    let border = engine.presentation_border_v4(&ingress, None);
+    let border = engine.tx(|tx| tx.presentation_border_v4(&ingress, None));
     assert!(border.visible);
     assert_eq!(border.reason, None);
     assert_eq!(border.subject, Some(WindowId("win-a".to_owned())));
@@ -230,7 +230,7 @@ fn genuine_descriptor_positive() {
     assert_eq!(border.width, Some(4));
     assert_eq!(border.radius, Some(6));
     assert_eq!(border.witness, ingress.witness);
-    let published = engine.presentation_for_publish_v4();
+    let published = engine.tx_ro(|tx| tx.presentation_for_publish_v4());
     assert_eq!(published.foreground, "win-a");
     assert!(published.border.visible);
     assert_eq!(published.border.reason, None);
@@ -259,7 +259,7 @@ fn scale_once_fractional_and_boundary() {
         ingress_v4("win-a"),
     );
     let ingress = staged_ingress(&engine);
-    let border = engine.presentation_border_v4(&ingress, None);
+    let border = engine.tx(|tx| tx.presentation_border_v4(&ingress, None));
     assert!(border.visible);
     assert_eq!(border.width, Some(5));
     assert_eq!(border.radius, Some(2));
@@ -284,7 +284,7 @@ fn scale_halves_upward() {
         ingress_v4("win-a"),
     );
     let ingress = staged_ingress(&engine);
-    let border = engine.presentation_border_v4(&ingress, None);
+    let border = engine.tx(|tx| tx.presentation_border_v4(&ingress, None));
     assert!(border.visible);
     assert_eq!(border.width, Some(2));
     assert_eq!(border.radius, Some(1));
@@ -307,13 +307,18 @@ fn scale_change_same_engine() {
         ingress_v4("win-a"),
     );
     let ingress = staged_ingress(&engine);
-    assert_eq!(engine.presentation_border_v4(&ingress, None).width, Some(4));
+    assert_eq!(
+        engine
+            .tx(|tx| tx.presentation_border_v4(&ingress, None))
+            .width,
+        Some(4)
+    );
     let mut scaled = screens_pair();
     scaled[0].scale = 2.0;
     let next = report_v4(4, scaled, facts_pair(), "win-a", ingress_v4("win-a"));
     stage_v4(&mut engine, &next);
     let ingress = staged_ingress(&engine);
-    let border = engine.presentation_border_v4(&ingress, None);
+    let border = engine.tx(|tx| tx.presentation_border_v4(&ingress, None));
     assert!(border.visible);
     assert_eq!(border.width, Some(8));
     assert_eq!(border.outsets, Some([12, 12, 12, 12]));
@@ -337,8 +342,12 @@ fn style_cap_boundary_holds_output() {
         ingress_v4("win-a"),
     );
     let ingress = staged_ingress(&engine);
-    assert!(engine.presentation_border_v4(&ingress, None).visible);
-    assert!(engine.presentation_style_hold_v4().is_none());
+    assert!(
+        engine
+            .tx(|tx| tx.presentation_border_v4(&ingress, None))
+            .visible
+    );
+    assert!(engine.tx(|tx| tx.presentation_style_hold_v4()).is_none());
 
     let mut over = engine_with(vec![
         ("borderWidth".to_owned(), RawSettingValue::Number(32.0)),
@@ -356,8 +365,12 @@ fn style_cap_boundary_holds_output() {
         ingress_v4("win-a"),
     );
     let ingress = staged_ingress(&over);
-    assert!(!over.presentation_border_v4(&ingress, None).visible);
-    let (output, _) = over.presentation_style_hold_v4().expect("hold");
+    assert!(
+        !over
+            .tx(|tx| tx.presentation_border_v4(&ingress, None))
+            .visible
+    );
+    let (output, _) = over.tx(|tx| tx.presentation_style_hold_v4()).expect("hold");
     assert_eq!(output, OutputId("out-a".to_owned()));
 
     // Exact halfway boundary through the staged scale: 32 * 32.015625 =
@@ -378,8 +391,12 @@ fn style_cap_boundary_holds_output() {
         ingress_v4("win-a"),
     );
     let ingress = staged_ingress(&halfway);
-    assert!(!halfway.presentation_border_v4(&ingress, None).visible);
-    assert!(halfway.presentation_style_hold_v4().is_some());
+    assert!(
+        !halfway
+            .tx(|tx| tx.presentation_border_v4(&ingress, None))
+            .visible
+    );
+    assert!(halfway.tx(|tx| tx.presentation_style_hold_v4()).is_some());
 }
 
 #[test]
@@ -398,7 +415,11 @@ fn witness_hides_via_intake() {
         ingress_v4("win-a"),
     );
     let good = staged_ingress(&engine);
-    assert!(engine.presentation_border_v4(&good, None).visible);
+    assert!(
+        engine
+            .tx(|tx| tx.presentation_border_v4(&good, None))
+            .visible
+    );
 
     for bad in [
         PresentationIngressV4 {
@@ -420,10 +441,10 @@ fn witness_hides_via_intake() {
         },
     ] {
         let staged = report_v4(10, screens_pair(), facts_pair(), "win-a", bad);
-        engine.stage_facts_v4(&staged);
-        engine.retain_pager_presentation_v4();
+        engine.tx(|tx| tx.stage_facts_v4(&staged));
+        engine.tx(|tx| tx.retain_pager_presentation_v4());
         let ingress = staged_ingress(&engine);
-        let border = engine.presentation_border_v4(&ingress, None);
+        let border = engine.tx(|tx| tx.presentation_border_v4(&ingress, None));
         assert!(!border.visible);
         assert_eq!(border.reason, None);
         assert_eq!(border.subject, None);
@@ -454,7 +475,7 @@ fn unknown_fact_fails_closed_via_intake() {
     let staged = report_v4(10, screens_pair(), facts_pair(), "win-a", unknown);
     stage_v4(&mut engine, &staged);
     let ingress = staged_ingress(&engine);
-    let border = engine.presentation_border_v4(&ingress, None);
+    let border = engine.tx(|tx| tx.presentation_border_v4(&ingress, None));
     assert!(!border.visible);
     assert_eq!(border.reason, None);
 
@@ -465,7 +486,9 @@ fn unknown_fact_fails_closed_via_intake() {
     stage_v4(&mut engine, &staged);
     let ingress = staged_ingress(&engine);
     assert_eq!(
-        engine.presentation_border_v4(&ingress, None).reason,
+        engine
+            .tx(|tx| tx.presentation_border_v4(&ingress, None))
+            .reason,
         Some(BorderHideReasonV4::Minimized)
     );
 }
@@ -543,7 +566,7 @@ fn known_hide_reasons_via_intake() {
         let staged = report_v4(10 + seq as u64, screens_pair(), facts_pair(), "win-a", bad);
         stage_v4(&mut engine, &staged);
         let ingress = staged_ingress(&engine);
-        let border = engine.presentation_border_v4(&ingress, None);
+        let border = engine.tx(|tx| tx.presentation_border_v4(&ingress, None));
         assert!(!border.visible, "seq {seq}");
         assert_eq!(border.reason, Some(reason), "seq {seq}");
         assert_eq!(border.subject, None, "seq {seq}");
@@ -574,7 +597,7 @@ fn shell_and_disabled_hides() {
         ingress_v4("win-a"),
     );
     let ingress = staged_ingress(&engine);
-    let border = engine.presentation_border_v4(&ingress, None);
+    let border = engine.tx(|tx| tx.presentation_border_v4(&ingress, None));
     assert!(!border.visible);
     assert_eq!(border.reason, Some(BorderHideReasonV4::Shell));
 
@@ -592,7 +615,8 @@ fn shell_and_disabled_hides() {
     );
     let ingress = staged_ingress(&off);
     assert_eq!(
-        off.presentation_border_v4(&ingress, None).reason,
+        off.tx(|tx| tx.presentation_border_v4(&ingress, None))
+            .reason,
         Some(BorderHideReasonV4::Disabled)
     );
 }
@@ -612,7 +636,7 @@ fn zero_width_and_missing_scale_hide_empty() {
         ingress_v4("win-a"),
     );
     let ingress = staged_ingress(&engine);
-    let border = engine.presentation_border_v4(&ingress, None);
+    let border = engine.tx(|tx| tx.presentation_border_v4(&ingress, None));
     assert!(!border.visible);
     assert_eq!(border.reason, None);
 
@@ -632,7 +656,7 @@ fn zero_width_and_missing_scale_hide_empty() {
         off_out,
     );
     let ingress = staged_ingress(&engine);
-    let border = engine.presentation_border_v4(&ingress, None);
+    let border = engine.tx(|tx| tx.presentation_border_v4(&ingress, None));
     assert!(!border.visible);
     assert_eq!(border.reason, None);
 }
@@ -668,10 +692,10 @@ fn held_screen_missing_scale_hides_without_hold() {
     report.held_screens = vec![held];
     stage_v4(&mut engine, &report);
     let ingress = staged_ingress(&engine);
-    let border = engine.presentation_border_v4(&ingress, None);
+    let border = engine.tx(|tx| tx.presentation_border_v4(&ingress, None));
     assert!(!border.visible);
     assert_eq!(border.reason, None);
-    assert!(engine.presentation_style_hold_v4().is_none());
+    assert!(engine.tx(|tx| tx.presentation_style_hold_v4()).is_none());
 }
 
 #[test]
@@ -690,16 +714,16 @@ fn foreground_out_contradiction_fails_closed() {
     let ingress = staged_ingress(&engine);
     // Border hides on the truthful fullscreen verdict (priority preserved);
     // the raw/staged out contradiction no longer vetoes suspension.
-    let border = engine.presentation_border_v4(&ingress, None);
+    let border = engine.tx(|tx| tx.presentation_border_v4(&ingress, None));
     assert!(!border.visible);
     assert_eq!(border.reason, Some(BorderHideReasonV4::Fullscreen));
     // ... while pager suspension stays unconditional on the truthful fact
     // output, omitting the suspended screen but preserving the other.
     assert_eq!(
-        engine.focused_fullscreen_suspended_output_v4(),
+        engine.tx(|tx| tx.focused_fullscreen_suspended_output_v4()),
         Some(OutputId("out-a".to_owned()))
     );
-    let published = engine.presentation_for_publish_v4();
+    let published = engine.tx_ro(|tx| tx.presentation_for_publish_v4());
     assert_eq!(
         published.suspended_output,
         Some(OutputId("out-a".to_owned()))
@@ -733,7 +757,7 @@ fn suspended_output_hides_locally_preserving_other_pager() {
         },
     ];
     seeded(&mut engine, 1, screens_pair(), full, "win-a", ingress);
-    let published = engine.presentation_for_publish_v4();
+    let published = engine.tx_ro(|tx| tx.presentation_for_publish_v4());
     assert_eq!(
         published.suspended_output,
         Some(OutputId("out-a".to_owned()))
@@ -777,10 +801,10 @@ fn unmanaged_fullscreen_suspends_via_raw_foreground_out() {
         ingress,
     );
     assert_eq!(
-        engine.focused_fullscreen_suspended_output_v4(),
+        engine.tx(|tx| tx.focused_fullscreen_suspended_output_v4()),
         Some(OutputId("out-b".to_owned()))
     );
-    let published = engine.presentation_for_publish_v4();
+    let published = engine.tx_ro(|tx| tx.presentation_for_publish_v4());
     assert_eq!(
         published.suspended_output,
         Some(OutputId("out-b".to_owned()))
@@ -800,10 +824,16 @@ fn no_suspension_without_truthful_fullscreen() {
         "win-a",
         ingress_v4("win-a"),
     );
-    assert_eq!(engine.focused_fullscreen_suspended_output_v4(), None);
+    assert_eq!(
+        engine.tx(|tx| tx.focused_fullscreen_suspended_output_v4()),
+        None
+    );
     let second = report_v4(10, screens_pair(), facts_pair(), "", ingress_v4(""));
     stage_v4(&mut engine, &second);
-    assert_eq!(engine.focused_fullscreen_suspended_output_v4(), None);
+    assert_eq!(
+        engine.tx(|tx| tx.focused_fullscreen_suspended_output_v4()),
+        None
+    );
 }
 
 #[test]
@@ -826,7 +856,7 @@ fn underlay_found_scaled() {
         },
     );
     let ingress = staged_ingress(&engine);
-    match engine.presentation_underlay_v4(&ingress, None) {
+    match engine.tx(|tx| tx.presentation_underlay_v4(&ingress, None)) {
         PresentationUnderlay::Found(found) => {
             assert_eq!(found.focused_window, WindowId("win-a".to_owned()));
             assert_eq!(found.members.len(), 2);
@@ -866,7 +896,7 @@ fn underlay_scaled_extension_at_fractional_scale() {
         },
     );
     let ingress = staged_ingress(&engine);
-    match engine.presentation_underlay_v4(&ingress, None) {
+    match engine.tx(|tx| tx.presentation_underlay_v4(&ingress, None)) {
         PresentationUnderlay::Found(found) => {
             assert_eq!(
                 found.outer_rect,
@@ -906,7 +936,7 @@ fn underlay_sentinel_follows_border_width_before_scale() {
         },
     );
     let ingress = staged_ingress(&engine);
-    match engine.presentation_underlay_v4(&ingress, None) {
+    match engine.tx(|tx| tx.presentation_underlay_v4(&ingress, None)) {
         PresentationUnderlay::Found(found) => {
             // gap 4 + width 8 + sentinel-width 8 = 20.
             assert_eq!(
@@ -941,7 +971,7 @@ fn underlay_sentinel_follows_border_width_before_scale() {
         },
     );
     let ingress = staged_ingress(&explicit);
-    match explicit.presentation_underlay_v4(&ingress, None) {
+    match explicit.tx(|tx| tx.presentation_underlay_v4(&ingress, None)) {
         PresentationUnderlay::Found(found) => {
             // gap 4 + width 8 + extension floor(1.5*2+0.5)=3 => 15.
             assert_eq!(
@@ -982,7 +1012,7 @@ fn underlay_fractional_negative_extension_follows_width() {
         },
     );
     let ingress = staged_ingress(&engine);
-    match engine.presentation_underlay_v4(&ingress, None) {
+    match engine.tx(|tx| tx.presentation_underlay_v4(&ingress, None)) {
         PresentationUnderlay::Found(found) => {
             // -0.5 follows the border width exactly like -1 through the
             // shared helper: gap 4 + width 8 + extension 8 = 20.
@@ -1000,7 +1030,7 @@ fn underlay_fractional_negative_extension_follows_width() {
     }
     // The style-hold path resolves through the same helper: representable,
     // so no hold is raised.
-    assert!(engine.presentation_style_hold_v4().is_none());
+    assert!(engine.tx(|tx| tx.presentation_style_hold_v4()).is_none());
 }
 
 fn composed_null_windows() -> Vec<WindowFact> {
@@ -1037,11 +1067,11 @@ fn composed_route_null_maximize_stays_eligible() {
     let ingress = staged_ingress(&engine);
     // Native null is valid with no native support: the border renders and
     // the underlay resolves instead of hiding Maximized.
-    let border = engine.presentation_border_v4(&ingress, None);
+    let border = engine.tx(|tx| tx.presentation_border_v4(&ingress, None));
     assert!(border.visible);
     assert_eq!(border.reason, None);
     assert!(matches!(
-        engine.presentation_underlay_v4(&ingress, None),
+        engine.tx(|tx| tx.presentation_underlay_v4(&ingress, None)),
         PresentationUnderlay::Found(_)
     ));
 }
@@ -1063,14 +1093,16 @@ fn composed_route_owned_bit_hides_maximized() {
     // Owned-bit toggle path is covered by the command tests; preset the
     // settled bit to drive the producer verdict.
     engine
+        .world
+        .runtime
         .composed_maximized
         .insert(WindowId("win-a".to_owned()));
     let ingress = staged_ingress(&engine);
-    let border = engine.presentation_border_v4(&ingress, None);
+    let border = engine.tx(|tx| tx.presentation_border_v4(&ingress, None));
     assert!(!border.visible);
     assert_eq!(border.reason, Some(BorderHideReasonV4::Maximized));
     assert!(matches!(
-        engine.presentation_underlay_v4(&ingress, None),
+        engine.tx(|tx| tx.presentation_underlay_v4(&ingress, None)),
         PresentationUnderlay::Hidden {
             reason: GroupHideReason::Maximized,
             ..
@@ -1093,7 +1125,7 @@ fn maximize_unknown_fails_closed_on_both_routes() {
         null_ingress,
     );
     let ingress = staged_ingress(&native);
-    let border = native.presentation_border_v4(&ingress, None);
+    let border = native.tx(|tx| tx.presentation_border_v4(&ingress, None));
     assert!(!border.visible);
     assert_eq!(border.reason, None);
 
@@ -1111,7 +1143,7 @@ fn maximize_unknown_fails_closed_on_both_routes() {
         claimed,
     );
     let ingress = staged_ingress(&composed);
-    let border = composed.presentation_border_v4(&ingress, None);
+    let border = composed.tx(|tx| tx.presentation_border_v4(&ingress, None));
     assert!(!border.visible);
     assert_eq!(border.reason, None);
 }
@@ -1135,7 +1167,7 @@ fn underlay_trigger_and_idle() {
     );
     let ingress = staged_ingress(&engine);
     assert!(matches!(
-        engine.presentation_underlay_v4(&ingress, None),
+        engine.tx(|tx| tx.presentation_underlay_v4(&ingress, None)),
         PresentationUnderlay::Found(_)
     ));
     let idle = report_v4(
@@ -1148,7 +1180,7 @@ fn underlay_trigger_and_idle() {
     stage_v4(&mut engine, &idle);
     let ingress = staged_ingress(&engine);
     assert_eq!(
-        engine.presentation_underlay_v4(&ingress, None),
+        engine.tx(|tx| tx.presentation_underlay_v4(&ingress, None)),
         PresentationUnderlay::Hidden {
             base_revision: None,
             reason: GroupHideReason::Idle,
@@ -1172,7 +1204,7 @@ fn underlay_unknown_fact_fails_closed() {
     );
     let ingress = staged_ingress(&engine);
     assert_eq!(
-        engine.presentation_underlay_v4(&ingress, None),
+        engine.tx(|tx| tx.presentation_underlay_v4(&ingress, None)),
         PresentationUnderlay::Hidden {
             base_revision: None,
             reason: GroupHideReason::NoGroup,
@@ -1205,9 +1237,9 @@ fn held_presentation_publishes_neutral_shapes() {
             ingress_v4("win-a"),
         )
     };
-    engine.stage_facts_v4(&held);
-    engine.retain_pager_presentation_v4();
-    let published = engine.presentation_for_publish_v4();
+    engine.tx(|tx| tx.stage_facts_v4(&held));
+    engine.tx(|tx| tx.retain_pager_presentation_v4());
+    let published = engine.tx_ro(|tx| tx.presentation_for_publish_v4());
     assert_eq!(published.foreground, String::new());
     assert!(!published.border.visible);
     assert_eq!(published.border.reason, None);
@@ -1254,7 +1286,7 @@ fn pager_fresh_and_retained_sources() {
     ];
     let staged = report_v4(4, screens_pair(), facts_pair(), "win-a", second);
     stage_v4(&mut engine, &staged);
-    let pager = engine.presentation_pager_v4(None);
+    let pager = engine.tx(|tx| tx.presentation_pager_v4(None));
     let ws_a = pager
         .iter()
         .find(|screen| screen.output == "out-a")
@@ -1299,7 +1331,9 @@ fn pager_close_prunes_order_frame_and_focus() {
     seeded(&mut engine, 1, screens_pair(), facts_pair(), "win-b", first);
     assert!(
         engine
-            .presentation_order_v4
+            .world
+            .presentation
+            .order_v4
             .contains(&WindowId("win-b".to_owned()))
     );
     let mut closed = report_v4(
@@ -1313,15 +1347,19 @@ fn pager_close_prunes_order_frame_and_focus() {
     stage_v4(&mut engine, &closed);
     assert!(
         !engine
-            .presentation_order_v4
+            .world
+            .presentation
+            .order_v4
             .contains(&WindowId("win-b".to_owned()))
     );
     assert!(
         !engine
-            .presentation_live_v4
+            .world
+            .presentation
+            .live_v4
             .contains_key(&WindowId("win-b".to_owned()))
     );
-    assert_eq!(engine.presentation_focused_v4, None);
+    assert_eq!(engine.world.presentation.focused_v4, None);
 }
 
 #[test]
@@ -1353,7 +1391,9 @@ fn pager_complete_absence_prunes_incomplete_retains() {
     stage_v4(&mut engine, &gap);
     assert!(
         engine
-            .presentation_live_v4
+            .world
+            .presentation
+            .live_v4
             .contains_key(&WindowId("win-b".to_owned()))
     );
 
@@ -1368,12 +1408,16 @@ fn pager_complete_absence_prunes_incomplete_retains() {
     stage_v4(&mut engine, &pruned);
     assert!(
         !engine
-            .presentation_order_v4
+            .world
+            .presentation
+            .order_v4
             .contains(&WindowId("win-b".to_owned()))
     );
     assert!(
         !engine
-            .presentation_live_v4
+            .world
+            .presentation
+            .live_v4
             .contains_key(&WindowId("win-b".to_owned()))
     );
 }
@@ -1414,21 +1458,26 @@ fn pager_capability_held_raw_presence_retains() {
     );
     assert!(
         !engine
+            .world
             .staged
             .facts
             .contains_key(&WindowId("win-b".to_owned()))
     );
-    assert_eq!(engine.staged.held_windows.len(), 1);
+    assert_eq!(engine.world.staged.held_windows.len(), 1);
     let retained = report_v4(4, screens_pair(), windows, "win-a", ingress_v4("win-a"));
     stage_v4(&mut engine, &retained);
     assert!(
         engine
-            .presentation_order_v4
+            .world
+            .presentation
+            .order_v4
             .contains(&WindowId("win-b".to_owned()))
     );
     assert!(
         engine
-            .presentation_live_v4
+            .world
+            .presentation
+            .live_v4
             .contains_key(&WindowId("win-b".to_owned()))
     );
 }
@@ -1456,24 +1505,30 @@ fn pager_own_process_exclusion_raw_presence_retains() {
     stage_v4(&mut engine, &excluded);
     assert!(
         engine
+            .world
             .staged
             .excluded
             .contains(&WindowId("win-b".to_owned()))
     );
     assert!(
         !engine
+            .world
             .staged
             .facts
             .contains_key(&WindowId("win-b".to_owned()))
     );
     assert!(
         engine
-            .presentation_order_v4
+            .world
+            .presentation
+            .order_v4
             .contains(&WindowId("win-b".to_owned()))
     );
     assert!(
         engine
-            .presentation_live_v4
+            .world
+            .presentation
+            .live_v4
             .contains_key(&WindowId("win-b".to_owned()))
     );
 }
@@ -1510,15 +1565,19 @@ fn held_presentation_still_prunes_closed_lifetimes() {
     stage_v4(&mut engine, &held);
     assert!(
         !engine
-            .presentation_order_v4
+            .world
+            .presentation
+            .order_v4
             .contains(&WindowId("win-b".to_owned()))
     );
     assert!(
         !engine
-            .presentation_live_v4
+            .world
+            .presentation
+            .live_v4
             .contains_key(&WindowId("win-b".to_owned()))
     );
-    let published = engine.presentation_for_publish_v4();
+    let published = engine.tx_ro(|tx| tx.presentation_for_publish_v4());
     assert_eq!(published.foreground, String::new());
     assert!(!published.border.visible);
 }
@@ -1539,23 +1598,23 @@ fn producer_does_not_mutate_staged_or_gesture() {
         "win-a",
         ingress,
     );
-    let staged_before = engine.staged.clone();
-    let members_before = engine.members.clone();
-    let order_before = engine.presentation_order_v4.clone();
-    let live_before = engine.presentation_live_v4.clone();
-    let focused_before = engine.presentation_focused_v4.clone();
-    let holds_before = engine.hold_reasons.clone();
-    let revision_before = engine.state_revision;
-    let first = engine.presentation_for_publish_v4();
-    let second = engine.presentation_for_publish_v4();
+    let staged_before = engine.world.staged.clone();
+    let members_before = engine.world.workspace.members.clone();
+    let order_before = engine.world.presentation.order_v4.clone();
+    let live_before = engine.world.presentation.live_v4.clone();
+    let focused_before = engine.world.presentation.focused_v4.clone();
+    let holds_before = engine.world.hold_reasons.clone();
+    let revision_before = engine.state_revision();
+    let first = engine.tx_ro(|tx| tx.presentation_for_publish_v4());
+    let second = engine.tx_ro(|tx| tx.presentation_for_publish_v4());
     assert_eq!(first, second);
-    assert_eq!(engine.staged, staged_before);
-    assert_eq!(engine.members, members_before);
-    assert_eq!(engine.presentation_order_v4, order_before);
-    assert_eq!(engine.presentation_live_v4, live_before);
-    assert_eq!(engine.presentation_focused_v4, focused_before);
-    assert_eq!(engine.hold_reasons, holds_before);
-    assert_eq!(engine.state_revision, revision_before);
+    assert_eq!(engine.world.staged, staged_before);
+    assert_eq!(engine.world.workspace.members, members_before);
+    assert_eq!(engine.world.presentation.order_v4, order_before);
+    assert_eq!(engine.world.presentation.live_v4, live_before);
+    assert_eq!(engine.world.presentation.focused_v4, focused_before);
+    assert_eq!(engine.world.hold_reasons, holds_before);
+    assert_eq!(engine.state_revision(), revision_before);
 }
 
 #[test]

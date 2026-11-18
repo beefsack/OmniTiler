@@ -316,7 +316,13 @@ fn refusal_priority_and_occupied_target() {
     let off_domain = observed_window("win-a", "out-9", "ws-2");
     assert_eq!(
         layout
-            .migrate_workspace(&src, 12, &window(""), &[off_domain.clone()], &tgt)
+            .migrate_workspace(
+                &src,
+                12,
+                &window(""),
+                std::slice::from_ref(&off_domain),
+                &tgt
+            )
             .unwrap_err(),
         WorkspaceMigrationFailure::DomainMismatch
     );

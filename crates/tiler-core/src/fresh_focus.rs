@@ -12,7 +12,7 @@
 //! empty-workspace focus, and float-home parking are untouched.
 
 use crate::directional::{OutputId, WindowId};
-use crate::world_engine::WorldEngine;
+use crate::world_transaction::WorldTransaction;
 
 /// Why the fresh focused leg resolved the way it did (trace-only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -68,7 +68,7 @@ pub(crate) struct FreshFocusMemory {
     pub trace: FreshFocusTrace,
 }
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Current managed focused output: the adapter-observed foreground,
     /// but only when it names a previously retained member homing. A
     /// brand-new lifetime (no retained homing yet) is not managed focus,
@@ -93,7 +93,7 @@ impl WorldEngine {
         ctx: &crate::world_engine::RawRouting<'_>,
     ) -> (Option<OutputId>, FreshFocusTrace) {
         let current = self.managed_focused_output(ctx);
-        let retained = self.fresh_focus.last_output.clone();
+        let retained = self.world.focus.fresh_focus.last_output.clone();
         if let Some(output) = current.clone() {
             return (
                 Some(output.clone()),
@@ -141,19 +141,20 @@ impl WorldEngine {
     /// never overwrites pre-admission context. Call before membership
     /// converges so the latch reflects strictly prior retention.
     pub(crate) fn note_focused_output(&mut self) {
-        let focused = self.staged.observation.focused_global.clone();
+        let focused = self.world.staged.observation.focused_global.clone();
         if focused.is_empty() {
             return;
         }
         let output = self.core_homing(&WindowId(focused)).map(|key| key.output);
         if let Some(output) = output
             && self
+                .world
                 .staged
                 .screens
                 .iter()
                 .any(|screen| screen.output == output)
         {
-            self.fresh_focus.last_output = Some(output);
+            self.world.focus.fresh_focus.last_output = Some(output);
         }
     }
 }

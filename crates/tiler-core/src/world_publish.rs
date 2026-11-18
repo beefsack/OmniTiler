@@ -5,12 +5,12 @@
 //! planner-owned logical workspace lifecycle, output views, and explicit
 //! lifetime/hold rows. Never authorizes writes inside held scopes.
 
+use crate::world_transaction::WorldTransaction;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::session::{DomainKey, RefusalKind};
-use crate::world_engine::WorldEngine;
 use crate::world_layout::{FreshDomainFailure, LayoutFailure, RetainedReconcileFailure};
 use crate::world_report::{
     CommandResult, FloatOrigin, HoldReason, IntentDesire, OneShotEffect, OutputDesire,
@@ -35,7 +35,7 @@ pub(crate) enum SweepFailure {
     Fresh(FreshDomainFailure),
 }
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Retained intent projection: the live retained lifetime scope of the
     /// `intent_desired` map, sorted by window, including explicit null
     /// clears. Missing rows carry no authority and never appear.
@@ -50,24 +50,28 @@ impl WorldEngine {
     /// at ingest), so every retained row stays in scope.
     pub(crate) fn project_intent_desired(&self) -> Vec<IntentDesire> {
         let in_scope = |id: &WindowId| -> bool {
-            if !self.staged.observation.inventory_complete {
+            if !self.world.staged.observation.inventory_complete {
                 return true;
             }
-            self.staged
+            self.world
+                .staged
                 .observation
                 .raw_windows
                 .iter()
                 .any(|fact| fact.window == *id)
                 || self
+                    .world
                     .staged
                     .held_windows
                     .iter()
                     .any(|held| held.window == *id)
-                || self.staged.excluded.contains(id)
-                || self.engine_knows_window_any(id)
-                || self.members.contains_key(id)
+                || self.world.staged.excluded.contains(id)
+                || self.world.engine_knows_window_any(id)
+                || self.world.workspace.members.contains_key(id)
         };
-        self.intent_desired
+        self.world
+            .intent
+            .intent_desired
             .iter()
             .filter(|(win, _)| in_scope(win))
             .map(|(win, data)| IntentDesire {
@@ -90,7 +94,7 @@ impl WorldEngine {
         command: &WorldCommand,
         result: &Option<CommandResult>,
     ) {
-        if self.intent_sticky_saturated {
+        if self.world.intent.intent_sticky_saturated {
             return;
         }
         let Some((win, data)) = self.ordinary_toggle_float_save(command, result) else {
@@ -119,7 +123,7 @@ impl WorldEngine {
         command: &WorldCommand,
         command_result: &Option<CommandResult>,
     ) -> Option<(WindowId, crate::intent_data::IntentData)> {
-        if self.intent_sticky_saturated {
+        if self.world.intent.intent_sticky_saturated {
             return None;
         }
         let window = match crate::world_report::unwrap_implicit(command) {
@@ -128,7 +132,7 @@ impl WorldEngine {
             }) => WindowId(window.clone()),
             _ => return None,
         };
-        if self.intent_sticky_blocks.contains(&window) {
+        if self.world.intent.intent_sticky_blocks.contains(&window) {
             return None;
         }
         let (result_window, rect, no_space) = match command_result {
@@ -143,14 +147,14 @@ impl WorldEngine {
             return None;
         }
         let float = if rect.is_some() {
-            if !self.is_exception_window_any(&window)
-                || self.layout().is_automatic_fixed_float_any(&window)
+            if !self.world.is_exception_window_any(&window)
+                || self.world.layout().is_automatic_fixed_float_any(&window)
             {
                 return None;
             }
             true
         } else {
-            if !self.is_tiled_window_any(&window) {
+            if !self.world.is_tiled_window_any(&window) {
                 return None;
             }
             false
@@ -223,7 +227,7 @@ impl WorldEngine {
         let Some(held) = style_held_output else {
             return false;
         };
-        self.retained.iter().any(|retained| {
+        self.world.settlement.retained.iter().any(|retained| {
             let carries = match &retained.target.kind {
                 TransferKind::Window(w) => w == window,
                 TransferKind::Migration => retained.members.contains(window),
@@ -269,9 +273,12 @@ impl WorldEngine {
         // drop authorizations that no longer need backing (e.g. minted
         // against a stale view that fresh evidence rehomed): stale state
         // never recreates. Ambiguous rows persist for their visible hold.
-        if self.host_owned_workspace_domains() {
-            if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
+        if self.connection.host_owned_workspace_domains() {
+            if self.connection.workspace_mode_setting()
+                == crate::workspace_scope::WorkspaceMode::Shared
+            {
                 let mut ordered: Vec<String> = self
+                    .world
                     .staged
                     .screens
                     .iter()
@@ -281,6 +288,7 @@ impl WorldEngine {
                 self.ensure_native_creations_shared(&ordered);
             } else {
                 let live: Vec<String> = self
+                    .world
                     .staged
                     .screens
                     .iter()
@@ -292,7 +300,7 @@ impl WorldEngine {
             }
             self.prune_unneeded_creations();
         }
-        let staged = self.staged.clone();
+        let staged = self.world.staged.clone();
         let mut scopes = Vec::with_capacity(staged.domains.len());
         let mut windows = Vec::new();
         // Pre-clear born overlay isolation (REQ-MAX-01/06): homes with an
@@ -302,6 +310,8 @@ impl WorldEngine {
         // reservations. Publish-only: commands still see the unheld
         // scopes so ToggleFloat refusal stays `not-tiled`.
         let born_held: BTreeSet<DomainKey> = self
+            .world
+            .settlement
             .retained_born
             .iter()
             .map(|held| held.home.clone())
@@ -314,14 +324,14 @@ impl WorldEngine {
             if !domain.readable
                 || held_scopes.contains(&domain.key)
                 || born_held.contains(&domain.key)
-                || self.floating_scopes.contains(&domain.key)
+                || self.world.floating_scopes.contains(&domain.key)
             {
                 continue;
             }
             for window in &domain.windows {
                 live.insert(window.window.0.clone());
             }
-            for window in self.layout().exception_windows(&domain.key) {
+            for window in self.world.layout().exception_windows(&domain.key) {
                 live.insert(window.0.clone());
             }
         }
@@ -338,7 +348,7 @@ impl WorldEngine {
         // Arrived movers already home at the target and ride their
         // sweep rows below.
         let mut redirect: BTreeMap<String, DomainKey> = BTreeMap::new();
-        for retained in &self.retained {
+        for retained in &self.world.settlement.retained {
             let (window, key) = match &retained.target.kind {
                 TransferKind::Window(window) => (
                     window.clone(),
@@ -368,7 +378,7 @@ impl WorldEngine {
             }
             redirect.insert(window.0.clone(), key);
         }
-        for retained in &self.retained {
+        for retained in &self.world.settlement.retained {
             if !matches!(&retained.target.kind, TransferKind::Migration) {
                 continue;
             }
@@ -412,7 +422,7 @@ impl WorldEngine {
             // homing; movers under an outstanding boundary transfer
             // publish one membership-only row at the target homing
             // below, so they emit nothing here (one homing).
-            if self.floating_scopes.contains(&key) {
+            if self.world.floating_scopes.contains(&key) {
                 scopes.push(ScopeStatus {
                     scope: workspace_authority_scope(&key.output, &key.workspace.0),
                     authority: ScopeAuthority::Untouched,
@@ -426,7 +436,7 @@ impl WorldEngine {
                     if !emitted.insert(window.window.0.clone()) {
                         continue;
                     }
-                    let boundary_mover = self.retained.iter().any(|r| {
+                    let boundary_mover = self.world.settlement.retained.iter().any(|r| {
                         matches!(&r.target.kind, TransferKind::Window(w) if w == &window.window)
                             && r.target.target_output == key.output
                             && r.target.target_workspace == key.workspace.0
@@ -488,7 +498,8 @@ impl WorldEngine {
                 ScopeAuthority::Hold(domain.hold.unwrap_or(HoldReason::Unreadable))
             } else if held_scopes.contains(&key) || born_held.contains(&key) {
                 ScopeAuthority::Hold(
-                    self.hold_reasons
+                    self.world
+                        .hold_reasons
                         .get(&key)
                         .copied()
                         .unwrap_or(HoldReason::Unreadable),
@@ -505,7 +516,7 @@ impl WorldEngine {
                 // with narrow holds, never silent absence. Omission inside a
                 // held scope authorizes no write or retirement; these rows
                 // make the retained lifetimes visible instead.
-                if self.layout().contains_domain(&key) {
+                if self.world.layout().contains_domain(&key) {
                     let reason = match authority {
                         ScopeAuthority::Hold(reason) => reason,
                         _ => HoldReason::Unreadable,
@@ -611,17 +622,22 @@ impl WorldEngine {
                 }
                 continue;
             }
-            if !self.layout().contains_domain(&key) {
+            if !self.world.layout().contains_domain(&key) {
                 continue;
             }
             // Sole-minimized scope (MNZ-03): no tiled members and no
             // exceptions homed here but live minimized slots are: the scope
             // stays controlled and the slots publish explicit minimized
             // rows, never a projection failure hold.
-            let tiled_here = self.layout().tiled_count(&key) > 0;
-            let exceptions_here = self.layout().exception_count(&key) > 0;
+            let tiled_here = self.world.layout().tiled_count(&key) > 0;
+            let exceptions_here = self.world.layout().exception_count(&key) > 0;
             if !tiled_here && !exceptions_here {
-                let slots: Vec<WindowId> = self.layout().minimized_windows(&key).cloned().collect();
+                let slots: Vec<WindowId> = self
+                    .world
+                    .layout()
+                    .minimized_windows(&key)
+                    .cloned()
+                    .collect();
                 if !slots.is_empty() {
                     for window in slots {
                         if live.contains(&window.0) || !emitted.insert(window.0.clone()) {
@@ -693,7 +709,7 @@ impl WorldEngine {
                     );
                     continue;
                 };
-                let Some(plan) = self.layout().project_retained_tiled_geometry(
+                let Some(plan) = self.world.layout().project_retained_tiled_geometry(
                     &key,
                     inset.bounds,
                     inset.gap,
@@ -742,10 +758,10 @@ impl WorldEngine {
                 // membership-only redirect row below, and a stale source
                 // session must never project a mover the truthful staged
                 // homing already placed elsewhere.
-                let window_flight = self.retained.iter().any(
+                let window_flight = self.world.settlement.retained.iter().any(
                     |r| matches!(&r.target.kind, TransferKind::Window(w) if w == &geometry.window),
                 );
-                let migration_flight = self.retained.iter().any(|r| {
+                let migration_flight = self.world.settlement.retained.iter().any(|r| {
                     matches!(&r.target.kind, TransferKind::Migration)
                         && r.target.target_output == key.output
                         && r.target.target_workspace == key.workspace.0
@@ -782,6 +798,7 @@ impl WorldEngine {
                 // lane: a born window already rides its admitted session
                 // row, so the desire rides here until proof retires it.
                 let fact_unreadable = self
+                    .world
                     .staged
                     .facts
                     .get(&geometry.window)
@@ -790,8 +807,12 @@ impl WorldEngine {
                 // contract-valid absent value (macOS provisional
                 // contract): ordinary admission, never an unknown hold.
                 // Supported-but-null keeps the narrow unknown hold.
-                let unknown_maximized = self.capabilities().is_some_and(|caps| caps.maximize)
+                let unknown_maximized = self
+                    .connection
+                    .capabilities()
+                    .is_some_and(|caps| caps.maximize)
                     && self
+                        .world
                         .staged
                         .facts
                         .get(&geometry.window)
@@ -808,11 +829,19 @@ impl WorldEngine {
                 // an uncomposed row, except a pending entry additionally
                 // holds the base frame write (no shared reply with the
                 // queued entry). A missing work area fails closed.
-                let composed = !self.capabilities().is_some_and(|caps| caps.maximize)
-                    && self.composed_maximized.contains(&geometry.window);
+                let composed = !self
+                    .connection
+                    .capabilities()
+                    .is_some_and(|caps| caps.maximize)
+                    && self
+                        .world
+                        .runtime
+                        .composed_maximized
+                        .contains(&geometry.window);
                 let work_area = self.composed_work_area(&geometry.output);
                 let composed_active = composed
                     && self
+                        .world
                         .staged
                         .facts
                         .get(&geometry.window)
@@ -825,7 +854,7 @@ impl WorldEngine {
                     geometry.rect
                 };
                 let work_missing = composed_active && work_area.is_none();
-                let (clear_operation, command_seq) = if self.staged.gesture_barrier
+                let (clear_operation, command_seq) = if self.world.staged.gesture_barrier
                     || fact_unreadable
                     || unknown_maximized
                     || self.is_held_window(&geometry.window)
@@ -833,9 +862,14 @@ impl WorldEngine {
                 {
                     (None, None)
                 } else {
-                    match self.retained_clears.iter().find(|retained| {
-                        retained.window == geometry.window && retained.pending.is_none()
-                    }) {
+                    match self
+                        .world
+                        .settlement
+                        .retained_clears
+                        .iter()
+                        .find(|retained| {
+                            retained.window == geometry.window && retained.pending.is_none()
+                        }) {
                         Some(retained) => (
                             Some(retained.operation_id.clone()),
                             Some(retained.command_seq),
@@ -859,22 +893,22 @@ impl WorldEngine {
                     .get(&geometry.window)
                     .and_then(|fact| fact.rect);
                 if observed == Some(desired) {
-                    self.frames.remove(&geometry.window);
+                    self.world.settlement.frames.remove(&geometry.window);
                 }
                 let frame_suppressed = observed.is_some_and(|current| {
                     self.frame_suppressed(
                         &geometry.window,
                         &desired,
                         Some(current),
-                        self.staged.observation.monotonic_ms,
+                        self.world.staged.observation.monotonic_ms,
                     )
                 });
                 let burst_held = Self::frame_burst_gate(
-                    &mut self.frame_bursts,
+                    &mut self.world.settlement.frame_bursts,
                     &geometry.window,
                     &desired,
                     observed,
-                    self.staged.observation.monotonic_ms,
+                    self.world.staged.observation.monotonic_ms,
                 );
                 windows.push(WindowDesire {
                     lifetime: geometry.window.clone(),
@@ -924,10 +958,16 @@ impl WorldEngine {
             // write authority. Game safety overrides parity. A retained D16
             // float send authorizes membership at the target without
             // authorizing any frame change.
-            let exceptions: Vec<WindowId> =
-                self.layout().exception_windows(&key).cloned().collect();
+            let exceptions: Vec<WindowId> = self
+                .world
+                .layout()
+                .exception_windows(&key)
+                .cloned()
+                .collect();
             for window in exceptions {
                 let in_flight = self
+                    .world
+                    .settlement
                     .retained
                     .iter()
                     .any(|r| matches!(&r.target.kind, TransferKind::Window(w) if w == &window));
@@ -943,6 +983,8 @@ impl WorldEngine {
                 // half-snaps, explicit placements), falling back to the
                 // session geometry only with no outstanding target.
                 let retained_float = self
+                    .world
+                    .settlement
                     .retained_floats
                     .iter()
                     .find(|held| held.window == window);
@@ -951,21 +993,22 @@ impl WorldEngine {
                 let mut frame_seq = retained_float.map(|held| held.command_seq);
                 if frame_operation.is_some() {
                     let target = retained_target.or_else(|| {
-                        self.layout()
+                        self.world
+                            .layout()
                             .exception_record(&key, &window)
                             .and_then(|r| r.floating_geometry)
                     });
                     let fact_rect = staged.facts.get(&window).and_then(|fact| fact.rect);
                     match (target, fact_rect) {
                         (Some(desired), Some(current)) if desired == current => {
-                            self.frames.remove(&window);
+                            self.world.settlement.frames.remove(&window);
                         }
                         (Some(desired), current)
                             if self.frame_suppressed(
                                 &window,
                                 &desired,
                                 current,
-                                self.staged.observation.monotonic_ms,
+                                self.world.staged.observation.monotonic_ms,
                             ) =>
                         {
                             frame_operation = None;
@@ -991,6 +1034,7 @@ impl WorldEngine {
                 // adapter float intent. The diagnostic capacity origin
                 // rides along for truthful echo; it grants no behavior.
                 let float_origin = self
+                    .world
                     .layout()
                     .is_capacity_float(&key, &window)
                     .then_some(FloatOrigin::Capacity);
@@ -999,11 +1043,14 @@ impl WorldEngine {
                 // also withheld while hints are unreadable (its
                 // continuation could not authorize); the binding survives.
                 let fact_unreadable = self
+                    .world
                     .staged
                     .facts
                     .get(&window)
                     .is_none_or(|fact| fact.minimized == Some(true) || fact.rect.is_none());
                 let directional = self
+                    .world
+                    .settlement
                     .retained_clears
                     .iter()
                     .find(|retained| retained.window == window && retained.pending.is_none());
@@ -1012,7 +1059,7 @@ impl WorldEngine {
                         .facts
                         .get(&window)
                         .is_none_or(|fact| fact.hints.is_none());
-                let (clear_operation, clear_seq) = if self.staged.gesture_barrier
+                let (clear_operation, clear_seq) = if self.world.staged.gesture_barrier
                     || fact_unreadable
                     || float_blocked
                     || self.is_held_window(&window)
@@ -1049,11 +1096,15 @@ impl WorldEngine {
                 // unattempted fullscreen entry withholds the same writes
                 // (the shared composed gate below); a withheld window
                 // publishes exactly like an uncomposed float.
-                let composed = !self.capabilities().is_some_and(|caps| caps.maximize)
-                    && self.composed_maximized.contains(&window);
+                let composed = !self
+                    .connection
+                    .capabilities()
+                    .is_some_and(|caps| caps.maximize)
+                    && self.world.runtime.composed_maximized.contains(&window);
                 let work_area = self.composed_work_area(&key.output);
                 let float_base = retained_target.or_else(|| {
-                    self.layout()
+                    self.world
+                        .layout()
                         .exception_record(&key, &window)
                         .and_then(|r| r.floating_geometry)
                 });
@@ -1069,10 +1120,10 @@ impl WorldEngine {
                     composed && fullscreen_released && !self.fullscreen_entry_pending(&window);
                 let composed_controlled = composed_active
                     && work_area.is_some()
-                    && self.staged.observation.inventory_complete
-                    && !self.staged.gesture_barrier
-                    && !self.floating_scopes.contains(&composed_home)
-                    && !self.hold_reasons.contains_key(&composed_home)
+                    && self.world.staged.observation.inventory_complete
+                    && !self.world.staged.gesture_barrier
+                    && !self.world.floating_scopes.contains(&composed_home)
+                    && !self.world.hold_reasons.contains_key(&composed_home)
                     && !self.is_held_window(&window)
                     && !self.is_excluded_window(&window)
                     && !in_flight
@@ -1096,15 +1147,15 @@ impl WorldEngine {
                             &window,
                             &desired,
                             Some(current),
-                            self.staged.observation.monotonic_ms,
+                            self.world.staged.observation.monotonic_ms,
                         )
                     });
                     overlay_burst = Self::frame_burst_gate(
-                        &mut self.frame_bursts,
+                        &mut self.world.settlement.frame_bursts,
                         &window,
                         &desired,
                         overlay_observed,
-                        self.staged.observation.monotonic_ms,
+                        self.world.staged.observation.monotonic_ms,
                     );
                 }
                 // No placement write beside the owned overlay while native
@@ -1156,7 +1207,12 @@ impl WorldEngine {
             // geometry, never silent absence and never an inferred close.
             // The slot stays homed until restore, explicit close, or the
             // retained transfer settles it.
-            let minimized: Vec<WindowId> = self.layout().minimized_windows(&key).cloned().collect();
+            let minimized: Vec<WindowId> = self
+                .world
+                .layout()
+                .minimized_windows(&key)
+                .cloned()
+                .collect();
             for window in minimized {
                 if live.contains(&window.0) || !emitted.insert(window.0.clone()) {
                     continue;
@@ -1214,7 +1270,7 @@ impl WorldEngine {
             .map(|fact| fact.window.0.as_str())
             .collect();
         let mut migration_redirect: BTreeSet<String> = BTreeSet::new();
-        for retained in &self.retained {
+        for retained in &self.world.settlement.retained {
             if !matches!(&retained.target.kind, TransferKind::Migration) {
                 continue;
             }
@@ -1329,7 +1385,7 @@ impl WorldEngine {
                     if !domain.readable {
                         Some(domain.hold.unwrap_or(HoldReason::Unreadable))
                     } else {
-                        self.hold_reasons.get(&domain.key).copied()
+                        self.world.hold_reasons.get(&domain.key).copied()
                     }
                 })
                 .or_else(|| {
@@ -1441,7 +1497,7 @@ impl WorldEngine {
         emitted: &mut BTreeSet<String>,
         windows: &mut Vec<WindowDesire>,
     ) {
-        let layout = self.layout();
+        let layout = self.world.layout();
         for window in layout.tiled_windows(key) {
             // Exclusions never ride held rows: no slot, no control, even
             // when the surrounding scope holds for another lifetime.
@@ -1530,7 +1586,9 @@ impl WorldEngine {
     /// backstop. Set through the planner-owned tiling command or the
     /// saved-default seed; the adapter never decides.
     pub(crate) fn workspace_tiling_mode(&self, output: &OutputId, workspace: &str) -> TilingMode {
-        self.tiling
+        self.world
+            .workspace
+            .tiling
             .get(&DomainKey {
                 output: output.clone(),
                 workspace: WorkspaceId(workspace.to_owned()),
@@ -1555,13 +1613,13 @@ impl WorldEngine {
     /// removes. Incomplete screens hold their rows without authorizing
     /// writes.
     pub(crate) fn plan_workspaces(&mut self, scopes: &[ScopeStatus]) -> Vec<WorkspaceDesire> {
-        let mut outputs: Vec<String> = self.mapping.keys().cloned().collect();
+        let mut outputs: Vec<String> = self.world.workspace.mapping.keys().cloned().collect();
         outputs.sort();
-        let staged = self.staged.clone();
+        let staged = self.world.staged.clone();
         let doomed = self.retirement_deletion_set();
         let mut rows = Vec::new();
         for output in outputs {
-            let Some(ring) = self.mapping.get(&output).cloned() else {
+            let Some(ring) = self.world.workspace.mapping.get(&output).cloned() else {
                 continue;
             };
             let marked = self.trailing_marked_id(&output);
@@ -1570,7 +1628,7 @@ impl WorldEngine {
                 .iter()
                 .any(|screen| screen.output.0 == output && screen.complete);
             for (index, id) in ring.iter().enumerate() {
-                let native_binding = if self.host_owned_workspace_domains() {
+                let native_binding = if self.connection.host_owned_workspace_domains() {
                     self.native_binding_for(&output, id)
                 } else {
                     None
@@ -1616,9 +1674,11 @@ impl WorldEngine {
         // No new wire field: the adapter re-enumerates occupants,
         // visibility and its own floor before deleting, and omission alone
         // never removes.
-        if self.host_owned_workspace_domains() {
+        if self.connection.host_owned_workspace_domains() {
             let mut per_output_index: BTreeMap<String, usize> = BTreeMap::new();
             let retired: Vec<((String, String), String)> = self
+                .world
+                .settlement
                 .retired_natives
                 .iter()
                 .map(|((output, native), logical)| {
@@ -1627,13 +1687,21 @@ impl WorldEngine {
                 .collect();
             for ((output, native), logical) in retired {
                 if self
+                    .world
+                    .workspace
                     .mapping
                     .get(&output)
                     .is_some_and(|ring| ring.contains(&logical))
                 {
                     continue;
                 }
-                let ring_len = self.mapping.get(&output).map(Vec::len).unwrap_or(0);
+                let ring_len = self
+                    .world
+                    .workspace
+                    .mapping
+                    .get(&output)
+                    .map(Vec::len)
+                    .unwrap_or(0);
                 let slot = per_output_index.entry(output.clone()).or_insert(0);
                 let order = ring_len + *slot;
                 *slot += 1;
@@ -1706,21 +1774,31 @@ impl WorldEngine {
         style_held_output: Option<&OutputId>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> Vec<OutputDesire> {
-        self.staged
+        self.world
+            .staged
             .screens
             .iter()
             .map(|screen| {
-                let pending_view = self.retained.iter().find_map(|r| match &r.target.kind {
-                    TransferKind::View if r.target.target_output == screen.output => {
-                        Some(r.target.target_workspace.clone())
-                    }
-                    _ => None,
-                });
+                let pending_view =
+                    self.world
+                        .settlement
+                        .retained
+                        .iter()
+                        .find_map(|r| match &r.target.kind {
+                            TransferKind::View if r.target.target_output == screen.output => {
+                                Some(r.target.target_workspace.clone())
+                            }
+                            _ => None,
+                        });
                 let logical_view: Option<String> = pending_view.or_else(|| {
-                    self.views
+                    self.world
+                        .workspace
+                        .views
                         .get(&screen.output.0)
                         .filter(|view| {
-                            self.mapping
+                            self.world
+                                .workspace
+                                .mapping
                                 .get(&screen.output.0)
                                 .is_some_and(|ring| ring.contains(view))
                         })
@@ -1734,7 +1812,7 @@ impl WorldEngine {
                 // the row holds instead of adopting it. The host-owned
                 // capability tolerates such echoes (observed only). Legacy
                 // path only: v4 passes no echoes.
-                let ring = self.mapping.get(&screen.output.0);
+                let ring = self.world.workspace.mapping.get(&screen.output.0);
                 let echo_unknown = !view_echoes.is_empty()
                     && view_echoes
                         .iter()
@@ -1742,7 +1820,7 @@ impl WorldEngine {
                         .is_some_and(|view| {
                             !view.view.is_empty()
                                 && !ring.is_some_and(|ring| ring.iter().any(|id| id == &view.view))
-                                && !self.host_owned_workspace_domains()
+                                && !self.connection.host_owned_workspace_domains()
                         });
                 let style_only = style_held_output.is_some_and(|output| *output == screen.output);
                 let legacy_hold = !screen.complete

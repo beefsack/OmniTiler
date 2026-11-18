@@ -646,7 +646,7 @@ fn sole_toggle_float_publishes_controlled_exception_row() {
     );
     // No tree is invented by publishing: the session stays exception-only.
     assert!(
-        engine.layout().tree(&domain_key(&view)).is_none(),
+        engine.world.layout().tree(&domain_key(&view)).is_none(),
         "exception-only session keeps no tree"
     );
 }
@@ -821,7 +821,11 @@ fn float_ambiguous_third_frame_holds_across_ack() {
             )],
         ),
     );
-    assert_eq!(engine.retained_floats.len(), 1, "ambiguous retains");
+    assert_eq!(
+        engine.world.settlement.retained_floats.len(),
+        1,
+        "ambiguous retains"
+    );
     let row = row_of(&ambiguous, "win-a");
     assert_eq!(row.frame_operation, None, "clamp withholds while held");
     assert_eq!(row.effective_frame, Some(target));
@@ -846,7 +850,7 @@ fn float_ambiguous_third_frame_holds_across_ack() {
     };
     let row = row_of(&held, "win-a");
     assert_eq!(
-        engine.retained_floats.len(),
+        engine.world.settlement.retained_floats.len(),
         1,
         "ambiguous holds across ack"
     );
@@ -1005,7 +1009,7 @@ fn float_changed_preimage_and_throw_latch_ambiguity() {
         ),
     );
     assert_eq!(
-        engine.retained_floats.len(),
+        engine.world.settlement.retained_floats.len(),
         1,
         "moved refusal latches ambiguity"
     );
@@ -1042,7 +1046,7 @@ fn float_changed_preimage_and_throw_latch_ambiguity() {
         ),
     );
     assert_eq!(
-        engine.retained_floats.len(),
+        engine.world.settlement.retained_floats.len(),
         1,
         "throw with unreadable proof latches ambiguity"
     );
@@ -1124,7 +1128,7 @@ fn float_forged_correlation_never_settles() {
         // clamp may withhold the stranded token, but the retained target
         // never settles from window/geometry-only evidence.
         assert_eq!(
-            engine.retained_floats.len(),
+            engine.world.settlement.retained_floats.len(),
             1,
             "forged shape {index} never settles"
         );
@@ -1188,7 +1192,7 @@ fn float_replay_of_consumed_attempt_never_resurrects() {
         ),
     );
     assert_eq!(
-        engine.retained_floats.len(),
+        engine.world.settlement.retained_floats.len(),
         1,
         "replay holds without renewal"
     );
@@ -1348,7 +1352,11 @@ fn float_incomplete_gesture_minimized_and_unreadable_hold() {
         );
         stale.monotonic_ms = 4000;
         accepted(&mut engine, &stale);
-        assert_eq!(engine.retained_floats.len(), 1, "{name} holds");
+        assert_eq!(
+            engine.world.settlement.retained_floats.len(),
+            1,
+            "{name} holds"
+        );
     }
 }
 
@@ -1442,7 +1450,7 @@ fn float_gap_clamp_recovers_without_repeated_row() {
         }
         accepted(&mut engine, &gapped);
         assert_eq!(
-            engine.retained_floats.len(),
+            engine.world.settlement.retained_floats.len(),
             1,
             "{name}: gap stages evidence and holds"
         );
@@ -1467,7 +1475,7 @@ fn float_gap_clamp_recovers_without_repeated_row() {
             panic!("expected accepted, got {recovered_outcome:?}");
         };
         assert_eq!(
-            engine.retained_floats.len(),
+            engine.world.settlement.retained_floats.len(),
             1,
             "{name}: recovery without repetition retains"
         );
@@ -1516,7 +1524,7 @@ fn float_gap_refusal_recovers_to_settle_after_ack() {
     gapped.inventory_complete = false;
     accepted(&mut engine, &gapped);
     assert_eq!(
-        engine.retained_floats.len(),
+        engine.world.settlement.retained_floats.len(),
         1,
         "gap preserves refusal evidence"
     );
@@ -1538,7 +1546,7 @@ fn float_gap_refusal_recovers_to_settle_after_ack() {
         ),
     );
     assert_eq!(
-        engine.retained_floats.len(),
+        engine.world.settlement.retained_floats.len(),
         0,
         "readable preimage settles refusal"
     );
@@ -1588,7 +1596,7 @@ fn float_dpi_flip_holds_recovery_then_target_settles() {
         ),
     );
     assert_eq!(
-        engine.retained_floats.len(),
+        engine.world.settlement.retained_floats.len(),
         1,
         "DPI flip latches ambiguity"
     );
@@ -1609,7 +1617,7 @@ fn float_dpi_flip_holds_recovery_then_target_settles() {
         ),
     );
     assert_eq!(
-        engine.retained_floats.len(),
+        engine.world.settlement.retained_floats.len(),
         1,
         "recovery holds without repetition"
     );
@@ -1630,7 +1638,7 @@ fn float_dpi_flip_holds_recovery_then_target_settles() {
         ),
     );
     assert_eq!(
-        engine.retained_floats.len(),
+        engine.world.settlement.retained_floats.len(),
         0,
         "later exact target settles"
     );
@@ -1672,7 +1680,7 @@ fn float_gap_close_still_settles() {
     gapped.closed = vec![WindowId("win-a".to_owned())];
     accepted(&mut engine, &gapped);
     assert_eq!(
-        engine.retained_floats.len(),
+        engine.world.settlement.retained_floats.len(),
         0,
         "explicit close settles across the gap"
     );

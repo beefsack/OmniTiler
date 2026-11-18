@@ -59,7 +59,7 @@ use crate::world_attempts::{
     AttemptDisposition, FrameAttemptEvidence, PropertyAttempt, frame_watermark_stale,
     retain_frame_watermark,
 };
-use crate::world_engine::WorldEngine;
+use crate::world_transaction::WorldTransaction;
 
 pub(crate) use crate::world_attempts::is_stale_replay;
 
@@ -296,7 +296,7 @@ fn meaningful_learned(value: i32) -> bool {
     (1..=GEOMETRY_BOUND).contains(&value)
 }
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Merge retained learned minima into one declared hint vector: a
     /// learned axis applies only when meaningful, above any meaningful
     /// declared minimum, and within any meaningful declared maximum
@@ -309,7 +309,7 @@ impl WorldEngine {
         window: &WindowId,
         declared: WindowSizeHints,
     ) -> WindowSizeHints {
-        let Some(learned) = self.learned_mins.get(window) else {
+        let Some(learned) = self.world.settlement.learned_mins.get(window) else {
             return declared;
         };
         let mut out = declared;
@@ -337,10 +337,10 @@ impl WorldEngine {
     /// missing/unreadable facts, unknown homing, unreadable domains and
     /// floating tiling modes. Neither growth nor DPI is judged here.
     fn eligible_fact(&self, window: &WindowId) -> Option<Rect> {
-        if !self.staged.observation.inventory_complete || self.staged.gesture_barrier {
+        if !self.world.staged.observation.inventory_complete || self.world.staged.gesture_barrier {
             return None;
         }
-        let fact = self.staged.facts.get(window)?;
+        let fact = self.world.staged.facts.get(window)?;
         let derived = self.derived_for(window);
         if derived.hidden
             || derived.hold
@@ -355,8 +355,9 @@ impl WorldEngine {
             return None;
         }
         let rect = fact.rect?;
-        let key = self.staged.homing.get(window)?;
+        let key = self.world.staged.homing.get(window)?;
         let domain = self
+            .world
             .staged
             .domains
             .iter()
@@ -365,6 +366,8 @@ impl WorldEngine {
             return None;
         }
         if self
+            .world
+            .workspace
             .tiling
             .get(key)
             .is_some_and(|mode| *mode != crate::world_report::TilingMode::Tiled)
@@ -409,7 +412,7 @@ impl WorldEngine {
         } else {
             return None;
         };
-        let fact = self.staged.facts.get(&attempt.window)?;
+        let fact = self.world.staged.facts.get(&attempt.window)?;
         let (mut grow_w, mut grow_h) = learnable_growth(&attempt.target, stable);
         if grow_w.is_none() && grow_h.is_none() {
             return None;
@@ -440,7 +443,12 @@ impl WorldEngine {
 
     /// Fold one proven growth pair into the retained bound: per-axis maximum.
     fn retain_learned(&mut self, window: &WindowId, growth: (Option<i32>, Option<i32>)) {
-        let entry = self.learned_mins.entry(window.clone()).or_default();
+        let entry = self
+            .world
+            .settlement
+            .learned_mins
+            .entry(window.clone())
+            .or_default();
         if let Some(w) = growth.0 {
             entry.min_w = Some(entry.min_w.map_or(w, |cur| cur.max(w)));
         }
@@ -465,6 +473,8 @@ impl WorldEngine {
     /// old clamp cannot defeat fresh smaller evidence.
     fn invalidate_learned(&mut self) {
         let snapshot: Vec<(WindowId, LearnedMin)> = self
+            .world
+            .settlement
             .learned_mins
             .iter()
             .map(|(window, learned)| (window.clone(), *learned))
@@ -477,6 +487,7 @@ impl WorldEngine {
             let mut undercut_h = false;
             let mut tainted = false;
             for attempt in self
+                .world
                 .staged
                 .observation
                 .property_attempts
@@ -493,6 +504,8 @@ impl WorldEngine {
                 // Reads the prior watermark only; this runs before the loop
                 // below consumes the current report.
                 if self
+                    .world
+                    .settlement
                     .consumed_frames
                     .get(&window)
                     .and_then(PropertyAttempt::as_frame)
@@ -515,7 +528,12 @@ impl WorldEngine {
             let Some(rect) = self.eligible_fact(&window) else {
                 continue;
             };
-            let hints = self.staged.facts.get(&window).and_then(|fact| fact.hints);
+            let hints = self
+                .world
+                .staged
+                .facts
+                .get(&window)
+                .and_then(|fact| fact.hints);
             let conflict_w = learned.min_w.is_some_and(|floor| {
                 hints.is_some_and(|hints| hints.meaningful_max_w().is_some_and(|cap| cap < floor))
             });
@@ -529,7 +547,7 @@ impl WorldEngine {
             if !clear_w && !clear_h {
                 continue;
             }
-            if let Some(entry) = self.learned_mins.get_mut(&window) {
+            if let Some(entry) = self.world.settlement.learned_mins.get_mut(&window) {
                 if clear_w {
                     entry.min_w = None;
                 }
@@ -537,7 +555,7 @@ impl WorldEngine {
                     entry.min_h = None;
                 }
                 if entry.min_w.is_none() && entry.min_h.is_none() {
-                    self.learned_mins.remove(&window);
+                    self.world.settlement.learned_mins.remove(&window);
                 }
             }
         }
@@ -549,7 +567,7 @@ impl WorldEngine {
     /// same-state no-ops); observation gaps and native-only fact flaps keep
     /// the budget via the untouched continuity path.
     pub(crate) fn reset_frame_burst(&mut self, window: &WindowId) {
-        self.frame_bursts.remove(window);
+        self.world.settlement.frame_bursts.remove(window);
     }
 
     /// Refresh burst continuity from the current staged facts before
@@ -561,16 +579,16 @@ impl WorldEngine {
     /// (the timestamp clears) without spending budget, so a resume from an
     /// observation gap can never time-reset the count.
     fn update_burst_observations(&mut self) {
-        let now_ms = self.staged.observation.monotonic_ms;
-        let windows: Vec<WindowId> = self.frame_bursts.keys().cloned().collect();
+        let now_ms = self.world.staged.observation.monotonic_ms;
+        let windows: Vec<WindowId> = self.world.settlement.frame_bursts.keys().cloned().collect();
         for window in windows {
             let Some(current) = self.eligible_fact(&window) else {
-                if let Some(entry) = self.frame_bursts.get_mut(&window) {
+                if let Some(entry) = self.world.settlement.frame_bursts.get_mut(&window) {
                     entry.last_change_ms = 0;
                 }
                 continue;
             };
-            let Some(entry) = self.frame_bursts.get_mut(&window) else {
+            let Some(entry) = self.world.settlement.frame_bursts.get_mut(&window) else {
                 continue;
             };
             if current == entry.observed {
@@ -658,6 +676,7 @@ impl WorldEngine {
         // never the whole mixed attempt vector. Relative report order among
         // frame writes is preserved by the filter.
         let attempts: Vec<FrameAttemptEvidence> = self
+            .world
             .staged
             .observation
             .property_attempts
@@ -665,16 +684,16 @@ impl WorldEngine {
             .filter_map(PropertyAttempt::as_frame)
             .cloned()
             .collect();
-        let now_ms = self.staged.observation.monotonic_ms;
+        let now_ms = self.world.staged.observation.monotonic_ms;
         for attempt in &attempts {
-            let (fact_rect, minimized) = match self.staged.facts.get(&attempt.window) {
+            let (fact_rect, minimized) = match self.world.staged.facts.get(&attempt.window) {
                 Some(fact) => (fact.rect, fact.minimized == Some(true)),
                 None => continue,
             };
             if minimized {
                 continue;
             }
-            if frame_watermark_stale(&self.consumed_frames, attempt) {
+            if frame_watermark_stale(&self.world.settlement.consumed_frames, attempt) {
                 continue;
             }
             // Burst budget: every non-stale attempt on an eligible readable
@@ -683,12 +702,12 @@ impl WorldEngine {
             // accumulates; a changed target opens a fresh budget. Ineligible
             // rows (floats, overlays, unreadable facts, ...) never spend.
             if let Some(current) = self.eligible_fact(&attempt.window) {
-                match self.frame_bursts.get_mut(&attempt.window) {
+                match self.world.settlement.frame_bursts.get_mut(&attempt.window) {
                     Some(entry) if entry.desired == attempt.target => {
                         entry.attempts = entry.attempts.saturating_add(1);
                     }
                     _ => {
-                        self.frame_bursts.insert(
+                        self.world.settlement.frame_bursts.insert(
                             attempt.window.clone(),
                             FrameBurst {
                                 desired: attempt.target,
@@ -712,40 +731,46 @@ impl WorldEngine {
             {
                 self.retain_learned(&attempt.window, growth);
             }
-            let existing = self.frames.get(&attempt.window).cloned();
+            let existing = self.world.settlement.frames.get(&attempt.window).cloned();
             match consume_attempt(existing, attempt, fact_rect) {
                 Some(memory) => {
-                    self.frames.insert(attempt.window.clone(), memory);
+                    self.world
+                        .settlement
+                        .frames
+                        .insert(attempt.window.clone(), memory);
                 }
                 None => {
-                    self.frames.remove(&attempt.window);
+                    self.world.settlement.frames.remove(&attempt.window);
                 }
             }
-            retain_frame_watermark(&mut self.consumed_frames, attempt);
+            retain_frame_watermark(&mut self.world.settlement.consumed_frames, attempt);
         }
-        let closed = &self.staged.observation.closed;
+        let closed = &self.world.staged.observation.closed;
         for id in closed {
-            self.frames.remove(id);
-            self.consumed_frames.remove(id);
-            self.learned_mins.remove(id);
-            self.frame_bursts.remove(id);
+            self.world.settlement.frames.remove(id);
+            self.world.settlement.consumed_frames.remove(id);
+            self.world.settlement.learned_mins.remove(id);
+            self.world.settlement.frame_bursts.remove(id);
         }
         let doomed: Vec<WindowId> = self
+            .world
+            .settlement
             .frames
             .keys()
-            .chain(self.consumed_frames.keys())
-            .chain(self.learned_mins.keys())
-            .chain(self.frame_bursts.keys())
+            .chain(self.world.settlement.consumed_frames.keys())
+            .chain(self.world.settlement.learned_mins.keys())
+            .chain(self.world.settlement.frame_bursts.keys())
             .filter(|window| {
-                !self.staged.facts.contains_key(window) && !self.members.contains_key(window)
+                !self.world.staged.facts.contains_key(window)
+                    && !self.world.workspace.members.contains_key(window)
             })
             .cloned()
             .collect();
         for window in doomed {
-            self.frames.remove(&window);
-            self.consumed_frames.remove(&window);
-            self.learned_mins.remove(&window);
-            self.frame_bursts.remove(&window);
+            self.world.settlement.frames.remove(&window);
+            self.world.settlement.consumed_frames.remove(&window);
+            self.world.settlement.learned_mins.remove(&window);
+            self.world.settlement.frame_bursts.remove(&window);
         }
     }
 
@@ -763,7 +788,9 @@ impl WorldEngine {
         let Some(current) = observed else {
             return false;
         };
-        self.frames
+        self.world
+            .settlement
+            .frames
             .get(window)
             .is_some_and(|memory| memory.suppressed(desired, &current, now_ms))
     }

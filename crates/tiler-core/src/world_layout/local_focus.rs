@@ -33,6 +33,7 @@ impl WorldLayout {
     /// `last_active` advance for the accepted target, fixed-size provenance is
     /// pruned (capacity provenance is untouched), and the per-domain accepted
     /// revision advances by one.
+    #[cfg(test)]
     pub(crate) fn local_focus(
         &mut self,
         key: &DomainKey,

@@ -620,7 +620,11 @@ fn rapid_input_mixed_burst_preserves_explicit_subjects_and_close() {
         "burst focus effect survives the close"
     );
     assert!(
-        !engine.members.contains_key(&WindowId("win-c".to_owned())),
+        !engine
+            .world
+            .workspace
+            .members
+            .contains_key(&WindowId("win-c".to_owned())),
         "explicit close amid burst retires the member"
     );
     let (second, more) = run_batched(
@@ -716,13 +720,14 @@ fn rapid_input_operation_focus_prefers_batch_command_over_empty_native() {
     assert_accepted(&settlements, "batch accepts");
     assert_ready_settlement(&settlements[1]);
     let domain = engine
+        .world
         .staged
         .homing
         .get(&WindowId("win-b".to_owned()))
         .cloned()
         .expect("win-b stays homed");
     assert_eq!(
-        engine.effective_operation_focus(&domain, &WindowId(String::new())),
+        engine.tx(|tx| tx.effective_operation_focus(&domain, &WindowId(String::new()))),
         WindowId(String::new()),
         "baseline clears at finish: no active batch falls back to staged capture"
     );
@@ -827,7 +832,7 @@ fn rapid_input_batch_refusal_keeps_rollback_and_command_saves() {
         .expect("admission observes");
     // Seed a retained desire for an untouched live window (as a prior
     // proven-refusal rollback would have left it).
-    engine.intent_desired.insert(
+    engine.world.intent.intent_desired.insert(
         WindowId("win-b".to_owned()),
         Some(IntentData::new(Some(false), None)),
     );
@@ -890,7 +895,7 @@ fn rapid_input_pre_ready_batch_reparks_then_drains() {
     let windows = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
     let mut early = observe(1, windows(), "win-a");
     early.inventory_complete = false;
-    let revision_before = engine.state_revision;
+    let revision_before = engine.state_revision();
     match engine.handle_report_v4_batched(&early, &issue_for(&early), &[(1, focus_cmd("win-b"))]) {
         (V4RunOutcome::Accepted(reply), settlements) => {
             assert!(!reply.ready, "bootstrap carries no authority");
@@ -902,7 +907,8 @@ fn rapid_input_pre_ready_batch_reparks_then_drains() {
         (other, _) => panic!("expected bootstrap acceptance, got {other:?}"),
     }
     assert_eq!(
-        engine.state_revision, revision_before,
+        engine.state_revision(),
+        revision_before,
         "bootstrap advances no revision"
     );
     let (reply, settlements) = run_batched(
@@ -1173,18 +1179,18 @@ fn bookkeeping_command_resolves_implicit_subject_once() {
     // unresolvable implicit falls back to the placeholder (no save arm
     // matches it, preserving mismatch/empty semantics).
     let mut engine = engine();
-    engine.logical_focus_cursor = Some(WindowId("win-a".to_owned()));
+    engine.world.focus.logical_focus_cursor = Some(WindowId("win-a".to_owned()));
     assert_eq!(
-        engine.bookkeeping_command(&implicit_toggle_float()),
+        engine.tx(|tx| tx.bookkeeping_command(&implicit_toggle_float())),
         explicit_toggle_float("win-a")
     );
     assert_eq!(
-        engine.bookkeeping_command(&explicit_toggle_float("win-b")),
+        engine.tx(|tx| tx.bookkeeping_command(&explicit_toggle_float("win-b"))),
         explicit_toggle_float("win-b")
     );
-    engine.logical_focus_cursor = None;
+    engine.world.focus.logical_focus_cursor = None;
     assert_eq!(
-        engine.bookkeeping_command(&implicit_toggle_float()),
+        engine.tx(|tx| tx.bookkeeping_command(&implicit_toggle_float())),
         implicit_toggle_float()
     );
 }
@@ -1310,7 +1316,7 @@ fn rapid_input_implicit_sticky_batch_keeps_command_and_rollback_saves() {
         .expect("admission observes");
     // Seed a retained desire for an untouched live window (as a prior
     // proven-refusal rollback would have left it).
-    engine.intent_desired.insert(
+    engine.world.intent.intent_desired.insert(
         WindowId("win-b".to_owned()),
         Some(IntentData::new(Some(false), None)),
     );
@@ -1508,7 +1514,7 @@ fn rapid_input_implicit_send_freezes_pre_observation_retained_home() {
         .handle_report_v4_for_test(&seed)
         .expect("admission observes");
     assert_eq!(
-        engine.logical_focus_cursor,
+        engine.world.focus.logical_focus_cursor,
         Some(WindowId("win-a".to_owned())),
         "precondition: retained subject is win-a"
     );
@@ -1558,7 +1564,7 @@ fn rapid_input_implicit_send_later_command_uses_post_prior_home() {
         .handle_report_v4_for_test(&seed)
         .expect("admission observes");
     assert_eq!(
-        engine.logical_focus_cursor,
+        engine.world.focus.logical_focus_cursor,
         Some(WindowId("win-a".to_owned())),
         "precondition: batch opens on win-a"
     );
@@ -1576,13 +1582,14 @@ fn rapid_input_implicit_send_later_command_uses_post_prior_home() {
     assert_eq!(first_settlements.len(), 1);
     assert_ready_settlement(&first_settlements[0]);
     assert_eq!(
-        engine.logical_focus_cursor,
+        engine.world.focus.logical_focus_cursor,
         Some(WindowId("win-b".to_owned())),
         "post-prior core subject is win-b while staged legs stay out-a"
     );
     // The exact later-command refreeze call from the batch loop.
-    let routing = crate::world_engine::RawRouting::from_staged(&engine.staged);
-    let (frozen, _) = engine.freeze_command_sources(Some(&implicit_send_numbered_home()), &routing);
+    let routing = crate::world_engine::RawRouting::from_staged(&engine.world.staged);
+    let (frozen, _) = engine
+        .tx_ro(|tx| tx.freeze_command_sources(Some(&implicit_send_numbered_home()), &routing));
     assert_eq!(
         frozen,
         Some(OutputId("out-b".to_owned())),
@@ -1709,9 +1716,9 @@ fn rapid_input_implicit_send_after_same_focus_batch_command_commits() {
     assert_ready_settlement(&settlements[1]);
     assert_accepted(&settlements, "focus plus following implicit send accepts");
     assert!(
-        engine.batch_command_focus.is_empty(),
+        engine.world.focus.batch_command_focus.is_empty(),
         "accepted finish clears batch-only provenance, never retained: {:?}",
-        engine.batch_command_focus
+        engine.world.focus.batch_command_focus
     );
     let transfer = reply
         .transfers
@@ -1726,153 +1733,123 @@ fn rapid_input_implicit_send_after_same_focus_batch_command_commits() {
 }
 
 #[test]
-fn rapid_input_save_reserve_covers_inline_implicit_max_id() {
-    // Pre-mutation intent-save reserve must unwrap the execution-time
-    // subject: an inline implicit float stages a resolved save up to the
-    // longest opaque id, never the empty placeholder width.
-    use crate::world_sizing_v4::max_intent_save_bound_v4;
-    let implicit = WorldCommand::Implicit(Box::new(WorldCommand::Operation(
-        CoreCommand::ToggleFloat {
-            window: String::new(),
-            float_rect: None,
-        },
-    )));
-    let probe = report(
-        1,
-        vec![fact("win-a", "out-a", 0)],
-        "win-a",
-        Some(1),
-        Some(implicit),
-        vec![],
-    );
-    assert_eq!(
-        max_intent_save_bound_v4(&probe),
-        16 + 130 + crate::world_sizing::MAX_INTENT_DESIRED_DATA_JSON,
-        "implicit inline reserves the max resolved id, not the placeholder"
-    );
-}
+fn rapid_input_batched_preflight_sees_effective_queued_and_refuses_before_mutation() {
+    // Format-neutral preflight gate proves `PreflightGateFacts.effective_queued`
+    // receives the exact parked FIFO batch commands, preflight refusal leaves
+    // revision/highwater/cached-reply/intent untouched with empty settlements,
+    // and retry publishes the exact distinct saves. Protocol sizing bounds
+    // live in `tiler-protocol/src/world_admission.rs`.
+    use crate::world_engine::{
+        AdmissionGateDecision, CoreAdmissionGate, ExactInnerCheck, ExactInnerDecision,
+        FutureReserveGateFacts, PreflightGateFacts,
+    };
+    use std::cell::{Cell, RefCell};
 
-#[test]
-fn rapid_input_batch_save_bound_covers_distinct_saves() {
-    // The drained FIFO batch stages real intentDesired bytes beyond
-    // report.command: the combined inline-plus-batch reserve must cover the
-    // exact published section.
-    use crate::world_sizing::intent_desired_estimate;
-    use crate::world_sizing_v4::{max_intent_save_batch_bound_v4, max_intent_save_bound_v4};
+    struct LocalBatchedPreflightGate {
+        refuse_preflight: Cell<bool>,
+        observed_queued: RefCell<Vec<(u64, WorldCommand)>>,
+    }
+
+    impl CoreAdmissionGate for LocalBatchedPreflightGate {
+        fn check_request_size(&self, _report: &WorldReportV4) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+
+        fn check_preflight(
+            &self,
+            _report: &WorldReportV4,
+            facts: &PreflightGateFacts<'_>,
+        ) -> AdmissionGateDecision {
+            *self.observed_queued.borrow_mut() = facts.effective_queued.to_vec();
+            if self.refuse_preflight.get() {
+                AdmissionGateDecision::Refuse
+            } else {
+                AdmissionGateDecision::Allow
+            }
+        }
+
+        fn check_exact_inner(&self, _reply: &WorldReplyV4) -> ExactInnerDecision {
+            ExactInnerDecision::Allow(ExactInnerCheck::new(0))
+        }
+
+        fn check_future_reserve(
+            &self,
+            _reply: &WorldReplyV4,
+            _facts: &FutureReserveGateFacts,
+            _exact: ExactInnerCheck,
+        ) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+    }
+
     let mut eng = engine();
     let windows = || vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
     eng.handle_report_v4_for_test(&observe(1, windows(), "win-a"))
         .expect("admission observes");
-    let report = observe(2, windows(), "win-a");
+    let capture = observe(2, windows(), "win-a");
     let queued = vec![
-        (
-            1,
-            WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "win-a".to_owned(),
-                float_rect: None,
-            }),
-        ),
-        (
-            2,
-            WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "win-b".to_owned(),
-                float_rect: None,
-            }),
-        ),
+        (1, explicit_toggle_float("win-a")),
+        (2, explicit_toggle_float("win-b")),
     ];
-    let (reply, settlements) = run_batched(&mut eng, &report, &queued);
-    assert_eq!(settlements.len(), 2);
-    assert!(!reply.intent_desired.is_empty(), "batch publishes saves");
-    let exact_section = intent_desired_estimate(&reply.intent_desired);
-    let bound =
-        max_intent_save_bound_v4(&report).saturating_add(max_intent_save_batch_bound_v4(&queued));
-    // Structural estimator only (same sizing family, not the canonical
-    // encoder): the empty 18-byte section rides the 4096 envelope slack
-    // already in the reply bound; the batch reserve covers rows only. Real
-    // canonical bytes are proven service-side in
-    // `rapid_input_burst::rapid_input_batch_saves_canonical_bytes_fit_reserve`.
-    assert!(
-        bound.saturating_add(18) >= exact_section,
-        "combined bound must cover the batch section: bound={bound} exact={exact_section} writes={:?}",
-        reply.intent_desired
-    );
-}
-
-#[test]
-fn rapid_input_batch_save_bound_max_widths_and_distinct() {
-    // Exact canonical encoding stays under the bound at maximum opaque id
-    // widths; repeated explicit subjects count once while each implicit
-    // save counts a max row.
-    use crate::world_sizing::{MAX_INTENT_DESIRED_DATA_JSON, json_string_len};
-    use crate::world_sizing_v4::{
-        is_intent_save_command_v4, max_intent_save_batch_bound_v4, max_intent_save_batch_rows_v4,
+    let revision_before = eng.state_revision();
+    let highwater_before = eng.world.command_highwater;
+    let cached_reply_before = eng.last_reply_v4().clone();
+    let gate = LocalBatchedPreflightGate {
+        refuse_preflight: Cell::new(true),
+        observed_queued: RefCell::new(Vec::new()),
     };
-    let max_id = "w".repeat(crate::bounds::MAX_OPAQUE_ID_LEN);
-    assert_eq!(json_string_len(&max_id), 130);
-    // Synthetic bound proof only (no 128-window execution): 100 distinct
-    // max-width explicit plus 28 implicit is 128 rows, each a max row
-    // (explicit exact equals max at this width). Estimator bytes here, not
-    // canonical encoder bytes; canonical proof lives service-side.
-    let mut queued: Vec<(u64, WorldCommand)> = Vec::new();
-    for n in 1..=100u64 {
-        queued.push((
-            n,
-            WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: format!("w{:0127}", n),
-                float_rect: None,
-            }),
-        ));
+    match eng
+        .handle_report_v4_batched_with_gate_and_prepare(
+            &capture,
+            &issue_for(&capture),
+            &queued,
+            &gate,
+            |_| Ok::<(), std::convert::Infallible>(()),
+        )
+        .unwrap_or_else(|e| match e {})
+    {
+        (V4RunOutcome::Rejected { kind, .. }, settlements) => {
+            assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
+            assert!(
+                settlements.is_empty(),
+                "preflight refusal settles nothing; batch stays unsettled"
+            );
+        }
+        (other, _) => panic!("expected reply-oversize refusal, got {other:?}"),
     }
-    for n in 101..=128u64 {
-        queued.push((
-            n,
-            WorldCommand::Implicit(Box::new(WorldCommand::Operation(
-                CoreCommand::ToggleFloat {
-                    window: String::new(),
-                    float_rect: None,
-                },
-            ))),
-        ));
-    }
-    assert!(queued.iter().all(|(_, c)| is_intent_save_command_v4(c)));
-    assert_eq!(max_intent_save_batch_rows_v4(&queued), 128);
-    let bound = max_intent_save_batch_bound_v4(&queued);
-    assert_eq!(bound, 128 * (16 + 130 + MAX_INTENT_DESIRED_DATA_JSON + 1));
-    // Manual exact section with 128 max-id rows fits under the bound.
-    let writes: Vec<crate::world_report::IntentDesire> = queued
-        .iter()
-        .enumerate()
-        .map(|(i, _)| crate::world_report::IntentDesire {
-            win: WindowId(format!("w{:0127}", i)),
-            data: Some(crate::intent_data::IntentData::new(Some(true), None)),
-        })
-        .collect();
-    let exact = crate::world_sizing::intent_desired_estimate(&writes);
-    assert!(
-        bound >= exact,
-        "max-width bound covers exact: {bound} vs {exact}"
-    );
-    // One repeated explicit subject counts once, not 100 times.
-    let repeated: Vec<(u64, WorldCommand)> = (1..=100u64)
-        .map(|n| {
-            (
-                n,
-                WorldCommand::Operation(CoreCommand::ToggleFloat {
-                    window: "win-a".to_owned(),
-                    float_rect: None,
-                }),
-            )
-        })
-        .collect();
-    assert_eq!(max_intent_save_batch_rows_v4(&repeated), 1);
+    assert_eq!(*gate.observed_queued.borrow(), queued);
+    assert_eq!(eng.state_revision(), revision_before);
+    assert_eq!(eng.world.command_highwater, highwater_before);
+    assert_eq!(eng.last_reply_v4(), cached_reply_before);
+    assert!(eng.world.intent.intent_desired.is_empty());
+
+    gate.refuse_preflight.set(false);
+    let (reply, settlements) = match eng
+        .handle_report_v4_batched_with_gate_and_prepare(
+            &capture,
+            &issue_for(&capture),
+            &queued,
+            &gate,
+            |_| Ok::<(), std::convert::Infallible>(()),
+        )
+        .unwrap_or_else(|e| match e {})
+    {
+        (V4RunOutcome::Accepted(reply), settlements) => (reply, settlements),
+        (other, _) => panic!("expected accepted retry, got {other:?}"),
+    };
+    assert_eq!(settlements.len(), 2);
+    assert_ready_settlement(&settlements[0]);
+    assert_ready_settlement(&settlements[1]);
+    let mut pairs: Vec<(String, IntentData)> =
+        reply.intent_desired.iter().map(float_write_pair).collect();
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(
-        max_intent_save_batch_bound_v4(&repeated),
-        16 + json_string_len("win-a") + MAX_INTENT_DESIRED_DATA_JSON + 1
+        pairs,
+        vec![
+            ("win-a".to_owned(), IntentData::new(Some(true), None)),
+            ("win-b".to_owned(), IntentData::new(Some(true), None)),
+        ]
     );
-    // Non-save commands reserve nothing.
-    let unrelated = vec![(1, focus_cmd("win-a")), (2, focus_cmd("win-b"))];
-    assert_eq!(max_intent_save_batch_rows_v4(&unrelated), 0);
-    assert_eq!(max_intent_save_batch_bound_v4(&unrelated), 0);
 }
 
 #[test]
@@ -1889,12 +1866,12 @@ fn rapid_input_batch_rowcap_leaves_batch_unsettled() {
     eng.handle_report_v4_for_test(&observe(1, windows(), "win-a"))
         .expect("admission observes");
     for i in 0..MAX_INTENT_DESIRED {
-        eng.intent_desired.insert(
+        eng.world.intent.intent_desired.insert(
             WindowId(format!("win-rb-{i:05}")),
             Some(IntentData::new(Some(false), None)),
         );
     }
-    assert_eq!(eng.intent_desired.len(), MAX_INTENT_DESIRED);
+    assert_eq!(eng.world.intent.intent_desired.len(), MAX_INTENT_DESIRED);
     let queued = vec![(
         1,
         WorldCommand::Operation(CoreCommand::ToggleFloat {
@@ -1902,9 +1879,9 @@ fn rapid_input_batch_rowcap_leaves_batch_unsettled() {
             float_rect: None,
         }),
     )];
-    let revision_before = eng.state_revision;
-    let highwater_before = eng.command_highwater;
-    let cached_reply_before = eng.last_reply_v4.clone();
+    let revision_before = eng.state_revision();
+    let highwater_before = eng.world.command_highwater;
+    let cached_reply_before = eng.last_reply_v4().clone();
     let capture = observe(2, windows(), "win-a");
     match eng.handle_report_v4_batched(&capture, &issue_for(&capture), &queued) {
         (V4RunOutcome::Rejected { kind, message }, settlements) => {
@@ -1918,20 +1895,22 @@ fn rapid_input_batch_rowcap_leaves_batch_unsettled() {
         (other, _) => panic!("expected rowcap refusal, got {other:?}"),
     }
     assert_eq!(
-        eng.state_revision, revision_before,
+        eng.state_revision(),
+        revision_before,
         "rowcap refusal advances no revision"
     );
     assert_eq!(
-        eng.command_highwater, highwater_before,
+        eng.world.command_highwater, highwater_before,
         "rowcap refusal consumes no sequence"
     );
     assert_eq!(
-        eng.intent_desired.len(),
+        eng.world.intent.intent_desired.len(),
         MAX_INTENT_DESIRED,
         "rowcap refusal mutates no ledger"
     );
     assert_eq!(
-        eng.last_reply_v4, cached_reply_before,
+        eng.last_reply_v4(),
+        cached_reply_before,
         "rowcap refusal preserves the exact cached reply"
     );
 }
@@ -1990,12 +1969,12 @@ fn rapid_input_capture_boundary_stale_native_keeps_implicit_subject() {
         "native fact catches up to the pre-batch focus",
     );
     assert_eq!(
-        engine.logical_focus_cursor,
+        engine.world.focus.logical_focus_cursor,
         Some(WindowId("win-b".to_owned())),
         "precondition: slot, leaf and staged native all open on left win-b"
     );
     assert_eq!(
-        engine.staged.observation.focused_global, "win-b",
+        engine.world.staged.observation.focused_global, "win-b",
         "precondition: staged native focus is left win-b"
     );
     // In-batch reversal: implicit focus-right moves left win-b to right
@@ -2019,14 +1998,14 @@ fn rapid_input_capture_boundary_stale_native_keeps_implicit_subject() {
         reversal.effects
     );
     assert_eq!(
-        engine.logical_focus_cursor,
+        engine.world.focus.logical_focus_cursor,
         Some(WindowId("win-a".to_owned())),
         "reversal leaves the unlanded core choice on win-a while staged native lags win-b"
     );
     assert!(
-        engine.batch_command_focus.is_empty(),
+        engine.world.focus.batch_command_focus.is_empty(),
         "accepted finish clears batch-only provenance: {:?}",
-        engine.batch_command_focus
+        engine.world.focus.batch_command_focus
     );
     // STALE leg: the next capture re-reports the unchanged native focus
     // win-b (no new information, so world_run_v4 keeps the slot win-a per
@@ -2049,7 +2028,7 @@ fn rapid_input_capture_boundary_stale_native_keeps_implicit_subject() {
         "unchanged lagging native keeps the implicit subject",
     );
     assert_eq!(
-        engine.logical_focus_cursor,
+        engine.world.focus.logical_focus_cursor,
         Some(WindowId("win-a".to_owned())),
         "unchanged re-report preserves the unlanded core choice win-a"
     );

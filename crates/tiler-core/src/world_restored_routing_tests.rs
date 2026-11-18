@@ -982,17 +982,6 @@ fn drag_preview_same_domain_routes_and_carries_core_rect_and_hover() {
     assert_eq!(row_of(&reply, "win-b").output.0, "out-a");
     assert!(reply.transfers.is_empty());
     assert!(reply.effects.is_empty());
-    // No core v4 canonical writer exists; the typed assertions above
-    // already pin the drag-preview op and the win-b neighbor identity,
-    // and the exact-byte delta below proves the preview rides the reply
-    // bytes (protocol `encode_reply_v4` field arithmetic).
-    use crate::world_sizing_v4::reply_exact_bytes_v4;
-    let mut stripped = reply.clone();
-    stripped.drag_preview = None;
-    assert!(
-        reply_exact_bytes_v4(&reply) > reply_exact_bytes_v4(&stripped),
-        "exact bytes carry the drag-preview"
-    );
 }
 
 fn presentation_query(
@@ -1294,6 +1283,8 @@ fn operation_send_retains_and_foreign_routes_refuse() {
     assert_eq!(reply.transfers[0].operation_id, "op-32");
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "ineligible mover binds nothing"
@@ -1464,6 +1455,8 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
     assert_eq!(reply.transfers[0].operation_id, "op-44");
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "floating follow binds nothing"
@@ -1555,6 +1548,8 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
     assert_eq!(engine.retained_transfers().len(), 1);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-a".to_owned())),
         "ineligible mover binds nothing"
@@ -1709,7 +1704,7 @@ fn predicate_ingress_selects_admission_without_reclassification() {
         &width_fixed_report(FixedSizePredicate::EitherAxis, 1),
     );
     assert_eq!(
-        engine.layout().fixed_size_predicate(),
+        engine.world.layout().fixed_size_predicate(),
         FixedSizePredicate::EitherAxis
     );
     let row = row_of(&reply, "win-f");
@@ -2133,14 +2128,14 @@ fn pair_keys(view_a: &str, view_b: &str) -> (DomainKey, DomainKey) {
 }
 
 fn assert_pair_gaps(engine: &WorldEngine, key_a: &DomainKey, key_b: &DomainKey) {
-    let keys = engine.layout().domain_keys();
+    let keys = engine.world.layout().domain_keys();
     assert_eq!(
-        engine.layout().domain_outer_gap(key_a),
+        engine.world.layout().domain_outer_gap(key_a),
         Some(8),
         "source outer gap retained; keys={keys:?} want={key_a:?}/{key_b:?}"
     );
     assert_eq!(
-        engine.layout().domain_outer_gap(key_b),
+        engine.world.layout().domain_outer_gap(key_b),
         Some(8),
         "configured outer gap is shared across outputs"
     );
@@ -2440,6 +2435,8 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
                 );
                 assert!(
                     !engine
+                        .world
+                        .settlement
                         .retained_selection
                         .contains_key(&OutputId("out-a".to_owned())),
                     "ineligible mover binds nothing"
@@ -2483,7 +2480,10 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
                 output: key_a.output.clone(),
                 workspace: WorkspaceId(ring[1].clone()),
             };
-            assert_eq!(engine.layout().domain_outer_gap(&workspace_target), Some(8));
+            assert_eq!(
+                engine.world.layout().domain_outer_gap(&workspace_target),
+                Some(8)
+            );
         }
         for row in &reply.windows {
             if let Some(allocation) = row.allocation {
@@ -3059,7 +3059,10 @@ fn physical_return_same_panel_new_handle_reclaims() {
             None,
         ),
     );
-    assert!(engine.displaced.contains_key("out-b"), "unit displaced");
+    assert!(
+        engine.world.workspace.displaced.contains_key("out-b"),
+        "unit displaced"
+    );
     let back = accepted(
         &mut engine,
         &report(
@@ -3076,9 +3079,9 @@ fn physical_return_same_panel_new_handle_reclaims() {
         ),
     );
     assert!(
-        !engine.displaced.contains_key("out-b"),
+        !engine.world.workspace.displaced.contains_key("out-b"),
         "same panel under a new handle reclaims: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     let units: Vec<_> = back
         .workspaces
@@ -3123,7 +3126,7 @@ fn physical_return_same_name_different_panel_holds() {
             None,
         ),
     );
-    assert!(engine.displaced.contains_key("out-b"));
+    assert!(engine.world.workspace.displaced.contains_key("out-b"));
     let back = accepted(
         &mut engine,
         &report(
@@ -3140,9 +3143,9 @@ fn physical_return_same_name_different_panel_holds() {
         ),
     );
     assert!(
-        engine.displaced.contains_key("out-b"),
+        engine.world.workspace.displaced.contains_key("out-b"),
         "different panel under the same name must hold: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     let units: Vec<_> = back
         .workspaces
@@ -3187,7 +3190,7 @@ fn physical_return_unknown_identity_holds_by_name() {
             None,
         ),
     );
-    assert!(engine.displaced.contains_key("out-b"));
+    assert!(engine.world.workspace.displaced.contains_key("out-b"));
     let back = accepted(
         &mut engine,
         &report(
@@ -3204,9 +3207,9 @@ fn physical_return_unknown_identity_holds_by_name() {
         ),
     );
     assert!(
-        engine.displaced.contains_key("out-b"),
+        engine.world.workspace.displaced.contains_key("out-b"),
         "unknown identity must hold even under the same name: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     let units: Vec<_> = back
         .workspaces
@@ -3296,7 +3299,7 @@ fn physical_return_duplicate_tuple_holds_without_connector() {
             None,
         ),
     );
-    assert!(engine.displaced.contains_key("out-b"));
+    assert!(engine.world.workspace.displaced.contains_key("out-b"));
     let back = accepted(
         &mut engine,
         &report(
@@ -3318,9 +3321,9 @@ fn physical_return_duplicate_tuple_holds_without_connector() {
         ),
     );
     assert!(
-        engine.displaced.contains_key("out-b"),
+        engine.world.workspace.displaced.contains_key("out-b"),
         "duplicated tuple with null connectors must hold: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     let units: Vec<_> = back
         .workspaces
@@ -3371,7 +3374,7 @@ fn physical_return_duplicate_tuple_connector_fallback_returns() {
             None,
         ),
     );
-    assert!(engine.displaced.contains_key("out-b"));
+    assert!(engine.world.workspace.displaced.contains_key("out-b"));
     let back = accepted(
         &mut engine,
         &report(
@@ -3393,9 +3396,9 @@ fn physical_return_duplicate_tuple_connector_fallback_returns() {
         ),
     );
     assert!(
-        !engine.displaced.contains_key("out-b"),
+        !engine.world.workspace.displaced.contains_key("out-b"),
         "connector lane disambiguates: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     let units: Vec<_> = back
         .workspaces
@@ -3447,7 +3450,7 @@ fn physical_return_connector_fallback_unknown_tuple_renamed() {
             None,
         ),
     );
-    assert!(engine.displaced.contains_key("out-b"));
+    assert!(engine.world.workspace.displaced.contains_key("out-b"));
     let back = accepted(
         &mut engine,
         &report(
@@ -3468,9 +3471,9 @@ fn physical_return_connector_fallback_unknown_tuple_renamed() {
         ),
     );
     assert!(
-        !engine.displaced.contains_key("out-b"),
+        !engine.world.workspace.displaced.contains_key("out-b"),
         "proved connector reclaims under a new handle: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     assert!(
         back.workspaces.iter().any(|row| row.output.0 == "out-c"),
@@ -3527,9 +3530,9 @@ fn physical_return_connector_fallback_unknown_tuple_renamed() {
         ),
     );
     assert!(
-        engine.displaced.contains_key("out-b"),
+        engine.world.workspace.displaced.contains_key("out-b"),
         "unproved connector never takes an arbitrary candidate: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     assert!(
         back.workspaces.iter().any(|row| row.output.0 == "out-z"),
@@ -3575,7 +3578,7 @@ fn physical_return_unplug_replug_cycles_keep_unit_and_views() {
             ),
         );
         assert!(
-            engine.displaced.contains_key("out-b"),
+            engine.world.workspace.displaced.contains_key("out-b"),
             "cycle {cycle}: displaced"
         );
         assert!(
@@ -3604,9 +3607,9 @@ fn physical_return_unplug_replug_cycles_keep_unit_and_views() {
             ),
         );
         assert!(
-            !engine.displaced.contains_key("out-b"),
+            !engine.world.workspace.displaced.contains_key("out-b"),
             "cycle {cycle}: reclaimed: {:?}",
-            engine.displaced
+            engine.world.workspace.displaced
         );
         assert!(
             back.effects.is_empty(),
@@ -3668,7 +3671,7 @@ fn physical_return_explicit_send_away_not_pulled_back() {
             None,
         ),
     );
-    assert!(engine.displaced.contains_key("out-b"));
+    assert!(engine.world.workspace.displaced.contains_key("out-b"));
     // Explicitly send the displaced member onto the survivor's own unit.
     // The mover must be the observed focus for the transfer to issue.
     let sent = accepted(
@@ -3712,9 +3715,9 @@ fn physical_return_explicit_send_away_not_pulled_back() {
         ),
     );
     assert!(
-        !engine.displaced.contains_key("out-b"),
+        !engine.world.workspace.displaced.contains_key("out-b"),
         "unit still reclaims: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     let rows: Vec<_> = back
         .windows
@@ -3745,12 +3748,14 @@ fn physical_return_explicit_send_away_not_pulled_back() {
     // live again with its own ring while the departed member stays put.
     assert!(
         !engine
+            .world
+            .workspace
             .mapping
             .get("out-b")
             .unwrap_or(&Vec::new())
             .is_empty(),
         "returned panel hosts a live ring: {:?}",
-        engine.mapping
+        engine.world.workspace.mapping
     );
 }
 
@@ -3798,16 +3803,18 @@ fn physical_disconnect_no_survivor_holds_unit_for_retry() {
     );
     assert!(
         engine
+            .world
+            .workspace
             .mapping
             .get("out-a")
             .is_some_and(|ring| ring.contains(&view_a)),
         "unit kept untouched for retry: {:?}",
-        engine.mapping
+        engine.world.workspace.mapping
     );
     assert!(
-        engine.displaced.is_empty(),
+        engine.world.workspace.displaced.is_empty(),
         "nothing displaced without a survivor: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     let back = accepted(
         &mut engine,
@@ -3868,7 +3875,10 @@ fn physical_return_shared_tuple_solo_intermediate_holds_null() {
             None,
         ),
     );
-    assert!(engine.displaced.contains_key("out-b"), "B displaced");
+    assert!(
+        engine.world.workspace.displaced.contains_key("out-b"),
+        "B displaced"
+    );
     // Intermediate A-only report while B is still absent: hold, keep the
     // association and the units on the survivor.
     let mid = accepted(
@@ -3888,9 +3898,9 @@ fn physical_return_shared_tuple_solo_intermediate_holds_null() {
         ),
     );
     assert!(
-        engine.displaced.contains_key("out-b"),
+        engine.world.workspace.displaced.contains_key("out-b"),
         "shared tuple must not reclaim onto the peer: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     let units: Vec<_> = mid
         .workspaces
@@ -3941,7 +3951,10 @@ fn physical_return_shared_tuple_solo_intermediate_holds_distinct_connector() {
             None,
         ),
     );
-    assert!(engine.displaced.contains_key("out-b"), "B displaced");
+    assert!(
+        engine.world.workspace.displaced.contains_key("out-b"),
+        "B displaced"
+    );
     let mid = accepted(
         &mut engine,
         &report(
@@ -3959,9 +3972,9 @@ fn physical_return_shared_tuple_solo_intermediate_holds_distinct_connector() {
         ),
     );
     assert!(
-        engine.displaced.contains_key("out-b"),
+        engine.world.workspace.displaced.contains_key("out-b"),
         "connector mismatch must hold: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     assert!(
         mid.workspaces
@@ -3987,9 +4000,9 @@ fn physical_return_shared_tuple_solo_intermediate_holds_distinct_connector() {
         ),
     );
     assert!(
-        !engine.displaced.contains_key("out-b"),
+        !engine.world.workspace.displaced.contains_key("out-b"),
         "true panel reclaims via connector: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     assert!(
         back.workspaces
@@ -4037,7 +4050,10 @@ fn physical_return_shared_tuple_solo_b_returns_after_a_leaves() {
             None,
         ),
     );
-    assert!(engine.displaced.contains_key("out-b"), "B displaced");
+    assert!(
+        engine.world.workspace.displaced.contains_key("out-b"),
+        "B displaced"
+    );
     // A leaves as well while B returns solo: B reclaims, A displaces.
     let back = accepted(
         &mut engine,
@@ -4056,9 +4072,9 @@ fn physical_return_shared_tuple_solo_b_returns_after_a_leaves() {
         ),
     );
     assert!(
-        !engine.displaced.contains_key("out-b"),
+        !engine.world.workspace.displaced.contains_key("out-b"),
         "solo true panel reclaims: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     assert!(
         back.workspaces
@@ -4115,8 +4131,14 @@ fn physical_return_cross_lane_same_target_holds() {
             None,
         ),
     );
-    assert!(engine.displaced.contains_key("out-x"), "X displaced");
-    assert!(engine.displaced.contains_key("out-y"), "Y displaced");
+    assert!(
+        engine.world.workspace.displaced.contains_key("out-x"),
+        "X displaced"
+    );
+    assert!(
+        engine.world.workspace.displaced.contains_key("out-y"),
+        "Y displaced"
+    );
     // out-p carries X's tuple with Y's connector: both lanes hit one panel.
     let mixed = accepted(
         &mut engine,
@@ -4147,9 +4169,10 @@ fn physical_return_cross_lane_same_target_holds() {
         ),
     );
     assert!(
-        engine.displaced.contains_key("out-x") && engine.displaced.contains_key("out-y"),
+        engine.world.workspace.displaced.contains_key("out-x")
+            && engine.world.workspace.displaced.contains_key("out-y"),
         "colliding claims must both hold: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     assert!(
         mixed
@@ -4195,7 +4218,10 @@ fn physical_return_connector_fallback_live_tuple_unreadable() {
             None,
         ),
     );
-    assert!(engine.displaced.contains_key("out-b"), "B displaced");
+    assert!(
+        engine.world.workspace.displaced.contains_key("out-b"),
+        "B displaced"
+    );
     let partial = crate::world_report::OutputIdentity {
         manufacturer: None,
         model: Some("SynthModel-b".to_owned()),
@@ -4218,9 +4244,9 @@ fn physical_return_connector_fallback_live_tuple_unreadable() {
         ),
     );
     assert!(
-        !engine.displaced.contains_key("out-b"),
+        !engine.world.workspace.displaced.contains_key("out-b"),
         "connector reclaim works with live tuple unreadable: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     assert!(
         back.workspaces
@@ -4264,7 +4290,10 @@ fn physical_return_connector_fallback_readable_mismatch_holds() {
             None,
         ),
     );
-    assert!(engine.displaced.contains_key("out-b"), "B displaced");
+    assert!(
+        engine.world.workspace.displaced.contains_key("out-b"),
+        "B displaced"
+    );
     let back = accepted(
         &mut engine,
         &report(
@@ -4285,9 +4314,9 @@ fn physical_return_connector_fallback_readable_mismatch_holds() {
         ),
     );
     assert!(
-        engine.displaced.contains_key("out-b"),
+        engine.world.workspace.displaced.contains_key("out-b"),
         "readable different tuple must hold: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     assert!(
         back.workspaces
@@ -4355,7 +4384,12 @@ fn physical_return_survivor_leaves_then_origin_returns_renamed() {
         ),
     );
     assert_eq!(
-        engine.displaced.get("out-s").map(|e| e.dest.as_str()),
+        engine
+            .world
+            .workspace
+            .displaced
+            .get("out-s")
+            .map(|e| e.dest.as_str()),
         Some("out-t")
     );
     assert!(
@@ -4384,18 +4418,23 @@ fn physical_return_survivor_leaves_then_origin_returns_renamed() {
         ),
     );
     assert!(
-        engine.displaced.contains_key("out-s"),
+        engine.world.workspace.displaced.contains_key("out-s"),
         "S association survives"
     );
     assert!(
-        engine.displaced.contains_key("out-t"),
+        engine.world.workspace.displaced.contains_key("out-t"),
         "T displaces in turn"
     );
     assert_eq!(
-        engine.displaced.get("out-s").map(|e| e.dest.as_str()),
+        engine
+            .world
+            .workspace
+            .displaced
+            .get("out-s")
+            .map(|e| e.dest.as_str()),
         Some("out-u"),
         "chain refresh tracks the live host: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     assert!(
         chained.effects.is_empty(),
@@ -4403,6 +4442,8 @@ fn physical_return_survivor_leaves_then_origin_returns_renamed() {
         chained.effects
     );
     let s_units: Vec<String> = engine
+        .world
+        .workspace
         .displaced
         .get("out-s")
         .map(|entry| entry.workspaces.clone())
@@ -4431,9 +4472,9 @@ fn physical_return_survivor_leaves_then_origin_returns_renamed() {
         ),
     );
     assert!(
-        !engine.displaced.contains_key("out-s"),
+        !engine.world.workspace.displaced.contains_key("out-s"),
         "renamed S reclaims: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     // Chained reclaim restores the exact viewed unit with its tiling
     // and contents; every member stays exactly homed once and the return
@@ -4549,7 +4590,12 @@ fn physical_chain_return_s_first_then_t_keeps_exact_affinity() {
         ),
     );
     assert_eq!(
-        engine.displaced.get("out-s").map(|e| e.dest.as_str()),
+        engine
+            .world
+            .workspace
+            .displaced
+            .get("out-s")
+            .map(|e| e.dest.as_str()),
         Some("out-t")
     );
     let _ = accepted(
@@ -4573,23 +4619,35 @@ fn physical_chain_return_s_first_then_t_keeps_exact_affinity() {
         ),
     );
     assert_eq!(
-        engine.displaced.get("out-s").map(|e| e.dest.as_str()),
+        engine
+            .world
+            .workspace
+            .displaced
+            .get("out-s")
+            .map(|e| e.dest.as_str()),
         Some("out-u"),
         "chain refresh tracks the live host: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     assert_eq!(
-        engine.displaced.get("out-t").map(|e| e.dest.as_str()),
+        engine
+            .world
+            .workspace
+            .displaced
+            .get("out-t")
+            .map(|e| e.dest.as_str()),
         Some("out-u")
     );
     assert!(
         engine
+            .world
+            .workspace
             .displaced
             .get("out-t")
             .map(|entry| entry.workspaces.contains(&view_s))
             .unwrap_or(false),
         "chained T record overlaps the S unit: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     let s_back = accepted(
         &mut engine,
@@ -4611,14 +4669,14 @@ fn physical_chain_return_s_first_then_t_keeps_exact_affinity() {
         ),
     );
     assert!(
-        !engine.displaced.contains_key("out-s"),
+        !engine.world.workspace.displaced.contains_key("out-s"),
         "renamed S reclaims: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     assert!(
-        engine.displaced.contains_key("out-t"),
+        engine.world.workspace.displaced.contains_key("out-t"),
         "T still displaced: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     let s_rows: Vec<_> = s_back
         .workspaces
@@ -4690,9 +4748,9 @@ fn physical_chain_return_s_first_then_t_keeps_exact_affinity() {
         ),
     );
     assert!(
-        engine.displaced.is_empty(),
+        engine.world.workspace.displaced.is_empty(),
         "both origins reclaim: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     for (id, output, tiling) in [(&view_s, "out-s2", tiling_s), (&view_t, "out-t2", tiling_t)] {
         let rows: Vec<_> = both_back
@@ -4842,12 +4900,14 @@ fn physical_chain_return_t_first_then_s_keeps_exact_affinity() {
     );
     assert!(
         engine
+            .world
+            .workspace
             .displaced
             .get("out-t")
             .map(|entry| entry.workspaces.contains(&view_s))
             .unwrap_or(false),
         "chained T record overlaps the S unit: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     let t_back = accepted(
         &mut engine,
@@ -4869,14 +4929,14 @@ fn physical_chain_return_t_first_then_s_keeps_exact_affinity() {
         ),
     );
     assert!(
-        !engine.displaced.contains_key("out-t"),
+        !engine.world.workspace.displaced.contains_key("out-t"),
         "renamed T reclaims: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     assert!(
-        engine.displaced.contains_key("out-s"),
+        engine.world.workspace.displaced.contains_key("out-s"),
         "S still displaced: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     let s_rows: Vec<_> = t_back
         .workspaces
@@ -4964,9 +5024,9 @@ fn physical_chain_return_t_first_then_s_keeps_exact_affinity() {
         ),
     );
     assert!(
-        engine.displaced.is_empty(),
+        engine.world.workspace.displaced.is_empty(),
         "both origins reclaim: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     for (id, output, tiling) in [(&view_s, "out-s2", tiling_s), (&view_t, "out-t2", tiling_t)] {
         let rows: Vec<_> = both_back
@@ -5116,12 +5176,14 @@ fn physical_chain_return_simultaneous_partition_keeps_exact_affinity() {
     );
     assert!(
         engine
+            .world
+            .workspace
             .displaced
             .get("out-t")
             .map(|entry| entry.workspaces.contains(&view_s))
             .unwrap_or(false),
         "chained T record overlaps the S unit: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     let both_back = accepted(
         &mut engine,
@@ -5144,9 +5206,9 @@ fn physical_chain_return_simultaneous_partition_keeps_exact_affinity() {
         ),
     );
     assert!(
-        engine.displaced.is_empty(),
+        engine.world.workspace.displaced.is_empty(),
         "both origins reclaim: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     for (id, output, tiling) in [(&view_s, "out-s2", tiling_s), (&view_t, "out-t2", tiling_t)] {
         let rows: Vec<_> = both_back
@@ -5306,32 +5368,38 @@ fn physical_chain_return_simultaneous_reverse_order_keeps_exact_affinity() {
     );
     assert!(
         engine
+            .world
+            .workspace
             .displaced
             .get("out-a")
             .map(|entry| entry.workspaces.contains(&view_b))
             .unwrap_or(false),
         "chained A record overlaps the B unit: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     assert_eq!(
         engine
+            .world
+            .workspace
             .displaced
             .get("out-b")
             .map(|entry| entry.owned.clone())
             .unwrap_or_default(),
         ring_b,
         "B owns its original ring: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     assert_eq!(
         engine
+            .world
+            .workspace
             .displaced
             .get("out-a")
             .map(|entry| entry.owned.clone())
             .unwrap_or_default(),
         vec![view_a.clone()],
         "A owns only its original unit: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     let both_back = accepted(
         &mut engine,
@@ -5354,9 +5422,9 @@ fn physical_chain_return_simultaneous_reverse_order_keeps_exact_affinity() {
         ),
     );
     assert!(
-        engine.displaced.is_empty(),
+        engine.world.workspace.displaced.is_empty(),
         "both origins reclaim: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     for (id, output, tiling) in [(&view_b, "out-b2", tiling_b), (&view_a, "out-a2", tiling_a)] {
         let rows: Vec<_> = both_back
@@ -5515,23 +5583,27 @@ fn physical_chain_return_moved_out_member_stays_away() {
     );
     assert_eq!(
         engine
+            .world
+            .workspace
             .displaced
             .get("out-s")
             .map(|entry| entry.owned.clone())
             .unwrap_or_default(),
         ring_s,
         "S owns its original ring: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     assert_eq!(
         engine
+            .world
+            .workspace
             .displaced
             .get("out-t")
             .map(|entry| entry.owned.clone())
             .unwrap_or_default(),
         vec![view_t.clone()],
         "T owns only its original unit: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     // Explicit move-out while displaced: win-s leaves its unit for the
     // survivor's own unit through the ordinary send route.
@@ -5596,9 +5668,9 @@ fn physical_chain_return_moved_out_member_stays_away() {
         ),
     );
     assert!(
-        engine.displaced.is_empty(),
+        engine.world.workspace.displaced.is_empty(),
         "both origins reclaim: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     // The emptied S unit dissolves through ordinary trailing lifecycle
     // (unviewed and unoccupied after the move-out); affinity is proven by

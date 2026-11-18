@@ -16,7 +16,7 @@
 use tiler_core::directional::WindowId;
 use tiler_core::world_report::{FrameSetter, StateAttempt, StateProperty};
 use tiler_core::world_report_v4_checks::{report_digest_v4, validate_report_v4_reason};
-use tiler_core::world_sizing_v4::report_estimate_v4;
+use tiler_protocol::world_admission_sizing::report_estimate_v4;
 use tiler_protocol::world_protocol::{decode_request, decode_state_attempt};
 
 fn fixture(name: &str) -> serde_json::Value {

@@ -122,6 +122,8 @@ fn fs_unknown_fact(window: &str, exitable: Option<bool>) -> crate::world_report:
 
 fn binding_value(engine: &WorldEngine, window: &str) -> Option<bool> {
     engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId(window.to_owned()), StateProperty::Fullscreen))
         .map(|binding| binding.target.value)
@@ -168,17 +170,21 @@ fn set_entry_mints_retained_target_with_typed_seq() {
     let mut engine = fs_engine();
     accepted(&mut engine, &bootstrap(vec![fs_fact("win-a", None, false)]));
     let home_before = engine
+        .world
+        .workspace
         .members
         .get(&WindowId("win-a".to_owned()))
         .expect("member")
         .home
         .clone();
     let geometry_before = engine
+        .world
+        .workspace
         .members
         .get(&WindowId("win-a".to_owned()))
         .expect("member")
         .geometry;
-    let rev_before = engine.state_revision;
+    let rev_before = engine.state_revision();
     let (reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
@@ -191,6 +197,8 @@ fn set_entry_mints_retained_target_with_typed_seq() {
     assert_eq!(settlements.len(), 1);
     assert!(settlements[0].result.is_none());
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding");
@@ -210,6 +218,8 @@ fn set_entry_mints_retained_target_with_typed_seq() {
     // No geometry or topology writes while fullscreen: member home and
     // placement survive entry untouched.
     let after = engine
+        .world
+        .workspace
         .members
         .get(&WindowId("win-a".to_owned()))
         .expect("member");
@@ -282,6 +292,8 @@ fn explicit_exit_needs_exitable_true() {
         );
         assert!(
             !engine
+                .world
+                .settlement
                 .retained_states
                 .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen)),
             "no binding minted on exitability refusal"
@@ -306,7 +318,7 @@ fn unreadable_fullscreen_consumes_state_unknown() {
             kind: CommandRejectKind::StateUnknown
         })
     );
-    assert!(engine.retained_states.is_empty());
+    assert!(engine.world.settlement.retained_states.is_empty());
 }
 
 #[test]
@@ -328,7 +340,7 @@ fn unsupported_caps_consume_state_unsupported() {
             kind: CommandRejectKind::StateUnsupported
         })
     );
-    assert!(engine.retained_states.is_empty());
+    assert!(engine.world.settlement.retained_states.is_empty());
 }
 
 #[test]
@@ -351,11 +363,13 @@ fn same_state_entry_is_accepted_noop_without_writes() {
     assert!(settlements[0].result.is_none());
     assert!(
         !engine
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen)),
         "same-state must not mint"
     );
-    assert_eq!(engine.command_highwater, Some(1));
+    assert_eq!(engine.world.command_highwater, Some(1));
     assert!(target_row(&reply, "win-a").is_none());
 }
 
@@ -376,6 +390,8 @@ fn entry_from_maximized_is_immediate_with_no_maximize_writes() {
     // the row still publishes fullscreen Controlled under maximize.
     assert!(
         !engine
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
     );
@@ -399,6 +415,8 @@ fn ordinary_exit_returns_to_maximize_with_no_extra_maximize_write() {
     assert_eq!(binding_value(&engine, "win-a"), Some(false));
     assert!(
         !engine
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Maximized)),
         "exit mints no maximize binding"
@@ -422,12 +440,16 @@ fn observation_only_retains_tuple_without_blind_retry() {
         ),
     );
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding")
         .clone();
     let reply = accepted(&mut engine, &observe(3, vec![fs_fact("win-a", None, true)]));
     let after = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("retained");
@@ -457,6 +479,8 @@ fn correlated_attempt_settles_and_fresh_command_reauthorizes() {
         ),
     );
     let rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding")
@@ -474,6 +498,8 @@ fn correlated_attempt_settles_and_fresh_command_reauthorizes() {
     )];
     let settled = accepted(&mut engine, &proof);
     let after = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("retained");
@@ -496,6 +522,8 @@ fn correlated_attempt_settles_and_fresh_command_reauthorizes() {
         ),
     );
     let first_rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding")
@@ -512,6 +540,8 @@ fn correlated_attempt_settles_and_fresh_command_reauthorizes() {
     )];
     accepted(&mut engine, &ambiguous);
     let stuck = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding");
@@ -529,6 +559,8 @@ fn correlated_attempt_settles_and_fresh_command_reauthorizes() {
     assert_eq!(reauth_settlements.len(), 1);
     assert!(reauth_settlements[0].result.is_none());
     let fresh = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding");
@@ -570,6 +602,8 @@ fn fullscreen_coexists_with_sticky_on_one_row() {
     assert!(settlements[0].result.is_none());
     assert_eq!(binding_value(&engine, "win-a"), Some(true));
     let sticky = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
         .expect("sticky binding");
@@ -594,7 +628,7 @@ fn minimized_window_refuses_without_mutation() {
     let mut minimized = fs_fact("win-a", None, false);
     minimized.minimized = Some(true);
     accepted(&mut engine, &bootstrap(vec![minimized.clone()]));
-    let rev_before = engine.state_revision;
+    let rev_before = engine.state_revision();
     match engine.handle_report(
         &cmd(2, 1, vec![minimized], set_fullscreen("win-a", true)),
         &[],
@@ -611,8 +645,8 @@ fn minimized_window_refuses_without_mutation() {
         }
         (other, _) => panic!("expected minimized refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, rev_before + 1, "refusal issues");
-    assert!(engine.retained_states.is_empty());
+    assert_eq!(engine.state_revision(), rev_before + 1, "refusal issues");
+    assert!(engine.world.settlement.retained_states.is_empty());
 }
 
 #[test]
@@ -628,9 +662,9 @@ fn binding_cap_replacement_allowed_but_new_key_refused_atomic() {
             set_fullscreen("win-a", true),
         ),
     );
-    let need = MAX_RETAINED_STATE_BINDINGS - engine.retained_states.len();
+    let need = MAX_RETAINED_STATE_BINDINGS - engine.world.settlement.retained_states.len();
     for i in 0..need {
-        engine.retained_states.insert(
+        engine.world.settlement.retained_states.insert(
             (WindowId(format!("win-fill-{i:05}")), StateProperty::Above),
             crate::world_state::RetainedStateBinding {
                 target: crate::world_state::RetainedStateTarget {
@@ -650,7 +684,7 @@ fn binding_cap_replacement_allowed_but_new_key_refused_atomic() {
         );
     }
     assert_eq!(
-        engine.retained_states.len(),
+        engine.world.settlement.retained_states.len(),
         MAX_RETAINED_STATE_BINDINGS,
         "exact bound before replacement"
     );
@@ -671,9 +705,9 @@ fn binding_cap_replacement_allowed_but_new_key_refused_atomic() {
     // A distinct new window at the cap refuses before mutation.
     let mut capped = fs_engine();
     accepted(&mut capped, &bootstrap(vec![fs_fact("win-a", None, false)]));
-    let need = MAX_RETAINED_STATE_BINDINGS - capped.retained_states.len();
+    let need = MAX_RETAINED_STATE_BINDINGS - capped.world.settlement.retained_states.len();
     for i in 0..need {
-        capped.retained_states.insert(
+        capped.world.settlement.retained_states.insert(
             (WindowId(format!("win-cap-{i:05}")), StateProperty::Above),
             crate::world_state::RetainedStateBinding {
                 target: crate::world_state::RetainedStateTarget {
@@ -692,7 +726,7 @@ fn binding_cap_replacement_allowed_but_new_key_refused_atomic() {
             },
         );
     }
-    let revision = capped.state_revision;
+    let revision = capped.state_revision();
     match capped.handle_report(
         &cmd(
             2,
@@ -714,9 +748,11 @@ fn binding_cap_replacement_allowed_but_new_key_refused_atomic() {
         }
         (other, _) => panic!("expected cap refusal, got {other:?}"),
     }
-    assert_eq!(capped.state_revision, revision + 1, "refusal issues");
+    assert_eq!(capped.state_revision(), revision + 1, "refusal issues");
     assert!(
         !capped
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen)),
         "no binding minted past the cap"
@@ -738,6 +774,8 @@ fn explicit_close_prunes_fullscreen_binding_and_lifetime_row() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
     );
@@ -746,6 +784,8 @@ fn explicit_close_prunes_fullscreen_binding_and_lifetime_row() {
     let reply = accepted(&mut engine, &closed);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen)),
         "explicit close prunes the producer target"
@@ -781,7 +821,7 @@ fn unsupported_caps_with_null_fullscreen_consumes_state_unsupported() {
             "unsupported + null must be StateUnsupported ({label})"
         );
         assert!(
-            engine.retained_states.is_empty(),
+            engine.world.settlement.retained_states.is_empty(),
             "no binding minted ({label})"
         );
     }
@@ -814,12 +854,14 @@ fn stale_true_binding_canceled_by_same_state_set() {
     assert!(settlements[0].result.is_none());
     assert!(
         !engine
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen)),
         "obsolete opposite binding must be revoked"
     );
     assert!(target_row(&reply, "win-a").is_none());
-    assert_eq!(engine.command_highwater, Some(2));
+    assert_eq!(engine.world.command_highwater, Some(2));
 }
 
 #[test]
@@ -852,12 +894,14 @@ fn stale_false_binding_canceled_by_same_state_set() {
     assert!(settlements[0].result.is_none());
     assert!(
         !engine
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen)),
         "obsolete opposite binding must be revoked"
     );
     assert!(target_row(&reply, "win-a").is_none());
-    assert_eq!(engine.command_highwater, Some(2));
+    assert_eq!(engine.world.command_highwater, Some(2));
 }
 
 #[test]
@@ -874,6 +918,8 @@ fn spent_opposite_binding_canceled_by_same_state_set() {
         ),
     );
     let rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding")
@@ -891,6 +937,8 @@ fn spent_opposite_binding_canceled_by_same_state_set() {
     accepted(&mut engine, &proof);
     assert!(
         engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
             .expect("spent")
@@ -909,12 +957,14 @@ fn spent_opposite_binding_canceled_by_same_state_set() {
     assert!(settlements[0].result.is_none());
     assert!(
         !engine
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen)),
         "spent opposite binding must be revoked"
     );
     assert!(target_row(&reply, "win-a").is_none());
-    assert_eq!(engine.command_highwater, Some(2));
+    assert_eq!(engine.world.command_highwater, Some(2));
 }
 
 #[test]
@@ -937,6 +987,8 @@ fn exit_exitable_fence_holds_and_resumes_with_same_tuple() {
     assert_eq!(minted_authority, ScopeAuthority::Controlled);
     assert_eq!(minted_seq, Some(1));
     let rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding")
@@ -965,6 +1017,8 @@ fn exit_exitable_fence_holds_and_resumes_with_same_tuple() {
     assert_eq!(seq, Some(1));
     assert_eq!(
         engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
             .expect("binding")
@@ -1030,6 +1084,8 @@ fn pending_window_transfer_holds_fullscreen_publication() {
     let (_, minted_authority, _) = target_row(&minted, "win-a").expect("entry target");
     assert_eq!(minted_authority, ScopeAuthority::Controlled);
     let rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding")
@@ -1054,13 +1110,20 @@ fn pending_window_transfer_holds_fullscreen_publication() {
         ),
     );
     assert!(
-        engine.retained.iter().any(|transfer| matches!(
-            &transfer.target.kind,
-            crate::world_report::TransferKind::Window(w) if w.0 == "win-a"
-        )),
+        engine
+            .world
+            .settlement
+            .retained
+            .iter()
+            .any(|transfer| matches!(
+                &transfer.target.kind,
+                crate::world_report::TransferKind::Window(w) if w.0 == "win-a"
+            )),
         "send must retain the same-window flight"
     );
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding survives the send");
@@ -1104,13 +1167,20 @@ fn pending_window_transfer_holds_fullscreen_publication() {
         });
     let settled = accepted(&mut engine, &arrived);
     assert!(
-        !engine.retained.iter().any(|transfer| matches!(
-            &transfer.target.kind,
-            crate::world_report::TransferKind::Window(w) if w.0 == "win-a"
-        )),
+        !engine
+            .world
+            .settlement
+            .retained
+            .iter()
+            .any(|transfer| matches!(
+                &transfer.target.kind,
+                crate::world_report::TransferKind::Window(w) if w.0 == "win-a"
+            )),
         "arrival evidence settles the same-window flight"
     );
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding survives arrival");
@@ -1144,6 +1214,8 @@ fn held_scope_holds_entry_then_healthy_recovery_resumes_tuple() {
         ),
     );
     let rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding")
@@ -1179,6 +1251,8 @@ fn held_scope_holds_entry_then_healthy_recovery_resumes_tuple() {
     assert_eq!(seq, Some(1));
     assert_eq!(
         engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
             .expect("binding")
@@ -1211,6 +1285,8 @@ fn lost_issued_reply_republish_accepts_republished_stamp() {
     let rev = issued.state_revision;
     let binding_rev = |engine: &WorldEngine| {
         engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
             .expect("binding")
@@ -1243,6 +1319,8 @@ fn lost_issued_reply_republish_accepts_republished_stamp() {
     proof.state_attempts = vec![row.clone()];
     accepted(&mut engine, &proof);
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding retained");
@@ -1285,6 +1363,8 @@ fn initial_hold_publication_attempt_records_evidence() {
     assert_eq!(seq, Some(1));
     assert_eq!(
         engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
             .expect("binding")
@@ -1305,12 +1385,14 @@ fn initial_hold_publication_attempt_records_evidence() {
     let mut incomplete = observe(3, vec![fs_fact("win-a", None, false)]);
     incomplete.inventory_complete = false;
     incomplete.state_attempts = vec![row.clone()];
-    let before = engine.retained_states.len();
+    let before = engine.world.settlement.retained_states.len();
     let reply = accepted(&mut engine, &incomplete);
     let (value, authority, _) = target_row(&reply, "win-a").expect("held target");
     assert!(value);
     assert!(matches!(authority, ScopeAuthority::Hold(_)));
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding retained");
@@ -1323,10 +1405,12 @@ fn initial_hold_publication_attempt_records_evidence() {
         ))
     );
     assert_eq!(binding.disposition, AttemptOutcome::PossiblyExecuted);
-    assert_eq!(engine.retained_states.len(), before);
+    assert_eq!(engine.world.settlement.retained_states.len(), before);
     // Later healthy report proves from the evidence with no new attempt.
     accepted(&mut engine, &observe(4, vec![fs_fact("win-a", None, true)]));
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding retained");
@@ -1374,7 +1458,7 @@ fn earlier_controlled_evidence_under_held_receipt() {
     );
     let mut held = observe(3, vec![minimized]);
     held.state_attempts = vec![row.clone()];
-    let before = engine.retained_states.len();
+    let before = engine.world.settlement.retained_states.len();
     let reply = accepted(&mut engine, &held);
     assert_eq!(reply.state_revision, rev + 1);
     let (value, authority, seq) = target_row(&reply, "win-a").expect("held target");
@@ -1385,6 +1469,8 @@ fn earlier_controlled_evidence_under_held_receipt() {
     );
     assert_eq!(seq, Some(1));
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding retained");
@@ -1397,10 +1483,12 @@ fn earlier_controlled_evidence_under_held_receipt() {
         ))
     );
     assert_eq!(binding.disposition, AttemptOutcome::PossiblyExecuted);
-    assert_eq!(engine.retained_states.len(), before);
+    assert_eq!(engine.world.settlement.retained_states.len(), before);
     // Healthy recovery proves from the held evidence with no new attempt.
     accepted(&mut engine, &observe(4, vec![fs_fact("win-a", None, true)]));
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding retained");
@@ -1421,6 +1509,8 @@ fn earlier_controlled_evidence_under_held_receipt() {
     assert!(value);
     assert!(matches!(authority, ScopeAuthority::Hold(_)));
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding retained");
@@ -1431,7 +1521,7 @@ fn earlier_controlled_evidence_under_held_receipt() {
         ))
     );
     assert_eq!(binding.disposition, AttemptOutcome::Applied);
-    assert_eq!(engine.retained_states.len(), before);
+    assert_eq!(engine.world.settlement.retained_states.len(), before);
 }
 
 #[test]
@@ -1462,6 +1552,8 @@ fn held_republish_accepts_republished_stamp_without_authority() {
     let (_, authority, _) = target_row(&reply, "win-a").expect("held target");
     assert!(matches!(authority, ScopeAuthority::Hold(_)));
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding retained");
@@ -1481,11 +1573,13 @@ fn held_republish_accepts_republished_stamp_without_authority() {
     minimized.minimized = Some(true);
     let mut held = observe(4, vec![minimized]);
     held.state_attempts = vec![row.clone()];
-    let before = engine.retained_states.len();
+    let before = engine.world.settlement.retained_states.len();
     let reply = accepted(&mut engine, &held);
     let (_, authority, _) = target_row(&reply, "win-a").expect("held target");
     assert!(matches!(authority, ScopeAuthority::Hold(_)));
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding retained");
@@ -1498,7 +1592,7 @@ fn held_republish_accepts_republished_stamp_without_authority() {
         ))
     );
     assert_eq!(binding.disposition, AttemptOutcome::PossiblyExecuted);
-    assert_eq!(engine.retained_states.len(), before);
+    assert_eq!(engine.world.settlement.retained_states.len(), before);
 }
 
 #[test]
@@ -1532,6 +1626,8 @@ fn replaced_true_false_true_obsoletes_original_stamp() {
     assert!(second_settlements[0].result.is_none());
     assert!(
         !engine
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen)),
         "same-state exit removes the obsolete entry binding"
@@ -1562,6 +1658,8 @@ fn replaced_true_false_true_obsoletes_original_stamp() {
     let reply = accepted(&mut engine, &proof);
     assert!(reply.diagnostics.is_empty());
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding retained");
@@ -1613,10 +1711,14 @@ fn two_output_binding_isolation_keeps_other_output_healthy() {
     );
     assert!(
         !engine
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-b".to_owned()), StateProperty::Fullscreen))
     );
     let other = engine
+        .world
+        .workspace
         .members
         .get(&WindowId("win-b".to_owned()))
         .expect("member");
@@ -1643,6 +1745,8 @@ fn rehandshake_resets_binding_and_old_proof_cannot_actuate() {
         ),
     );
     let rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding")
@@ -1678,16 +1782,17 @@ fn rehandshake_resets_binding_and_old_proof_cannot_actuate() {
     });
     assert!(settings.is_some());
     assert!(
-        engine.retained_states.is_empty(),
+        engine.world.settlement.retained_states.is_empty(),
         "handshake clears producer targets"
     );
     let mut stale = observe(3, vec![fs_fact("win-a", None, true)]);
     stale.adapter_incarnation = engine
+        .connection
         .connection_owner
         .as_ref()
         .map(|owner| owner.as_str().to_owned())
         .expect("owner");
-    stale.core_generation = engine.core_generation_str.clone();
+    stale.core_generation = engine.connection.core_generation_str.clone();
     stale.state_attempts = vec![attempt(
         "win-a",
         true,
@@ -1698,7 +1803,7 @@ fn rehandshake_resets_binding_and_old_proof_cannot_actuate() {
     )];
     let reply = accepted(&mut engine, &stale);
     assert!(
-        engine.retained_states.is_empty(),
+        engine.world.settlement.retained_states.is_empty(),
         "old proof after reset mints nothing"
     );
     assert!(
@@ -1725,6 +1830,8 @@ fn consecutive_toggles_resolve_from_raw_facts_not_queued_intent() {
     );
     assert_eq!(binding_value(&engine, "win-a"), Some(true));
     let first_rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding")
@@ -1742,6 +1849,8 @@ fn consecutive_toggles_resolve_from_raw_facts_not_queued_intent() {
     assert_eq!(second_settlements.len(), 1);
     assert!(second_settlements[0].result.is_none());
     let fresh = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("binding");
@@ -1794,6 +1903,8 @@ fn spent_same_value_binding_consumes_same_state_without_renewal() {
             ),
         );
         let rev = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
             .expect("binding")
@@ -1824,6 +1935,8 @@ fn spent_same_value_binding_consumes_same_state_without_renewal() {
             "desired {desired}: same-state must not reject"
         );
         let binding = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
             .expect("spent tuple preserved");
@@ -1846,6 +1959,6 @@ fn spent_same_value_binding_consumes_same_state_without_renewal() {
             "desired {desired}: spent target must not renew Controlled"
         );
         assert_eq!(seq, Some(1));
-        assert_eq!(engine.command_highwater, Some(2));
+        assert_eq!(engine.world.command_highwater, Some(2));
     }
 }

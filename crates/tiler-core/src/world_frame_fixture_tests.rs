@@ -134,7 +134,7 @@ fn learned_shared_fixture_converges_through_raw_reports() {
                 "{name}: table learns nothing on retry lanes"
             );
             assert!(
-                engine.learned_mins.is_empty(),
+                engine.world.settlement.learned_mins.is_empty(),
                 "{name}: refusal learns nothing"
             );
             assert_eq!(
@@ -160,7 +160,7 @@ fn learned_shared_fixture_converges_through_raw_reports() {
                 "{name}: inside backoff still holds"
             );
             assert!(
-                engine.learned_mins.is_empty(),
+                engine.world.settlement.learned_mins.is_empty(),
                 "{name}: still learns nothing"
             );
             let fourth = accepted(
@@ -181,7 +181,7 @@ fn learned_shared_fixture_converges_through_raw_reports() {
                 "{name}: past backoff retries controlled"
             );
             assert!(
-                engine.learned_mins.is_empty(),
+                engine.world.settlement.learned_mins.is_empty(),
                 "{name}: retry learns nothing"
             );
         } else {
@@ -191,7 +191,7 @@ fn learned_shared_fixture_converges_through_raw_reports() {
                 "{name}: table learns nothing past the contradiction"
             );
             assert!(
-                engine.learned_mins.is_empty(),
+                engine.world.settlement.learned_mins.is_empty(),
                 "{name}: contradiction learns nothing"
             );
             assert_eq!(next, baseline, "{name}: target unchanged");
@@ -224,7 +224,10 @@ fn learned_shared_fixture_converges_through_raw_reports() {
                 ScopeAuthority::Controlled,
                 "{name}: converged target actionable"
             );
-            assert!(engine.frames.is_empty(), "{name}: suppression clears");
+            assert!(
+                engine.world.settlement.frames.is_empty(),
+                "{name}: suppression clears"
+            );
             assert_eq!(
                 learned_of(&engine, window),
                 (exp_w.then_some(grown.w), exp_h.then_some(grown.h)),
@@ -296,8 +299,14 @@ fn replacement_shared_fixture_reuses_retired_token_fresh() {
                 true,
             ),
         );
-        assert!(engine.learned_mins.is_empty(), "{name}: close prunes floor");
-        assert!(engine.frames.is_empty(), "{name}: close prunes pair");
+        assert!(
+            engine.world.settlement.learned_mins.is_empty(),
+            "{name}: close prunes floor"
+        );
+        assert!(
+            engine.world.settlement.frames.is_empty(),
+            "{name}: close prunes pair"
+        );
         // Reuse the token as a fresh lifetime at the same observed rect:
         // the desire is the un-floored baseline, controlled, with nothing
         // retained and no suppression resurrected.
@@ -329,9 +338,16 @@ fn replacement_shared_fixture_reuses_retired_token_fresh() {
             (false, false),
             "{name}: table learns nothing on reuse"
         );
-        assert!(engine.learned_mins.is_empty(), "{name}: learns nothing");
-        assert!(engine.frames.is_empty(), "{name}: suppresses nothing");
-        let retained = !engine.learned_mins.is_empty() || !engine.frames.is_empty();
+        assert!(
+            engine.world.settlement.learned_mins.is_empty(),
+            "{name}: learns nothing"
+        );
+        assert!(
+            engine.world.settlement.frames.is_empty(),
+            "{name}: suppresses nothing"
+        );
+        let retained = !engine.world.settlement.learned_mins.is_empty()
+            || !engine.world.settlement.frames.is_empty();
         assert_eq!(
             case["expect_retained"].as_bool().expect("expect_retained"),
             retained,
@@ -426,16 +442,20 @@ fn observation_shared_fixture_records_no_bounds_without_proof() {
             "{name}: table learns nothing without proof"
         );
         assert!(
-            engine.learned_mins.is_empty(),
+            engine.world.settlement.learned_mins.is_empty(),
             "{name}: unproven growth learns nothing"
         );
         if suppressed {
             // The readable readback still pins the stable pair (suppression
             // without a floor); hidden evidence records nothing at all.
-            assert_eq!(engine.frames.len(), 1, "{name}: stable pair recorded");
+            assert_eq!(
+                engine.world.settlement.frames.len(),
+                1,
+                "{name}: stable pair recorded"
+            );
         } else {
             assert!(
-                engine.frames.is_empty(),
+                engine.world.settlement.frames.is_empty(),
                 "{name}: unproven growth suppresses nothing"
             );
         }
@@ -477,21 +497,21 @@ fn observation_shared_fixture_records_no_bounds_without_proof() {
         );
         match (suppressed, recover_is_baseline) {
             (true, true) => assert!(
-                engine.frames.is_empty(),
+                engine.world.settlement.frames.is_empty(),
                 "{name}: exact recovery clears the recorded pair"
             ),
             (true, false) => assert_eq!(
-                engine.frames.len(),
+                engine.world.settlement.frames.len(),
                 1,
                 "{name}: grown recovery re-holds the recorded pair"
             ),
             (false, _) => assert!(
-                engine.frames.is_empty(),
+                engine.world.settlement.frames.is_empty(),
                 "{name}: unrecorded lane recovers clean"
             ),
         }
         assert!(
-            engine.learned_mins.is_empty(),
+            engine.world.settlement.learned_mins.is_empty(),
             "{name}: recovery learns nothing without proof"
         );
     }

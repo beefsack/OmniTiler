@@ -16,6 +16,10 @@ use tiler_core::connection::HostCapabilities;
 use tiler_protocol::world_protocol::{
     DecodedReplyV4, decode_reply_v4, decode_reply_v4_for_host, encode_reply_v4,
 };
+use tiler_protocol::world_reply_write::{
+    BrokerGestureAssoc, BrokerReplyBind, count_reply_v4, write_bound_reply_v4,
+    write_projection_reply_v4, write_reply_v4,
+};
 
 fn fixture_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -983,6 +987,18 @@ fn v4_reply_writer_round_trips_all_valid_wire() {
         let text = fixture_text(&fixture.file);
         let decoded = decode_reply_v4(&text).expect("valid-wire decodes");
         let encoded = encode_reply_v4(&decoded).expect("valid-wire encodes");
+        assert_eq!(
+            count_reply_v4(&decoded.reply, &decoded.wire).expect("valid-wire counts"),
+            encoded.len(),
+            "exact count matches encoded len {}",
+            fixture.id
+        );
+        assert_eq!(
+            write_reply_v4(&decoded.reply, &decoded.wire).expect("valid-wire writes"),
+            encoded,
+            "borrowed writer matches encode_reply_v4 {}",
+            fixture.id
+        );
         if encoded != text {
             let common = encoded
                 .bytes()
@@ -1297,6 +1313,10 @@ fn v4_reply_writer_refuses_unspellable() {
         let error = encode_reply_v4(&decoded).expect_err("writer refuses {case}");
         assert_eq!(error.kind, kind, "kind {case}");
         assert_eq!(error.message, message, "message {case}");
+        let count_error = count_reply_v4(&decoded.reply, &decoded.wire)
+            .expect_err("counter refuses unspellable case");
+        assert_eq!(count_error.kind, kind, "count kind {case}");
+        assert_eq!(count_error.message, message, "count message {case}");
     }
 }
 
@@ -1409,7 +1429,7 @@ fn v4_reply_operation_and_switch_settled_strict_keys_and_round_trip() {
     let decoded = decode_value(&doc).expect("distinct phase/output keys decode");
     let wire = encode_reply_v4(&decoded).expect("encodes");
     assert_eq!(
-        tiler_core::world_sizing_v4::reply_exact_bytes_v4(&decoded.reply),
+        count_reply_v4(&decoded.reply, &decoded.wire).expect("writer counts"),
         wire.len()
     );
     let redecoded = decode_reply_v4(&wire).expect("re-decodes");
@@ -1447,10 +1467,9 @@ fn v4_reply_cap_valid_near_4mib_windows_encodes_and_roundtrips() {
         MAX_INTENT_DESIRED, MAX_REPLY_DIAGNOSTICS, MAX_REPLY_NATIVE_CREATIONS,
         MAX_REPLY_OPERATIONS, MAX_REPLY_OUTPUTS, MAX_REPLY_SCOPES, MAX_REPLY_SWITCH_EVENTS,
         MAX_REPLY_TRANSFERS, MAX_REPLY_WINDOWS, MAX_REPLY_WORKSPACES, OperationEvent,
-        OperationKind, OperationOutcome, ScopeAuthority, StateProperty, StateTarget,
-        WORLD_MAX_REPLY_BYTES, WindowDesire,
+        OperationKind, OperationOutcome, ScopeAuthority, StateProperty, StateTarget, WindowDesire,
     };
-    use tiler_core::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
+    use tiler_protocol::world_protocol::WORLD_MAX_REPLY_BYTES;
 
     // Paired with `staged_pending_operation_future_budget_rejects_over_4mib_transactionally`
     // in `crates/tiler-core/src/world_publish_v4_tests.rs`: same deterministic
@@ -1519,9 +1538,9 @@ fn v4_reply_cap_valid_near_4mib_windows_encodes_and_roundtrips() {
     };
 
     decoded.reply.windows.push(pad_win(0));
-    let after_one = reply_estimate_v4(&decoded.reply).max(reply_exact_bytes_v4(&decoded.reply));
+    let after_one = count_reply_v4(&decoded.reply, &decoded.wire).expect("one row counts");
     decoded.reply.windows.push(pad_win(1));
-    let after_two = reply_estimate_v4(&decoded.reply).max(reply_exact_bytes_v4(&decoded.reply));
+    let after_two = count_reply_v4(&decoded.reply, &decoded.wire).expect("two rows count");
     let row_step = after_two - after_one;
     let target_bytes = WORLD_MAX_REPLY_BYTES - 500;
     let extra = target_bytes.saturating_sub(after_two) / row_step;
@@ -1538,12 +1557,17 @@ fn v4_reply_cap_valid_near_4mib_windows_encodes_and_roundtrips() {
     assert!(decoded.reply.intent_desired.len() <= MAX_INTENT_DESIRED);
     assert!(decoded.reply.switch_settled.len() <= MAX_REPLY_SWITCH_EVENTS);
     assert!(decoded.reply.diagnostics.len() <= MAX_REPLY_DIAGNOSTICS);
-    assert!(reply_estimate_v4(&decoded.reply) <= WORLD_MAX_REPLY_BYTES);
-    assert!(reply_exact_bytes_v4(&decoded.reply) <= WORLD_MAX_REPLY_BYTES);
+    assert!(
+        count_reply_v4(&decoded.reply, &decoded.wire).expect("writer counts")
+            <= WORLD_MAX_REPLY_BYTES
+    );
 
     let wire = encode_reply_v4(&decoded).expect("cap-valid ~4 MiB reply encodes");
     assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
-    assert_eq!(wire.len(), reply_exact_bytes_v4(&decoded.reply));
+    assert_eq!(
+        wire.len(),
+        count_reply_v4(&decoded.reply, &decoded.wire).expect("writer counts")
+    );
     let redecoded = decode_reply_v4(&wire).expect("encoded ~4 MiB reply re-decodes");
     assert_eq!(redecoded, decoded);
 }
@@ -1560,7 +1584,6 @@ fn v4_reply_drag_preview_strict_validation_and_bounds() {
         BorderHideReasonV4, BorderPresentationV4, DragPreviewV4, WORLD_CONTRACT_VERSION_V4,
         WorldPresentationV4, WorldReplyV4,
     };
-    use tiler_core::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
     use tiler_protocol::world_protocol::ReplyWireOptionals;
 
     let domain = DomainKey {
@@ -1641,8 +1664,10 @@ fn v4_reply_drag_preview_strict_validation_and_bounds() {
         },
     };
     let base_wire = encode_reply_v4(&base_decoded).expect("encodes");
-    assert_eq!(reply_exact_bytes_v4(&base_decoded.reply), base_wire.len());
-    assert!(reply_estimate_v4(&base_decoded.reply) >= base_wire.len());
+    assert_eq!(
+        count_reply_v4(&base_decoded.reply, &base_decoded.wire).expect("writer counts"),
+        base_wire.len()
+    );
     assert_eq!(decode_reply_v4(&base_wire).expect("decodes"), base_decoded);
 
     let base_doc: serde_json::Value = serde_json::from_str(&base_wire).expect("parses");
@@ -1723,4 +1748,317 @@ fn v4_reply_drag_preview_strict_validation_and_bounds() {
         decode_value(&bad_rect).expect_err("zero-width rect").kind,
         "unknown-value"
     );
+}
+
+#[test]
+fn v4_reply_writer_after_shown_duplicate_and_later_error_precedence() {
+    use tiler_core::directional::{OutputId, WindowId};
+    use tiler_core::world_report::{AfterShown, AfterShownMember, FocusRequest, FocusRequestCause};
+
+    let mut dup_only = decode_ok("messages/reply-observe.json");
+    dup_only.reply.focus_request = Some(FocusRequest {
+        id: "focus-1".to_owned(),
+        target: WindowId("win-a".to_owned()),
+        issued_revision: 1,
+        cause: FocusRequestCause::ExplicitCommand,
+        output: OutputId("out-a".to_owned()),
+        workspace: "ws-a".to_owned(),
+        cmd_seq: Some(1),
+        after_shown: Some(AfterShown {
+            op: "op-1".to_owned(),
+            obs: 1,
+            members: vec![
+                AfterShownMember {
+                    win: WindowId("win-a".to_owned()),
+                    out: OutputId("out-a".to_owned()),
+                    ws: "ws-a".to_owned(),
+                    frame: None,
+                },
+                AfterShownMember {
+                    win: WindowId("win-a".to_owned()),
+                    out: OutputId("out-a".to_owned()),
+                    ws: "ws-a".to_owned(),
+                    frame: None,
+                },
+            ],
+            views: Vec::new(),
+            selected: Vec::new(),
+            departing: Vec::new(),
+        }),
+    });
+
+    let err = encode_reply_v4(&dup_only).expect_err("duplicate afterShown member refuses");
+    assert_eq!(err.kind, "snapshot-invalid");
+    assert_eq!(err.message, "encode-mismatch");
+    let count_err =
+        count_reply_v4(&dup_only.reply, &dup_only.wire).expect_err("count matches encode error");
+    assert_eq!(count_err, err);
+
+    let mut with_later_error = dup_only;
+    with_later_error.reply.presentation.border.width = Some(-1);
+    let later_err =
+        encode_reply_v4(&with_later_error).expect_err("later writer error takes precedence");
+    assert_eq!(later_err.kind, "unknown-value");
+    assert_eq!(later_err.message, "request contains an unknown value");
+    let later_count_err = count_reply_v4(&with_later_error.reply, &with_later_error.wire)
+        .expect_err("count matches later writer error");
+    assert_eq!(later_count_err, later_err);
+}
+
+fn legacy_bound_oracle(decoded: &DecodedReplyV4, bind: &BrokerReplyBind<'_>) -> String {
+    let encoded = encode_reply_v4(decoded).expect("oracle inner encodes");
+    let mut val: serde_json::Value = serde_json::from_str(&encoded).expect("oracle json");
+    let map = val.as_object_mut().expect("object");
+    let assoc_val = |a: Option<BrokerGestureAssoc<'_>>| match a {
+        Some(a) => serde_json::json!({
+            "instance": a.instance,
+            "serial": a.serial,
+            "coreId": a.core_id.to_string(),
+        }),
+        None => serde_json::Value::Null,
+    };
+    map.insert(
+        "source".to_owned(),
+        serde_json::Value::String(bind.source.to_owned()),
+    );
+    map.insert(
+        "nativeInvalid".to_owned(),
+        serde_json::Value::String(bind.native_invalid.to_string()),
+    );
+    map.insert(
+        "clock".to_owned(),
+        serde_json::Value::String(bind.clock.to_string()),
+    );
+    map.insert("gestureAssoc".to_owned(), assoc_val(bind.gesture_assoc));
+    map.insert(
+        "gestureSettledAssoc".to_owned(),
+        assoc_val(bind.gesture_settled_assoc),
+    );
+    val.to_string()
+}
+
+fn legacy_projection_oracle(decoded: &DecodedReplyV4, producer: Option<(&str, &str)>) -> String {
+    let encoded = encode_reply_v4(decoded).expect("oracle inner encodes");
+    let val: serde_json::Value = serde_json::from_str(&encoded).expect("oracle json");
+    let get = |k: &str| val.get(k).cloned().unwrap_or(serde_json::Value::Null);
+    let mut windows = get("windows");
+    if let Some(rows) = windows.as_array_mut() {
+        for row in rows {
+            if let Some(map) = row.as_object_mut() {
+                map.remove("frame_op");
+                map.remove("clear_op");
+            }
+        }
+    }
+    let suspended = val
+        .get("dragPreview")
+        .and_then(|p| p.get("domainOut"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|d| {
+            val.get("presentation")
+                .and_then(|p| p.get("suspendedOutput"))
+                .and_then(serde_json::Value::as_str)
+                == Some(d)
+        });
+    let preview = if suspended {
+        serde_json::Value::Null
+    } else if let Some(p) = val.get("dragPreview").and_then(|v| v.as_object()) {
+        let mut obj = serde_json::Map::new();
+        obj.insert("rect".to_owned(), p["rect"].clone());
+        obj.insert("sourceOut".to_owned(), p["sourceOut"].clone());
+        obj.insert("sourceWs".to_owned(), p["sourceWs"].clone());
+        obj.insert("win".to_owned(), p["win"].clone());
+        match producer {
+            Some((inst, ser)) => {
+                obj.insert("producerInstance".to_owned(), serde_json::json!(inst));
+                obj.insert("producerSerial".to_owned(), serde_json::json!(ser));
+            }
+            None => {
+                obj.insert("producerInstance".to_owned(), serde_json::Value::Null);
+                obj.insert("producerSerial".to_owned(), serde_json::Value::Null);
+            }
+        }
+        serde_json::Value::Object(obj)
+    } else {
+        serde_json::Value::Null
+    };
+    serde_json::json!({
+        "v": 4,
+        "outcome": "presentation",
+        "rev": get("rev"),
+        "obs": get("obs"),
+        "scopes": get("scopes"),
+        "workspaces": get("workspaces"),
+        "outputs": get("outputs"),
+        "windows": windows,
+        "presentation": get("presentation"),
+        "preview": preview,
+    })
+    .to_string()
+}
+
+#[test]
+fn v4_bound_and_projection_match_stage5_fixtures_and_serde_oracle_byte_for_byte() {
+    let stage5_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/stage5-v4-active/full");
+    let strip_and_decode = |raw: &str| -> (DecodedReplyV4, serde_json::Value) {
+        let mut v: serde_json::Value = serde_json::from_str(raw).expect("fixture json");
+        let saved = v.clone();
+        let map = v.as_object_mut().expect("object");
+        for k in [
+            "source",
+            "nativeInvalid",
+            "clock",
+            "gestureAssoc",
+            "gestureSettledAssoc",
+        ] {
+            map.remove(k);
+        }
+        (
+            decode_reply_v4(&v.to_string()).expect("inner decodes"),
+            saved,
+        )
+    };
+
+    // 1. Exact byte-for-byte match against stage5-v4-active/full/reply-genesis-0.json
+    let genesis_raw = std::fs::read_to_string(stage5_dir.join("reply-genesis-0.json"))
+        .expect("reply-genesis-0.json");
+    let genesis_trimmed = genesis_raw.trim_end_matches('\n');
+    let (genesis_decoded, genesis_saved) = strip_and_decode(genesis_trimmed);
+    let genesis_bind = BrokerReplyBind {
+        source: genesis_saved["source"].as_str().unwrap(),
+        native_invalid: genesis_saved["nativeInvalid"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap(),
+        clock: genesis_saved["clock"].as_str().unwrap().parse().unwrap(),
+        gesture_assoc: None,
+        gesture_settled_assoc: None,
+    };
+    let actual_genesis =
+        write_bound_reply_v4(&genesis_decoded.reply, &genesis_decoded.wire, &genesis_bind)
+            .expect("write_bound_reply_v4");
+    assert_eq!(actual_genesis, genesis_trimmed);
+
+    // 2. Exact byte-for-byte match against stage5-v4-active/full/reply-preview-0.json
+    // and projection-preview.json (with read-time gen/req/covered fields added).
+    let preview_raw = std::fs::read_to_string(stage5_dir.join("reply-preview-0.json"))
+        .expect("reply-preview-0.json");
+    let preview_trimmed = preview_raw.trim_end_matches('\n');
+    let (preview_decoded, preview_saved) = strip_and_decode(preview_trimmed);
+    let preview_bind = BrokerReplyBind {
+        source: preview_saved["source"].as_str().unwrap(),
+        native_invalid: preview_saved["nativeInvalid"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap(),
+        clock: preview_saved["clock"].as_str().unwrap().parse().unwrap(),
+        gesture_assoc: Some(BrokerGestureAssoc {
+            instance: preview_saved["gestureAssoc"]["instance"].as_str().unwrap(),
+            serial: preview_saved["gestureAssoc"]["serial"].as_str().unwrap(),
+            core_id: preview_saved["gestureAssoc"]["coreId"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap(),
+        }),
+        gesture_settled_assoc: None,
+    };
+    let actual_preview_bound =
+        write_bound_reply_v4(&preview_decoded.reply, &preview_decoded.wire, &preview_bind)
+            .expect("write_bound_reply_v4");
+    assert_eq!(actual_preview_bound, preview_trimmed);
+
+    let proj_fixture_raw = std::fs::read_to_string(stage5_dir.join("projection-preview.json"))
+        .expect("projection-preview.json");
+    let proj_fixture_trimmed = proj_fixture_raw.trim_end_matches('\n');
+    let actual_proj = write_projection_reply_v4(
+        &preview_decoded.reply,
+        &preview_decoded.wire,
+        Some(("gesture-1", "1")),
+    )
+    .expect("write_projection_reply_v4");
+    let mut proj_val: serde_json::Value = serde_json::from_str(&actual_proj).expect("proj json");
+    let proj_fixture_val: serde_json::Value =
+        serde_json::from_str(proj_fixture_trimmed).expect("fixture proj json");
+    if let Some(map) = proj_val.as_object_mut() {
+        for k in ["gen", "req", "coveredInstance", "coveredInvalid"] {
+            map.insert(k.to_owned(), proj_fixture_val[k].clone());
+        }
+    }
+    assert_eq!(proj_val.to_string(), proj_fixture_trimmed);
+
+    // 3. Constructed rich reply with IntentDesire nested data + C0/serde escapes,
+    // trailing=true, suspended_output_present=true/false, and full oracle comparison.
+    let mut rich = decode_ok("messages/reply-observe.json");
+    rich.reply
+        .workspaces
+        .push(tiler_core::world_report::WorkspaceDesire {
+            id: "ws-trail".to_owned(),
+            output: tiler_core::directional::OutputId("out-a".to_owned()),
+            native_binding: None,
+            scope: tiler_core::world_report::AuthorityScope::Output(
+                tiler_core::directional::OutputId("out-a".to_owned()),
+            ),
+            order: 9,
+            tiling_mode: tiler_core::world_report::TilingMode::Tiled,
+            existence: true,
+            hold: None,
+            trailing: true,
+        });
+    rich.reply
+        .intent_desired
+        .push(tiler_core::world_report::IntentDesire {
+            win: tiler_core::directional::WindowId("win-a".to_owned()),
+            data: Some(tiler_core::intent_data::IntentData {
+                float: Some(true),
+                sticky_prior: Some(false),
+            }),
+        });
+    rich.reply
+        .presentation
+        .pager
+        .push(tiler_core::world_presentation::PagerScreen {
+            output: "out-a".to_owned(),
+            workspaces: vec![tiler_core::world_presentation::PagerWorkspace {
+                id: "ws-trail".to_owned(),
+                ordinal: 1,
+                label: "Line1\nTab\tQuote\"Slash\\Ctrl\x08\x0c\x01-\u{2603}".to_owned(),
+                current: true,
+                occupied: false,
+                contains_focused: false,
+                trailing: true,
+                windows: Vec::new(),
+            }],
+        });
+    rich.reply.presentation.suspended_output =
+        Some(tiler_core::directional::OutputId("out-a".to_owned()));
+    rich.wire.suspended_output_present = true;
+
+    let rich_bind = BrokerReplyBind {
+        source: "src-rich-1",
+        native_invalid: 42,
+        clock: 999,
+        gesture_assoc: Some(BrokerGestureAssoc {
+            instance: "g-inst",
+            serial: "7",
+            core_id: 3,
+        }),
+        gesture_settled_assoc: Some(BrokerGestureAssoc {
+            instance: "g-inst-0",
+            serial: "6",
+            core_id: 2,
+        }),
+    };
+    let actual_rich_bound =
+        write_bound_reply_v4(&rich.reply, &rich.wire, &rich_bind).expect("rich bound");
+    let oracle_rich_bound = legacy_bound_oracle(&rich, &rich_bind);
+    assert_eq!(actual_rich_bound, oracle_rich_bound);
+
+    let actual_rich_proj =
+        write_projection_reply_v4(&rich.reply, &rich.wire, None).expect("rich proj");
+    let oracle_rich_proj = legacy_projection_oracle(&rich, None);
+    assert_eq!(actual_rich_proj, oracle_rich_proj);
 }

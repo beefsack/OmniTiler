@@ -6,6 +6,7 @@
 //! transfer/focus settlement. Transition entry points stay on the engine; this
 //! module only extends its `impl`.
 
+use crate::world_transaction::WorldTransaction;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::boundary::CoreCommand;
@@ -30,7 +31,19 @@ use crate::world_report::{
 
 use crate::world_commands::CommandApplied;
 
-impl WorldEngine {
+/// Source-first pair geometry and combined shielded observation for one
+/// directional pair operation.
+type PairOperationInputs = (
+    OutputDomain,
+    OutputDomain,
+    i32,
+    i32,
+    WindowId,
+    Vec<EngineWindow>,
+    Vec<WindowId>,
+);
+
+impl WorldTransaction<'_> {
     /// Effective operation focus for one internal command: the session's
     /// post-previous-command focus when a prior batch command established
     /// it (a session value change since the batch baseline snapshot, or
@@ -58,23 +71,24 @@ impl WorldEngine {
         // dispatch, so explicit seams keep their native gates unchanged.
         // Guarded to the homed live subject: a subject that is empty or not
         // homed in this domain falls through to the session logic below.
-        if let Some(subject) = self.implicit_event_focus.clone()
+        if let Some(subject) = self.world.focus.implicit_event_focus.clone()
             && !subject.0.is_empty()
-            && self.staged.homing.get(&subject).as_ref() == Some(&domain)
+            && self.world.staged.homing.get(&subject).as_ref() == Some(&domain)
         {
             return subject;
         }
-        if let Some(focus_leaf) = self.layout.focus_leaf(domain) {
+        if let Some(focus_leaf) = self.world.layout.focus_leaf(domain) {
             let current = self
+                .world
                 .layout
                 .window_for_leaf(domain, focus_leaf)
-                .filter(|window| self.staged.homing.get(window).as_ref() == Some(&domain));
+                .filter(|window| self.world.staged.homing.get(window).as_ref() == Some(&domain));
             // Batch-only baseline: only an entry snapped for the active
             // batch counts. No entry means no active batch, so fall back
             // to the staged capture - never treat a missing entry as a
             // None baseline, which would promote stale retained session
             // focus over fresh observations outside the batch loop.
-            if let Some(base) = self.batch_base_focus.get(domain) {
+            if let Some(base) = self.world.focus.batch_base_focus.get(domain) {
                 if let Some(window) = current.as_ref()
                     && Some(window) != base.as_ref()
                 {
@@ -88,7 +102,7 @@ impl WorldEngine {
                 // outside-batch retained focus has no baseline entry, so
                 // both still fall back to the staged capture unchanged.
                 if let Some(window) = current.as_ref()
-                    && self.batch_command_focus.contains(window)
+                    && self.world.focus.batch_command_focus.contains(window)
                 {
                     return window.clone();
                 }
@@ -107,16 +121,17 @@ impl WorldEngine {
         let mut base: BTreeMap<DomainKey, Option<WindowId>> = BTreeMap::new();
         // Provenance starts empty every capture: only commands in THIS
         // batch may mark, never admission or a previous run.
-        self.batch_command_focus.clear();
-        for key in self.layout.domain_keys() {
+        self.world.focus.batch_command_focus.clear();
+        for key in self.world.layout.domain_keys() {
             let resolved = self
+                .world
                 .layout
                 .focus_leaf(&key)
-                .and_then(|focus_leaf| self.layout.window_for_leaf(&key, focus_leaf))
-                .filter(|window| self.staged.homing.get(window).as_ref() == Some(&&key));
+                .and_then(|focus_leaf| self.world.layout.window_for_leaf(&key, focus_leaf))
+                .filter(|window| self.world.staged.homing.get(window).as_ref() == Some(&&key));
             base.insert(key, resolved);
         }
-        self.batch_base_focus = base;
+        self.world.focus.batch_base_focus = base;
     }
 
     /// Typed operation route: dispatches explicit sends, migrations, domain
@@ -318,18 +333,7 @@ impl WorldEngine {
         pinned_target: Option<&OutputId>,
         by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
-    ) -> Result<
-        (
-            OutputDomain,
-            OutputDomain,
-            i32,
-            i32,
-            WindowId,
-            Vec<EngineWindow>,
-            Vec<WindowId>,
-        ),
-        CommandApplied,
-    > {
+    ) -> Result<PairOperationInputs, CommandApplied> {
         let Some(source_row) = by_id.get(window) else {
             return Err(CommandApplied::Rejected {
                 kind: KIND_OPERATION,
@@ -349,6 +353,7 @@ impl WorldEngine {
         let pair = if is_move {
             if let Some(pinned) = pinned_target {
                 let Some(source_report) = self
+                    .world
                     .staged
                     .domains
                     .iter()
@@ -394,6 +399,7 @@ impl WorldEngine {
             });
         };
         let Some(source_report) = self
+            .world
             .staged
             .domains
             .iter()
@@ -405,6 +411,7 @@ impl WorldEngine {
             });
         };
         let Some(target_report) = self
+            .world
             .staged
             .domains
             .iter()
@@ -492,6 +499,7 @@ impl WorldEngine {
             closed: &closed,
         };
         match self
+            .world
             .layout
             .run_directional_pair_focus(&ctx, window, direction, float_subject)
         {
@@ -501,7 +509,7 @@ impl WorldEngine {
                 CommandApplied::Effect(OneShotEffect::explicit_focus(
                     command_seq,
                     outcome.to_window,
-                    self.state_revision + 1,
+                    self.world.state_revision + 1,
                 ))
             }
             Err(err) => reject_pair_operation_failure(err),
@@ -554,7 +562,7 @@ impl WorldEngine {
             observed: &combined,
             closed: &closed,
         };
-        match self.layout.run_directional_pair_move(
+        match self.world.layout.run_directional_pair_move(
             &ctx,
             window,
             direction,
@@ -653,7 +661,7 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn focus_directional(
         &mut self,
-        issue: &crate::world_engine::EventIssue,
+        _issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
         direction: &str,
@@ -685,7 +693,7 @@ impl WorldEngine {
         // source refuses with the existing stale vocabulary, like an
         // unknown window (no new kind, no wire change).
         if self.staged_hidden(window) {
-            self.command_result = Some(CommandResult::Directional {
+            self.world.command_result = Some(CommandResult::Directional {
                 outcome: DirectionalOutcome::FocusFloatRefusedStale,
                 target: Some(window.clone()),
                 rect: None,
@@ -695,7 +703,7 @@ impl WorldEngine {
             return CommandApplied::NoEffect;
         }
         let Some(source_row) = by_id.get(window) else {
-            self.command_result = Some(CommandResult::Directional {
+            self.world.command_result = Some(CommandResult::Directional {
                 outcome: DirectionalOutcome::FocusFloatRefusedStale,
                 target: Some(window.clone()),
                 rect: None,
@@ -704,8 +712,8 @@ impl WorldEngine {
             self.note_command(command_seq);
             return CommandApplied::NoEffect;
         };
-        let Some(home) = self.staged.homing.get(window).cloned() else {
-            self.command_result = Some(CommandResult::Directional {
+        let Some(home) = self.world.staged.homing.get(window).cloned() else {
+            self.world.command_result = Some(CommandResult::Directional {
                 outcome: DirectionalOutcome::FocusFloatRefusedStale,
                 target: Some(window.clone()),
                 rect: None,
@@ -730,7 +738,7 @@ impl WorldEngine {
         if let Some(early) = early_verdict(source_row, tiling, false) {
             debug_assert!(!matches!(early, DirectionalVerdict::NeedClear { .. }));
             if let DirectionalVerdict::Refused { outcome, cause } = early {
-                self.command_result = Some(CommandResult::Directional {
+                self.world.command_result = Some(CommandResult::Directional {
                     outcome,
                     target: None,
                     rect: None,
@@ -754,18 +762,21 @@ impl WorldEngine {
         // staging, like a lattice miss. Ordinary (non-maximized) floats
         // keep the lattice. Native caps/maximize=true is unaffected: the
         // bit is only ever set on the composed route.
-        let composed_overlay = !self.capabilities().is_some_and(|caps| caps.maximize)
-            && self.composed_maximized.contains(window);
+        let composed_overlay = !self
+            .connection
+            .capabilities()
+            .is_some_and(|caps| caps.maximize)
+            && self.world.runtime.composed_maximized.contains(window);
         let maximized_subject = !fullscreen_subject && (source_row.maximized || composed_overlay);
         let float_subject = source_row.floating || source_row.sticky;
         if float_subject && !fullscreen_subject && !maximized_subject {
             let mut staged: Vec<EngineWindow> = Vec::new();
-            for domain in &self.staged.domains {
+            for domain in &self.world.staged.domains {
                 staged.extend(domain.windows.iter().cloned());
             }
             let candidates = float_focus_candidates(
                 &staged,
-                &self.staged.homing,
+                &self.world.staged.homing,
                 window,
                 &effective.output,
                 &effective.workspace.0,
@@ -776,7 +787,7 @@ impl WorldEngine {
                 direction,
                 &candidates,
             ) else {
-                self.command_result = Some(CommandResult::Directional {
+                self.world.command_result = Some(CommandResult::Directional {
                     outcome: DirectionalOutcome::FocusFloatRetained,
                     target: None,
                     rect: None,
@@ -785,7 +796,7 @@ impl WorldEngine {
                 self.note_command(command_seq);
                 return CommandApplied::NoEffect;
             };
-            self.command_result = Some(CommandResult::Directional {
+            self.world.command_result = Some(CommandResult::Directional {
                 outcome: DirectionalOutcome::FocusFloatApplied,
                 target: Some(target.clone()),
                 rect: None,
@@ -796,7 +807,7 @@ impl WorldEngine {
             return CommandApplied::Effect(OneShotEffect::explicit_focus(
                 command_seq,
                 target,
-                self.state_revision + 1,
+                self.world.state_revision + 1,
             ));
         }
         // KDE focus policy: ordinary and fullscreen subjects only cross
@@ -826,7 +837,7 @@ impl WorldEngine {
             // above are unchanged, and no native clear is minted.
             let Some(target_output) = cross_target else {
                 if float_subject {
-                    self.command_result = Some(CommandResult::Directional {
+                    self.world.command_result = Some(CommandResult::Directional {
                         outcome: DirectionalOutcome::FocusFloatRetained,
                         target: None,
                         rect: None,
@@ -841,6 +852,7 @@ impl WorldEngine {
                 };
             };
             let Some(source_staged) = self
+                .world
                 .staged
                 .domains
                 .iter()
@@ -863,9 +875,9 @@ impl WorldEngine {
                     message: MSG_OPERATION,
                 };
             };
-            let selected = if self.layout.contains_domain(&target_key) {
+            let selected = if self.world.layout.contains_domain(&target_key) {
                 let leaf = if float_subject {
-                    self.layout.remembered_leaf(&target_key)
+                    self.world.layout.remembered_leaf(&target_key)
                 } else {
                     crate::geometry::inset_bounds(source_staged.bounds, source_staged.outer_gap)
                         .ok()
@@ -878,23 +890,23 @@ impl WorldEngine {
                                     (usable.x, usable.x.checked_add(usable.w)?)
                                 }
                             };
-                            self.layout.select_cross_output_edge_target(
+                            self.world.layout.select_cross_output_edge_target(
                                 &target_key,
                                 direction_parsed,
                                 source_perp,
                             )
                         })
                 };
-                leaf.and_then(|leaf| self.layout.window_for_leaf(&target_key, &leaf))
+                leaf.and_then(|leaf| self.world.layout.window_for_leaf(&target_key, &leaf))
             } else {
                 None
             }
-            .filter(|window| self.staged.homing.get(window).as_ref() == Some(&&target_key))
+            .filter(|window| self.world.staged.homing.get(window).as_ref() == Some(&&target_key))
             .filter(|window| by_id.get(window).is_some_and(|row| !row.floating))
-            .filter(|window| !self.is_exception_window_any(window));
+            .filter(|window| !self.world.is_exception_window_any(window));
             let Some(target_window) = selected else {
                 if float_subject {
-                    self.command_result = Some(CommandResult::Directional {
+                    self.world.command_result = Some(CommandResult::Directional {
                         outcome: DirectionalOutcome::FocusFloatRetained,
                         target: None,
                         rect: None,
@@ -913,7 +925,7 @@ impl WorldEngine {
             return CommandApplied::Effect(OneShotEffect::explicit_focus(
                 command_seq,
                 target_window,
-                self.state_revision + 1,
+                self.world.state_revision + 1,
             ));
         }
         if cross_target.is_some() {
@@ -935,7 +947,7 @@ impl WorldEngine {
         // not) run the local leg unchanged: the Session overlay rule
         // refuses there, non-overlay plans.
         if (fullscreen_subject || maximized_subject) && float_subject {
-            self.command_result = Some(CommandResult::Directional {
+            self.world.command_result = Some(CommandResult::Directional {
                 outcome: DirectionalOutcome::FocusFloatRetained,
                 target: None,
                 rect: None,
@@ -967,12 +979,12 @@ impl WorldEngine {
     ) -> CommandApplied {
         // A contradictory observed focus fails closed: the adapter claimed
         // no focused window while the report carries one.
-        if !self.staged.observation.focused_global.is_empty() {
+        if !self.world.staged.observation.focused_global.is_empty() {
             return self.note_unfocused_retained(command_seq, "focus-present");
         }
-        let Some(source_output) =
-            self.resolve_action_output(&crate::world_engine::RawRouting::from_staged(&self.staged))
-        else {
+        let Some(source_output) = self.resolve_action_output(
+            &crate::world_engine::RawRouting::from_staged(&self.world.staged),
+        ) else {
             return self.note_unfocused_retained(command_seq, "no-source");
         };
         let Some(source_view) = self.effective_view(&source_output) else {
@@ -994,7 +1006,7 @@ impl WorldEngine {
             self.logical_tiling(&source_key.output.0, &source_key.workspace.0),
             crate::world_report::TilingMode::Tiled
         ) {
-            self.command_result = Some(CommandResult::Directional {
+            self.world.command_result = Some(CommandResult::Directional {
                 outcome:
                     crate::world_directional::DirectionalOutcome::FocusRefusedWorkspaceFloating,
                 target: None,
@@ -1008,6 +1020,7 @@ impl WorldEngine {
             return self.note_unfocused_retained(command_seq, "no-adjacent-output");
         };
         let Some(source_staged) = self
+            .world
             .staged
             .domains
             .iter()
@@ -1030,7 +1043,7 @@ impl WorldEngine {
                 message: MSG_OPERATION,
             };
         };
-        let selected = if self.layout.contains_domain(&target_key) {
+        let selected = if self.world.layout.contains_domain(&target_key) {
             // No focused subject exists, so the perpendicular span is
             // the source output usable area (canonical staged bounds,
             // never an observed native frame).
@@ -1045,17 +1058,17 @@ impl WorldEngine {
                             (usable.x, usable.x.checked_add(usable.w)?)
                         }
                     };
-                    let leaf = self.layout.select_cross_output_edge_target(
+                    let leaf = self.world.layout.select_cross_output_edge_target(
                         &target_key,
                         direction,
                         source_perp,
                     )?;
-                    self.layout.window_for_leaf(&target_key, &leaf)
+                    self.world.layout.window_for_leaf(&target_key, &leaf)
                 })
         } else {
             None
         }
-        .filter(|window| self.staged.homing.get(window).as_ref() == Some(&&target_key))
+        .filter(|window| self.world.staged.homing.get(window).as_ref() == Some(&&target_key))
         .filter(|window| by_id.get(window).is_some_and(|row| !row.floating));
         let Some(target_window) = selected else {
             return self.note_unfocused_retained(command_seq, "no-target");
@@ -1064,14 +1077,14 @@ impl WorldEngine {
         CommandApplied::Effect(OneShotEffect::explicit_focus(
             command_seq,
             target_window,
-            self.state_revision + 1,
+            self.world.state_revision + 1,
         ))
     }
 
     /// Record a no-focus directional no-op under the shared directional
     /// vocabulary without mutation or actuation.
     fn note_unfocused_retained(&mut self, command_seq: u64, cause: &str) -> CommandApplied {
-        self.command_result = Some(CommandResult::Directional {
+        self.world.command_result = Some(CommandResult::Directional {
             outcome: crate::world_directional::DirectionalOutcome::FocusUnfocusedRetained,
             target: None,
             rect: None,
@@ -1098,7 +1111,7 @@ impl WorldEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn move_directional(
         &mut self,
-        issue: &crate::world_engine::EventIssue,
+        _issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
         direction: &str,
@@ -1117,7 +1130,7 @@ impl WorldEngine {
             };
         };
         let Some(source_row) = by_id.get(window) else {
-            self.command_result = Some(CommandResult::Directional {
+            self.world.command_result = Some(CommandResult::Directional {
                 outcome: DirectionalOutcome::MoveFloatRefusedStale,
                 target: Some(window.clone()),
                 rect: None,
@@ -1126,8 +1139,8 @@ impl WorldEngine {
             self.note_command(command_seq);
             return CommandApplied::NoEffect;
         };
-        let Some(staged_home) = self.staged.homing.get(window).cloned() else {
-            self.command_result = Some(CommandResult::Directional {
+        let Some(staged_home) = self.world.staged.homing.get(window).cloned() else {
+            self.world.command_result = Some(CommandResult::Directional {
                 outcome: DirectionalOutcome::MoveFloatRefusedStale,
                 target: Some(window.clone()),
                 rect: None,
@@ -1137,6 +1150,8 @@ impl WorldEngine {
             return CommandApplied::NoEffect;
         };
         let home = if self
+            .world
+            .settlement
             .retained
             .iter()
             .any(|r| matches!(&r.target.kind, TransferKind::Window(w) if w == window))
@@ -1164,12 +1179,13 @@ impl WorldEngine {
         // No half-snap on unreadable hints, before any clear kickoff.
         if (source_row.floating || source_row.sticky)
             && self
+                .world
                 .staged
                 .facts
                 .get(window)
                 .is_none_or(|fact| fact.hints.is_none())
         {
-            self.command_result = Some(CommandResult::Directional {
+            self.world.command_result = Some(CommandResult::Directional {
                 outcome: DirectionalOutcome::MoveFloatRefusedConstraints,
                 target: None,
                 rect: None,
@@ -1180,7 +1196,7 @@ impl WorldEngine {
         }
         match early_verdict(source_row, tiling, true) {
             Some(DirectionalVerdict::Refused { outcome, cause }) => {
-                self.command_result = Some(CommandResult::Directional {
+                self.world.command_result = Some(CommandResult::Directional {
                     outcome,
                     target: None,
                     rect: None,
@@ -1202,8 +1218,13 @@ impl WorldEngine {
                 // reply never co-publishes a stale placement with the new
                 // clear.
                 let operation_id = format!("op-{command_seq}");
-                self.retained_floats.retain(|held| held.window != window);
-                self.retained_clears
+                self.world
+                    .settlement
+                    .retained_floats
+                    .retain(|held| held.window != window);
+                self.world
+                    .settlement
+                    .retained_clears
                     .push(crate::world_engine::RetainedClear {
                         operation_id,
                         command_seq,
@@ -1211,13 +1232,13 @@ impl WorldEngine {
                         direction: direction.to_owned(),
                         home: home.clone(),
                         view: view.clone(),
-                        focus: self.staged.observation.focused_global.clone(),
+                        focus: self.world.staged.observation.focused_global.clone(),
                         float_route: source_row.floating || source_row.sticky,
                         same_axis,
                         pending: None,
                         ambiguous: false,
                     });
-                self.command_result = Some(CommandResult::Directional {
+                self.world.command_result = Some(CommandResult::Directional {
                     outcome: DirectionalOutcome::NeedClear,
                     target: Some(window),
                     rect: None,
@@ -1239,8 +1260,11 @@ impl WorldEngine {
         // result, which restores the base through the one-shot lane on
         // refusal. Directional no-op outcomes keep the clear like a bound
         // native NeedClear, and a hard tiled refusal below restores it.
-        let composed_overlay = !self.capabilities().is_some_and(|caps| caps.maximize)
-            && self.composed_maximized.contains(window);
+        let composed_overlay = !self
+            .connection
+            .capabilities()
+            .is_some_and(|caps| caps.maximize)
+            && self.world.runtime.composed_maximized.contains(window);
         if source_row.floating || source_row.sticky {
             // Float and sticky half-snaps share the uniform retained
             // float-placement lane: the stable `frame_operation` token is
@@ -1248,12 +1272,13 @@ impl WorldEngine {
             // frame writes stay prohibited elsewhere (the tiled lane never
             // writes sticky frames).
             let Some(screen) = self
+                .world
                 .staged
                 .screens
                 .iter()
                 .find(|s| s.output == effective.output)
             else {
-                self.command_result = Some(CommandResult::Directional {
+                self.world.command_result = Some(CommandResult::Directional {
                     outcome: DirectionalOutcome::MoveFloatRefusedUnknownOutput,
                     target: None,
                     rect: None,
@@ -1263,7 +1288,7 @@ impl WorldEngine {
                 return CommandApplied::NoEffect;
             };
             let Some(work) = screen.work_area else {
-                self.command_result = Some(CommandResult::Directional {
+                self.world.command_result = Some(CommandResult::Directional {
                     outcome: DirectionalOutcome::MoveFloatRefusedUnknownOutput,
                     target: None,
                     rect: None,
@@ -1272,10 +1297,11 @@ impl WorldEngine {
                 self.note_command(command_seq);
                 return CommandApplied::NoEffect;
             };
-            let Some(gap) = Self::scale_once(self.gap_setting(), screen.scale) else {
+            let Some(gap) = WorldEngine::scale_once(self.connection.gap_setting(), screen.scale)
+            else {
                 // Unscalable geometry refuses without mutation, never a
                 // clamped gap.
-                self.command_result = Some(CommandResult::Directional {
+                self.world.command_result = Some(CommandResult::Directional {
                     outcome: DirectionalOutcome::MoveFloatRefusedInvalidGeometry,
                     target: None,
                     rect: None,
@@ -1285,7 +1311,7 @@ impl WorldEngine {
                 return CommandApplied::NoEffect;
             };
             let Some(half) = float_half_snap_rect(work, gap, direction) else {
-                self.command_result = Some(CommandResult::Directional {
+                self.world.command_result = Some(CommandResult::Directional {
                     outcome: DirectionalOutcome::MoveFloatRefusedInvalidGeometry,
                     target: None,
                     rect: None,
@@ -1297,10 +1323,10 @@ impl WorldEngine {
             // Geometry resolved: the local clear completes before the
             // dependent ordinary constraints result.
             if composed_overlay {
-                self.composed_maximized.remove(window);
+                self.world.runtime.composed_maximized.remove(window);
             }
             if !half_snap_constraints_ok(half, source_row.hints) {
-                self.command_result = Some(CommandResult::Directional {
+                self.world.command_result = Some(CommandResult::Directional {
                     outcome: DirectionalOutcome::MoveFloatRefusedConstraints,
                     target: None,
                     rect: None,
@@ -1312,11 +1338,14 @@ impl WorldEngine {
                     // a completed native clear, so the refusal returns to
                     // the retained session base through the existing
                     // one-shot placement lane (never a bare echo).
-                    if let Some(base) = self.layout.exception_float_geometry(&home, window) {
+                    if let Some(base) = self.world.layout.exception_float_geometry(&home, window) {
                         let operation_id = format!("op-{command_seq}");
-                        self.retained_floats.retain(|held| held.window != *window);
-                        self.retained_floats
-                            .push(crate::world_engine::RetainedFloat {
+                        self.world
+                            .settlement
+                            .retained_floats
+                            .retain(|held| held.window != *window);
+                        self.world.settlement.retained_floats.push(
+                            crate::world_engine::RetainedFloat {
                                 operation_id,
                                 command_seq,
                                 window: window.clone(),
@@ -1326,15 +1355,16 @@ impl WorldEngine {
                                 workspace: effective.workspace.0.clone(),
                                 ambiguous: false,
                                 pending: None,
-                            });
+                            },
+                        );
                     } else {
                         // No base to restore: fail closed with the bit kept.
-                        self.composed_maximized.insert(window.clone());
+                        self.world.runtime.composed_maximized.insert(window.clone());
                     }
                 }
                 return CommandApplied::NoEffect;
             }
-            self.command_result = Some(CommandResult::Directional {
+            self.world.command_result = Some(CommandResult::Directional {
                 outcome: DirectionalOutcome::MoveFloatApplied,
                 target: Some(window.clone()),
                 rect: Some(half),
@@ -1349,8 +1379,13 @@ impl WorldEngine {
             // fight: settlement drops or supersedes the target like any
             // explicit float placement.
             let operation_id = format!("op-{command_seq}");
-            self.retained_floats.retain(|held| held.window != *window);
-            self.retained_floats
+            self.world
+                .settlement
+                .retained_floats
+                .retain(|held| held.window != *window);
+            self.world
+                .settlement
+                .retained_floats
                 .push(crate::world_engine::RetainedFloat {
                     operation_id,
                     command_seq,
@@ -1372,7 +1407,7 @@ impl WorldEngine {
         // now: the local clear completes before ordinary tiled policy,
         // with the existing restores below.
         if composed_overlay {
-            self.composed_maximized.remove(window);
+            self.world.runtime.composed_maximized.remove(window);
         }
         let pinned = match self.window_topology_target(
             &source_key.output,
@@ -1381,7 +1416,7 @@ impl WorldEngine {
         ) {
             Err(_) => {
                 if composed_overlay {
-                    self.composed_maximized.insert(window.clone());
+                    self.world.runtime.composed_maximized.insert(window.clone());
                 }
                 return CommandApplied::Rejected {
                     kind: KIND_OPERATION,
@@ -1416,13 +1451,13 @@ impl WorldEngine {
             )
         };
         if composed_overlay && matches!(applied, CommandApplied::Rejected { .. }) {
-            self.composed_maximized.insert(window.clone());
+            self.world.runtime.composed_maximized.insert(window.clone());
         }
         match applied {
             CommandApplied::NoEffect => CommandApplied::Effect(OneShotEffect::explicit_focus(
                 command_seq,
                 window.clone(),
-                self.state_revision + 1,
+                self.world.state_revision + 1,
             )),
             CommandApplied::Effect(_) | CommandApplied::Rejected { .. } => applied,
         }
@@ -1664,6 +1699,7 @@ impl WorldEngine {
         let source_key = source_key.clone();
         let domain_key = domain_key.clone();
         let Some(source_report) = self
+            .world
             .staged
             .domains
             .iter()
@@ -1723,13 +1759,14 @@ impl WorldEngine {
         };
         if is_drop {
             match self
+                .world
                 .layout
                 .run_pair_drag_drop(&ctx, &mover, x, y, hover_prior)
             {
                 Ok(_) => {
-                    self.command_result = None;
+                    self.world.command_result = None;
                     self.note_command(command_seq);
-                    self.retained.push(RetainedTransfer {
+                    self.world.settlement.retained.push(RetainedTransfer {
                         target: TransferTarget {
                             operation_id: format!("op-{command_seq}"),
                             kind: TransferKind::Window(mover),
@@ -1761,11 +1798,12 @@ impl WorldEngine {
             }
         } else {
             match self
+                .world
                 .layout
                 .run_pair_drag_preview(&ctx, &mover, x, y, hover_prior)
             {
                 Ok(_) => {
-                    self.command_result = None;
+                    self.world.command_result = None;
                     self.note_command(command_seq);
                     CommandApplied::NoEffect
                 }
@@ -1844,7 +1882,7 @@ impl WorldEngine {
                 };
             }
         };
-        self.layout.drop_domain(&domain_key);
+        self.world.layout.drop_domain(&domain_key);
         self.note_command(command_seq);
         CommandApplied::NoEffect
     }
@@ -1864,6 +1902,7 @@ impl WorldEngine {
         // never decides admission.
         if let CoreCommand::ToggleFloat { window, .. } = command
             && self
+                .world
                 .staged
                 .facts
                 .get(&WindowId(window.clone()))
@@ -1888,13 +1927,19 @@ impl WorldEngine {
         // the session lane are unchanged.
         if let CoreCommand::ToggleFloat { window, .. } = command {
             let window_id = WindowId(window.clone());
-            let usable_pending = self.pending_intent.get(&window_id).is_some_and(|data| {
-                data.sticky_prior.is_some() && !self.intent_conflicts.contains(&window_id)
-            });
+            let usable_pending = self
+                .world
+                .intent
+                .pending_intent
+                .get(&window_id)
+                .is_some_and(|data| {
+                    data.sticky_prior.is_some()
+                        && !self.world.intent.intent_conflicts.contains(&window_id)
+                });
             let native_sticky_subject = self.sticky_route()
                 == crate::world_sticky::StickyRoute::Native
                 && self.sticky_current(&window_id) == Some(true);
-            if self.restored_sticky.contains_key(&window_id)
+            if self.world.intent.restored_sticky.contains_key(&window_id)
                 || usable_pending
                 || native_sticky_subject
             {
@@ -1926,13 +1971,20 @@ impl WorldEngine {
         // below still restores it.
         let mut composed_should_clear = false;
         if let CoreCommand::ToggleFloat { window, .. } = command
-            && !self.capabilities().is_some_and(|caps| caps.maximize)
-            && self.composed_maximized.contains(&WindowId(window.clone()))
+            && !self
+                .connection
+                .capabilities()
+                .is_some_and(|caps| caps.maximize)
+            && self
+                .world
+                .runtime
+                .composed_maximized
+                .contains(&WindowId(window.clone()))
         {
             let subject = WindowId(window.clone());
-            if self.is_exception_window_any(&subject) {
+            if self.world.is_exception_window_any(&subject) {
                 composed_should_clear = true;
-            } else if self.is_tiled_window_any(&subject) {
+            } else if self.world.is_tiled_window_any(&subject) {
                 return CommandApplied::Rejected {
                     kind: RefusalKind::NotTiled.as_str(),
                     message: RefusalKind::NotTiled.message(),
@@ -1965,7 +2017,11 @@ impl WorldEngine {
         };
         let mut composed_cleared = false;
         if composed_should_clear && let CoreCommand::ToggleFloat { window, .. } = command {
-            composed_cleared = self.composed_maximized.remove(&WindowId(window.clone()));
+            composed_cleared = self
+                .world
+                .runtime
+                .composed_maximized
+                .remove(&WindowId(window.clone()));
         }
         let applied = match command {
             CoreCommand::DragPreview {
@@ -1984,8 +2040,8 @@ impl WorldEngine {
                     let focused_window =
                         self.effective_operation_focus(&domain_key, &domain_report.focused);
                     let windows = self.shielded_windows(&domain_key, &domain_report.windows);
-                    self.command_result = None;
-                    match self.layout.run_local_drag_preview_with_source(
+                    self.world.command_result = None;
+                    match self.world.layout.run_local_drag_preview_with_source(
                         &inset,
                         domain_report.outer_gap,
                         &WindowId(window.clone()),
@@ -2019,7 +2075,7 @@ impl WorldEngine {
                             message: OPAQUE_ID_MESSAGE,
                         }
                     } else {
-                        match self.layout.run_local_drag_drop_with_source(
+                        match self.world.layout.run_local_drag_drop_with_source(
                             &inset,
                             domain_report.outer_gap,
                             &WindowId(window.clone()),
@@ -2042,18 +2098,18 @@ impl WorldEngine {
             CoreCommand::Reconcile => {
                 let windows = self.shielded_windows(&domain_key, &domain_report.windows);
                 let disjoint = !windows.is_empty()
-                    && self.layout.contains_domain(&domain_key)
+                    && self.world.layout.contains_domain(&domain_key)
                     && !windows.iter().any(|w| {
-                        self.layout.is_tiled_window(&domain_key, &w.window)
-                            || self.layout.is_exception(&domain_key, &w.window)
-                            || self.layout.has_minimized_slot(&domain_key, &w.window)
+                        self.world.layout.is_tiled_window(&domain_key, &w.window)
+                            || self.world.layout.is_exception(&domain_key, &w.window)
+                            || self.world.layout.has_minimized_slot(&domain_key, &w.window)
                     });
                 if disjoint {
-                    self.layout.drop_domain(&domain_key);
+                    self.world.layout.drop_domain(&domain_key);
                 }
                 match self.converge_local_observation(&domain_key, &domain_report) {
                     Err(rejected) => rejected,
-                    Ok((focused_window, windows, _)) => match self.layout.reconcile_retained(
+                    Ok((focused_window, windows, _)) => match self.world.layout.reconcile_retained(
                         &domain_key,
                         inset.bounds,
                         inset.gap,
@@ -2066,7 +2122,7 @@ impl WorldEngine {
                             self.note_command(command_seq);
                             CommandApplied::NoEffect
                         }
-                        Ok(None) => match self.layout.reconcile_fresh(
+                        Ok(None) => match self.world.layout.reconcile_fresh(
                             &inset,
                             domain_report.outer_gap,
                             &focused_window,
@@ -2086,7 +2142,7 @@ impl WorldEngine {
                 match self.converge_local_observation(&domain_key, &domain_report) {
                     Err(rejected) => rejected,
                     Ok((focused_window, windows, _)) => {
-                        match self.layout.update_domain_gaps(
+                        match self.world.layout.update_domain_gaps(
                             &domain_key,
                             inset.bounds,
                             inset.gap,
@@ -2132,6 +2188,7 @@ impl WorldEngine {
                                 }
                             } else {
                                 match self
+                                    .world
                                     .layout
                                     .run_toggle_orientation(&ctx, &WindowId(window.clone()))
                                 {
@@ -2205,7 +2262,7 @@ impl WorldEngine {
                                 }
                             } else if let Some(dir) = parse_direction_token(direction) {
                                 if let Some(parsed_mode) = parse_resize_mode(mode) {
-                                    match self.layout.run_keyboard_resize(
+                                    match self.world.layout.run_keyboard_resize(
                                         &ctx,
                                         &WindowId(window.clone()),
                                         dir,
@@ -2247,6 +2304,7 @@ impl WorldEngine {
                                 let subject = WindowId(window.clone());
                                 match (direction2, boundary2) {
                                     (None, None) => match self
+                                        .world
                                         .layout
                                         .run_pointer_resize(&ctx, &subject, dir, *boundary)
                                     {
@@ -2266,7 +2324,7 @@ impl WorldEngine {
                                                     message: MSG_DIRECTION,
                                                 }
                                             } else {
-                                                match self.layout.run_pointer_resize_corner(
+                                                match self.world.layout.run_pointer_resize_corner(
                                                     &ctx, &subject, dir, *boundary, parsed, *second,
                                                 ) {
                                                     Ok(_) => {
@@ -2307,7 +2365,10 @@ impl WorldEngine {
             && matches!(applied, CommandApplied::Rejected { .. })
             && let CoreCommand::ToggleFloat { window, .. } = command
         {
-            self.composed_maximized.insert(WindowId(window.clone()));
+            self.world
+                .runtime
+                .composed_maximized
+                .insert(WindowId(window.clone()));
         }
         applied
     }
@@ -2318,12 +2379,12 @@ impl WorldEngine {
         // publications add no predecessor, while published predecessors
         // retain raw correlation until latest consumption.
         let TransferKind::Window(window) = next.target.kind.clone() else {
-            self.retained.push(next);
+            self.world.settlement.retained.push(next);
             return;
         };
         let observed_source = self.staged_homing(&window);
-        let last_reply = self.last_reply_v4.as_ref();
-        self.retained.retain_mut(|old| {
+        let prev_reply_transfers = self.prev_reply_transfers;
+        self.world.settlement.retained.retain_mut(|old| {
             let remove = matches!(&old.target.kind, TransferKind::Window(w) if w == &window);
             if !remove {
                 return true;
@@ -2335,19 +2396,16 @@ impl WorldEngine {
             }
             next.member_predecessors
                 .append(&mut old.member_predecessors);
-            let published = last_reply.is_some_and(|reply| {
-                reply
-                    .transfers
-                    .iter()
-                    .any(|transfer| transfer.operation_id == old.target.operation_id)
-            });
+            let published = prev_reply_transfers
+                .iter()
+                .any(|transfer| transfer.operation_id == old.target.operation_id);
             if old.pending_member.is_some() || published {
                 next.member_predecessors
                     .push((old.target.clone(), old.pending_member.take()));
             }
             false
         });
-        self.retained.push(next);
+        self.world.settlement.retained.push(next);
     }
 
     fn settle_float_retention(
@@ -2370,9 +2428,14 @@ impl WorldEngine {
                     .find(|entry| entry.window == window)
                     .map(|entry| (entry.output.clone(), entry.workspace.0.clone()))
                     .unwrap_or_else(|| (domain_key.output.clone(), domain_key.workspace.0.clone()));
-                self.retained_floats.retain(|held| held.window != window);
+                self.world
+                    .settlement
+                    .retained_floats
+                    .retain(|held| held.window != window);
                 self.reset_frame_burst(&window);
-                self.retained_floats
+                self.world
+                    .settlement
+                    .retained_floats
                     .push(crate::world_engine::RetainedFloat {
                         operation_id: format!("op-{command_seq}"),
                         command_seq,
@@ -2387,7 +2450,10 @@ impl WorldEngine {
             }
             None => {
                 if !no_space {
-                    self.retained_floats.retain(|held| held.window != window);
+                    self.world
+                        .settlement
+                        .retained_floats
+                        .retain(|held| held.window != window);
                     self.reset_frame_burst(&window);
                 }
             }
@@ -2432,8 +2498,8 @@ impl WorldEngine {
         closed_windows: &[WindowId],
     ) -> Result<(WindowId, Vec<EngineWindow>, bool), CommandApplied> {
         let windows = self.shielded_windows(domain_key, &domain_report.windows);
-        self.command_result = None;
-        let preconverged = match self.layout.converge_retained_observation(
+        self.world.command_result = None;
+        let preconverged = match self.world.layout.converge_retained_observation(
             domain_key,
             &windows,
             &focused_window,
@@ -2467,12 +2533,12 @@ impl WorldEngine {
         subject: &WindowId,
         float_rect: Option<Rect>,
     ) -> CommandApplied {
-        match self.layout.run_toggle_float(ctx, subject, float_rect) {
+        match self.world.layout.run_toggle_float(ctx, subject, float_rect) {
             Ok(outcome) => {
                 let no_space = outcome.float_window.is_some() && outcome.float_rect.is_none();
                 let window = outcome.float_window.unwrap_or_else(|| subject.clone());
                 let rect = outcome.float_rect;
-                self.command_result = Some(CommandResult::Float {
+                self.world.command_result = Some(CommandResult::Float {
                     window: window.clone(),
                     rect,
                     no_space,
@@ -2534,14 +2600,14 @@ impl WorldEngine {
                 message: OPAQUE_ID_MESSAGE,
             };
         }
-        match self.layout.run_local_focus(ctx, window, direction) {
+        match self.world.layout.run_local_focus(ctx, window, direction) {
             Ok(outcome) => {
                 self.note_command(command_seq);
                 let _ = self.record_command_focus(&outcome.to_window, held_scopes);
                 CommandApplied::Effect(OneShotEffect::explicit_focus(
                     command_seq,
                     outcome.to_window,
-                    self.state_revision + 1,
+                    self.world.state_revision + 1,
                 ))
             }
             Err(err) => reject_local_operation_failure(err),
@@ -2563,6 +2629,7 @@ impl WorldEngine {
             };
         }
         match self
+            .world
             .layout
             .run_local_move(ctx, window, direction, same_axis_move)
         {
@@ -2641,7 +2708,8 @@ impl WorldEngine {
         y: i32,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> Option<(DomainKey, crate::world_engine::StagedDomain)> {
-        self.staged
+        self.world
+            .staged
             .domains
             .iter()
             .filter(|d| {
@@ -2699,15 +2767,19 @@ impl WorldEngine {
     ) -> Option<(DomainKey, crate::world_engine::StagedDomain)> {
         if let Some(window) = window {
             let preferred = if is_move {
-                self.retained.iter().find_map(|r| match &r.target.kind {
-                    TransferKind::Window(w) if w == window => Some(DomainKey {
-                        output: r.target.target_output.clone(),
-                        workspace: crate::directional::WorkspaceId(
-                            r.target.target_workspace.clone(),
-                        ),
-                    }),
-                    _ => None,
-                })
+                self.world
+                    .settlement
+                    .retained
+                    .iter()
+                    .find_map(|r| match &r.target.kind {
+                        TransferKind::Window(w) if w == window => Some(DomainKey {
+                            output: r.target.target_output.clone(),
+                            workspace: crate::directional::WorkspaceId(
+                                r.target.target_workspace.clone(),
+                            ),
+                        }),
+                        _ => None,
+                    })
             } else {
                 None
             };
@@ -2716,6 +2788,7 @@ impl WorldEngine {
                 .filter(|key| !held_scopes.contains(key));
             if let Some(key) = key
                 && let Some(domain) = self
+                    .world
                     .staged
                     .domains
                     .iter()
@@ -2724,7 +2797,8 @@ impl WorldEngine {
                 return Some((key, domain.clone()));
             }
         }
-        self.staged
+        self.world
+            .staged
             .domains
             .iter()
             .filter(|d| d.readable && !held_scopes.contains(&d.key))

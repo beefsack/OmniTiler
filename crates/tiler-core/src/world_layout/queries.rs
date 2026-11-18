@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::directional::{Direction, NodeId, OutputId, WindowId};
+use crate::directional::{Direction, Node, NodeId, OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::session::{DomainKey, ExceptionFlags};
 
@@ -10,6 +10,7 @@ use super::topology::collect_leaves;
 
 impl WorldLayout {
     /// Retained fixed-size admission predicate, read directly for tests.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn fixed_size_predicate(&self) -> crate::size_hints::FixedSizePredicate {
         self.config.fixed_size_predicate
@@ -69,7 +70,6 @@ impl WorldLayout {
     }
 
     /// Tiled window identities retained in one domain, in window-id order.
-    #[must_use]
     pub(crate) fn tiled_windows(&self, key: &DomainKey) -> impl Iterator<Item = &WindowId> {
         self.domain(key)
             .into_iter()
@@ -77,7 +77,6 @@ impl WorldLayout {
     }
 
     /// Exception window identities retained in one domain, in window-id order.
-    #[must_use]
     pub(crate) fn exception_windows(&self, key: &DomainKey) -> impl Iterator<Item = &WindowId> {
         self.domain(key)
             .into_iter()
@@ -85,6 +84,7 @@ impl WorldLayout {
     }
 
     /// Retained exception flags for one window, if it is an exception here.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn exception_flags(
         &self,
@@ -97,7 +97,7 @@ impl WorldLayout {
     }
 
     /// Exception identities with flags for one domain, in window-id order.
-    #[must_use]
+    #[cfg(test)]
     pub(crate) fn exception_windows_with_flags(
         &self,
         key: &DomainKey,
@@ -111,7 +111,6 @@ impl WorldLayout {
     }
 
     /// Minimize restore-slot identities retained in one domain.
-    #[must_use]
     pub(crate) fn minimized_windows(&self, key: &DomainKey) -> impl Iterator<Item = &WindowId> {
         self.domain(key)
             .into_iter()
@@ -151,7 +150,6 @@ impl WorldLayout {
     }
 
     /// All retained tiled windows, in domain/window-id order.
-    #[must_use]
     pub(crate) fn all_tiled_windows(&self) -> impl Iterator<Item = WindowId> + '_ {
         self.domains
             .values()
@@ -159,7 +157,6 @@ impl WorldLayout {
     }
 
     /// All retained exception windows with their flags.
-    #[must_use]
     pub(crate) fn all_exception_windows_with_flags(
         &self,
     ) -> impl Iterator<Item = (WindowId, ExceptionFlags)> + '_ {
@@ -172,7 +169,6 @@ impl WorldLayout {
     }
 
     /// All retained exception windows.
-    #[must_use]
     pub(crate) fn all_exception_windows(&self) -> impl Iterator<Item = WindowId> + '_ {
         self.domains
             .values()
@@ -180,7 +176,6 @@ impl WorldLayout {
     }
 
     /// All retained minimize-slot windows.
-    #[must_use]
     pub(crate) fn all_minimized_windows(&self) -> impl Iterator<Item = WindowId> + '_ {
         self.domains
             .values()
@@ -196,6 +191,15 @@ impl WorldLayout {
             .leaves
             .iter()
             .find_map(|(window, bound)| (bound == leaf).then(|| window.clone()))
+    }
+
+    /// Whether `group` names a live group node in the retained tree for `key`.
+    /// Leaves share the id namespace but never match: only `Node::Group` arms match.
+    #[must_use]
+    pub(crate) fn has_group(&self, key: &DomainKey, group: &NodeId) -> bool {
+        self.domain(key)
+            .and_then(|domain| domain.tree.as_ref())
+            .is_some_and(|tree| tree_has_group(tree, group))
     }
 
     /// Sorted tiled residents of a domain for focus fallback.
@@ -221,6 +225,7 @@ impl WorldLayout {
     }
 
     /// Whether any retained domain carries capacity-float provenance.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn is_capacity_float_any(&self, window: &WindowId) -> bool {
         self.domains
@@ -236,6 +241,7 @@ impl WorldLayout {
     }
 
     /// Retained admission sequence for a window in one domain, if any.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn admission_sequence(&self, key: &DomainKey, window: &WindowId) -> Option<u64> {
         self.domain(key)
@@ -258,7 +264,7 @@ impl WorldLayout {
     /// Tiled window/leaf bindings in one domain, in window-id order. The
     /// inverse leaf-to-window map is derived by callers; no mutable view or
     /// map is exposed.
-    #[must_use]
+    #[cfg(test)]
     pub(crate) fn bindings(&self, key: &DomainKey) -> impl Iterator<Item = (&WindowId, &NodeId)> {
         self.domain(key)
             .into_iter()
@@ -489,6 +495,15 @@ impl WorldLayout {
         }
         let history = self.cross_output_history_newest_first(target);
         rank_cross_output_edge_candidates(&rects_dfs, direction, &history, source_perp)
+    }
+}
+
+fn tree_has_group(tree: &Node, id: &NodeId) -> bool {
+    match tree {
+        Node::Leaf { .. } => false,
+        Node::Group {
+            id: gid, children, ..
+        } => gid == id || children.iter().any(|child| tree_has_group(child, id)),
     }
 }
 

@@ -115,7 +115,7 @@ pub fn encode_json_number(value: f64) -> Result<String, CodecError> {
     if !value.is_finite() {
         return Err(CodecError("nonfinite"));
     }
-    Ok(tiler_core::world_report::encode_finite_json_number(value))
+    Ok(crate::canonical_json::encode_finite_json_number(value))
 }
 
 fn object(value: &Value) -> Result<&Map<String, Value>, CodecError> {

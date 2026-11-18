@@ -16,6 +16,7 @@
 //! ingress is retired; internal [`AttemptOutcome`] latch vocabulary
 //! (migration terminal) is retained.
 
+use crate::world_transaction::WorldTransaction;
 use std::collections::BTreeSet;
 
 use crate::directional::{OutputId, WindowId};
@@ -24,10 +25,10 @@ use crate::world_attempts::{
     AttemptDisposition, MemberAttemptDisposition, MemberAttemptEvidence, RetentionPolicy,
     ViewAttemptEvidence, retain_matching_attempt, view_evidence_matches,
 };
-use crate::world_engine::{RetainedFloat, RetainedTransfer, WorldEngine};
+use crate::world_engine::{RetainedFloat, RetainedTransfer};
 use crate::world_report::{AttemptOutcome, TransferKind, WorkspaceRef, WorldCommand};
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Effective logical pre homing for one member attempt, capability-gated
     /// to a single evidence lane (never a logical-or-native precedence):
     /// host-owned reports ignore the logical fields and translate only the
@@ -246,8 +247,13 @@ impl WorldEngine {
         workspace: &str,
     ) -> Vec<String> {
         let entry = (source_output.0.clone(), workspace.to_owned());
-        if !self.pending_source_releases.contains(&entry) {
-            self.pending_source_releases.push(entry);
+        if !self
+            .world
+            .settlement
+            .pending_source_releases
+            .contains(&entry)
+        {
+            self.world.settlement.pending_source_releases.push(entry);
         }
         Vec::new()
     }
@@ -285,7 +291,7 @@ impl WorldEngine {
         source_output: &OutputId,
         workspace: &str,
     ) -> Vec<String> {
-        if !self.host_owned_workspace_domains() {
+        if !self.connection.host_owned_workspace_domains() {
             return Vec::new();
         }
         // Operation-scoped: only pairs naming the migrated workspace that
@@ -293,6 +299,8 @@ impl WorldEngine {
         // never released, and with no pairs left there is no work to
         // retain.
         if self
+            .world
+            .workspace
             .mapping
             .get(&source_output.0)
             .is_some_and(|ring| ring.iter().any(|id| id == workspace))
@@ -300,6 +308,8 @@ impl WorldEngine {
             return Vec::new();
         }
         let has_pairs = self
+            .world
+            .settlement
             .native_map
             .iter()
             .any(|((out, _), logical)| out == &source_output.0 && logical == workspace);
@@ -316,6 +326,8 @@ impl WorldEngine {
         // Ordinary adoption rule: while a creation is outstanding on this
         // output, unmapped desktops belong to it, never to fresh adoption.
         if self
+            .world
+            .settlement
             .retained_creations
             .iter()
             .any(|pending| pending.target_output == *source_output)
@@ -323,6 +335,7 @@ impl WorldEngine {
             return self.defer_source_release(source_output, workspace);
         }
         let order: Vec<String> = self
+            .world
             .staged
             .observation
             .native
@@ -331,14 +344,17 @@ impl WorldEngine {
             .map(|entry| entry.native_order.clone())
             .unwrap_or_default();
         let mut vacated: Vec<String> = Vec::new();
-        self.native_map.retain(|(out, native), logical| {
-            if out == &source_output.0 && logical == workspace {
-                vacated.push(native.clone());
-                false
-            } else {
-                true
-            }
-        });
+        self.world
+            .settlement
+            .native_map
+            .retain(|(out, native), logical| {
+                if out == &source_output.0 && logical == workspace {
+                    vacated.push(native.clone());
+                    false
+                } else {
+                    true
+                }
+            });
         if vacated.is_empty() {
             return Vec::new();
         }
@@ -354,13 +370,16 @@ impl WorldEngine {
             if !order.iter().any(|id| id == &native) {
                 continue;
             }
-            self.retired_natives
+            self.world
+                .settlement
+                .retired_natives
                 .remove(&(source_output.0.clone(), native.clone()));
             if let Some(fresh) = self.adopt_single_native(&source_output.0, &native) {
                 adopted.push((native, fresh));
             }
         }
         let current = self
+            .world
             .staged
             .observation
             .native
@@ -370,7 +389,10 @@ impl WorldEngine {
             .unwrap_or_default();
         for (native, fresh) in &adopted {
             if *native == current {
-                self.views.insert(source_output.0.clone(), fresh.clone());
+                self.world
+                    .workspace
+                    .views
+                    .insert(source_output.0.clone(), fresh.clone());
             }
         }
         adopted.into_iter().map(|(_, fresh)| fresh).collect()
@@ -420,6 +442,8 @@ impl WorldEngine {
             && echo.is_some_and(|current| {
                 current != target_workspace
                     && self
+                        .world
+                        .workspace
                         .mapping
                         .get(&attempt.target_output.0)
                         .is_some_and(|ring| ring.iter().any(|id| id == current))
@@ -466,7 +490,7 @@ impl WorldEngine {
     }
 }
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Settle retained view targets with staged native proof before
     /// staging. Host-owned only: native-free views ride the frozen
     /// selection binding (ordinary, follow, migration, and policy routes
@@ -491,14 +515,16 @@ impl WorldEngine {
         // Migration parents live in the same vec: refill children with a
         // live parent settle with the parent, never alone.
         let parent_ops: std::collections::BTreeSet<String> = self
+            .world
+            .settlement
             .retained
             .iter()
             .filter(|retained| matches!(&retained.target.kind, TransferKind::Migration))
             .map(|retained| retained.target.operation_id.clone())
             .collect();
-        let native_free = !self.host_owned_workspace_domains();
+        let native_free = !self.connection.host_owned_workspace_domains();
         let mut keep: Vec<RetainedTransfer> = Vec::new();
-        for retained in std::mem::take(&mut self.retained) {
+        for retained in std::mem::take(&mut self.world.settlement.retained) {
             if !matches!(&retained.target.kind, TransferKind::View) {
                 keep.push(retained);
                 continue;
@@ -526,16 +552,18 @@ impl WorldEngine {
             let echo = echo.as_deref();
             if echo == Some(retained.target.target_workspace.as_str()) {
                 // Confirmed by echo: adopt as the core view.
-                self.views.insert(
+                self.world.workspace.views.insert(
                     retained.target.target_output.0.clone(),
                     retained.target.target_workspace.clone(),
                 );
                 let ring = self
+                    .world
+                    .workspace
                     .mapping
                     .get(&retained.target.target_output.0)
                     .cloned()
                     .unwrap_or_default();
-                self.history.observe(
+                self.world.workspace.history.observe(
                     &retained.target.target_output.0,
                     &retained.target.target_workspace,
                     &ring,
@@ -544,7 +572,7 @@ impl WorldEngine {
                 self.view_refused(
                     attempt,
                     &retained.target.target_workspace,
-                    self.host_owned_workspace_domains(),
+                    self.connection.host_owned_workspace_domains(),
                 )
             }) {
                 // Proven refusal reconciled against readable evidence, never
@@ -558,20 +586,21 @@ impl WorldEngine {
                 // from the current report at `stage_captured_v4`): an incomplete
                 // current screen holds even after a complete prior.
                 let current_complete = self
+                    .world
                     .staged
                     .screens
                     .iter()
                     .find(|screen| screen.output == retained.target.target_output)
                     .map(|screen| screen.complete);
-                if !self.staged.observation.inventory_complete
+                if !self.world.staged.observation.inventory_complete
                     || current_complete != Some(true)
-                    || self.staged.gesture_barrier
+                    || self.world.staged.gesture_barrier
                 {
                     keep.push(retained);
                     continue;
                 }
                 let pre_matches = raw_view.and_then(|attempt| {
-                    self.effective_view_pre(attempt, self.host_owned_workspace_domains())
+                    self.effective_view_pre(attempt, self.connection.host_owned_workspace_domains())
                 });
                 if echo.is_some() && echo == pre_matches.as_deref() {
                     // Settle to observed: the refused preimage survived.
@@ -583,7 +612,7 @@ impl WorldEngine {
                     attempt,
                     &retained.target.target_workspace,
                     echo,
-                    self.host_owned_workspace_domains(),
+                    self.connection.host_owned_workspace_domains(),
                 )
             }) {
                 // Proven write then newer external input: the translated
@@ -594,26 +623,35 @@ impl WorldEngine {
                 // instead of holding or re-actuating a settled write.
                 let current = echo.map(str::to_owned);
                 if let Some(current) = current {
-                    self.views
+                    self.world
+                        .workspace
+                        .views
                         .insert(retained.target.target_output.0.clone(), current.clone());
                     let ring = self
+                        .world
+                        .workspace
                         .mapping
                         .get(&retained.target.target_output.0)
                         .cloned()
                         .unwrap_or_default();
-                    self.history
-                        .observe(&retained.target.target_output.0, &current, &ring);
+                    self.world.workspace.history.observe(
+                        &retained.target.target_output.0,
+                        &current,
+                        &ring,
+                    );
                 }
             } else if raw_view.is_some_and(|attempt| {
                 self.view_third_location(
                     attempt,
                     &retained.target.target_workspace,
-                    self.host_owned_workspace_domains(),
+                    self.connection.host_owned_workspace_domains(),
                 ) && self
-                    .effective_view_post(attempt, self.host_owned_workspace_domains())
+                    .effective_view_post(attempt, self.connection.host_owned_workspace_domains())
                     .as_deref()
                     .is_some_and(|post| {
-                        self.mapping
+                        self.world
+                            .workspace
+                            .mapping
                             .get(&retained.target.target_output.0)
                             .is_some_and(|ring| ring.iter().any(|id| id == post))
                     })
@@ -622,6 +660,8 @@ impl WorldEngine {
                 // observed instead of fighting the user.
             } else {
                 let last = self
+                    .world
+                    .settlement
                     .last_views
                     .get(&retained.target.target_output)
                     .map(String::as_str);
@@ -638,19 +678,28 @@ impl WorldEngine {
                     // names a known logical workspace. Unknown ids hold
                     // (gap, never external proof); stale echoes hold.
                     if self
+                        .world
+                        .workspace
                         .mapping
                         .get(&retained.target.target_output.0)
                         .is_some_and(|ring| ring.iter().any(|id| id == echo))
                     {
-                        self.views
+                        self.world
+                            .workspace
+                            .views
                             .insert(retained.target.target_output.0.clone(), echo.to_owned());
                         let ring = self
+                            .world
+                            .workspace
                             .mapping
                             .get(&retained.target.target_output.0)
                             .cloned()
                             .unwrap_or_default();
-                        self.history
-                            .observe(&retained.target.target_output.0, echo, &ring);
+                        self.world.workspace.history.observe(
+                            &retained.target.target_output.0,
+                            echo,
+                            &ring,
+                        );
                     } else {
                         keep.push(retained);
                     }
@@ -661,7 +710,7 @@ impl WorldEngine {
                 }
             }
         }
-        self.retained = keep;
+        self.world.settlement.retained = keep;
     }
 
     /// Settle outstanding window and migration transfers plus explicit
@@ -694,7 +743,7 @@ impl WorldEngine {
         // visibility/focus completion.
         self.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Members);
         let mut keep: Vec<RetainedTransfer> = Vec::new();
-        for mut retained in std::mem::take(&mut self.retained) {
+        for mut retained in std::mem::take(&mut self.world.settlement.retained) {
             let raw = retained.pending_member.clone();
             let raw_member = raw
                 .as_ref()
@@ -709,7 +758,11 @@ impl WorldEngine {
                         output
                     }
                 };
-                self.effective_member_pre(attempt, output, self.host_owned_workspace_domains())
+                self.effective_member_pre(
+                    attempt,
+                    output,
+                    self.connection.host_owned_workspace_domains(),
+                )
             });
             let (call_output, call_workspace) = call_source.clone().unwrap_or_else(|| {
                 (
@@ -724,7 +777,7 @@ impl WorldEngine {
                         &call_output,
                         &retained.target.target_output,
                         &retained.target.target_workspace,
-                        self.host_owned_workspace_domains(),
+                        self.connection.host_owned_workspace_domains(),
                     )
                 }),
                 _ => false,
@@ -736,13 +789,16 @@ impl WorldEngine {
             // the write landed even when the staged capture is intermediate.
             let raw_arrival_proves = match &retained.target.kind {
                 TransferKind::Window(_) => raw_member.is_some_and(|attempt| {
-                    self.member_post_proves_target(attempt, self.host_owned_workspace_domains())
+                    self.member_post_proves_target(
+                        attempt,
+                        self.connection.host_owned_workspace_domains(),
+                    )
                 }),
                 _ => false,
             };
             // Consumption spends the operation, not settlement. Calls always
             // spend; no-call requires exact target proof.
-            let host_owned = self.host_owned_workspace_domains();
+            let host_owned = self.connection.host_owned_workspace_domains();
             let latest_consumed = match &retained.target.kind {
                 TransferKind::Window(_) => {
                     raw_member.is_some_and(|attempt| match attempt.disposition {
@@ -771,7 +827,7 @@ impl WorldEngine {
             match &retained.target.kind {
                 TransferKind::Window(window) => {
                     let homing = self.staged_homing(window);
-                    let closed = self.staged.closes.contains(window);
+                    let closed = self.world.staged.closes.contains(window);
                     let source_key = DomainKey {
                         output: call_output.clone(),
                         workspace: crate::directional::WorkspaceId(call_workspace.clone()),
@@ -798,11 +854,12 @@ impl WorldEngine {
                             // Native-derived receipt proof (host-owned only;
                             // native-free carries no receipt vocabulary).
                             let observed_proves = self
+                                .world
                                 .staged
                                 .facts
                                 .get(window)
                                 .and_then(|fact| {
-                                    if self.host_owned_workspace_domains() {
+                                    if self.connection.host_owned_workspace_domains() {
                                         self.effective_logical_receipt(fact)
                                     } else {
                                         None
@@ -825,13 +882,14 @@ impl WorldEngine {
                                 observed_proves || raw_arrival_proves
                             } else {
                                 let fact_at_target = self
+                                    .world
                                     .staged
                                     .facts
                                     .get(window)
                                     .and_then(|fact| fact.output.as_ref())
                                     == Some(&retained.target.target_output);
-                                let receipt_ok =
-                                    !self.host_owned_workspace_domains() || observed_proves;
+                                let receipt_ok = !self.connection.host_owned_workspace_domains()
+                                    || observed_proves;
                                 (fact_at_target && receipt_ok) || raw_arrival_proves
                             };
                             // With an outstanding predecessor and no latest
@@ -859,25 +917,25 @@ impl WorldEngine {
                         // Target arrival already won above; gaps hold with
                         // the raw staged (as floats do), never settling from
                         // absence. Minimized/unreadable facts hold.
-                        let gapped = !self.staged.observation.inventory_complete
+                        let gapped = !self.world.staged.observation.inventory_complete
                             || self.screen_complete(&call_output) != Some(true)
                             || self.screen_complete(&retained.target.target_output) != Some(true)
-                            || self.staged.gesture_barrier;
+                            || self.world.staged.gesture_barrier;
                         if gapped {
                             let mut held = retained;
                             held.target.held = true;
                             keep.push(held);
                         } else {
-                            let fact_ok = self.staged.facts.get(window).is_some_and(|fact| {
+                            let fact_ok = self.world.staged.facts.get(window).is_some_and(|fact| {
                                 fact.rect.is_some()
                                     && fact.minimized != Some(true)
-                                    && !self.staged.closes.contains(window)
+                                    && !self.world.staged.closes.contains(window)
                             });
                             let pre_key = raw_member.and_then(|attempt| {
                                 self.effective_member_pre(
                                     attempt,
                                     &call_output,
-                                    self.host_owned_workspace_domains(),
+                                    self.connection.host_owned_workspace_domains(),
                                 )
                                 .map(|(out, ws)| DomainKey {
                                     output: out.clone(),
@@ -890,7 +948,7 @@ impl WorldEngine {
                                 // Deferred until after the sweep: the
                                 // unshielded sweep may re-store the slot
                                 // while converging back to observed.
-                                self.pending_forget.push((
+                                self.world.settlement.pending_forget.push((
                                     DomainKey {
                                         output: retained.target.target_output.clone(),
                                         workspace: crate::directional::WorkspaceId(
@@ -999,10 +1057,12 @@ impl WorldEngine {
                                 // Capability-gated SOURCE narrowing: without
                                 // host-owned evidence no Value ever proves
                                 // external input, so the policy holds.
-                                if !self.host_owned_workspace_domains() {
+                                if !self.connection.host_owned_workspace_domains() {
                                     keep.push(retained);
                                 } else {
                                     let source_natives: BTreeSet<String> = self
+                                        .world
+                                        .settlement
                                         .native_map
                                         .iter()
                                         .filter(|((out, _), logical)| {
@@ -1012,6 +1072,7 @@ impl WorldEngine {
                                         .map(|((_, native), _)| native.clone())
                                         .collect();
                                     let stale = match self
+                                        .world
                                         .staged
                                         .facts
                                         .get(window)
@@ -1027,7 +1088,9 @@ impl WorldEngine {
                                                 // proxy. A backed source stays
                                                 // authoritative so a genuine move
                                                 // still supersedes.
-                                                self.native_map
+                                                self.world
+                                                    .settlement
+                                                    .native_map
                                                     .iter()
                                                     .filter(|((out, _), logical)| {
                                                         out == &retained.target.target_output.0
@@ -1081,7 +1144,7 @@ impl WorldEngine {
                 }
             }
         }
-        self.retained = keep;
+        self.world.settlement.retained = keep;
         self.settle_floats();
     }
 
@@ -1127,7 +1190,7 @@ impl WorldEngine {
         let target_out = retained.target.target_output.clone();
         let target_ws = retained.target.target_workspace.clone();
         let op = retained.target.operation_id.clone();
-        let attempts = &self.staged.observation.property_attempts;
+        let attempts = &self.world.staged.observation.property_attempts;
         let mut parent_slot = retained.pending_view.take();
         retain_matching_attempt(
             attempts,
@@ -1169,11 +1232,20 @@ impl WorldEngine {
             let child_view = child_raw
                 .as_ref()
                 .and_then(crate::world_attempts::PropertyAttempt::as_view);
-            let echo = self.staged.echoes.get(&child_out.0).map(String::as_str);
+            let echo = self
+                .world
+                .staged
+                .echoes
+                .get(&child_out.0)
+                .map(String::as_str);
             if echo == Some(child_ws.as_str()) {
                 keep.remove(pos);
             } else if child_view.is_some_and(|attempt| {
-                self.view_refused(attempt, &child_ws, self.host_owned_workspace_domains())
+                self.view_refused(
+                    attempt,
+                    &child_ws,
+                    self.connection.host_owned_workspace_domains(),
+                )
             }) {
                 // A refused refill never retries: the spent view-phase fence
                 // blocks repeats, so mere child absence can never itself
@@ -1185,12 +1257,14 @@ impl WorldEngine {
                 // forever: drop the child so the source-echo check below
                 // reconciles as external. Unknown/gap echoes hold.
                 let pre = child_view.and_then(|attempt| {
-                    self.effective_view_pre(attempt, self.host_owned_workspace_domains())
+                    self.effective_view_pre(attempt, self.connection.host_owned_workspace_domains())
                 });
                 let known_third = echo.is_some_and(|current| {
                     current != child_ws.as_str()
                         && Some(current) != pre.as_deref()
                         && self
+                            .world
+                            .workspace
                             .mapping
                             .get(&child_out.0)
                             .is_some_and(|ring| ring.iter().any(|id| id == current))
@@ -1205,7 +1279,7 @@ impl WorldEngine {
                     attempt,
                     &child_ws,
                     echo,
-                    self.host_owned_workspace_domains(),
+                    self.connection.host_owned_workspace_domains(),
                 )
             }) {
                 // Proven refill then abandoned: the translated post
@@ -1216,19 +1290,27 @@ impl WorldEngine {
                 // against the source echo below.
                 let current = echo.map(str::to_owned);
                 if let Some(current) = current {
-                    self.views.insert(child_out.0.clone(), current);
+                    self.world
+                        .workspace
+                        .views
+                        .insert(child_out.0.clone(), current);
                 }
                 keep.remove(pos);
             } else if child_view.is_some_and(|attempt| {
-                self.view_third_location(attempt, &child_ws, self.host_owned_workspace_domains())
-                    && self
-                        .effective_view_post(attempt, self.host_owned_workspace_domains())
-                        .as_deref()
-                        .is_some_and(|post| {
-                            self.mapping
-                                .get(&child_out.0)
-                                .is_some_and(|ring| ring.iter().any(|id| id == post))
-                        })
+                self.view_third_location(
+                    attempt,
+                    &child_ws,
+                    self.connection.host_owned_workspace_domains(),
+                ) && self
+                    .effective_view_post(attempt, self.connection.host_owned_workspace_domains())
+                    .as_deref()
+                    .is_some_and(|post| {
+                        self.world
+                            .workspace
+                            .mapping
+                            .get(&child_out.0)
+                            .is_some_and(|ring| ring.iter().any(|id| id == post))
+                    })
             }) {
                 // Externally moved refill: drop the child; the parent
                 // reconciles against the source echo below.
@@ -1251,7 +1333,7 @@ impl WorldEngine {
         let live_members: Vec<WindowId> = retained
             .members
             .iter()
-            .filter(|m| !self.staged.closes.contains(m))
+            .filter(|m| !self.world.staged.closes.contains(m))
             .cloned()
             .collect();
         if !live_members.is_empty()
@@ -1259,7 +1341,7 @@ impl WorldEngine {
                 retained.pending_members.get(member).and_then(
                     crate::world_attempts::PropertyAttempt::as_member
                 ).is_some_and(|attempt| {
-                    self.member_refused(attempt, &retained.source_output, &target_out, &target_ws, self.host_owned_workspace_domains())
+                    self.member_refused(attempt, &retained.source_output, &target_out, &target_ws, self.connection.host_owned_workspace_domains())
                 })
             })
         {
@@ -1267,9 +1349,9 @@ impl WorldEngine {
         } else if retained.pending_view.as_ref().and_then(
             crate::world_attempts::PropertyAttempt::as_view
         ).is_some_and(|attempt| {
-            self.view_third_location(attempt, &target_ws, self.host_owned_workspace_domains())
-                && self.effective_view_post(attempt, self.host_owned_workspace_domains()).as_deref().is_some_and(|post| {
-                    self.mapping
+            self.view_third_location(attempt, &target_ws, self.connection.host_owned_workspace_domains())
+                && self.effective_view_post(attempt, self.connection.host_owned_workspace_domains()).as_deref().is_some_and(|post| {
+                    self.world.workspace.mapping
                         .get(&target_out.0)
                         .is_some_and(|ring| ring.iter().any(|id| id == post))
                 })
@@ -1277,7 +1359,7 @@ impl WorldEngine {
                 // an exact target echo confirms instead of latching external
                 // supersession.
                 && self
-                    .staged
+                    .world.staged
                     .echoes
                     .get(&target_out.0)
                     .map(String::as_str)
@@ -1323,7 +1405,7 @@ impl WorldEngine {
             let pruned: Vec<WindowId> = retained
                 .members
                 .iter()
-                .filter(|m| !self.staged.closes.contains(m))
+                .filter(|m| !self.world.staged.closes.contains(m))
                 .cloned()
                 .collect();
             if pruned.is_empty()
@@ -1340,7 +1422,7 @@ impl WorldEngine {
             // or a held gesture never prove non-arrival. Hold narrowly
             // with identities preserved, marked held persistently so the
             // flight survives the refusal acknowledgement disappearing.
-            if !self.staged.observation.inventory_complete {
+            if !self.world.staged.observation.inventory_complete {
                 let mut held = retained;
                 held.members = pruned;
                 held.target.held = true;
@@ -1356,7 +1438,7 @@ impl WorldEngine {
                 keep.push(held);
                 return;
             }
-            if self.staged.gesture_barrier {
+            if self.world.staged.gesture_barrier {
                 let mut held = retained;
                 held.members = pruned;
                 held.target.held = true;
@@ -1364,8 +1446,10 @@ impl WorldEngine {
                 return;
             }
             let unreadable_member = pruned.iter().any(|m| {
-                self.staged.facts.get(m).is_some_and(|f| {
-                    f.rect.is_none() && f.minimized != Some(true) && !self.staged.closes.contains(m)
+                self.world.staged.facts.get(m).is_some_and(|f| {
+                    f.rect.is_none()
+                        && f.minimized != Some(true)
+                        && !self.world.staged.closes.contains(m)
                 })
             });
             if unreadable_member {
@@ -1439,11 +1523,18 @@ impl WorldEngine {
                     keep.push(held);
                     return;
                 }
-                if let Some(ring) = self.mapping.get_mut(&retained.target.target_output.0) {
+                if let Some(ring) = self
+                    .world
+                    .workspace
+                    .mapping
+                    .get_mut(&retained.target.target_output.0)
+                {
                     ring.retain(|id| id != &ws);
                 }
                 {
                     let source_ring = self
+                        .world
+                        .workspace
                         .mapping
                         .entry(retained.source_output.0.clone())
                         .or_default();
@@ -1484,54 +1575,81 @@ impl WorldEngine {
                     .migration_source_view
                     .clone()
                     .filter(|view| {
-                        self.mapping
+                        self.world
+                            .workspace
+                            .mapping
                             .get(&retained.source_output.0)
                             .is_some_and(|ring| ring.iter().any(|id| id == view))
                     })
                     .unwrap_or_else(|| ws.clone());
-                self.views
+                self.world
+                    .workspace
+                    .views
                     .insert(retained.source_output.0.clone(), source_view.clone());
                 if let Some(prev_target) = retained.migration_target_view.clone() {
                     let known = self
+                        .world
+                        .workspace
                         .mapping
                         .get(&retained.target.target_output.0)
                         .is_some_and(|ring| ring.iter().any(|id| id == &prev_target));
                     if known {
-                        self.views
+                        self.world
+                            .workspace
+                            .views
                             .insert(retained.target.target_output.0.clone(), prev_target);
                     } else {
                         let target_ring = self
+                            .world
+                            .workspace
                             .mapping
                             .get(&retained.target.target_output.0)
                             .cloned()
                             .unwrap_or_default();
                         if let Some(head) = target_ring.first().cloned() {
-                            self.views
+                            self.world
+                                .workspace
+                                .views
                                 .insert(retained.target.target_output.0.clone(), head);
                         } else {
-                            self.views.remove(&retained.target.target_output.0);
+                            self.world
+                                .workspace
+                                .views
+                                .remove(&retained.target.target_output.0);
                         }
                     }
                 } else {
                     let target_ring = self
+                        .world
+                        .workspace
                         .mapping
                         .get(&retained.target.target_output.0)
                         .cloned()
                         .unwrap_or_default();
                     if let Some(head) = target_ring.first().cloned() {
-                        self.views
+                        self.world
+                            .workspace
+                            .views
                             .insert(retained.target.target_output.0.clone(), head);
                     } else {
-                        self.views.remove(&retained.target.target_output.0);
+                        self.world
+                            .workspace
+                            .views
+                            .remove(&retained.target.target_output.0);
                     }
                 }
                 let source_ring = self
+                    .world
+                    .workspace
                     .mapping
                     .get(&retained.source_output.0)
                     .cloned()
                     .unwrap_or_default();
-                self.history
-                    .observe(&retained.source_output.0, &source_view, &source_ring);
+                self.world.workspace.history.observe(
+                    &retained.source_output.0,
+                    &source_view,
+                    &source_ring,
+                );
                 // Terminal rollback revokes ONLY the exact parent-issued
                 // selection binding/scopes/targets by the stored issuing
                 // revision: departing-echo tolerance would otherwise keep
@@ -1540,12 +1658,19 @@ impl WorldEngine {
                 // and survive; silent drop, no new event or token.
                 if let Some(sel_rev) = retained.migration_selection_rev {
                     let op_id = retained.target.operation_id.clone();
-                    self.retained_selection.retain(|_, binding| {
-                        !(binding.parent_op == op_id && binding.rev == sel_rev)
-                    });
-                    self.selection_scopes
+                    self.world
+                        .settlement
+                        .retained_selection
+                        .retain(|_, binding| {
+                            !(binding.parent_op == op_id && binding.rev == sel_rev)
+                        });
+                    self.world
+                        .settlement
+                        .selection_scopes
                         .retain(|_, scope| scope.rev != sel_rev);
-                    self.selection_targets
+                    self.world
+                        .settlement
+                        .selection_targets
                         .retain(|_, entry| entry.rev != sel_rev);
                 }
             } else {
@@ -1573,7 +1698,7 @@ impl WorldEngine {
         // gesture gaps, never an artificial wake. Native-owned empty
         // keeps its view-proof path below; nonzero visibility
         // obligations stay held in the selection binding.
-        if retained.migration_initial_empty && !self.host_owned_workspace_domains() {
+        if retained.migration_initial_empty && !self.connection.host_owned_workspace_domains() {
             keep.retain(|r| {
                 !(matches!(&r.target.kind, TransferKind::View)
                     && r.target.operation_id == refill_child_op)
@@ -1588,7 +1713,7 @@ impl WorldEngine {
         let pruned: Vec<WindowId> = retained
             .members
             .iter()
-            .filter(|m| !self.staged.closes.contains(m))
+            .filter(|m| !self.world.staged.closes.contains(m))
             .cloned()
             .collect();
         if pruned.is_empty() && !retained.migration_initial_empty && !retained.members.is_empty() {
@@ -1606,7 +1731,7 @@ impl WorldEngine {
             });
             return;
         }
-        if !self.staged.observation.inventory_complete {
+        if !self.world.staged.observation.inventory_complete {
             let mut held = retained;
             held.members = pruned;
             hold(held);
@@ -1628,7 +1753,7 @@ impl WorldEngine {
             hold(held);
             return;
         }
-        if self.staged.gesture_barrier {
+        if self.world.staged.gesture_barrier {
             let mut held = retained;
             held.members = pruned;
             hold(held);
@@ -1637,8 +1762,10 @@ impl WorldEngine {
         // Unreadable member frames hold narrowly: partial/unreadable arrival
         // stays outstanding with arrived members preserved.
         let unreadable_member = pruned.iter().any(|m| {
-            self.staged.facts.get(m).is_some_and(|f| {
-                f.rect.is_none() && f.minimized != Some(true) && !self.staged.closes.contains(m)
+            self.world.staged.facts.get(m).is_some_and(|f| {
+                f.rect.is_none()
+                    && f.minimized != Some(true)
+                    && !self.world.staged.closes.contains(m)
             })
         });
         if unreadable_member {
@@ -1650,7 +1777,7 @@ impl WorldEngine {
         let mut outstanding = Vec::new();
         let mut surviving = Vec::new();
         for member in &pruned {
-            if self.staged.closes.contains(member) {
+            if self.world.staged.closes.contains(member) {
                 continue;
             }
             match self.staged_homing(member) {
@@ -1726,7 +1853,7 @@ impl WorldEngine {
         // the live binding presence: an issued zero-member terminal or a
         // superseded/closed binding must never revert membership to the
         // echo path).
-        if !self.host_owned_workspace_domains() {
+        if !self.connection.host_owned_workspace_domains() {
             keep.retain(|r| {
                 !(matches!(&r.target.kind, TransferKind::View)
                     && r.target.operation_id == refill_child_op)
@@ -1746,7 +1873,12 @@ impl WorldEngine {
         // A target echo that moved externally (differs from both the
         // expectation and the last echo) settles instead of fighting.
         if let Some(refill) = retained.migration_refill.as_deref() {
-            let source_echo = self.staged.echoes.get(&retained.source_output.0).cloned();
+            let source_echo = self
+                .world
+                .staged
+                .echoes
+                .get(&retained.source_output.0)
+                .cloned();
             if source_echo.is_none() {
                 // Unknown source echo with all members arrived: usually a
                 // gap (hold, never settle as external). The release above
@@ -1764,6 +1896,8 @@ impl WorldEngine {
                 // Unknown source echoes hold (gap); only a known different
                 // logical id proves external movement.
                 let known = self
+                    .world
+                    .workspace
                     .mapping
                     .get(&retained.source_output.0)
                     .is_some_and(|ring| {
@@ -1781,20 +1915,28 @@ impl WorldEngine {
                 // user's switch wins (adopt the echo); the migrated
                 // members stay migrated. Drop the refill child.
                 if let Some(current) = source_echo {
-                    self.views.insert(retained.source_output.0.clone(), current);
+                    self.world
+                        .workspace
+                        .views
+                        .insert(retained.source_output.0.clone(), current);
                 }
                 let target_echo = self
+                    .world
                     .staged
                     .echoes
                     .get(&retained.target.target_output.0)
                     .cloned();
                 if let Some(current) = target_echo {
                     let known_target = self
+                        .world
+                        .workspace
                         .mapping
                         .get(&retained.target.target_output.0)
                         .is_some_and(|ring| ring.iter().any(|id| id == &current));
                     if known_target {
-                        self.views
+                        self.world
+                            .workspace
+                            .views
                             .insert(retained.target.target_output.0.clone(), current);
                     }
                 }
@@ -1806,6 +1948,7 @@ impl WorldEngine {
             }
         }
         let target_echo = self
+            .world
             .staged
             .echoes
             .get(&retained.target.target_output.0)
@@ -1820,6 +1963,8 @@ impl WorldEngine {
                 return;
             }
             let last = self
+                .world
+                .settlement
                 .last_views
                 .get(&retained.target.target_output)
                 .map(String::as_str);
@@ -1833,6 +1978,8 @@ impl WorldEngine {
                 // Externally moved target view settles, but unknown ids
                 // hold (gap, never external proof).
                 let known = self
+                    .world
+                    .workspace
                     .mapping
                     .get(&retained.target.target_output.0)
                     .is_some_and(|ring| {
@@ -1851,17 +1998,29 @@ impl WorldEngine {
                 // outputs (adopt each known echo); the migrated members
                 // stay migrated.
                 if let Some(current) = target_echo {
-                    self.views
+                    self.world
+                        .workspace
+                        .views
                         .insert(retained.target.target_output.0.clone(), current);
                 }
-                let source_echo = self.staged.echoes.get(&retained.source_output.0).cloned();
+                let source_echo = self
+                    .world
+                    .staged
+                    .echoes
+                    .get(&retained.source_output.0)
+                    .cloned();
                 if let Some(current) = source_echo {
                     let known_source = self
+                        .world
+                        .workspace
                         .mapping
                         .get(&retained.source_output.0)
                         .is_some_and(|ring| ring.iter().any(|id| id == &current));
                     if known_source {
-                        self.views.insert(retained.source_output.0.clone(), current);
+                        self.world
+                            .workspace
+                            .views
+                            .insert(retained.source_output.0.clone(), current);
                     }
                 }
                 keep.retain(|r| {
@@ -1877,6 +2036,7 @@ impl WorldEngine {
         }
         if let Some(refill) = retained.migration_refill.as_deref()
             && self
+                .world
                 .staged
                 .echoes
                 .get(&retained.source_output.0)
@@ -1890,22 +2050,28 @@ impl WorldEngine {
         }
         // Settled: record both views in history and drop the refill child.
         let target_ring = self
+            .world
+            .workspace
             .mapping
             .get(&retained.target.target_output.0)
             .cloned()
             .unwrap_or_default();
-        self.history.observe(
+        self.world.workspace.history.observe(
             &retained.target.target_output.0,
             &retained.target.target_workspace,
             &target_ring,
         );
         if let Some(refill) = retained.migration_refill.as_deref() {
             let source_ring = self
+                .world
+                .workspace
                 .mapping
                 .get(&retained.source_output.0)
                 .cloned()
                 .unwrap_or_default();
-            self.history
+            self.world
+                .workspace
+                .history
                 .observe(&retained.source_output.0, refill, &source_ring);
         }
         keep.retain(|r| {
@@ -1970,8 +2136,8 @@ impl WorldEngine {
         use crate::world_frames::dpi_basis_changed;
         use crate::world_report::OperationOutcome;
         let mut keep: Vec<RetainedFloat> = Vec::new();
-        for mut retained in std::mem::take(&mut self.retained_floats) {
-            if self.staged.closes.contains(&retained.window) {
+        for mut retained in std::mem::take(&mut self.world.settlement.retained_floats) {
+            if self.world.staged.closes.contains(&retained.window) {
                 self.emit_operation(
                     retained.operation_id.clone(),
                     retained.window.clone(),
@@ -1990,6 +2156,7 @@ impl WorldEngine {
             let mut fresh_evidence = false;
             let mut fresh_dpi_flip = false;
             for attempt in self
+                .world
                 .staged
                 .observation
                 .property_attempts
@@ -2006,7 +2173,7 @@ impl WorldEngine {
                 })
             {
                 let evidence = attempt.as_frame().expect("filtered frame attempt");
-                if frame_watermark_stale(&self.consumed_frames, evidence) {
+                if frame_watermark_stale(&self.world.settlement.consumed_frames, evidence) {
                     continue;
                 }
                 if dpi_basis_changed(evidence.dpi_before, evidence.dpi_after) {
@@ -2038,16 +2205,18 @@ impl WorldEngine {
             // settling, but latches conservatively from retained evidence
             // so a later readable report reconciles instead of dropping
             // the operation as external input.
-            let readable = self.staged.observation.inventory_complete
-                && !self.staged.gesture_barrier
+            let readable = self.world.staged.observation.inventory_complete
+                && !self.world.staged.gesture_barrier
                 && self
+                    .world
                     .staged
                     .facts
                     .get(&retained.window)
                     .is_some_and(|fact| fact.minimized != Some(true) && fact.rect.is_some());
             let Some(current) = readable
                 .then(|| {
-                    self.staged
+                    self.world
+                        .staged
                         .facts
                         .get(&retained.window)
                         .and_then(|fact| fact.rect)
@@ -2118,6 +2287,7 @@ impl WorldEngine {
             // retained. Its latest mechanical attempt is self-echo evidence,
             // not a float completion or permission to repeat either write.
             let latest = self
+                .world
                 .staged
                 .observation
                 .property_attempts
@@ -2125,10 +2295,12 @@ impl WorldEngine {
                 .filter_map(PropertyAttempt::as_frame)
                 .find(|evidence| {
                     evidence.window == retained.window
-                        && !frame_watermark_stale(&self.consumed_frames, evidence)
+                        && !frame_watermark_stale(&self.world.settlement.consumed_frames, evidence)
                 })
                 .or_else(|| {
-                    self.consumed_frames
+                    self.world
+                        .settlement
+                        .consumed_frames
                         .get(&retained.window)
                         .and_then(PropertyAttempt::as_frame)
                 });
@@ -2156,6 +2328,6 @@ impl WorldEngine {
                 keep.push(retained);
             }
         }
-        self.retained_floats = keep;
+        self.world.settlement.retained_floats = keep;
     }
 }

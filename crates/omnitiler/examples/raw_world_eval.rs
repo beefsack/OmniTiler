@@ -24,8 +24,9 @@
 use std::io::{BufRead, Write};
 
 use tiler_core::world_report::{BatchSettlement, CommandResult};
-use tiler_core::world_sizing::encode_command_result;
 use tiler_protocol::connection_protocol::route_connection_request;
+use tiler_protocol::world_admission::ProtocolAdmissionGate;
+use tiler_protocol::world_command_result::encode_command_result;
 use tiler_protocol::world_protocol::{
     DecodedReplyV4, ReplyWireOptionals, WorldEngine, WorldOutcome, decode_request, encode_error,
     encode_reply,
@@ -62,7 +63,12 @@ fn submit_report_with_settlements(
             );
         }
     };
-    let (outcome, settlements) = engine.handle_report(&report, &[]);
+    let gate = ProtocolAdmissionGate::new();
+    let (outcome, settlements) = engine
+        .handle_report_with_gate_and_prepare(&report, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
     match outcome {
         WorldOutcome::Accepted(reply)
         | WorldOutcome::Duplicate(reply)

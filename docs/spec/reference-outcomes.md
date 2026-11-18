@@ -32,6 +32,30 @@ Existing citation keys retain historical pins until relied on again; KDE policy 
 | --- | --- | --- |
 | A alone on L, adjacent empty R; publish Right, then queue Left while native A still reports L; consume Left at L without a setter; replay its exact attempt | User 2026-11-17, Option A: both moves evaluate the preceding logical home. Initial L alone cannot retire Left while an older published move may land. Exact operation/window/target plus equal non-null L pre/post readbacks report `already-at-target`; core settles once, without renewing a native write | Reference-WM and native KDE/macOS/Windows outcomes TBD; no general publication or delivery acknowledgement; [raw attempts](../porting/world-contract.md#raw-attempts-and-settlement) |
 
+### Typed report replay with a changed queued list
+
+| Minimal action sequence | Current core evidence | Selected outcome |
+| --- | --- | --- |
+| Once ready, submit a fresh commandless typed report with an empty queued list. Resubmit the identical report with one new queued command. | Source inspection: the report matches the replay entry; core returns the cached reply and no batch settlement, without executing the new command. | User 2026-11-18: Reusing the latest sequence with a changed typed report or ordered batch refuses `request-reused`; an exact retry returns the cached reply with no new settlements. Conditional on bounded exact identity and proof that the broker reparks commands without loss or reexecution and the next fresh capture progresses. Otherwise retain report-only matching and report. [C5 design](../changes/core-wire-boundary.md#user-decisions-2026-11-18) |
+
+### Typed native capture over the JSON budget
+
+| Minimal action sequence | Current core evidence | Selected outcome |
+| --- | --- | --- |
+| Submit a fresh, otherwise valid in-process report that meets typed structural limits but exceeds the protocol size budget. | Source inspection: the current typed ingress runs the JSON size gates before adoption. | D3 = B (user, 2026-11-18): Keep the protocol size gate by default. Revisit removal only if measurements justify it. Keep the same semantic checks before adoption either way. [C5 design](../changes/core-wire-boundary.md#user-decisions-2026-11-18) |
+
+### Staged reply size versus terminal headroom
+
+| Minimal action sequence | Current code | Intended result |
+| --- | --- | --- |
+| Pass the early reply bound; stage a reply whose exact bytes fit with remaining terminal headroom, but whose legacy estimate plus that headroom exceeds 4 MiB. Repeat with a fitting bound broker reply where only the outer binding tips exact bytes plus headroom over 4 MiB. | Legacy admission refuses the first case at the final checkpoint if reached. It passes the second if the inner-plus-headroom and actual bound checks pass independently. These discriminators are not demonstrated as reachable production inputs. | User 2026-11-18: neither case refuses on size alone. Drop the estimate-only final refusal. Exact canonical inner bytes plus terminal headroom over 4 MiB still yield a remembered `reply-oversize`; actual broker-bound bytes over 4 MiB still yield a separate unremembered service refusal. Keep checkpoint order and atomicity. |
+
+### Visibility attempt shared rules
+
+| ID | Minimal action sequence | Intended result |
+| --- | --- | --- |
+| `visibility-attempt-shared-rules` | Report healthy B and a visibility attempt for absent A; repeat with A only in `closed`. Then report A live with two visibility attempts for its lifetime, one readable and one identifiable malformed. Finally combine the absent-A case with an independently malformed state attempt; reverse the two rows in each paired case. | User 2026-11-18: Ignore visibility attempts without a live or held window in the report, with no authority or diagnostic. Duplicate visibility identities refuse `snapshot-invalid` with `duplicate-visibility-attempt`, including identifiable malformed rows. Use fixed section/kind order and producer order within a kind; first hard error wins. The mixed case reports the state error in either order. [C5 design](../changes/core-wire-boundary.md#user-decisions-2026-11-18) |
+
 ### Inventory hold and pending execution subject
 
 | Minimal action sequence | Current core evidence | Unsupported outcome / decision |
@@ -289,6 +313,7 @@ counterpart. Those sources do not prove macOS delivery or the sequences below.
 | Minimal action sequence | Established constraints | Selected core rule / native evidence gate |
 | --- | --- | --- |
 | Start with tiled A; request native sticky-on, atomically save the requested sticky record before its property write; return an exact correlated explicit refusal with pre=post=false and readable staged sticky=false; restart without another command. Separately return an ambiguous/unproven outcome and later readable observation | Refusal proves no native transition and permits no blind retry. Existing KDE persists the new float/sticky intent only after successful readback (`kwin/src/world-native.ts`, `setStickyNative`); v4 storage must publish before dependent writes. Tier 1 [R-FLT-02](reference-outcomes/floating.md#r-flt-02-backfill-sticky-across-a-workspace-switch-scrolling) establishes sticky float/prior-mode behavior, not failed external setter/storage ordering | User 2026-11-03: pre-write save remains for crash safety. Proven refusal restores the pre-command saved record, or null-clears if none existed, with no automatic retry. Ambiguous/unproven outcomes keep the requested record; later native observation reconciles under existing fact-authority rules, without retry. This applies the existing failed-transition rule, not new product semantics. Native save/rollback/restart outcomes remain TBD; immutable native-sticky fixtures cover success only |
+| Deliver proven native sticky refusal for A while A has no retained save entry and the save map is full. Free one slot on a later report and request native sticky for B. | Capacity blocks A's rollback without dropping its refusal proof. | User 2026-11-18: A's blocked rollback does not fence B. Keep A's proof for its own later eligible retry; B proceeds normally when capacity allows. |
 
 ### Selection accounting without logical echoes
 

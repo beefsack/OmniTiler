@@ -132,8 +132,8 @@ fn focus_report_v4() -> WorldReportV4 {
 
 fn stage_v4(engine: &mut WorldEngine, report: &WorldReportV4) {
     let observation = WorldEngine::capture_observation_v4(report);
-    engine.ingest_staged_intent(&observation);
-    engine.stage_facts_v4(report);
+    engine.tx(|tx| tx.ingest_staged_intent(&observation));
+    engine.tx(|tx| tx.stage_facts_v4(report));
 }
 
 fn accepted_v4(
@@ -150,12 +150,18 @@ fn accepted_v4(
 /// in for prior accepted-run assembly; classification lanes still come
 /// from the real staged captures above.
 fn seed_ring_views(engine: &mut WorldEngine) {
-    engine.mapping.insert(
+    engine.world.workspace.mapping.insert(
         "out-a".to_owned(),
         vec!["ws-1".to_owned(), "ws-9".to_owned()],
     );
-    engine.views.insert("out-a".to_owned(), "ws-1".to_owned());
     engine
+        .world
+        .workspace
+        .views
+        .insert("out-a".to_owned(), "ws-1".to_owned());
+    engine
+        .world
+        .settlement
         .last_views
         .insert(OutputId("out-a".to_owned()), "ws-1".to_owned());
 }
@@ -180,14 +186,16 @@ fn seed_command_domain(engine: &mut WorldEngine) {
         hints: WindowSizeHints::none(),
     };
     engine
+        .world
         .staged
         .homing
         .insert(WindowId("win-a".to_owned()), key.clone());
     engine
+        .world
         .staged
         .homing
         .insert(WindowId("win-b".to_owned()), key.clone());
-    engine.staged.domains.push(StagedDomain {
+    engine.world.staged.domains.push(StagedDomain {
         key,
         bounds: rect(0, 0, 800, 560),
         gap: 0,
@@ -231,14 +239,16 @@ fn focus_command_effect_parity_with_unknown_refusal() {
     // sequence carried through.
     let probe = contra_v4(90);
     let issue = test_issue(&probe);
-    match engine.execute_command(
-        &issue,
-        12,
-        &focus_command("win-b"),
-        &BTreeSet::new(),
-        None,
-        None,
-    ) {
+    match engine.tx(|tx| {
+        tx.execute_command(
+            &issue,
+            12,
+            &focus_command("win-b"),
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    }) {
         CommandApplied::Effect(effect) => {
             assert_eq!(effect.target, WindowId("win-b".to_owned()));
             assert_eq!(effect.command_seq, Some(12));
@@ -251,14 +261,16 @@ fn focus_command_effect_parity_with_unknown_refusal() {
     }
     // Negative with the eligible control above: unknown lifetimes
     // refuse with the focus vocabulary.
-    match engine.execute_command(
-        &issue,
-        13,
-        &focus_command("win-zzz"),
-        &BTreeSet::new(),
-        None,
-        None,
-    ) {
+    match engine.tx(|tx| {
+        tx.execute_command(
+            &issue,
+            13,
+            &focus_command("win-zzz"),
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    }) {
         CommandApplied::Rejected { kind, .. } => assert_eq!(kind, KIND_FOCUS),
         _ => panic!("unknown focus must refuse"),
     }
@@ -287,12 +299,12 @@ fn sticky_transition_uses_issue_owner_with_ownerless_connection() {
         output: OutputId("out-a".to_owned()),
         workspace: WorkspaceId(
             engine
-                .effective_view(&OutputId("out-a".to_owned()))
+                .tx_ro(|tx| tx.effective_view(&OutputId("out-a".to_owned())))
                 .expect("staged view"),
         ),
     };
-    engine.floating_scopes.insert(dest.clone());
-    engine.connection_owner = None;
+    engine.world.floating_scopes.insert(dest.clone());
+    engine.connection.connection_owner = None;
     // Staged intent-plus-facts staging does not rebuild the command
     // planning joins; seed the retained homing/domain join post
     // staging, mirroring accepted-run assembly.
@@ -301,13 +313,15 @@ fn sticky_transition_uses_issue_owner_with_ownerless_connection() {
         owner: OwnerId::parse("adapter-1").expect("owner"),
         correlation: CorrelationId::parse("req-7").expect("correlation"),
     };
-    match engine.execute_sticky_command(
-        &issue,
-        7,
-        &WindowId("win-a".to_owned()),
-        Some(true),
-        &BTreeSet::new(),
-    ) {
+    match engine.tx(|tx| {
+        tx.execute_sticky_command(
+            &issue,
+            7,
+            &WindowId("win-a".to_owned()),
+            Some(true),
+            &BTreeSet::new(),
+        )
+    }) {
         CommandApplied::NoEffect => {}
         CommandApplied::Rejected { kind, message } => panic!(
             "eligible sticky ON must succeed with ownerless connection, got {kind} {message}"
@@ -316,6 +330,8 @@ fn sticky_transition_uses_issue_owner_with_ownerless_connection() {
     }
     assert_eq!(
         engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
             .map(|binding| binding.target.value),
@@ -323,7 +339,7 @@ fn sticky_transition_uses_issue_owner_with_ownerless_connection() {
         "native sticky binding minted from the issue owner",
     );
     assert!(
-        engine.connection_owner.is_none(),
+        engine.connection.connection_owner.is_none(),
         "helper must not reconnect the owner"
     );
 }
@@ -365,15 +381,21 @@ fn sticky_toggle_float_clear_restages_staged_facts_only() {
         output: OutputId("out-a".to_owned()),
         workspace: WorkspaceId(
             engine
-                .effective_view(&OutputId("out-a".to_owned()))
+                .tx_ro(|tx| tx.effective_view(&OutputId("out-a".to_owned())))
                 .expect("staged view"),
         ),
     };
-    engine.floating_scopes.insert(dest.clone());
+    engine.world.floating_scopes.insert(dest.clone());
     seed_command_domain(&mut engine);
     let win = WindowId("win-a".to_owned());
-    engine.restored_sticky.insert(win.clone(), false);
     engine
+        .world
+        .intent
+        .restored_sticky
+        .insert(win.clone(), false);
+    engine
+        .world
+        .intent
         .pending_intent
         .insert(win.clone(), IntentData::new(None, None));
     // No report is ever passed to the helper: the explicit issue is
@@ -382,7 +404,7 @@ fn sticky_toggle_float_clear_restages_staged_facts_only() {
         owner: OwnerId::parse("adapter-1").expect("owner"),
         correlation: CorrelationId::parse("req-7").expect("correlation"),
     };
-    match engine.execute_sticky_toggle_float(&issue, 7, &win, &BTreeSet::new()) {
+    match engine.tx(|tx| tx.execute_sticky_toggle_float(&issue, 7, &win, &BTreeSet::new())) {
         CommandApplied::NoEffect => {}
         CommandApplied::Rejected { kind, message } => panic!(
             "staged toggle-float clear must succeed with no report input, got {kind} {message}"
@@ -392,11 +414,13 @@ fn sticky_toggle_float_clear_restages_staged_facts_only() {
         }
     }
     assert!(
-        !engine.restored_sticky.contains_key(&win),
+        !engine.world.intent.restored_sticky.contains_key(&win),
         "clear drops sticky provenance",
     );
     assert_eq!(
         engine
+            .world
+            .intent
             .intent_desired
             .get(&win)
             .and_then(|entry| entry.as_ref()),
@@ -404,11 +428,11 @@ fn sticky_toggle_float_clear_restages_staged_facts_only() {
         "tile-base save adopted from staged facts",
     );
     assert!(
-        !engine.pending_intent.contains_key(&win),
+        !engine.world.intent.pending_intent.contains_key(&win),
         "restaged adopt must not reingest cleared intent",
     );
     assert_eq!(
-        engine.staged_homing(&win).as_ref(),
+        engine.tx_ro(|tx| tx.staged_homing(&win)).as_ref(),
         Some(&dest),
         "restage converges at the destination",
     );
@@ -455,11 +479,11 @@ fn sticky_composed_transition_restages_staged_facts_only() {
         output: OutputId("out-a".to_owned()),
         workspace: WorkspaceId(
             engine
-                .effective_view(&OutputId("out-a".to_owned()))
+                .tx_ro(|tx| tx.effective_view(&OutputId("out-a".to_owned())))
                 .expect("staged view"),
         ),
     };
-    engine.floating_scopes.insert(dest.clone());
+    engine.world.floating_scopes.insert(dest.clone());
     // Staged intent-plus-facts staging does not rebuild the command
     // planning joins; seed the retained homing/domain join post
     // staging, mirroring accepted-run assembly.
@@ -468,6 +492,8 @@ fn sticky_composed_transition_restages_staged_facts_only() {
     // clone, and the restaged adopt must not resurrect it.
     let win = WindowId("win-a".to_owned());
     engine
+        .world
+        .intent
         .pending_intent
         .insert(win.clone(), IntentData::new(None, None));
     // No report is ever passed to the helper: the explicit issue is
@@ -476,7 +502,7 @@ fn sticky_composed_transition_restages_staged_facts_only() {
         owner: OwnerId::parse("adapter-1").expect("owner"),
         correlation: CorrelationId::parse("req-7").expect("correlation"),
     };
-    match engine.execute_sticky_command(&issue, 7, &win, Some(true), &BTreeSet::new()) {
+    match engine.tx(|tx| tx.execute_sticky_command(&issue, 7, &win, Some(true), &BTreeSet::new())) {
         CommandApplied::NoEffect => {}
         CommandApplied::Rejected { kind, message } => {
             panic!("staged composed ON must succeed with no report input, got {kind} {message}")
@@ -484,12 +510,14 @@ fn sticky_composed_transition_restages_staged_facts_only() {
         CommandApplied::Effect(_) => panic!("sticky ON mints no focus effect"),
     }
     assert_eq!(
-        engine.restored_sticky.get(&win),
+        engine.world.intent.restored_sticky.get(&win),
         Some(&false),
         "tiled origin restores with a false prior",
     );
     assert_eq!(
         engine
+            .world
+            .intent
             .intent_desired
             .get(&win)
             .and_then(|entry| entry.as_ref()),
@@ -497,11 +525,11 @@ fn sticky_composed_transition_restages_staged_facts_only() {
         "ON save adopted from staged facts",
     );
     assert!(
-        engine.sticky_visible_rev.contains_key(&win),
+        engine.world.intent.sticky_visible_rev.contains_key(&win),
         "fresh ON marks the visibility revision",
     );
     assert!(
-        !engine.pending_intent.contains_key(&win),
+        !engine.world.intent.pending_intent.contains_key(&win),
         "restaged adopt must not reingest cleared intent",
     );
 }
@@ -520,17 +548,17 @@ fn local_toggle_orientation_uses_issue_owner_with_ownerless_connection() {
     accepted_v4(&mut engine, &bootstrap);
     stage_v4(&mut engine, &bootstrap);
     seed_ring_views(&mut engine);
-    engine.connection_owner = None;
+    engine.connection.connection_owner = None;
     // Real domain join over the staged facts (classification
     // only, from staged state with no report input), mirroring
     // accepted-run assembly.
-    engine.build_staged_domains();
+    engine.tx(|tx| tx.build_staged_domains());
     let issue = EventIssue {
         owner: OwnerId::parse("adapter-1").expect("owner"),
         correlation: CorrelationId::parse("req-7").expect("correlation"),
     };
     let mut owned: Vec<EngineWindow> = Vec::new();
-    for domain in &engine.staged.domains {
+    for domain in &engine.world.staged.domains {
         owned.extend(domain.windows.iter().cloned());
     }
     let by_id: BTreeMap<&WindowId, &EngineWindow> =
@@ -538,10 +566,10 @@ fn local_toggle_orientation_uses_issue_owner_with_ownerless_connection() {
     let command = CoreCommand::ToggleOrientation {
         window: "win-a".to_owned(),
     };
-    match engine.run_local_operation(&issue, 7, &command, &by_id, &BTreeSet::new()) {
+    match engine.tx(|tx| tx.run_local_operation(&issue, 7, &command, &by_id, &BTreeSet::new())) {
         CommandApplied::NoEffect => {
             assert_eq!(
-                engine.command_highwater,
+                engine.world.command_highwater,
                 Some(7),
                 "eligible orientation consumes its sequence through the typed operation",
             );
@@ -567,16 +595,18 @@ fn toggle_maximize_focus_gate_reads_staged_not_contra() {
     stage_v4(&mut engine, &v4report);
     seed_command_domain(&mut engine);
     let probe = contra_v4(90);
-    match engine.execute_command(
-        &test_issue(&probe),
-        12,
-        &WorldCommand::ToggleMaximize {
-            window: WindowId("win-a".to_owned()),
-        },
-        &BTreeSet::new(),
-        None,
-        None,
-    ) {
+    match engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&probe),
+            12,
+            &WorldCommand::ToggleMaximize {
+                window: WindowId("win-a".to_owned()),
+            },
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    }) {
         CommandApplied::NoEffect => {}
         CommandApplied::Rejected { kind, message } => {
             panic!("eligible maximize must toggle, refused {kind} {message}")
@@ -585,17 +615,19 @@ fn toggle_maximize_focus_gate_reads_staged_not_contra() {
     }
     assert!(
         matches!(
-            engine.command_result,
+            engine.world.command_result,
             Some(crate::world_report::CommandResult::Maximize {
                 maximized: true,
                 ..
             })
         ),
         "native maximize result minted from staged facts: {:?}",
-        engine.command_result,
+        engine.world.command_result,
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
             .is_some_and(|binding| binding.target.value),
@@ -616,16 +648,18 @@ fn toggle_maximize_focus_gate_reads_staged_not_contra() {
     let mut eligible_probe = contra_v4(91);
     eligible_probe.focused_global = "win-a".to_owned();
     eligible_probe.foreground_known = true;
-    match refused_engine.execute_command(
-        &test_issue(&eligible_probe),
-        12,
-        &WorldCommand::ToggleMaximize {
-            window: WindowId("win-a".to_owned()),
-        },
-        &BTreeSet::new(),
-        None,
-        None,
-    ) {
+    match refused_engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&eligible_probe),
+            12,
+            &WorldCommand::ToggleMaximize {
+                window: WindowId("win-a".to_owned()),
+            },
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    }) {
         CommandApplied::Rejected { kind, .. } => assert_eq!(kind, KIND_FOCUS),
         CommandApplied::NoEffect => panic!("staged unknown focus must refuse"),
         CommandApplied::Effect(_) => panic!("refusal mints no effect"),
@@ -640,16 +674,18 @@ fn toggle_maximize_focus_gate_reads_staged_not_contra() {
     let mut held = BTreeSet::new();
     held.insert(home_key_ws("out-a", "ws-1"));
     let held_probe = contra_v4(92);
-    match held_engine.execute_command(
-        &test_issue(&held_probe),
-        12,
-        &WorldCommand::ToggleMaximize {
-            window: WindowId("win-a".to_owned()),
-        },
-        &held,
-        None,
-        None,
-    ) {
+    match held_engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&held_probe),
+            12,
+            &WorldCommand::ToggleMaximize {
+                window: WindowId("win-a".to_owned()),
+            },
+            &held,
+            None,
+            None,
+        )
+    }) {
         CommandApplied::Rejected { kind, .. } => assert_eq!(kind, KIND_SCOPE_HELD),
         CommandApplied::NoEffect => panic!("held home scope must refuse"),
         CommandApplied::Effect(_) => panic!("refusal mints no effect"),
@@ -685,23 +721,25 @@ fn composed_maximize_staged_inventory_and_barrier_gates() {
     stage_v4(&mut engine, &v4report);
     seed_command_domain(&mut engine);
     let probe = contra_v4(90);
-    match engine.execute_command(
-        &test_issue(&probe),
-        12,
-        &WorldCommand::ToggleMaximize {
-            window: WindowId("win-a".to_owned()),
-        },
-        &BTreeSet::new(),
-        None,
-        None,
-    ) {
+    match engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&probe),
+            12,
+            &WorldCommand::ToggleMaximize {
+                window: WindowId("win-a".to_owned()),
+            },
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    }) {
         CommandApplied::NoEffect => {}
         CommandApplied::Rejected { kind, message } => {
             panic!("eligible composed maximize must toggle, refused {kind} {message}")
         }
         CommandApplied::Effect(_) => panic!("maximize mints no focus effect"),
     }
-    match &engine.command_result {
+    match &engine.world.command_result {
         Some(crate::world_report::CommandResult::Maximize { maximized, .. }) => {
             assert!(*maximized, "owned bit set from staged facts",)
         }
@@ -709,6 +747,8 @@ fn composed_maximize_staged_inventory_and_barrier_gates() {
     }
     assert!(
         engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "composed bit retained",
@@ -723,22 +763,26 @@ fn composed_maximize_staged_inventory_and_barrier_gates() {
     seed_command_domain(&mut partial_engine);
     let mut complete_probe = contra_v4(91);
     complete_probe.inventory_complete = true;
-    match partial_engine.execute_command(
-        &test_issue(&complete_probe),
-        12,
-        &WorldCommand::ToggleMaximize {
-            window: WindowId("win-a".to_owned()),
-        },
-        &BTreeSet::new(),
-        None,
-        None,
-    ) {
+    match partial_engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&complete_probe),
+            12,
+            &WorldCommand::ToggleMaximize {
+                window: WindowId("win-a".to_owned()),
+            },
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    }) {
         CommandApplied::Rejected { kind, .. } => assert_eq!(kind, KIND_OPERATION),
         CommandApplied::NoEffect => panic!("partial staged inventory must refuse"),
         CommandApplied::Effect(_) => panic!("refusal mints no effect"),
     }
     assert!(
         !partial_engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "inventory refusal sets no bit",
@@ -752,22 +796,26 @@ fn composed_maximize_staged_inventory_and_barrier_gates() {
     stage_v4(&mut barrier_engine, &v4report);
     seed_command_domain(&mut barrier_engine);
     let barrier_probe = contra_v4(92);
-    match barrier_engine.execute_command(
-        &test_issue(&barrier_probe),
-        12,
-        &WorldCommand::ToggleMaximize {
-            window: WindowId("win-a".to_owned()),
-        },
-        &BTreeSet::new(),
-        None,
-        None,
-    ) {
+    match barrier_engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&barrier_probe),
+            12,
+            &WorldCommand::ToggleMaximize {
+                window: WindowId("win-a".to_owned()),
+            },
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    }) {
         CommandApplied::Rejected { kind, .. } => assert_eq!(kind, KIND_OPERATION),
         CommandApplied::NoEffect => panic!("staged barrier must refuse"),
         CommandApplied::Effect(_) => panic!("refusal mints no effect"),
     }
     assert!(
         !barrier_engine
+            .world
+            .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
         "barrier refusal sets no bit",
@@ -801,25 +849,27 @@ fn move_float_destination_reads_staged_screens_not_contra() {
     let work = rect(100, 0, 600, 500);
     let contra_default = rect(0, 0, 400, 560);
     let probe = contra_v4(90);
-    match engine.execute_command(
-        &test_issue(&probe),
-        12,
-        &WorldCommand::MoveDirectional {
-            window: WindowId("win-a".to_owned()),
-            direction: "left".to_owned(),
-            same_axis: SameAxisMove::GroupWithNeighbor,
-        },
-        &BTreeSet::new(),
-        None,
-        None,
-    ) {
+    match engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&probe),
+            12,
+            &WorldCommand::MoveDirectional {
+                window: WindowId("win-a".to_owned()),
+                direction: "left".to_owned(),
+                same_axis: SameAxisMove::GroupWithNeighbor,
+            },
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    }) {
         CommandApplied::NoEffect => {}
         CommandApplied::Rejected { kind, message } => {
             panic!("eligible float move must apply, refused {kind} {message}")
         }
         CommandApplied::Effect(_) => panic!("float move mints no focus effect"),
     }
-    match &engine.command_result {
+    match &engine.world.command_result {
         Some(crate::world_report::CommandResult::Directional {
             outcome,
             target,
@@ -859,25 +909,27 @@ fn move_float_destination_reads_staged_screens_not_contra() {
     seed_float_domain(&mut missing_engine);
     let mut home_probe = contra_v4(91);
     home_probe.screens = vec![screen("out-a", 0)];
-    match missing_engine.execute_command(
-        &test_issue(&home_probe),
-        12,
-        &WorldCommand::MoveDirectional {
-            window: WindowId("win-a".to_owned()),
-            direction: "left".to_owned(),
-            same_axis: SameAxisMove::GroupWithNeighbor,
-        },
-        &BTreeSet::new(),
-        None,
-        None,
-    ) {
+    match missing_engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&home_probe),
+            12,
+            &WorldCommand::MoveDirectional {
+                window: WindowId("win-a".to_owned()),
+                direction: "left".to_owned(),
+                same_axis: SameAxisMove::GroupWithNeighbor,
+            },
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    }) {
         CommandApplied::NoEffect => {}
         CommandApplied::Rejected { kind, message } => {
             panic!("missing staged screen must no-effect, refused {kind} {message}")
         }
         CommandApplied::Effect(_) => panic!("refusal-path mints no focus effect"),
     }
-    match &missing_engine.command_result {
+    match &missing_engine.world.command_result {
         Some(crate::world_report::CommandResult::Directional { outcome, .. }) => assert_eq!(
             *outcome,
             crate::world_directional::DirectionalOutcome::MoveFloatRefusedUnknownOutput,
@@ -893,10 +945,11 @@ fn move_float_destination_reads_staged_screens_not_contra() {
 fn seed_float_domain(engine: &mut WorldEngine) {
     let key = home_key_ws("out-a", "ws-1");
     engine
+        .world
         .staged
         .homing
         .insert(WindowId("win-a".to_owned()), key.clone());
-    engine.staged.domains.push(StagedDomain {
+    engine.world.staged.domains.push(StagedDomain {
         key,
         bounds: rect(100, 0, 600, 600),
         gap: 0,
@@ -934,12 +987,18 @@ fn shared_retain_view_fans_out_across_staged_screens_not_contra() {
         (WorkspaceMode::PerOutputLocal, false),
     ] {
         let mut engine = new_engine();
-        engine.settings.workspace_mode = mode;
+        engine.connection.settings.workspace_mode = mode;
         for out in ["out-a", "out-b"] {
             engine
+                .world
+                .workspace
                 .mapping
                 .insert(out.to_owned(), vec!["ws-1".to_owned(), "ws-9".to_owned()]);
-            engine.views.insert(out.to_owned(), "ws-1".to_owned());
+            engine
+                .world
+                .workspace
+                .views
+                .insert(out.to_owned(), "ws-1".to_owned());
         }
         let mut v4report = report_v4_simple(2, vec![screen("out-a", 0), screen("out-b", 800)]);
         v4report.windows = vec![fact("win-a", "out-a", 0)];
@@ -948,17 +1007,19 @@ fn shared_retain_view_fans_out_across_staged_screens_not_contra() {
         stage_v4(&mut engine, &v4report);
         seed_command_domain(&mut engine);
         let probe = contra_v4(90);
-        match engine.execute_command(
-            &test_issue(&probe),
-            12,
-            &WorldCommand::SwitchView {
-                output: OutputId("out-a".to_owned()),
-                workspace: "ws-9".to_owned(),
-            },
-            &BTreeSet::new(),
-            None,
-            None,
-        ) {
+        match engine.tx(|tx| {
+            tx.execute_command(
+                &test_issue(&probe),
+                12,
+                &WorldCommand::SwitchView {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: "ws-9".to_owned(),
+                },
+                &BTreeSet::new(),
+                None,
+                None,
+            )
+        }) {
             CommandApplied::NoEffect => {}
             CommandApplied::Rejected { kind, message } => {
                 panic!("eligible view switch must move, refused {kind} {message}")
@@ -966,12 +1027,12 @@ fn shared_retain_view_fans_out_across_staged_screens_not_contra() {
             CommandApplied::Effect(_) => panic!("view switch mints no focus effect"),
         }
         assert_eq!(
-            engine.views.get("out-a"),
+            engine.world.workspace.views.get("out-a"),
             Some(&"ws-9".to_owned()),
             "target view moves (mode={mode:?})",
         );
         assert_eq!(
-            engine.views.get("out-b"),
+            engine.world.workspace.views.get("out-b"),
             Some(&(if fanout { "ws-9" } else { "ws-1" }).to_owned()),
             "second output follows only under Shared fanout (mode={mode:?})",
         );
@@ -998,15 +1059,25 @@ fn global_unique_select_swap_gated_by_staged_inventory_not_contra() {
     // path where the staged inventory gate lives (the empty-topology
     // fast path carries no inventory gate by design).
     let mut engine = new_engine();
-    engine.settings.workspace_mode = WorkspaceMode::GlobalUnique;
+    engine.connection.settings.workspace_mode = WorkspaceMode::GlobalUnique;
     for out in ["out-a", "out-b"] {
         engine
+            .world
+            .workspace
             .mapping
             .insert(out.to_owned(), vec!["ws-1".to_owned(), "ws-9".to_owned()]);
     }
-    engine.views.insert("out-a".to_owned(), "ws-1".to_owned());
-    engine.views.insert("out-b".to_owned(), "ws-9".to_owned());
-    engine.members.insert(
+    engine
+        .world
+        .workspace
+        .views
+        .insert("out-a".to_owned(), "ws-1".to_owned());
+    engine
+        .world
+        .workspace
+        .views
+        .insert("out-b".to_owned(), "ws-9".to_owned());
+    engine.world.workspace.members.insert(
         WindowId("win-a".to_owned()),
         MemberState {
             home: home_key_ws("out-a", "ws-1"),
@@ -1018,17 +1089,19 @@ fn global_unique_select_swap_gated_by_staged_inventory_not_contra() {
     let v4report = stage_v4report(true);
     stage_v4(&mut engine, &v4report);
     let probe = contra_v4(90);
-    let applied = engine.execute_command(
-        &test_issue(&probe),
-        12,
-        &WorldCommand::SelectWorkspace {
-            output: OutputId("out-a".to_owned()),
-            workspace: "ws-9".to_owned(),
-        },
-        &BTreeSet::new(),
-        None,
-        None,
-    );
+    let applied = engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&probe),
+            12,
+            &WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: "ws-9".to_owned(),
+            },
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    });
     match applied {
         CommandApplied::NoEffect => {}
         CommandApplied::Rejected { kind, message } => {
@@ -1037,31 +1110,37 @@ fn global_unique_select_swap_gated_by_staged_inventory_not_contra() {
         CommandApplied::Effect(_) => panic!("eligible swap invents no focus"),
     }
     assert_eq!(
-        engine.views.get("out-a"),
+        engine.world.workspace.views.get("out-a"),
         Some(&"ws-9".to_owned()),
         "select lands on the target",
     );
     assert_eq!(
-        engine.views.get("out-b"),
+        engine.world.workspace.views.get("out-b"),
         Some(&"ws-1".to_owned()),
         "other output takes the displaced view",
     );
     // Negative: staged incomplete inventory refuses with the migration
     // vocabulary while the contra report claims completeness.
     let mut held_engine = new_engine();
-    held_engine.settings.workspace_mode = WorkspaceMode::GlobalUnique;
+    held_engine.connection.settings.workspace_mode = WorkspaceMode::GlobalUnique;
     for out in ["out-a", "out-b"] {
         held_engine
+            .world
+            .workspace
             .mapping
             .insert(out.to_owned(), vec!["ws-1".to_owned(), "ws-9".to_owned()]);
     }
     held_engine
+        .world
+        .workspace
         .views
         .insert("out-a".to_owned(), "ws-1".to_owned());
     held_engine
+        .world
+        .workspace
         .views
         .insert("out-b".to_owned(), "ws-9".to_owned());
-    held_engine.members.insert(
+    held_engine.world.workspace.members.insert(
         WindowId("win-a".to_owned()),
         MemberState {
             home: home_key_ws("out-a", "ws-1"),
@@ -1074,23 +1153,25 @@ fn global_unique_select_swap_gated_by_staged_inventory_not_contra() {
     stage_v4(&mut held_engine, &v4report);
     let mut complete_probe = contra_v4(91);
     complete_probe.inventory_complete = true;
-    match held_engine.execute_command(
-        &test_issue(&complete_probe),
-        12,
-        &WorldCommand::SelectWorkspace {
-            output: OutputId("out-a".to_owned()),
-            workspace: "ws-9".to_owned(),
-        },
-        &BTreeSet::new(),
-        None,
-        None,
-    ) {
+    match held_engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&complete_probe),
+            12,
+            &WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: "ws-9".to_owned(),
+            },
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    }) {
         CommandApplied::Rejected { kind, .. } => assert_eq!(kind, KIND_MIGRATION),
         CommandApplied::NoEffect => panic!("incomplete staged inventory must refuse"),
         CommandApplied::Effect(_) => panic!("refusal mints no effect"),
     }
     assert_eq!(
-        held_engine.views.get("out-a"),
+        held_engine.world.workspace.views.get("out-a"),
         Some(&"ws-1".to_owned()),
         "refusal leaves views untouched",
     );
@@ -1118,24 +1199,41 @@ fn migrate_mode_and_inventory_gates_read_staged_not_contra() {
     // with its floating scope. Identical for every leg; only the raw
     // inventory flag (set before intake) and the engine mode vary.
     let seed_migrate_joins = |engine: &mut WorldEngine| {
-        engine.settings.workspace_mode = WorkspaceMode::PerOutputLocal;
-        engine.mapping.insert(
+        engine.connection.settings.workspace_mode = WorkspaceMode::PerOutputLocal;
+        engine.world.workspace.mapping.insert(
             "out-a".to_owned(),
             vec!["ws-1".to_owned(), "ws-9".to_owned()],
         );
         engine
+            .world
+            .workspace
             .mapping
             .insert("out-b".to_owned(), vec!["ws-9".to_owned()]);
-        engine.views.insert("out-a".to_owned(), "ws-1".to_owned());
-        engine.views.insert("out-b".to_owned(), "ws-9".to_owned());
         engine
+            .world
+            .workspace
+            .views
+            .insert("out-a".to_owned(), "ws-1".to_owned());
+        engine
+            .world
+            .workspace
+            .views
+            .insert("out-b".to_owned(), "ws-9".to_owned());
+        engine
+            .world
+            .workspace
             .live_topology
             .insert("out-a".to_owned(), rect(0, 0, 800, 600));
         engine
+            .world
+            .workspace
             .live_topology
             .insert("out-b".to_owned(), rect(800, 0, 800, 600));
         seed_float_domain(engine);
-        engine.floating_scopes.insert(home_key_ws("out-a", "ws-1"));
+        engine
+            .world
+            .floating_scopes
+            .insert(home_key_ws("out-a", "ws-1"));
     };
     let migrate = || WorldCommand::MigrateWorkspace {
         source_output: OutputId("out-a".to_owned()),
@@ -1150,21 +1248,23 @@ fn migrate_mode_and_inventory_gates_read_staged_not_contra() {
     stage_v4(&mut engine, &v4report);
     seed_migrate_joins(&mut engine);
     let probe = contra_v4(90);
-    match engine.execute_command(
-        &test_issue(&probe),
-        12,
-        &migrate(),
-        &BTreeSet::new(),
-        None,
-        None,
-    ) {
+    match engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&probe),
+            12,
+            &migrate(),
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    }) {
         CommandApplied::NoEffect => {}
         CommandApplied::Rejected { kind, message } => {
             panic!("eligible migration must carry, refused {kind} {message}")
         }
         CommandApplied::Effect(_) => panic!("migration mints no focus effect"),
     }
-    match &engine.command_result {
+    match &engine.world.command_result {
         Some(crate::world_report::CommandResult::Migration {
             source,
             target,
@@ -1181,20 +1281,22 @@ fn migrate_mode_and_inventory_gates_read_staged_not_contra() {
         other => panic!("expected migration provenance, got {other:?}"),
     }
     assert_eq!(
-        engine.views.get("out-b"),
+        engine.world.workspace.views.get("out-b"),
         Some(&"ws-1".to_owned()),
         "target view lands",
     );
     assert!(
         !engine
+            .world
+            .workspace
             .mapping
             .get("out-a")
             .is_some_and(|ring| ring.iter().any(|id| id == "ws-1")),
         "source ring drops the id: {:?}",
-        engine.mapping.get("out-a"),
+        engine.world.workspace.mapping.get("out-a"),
     );
     assert!(
-        engine.retained.iter().any(|transfer| {
+        engine.world.settlement.retained.iter().any(|transfer| {
             matches!(
                 &transfer.target.kind,
                 crate::world_report::TransferKind::Migration
@@ -1208,16 +1310,18 @@ fn migrate_mode_and_inventory_gates_read_staged_not_contra() {
     let v4report = stage_v4report(true);
     stage_v4(&mut shared_engine, &v4report);
     seed_migrate_joins(&mut shared_engine);
-    shared_engine.settings.workspace_mode = WorkspaceMode::Shared;
+    shared_engine.connection.settings.workspace_mode = WorkspaceMode::Shared;
     let shared_probe = contra_v4(90);
-    match shared_engine.execute_command(
-        &test_issue(&shared_probe),
-        12,
-        &migrate(),
-        &BTreeSet::new(),
-        None,
-        None,
-    ) {
+    match shared_engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&shared_probe),
+            12,
+            &migrate(),
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    }) {
         CommandApplied::Rejected { kind, message } => {
             assert_eq!(kind, KIND_MIGRATION);
             assert_eq!(message, MSG_MIGRATION_SHARED);
@@ -1233,14 +1337,16 @@ fn migrate_mode_and_inventory_gates_read_staged_not_contra() {
     seed_migrate_joins(&mut partial_engine);
     let mut complete_probe = contra_v4(91);
     complete_probe.inventory_complete = true;
-    match partial_engine.execute_command(
-        &test_issue(&complete_probe),
-        12,
-        &migrate(),
-        &BTreeSet::new(),
-        None,
-        None,
-    ) {
+    match partial_engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&complete_probe),
+            12,
+            &migrate(),
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    }) {
         CommandApplied::Rejected { kind, message } => {
             assert_eq!(kind, KIND_MIGRATION);
             assert_eq!(message, MSG_MIGRATION_INVENTORY);
@@ -1249,7 +1355,7 @@ fn migrate_mode_and_inventory_gates_read_staged_not_contra() {
         CommandApplied::Effect(_) => panic!("refusal mints no effect"),
     }
     assert_eq!(
-        partial_engine.views.get("out-b"),
+        partial_engine.world.workspace.views.get("out-b"),
         Some(&"ws-9".to_owned()),
         "refusal leaves views untouched",
     );
@@ -1263,7 +1369,7 @@ fn send_source_freeze_prefers_retained_home_over_current_action() {
     // source (not the stale staged chain). Source-freeze survival through
     // staging end to end is covered by the accepted-run freeze tests.
     let mut engine = new_engine();
-    engine.members.insert(
+    engine.world.workspace.members.insert(
         WindowId("win-a".to_owned()),
         MemberState {
             home: home_key_ws("out-a", "ws-1"),
@@ -1288,38 +1394,40 @@ fn send_source_freeze_prefers_retained_home_over_current_action() {
     current.cursor = Some((850, 10));
     current.action_outputs = vec![OutputId("out-b".to_owned()), OutputId("out-a".to_owned())];
     let source_ctx = RawRouting::from_v4(&current);
-    let staged_ctx = RawRouting::from_staged(&engine.staged);
+    let staged_ctx = RawRouting::from_staged(&engine.world.staged);
     assert_eq!(
-        engine.resolve_home_then_action(&source_ctx, &WindowId("win-a".to_owned())),
+        engine.tx_ro(|tx| tx.resolve_home_then_action(&source_ctx, &WindowId("win-a".to_owned()))),
         Some(OutputId("out-a".to_owned())),
         "retained home wins over current action",
     );
     assert_eq!(
-        engine.resolve_action_output(&source_ctx),
+        engine.tx_ro(|tx| tx.resolve_action_output(&source_ctx)),
         Some(OutputId("out-b".to_owned())),
         "current action resolves from the source context",
     );
     assert_eq!(
-        engine.resolve_action_output(&staged_ctx),
+        engine.tx_ro(|tx| tx.resolve_action_output(&staged_ctx)),
         Some(OutputId("out-a".to_owned())),
         "stale staged chain disagrees, proving the freeze must use the source",
     );
     // Unfrozen helper plumbing refuses without inventing a source;
     // the frozen source resolves verbatim.
     let probe = contra_v4(90);
-    match engine.execute_command(
-        &test_issue(&probe),
-        12,
-        &WorldCommand::SendNumbered {
-            window: WindowId("win-a".to_owned()),
-            source: SendSource::HomeThenAction,
-            index: 1,
-            follow: false,
-        },
-        &BTreeSet::new(),
-        None,
-        None,
-    ) {
+    match engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&probe),
+            12,
+            &WorldCommand::SendNumbered {
+                window: WindowId("win-a".to_owned()),
+                source: SendSource::HomeThenAction,
+                index: 1,
+                follow: false,
+            },
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    }) {
         CommandApplied::Rejected { kind, .. } => assert_eq!(kind, KIND_SEND_WINDOW),
         CommandApplied::NoEffect => panic!("unfrozen implicit source must refuse"),
         CommandApplied::Effect(_) => panic!("refusal mints no effect"),
@@ -1351,7 +1459,7 @@ fn fresh_focus_current_retained_native_and_primary_order() {
     // while it names retained homing.
     let mut engine = new_engine();
     seed_ring_views(&mut engine);
-    engine.members.insert(
+    engine.world.workspace.members.insert(
         WindowId("win-a".to_owned()),
         MemberState {
             home: home_key_ws("out-a", "ws-1"),
@@ -1360,10 +1468,11 @@ fn fresh_focus_current_retained_native_and_primary_order() {
             geometry: None,
         },
     );
-    engine.fresh_focus.last_output = Some(OutputId("out-b".to_owned()));
+    engine.world.focus.fresh_focus.last_output = Some(OutputId("out-b".to_owned()));
     let v4report = setup("win-a");
     stage_v4(&mut engine, &v4report);
-    let (current, trace) = engine.fresh_focused_output(&RawRouting::from_staged(&engine.staged));
+    let (current, trace) =
+        engine.tx_ro(|tx| tx.fresh_focused_output(&RawRouting::from_staged(&engine.world.staged)));
     assert_eq!(current, Some(OutputId("out-a".to_owned())), "current wins");
     assert_eq!(
         trace.basis,
@@ -1373,7 +1482,7 @@ fn fresh_focus_current_retained_native_and_primary_order() {
     // Empty focus with a live retained latch falls back to retained.
     let mut engine = new_engine();
     seed_ring_views(&mut engine);
-    engine.members.insert(
+    engine.world.workspace.members.insert(
         WindowId("win-a".to_owned()),
         MemberState {
             home: home_key_ws("out-a", "ws-1"),
@@ -1382,10 +1491,11 @@ fn fresh_focus_current_retained_native_and_primary_order() {
             geometry: None,
         },
     );
-    engine.fresh_focus.last_output = Some(OutputId("out-b".to_owned()));
+    engine.world.focus.fresh_focus.last_output = Some(OutputId("out-b".to_owned()));
     let v4report = setup("");
     stage_v4(&mut engine, &v4report);
-    let (retained, trace) = engine.fresh_focused_output(&RawRouting::from_staged(&engine.staged));
+    let (retained, trace) =
+        engine.tx_ro(|tx| tx.fresh_focused_output(&RawRouting::from_staged(&engine.world.staged)));
     assert_eq!(
         retained,
         Some(OutputId("out-b".to_owned())),
@@ -1401,14 +1511,16 @@ fn fresh_focus_current_retained_native_and_primary_order() {
     let mut engine = new_engine();
     let v4report = setup("win-new");
     stage_v4(&mut engine, &v4report);
-    let (native, trace) = engine.fresh_focused_output(&RawRouting::from_staged(&engine.staged));
+    let (native, trace) =
+        engine.tx_ro(|tx| tx.fresh_focused_output(&RawRouting::from_staged(&engine.world.staged)));
     assert_eq!(native, Some(OutputId("out-b".to_owned())), "native wins");
     assert_eq!(
         trace.basis,
         crate::fresh_focus::FreshFocusBasis::Native,
         "native basis",
     );
-    let ordered = engine.primary_first_outputs(&RawRouting::from_staged(&engine.staged));
+    let ordered =
+        engine.tx_ro(|tx| tx.primary_first_outputs(&RawRouting::from_staged(&engine.world.staged)));
     assert_eq!(
         ordered.first(),
         Some(&OutputId("out-c".to_owned())),
@@ -1419,14 +1531,16 @@ fn fresh_focus_current_retained_native_and_primary_order() {
     let mut engine = new_engine();
     let v4report = setup("");
     stage_v4(&mut engine, &v4report);
-    let (none, trace) = engine.fresh_focused_output(&RawRouting::from_staged(&engine.staged));
+    let (none, trace) =
+        engine.tx_ro(|tx| tx.fresh_focused_output(&RawRouting::from_staged(&engine.world.staged)));
     assert_eq!(none, None, "no invention");
     assert_eq!(
         trace.basis,
         crate::fresh_focus::FreshFocusBasis::Primary,
         "primary basis",
     );
-    let ordered = engine.primary_first_outputs(&RawRouting::from_staged(&engine.staged));
+    let ordered =
+        engine.tx_ro(|tx| tx.primary_first_outputs(&RawRouting::from_staged(&engine.world.staged)));
     assert_eq!(
         ordered.first(),
         Some(&OutputId("out-c".to_owned())),
@@ -1452,20 +1566,22 @@ fn switch_view_command_moves_view_parity() {
         output: OutputId("out-a".to_owned()),
         workspace: "ws-9".to_owned(),
     };
-    let applied = engine.execute_command(
-        &test_issue(&probe),
-        12,
-        &command,
-        &BTreeSet::new(),
-        None,
-        None,
-    );
+    let applied = engine.tx(|tx| {
+        tx.execute_command(
+            &test_issue(&probe),
+            12,
+            &command,
+            &BTreeSet::new(),
+            None,
+            None,
+        )
+    });
     assert!(
         matches!(applied, CommandApplied::NoEffect),
         "empty target view moves with no invented focus",
     );
     assert_eq!(
-        engine.views.get("out-a"),
+        engine.world.workspace.views.get("out-a"),
         Some(&"ws-9".to_owned()),
         "view moved on the staged intake",
     );
@@ -1565,17 +1681,17 @@ fn hidden_focus_target_refuses_complete_and_incomplete() {
         // (classification only, from staged state with no report
         // input), mirroring accepted-run assembly: hidden rows land in
         // the minimized lane, never the carrier index.
-        engine.build_staged_domains();
+        engine.tx(|tx| tx.build_staged_domains());
         assert!(
-            engine.staged_hidden(&WindowId("win-b".to_owned())),
+            engine.tx_ro(|tx| tx.staged_hidden(&WindowId("win-b".to_owned()))),
             "{hidden_kind} target stages hidden (complete={inventory_complete})",
         );
         assert!(
-            !engine.staged_hidden(&WindowId("win-a".to_owned())),
+            !engine.tx_ro(|tx| tx.staged_hidden(&WindowId("win-a".to_owned()))),
             "visible control stages shown (complete={inventory_complete})",
         );
         let mut owned: Vec<EngineWindow> = Vec::new();
-        for domain in &engine.staged.domains {
+        for domain in &engine.world.staged.domains {
             owned.extend(domain.windows.iter().cloned());
         }
         let by_id: BTreeMap<&WindowId, &EngineWindow> =
@@ -1589,22 +1705,26 @@ fn hidden_focus_target_refuses_complete_and_incomplete() {
         );
         assert!(
             engine
+                .world
                 .layout
                 .is_tiled_window_any(&WindowId("win-b".to_owned()))
                 || engine
+                    .world
                     .layout
                     .is_exception_window_any(&WindowId("win-b".to_owned())),
             "{hidden_kind} target keeps retained membership (complete={inventory_complete})",
         );
         let probe = contra_v4(90);
-        match engine.execute_command(
-            &test_issue(&probe),
-            12,
-            &focus_command("win-b"),
-            &BTreeSet::new(),
-            None,
-            None,
-        ) {
+        match engine.tx(|tx| {
+            tx.execute_command(
+                &test_issue(&probe),
+                12,
+                &focus_command("win-b"),
+                &BTreeSet::new(),
+                None,
+                None,
+            )
+        }) {
             CommandApplied::Rejected { kind, .. } => assert_eq!(kind, KIND_FOCUS),
             CommandApplied::NoEffect => {
                 panic!("{hidden_kind} focus must refuse (complete={inventory_complete})")
@@ -1614,14 +1734,16 @@ fn hidden_focus_target_refuses_complete_and_incomplete() {
             }
         }
         // Visible control: no blanket focus ban while hidden is staged.
-        match engine.execute_command(
-            &test_issue(&probe),
-            13,
-            &focus_command("win-a"),
-            &BTreeSet::new(),
-            None,
-            None,
-        ) {
+        match engine.tx(|tx| {
+            tx.execute_command(
+                &test_issue(&probe),
+                13,
+                &focus_command("win-a"),
+                &BTreeSet::new(),
+                None,
+                None,
+            )
+        }) {
             CommandApplied::Effect(effect) => {
                 assert_eq!(effect.target, WindowId("win-a".to_owned()));
                 assert_eq!(effect.command_seq, Some(13));
@@ -1636,6 +1758,7 @@ fn hidden_focus_target_refuses_complete_and_incomplete() {
         // Observations preserved: the hidden row stays staged verbatim
         // with no controlled geometry and no hidden focus recorded.
         let staged = engine
+            .world
             .staged
             .facts
             .get(&WindowId("win-b".to_owned()))
@@ -1646,7 +1769,7 @@ fn hidden_focus_target_refuses_complete_and_incomplete() {
             assert_eq!(staged.host_hidden, Some(true));
         }
         assert!(
-            engine.logical_focus_cursor != Some(WindowId("win-b".to_owned())),
+            engine.world.focus.logical_focus_cursor != Some(WindowId("win-b".to_owned())),
             "refused hidden focus records nothing",
         );
     }
@@ -1684,19 +1807,21 @@ fn hidden_directional_source_refuses_stale_complete_and_incomplete() {
         hidden_report.inventory_complete = inventory_complete;
         stage_v4(&mut engine, &hidden_report);
         seed_ring_views(&mut engine);
-        engine.build_staged_domains();
+        engine.tx(|tx| tx.build_staged_domains());
         let probe = contra_v4(90);
-        match engine.execute_command(
-            &test_issue(&probe),
-            12,
-            &WorldCommand::FocusDirectional {
-                window: WindowId("win-b".to_owned()),
-                direction: "left".to_owned(),
-            },
-            &BTreeSet::new(),
-            None,
-            None,
-        ) {
+        match engine.tx(|tx| {
+            tx.execute_command(
+                &test_issue(&probe),
+                12,
+                &WorldCommand::FocusDirectional {
+                    window: WindowId("win-b".to_owned()),
+                    direction: "left".to_owned(),
+                },
+                &BTreeSet::new(),
+                None,
+                None,
+            )
+        }) {
             CommandApplied::NoEffect => {}
             CommandApplied::Rejected { kind, message } => panic!(
                 "{hidden_kind} directional source must stale-no-effect, refused {kind} {message}"
@@ -1705,7 +1830,7 @@ fn hidden_directional_source_refuses_stale_complete_and_incomplete() {
                 "{hidden_kind} directional source must never effect (complete={inventory_complete})"
             ),
         }
-        match &engine.command_result {
+        match &engine.world.command_result {
             Some(crate::world_report::CommandResult::Directional {
                 outcome,
                 target,
@@ -1726,20 +1851,22 @@ fn hidden_directional_source_refuses_stale_complete_and_incomplete() {
         }
         // Visible-source control: the guard never misfires on a shown
         // subject, so its result never takes the hidden stale path.
-        let applied = engine.execute_command(
-            &test_issue(&probe),
-            13,
-            &WorldCommand::FocusDirectional {
-                window: WindowId("win-a".to_owned()),
-                direction: "left".to_owned(),
-            },
-            &BTreeSet::new(),
-            None,
-            None,
-        );
+        let applied = engine.tx(|tx| {
+            tx.execute_command(
+                &test_issue(&probe),
+                13,
+                &WorldCommand::FocusDirectional {
+                    window: WindowId("win-a".to_owned()),
+                    direction: "left".to_owned(),
+                },
+                &BTreeSet::new(),
+                None,
+                None,
+            )
+        });
         let stale_hidden_path = matches!(applied, CommandApplied::NoEffect)
             && matches!(
-                &engine.command_result,
+                &engine.world.command_result,
                 Some(crate::world_report::CommandResult::Directional {
                     outcome,
                     cause,
@@ -1764,10 +1891,11 @@ fn local_preconvergence_persists_after_invalid_direction_refusal() {
     accepted_v4(&mut engine, &bootstrap);
     stage_v4(&mut engine, &bootstrap);
     seed_ring_views(&mut engine);
-    engine.build_staged_domains();
+    engine.tx(|tx| tx.build_staged_domains());
 
     let issue = test_issue(&bootstrap);
     let owned: Vec<EngineWindow> = engine
+        .world
         .staged
         .domains
         .iter()
@@ -1775,19 +1903,21 @@ fn local_preconvergence_persists_after_invalid_direction_refusal() {
         .collect();
     let by_id: BTreeMap<&WindowId, &EngineWindow> =
         owned.iter().map(|row| (&row.window, row)).collect();
-    let initial = engine.run_local_operation(
-        &issue,
-        1,
-        &CoreCommand::ToggleOrientation {
-            window: "win-a".to_owned(),
-        },
-        &by_id,
-        &BTreeSet::new(),
-    );
+    let initial = engine.tx(|tx| {
+        tx.run_local_operation(
+            &issue,
+            1,
+            &CoreCommand::ToggleOrientation {
+                window: "win-a".to_owned(),
+            },
+            &by_id,
+            &BTreeSet::new(),
+        )
+    });
     assert!(matches!(initial, CommandApplied::NoEffect));
-    assert_eq!(engine.command_highwater, Some(1));
+    assert_eq!(engine.world.command_highwater, Some(1));
 
-    let domain = &mut engine.staged.domains[0];
+    let domain = &mut engine.world.staged.domains[0];
     domain.windows.push(EngineWindow {
         window: WindowId("win-c".to_owned()),
         output: OutputId("out-a".to_owned()),
@@ -1803,11 +1933,13 @@ fn local_preconvergence_persists_after_invalid_direction_refusal() {
         hints: WindowSizeHints::none(),
     });
     engine
+        .world
         .staged
         .homing
         .insert(WindowId("win-c".to_owned()), home_key_ws("out-a", "ws-1"));
 
     let owned: Vec<EngineWindow> = engine
+        .world
         .staged
         .domains
         .iter()
@@ -1815,18 +1947,20 @@ fn local_preconvergence_persists_after_invalid_direction_refusal() {
         .collect();
     let by_id: BTreeMap<&WindowId, &EngineWindow> =
         owned.iter().map(|row| (&row.window, row)).collect();
-    let refused = engine.run_local_operation(
-        &issue,
-        2,
-        &CoreCommand::Move {
-            window: "win-a".to_owned(),
-            direction: "bogus".to_owned(),
-            cross_output_transfer: false,
-            same_axis_move: SameAxisMove::SwapWithNeighbor,
-        },
-        &by_id,
-        &BTreeSet::new(),
-    );
+    let refused = engine.tx(|tx| {
+        tx.run_local_operation(
+            &issue,
+            2,
+            &CoreCommand::Move {
+                window: "win-a".to_owned(),
+                direction: "bogus".to_owned(),
+                cross_output_transfer: false,
+                same_axis_move: SameAxisMove::SwapWithNeighbor,
+            },
+            &by_id,
+            &BTreeSet::new(),
+        )
+    });
     match refused {
         CommandApplied::Rejected { kind, message } => {
             assert_eq!(kind, "direction-invalid");
@@ -1834,10 +1968,11 @@ fn local_preconvergence_persists_after_invalid_direction_refusal() {
         }
         _ => panic!("expected invalid-direction refusal"),
     }
-    assert_eq!(engine.command_highwater, Some(1));
-    assert!(engine.command_result.is_none());
+    assert_eq!(engine.world.command_highwater, Some(1));
+    assert!(engine.world.command_result.is_none());
     assert!(
         engine
+            .world
             .layout
             .is_tiled_window(&home_key_ws("out-a", "ws-1"), &WindowId("win-c".to_owned())),
         "accepted preconvergence must persist after later command validation refusal"
@@ -1856,10 +1991,11 @@ fn local_composed_maximize_rollback_and_pointer_half_pair_refusal() {
     accepted_v4(&mut engine, &bootstrap);
     stage_v4(&mut engine, &bootstrap);
     seed_ring_views(&mut engine);
-    engine.build_staged_domains();
+    engine.tx(|tx| tx.build_staged_domains());
 
     let issue = test_issue(&bootstrap);
     let owned: Vec<EngineWindow> = engine
+        .world
         .staged
         .domains
         .iter()
@@ -1868,53 +2004,63 @@ fn local_composed_maximize_rollback_and_pointer_half_pair_refusal() {
     let by_id: BTreeMap<&WindowId, &EngineWindow> =
         owned.iter().map(|row| (&row.window, row)).collect();
 
-    let floated = engine.run_local_operation(
-        &issue,
-        1,
-        &CoreCommand::ToggleFloat {
-            window: "win-a".to_owned(),
-            float_rect: Some(rect(10, 20, 300, 200)),
-        },
-        &by_id,
-        &BTreeSet::new(),
-    );
+    let floated = engine.tx(|tx| {
+        tx.run_local_operation(
+            &issue,
+            1,
+            &CoreCommand::ToggleFloat {
+                window: "win-a".to_owned(),
+                float_rect: Some(rect(10, 20, 300, 200)),
+            },
+            &by_id,
+            &BTreeSet::new(),
+        )
+    });
     assert!(matches!(floated, CommandApplied::NoEffect));
-    assert!(!engine.retained_floats.is_empty());
+    assert!(!engine.world.settlement.retained_floats.is_empty());
 
     let win_a = WindowId("win-a".to_owned());
-    engine.composed_maximized.insert(win_a.clone());
-    engine.staged.domains[0].windows.clear();
-    engine.staged.domains[0].focused = WindowId(String::new());
+    engine
+        .world
+        .runtime
+        .composed_maximized
+        .insert(win_a.clone());
+    engine.world.staged.domains[0].windows.clear();
+    engine.world.staged.domains[0].focused = WindowId(String::new());
     let empty_by_id = BTreeMap::new();
-    let refused = engine.run_local_operation(
-        &issue,
-        2,
-        &CoreCommand::ToggleFloat {
-            window: "win-a".to_owned(),
-            float_rect: None,
-        },
-        &empty_by_id,
-        &BTreeSet::new(),
-    );
+    let refused = engine.tx(|tx| {
+        tx.run_local_operation(
+            &issue,
+            2,
+            &CoreCommand::ToggleFloat {
+                window: "win-a".to_owned(),
+                float_rect: None,
+            },
+            &empty_by_id,
+            &BTreeSet::new(),
+        )
+    });
     assert!(matches!(refused, CommandApplied::Rejected { .. }));
     assert!(
-        engine.composed_maximized.contains(&win_a),
+        engine.world.runtime.composed_maximized.contains(&win_a),
         "composed_maximized bit must be restored on post-inset rejection"
     );
 
-    let half_pair = engine.run_local_operation(
-        &issue,
-        3,
-        &CoreCommand::PointerResize {
-            window: "win-b".to_owned(),
-            direction: "right".to_owned(),
-            boundary: 250,
-            direction2: Some("up".to_owned()),
-            boundary2: None,
-        },
-        &empty_by_id,
-        &BTreeSet::new(),
-    );
+    let half_pair = engine.tx(|tx| {
+        tx.run_local_operation(
+            &issue,
+            3,
+            &CoreCommand::PointerResize {
+                window: "win-b".to_owned(),
+                direction: "right".to_owned(),
+                boundary: 250,
+                direction2: Some("up".to_owned()),
+                boundary2: None,
+            },
+            &empty_by_id,
+            &BTreeSet::new(),
+        )
+    });
     match half_pair {
         CommandApplied::Rejected { kind, message } => {
             assert_eq!(kind, "unknown-value");

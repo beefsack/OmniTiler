@@ -38,12 +38,6 @@ fn dom_adjacent(o: &str, w: &str, dir: Direction, target: &str) -> OutputDomain 
     d.adjacent.insert(dir, OutputId(target.to_owned()));
     d
 }
-fn key(o: &str, w: &str) -> DomainKey {
-    DomainKey {
-        output: OutputId(o.to_owned()),
-        workspace: WorkspaceId(w.to_owned()),
-    }
-}
 fn tiled(w: &str, o: &str, ws: &str) -> ObservedWindow {
     ObservedWindow {
         window: WindowId(w.to_owned()),

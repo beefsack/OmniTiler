@@ -657,7 +657,7 @@ fn fixed_tile_override_newcomer_still_mints_once() {
             None,
         ),
     );
-    engine.pending_intent.insert(
+    engine.world.intent.pending_intent.insert(
         WindowId("wt".to_owned()),
         crate::intent_data::IntentData::new(Some(false), None),
     );
@@ -2408,6 +2408,8 @@ fn floating_source_migration_carries_without_engine_tree() {
     );
     let affected = {
         let binding = engine
+            .world
+            .settlement
             .retained_selection
             .values()
             .find(|binding| binding.parent_op == "op-12")
@@ -2436,7 +2438,7 @@ fn floating_source_migration_carries_without_engine_tree() {
         workspace: crate::directional::WorkspaceId(view_a.clone()),
     };
     assert!(
-        !engine.layout().contains_domain(&target_key),
+        !engine.world.layout().contains_domain(&target_key),
         "sessionless carry builds no tree"
     );
     // Unchanged membership stays stable with no replay: one migration
@@ -3681,16 +3683,16 @@ fn toggle_maximize_command_decides_and_reports() {
         "no subject effects: {:?}",
         toggled.effects
     );
-    // Exact result bytes: the structural estimate matches the existing
-    // serializer byte-for-byte (locks the fixed count, no guesses; the
-    // 10 bytes are the shared `,"result":` section prefix).
-    let mut encoded = String::new();
+    // Exact typed result on the settled command.
     let toggled_result = toggled_settlements.first().and_then(|s| s.result.clone());
-    crate::world_sizing::encode_command_result(&mut encoded, &toggled_result);
     assert_eq!(
-        crate::world_sizing::command_result_estimate(&toggled_result),
-        encoded.len() + 10,
-        "result estimate is exact: {encoded}"
+        toggled_result,
+        Some(crate::world_report::CommandResult::Maximize {
+            window: crate::directional::WindowId("w1".to_owned()),
+            maximized: true,
+            clear_fullscreen: true,
+            was_maximized: false,
+        })
     );
 
     // Maximized observation toggles back off with no clear; the base
@@ -3768,26 +3770,6 @@ fn toggle_maximize_command_decides_and_reports() {
         row_of(&plain, "w1").allocation,
         Some(w1_alloc),
         "plain toggle keeps the tile"
-    );
-    // Exact command bytes: the estimate delta over a commandless twin
-    // equals the wire delta (locks the fixed count, no guesses).
-    let wire = r#"{"op":"toggle-maximize","win":"w1"}"#;
-    let with_cmd = report(
-        6,
-        screens.clone(),
-        vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
-        "w1",
-        vec![],
-        Some(6),
-        Some(toggle("w1")),
-    );
-    let mut bare = with_cmd.clone();
-    bare.command = None;
-    assert_eq!(
-        crate::world_sizing_v4::report_estimate_v4(&with_cmd)
-            - crate::world_sizing_v4::report_estimate_v4(&bare),
-        wire.len() - 4,
-        "command estimate is exact"
     );
     // Commandless reports carry no settlements.
     let (_quiet, quiet_settlements) = accepted_with_settlements(
@@ -4149,6 +4131,7 @@ fn per_output_scale_derives_physical_gaps() {
             ),
         );
         let domain = engine
+            .world
             .staged
             .domains
             .iter()
@@ -4180,6 +4163,7 @@ fn scale_overflow_holds_scope_unreadable_with_diagnostic() {
         ),
     );
     let domain = engine
+        .world
         .staged
         .domains
         .iter()
@@ -4494,10 +4478,6 @@ fn direct_nonfinite_scale_grades_to_hold_without_null_encoding() {
     );
     let graded = grade_invalid_screens(&narrow).expect("grades");
     assert_eq!(graded.held_screens.len(), 1);
-    assert!(
-        crate::world_report::encode_held_screen_canonical(&graded.held_screens[0]).is_err(),
-        "retained non-finite fact never spells null"
-    );
     let reply = match engine.handle_report(&narrow, &[]).0 {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted narrow hold, got {other:?}"),
@@ -4696,6 +4676,7 @@ fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
     assert!(!row_of(&untiled, "wf").floating);
     assert!(
         engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("wf".to_owned())),
         "live command records override"
@@ -4734,6 +4715,7 @@ fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
     );
     assert!(
         engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("wf".to_owned())),
         "override survives hide"
@@ -4757,6 +4739,7 @@ fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
     assert!(!row_of(&shown, "wf").floating, "override survives show");
     assert!(
         engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("wf".to_owned()))
     );
@@ -4808,6 +4791,7 @@ fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
     );
     assert!(
         engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("wf".to_owned()))
     );

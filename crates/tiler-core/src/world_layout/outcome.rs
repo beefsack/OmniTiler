@@ -55,6 +55,7 @@ pub(crate) enum FittedAdmissionReason {
 impl FittedAdmissionReason {
     /// Stable diagnostic token, matching the fitter's tokens for fit declines
     /// and `commit_failed` for the collapsed commit-failure branch.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn as_str(self) -> &'static str {
         match self {

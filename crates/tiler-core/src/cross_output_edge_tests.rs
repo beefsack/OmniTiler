@@ -11,7 +11,7 @@
 
 use crate::directional::{Direction, Node, NodeId, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
-use crate::seed::{EngineWindow, observed_window_from_engine};
+use crate::seed::EngineWindow;
 use crate::session::{
     DomainKey, ExceptionBehavior, ExceptionFlags, ObservedWindow, OutputDomain, RefusalKind,
 };
@@ -21,12 +21,6 @@ use crate::world_layout::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-fn key(o: &str, w: &str) -> DomainKey {
-    DomainKey {
-        output: OutputId(o.to_owned()),
-        workspace: WorkspaceId(w.to_owned()),
-    }
-}
 fn tiled(w: &str, o: &str, ws: &str) -> ObservedWindow {
     ObservedWindow {
         window: WindowId(w.to_owned()),

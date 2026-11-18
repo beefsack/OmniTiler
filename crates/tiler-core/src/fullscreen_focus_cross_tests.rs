@@ -13,7 +13,6 @@
 use crate::connection::{HostCapabilities, RawSettingValue};
 use crate::directional::{Direction, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
-use crate::ids::{CorrelationId, OwnerId};
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, ObservedWindow, OutputDomain, RefusalKind};
 use crate::settings_catalog::{FIELD_INNER_GAP, FIELD_OUTER_GAP};
@@ -29,9 +28,6 @@ use std::collections::BTreeMap;
 
 // ---- WorldLayout fixtures (mirrors maximized_focus_send_tests.rs). ----
 
-fn corr(v: &str) -> CorrelationId {
-    CorrelationId::parse(v).expect("valid")
-}
 fn dom(o: &str, w: &str) -> OutputDomain {
     OutputDomain {
         id: OutputId(o.to_owned()),
@@ -50,12 +46,6 @@ fn dom_adjacent(o: &str, w: &str, dir: Direction, target: &str) -> OutputDomain 
     let mut d = dom(o, w);
     d.adjacent.insert(dir, OutputId(target.to_owned()));
     d
-}
-fn key(o: &str, w: &str) -> DomainKey {
-    DomainKey {
-        output: OutputId(o.to_owned()),
-        workspace: WorkspaceId(w.to_owned()),
-    }
 }
 fn tiled(w: &str, o: &str, ws: &str) -> ObservedWindow {
     ObservedWindow {
@@ -795,17 +785,17 @@ fn expect_explicit_focus(
 }
 
 fn home_of(engine: &WorldEngine, window: &WindowId) -> Option<DomainKey> {
-    for key in engine.layout.domain_keys() {
-        if engine.layout.is_tiled_window(&key, window) {
-            return Some(key);
-        }
-    }
-    None
+    engine
+        .world
+        .layout
+        .domain_keys()
+        .into_iter()
+        .find(|key| engine.world.layout.is_tiled_window(key, window))
 }
 
 fn session_focused(engine: &WorldEngine, key: &DomainKey) -> Option<WindowId> {
-    let leaf = engine.layout.focus_leaf(key)?;
-    engine.layout.window_for_leaf(key, leaf)
+    let leaf = engine.world.layout.focus_leaf(key)?;
+    engine.world.layout.window_for_leaf(key, leaf)
 }
 
 #[test]
@@ -1514,6 +1504,7 @@ fn world_native_maximized_cross_preserves_destination_overlay() {
         expect_explicit_focus(&reply, "win-c", 11, 2);
         let staged_maximized = |lifetime: &str| {
             engine
+                .world
                 .staged
                 .facts
                 .get(&WindowId(lifetime.to_owned()))

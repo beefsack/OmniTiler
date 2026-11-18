@@ -171,7 +171,7 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
 
 /// Actual latest published presentation revision on the engine.
 fn latest_published(engine: &WorldEngine) -> u64 {
-    engine.latest_published_presentation_rev_v4
+    engine.world.presentation.latest_published_rev_v4
 }
 
 fn screens_pair() -> Vec<ScreenReport> {
@@ -239,7 +239,10 @@ fn seed_pair(generation: &str) -> (WorldEngine, String, String, u64, u64) {
         .and_then(|row| row.logical_view.clone())
         .expect("view b");
     assert_eq!(
-        engine.core_homing(&WindowId("win-a".to_owned())),
+        engine
+            .world
+            .workspace
+            .core_homing(&WindowId("win-a".to_owned())),
         Some(DomainKey {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(view_a.clone()),
@@ -252,7 +255,7 @@ fn seed_pair(generation: &str) -> (WorldEngine, String, String, u64, u64) {
 /// Live group ids in one domain's committed Engine session tree.
 fn group_ids(engine: &WorldEngine, output: &str, workspace: &str) -> Vec<NodeId> {
     let key = domain_key(output, workspace);
-    let Some(tree) = engine.layout.tree(&key) else {
+    let Some(tree) = engine.world.layout.tree(&key) else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -279,7 +282,7 @@ fn collect_groups(tree: &Node, out: &mut Vec<NodeId>) {
 /// Exact member lifetime set committed in one domain's Engine session.
 fn domain_members(engine: &WorldEngine, output: &str, workspace: &str) -> BTreeSet<WindowId> {
     let key = domain_key(output, workspace);
-    engine.layout.tiled_windows(&key).cloned().collect()
+    engine.world.layout.tiled_windows(&key).cloned().collect()
 }
 
 /// Pager workspace row for one id on one output, from an accepted reply.
@@ -337,7 +340,7 @@ fn check(
     input: Option<&RendererInput>,
     latest: u64,
 ) -> Option<CommandRejectKind> {
-    engine.validate_renderer_input_v4(input, latest)
+    engine.tx_ro(|tx| tx.validate_renderer_input_v4(input, latest))
 }
 
 #[test]
@@ -449,7 +452,13 @@ fn removed_window_refused() {
 #[test]
 fn window_moved_workspace_refused() {
     let (mut engine, view_a, _, rev_old, _) = seed_pair("gen-1");
-    let ring = engine.mapping.get("out-a").cloned().expect("ring a");
+    let ring = engine
+        .world
+        .workspace
+        .mapping
+        .get("out-a")
+        .cloned()
+        .expect("ring a");
     assert!(ring.iter().any(|id| id == &view_a));
     let target_ws = ring
         .iter()
@@ -512,7 +521,10 @@ fn window_moved_output_refused() {
         ),
     );
     assert_eq!(
-        engine.core_homing(&WindowId("win-a".to_owned())),
+        engine
+            .world
+            .workspace
+            .core_homing(&WindowId("win-a".to_owned())),
         Some(domain_key("out-b", &view_b)),
         "observed cross-output move rehomes to the out-b view"
     );
@@ -592,6 +604,8 @@ fn workspace_moved_output_refused() {
     );
     assert!(
         !engine
+            .world
+            .workspace
             .mapping
             .get("out-a")
             .is_some_and(|ring| ring.iter().any(|id| id == &view_a)),
@@ -739,7 +753,13 @@ fn stale_group_refuses_despite_later_group() {
 #[test]
 fn ring_reorder_changes_ordinal_and_label_but_accepts_same_workspace() {
     let (mut engine, view_a, _, rev_old, _) = seed_pair("gen-1");
-    let ring = engine.mapping.get("out-a").cloned().expect("ring a");
+    let ring = engine
+        .world
+        .workspace
+        .mapping
+        .get("out-a")
+        .cloned()
+        .expect("ring a");
     assert_eq!(ring.first(), Some(&view_a), "seed view heads the ring");
     // Occupy the spare through the production send path so the reorder
     // below swaps two live workspaces (no lifecycle spare involved).
@@ -776,11 +796,21 @@ fn ring_reorder_changes_ordinal_and_label_but_accepts_same_workspace() {
     );
     // Direct retained-ring reorder (labeled setup, not a production op):
     // swap the two live heads; any lifecycle spare stays last.
-    let live = engine.mapping.get("out-a").cloned().expect("ring a");
+    let live = engine
+        .world
+        .workspace
+        .mapping
+        .get("out-a")
+        .cloned()
+        .expect("ring a");
     assert!(live.len() >= 2, "ring holds two live rows: {live:?}");
     let mut reordered = live.clone();
     reordered.swap(0, 1);
-    engine.mapping.insert("out-a".to_owned(), reordered);
+    engine
+        .world
+        .workspace
+        .mapping
+        .insert("out-a".to_owned(), reordered);
     let republished = accepted(
         &mut engine,
         &report(
@@ -794,7 +824,13 @@ fn ring_reorder_changes_ordinal_and_label_but_accepts_same_workspace() {
             None,
         ),
     );
-    let ring_after = engine.mapping.get("out-a").cloned().expect("ring a");
+    let ring_after = engine
+        .world
+        .workspace
+        .mapping
+        .get("out-a")
+        .cloned()
+        .expect("ring a");
     assert_eq!(
         (&ring_after[0], &ring_after[1]),
         (&live[1], &live[0]),
@@ -819,7 +855,13 @@ fn ring_reorder_changes_ordinal_and_label_but_accepts_same_workspace() {
 #[test]
 fn trailing_and_occupied_change_accepts_same_workspace() {
     let (mut engine, view_a, _, rev_old, _) = seed_pair("gen-1");
-    let ring = engine.mapping.get("out-a").cloned().expect("ring a");
+    let ring = engine
+        .world
+        .workspace
+        .mapping
+        .get("out-a")
+        .cloned()
+        .expect("ring a");
     let spare = ring
         .iter()
         .find(|id| *id != &view_a)
@@ -841,7 +883,7 @@ fn trailing_and_occupied_change_accepts_same_workspace() {
         ),
     );
     assert_eq!(
-        engine.trailing_marked_id("out-a"),
+        engine.tx_ro(|tx| tx.trailing_marked_id("out-a")),
         Some(spare.clone()),
         "spare is the marked trailing id"
     );
@@ -864,9 +906,18 @@ fn trailing_and_occupied_change_accepts_same_workspace() {
     // non-sticky, so pointing its staged homing at the spare flips exactly
     // the occupancy/trailing accounting the pager derives from. Retained
     // homing, mapping, and membership are untouched.
-    let ring_before = engine.mapping.get("out-a").cloned().expect("ring a");
-    let home_before = engine.core_homing(&WindowId("win-b".to_owned()));
-    engine.staged.homing.insert(
+    let ring_before = engine
+        .world
+        .workspace
+        .mapping
+        .get("out-a")
+        .cloned()
+        .expect("ring a");
+    let home_before = engine
+        .world
+        .workspace
+        .core_homing(&WindowId("win-b".to_owned()));
+    engine.world.staged.homing.insert(
         WindowId("win-b".to_owned()),
         DomainKey {
             output: OutputId("out-a".to_owned()),
@@ -878,23 +929,26 @@ fn trailing_and_occupied_change_accepts_same_workspace() {
     // predates this staging-only setup; `trailing_marked_id` and
     // `ring_occupied` below are the live fields that row derives from.)
     assert_ne!(
-        engine.trailing_marked_id("out-a"),
+        engine.tx_ro(|tx| tx.trailing_marked_id("out-a")),
         Some(spare.clone()),
         "spare is no longer the marked trailing id"
     );
     assert!(
         engine
-            .ring_occupied(&OutputId("out-a".to_owned()))
+            .tx_ro(|tx| tx.ring_occupied(&OutputId("out-a".to_owned())))
             .contains(&spare),
         "staging shows the spare occupied"
     );
     assert_eq!(
-        engine.core_homing(&WindowId("win-b".to_owned())),
+        engine
+            .world
+            .workspace
+            .core_homing(&WindowId("win-b".to_owned())),
         home_before,
         "retained homing untouched by the staging setup"
     );
     assert_eq!(
-        engine.mapping.get("out-a"),
+        engine.world.workspace.mapping.get("out-a"),
         Some(&ring_before),
         "ring untouched by the staging setup"
     );
@@ -920,7 +974,7 @@ fn native_binding_change_accepts_same_workspace() {
     let (mut engine, view_a, _, rev_old, _) = seed_pair("gen-1");
     // Verified before state: native-free seed carries no binding.
     assert_eq!(
-        engine.native_binding_for("out-a", &view_a),
+        engine.tx(|tx| tx.native_binding_for("out-a", &view_a)),
         None,
         "no retained binding before"
     );
@@ -931,24 +985,38 @@ fn native_binding_change_accepts_same_workspace() {
     // Direct retained native_map setup (labeled setup, not a production
     // op): bind one native id to the same logical workspace. The
     // capability stays off, so mapping and membership are untouched.
-    let ring_before = engine.mapping.get("out-a").cloned().expect("ring a");
-    let home_before = engine.core_homing(&WindowId("win-a".to_owned()));
+    let ring_before = engine
+        .world
+        .workspace
+        .mapping
+        .get("out-a")
+        .cloned()
+        .expect("ring a");
+    let home_before = engine
+        .world
+        .workspace
+        .core_homing(&WindowId("win-a".to_owned()));
     engine
+        .world
+        .settlement
         .native_map
         .insert(("out-a".to_owned(), "ndk-1".to_owned()), view_a.clone());
     // Verified after state: the binding reads back, identity untouched.
     assert_eq!(
-        engine.native_binding_for("out-a", &view_a),
+        engine.tx(|tx| tx.native_binding_for("out-a", &view_a)),
         Some("ndk-1".to_owned()),
         "retained binding reads back"
     );
     assert_eq!(
-        engine.mapping.get("out-a"),
+        engine.world.workspace.mapping.get("out-a"),
         Some(&ring_before),
         "ring untouched by the binding"
     );
     assert_eq!(
-        engine.core_homing(&WindowId("win-a".to_owned())),
+        engine
+            .world
+            .workspace
+            .core_homing(&WindowId("win-a".to_owned())),
         home_before,
         "homing untouched by the binding"
     );
@@ -992,7 +1060,10 @@ fn group_member_set_change_accepts_surviving_group() {
         ),
     );
     assert_eq!(
-        engine.core_homing(&WindowId("win-d".to_owned())),
+        engine
+            .world
+            .workspace
+            .core_homing(&WindowId("win-d".to_owned())),
         Some(domain_key("out-a", &view_a)),
         "newcomer adopts the live view"
     );
@@ -1000,6 +1071,7 @@ fn group_member_set_change_accepts_surviving_group() {
     // the exact member lifetime set changed (not just frame payload).
     let key = domain_key("out-a", &view_a);
     let root_id = engine
+        .world
         .layout
         .tree(&key)
         .map(|tree| tree.id().clone())

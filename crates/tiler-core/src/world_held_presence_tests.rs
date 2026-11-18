@@ -118,12 +118,14 @@ fn held_member_keeps_home_sibling_scope_stays_controlled() {
     assert!(controlled_row(&reply, "win-a"));
     assert!(controlled_row(&reply, "win-b"));
     let home = engine
+        .world
+        .workspace
         .members
         .get(&WindowId("win-a".to_owned()))
         .expect("member")
         .home
         .clone();
-    let spent = engine.admission_focus_spent.clone();
+    let spent = engine.world.focus.admission_focus_spent.clone();
 
     let mut held_fact = fact("win-a", "out-a", 0);
     held_fact.title = Some(overlong_title());
@@ -134,6 +136,8 @@ fn held_member_keeps_home_sibling_scope_stays_controlled() {
     // Retained membership and home survive the complete held row.
     assert_eq!(
         engine
+            .world
+            .workspace
             .members
             .get(&WindowId("win-a".to_owned()))
             .expect("held keeps member")
@@ -162,6 +166,8 @@ fn held_member_keeps_home_sibling_scope_stays_controlled() {
     );
     assert_eq!(
         engine
+            .world
+            .workspace
             .members
             .get(&WindowId("win-a".to_owned()))
             .expect("recovered")
@@ -170,7 +176,7 @@ fn held_member_keeps_home_sibling_scope_stays_controlled() {
     );
     assert!(controlled_row(&reply, "win-a"));
     assert!(controlled_row(&reply, "win-b"));
-    assert_eq!(engine.admission_focus_spent, spent);
+    assert_eq!(engine.world.focus.admission_focus_spent, spent);
     assert!(reply.effects.is_empty());
 }
 
@@ -191,7 +197,13 @@ fn held_newcomer_has_no_membership_or_row() {
         &mut engine,
         &two_output_report(2, vec![fact("win-healthy", "out-b", 800), newcomer]),
     );
-    assert!(!engine.members.contains_key(&WindowId("win-new".to_owned())));
+    assert!(
+        !engine
+            .world
+            .workspace
+            .members
+            .contains_key(&WindowId("win-new".to_owned()))
+    );
     assert!(!reply.windows.iter().any(|row| row.lifetime.0 == "win-new"));
     assert!(scope_controlled(&reply, "out-b", "ws-1"));
     assert!(controlled_row(&reply, "win-healthy"));
@@ -230,8 +242,10 @@ fn born_binding_survives_hold_and_recovers_same_operation() {
             None,
         ),
     );
-    assert_eq!(engine.retained_born.len(), 1);
-    let operation = engine.retained_born[0].operation_id.clone();
+    assert_eq!(engine.world.settlement.retained_born.len(), 1);
+    let operation = engine.world.settlement.retained_born[0]
+        .operation_id
+        .clone();
     let desire = reply
         .windows
         .iter()
@@ -257,8 +271,11 @@ fn born_binding_survives_hold_and_recovers_same_operation() {
             None,
         ),
     );
-    assert_eq!(engine.retained_born.len(), 1);
-    assert_eq!(engine.retained_born[0].operation_id, operation);
+    assert_eq!(engine.world.settlement.retained_born.len(), 1);
+    assert_eq!(
+        engine.world.settlement.retained_born[0].operation_id,
+        operation
+    );
     assert!(
         reply
             .windows
@@ -284,8 +301,11 @@ fn born_binding_survives_hold_and_recovers_same_operation() {
             None,
         ),
     );
-    assert_eq!(engine.retained_born.len(), 1);
-    assert_eq!(engine.retained_born[0].operation_id, operation);
+    assert_eq!(engine.world.settlement.retained_born.len(), 1);
+    assert_eq!(
+        engine.world.settlement.retained_born[0].operation_id,
+        operation
+    );
     assert_eq!(
         reply
             .windows
@@ -314,12 +334,24 @@ fn explicit_close_after_hold_drops_member() {
         &mut engine,
         &two_output_report(2, vec![held_fact, fact("win-b", "out-b", 800)]),
     );
-    assert!(engine.members.contains_key(&WindowId("win-a".to_owned())));
+    assert!(
+        engine
+            .world
+            .workspace
+            .members
+            .contains_key(&WindowId("win-a".to_owned()))
+    );
 
     let mut closed = two_output_report(3, vec![fact("win-b", "out-b", 800)]);
     closed.closed = vec![WindowId("win-a".to_owned())];
     let reply = accepted(&mut engine, &closed);
-    assert!(!engine.members.contains_key(&WindowId("win-a".to_owned())));
+    assert!(
+        !engine
+            .world
+            .workspace
+            .members
+            .contains_key(&WindowId("win-a".to_owned()))
+    );
     assert!(!reply.windows.iter().any(|row| row.lifetime.0 == "win-a"));
     assert!(controlled_row(&reply, "win-b"));
 }
@@ -351,6 +383,8 @@ fn output_less_held_row_resolves_retained_home_hold() {
         ),
     );
     let home = engine
+        .world
+        .workspace
         .members
         .get(&WindowId("win-a".to_owned()))
         .expect("member")
@@ -369,6 +403,8 @@ fn output_less_held_row_resolves_retained_home_hold() {
     let reply = accepted(&mut engine, &report);
     assert_eq!(
         engine
+            .world
+            .workspace
             .members
             .get(&WindowId("win-a".to_owned()))
             .expect("held keeps member")
@@ -404,6 +440,8 @@ fn conflicting_title_holds_member_and_recovers() {
     );
     assert!(controlled_row(&reply, "win-a"));
     let home = engine
+        .world
+        .workspace
         .members
         .get(&WindowId("win-a".to_owned()))
         .expect("member")
@@ -427,6 +465,8 @@ fn conflicting_title_holds_member_and_recovers() {
     );
     assert_eq!(
         engine
+            .world
+            .workspace
             .members
             .get(&WindowId("win-a".to_owned()))
             .expect("conflict keeps member")
@@ -480,8 +520,20 @@ fn known_exclusion_never_members_or_controls() {
             None,
         ),
     );
-    assert!(engine.members.contains_key(&WindowId("win-t".to_owned())));
-    assert!(!engine.members.contains_key(&WindowId("win-x".to_owned())));
+    assert!(
+        engine
+            .world
+            .workspace
+            .members
+            .contains_key(&WindowId("win-t".to_owned()))
+    );
+    assert!(
+        !engine
+            .world
+            .workspace
+            .members
+            .contains_key(&WindowId("win-x".to_owned()))
+    );
     assert!(!reply.windows.iter().any(|row| row.lifetime.0 == "win-x"));
     assert!(reply.effects.is_empty());
     assert!(reply.transfers.is_empty());
@@ -500,7 +552,13 @@ fn known_exclusion_never_members_or_controls() {
     );
     gapped.inventory_complete = false;
     let reply = accepted(&mut engine, &gapped);
-    assert!(!engine.members.contains_key(&WindowId("win-x".to_owned())));
+    assert!(
+        !engine
+            .world
+            .workspace
+            .members
+            .contains_key(&WindowId("win-x".to_owned()))
+    );
     assert!(!reply.windows.iter().any(|row| row.lifetime.0 == "win-x"));
     assert!(reply.effects.is_empty());
 
@@ -586,6 +644,8 @@ fn own_process_windows_never_member() {
     );
     assert!(
         !engine
+            .world
+            .workspace
             .members
             .contains_key(&WindowId("win-self".to_owned()))
     );
@@ -609,6 +669,8 @@ fn own_process_windows_never_member() {
     let reply = accepted(&mut engine, &gapped);
     assert!(
         !engine
+            .world
+            .workspace
             .members
             .contains_key(&WindowId("win-self".to_owned()))
     );
@@ -679,6 +741,7 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
     assert!(arrival_row.floating);
     assert!(
         !engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("wf".to_owned()))
     );
@@ -728,6 +791,7 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
     );
     assert!(
         engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("wf".to_owned()))
     );
@@ -749,7 +813,13 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
             None,
         ),
     );
-    assert!(!engine.members.contains_key(&WindowId("wf".to_owned())));
+    assert!(
+        !engine
+            .world
+            .workspace
+            .members
+            .contains_key(&WindowId("wf".to_owned()))
+    );
     assert!(!denied.windows.iter().any(|row| row.lifetime.0 == "wf"));
     assert!(denied.effects.is_empty());
     assert!(denied.transfers.is_empty());
@@ -758,6 +828,8 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
     ));
     assert!(
         engine
+            .world
+            .intent
             .excluded_intent
             .get(&WindowId("wf".to_owned()))
             .is_some_and(|intent| intent.tile_override)
@@ -782,7 +854,13 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
     );
     gapped.inventory_complete = false;
     let denied_gapped = accepted(&mut engine, &gapped);
-    assert!(!engine.members.contains_key(&WindowId("wf".to_owned())));
+    assert!(
+        !engine
+            .world
+            .workspace
+            .members
+            .contains_key(&WindowId("wf".to_owned()))
+    );
     assert!(
         !denied_gapped
             .windows
@@ -792,6 +870,8 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
     assert!(denied_gapped.effects.is_empty());
     assert!(
         engine
+            .world
+            .intent
             .excluded_intent
             .get(&WindowId("wf".to_owned()))
             .is_some_and(|intent| intent.tile_override)
@@ -826,10 +906,17 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
     assert_eq!(row.frame_authority, ScopeAuthority::Controlled);
     assert!(
         engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("wf".to_owned()))
     );
-    assert!(engine.members.contains_key(&WindowId("wf".to_owned())));
+    assert!(
+        engine
+            .world
+            .workspace
+            .members
+            .contains_key(&WindowId("wf".to_owned()))
+    );
     assert!(lifted.effects.is_empty());
 
     // Explicit native close ends the lifetime: the ledger clears and the
@@ -848,6 +935,8 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
     accepted(&mut engine, &closed);
     assert!(
         !engine
+            .world
+            .intent
             .excluded_intent
             .contains_key(&WindowId("wf".to_owned()))
     );
@@ -876,6 +965,7 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
     assert!(row.floating);
     assert!(
         !engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("wf".to_owned()))
     );
@@ -894,7 +984,7 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
         &mut eng,
         &two_output_report(1, vec![fact("win-a", "out-a", 0)]),
     );
-    let mapping_before = eng.mapping.clone();
+    let mapping_before = eng.world.workspace.mapping.clone();
     let mut unknown = fact("win-a", "out-a", 0);
     unknown.sticky = None;
     let mut report = two_output_report(2, vec![unknown]);
@@ -915,13 +1005,20 @@ fn unknown_sticky_migration_rejects_without_partial_move() {
         ),
         other => panic!("unknown sticky must refuse, got {other:?}"),
     }
-    assert_eq!(eng.mapping, mapping_before);
+    assert_eq!(eng.world.workspace.mapping, mapping_before);
     assert!(
-        eng.retained
+        eng.world
+            .settlement
+            .retained
             .iter()
             .all(|retained| !matches!(retained.target.kind, TransferKind::Migration))
     );
-    assert!(eng.members.contains_key(&WindowId("win-a".to_owned())));
+    assert!(
+        eng.world
+            .workspace
+            .members
+            .contains_key(&WindowId("win-a".to_owned()))
+    );
 
     // Proven sticky stays physical under the existing stay policy:
     // the workspace migrates with an empty member set while the
@@ -1003,42 +1100,42 @@ fn swap_source_unknown_sticky_flags_only_unproven() {
     // All proven non-sticky: no flag.
     let mut proven_engine = engine();
     let (id, state) = member("win-a");
-    proven_engine.members.insert(id.clone(), state);
+    proven_engine
+        .world
+        .workspace
+        .members
+        .insert(id.clone(), state);
     let mut proven = fact("win-a", "out-a", 0);
     proven.sticky = Some(false);
-    proven_engine.staged.facts.insert(id, proven);
-    assert!(!WorldEngine::swap_source_unknown_sticky(
-        &proven_engine,
-        &key
-    ));
+    proven_engine.world.staged.facts.insert(id, proven);
+    assert!(!proven_engine.swap_source_unknown_sticky(&key));
     // Proven sticky: no flag (stay policy, not a refusal).
     let mut sticky_engine = engine();
     let (id, state) = member("win-a");
-    sticky_engine.members.insert(id.clone(), state);
+    sticky_engine
+        .world
+        .workspace
+        .members
+        .insert(id.clone(), state);
     let mut sticky = fact("win-a", "out-a", 0);
     sticky.sticky = Some(true);
-    sticky_engine.staged.facts.insert(id, sticky);
-    assert!(!WorldEngine::swap_source_unknown_sticky(
-        &sticky_engine,
-        &key
-    ));
+    sticky_engine.world.staged.facts.insert(id, sticky);
+    assert!(!sticky_engine.swap_source_unknown_sticky(&key));
     // Null sticky fact: flags.
     let mut unknown_engine = engine();
     let (id, state) = member("win-a");
-    unknown_engine.members.insert(id.clone(), state);
+    unknown_engine
+        .world
+        .workspace
+        .members
+        .insert(id.clone(), state);
     let mut unknown = fact("win-a", "out-a", 0);
     unknown.sticky = None;
-    unknown_engine.staged.facts.insert(id, unknown);
-    assert!(WorldEngine::swap_source_unknown_sticky(
-        &unknown_engine,
-        &key
-    ));
+    unknown_engine.world.staged.facts.insert(id, unknown);
+    assert!(unknown_engine.swap_source_unknown_sticky(&key));
     // Member with no staged fact at all: flags (never silently moved).
     let mut missing_engine = engine();
     let (id, state) = member("win-a");
-    missing_engine.members.insert(id, state);
-    assert!(WorldEngine::swap_source_unknown_sticky(
-        &missing_engine,
-        &key
-    ));
+    missing_engine.world.workspace.members.insert(id, state);
+    assert!(missing_engine.swap_source_unknown_sticky(&key));
 }

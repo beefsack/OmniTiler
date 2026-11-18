@@ -8,12 +8,11 @@ use tiler_core::world_report::{
     FocusRequestCause, OneShotEffect,
 };
 use tiler_core::world_report_v4_checks::{report_digest_v4, validate_report_v4_reason};
-use tiler_core::world_sizing_v4::{
-    reply_estimate_v4, reply_exact_bytes_v4, reply_upper_bound_v4, report_estimate_v4,
-};
+use tiler_protocol::world_admission_sizing::{reply_upper_bound_v4, report_estimate_v4};
 use tiler_protocol::world_protocol::{
     WORLD_MAX_REPLY_BYTES, decode_reply_v4, decode_report_v4, encode_reply_v4, encode_report_v4,
 };
+use tiler_protocol::world_reply_write::count_reply_v4;
 
 fn fixture_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/world-wire/v4")
@@ -145,13 +144,9 @@ fn reply_focus_request_all_causes_round_trip_with_correlation() {
         let decoded = decode_reply_v4(&wire).expect("cause decodes");
         assert_eq!(decoded, reply, "cause {cause:?} round-trips");
         assert_eq!(
-            reply_exact_bytes_v4(&reply.reply),
+            count_reply_v4(&reply.reply, &reply.wire).expect("protocol count succeeds"),
             wire.len(),
             "exact matches {cause:?} bytes"
-        );
-        assert!(
-            reply_estimate_v4(&reply.reply) >= wire.len(),
-            "estimate covers {cause:?} bytes"
         );
     }
     // The selection-backed explicit witness carries a non-null projection.
@@ -557,19 +552,14 @@ fn core_digest_and_sizing_cover_new_lanes() {
     );
 
     // Exact byte length pins the encoded bytes for the null lane and for a
-    // pending lane with longest valid opaque fields at max revision; the
-    // structural estimate covers both.
+    // pending lane with longest valid opaque fields at max revision.
     let null_reply =
         decode_reply_v4(&reply_text("messages/reply-bootstrap.json")).expect("reply decodes");
     let null_wire = encode_reply_v4(&null_reply).expect("null encodes");
     assert_eq!(
-        reply_exact_bytes_v4(&null_reply.reply),
+        count_reply_v4(&null_reply.reply, &null_reply.wire).expect("protocol count succeeds"),
         null_wire.len(),
         "exact matches null-lane bytes"
-    );
-    assert!(
-        reply_estimate_v4(&null_reply.reply) >= null_wire.len(),
-        "estimate covers null-lane bytes"
     );
     let mut wide = null_reply.clone();
     let long = "w".repeat(128);
@@ -585,13 +575,9 @@ fn core_digest_and_sizing_cover_new_lanes() {
     });
     let wide_wire = encode_reply_v4(&wide).expect("max-width pending encodes");
     assert_eq!(
-        reply_exact_bytes_v4(&wide.reply),
+        count_reply_v4(&wide.reply, &wide.wire).expect("protocol count succeeds"),
         wide_wire.len(),
         "exact matches max-width pending bytes"
-    );
-    assert!(
-        reply_estimate_v4(&wide.reply) >= wide_wire.len(),
-        "estimate covers max-width pending bytes"
     );
     // An explicit request with frozen dependencies is exact too: one member
     // with a null frame plus one view/selected scope and no departing
@@ -627,13 +613,9 @@ fn core_digest_and_sizing_cover_new_lanes() {
     });
     let projected_wire = encode_reply_v4(&projected).expect("projected encodes");
     assert_eq!(
-        reply_exact_bytes_v4(&projected.reply),
+        count_reply_v4(&projected.reply, &projected.wire).expect("protocol count succeeds"),
         projected_wire.len(),
         "exact matches projected bytes"
-    );
-    assert!(
-        reply_estimate_v4(&projected.reply) >= projected_wire.len(),
-        "estimate covers projected bytes"
     );
 
     // The pre-mutation upper bound over one staged report covers every
@@ -643,15 +625,18 @@ fn core_digest_and_sizing_cover_new_lanes() {
         .report;
     let bound = reply_upper_bound_v4(&report, 0, 0, 0, 0, 0);
     assert!(
-        bound >= reply_exact_bytes_v4(&null_reply.reply),
+        bound
+            >= count_reply_v4(&null_reply.reply, &null_reply.wire)
+                .expect("protocol count succeeds"),
         "upper bound covers null-lane reply"
     );
     assert!(
-        bound >= reply_exact_bytes_v4(&wide.reply),
+        bound >= count_reply_v4(&wide.reply, &wide.wire).expect("protocol count succeeds"),
         "upper bound covers max-width pending reply"
     );
     assert!(
-        bound >= reply_exact_bytes_v4(&projected.reply),
+        bound
+            >= count_reply_v4(&projected.reply, &projected.wire).expect("protocol count succeeds"),
         "upper bound covers projected reply"
     );
 }
@@ -736,13 +721,9 @@ fn focus_request_aftershown_at_cap_exact_and_oversize_contrast() {
     let decoded = decode_reply_v4(&wire).expect("at-cap decodes");
     assert_eq!(decoded, at_cap, "at-cap round-trips");
     assert_eq!(
-        reply_exact_bytes_v4(&at_cap.reply),
+        count_reply_v4(&at_cap.reply, &at_cap.wire).expect("protocol count succeeds"),
         wire.len(),
         "exact matches at-cap bytes"
-    );
-    assert!(
-        reply_estimate_v4(&at_cap.reply) >= wire.len(),
-        "estimate covers at-cap bytes"
     );
     assert!(
         reply_upper_bound_v4(&report, 0, 0, 0, 0, 0) >= wire.len(),
@@ -776,15 +757,10 @@ fn focus_request_aftershown_at_cap_exact_and_oversize_contrast() {
             departing: Vec::new(),
         }),
     });
-    let exact = reply_exact_bytes_v4(&heavy.reply);
-    let estimate = reply_estimate_v4(&heavy.reply);
+    let exact = count_reply_v4(&heavy.reply, &heavy.wire).expect("protocol count succeeds");
     assert!(
         exact > WORLD_MAX_REPLY_BYTES,
         "max-width capped projection exceeds the byte budget (exact {exact})"
-    );
-    assert!(
-        estimate >= exact,
-        "estimate covers the heavy projection (estimate {estimate}, exact {exact})"
     );
     let error = encode_reply_v4(&heavy).expect_err("over-byte projection refuses");
     assert_eq!(error.kind, "snapshot-invalid");

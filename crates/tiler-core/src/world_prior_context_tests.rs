@@ -51,7 +51,7 @@ fn first_observation_focus_records_canonical_slot() {
     );
     let key = home_key(&reply);
     assert_eq!(
-        engine.canonical_memory(&key),
+        engine.tx(|tx| tx.canonical_memory(&key)),
         Some(WindowId("win-a".to_owned()))
     );
 }
@@ -72,7 +72,7 @@ fn changed_focus_progresses_canonical_slot() {
     let reply = accepted(&mut engine, &first);
     let key = home_key(&reply);
     assert_eq!(
-        engine.canonical_memory(&key),
+        engine.tx(|tx| tx.canonical_memory(&key)),
         Some(WindowId("win-a".to_owned()))
     );
     let second = report_full(
@@ -87,7 +87,7 @@ fn changed_focus_progresses_canonical_slot() {
     );
     accepted(&mut engine, &second);
     assert_eq!(
-        engine.canonical_memory(&key),
+        engine.tx(|tx| tx.canonical_memory(&key)),
         Some(WindowId("win-b".to_owned()))
     );
 }
@@ -110,8 +110,7 @@ fn cleared_cache_preserves_focus_progression() {
     );
     // Test-only eviction of the typed replay cache: the focus lane must
     // keep progressing from retained prior context.
-    engine.last_report_v4 = None;
-    engine.last_reply_v4 = None;
+    engine.clear_replay();
     let reply = accepted(
         &mut engine,
         &report_full(
@@ -127,7 +126,7 @@ fn cleared_cache_preserves_focus_progression() {
     );
     let key = home_key(&reply);
     assert_eq!(
-        engine.canonical_memory(&key),
+        engine.tx(|tx| tx.canonical_memory(&key)),
         Some(WindowId("win-b".to_owned()))
     );
 }
@@ -148,15 +147,15 @@ fn bootstrap_only_records_no_canonical_focus() {
         WorldOutcome::Accepted(reply) => assert!(!reply.ready, "bootstrap stays unready"),
         other => panic!("expected bootstrap acceptance, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, 0);
+    assert_eq!(engine.state_revision(), 0);
     assert_eq!(
-        engine.canonical_memory(&DomainKey {
+        engine.tx(|tx| tx.canonical_memory(&DomainKey {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId("ws-1".to_owned()),
-        }),
+        })),
         None
     );
-    assert_eq!(engine.prior_context, PriorAcceptedContext::default());
+    assert_eq!(engine.world.prior_context, PriorAcceptedContext::default());
 }
 
 #[test]
@@ -176,7 +175,7 @@ fn rejected_report_leaves_canonical_focus_and_revision() {
         ),
     );
     let key = home_key(&reply);
-    let revision = engine.state_revision;
+    let revision = engine.state_revision();
     let reused = report(
         1,
         1,
@@ -189,9 +188,9 @@ fn rejected_report_leaves_canonical_focus_and_revision() {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REUSED),
         other => panic!("expected reused refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision);
+    assert_eq!(engine.state_revision(), revision);
     assert_eq!(
-        engine.canonical_memory(&key),
+        engine.tx(|tx| tx.canonical_memory(&key)),
         Some(WindowId("win-a".to_owned()))
     );
 }
@@ -214,7 +213,7 @@ fn reset_handshake_clears_canonical_focus() {
     );
     let key = home_key(&reply);
     assert_eq!(
-        engine.canonical_memory(&key),
+        engine.tx(|tx| tx.canonical_memory(&key)),
         Some(WindowId("win-a".to_owned()))
     );
     let reset = HandshakeRequest {
@@ -233,8 +232,8 @@ fn reset_handshake_clears_canonical_focus() {
     };
     let handshake_reply = engine.handshake(&reset);
     assert!(handshake_reply.kind.is_none());
-    assert_eq!(engine.state_revision, 0);
-    assert_eq!(engine.canonical_memory(&key), None);
+    assert_eq!(engine.state_revision(), 0);
+    assert_eq!(engine.tx(|tx| tx.canonical_memory(&key)), None);
 }
 
 fn report_v4(
@@ -258,11 +257,11 @@ fn staged_v4_observation_feeds_prior_capture_without_typed_cache() {
         vec![fact("win-a", "out-a", 0)],
         "win-a",
     );
-    engine.stage_facts_v4(&staged);
-    assert_eq!(engine.staged.observation.focused_global, "win-a");
-    assert!(engine.last_report_v4.is_none());
-    assert!(engine.last_reply_v4.is_none());
-    let focus = engine.staged.observation.focused_global.clone();
+    engine.tx(|tx| tx.stage_facts_v4(&staged));
+    assert_eq!(engine.world.staged.observation.focused_global, "win-a");
+    assert!(engine.last_report_v4().is_none());
+    assert!(engine.last_reply_v4().is_none());
+    let focus = engine.world.staged.observation.focused_global.clone();
     let context = PriorAcceptedContext::capture(&focus, &[], &[], &[]);
     assert_eq!(context.prev_focused_global, "win-a");
     assert!(context.empty_controlled.is_empty());
@@ -290,7 +289,7 @@ fn unchanged_raw_focus_preserves_command_selected_slot_without_cache() {
     );
     let key = home_key(&reply);
     assert_eq!(
-        engine.canonical_memory(&key),
+        engine.tx(|tx| tx.canonical_memory(&key)),
         Some(WindowId("win-a".to_owned()))
     );
     let focus_b = WorldCommand::Focus {
@@ -323,13 +322,12 @@ fn unchanged_raw_focus_preserves_command_selected_slot_without_cache() {
     assert_eq!(request.target, WindowId("win-b".to_owned()));
     assert_eq!(request.cause, FocusRequestCause::ExplicitCommand);
     assert_eq!(
-        engine.canonical_memory(&key),
+        engine.tx(|tx| tx.canonical_memory(&key)),
         Some(WindowId("win-b".to_owned()))
     );
     // Test-only eviction of the typed replay cache: unchanged raw A must
     // still preserve the command-selected slot.
-    engine.last_report_v4 = None;
-    engine.last_reply_v4 = None;
+    engine.clear_replay();
     accepted(
         &mut engine,
         &report_full(
@@ -344,7 +342,7 @@ fn unchanged_raw_focus_preserves_command_selected_slot_without_cache() {
         ),
     );
     assert_eq!(
-        engine.canonical_memory(&key),
+        engine.tx(|tx| tx.canonical_memory(&key)),
         Some(WindowId("win-b".to_owned()))
     );
 }
@@ -365,7 +363,7 @@ fn reset_handshake_clears_prior_context() {
             None,
         ),
     );
-    assert_eq!(engine.prior_context.prev_focused_global, "win-a");
+    assert_eq!(engine.world.prior_context.prev_focused_global, "win-a");
     let reset = HandshakeRequest {
         adapter: "adapter-2".to_owned(),
         request: "test-handshake-reset".to_owned(),
@@ -381,7 +379,7 @@ fn reset_handshake_clears_prior_context() {
         },
     };
     assert!(engine.handshake(&reset).kind.is_none());
-    assert_eq!(engine.prior_context, PriorAcceptedContext::default());
+    assert_eq!(engine.world.prior_context, PriorAcceptedContext::default());
 }
 
 #[test]
@@ -416,15 +414,21 @@ fn consumed_report_refreshes_prior_focus_and_empty_set() {
                 .iter()
                 .find(|workspace| workspace.output == OutputId("out-a".to_owned()))
                 .expect("published workspace row");
-            assert!(engine.prior_context.empty_controlled.contains(&DomainKey {
-                output: OutputId("out-a".to_owned()),
-                workspace: WorkspaceId(row.id.clone()),
-            }));
+            assert!(
+                engine
+                    .world
+                    .prior_context
+                    .empty_controlled
+                    .contains(&DomainKey {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: WorkspaceId(row.id.clone()),
+                    })
+            );
             row.id.clone()
         }
         other => panic!("expected accepted refusal, got {other:?}"),
     };
-    assert_eq!(engine.prior_context.prev_focused_global, "win-a");
+    assert_eq!(engine.world.prior_context.prev_focused_global, "win-a");
     // Occupy the workspace and move raw focus under a consumed sequence.
     // The previously proven key must drop from the refreshed set: a stale
     // context would keep proving the now-occupied workspace empty.
@@ -452,11 +456,17 @@ fn consumed_report_refreshes_prior_focus_and_empty_set() {
         other => panic!("expected consumed command, got {other:?}"),
     };
     assert_eq!(occupied_id, empty_id);
-    assert_eq!(engine.prior_context.prev_focused_global, "win-x");
-    assert!(!engine.prior_context.empty_controlled.contains(&DomainKey {
-        output: OutputId("out-a".to_owned()),
-        workspace: WorkspaceId(occupied_id),
-    }));
+    assert_eq!(engine.world.prior_context.prev_focused_global, "win-x");
+    assert!(
+        !engine
+            .world
+            .prior_context
+            .empty_controlled
+            .contains(&DomainKey {
+                output: OutputId("out-a".to_owned()),
+                workspace: WorkspaceId(occupied_id),
+            })
+    );
 }
 
 fn workspace_row(id: &str, output: &str) -> WorkspaceDesire {

@@ -29,6 +29,7 @@ impl WorldLayout {
     /// installed, the per-domain accepted revision advances by exactly one,
     /// and a typed geometry/focus/group outcome is returned. No native
     /// acceptance is claimed.
+    #[cfg(test)]
     pub(crate) fn toggle_orientation(
         &mut self,
         key: &DomainKey,

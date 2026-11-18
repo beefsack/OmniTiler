@@ -4455,3 +4455,79 @@ fn take_retains_across_commandless_captures_isolates_senders_and_evicts_at_1024(
     );
     assert_eq!(newest["outcome"], "ready");
 }
+
+#[test]
+fn service_capture_bound_and_projection_match_legacy_serde_bytes() {
+    let (service, generation) = discovered_service();
+    let inner = inner_report(
+        &[
+            window_json("win-a", "[0,0,400,600]", None),
+            window_json("win-b", "[400,0,400,600]", None),
+        ],
+        true,
+        false,
+        "",
+    );
+    let bound_bytes = service
+        .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &inner))
+        .expect("accepted");
+
+    let mut bound_val: serde_json::Value = serde_json::from_str(&bound_bytes).expect("bound json");
+    let clock = bound_val["clock"].as_str().expect("clock").to_owned();
+    let mut inner_val = bound_val.clone();
+    let inner_map = inner_val.as_object_mut().expect("object");
+    for k in [
+        "source",
+        "nativeInvalid",
+        "clock",
+        "gestureAssoc",
+        "gestureSettledAssoc",
+    ] {
+        inner_map.remove(k);
+    }
+    let decoded = tiler_protocol::world_protocol::decode_reply_v4(&inner_val.to_string())
+        .expect("decoded inner");
+    let canonical_inner =
+        tiler_protocol::world_protocol::encode_reply_v4(&decoded).expect("canonical inner");
+    let mut oracle_val: serde_json::Value =
+        serde_json::from_str(&canonical_inner).expect("oracle inner");
+    let oracle_map = oracle_val.as_object_mut().expect("object");
+    oracle_map.insert("source".to_owned(), serde_json::json!("src-1-t"));
+    oracle_map.insert("nativeInvalid".to_owned(), serde_json::json!("1"));
+    oracle_map.insert("clock".to_owned(), serde_json::json!(clock));
+    oracle_map.insert("gestureAssoc".to_owned(), serde_json::Value::Null);
+    oracle_map.insert("gestureSettledAssoc".to_owned(), serde_json::Value::Null);
+    assert_eq!(bound_bytes, oracle_val.to_string());
+
+    let proj_bytes = service
+        .read_presentation("{\"v\":4,\"req\":\"read-1\"}")
+        .expect("projection");
+    let mut windows = oracle_val["windows"].clone();
+    if let Some(rows) = windows.as_array_mut() {
+        for row in rows {
+            if let Some(m) = row.as_object_mut() {
+                m.remove("frame_op");
+                m.remove("clear_op");
+            }
+        }
+    }
+    let proj_oracle = serde_json::json!({
+        "v": 4,
+        "outcome": "presentation",
+        "gen": generation,
+        "req": "read-1",
+        "rev": oracle_val["rev"],
+        "obs": oracle_val["obs"],
+        "scopes": oracle_val["scopes"],
+        "workspaces": oracle_val["workspaces"],
+        "outputs": oracle_val["outputs"],
+        "windows": windows,
+        "presentation": oracle_val["presentation"],
+        "preview": serde_json::Value::Null,
+        "coveredInstance": serde_json::Value::Null,
+        "coveredInvalid": serde_json::Value::Null,
+    })
+    .to_string();
+    assert_eq!(proj_bytes, proj_oracle);
+    let _ = bound_val.take();
+}

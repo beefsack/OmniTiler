@@ -62,12 +62,10 @@ fn two_tile_domain(
     bounds: Rect,
     outer_gap: i32,
     group: &str,
-    w1: &str,
-    l1: &str,
-    w2: &str,
-    l2: &str,
+    tiles: [(&str, &str); 2],
     rev: u64,
 ) -> DomainLayout {
+    let [(w1, l1), (w2, l2)] = tiles;
     let mut d = DomainLayout::new(bounds, 0, outer_gap);
     d.tree = Some(Node::Group {
         id: nid(group),
@@ -99,7 +97,7 @@ fn local_preview_does_not_install_topology_and_burns_group_serials_on_split() {
     let desc = domain_desc(&key, bounds, 0);
 
     let mut layout = WorldLayout::new();
-    let d = two_tile_domain(bounds, 0, "g-root", "w1", "a", "w2", "b", 3);
+    let d = two_tile_domain(bounds, 0, "g-root", [("w1", "a"), ("w2", "b")], 3);
     let original_tree = d.tree.clone();
     layout.domains.insert(key.clone(), d);
 
@@ -179,7 +177,7 @@ fn local_drop_commits_topology_bumps_revision_and_settles_focus() {
     let desc = domain_desc(&key, bounds, 0);
 
     let mut layout = WorldLayout::new();
-    let d = two_tile_domain(bounds, 0, "g-root", "w1", "a", "w2", "b", 4);
+    let d = two_tile_domain(bounds, 0, "g-root", [("w1", "a"), ("w2", "b")], 4);
     let original_tree = d.tree.clone();
     layout.domains.insert(key.clone(), d);
 
@@ -217,8 +215,8 @@ fn pair_preview_converges_without_installing_preview_topology_and_burns_serials(
     let desc_b = domain_desc(&key_b, bounds_b, 0);
 
     let mut layout = WorldLayout::new();
-    let d_a = two_tile_domain(bounds_a, 0, "g-a", "w1", "a1", "w2", "a2", 2);
-    let d_b = two_tile_domain(bounds_b, 0, "g-b", "w3", "b1", "w4", "b2", 5);
+    let d_a = two_tile_domain(bounds_a, 0, "g-a", [("w1", "a1"), ("w2", "a2")], 2);
+    let d_b = two_tile_domain(bounds_b, 0, "g-b", [("w3", "b1"), ("w4", "b2")], 5);
     let orig_a_tree = d_a.tree.clone();
     let orig_b_tree = d_b.tree.clone();
     layout.domains.insert(key_a.clone(), d_a);
@@ -302,8 +300,8 @@ fn pair_drop_moves_leaf_across_domains_and_installs_atomically() {
     let desc_b = domain_desc(&key_b, bounds_b, 0);
 
     let mut layout = WorldLayout::new();
-    let d_a = two_tile_domain(bounds_a, 0, "g-a", "w1", "a1", "w2", "a2", 2);
-    let d_b = two_tile_domain(bounds_b, 0, "g-b", "w3", "b1", "w4", "b2", 5);
+    let d_a = two_tile_domain(bounds_a, 0, "g-a", [("w1", "a1"), ("w2", "a2")], 2);
+    let d_b = two_tile_domain(bounds_b, 0, "g-b", [("w3", "b1"), ("w4", "b2")], 5);
     layout.domains.insert(key_a.clone(), d_a);
     layout.domains.insert(key_b.clone(), d_b);
 
@@ -432,7 +430,7 @@ fn local_drop_refuses_unknown_window_without_mutation() {
     let mut layout = WorldLayout::new();
     layout.domains.insert(
         key.clone(),
-        two_tile_domain(bounds, 0, "g-root", "w1", "a", "w2", "b", 1),
+        two_tile_domain(bounds, 0, "g-root", [("w1", "a"), ("w2", "b")], 1),
     );
     let obs = vec![eng("w1", &key, 0, 400), eng("w2", &key, 400, 400)];
 
@@ -511,7 +509,7 @@ fn pair_drag_refuses_missing_target_and_preserves_unusable_vs_absent_priority() 
     // 1. Missing target refuses before convergence, leaving domains untouched
     // and burning zero allocator serials.
     let mut layout = WorldLayout::new();
-    let d_a = two_tile_domain(bounds_a, 0, "g-a", "w1", "a1", "w2", "a2", 2);
+    let d_a = two_tile_domain(bounds_a, 0, "g-a", [("w1", "a1"), ("w2", "a2")], 2);
     let orig_a_tree = d_a.tree.clone();
     layout.domains.insert(key_a.clone(), d_a);
     let obs = vec![eng("w1", &key_a, 0, 400), eng("w2", &key_a, 400, 400)];
@@ -928,8 +926,8 @@ fn pair_drop_refuses_absent_mover_without_mutating_domains() {
     let desc_b = domain_desc(&key_b, bounds_b, 0);
 
     let mut layout = WorldLayout::new();
-    let d_a = two_tile_domain(bounds_a, 0, "g-a", "w1", "a1", "w2", "a2", 2);
-    let d_b = two_tile_domain(bounds_b, 0, "g-b", "w3", "b1", "w4", "b2", 5);
+    let d_a = two_tile_domain(bounds_a, 0, "g-a", [("w1", "a1"), ("w2", "a2")], 2);
+    let d_b = two_tile_domain(bounds_b, 0, "g-b", [("w3", "b1"), ("w4", "b2")], 5);
     let orig_b_tree = d_b.tree.clone();
     layout.domains.insert(key_a.clone(), d_a);
     layout.domains.insert(key_b.clone(), d_b);
@@ -1168,7 +1166,7 @@ fn local_drag_insertion_index_sixty_five_succeeds_without_count_cap() {
         children.push(crate::directional::Node::Leaf { id: nid(&lid) });
         leaves.insert(win(&wid), nid(&lid));
         focus_stack.push(nid(&lid));
-        obs.push(eng(&wid, &key, (i as i32) * 100, 100));
+        obs.push(eng(&wid, &key, i * 100, 100));
     }
 
     let mut layout = WorldLayout::new();
@@ -1237,7 +1235,7 @@ fn local_drop_perpendicular_edge_wraps_root_and_self_drop_refuses() {
     let desc = domain_desc(&key, bounds, 0);
 
     let mut layout = WorldLayout::new();
-    let d = two_tile_domain(bounds, 0, "g-root", "w1", "a", "w2", "b", 4);
+    let d = two_tile_domain(bounds, 0, "g-root", [("w1", "a"), ("w2", "b")], 4);
     let original_tree = d.tree.clone();
     layout.domains.insert(key.clone(), d);
 
@@ -1305,7 +1303,7 @@ fn drag_sides_map_to_axis_and_order_across_horizontal_and_vertical_parents() {
 
     // 1) Two-wide H[w1, w2], drag w2 left onto w1 -> collapses root to w1, wraps H[w2, w1].
     let mut layout = WorldLayout::new();
-    let d2 = two_tile_domain(bounds, 0, "g-root", "w1", "l1", "w2", "l2", 1);
+    let d2 = two_tile_domain(bounds, 0, "g-root", [("w1", "l1"), ("w2", "l2")], 1);
     layout.domains.insert(key.clone(), d2);
     let obs2 = vec![eng("w1", &key, 0, 300), eng("w2", &key, 300, 300)];
     let left = layout
@@ -1628,7 +1626,7 @@ fn drag_preview_and_drop_refuse_center_and_bounds_without_mutation() {
     let desc = domain_desc(&key, bounds, 0);
 
     let mut layout = WorldLayout::new();
-    let d = two_tile_domain(bounds, 0, "g-root", "w1", "l1", "w2", "l2", 3);
+    let d = two_tile_domain(bounds, 0, "g-root", [("w1", "l1"), ("w2", "l2")], 3);
     let original_tree = d.tree.clone();
     layout.domains.insert(key.clone(), d);
     let obs = vec![eng("w1", &key, 0, 300), eng("w2", &key, 300, 300)];
@@ -2163,4 +2161,293 @@ fn drag_group_edge_same_axis_nary_first_last_and_interior_placement() {
         }
         other => panic!("expected collapsed g-h root, got {other:?}"),
     }
+}
+
+fn drag_group_ids(node: &Node, out: &mut std::collections::BTreeSet<NodeId>) {
+    if let Node::Group { id, children, .. } = node {
+        out.insert(id.clone());
+        for child in children {
+            drag_group_ids(child, out);
+        }
+    }
+}
+
+fn domain_drag_group_ids(
+    layout: &WorldLayout,
+    key: &DomainKey,
+) -> std::collections::BTreeSet<NodeId> {
+    let mut out = std::collections::BTreeSet::new();
+    if let Some(tree) = layout.tree(key) {
+        drag_group_ids(tree, &mut out);
+    }
+    out
+}
+
+#[test]
+fn alloc_drag_wrap_mints_next_serial() {
+    use crate::session::{ExceptionFlags, ObservedWindow};
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 800,
+        h: 400,
+    };
+    let key = ws_key("out-1", "ws-1");
+    let desc = domain_desc(&key, bounds, 0);
+    let mut layout = WorldLayout::new();
+    layout
+        .domains
+        .insert(key.clone(), DomainLayout::new(bounds, 0, 0));
+
+    let obs_win = |name: &str| ObservedWindow {
+        window: win(name),
+        output: key.output.clone(),
+        workspace: key.workspace.clone(),
+        floating: false,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress: false,
+        hints: WindowSizeHints::none(),
+    };
+    for (i, name) in ["win-1", "win-2", "win-3"].iter().enumerate() {
+        let obs_list: Vec<ObservedWindow> = ["win-1", "win-2", "win-3"][..=i]
+            .iter()
+            .map(|n| obs_win(n))
+            .collect();
+        layout
+            .admit_window(
+                &key,
+                &win(name),
+                ExceptionFlags::none(),
+                None,
+                bounds,
+                false,
+                false,
+                &obs_list,
+            )
+            .expect("admit");
+    }
+    assert_eq!(layout.group_alloc.next_value(), 2);
+
+    let obs = vec![
+        eng("win-1", &key, 0, 400),
+        eng("win-2", &key, 400, 200),
+        eng("win-3", &key, 600, 200),
+    ];
+    // Top-edge drop on win-1 wraps perpendicularly, minting grp-2.
+    layout
+        .run_local_drag_drop(&desc, 0, &win("win-3"), &win("win-3"), &obs, 200, 5, None)
+        .expect("drag wrap drop");
+    assert!(domain_drag_group_ids(&layout, &key).contains(&nid("grp-2")));
+    assert_eq!(layout.group_alloc.next_value(), 3);
+
+    // Remove win-3 (collapsing grp-2), then preview and redrop win-2:
+    // preview burns grp-3, repeat drop mints grp-4, never reissuing grp-2.
+    layout
+        .converge_domain(
+            &key,
+            &[obs_win("win-1"), obs_win("win-2")],
+            Some(&win("win-2")),
+            &std::collections::BTreeSet::new(),
+        )
+        .expect("remove win-3");
+    assert!(!domain_drag_group_ids(&layout, &key).contains(&nid("grp-2")));
+
+    let obs2 = vec![eng("win-1", &key, 0, 400), eng("win-2", &key, 400, 400)];
+    let preview = layout
+        .run_local_drag_preview(&desc, 0, &win("win-2"), &win("win-2"), &obs2, 200, 5, None)
+        .expect("repeat preview");
+    assert!(preview.proposed_rect.w > 0);
+    layout
+        .run_local_drag_drop(
+            &desc,
+            0,
+            &win("win-2"),
+            &win("win-2"),
+            &obs2,
+            200,
+            5,
+            Some(&preview.hover),
+        )
+        .expect("repeat drop");
+    let groups = domain_drag_group_ids(&layout, &key);
+    assert!(groups.contains(&nid("grp-4")));
+    assert!(!groups.contains(&nid("grp-2")));
+    assert_eq!(layout.group_alloc.next_value(), 5);
+}
+
+#[test]
+fn alloc_discarded_session_trial_burns_serial() {
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 800,
+        h: 400,
+    };
+    let key = ws_key("out-1", "ws-1");
+    let desc = domain_desc(&key, bounds, 0);
+    let mut layout = WorldLayout::new();
+    let mut d = DomainLayout::new(bounds, 0, 0);
+    d.tree = Some(Node::Group {
+        id: nid("grp-0"),
+        axis: Axis::Horizontal,
+        children: vec![
+            leaf("leaf-1"),
+            Node::Group {
+                id: nid("grp-1"),
+                axis: Axis::Vertical,
+                children: vec![leaf("leaf-2"), leaf("leaf-3")],
+                shares: vec![1, 1],
+            },
+        ],
+        shares: vec![1, 1],
+    });
+    d.leaves.insert(win("win-1"), nid("leaf-1"));
+    d.leaves.insert(win("win-2"), nid("leaf-2"));
+    d.leaves.insert(win("win-3"), nid("leaf-3"));
+    d.focused_leaf = Some(nid("leaf-3"));
+    d.focus_stack = vec![nid("leaf-1"), nid("leaf-2"), nid("leaf-3")];
+    layout.domains.insert(key.clone(), d);
+    layout.group_alloc = crate::world_layout::GroupAllocator::test_with_next(2);
+
+    let obs = vec![
+        eng("win-1", &key, 0, 400),
+        eng("win-2", &key, 400, 200),
+        eng("win-3", &key, 600, 200),
+    ];
+
+    let mut trial = layout.clone();
+    trial
+        .run_local_drag_drop(&desc, 0, &win("win-3"), &win("win-3"), &obs, 200, 5, None)
+        .expect("trial drop");
+    assert!(domain_drag_group_ids(&trial, &key).contains(&nid("grp-2")));
+    drop(trial);
+
+    // Discarded trial burned grp-2 on the shared counter.
+    assert_eq!(layout.group_alloc.next_value(), 3);
+    assert!(!domain_drag_group_ids(&layout, &key).contains(&nid("grp-2")));
+
+    let mut live = layout.clone();
+    live.run_local_drag_drop(&desc, 0, &win("win-3"), &win("win-3"), &obs, 200, 5, None)
+        .expect("live drop");
+    let groups = domain_drag_group_ids(&live, &key);
+    assert!(groups.contains(&nid("grp-3")));
+    assert!(!groups.contains(&nid("grp-2")));
+}
+
+#[test]
+fn alloc_drag_group_edge_wrap_burns_trial_and_live() {
+    use crate::session::{ExceptionFlags, ObservedWindow};
+    let (mut layout, desc, key, obs) = gap_nested_layout();
+    layout.group_alloc = crate::world_layout::GroupAllocator::test_with_next(2);
+    let (inner_rect, _, leaf_rects) = inner_v_group_geom(&layout, &key);
+    let cx = inner_rect.x + inner_rect.w / 2;
+    let gy = (inner_rect.y..inner_rect.y + inner_rect.h)
+        .find(|&y| !leaf_rects.iter().any(|r| rect_contains(r, cx, y)))
+        .expect("inner gap row");
+    let gx = inner_rect.x + 5;
+
+    let mut trial = layout.clone();
+    trial
+        .run_local_drag_drop(&desc, 0, &win("w1"), &win("w1"), &obs, gx, gy + 2, None)
+        .expect("trial edge wrap");
+    assert!(domain_drag_group_ids(&trial, &key).contains(&nid("grp-2")));
+    drop(trial);
+    assert_eq!(layout.group_alloc.next_value(), 3);
+
+    let preview = layout
+        .run_local_drag_preview(&desc, 0, &win("w1"), &win("w1"), &obs, gx, gy + 2, None)
+        .expect("live preview");
+    layout
+        .run_local_drag_drop(
+            &desc,
+            0,
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            gx,
+            gy + 2,
+            Some(&preview.hover),
+        )
+        .expect("live edge wrap");
+    let old_wrapper = nid("grp-4");
+    assert!(domain_drag_group_ids(&layout, &key).contains(&old_wrapper));
+    assert!(!domain_drag_group_ids(&layout, &key).contains(&nid("grp-2")));
+    assert_eq!(layout.group_alloc.next_value(), 5);
+
+    // Remove w1 (collapsing old_wrapper), readmit w1, and drop on the
+    // restored inner gap again: repeat wrap mints a fresh group and never
+    // reissues old_wrapper.
+    let obs_win = |name: &str| ObservedWindow {
+        window: win(name),
+        output: key.output.clone(),
+        workspace: key.workspace.clone(),
+        floating: false,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress: false,
+        hints: WindowSizeHints::none(),
+    };
+    let retained_names = ["w2", "w3"];
+    let retained_obs: Vec<ObservedWindow> = retained_names.iter().map(|n| obs_win(n)).collect();
+    layout
+        .converge_domain(
+            &key,
+            &retained_obs,
+            Some(&win("w2")),
+            &std::collections::BTreeSet::new(),
+        )
+        .expect("remove w1");
+    assert!(!domain_drag_group_ids(&layout, &key).contains(&old_wrapper));
+
+    let all_obs: Vec<ObservedWindow> = ["w2", "w3", "w1"].iter().map(|n| obs_win(n)).collect();
+    layout
+        .admit_window(
+            &key,
+            &win("w1"),
+            ExceptionFlags::none(),
+            None,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 50,
+            },
+            false,
+            false,
+            &all_obs,
+        )
+        .expect("readmit w1");
+
+    let geom = layout
+        .project_domain_geometry(&key, &BTreeMap::new())
+        .expect("project");
+    let r2 = geom.iter().find(|g| g.window == win("w2")).unwrap().rect;
+    let repeat_obs = vec![
+        eng("w2", &key, 0, 200),
+        eng("w3", &key, 200, 200),
+        eng("w1", &key, 400, 200),
+    ];
+    let pre_repeat = domain_drag_group_ids(&layout, &key);
+    layout
+        .run_local_drag_drop(
+            &desc,
+            0,
+            &win("w1"),
+            &win("w1"),
+            &repeat_obs,
+            r2.x + 5,
+            r2.y + r2.h / 2,
+            None,
+        )
+        .expect("repeat edge wrap");
+    let post_repeat = domain_drag_group_ids(&layout, &key);
+    assert!(!post_repeat.contains(&old_wrapper));
+    let reminted: Vec<NodeId> = post_repeat.difference(&pre_repeat).cloned().collect();
+    assert!(!reminted.is_empty());
+    assert!(!reminted.contains(&old_wrapper));
 }

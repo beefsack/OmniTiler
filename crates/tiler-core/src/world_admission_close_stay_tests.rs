@@ -168,8 +168,9 @@ fn committed_focus(engine: &WorldEngine, output: &str, workspace: &str) -> Optio
         output: OutputId(output.to_owned()),
         workspace: crate::directional::WorkspaceId(workspace.to_owned()),
     };
-    let leaf = engine.layout().focus_leaf(&key)?;
+    let leaf = engine.world.layout().focus_leaf(&key)?;
     engine
+        .world
         .layout()
         .window_for_leaf(&key, leaf)
         .map(|window| window.0.clone())
@@ -2261,10 +2262,10 @@ fn select_without_native_focus_returns_recorded_leaf() {
         "layout order starts at the first admission"
     );
     assert_eq!(
-        engine.canonical_memory(&crate::session::DomainKey {
+        engine.tx_ro(|tx| tx.canonical_memory(&crate::session::DomainKey {
             output: OutputId("out-a".to_owned()),
             workspace: crate::directional::WorkspaceId(other.clone()),
-        }),
+        })),
         Some(crate::directional::WindowId("win-d".to_owned())),
         "latest accepted admission focus supersedes earlier leaf memory"
     );
@@ -2357,11 +2358,12 @@ fn first_leaf_window(engine: &WorldEngine, output: &str, workspace: &str) -> Opt
         output: OutputId(output.to_owned()),
         workspace: crate::directional::WorkspaceId(workspace.to_owned()),
     };
-    let mut node = engine.layout().tree(&key)?;
+    let mut node = engine.world.layout().tree(&key)?;
     loop {
         match node {
             crate::directional::Node::Leaf { id } => {
                 return engine
+                    .world
                     .layout()
                     .window_for_leaf(&key, id)
                     .map(|window| window.0.clone());
@@ -2388,7 +2390,7 @@ fn assert_no_newcomer_memory(
         workspace: crate::directional::WorkspaceId(view),
     };
     assert_ne!(
-        engine.canonical_memory(&home),
+        engine.tx_ro(|tx| tx.canonical_memory(&home)),
         Some(WindowId(newcomer.to_owned())),
         "{what}"
     );
@@ -3204,10 +3206,12 @@ fn inactive_workspace_birth_anchors_remembered_without_focus_or_switch_and_never
     );
     {
         let remembered = engine
+            .world
             .layout()
             .remembered_leaf(&w2_key)
             .expect("W2 remembered leaf");
         let remembered_win = engine
+            .world
             .layout()
             .window_for_leaf(&w2_key, &remembered)
             .map(|window| window.0);
@@ -3255,7 +3259,7 @@ fn inactive_workspace_birth_anchors_remembered_without_focus_or_switch_and_never
     );
     assert_eq!(view_of(&admit_reply, "out-a"), w1_id);
     assert!(
-        engine.admission_focus_spent.contains("win-d"),
+        engine.world.focus.admission_focus_spent.contains("win-d"),
         "inactive birth spends admission focus"
     );
 
@@ -3392,8 +3396,8 @@ fn same_report_inactive_and_active_new_births_keep_active_focus_eligible() {
         .expect("active newcomer win-e remains eligible for admission focus");
     assert_eq!(issued.target.0, "win-e");
     assert_eq!(issued.cause, FocusRequestCause::AutomaticAdmission);
-    assert!(engine.admission_focus_spent.contains("win-d"));
-    assert!(engine.admission_focus_spent.contains("win-e"));
+    assert!(engine.world.focus.admission_focus_spent.contains("win-d"));
+    assert!(engine.world.focus.admission_focus_spent.contains("win-e"));
 
     // 3. Switching to W2 (n2) must not replay admission focus for win-d.
     let mut switch_w2 = report(

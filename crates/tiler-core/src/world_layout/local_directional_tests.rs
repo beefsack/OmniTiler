@@ -685,3 +685,281 @@ fn rmov10_group_neighbor_wrap_shares_under_both_modes() {
         }
     }
 }
+
+#[test]
+fn alloc_move_wrap_mints_shared_serial() {
+    use crate::directional::{OutputId, WorkspaceId};
+    use crate::seed::EngineWindow;
+    use crate::session::{ExceptionFlags, OutputDomain};
+    use crate::size_hints::WindowSizeHints;
+    use crate::world_layout::{PairMoveOutcome, PairOperationContext};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn move_group_ids(node: &Node, out: &mut BTreeSet<NodeId>) {
+        if let Node::Group { id, children, .. } = node {
+            out.insert(id.clone());
+            for child in children {
+                move_group_ids(child, out);
+            }
+        }
+    }
+
+    fn all_move_groups(layout: &WorldLayout) -> BTreeSet<NodeId> {
+        let mut out = BTreeSet::new();
+        for domain in layout.domains.values() {
+            if let Some(tree) = domain.tree.as_ref() {
+                move_group_ids(tree, &mut out);
+            }
+        }
+        out
+    }
+
+    let bounds1 = Rect {
+        x: 0,
+        y: 0,
+        w: 120,
+        h: 80,
+    };
+    let bounds2 = Rect {
+        x: 120,
+        y: 0,
+        w: 120,
+        h: 80,
+    };
+    let k1 = key();
+    let k2 = other_key();
+
+    let mut adj1 = BTreeMap::new();
+    adj1.insert(Direction::Right, k2.output.clone());
+    let d1 = OutputDomain {
+        id: k1.output.clone(),
+        workspace: k1.workspace.clone(),
+        bounds: bounds1,
+        gap: 0,
+        adjacent: adj1,
+    };
+    let mut adj2 = BTreeMap::new();
+    adj2.insert(Direction::Left, k1.output.clone());
+    let d2 = OutputDomain {
+        id: k2.output.clone(),
+        workspace: k2.workspace.clone(),
+        bounds: bounds2,
+        gap: 0,
+        adjacent: adj2,
+    };
+
+    let mut layout = WorldLayout::new();
+    layout
+        .domains
+        .insert(k1.clone(), DomainLayout::new(bounds1, 0, 0));
+    layout
+        .domains
+        .insert(k2.clone(), DomainLayout::new(bounds2, 0, 0));
+
+    let obs_in = |name: &str, k: &DomainKey| ObservedWindow {
+        window: win(name),
+        output: k.output.clone(),
+        workspace: k.workspace.clone(),
+        floating: false,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress: false,
+        hints: WindowSizeHints::none(),
+    };
+    for (i, name) in ["win-1", "win-2", "win-3"].iter().enumerate() {
+        let list: Vec<ObservedWindow> = ["win-1", "win-2", "win-3"][..=i]
+            .iter()
+            .map(|n| obs_in(n, &k1))
+            .collect();
+        layout
+            .admit_window(
+                &k1,
+                &win(name),
+                ExceptionFlags::none(),
+                None,
+                bounds1,
+                false,
+                false,
+                &list,
+            )
+            .expect("admit source");
+    }
+    layout
+        .admit_window(
+            &k2,
+            &win("win-4"),
+            ExceptionFlags::none(),
+            None,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 50,
+            },
+            false,
+            false,
+            &[obs_in("win-4", &k2)],
+        )
+        .expect("admit dest");
+
+    let pre_groups = all_move_groups(&layout);
+    assert_eq!(pre_groups.len(), 2);
+    let pre_next = layout.group_alloc.next_value();
+
+    // Local R3 escape first, then R4 cross-output wrap.
+    layout
+        .local_move(
+            &k1,
+            &win("win-3"),
+            Direction::Right,
+            SameAxisMove::GroupWithNeighbor,
+            &win("win-3"),
+            &[
+                obs_in("win-1", &k1),
+                obs_in("win-2", &k1),
+                obs_in("win-3", &k1),
+            ],
+        )
+        .expect("local R3 move");
+
+    let eng = |name: &str, k: &DomainKey| EngineWindow {
+        window: win(name),
+        output: OutputId(k.output.0.clone()),
+        workspace: WorkspaceId(k.workspace.0.clone()),
+        rect: Rect {
+            x: 0,
+            y: 0,
+            w: 40,
+            h: 40,
+        },
+        floating: false,
+        fit_excluded: false,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress: false,
+        hints: WindowSizeHints::none(),
+    };
+    let observed_eng = vec![
+        eng("win-1", &k1),
+        eng("win-2", &k1),
+        eng("win-3", &k1),
+        eng("win-4", &k2),
+    ];
+    let focus_w = win("win-3");
+    let ctx = PairOperationContext {
+        source_domain: &d1,
+        target_domain: &d2,
+        source_outer_gap: 0,
+        target_outer_gap: Some(0),
+        observed_focus: &focus_w,
+        observed: &observed_eng,
+        closed: &[],
+    };
+
+    // Trial on a discarded clone first: burns serials that live never reissues.
+    let mut trial = layout.clone();
+    let trial_out = trial
+        .run_directional_pair_move(
+            &ctx,
+            &win("win-3"),
+            Direction::Right,
+            true,
+            SameAxisMove::GroupWithNeighbor,
+        )
+        .expect("trial R4 move");
+    assert!(matches!(
+        trial_out,
+        PairMoveOutcome::Moved { cross: Some(_), .. }
+    ));
+    let trial_groups = all_move_groups(&trial);
+    let trial_fresh: Vec<NodeId> = trial_groups.difference(&pre_groups).cloned().collect();
+    assert!(!trial_fresh.is_empty());
+    drop(trial);
+
+    let trial_next = layout.group_alloc.next_value();
+    assert!(trial_next > pre_next);
+
+    let live_out = layout
+        .run_directional_pair_move(
+            &ctx,
+            &win("win-3"),
+            Direction::Right,
+            true,
+            SameAxisMove::GroupWithNeighbor,
+        )
+        .expect("live R4 move");
+    assert!(matches!(
+        live_out,
+        PairMoveOutcome::Moved { cross: Some(_), .. }
+    ));
+    assert!(layout.group_alloc.next_value() > trial_next);
+
+    let post_groups = all_move_groups(&layout);
+    let fresh: Vec<NodeId> = post_groups.difference(&pre_groups).cloned().collect();
+    assert!(!fresh.is_empty());
+    for id in &fresh {
+        let serial: u64 = id.0.strip_prefix("grp-").unwrap().parse().unwrap();
+        assert!(serial >= trial_next);
+        assert!(!trial_fresh.contains(id));
+    }
+
+    // Remove win-3 at destination (collapsing R4 wrapper), readmit at source,
+    // and move right until R4 fires again: never reissues removed wrappers.
+    let old_wraps = fresh;
+    layout
+        .converge_domain(
+            &k2,
+            &[obs_in("win-4", &k2)],
+            Some(&win("win-4")),
+            &BTreeSet::new(),
+        )
+        .expect("remove win-3 at dest");
+    for id in &old_wraps {
+        assert!(!all_move_groups(&layout).contains(id));
+    }
+
+    layout
+        .admit_window(
+            &k1,
+            &win("win-3"),
+            ExceptionFlags::none(),
+            None,
+            bounds1,
+            false,
+            false,
+            &[
+                obs_in("win-1", &k1),
+                obs_in("win-2", &k1),
+                obs_in("win-3", &k1),
+            ],
+        )
+        .expect("readmit win-3");
+    let before_repeat = all_move_groups(&layout);
+    let mut wrapped = false;
+    for _ in 0..3 {
+        let step = layout
+            .run_directional_pair_move(
+                &ctx,
+                &win("win-3"),
+                Direction::Right,
+                true,
+                SameAxisMove::GroupWithNeighbor,
+            )
+            .expect("repeat move");
+        if matches!(step, PairMoveOutcome::Moved { cross: Some(_), .. }) {
+            wrapped = true;
+            break;
+        }
+    }
+    assert!(wrapped, "repeat move reaches R4 cross-output wrap");
+    let post_repeat = all_move_groups(&layout);
+    for id in &old_wraps {
+        assert!(!post_repeat.contains(id));
+    }
+    let fresh_repeat: Vec<NodeId> = post_repeat.difference(&before_repeat).cloned().collect();
+    assert!(!fresh_repeat.is_empty());
+}

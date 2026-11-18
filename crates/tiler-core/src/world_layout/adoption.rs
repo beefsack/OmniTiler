@@ -104,18 +104,19 @@ impl WorldLayout {
         // Clean fit: only the focused non-floating anchor qualifies, and only
         // with no fixed-size member to exclude. A decline falls through with
         // its allocator burns intact.
-        if !fixed_present && anchor == *focused_window {
-            if let Ok(admission) = self.try_fitted_admission(domain, outer_gap, &anchor, observed) {
-                return Ok(FreshDomainOutcome {
-                    projection: RetainedProjectionOutcome {
-                        base_revision: admission.base_revision,
-                        geometry: admission.geometry,
-                        focus_leaf: admission.admitted_leaf,
-                    },
-                    native_capacity_float: None,
-                    kind: FreshOutcomeKind::Fit,
-                });
-            }
+        if !fixed_present
+            && anchor == *focused_window
+            && let Ok(admission) = self.try_fitted_admission(domain, outer_gap, &anchor, observed)
+        {
+            return Ok(FreshDomainOutcome {
+                projection: RetainedProjectionOutcome {
+                    base_revision: admission.base_revision,
+                    geometry: admission.geometry,
+                    focus_leaf: admission.admitted_leaf,
+                },
+                native_capacity_float: None,
+                kind: FreshOutcomeKind::Fit,
+            });
         }
 
         let unique_source = self.unique_source_key(&key);

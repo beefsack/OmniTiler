@@ -401,37 +401,42 @@ fn dynamic_trailing_spare_requests_native_backing() {
     // Host-owned: unbound trailing empty spare (unviewed, untargeted,
     // unoccupied) must mint exactly one native creation desire.
     let mut engine = engine_host_owned(WorkspaceMode::PerOutputLocal);
-    engine.mapping.insert(
+    engine.world.workspace.mapping.insert(
         "out-a".to_owned(),
         vec!["ws-1".to_owned(), "ws-9".to_owned()],
     );
     // Bind head so only the trailing spare is unbound; view stays on head
     // so the spare is genuinely unviewed/untargeted/unoccupied.
-    engine.native_map.insert(
+    engine.world.settlement.native_map.insert(
         ("out-a".to_owned(), "native-out-a-0".to_owned()),
         "ws-1".to_owned(),
     );
-    engine.views.insert("out-a".to_owned(), "ws-1".to_owned());
+    engine
+        .world
+        .workspace
+        .views
+        .insert("out-a".to_owned(), "ws-1".to_owned());
     // Stage a complete native list + screen so creation gates pass.
-    engine.staged.screens = vec![screen("out-a", 0)];
-    engine.staged.observation.inventory_complete = true;
-    engine.staged.observation.native = vec![NativeObservation {
-        output: OutputId("out-a".to_owned()),
-        native_order: vec!["native-out-a-0".to_owned()],
-        current_native: Some("native-out-a-0".to_owned()),
-        occupancy: vec![NativeOccupancy {
-            native: "native-out-a-0".to_owned(),
-            count: Some(0),
-        }],
-    }];
-    engine.ensure_native_creations("out-a");
-    let desires = engine.native_creation_desires();
+    engine.world.staged.screens = vec![screen("out-a", 0)];
+    std::sync::Arc::make_mut(&mut engine.world.staged.observation).inventory_complete = true;
+    std::sync::Arc::make_mut(&mut engine.world.staged.observation).native =
+        vec![NativeObservation {
+            output: OutputId("out-a".to_owned()),
+            native_order: vec!["native-out-a-0".to_owned()],
+            current_native: Some("native-out-a-0".to_owned()),
+            occupancy: vec![NativeOccupancy {
+                native: "native-out-a-0".to_owned(),
+                count: Some(0),
+            }],
+        }];
+    engine.tx(|tx| tx.ensure_native_creations("out-a"));
+    let desires = engine.tx(|tx| tx.native_creation_desires());
     assert_eq!(desires.len(), 1, "trailing spare mints one desire");
     assert_eq!(desires[0].logical_workspace, "ws-9");
     // Idempotent: repeat mints nothing new.
-    engine.ensure_native_creations("out-a");
+    engine.tx(|tx| tx.ensure_native_creations("out-a"));
     assert_eq!(
-        engine.native_creation_desires().len(),
+        engine.tx(|tx| tx.native_creation_desires()).len(),
         1,
         "stable operation id, no oscillation"
     );
@@ -440,22 +445,32 @@ fn dynamic_trailing_spare_requests_native_backing() {
 #[test]
 fn dynamic_shared_trailing_spare_requests_native_backing() {
     let mut engine = engine_host_owned(WorkspaceMode::Shared);
-    engine.mapping.insert(
+    engine.world.workspace.mapping.insert(
         "out-a".to_owned(),
         vec!["ws-1".to_owned(), "ws-9".to_owned()],
     );
-    engine.mapping.insert(
+    engine.world.workspace.mapping.insert(
         "out-b".to_owned(),
         vec!["ws-1".to_owned(), "ws-9".to_owned()],
     );
     engine
+        .world
+        .settlement
         .native_map
         .insert(("out-a".to_owned(), "n-0".to_owned()), "ws-1".to_owned());
-    engine.views.insert("out-a".to_owned(), "ws-1".to_owned());
-    engine.views.insert("out-b".to_owned(), "ws-1".to_owned());
-    engine.staged.screens = vec![screen("out-a", 0), screen("out-b", 800)];
-    engine.staged.observation.inventory_complete = true;
-    engine.staged.observation.native = vec![
+    engine
+        .world
+        .workspace
+        .views
+        .insert("out-a".to_owned(), "ws-1".to_owned());
+    engine
+        .world
+        .workspace
+        .views
+        .insert("out-b".to_owned(), "ws-1".to_owned());
+    engine.world.staged.screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    std::sync::Arc::make_mut(&mut engine.world.staged.observation).inventory_complete = true;
+    std::sync::Arc::make_mut(&mut engine.world.staged.observation).native = vec![
         NativeObservation {
             output: OutputId("out-a".to_owned()),
             native_order: vec!["n-0".to_owned()],
@@ -475,8 +490,8 @@ fn dynamic_shared_trailing_spare_requests_native_backing() {
             }],
         },
     ];
-    engine.ensure_native_creations_shared(&["out-a".to_owned(), "out-b".to_owned()]);
-    let desires = engine.native_creation_desires();
+    engine.tx(|tx| tx.ensure_native_creations_shared(&["out-a".to_owned(), "out-b".to_owned()]));
+    let desires = engine.tx(|tx| tx.native_creation_desires());
     assert_eq!(desires.len(), 1, "shared trailing spare mints once");
     assert_eq!(desires[0].logical_workspace, "ws-9");
 }
@@ -577,7 +592,13 @@ fn report_host(
 }
 
 fn ring_ids_live(engine: &WorldEngine, output: &str) -> Vec<String> {
-    engine.mapping.get(output).cloned().unwrap_or_default()
+    engine
+        .world
+        .workspace
+        .mapping
+        .get(output)
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn tombstone_for(
@@ -650,14 +671,14 @@ fn retirement_tombstone_published_for_pruned_bound_row() {
     // binding cleared, tombstone published under the removed logical id.
     let retired: Vec<String> = ["a1", "a2"]
         .into_iter()
-        .filter(|native| engine.is_locally_retired("out-a", native))
+        .filter(|native| engine.tx(|tx| tx.is_locally_retired("out-a", native)))
         .map(str::to_owned)
         .collect();
     assert_eq!(
         retired.len(),
         1,
         "exactly one out-a native retires (creates={creates} deletes={deletes} transfers={transfers}) ring={:?} rows={:?}",
-        engine.mapping.get("out-a"),
+        engine.world.workspace.mapping.get("out-a"),
         boot.workspaces
             .iter()
             .map(|row| (
@@ -688,7 +709,9 @@ fn retirement_tombstone_published_for_pruned_bound_row() {
         "tombstone id is not a live ring row"
     );
     assert!(
-        engine.native_binding_for("out-a", &tomb).is_none(),
+        engine
+            .tx(|tx| tx.native_binding_for("out-a", &tomb))
+            .is_none(),
         "no live native_map binding retained outside rings"
     );
     // Repeat readback: stable, no re-adoption, no oscillation.
@@ -718,7 +741,7 @@ fn retirement_tombstone_published_for_pruned_bound_row() {
         "repeat readback keeps the live ring stable"
     );
     assert!(
-        engine.is_locally_retired("out-a", &native),
+        engine.tx(|tx| tx.is_locally_retired("out-a", &native)),
         "marker survives repeat readback (creates={creates2} deletes={deletes2})"
     );
     assert!(
@@ -773,9 +796,9 @@ fn shared_native_ids_never_readopt_from_remote_occupancy() {
             "boot writes no memberships, mode {mode:?}"
         );
         assert!(
-            engine.is_locally_retired("out-a", "n1"),
+            engine.tx(|tx| tx.is_locally_retired("out-a", "n1")),
             "out-a retires n1 while out-b hosts the occupant, mode {mode:?}: ring={:?}",
-            engine.mapping.get("out-a"),
+            engine.world.workspace.mapping.get("out-a"),
         );
         assert!(
             tombstone_for(&boot, &engine, "out-a", "n1").is_some(),
@@ -820,7 +843,7 @@ fn shared_native_ids_never_readopt_from_remote_occupancy() {
                 "repeat writes no memberships, mode {mode:?}"
             );
             assert!(
-                engine.is_locally_retired("out-a", "n1"),
+                engine.tx(|tx| tx.is_locally_retired("out-a", "n1")),
                 "global repeated count must not clear the marker, mode {mode:?} seq {seq}"
             );
             assert!(
@@ -873,7 +896,7 @@ fn shared_native_ids_never_readopt_from_remote_occupancy() {
             "reselect writes no memberships"
         );
         assert!(
-            !engine.is_locally_retired("out-a", "n1"),
+            !engine.tx(|tx| tx.is_locally_retired("out-a", "n1")),
             "current-native selection clears the marker, mode {mode:?}"
         );
         let fresh = binding_for(&reselect, "out-a", "n1")
@@ -1050,7 +1073,10 @@ fn native_deletion_clears_retired_marker() {
             ],
         ),
     );
-    assert!(engine.is_locally_retired("out-a", "n1"), "retires first");
+    assert!(
+        engine.tx(|tx| tx.is_locally_retired("out-a", "n1")),
+        "retires first"
+    );
     assert!(tombstone_for(&boot, &engine, "out-a", "n1").is_some());
     let deleted = accepted(
         &mut engine,
@@ -1080,7 +1106,7 @@ fn native_deletion_clears_retired_marker() {
         "deletion readback writes no memberships"
     );
     assert!(
-        !engine.is_locally_retired("out-a", "n1"),
+        !engine.tx(|tx| tx.is_locally_retired("out-a", "n1")),
         "native deletion clears the marker"
     );
     assert!(
@@ -1123,7 +1149,8 @@ fn shared_mode_unified_retire_and_reselect() {
     );
     assert_eq!(boot.transfers.len(), 0, "boot writes no memberships");
     assert!(
-        engine.is_locally_retired("out-a", "n1") || engine.is_locally_retired("out-a", "n2"),
+        engine.tx(|tx| tx.is_locally_retired("out-a", "n1"))
+            || engine.tx(|tx| tx.is_locally_retired("out-a", "n2")),
         "shared middle prunes while natives survive: {:?}",
         boot.workspaces
             .iter()
@@ -1137,7 +1164,7 @@ fn shared_mode_unified_retire_and_reselect() {
     );
     let retired_native = ["n1", "n2"]
         .into_iter()
-        .find(|native| engine.is_locally_retired("out-a", native))
+        .find(|native| engine.tx(|tx| tx.is_locally_retired("out-a", native)))
         .expect("one retired native")
         .to_owned();
     assert!(
@@ -1202,8 +1229,8 @@ fn shared_mode_unified_retire_and_reselect() {
         "reselect writes no memberships"
     );
     assert!(
-        !engine.is_locally_retired("out-a", &retired_native)
-            && !engine.is_locally_retired("out-b", &retired_native),
+        !engine.tx(|tx| tx.is_locally_retired("out-a", &retired_native))
+            && !engine.tx(|tx| tx.is_locally_retired("out-b", &retired_native)),
         "selection evidence clears every pair naming the native"
     );
 }
@@ -1344,11 +1371,11 @@ fn rotation_round(
     let mut retired: Vec<String> = Vec::new();
     for output in ["out-a", "out-b"] {
         for native in &host.order {
-            if engine.is_locally_retired(output, native) {
+            if engine.tx(|tx| tx.is_locally_retired(output, native)) {
                 retired.push(format!("{output}:{native}"));
             }
         }
-        for (out, native) in engine.retired_natives.keys() {
+        for (out, native) in engine.world.settlement.retired_natives.keys() {
             if out == output && !host.order.iter().any(|id| id == native) {
                 retired.push(format!("{output}:{native}(gone)"));
             }
@@ -1364,8 +1391,8 @@ fn rotation_round(
         host.transfers,
         reply.native_creations.len(),
         reply.workspaces.iter().filter(|row| !row.existence).count(),
-        engine.mapping.get("out-a"),
-        engine.mapping.get("out-b"),
+        engine.world.workspace.mapping.get("out-a"),
+        engine.world.workspace.mapping.get("out-b"),
     ));
     reply
 }
@@ -1409,7 +1436,7 @@ fn reselect_retired_native_reaches_quiescence_shared_global() {
     let retired = host
         .order
         .iter()
-        .find(|native| engine.is_locally_retired("out-a", native))
+        .find(|native| engine.tx(|tx| tx.is_locally_retired("out-a", native)))
         .cloned()
         .unwrap_or_else(|| {
             panic!(
@@ -1420,7 +1447,7 @@ fn reselect_retired_native_reaches_quiescence_shared_global() {
     host.currents.insert("out-a".to_owned(), retired.clone());
     let reselect = rotation_round(&mut engine, &mut host, 4);
     assert!(
-        !engine.is_locally_retired("out-a", &retired),
+        !engine.tx(|tx| tx.is_locally_retired("out-a", &retired)),
         "current-native selection clears the marker:\n{}",
         host.log.join("\n")
     );
@@ -1444,7 +1471,7 @@ fn reselect_retired_native_reaches_quiescence_shared_global() {
         .take_while(|native| native.as_str() != retired.as_str())
         .filter(|native| {
             engine
-                .native_logical(&OutputId("out-a".to_owned()), native.as_str())
+                .tx(|tx| tx.native_logical(&OutputId("out-a".to_owned()), native.as_str()))
                 .is_some()
         })
         .count();
@@ -1609,8 +1636,8 @@ fn split_round(
         host.transfers,
         reply.native_creations.len(),
         reply.workspaces.iter().filter(|row| !row.existence).count(),
-        engine.mapping.get("out-a"),
-        engine.mapping.get("out-b"),
+        engine.world.workspace.mapping.get("out-a"),
+        engine.world.workspace.mapping.get("out-b"),
     ));
     reply
 }
@@ -1653,7 +1680,7 @@ fn reselect_retired_native_reaches_quiescence_independent() {
         host.log.join("\n")
     );
     assert!(
-        engine.is_locally_retired("out-a", "a1"),
+        engine.tx(|tx| tx.is_locally_retired("out-a", "a1")),
         "out-a retires its locally empty middle:\n{}",
         host.log.join("\n")
     );
@@ -1680,7 +1707,7 @@ fn reselect_retired_native_reaches_quiescence_independent() {
     host.currents.insert("out-a".to_owned(), "a1".to_owned());
     let reselect = split_round(&mut engine, &mut host, 2, false);
     assert!(
-        !engine.is_locally_retired("out-a", "a1"),
+        !engine.tx(|tx| tx.is_locally_retired("out-a", "a1")),
         "current-native selection clears the marker:\n{}",
         host.log.join("\n")
     );

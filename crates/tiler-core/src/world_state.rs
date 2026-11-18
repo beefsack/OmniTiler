@@ -1,12 +1,12 @@
 //! Internal native-state attempt settlement.
 
-use std::collections::BTreeSet;
+use crate::world_transaction::WorldTransaction;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::directional::{OutputId, WindowId};
 use crate::intent_data::IntentData;
 use crate::session::DomainKey;
 use crate::world_attempts::{AttemptDisposition, PropertyAttempt, StateAttemptEvidence};
-use crate::world_engine::WorldEngine;
 use crate::world_report::{
     AttemptOutcome, AuthorityScope, HeldWindowRow, RowDiagnostic, RowDiagnosticKind,
     RowDiagnosticLane, StateProperty, WindowFact,
@@ -117,7 +117,69 @@ pub(crate) fn state_fact_value(
     }
 }
 
-impl WorldEngine {
+/// Shared scope precedence for unsupported state attempts, slice-based so
+/// the legacy and v4 intakes cannot drift: carried valid window output,
+/// carried held output, retained core home, retained session home. `None`
+/// when unresolved: no invented scope.
+pub(crate) fn state_offroute_scope_in(
+    windows: &[WindowFact],
+    held_windows: &[HeldWindowRow],
+    members: &BTreeMap<WindowId, crate::world_members::MemberState>,
+    mapping: &BTreeMap<String, Vec<String>>,
+    displaced: &BTreeMap<String, crate::workspace_scope::DisplacedEntry>,
+    layout: &crate::world_layout::WorldLayout,
+    window: &WindowId,
+) -> Option<OutputId> {
+    if let Some(out) = windows
+        .iter()
+        .find(|fact| fact.window == *window)
+        .and_then(|fact| fact.output.clone())
+    {
+        return Some(out);
+    }
+    if let Some(out) = held_windows
+        .iter()
+        .find(|held| held.window == *window)
+        .and_then(|held| held.output.clone())
+    {
+        return Some(out);
+    }
+    if let Some(home) = crate::world_members::core_homing_in(members, mapping, displaced, window) {
+        return Some(home.output);
+    }
+    layout.retained_home_any(window)
+}
+
+/// Shared typed diagnostic for one unsupported state attempt: `None` when
+/// the scope is unresolvable, so callers emit nothing and never fabricate
+/// a scope. Preserves input order at the call site; never a held row.
+pub(crate) fn state_offroute_diagnostic_in(
+    windows: &[WindowFact],
+    held_windows: &[HeldWindowRow],
+    members: &BTreeMap<WindowId, crate::world_members::MemberState>,
+    mapping: &BTreeMap<String, Vec<String>>,
+    displaced: &BTreeMap<String, crate::workspace_scope::DisplacedEntry>,
+    layout: &crate::world_layout::WorldLayout,
+    window: &WindowId,
+) -> Option<RowDiagnostic> {
+    state_offroute_scope_in(
+        windows,
+        held_windows,
+        members,
+        mapping,
+        displaced,
+        layout,
+        window,
+    )
+    .map(|output| RowDiagnostic {
+        scope: AuthorityScope::Output(output),
+        row: RowDiagnosticLane::Attempt,
+        id: Some(window.0.clone()),
+        kind: RowDiagnosticKind::ConflictingFact,
+    })
+}
+
+impl WorldTransaction<'_> {
     /// Pending unattempted native fullscreen entry: an unspent retained
     /// `Fullscreen=true` binding with no observed attempt yet. While one
     /// is outstanding, the core-composed overlay withholds every frame
@@ -125,7 +187,9 @@ impl WorldEngine {
     /// overlay or restore write. After the attempt is observed, the first
     /// readable exit releases the overlay with no fullscreen retry.
     pub(crate) fn fullscreen_entry_pending(&self, window: &WindowId) -> bool {
-        self.retained_states
+        self.world
+            .settlement
+            .retained_states
             .get(&(window.clone(), StateProperty::Fullscreen))
             .is_some_and(|binding| {
                 !binding.spent
@@ -142,8 +206,11 @@ impl WorldEngine {
     /// entry itself still publishes, and raw-true/raw-exit withholding is
     /// unchanged.
     pub(crate) fn composed_frame_gated(&self, window: &WindowId) -> bool {
-        !self.capabilities().is_some_and(|caps| caps.maximize)
-            && self.composed_maximized.contains(window)
+        !self
+            .connection
+            .capabilities()
+            .is_some_and(|caps| caps.maximize)
+            && self.world.runtime.composed_maximized.contains(window)
             && self.fullscreen_entry_pending(window)
     }
 
@@ -152,12 +219,16 @@ impl WorldEngine {
     /// observation. Continuations that need the retained row read it from
     /// `retained_states` directly.
     pub(crate) fn state_binding_terminal(&self, key: &(WindowId, StateProperty)) -> bool {
-        self.retained_states.get(key).is_some_and(|binding| {
-            matches!(
-                binding.disposition,
-                AttemptOutcome::Applied | AttemptOutcome::RefusedProven
-            )
-        })
+        self.world
+            .settlement
+            .retained_states
+            .get(key)
+            .is_some_and(|binding| {
+                matches!(
+                    binding.disposition,
+                    AttemptOutcome::Applied | AttemptOutcome::RefusedProven
+                )
+            })
     }
 
     /// Native-state verdict policy. Readability stays here: incomplete
@@ -190,10 +261,10 @@ impl WorldEngine {
     }
 
     fn state_readable_value(&self, window: &WindowId, property: StateProperty) -> Option<bool> {
-        if !self.staged.observation.inventory_complete || self.staged.gesture_barrier {
+        if !self.world.staged.observation.inventory_complete || self.world.staged.gesture_barrier {
             return None;
         }
-        let fact = self.staged.facts.get(window)?;
+        let fact = self.world.staged.facts.get(window)?;
         if fact.minimized == Some(true) {
             return None;
         }
@@ -202,6 +273,7 @@ impl WorldEngine {
         }
         let homing = self.staged_homing(window)?;
         let readable = self
+            .world
             .staged
             .domains
             .iter()
@@ -212,69 +284,24 @@ impl WorldEngine {
         state_fact_value(fact, property)
     }
 
-    /// Shared scope precedence for unsupported state attempts, slice-based so
-    /// the legacy and v4 intakes cannot drift: carried valid window output,
-    /// carried held output, retained core home, retained session home. `None`
-    /// when unresolved: no invented scope.
-    pub(crate) fn state_offroute_scope_for(
-        &self,
-        windows: &[WindowFact],
-        held_windows: &[HeldWindowRow],
-        window: &WindowId,
-    ) -> Option<OutputId> {
-        if let Some(out) = windows
-            .iter()
-            .find(|fact| fact.window == *window)
-            .and_then(|fact| fact.output.clone())
-        {
-            return Some(out);
-        }
-        if let Some(out) = held_windows
-            .iter()
-            .find(|held| held.window == *window)
-            .and_then(|held| held.output.clone())
-        {
-            return Some(out);
-        }
-        if let Some(home) = self.core_homing(window) {
-            return Some(home.output);
-        }
-        self.layout.retained_home_any(window)
-    }
-
-    /// Shared typed diagnostic for one unsupported state attempt: `None` when
-    /// the scope is unresolvable, so callers emit nothing and never fabricate
-    /// a scope. Preserves input order at the call site; never a held row.
-    pub(crate) fn state_offroute_diagnostic_for(
-        &self,
-        windows: &[WindowFact],
-        held_windows: &[HeldWindowRow],
-        window: &WindowId,
-    ) -> Option<RowDiagnostic> {
-        self.state_offroute_scope_for(windows, held_windows, window)
-            .map(|output| RowDiagnostic {
-                scope: AuthorityScope::Output(output),
-                row: RowDiagnosticLane::Attempt,
-                id: Some(window.0.clone()),
-                kind: RowDiagnosticKind::ConflictingFact,
-            })
-    }
-
     pub(crate) fn prune_state_bindings(&mut self) {
         // Lifetime presence reads the staged raw capture, never the
         // classified facts alone: only own-process subjects are dropped
         // from classification, while safety-excluded facts stay classified
         // but ineligible. Both stay lifetime evidence here.
-        let observation = &self.staged.observation;
+        let observation = &self.world.staged.observation;
         if !observation.closed.is_empty() {
             let closed: BTreeSet<WindowId> = observation.closed.iter().cloned().collect();
-            self.retained_states
+            self.world
+                .settlement
+                .retained_states
                 .retain(|(window, _), _| !closed.contains(window));
         }
         let own: BTreeSet<WindowId> = match (
-            self.application_identity()
+            self.connection
+                .application_identity()
                 .and_then(|identity| identity.process_id.clone()),
-            self.capabilities(),
+            self.connection.capabilities(),
         ) {
             (Some(own), Some(caps))
                 if !caps
@@ -291,7 +318,9 @@ impl WorldEngine {
             _ => BTreeSet::new(),
         };
         if !own.is_empty() {
-            self.retained_states
+            self.world
+                .settlement
+                .retained_states
                 .retain(|(window, _), _| !own.contains(window));
         }
         if !observation.inventory_complete {
@@ -303,25 +332,32 @@ impl WorldEngine {
             .map(|fact| &fact.window)
             .collect();
         let held: BTreeSet<&WindowId> = self
+            .world
             .staged
             .held_windows
             .iter()
             .map(|held| &held.window)
             .collect();
-        let excluded = self.staged.excluded.clone();
+        let excluded = self.world.staged.excluded.clone();
         let known: BTreeSet<WindowId> = self
+            .world
+            .settlement
             .retained_states
             .keys()
             .map(|(window, _)| window.clone())
             .filter(|window| {
-                self.engine_knows_window_any(window) || self.members.contains_key(window)
+                self.world.engine_knows_window_any(window)
+                    || self.world.workspace.members.contains_key(window)
             })
             .collect();
-        self.retained_states.retain(|(window, _), _| {
-            live.contains(window)
-                || held.contains(window)
-                || excluded.contains(window)
-                || known.contains(window)
-        });
+        self.world
+            .settlement
+            .retained_states
+            .retain(|(window, _), _| {
+                live.contains(window)
+                    || held.contains(window)
+                    || excluded.contains(window)
+                    || known.contains(window)
+            });
     }
 }

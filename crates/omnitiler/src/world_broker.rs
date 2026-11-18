@@ -202,9 +202,12 @@ use std::time::Instant;
 use serde_json::Map;
 
 use tiler_protocol::world_protocol::{
-    DecodedReplyV4, ReplyWireOptionals, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES,
-    WorldEngine, WorldOutcome, decode_command_value_v4, decode_request, encode_error, encode_reply,
-    is_valid_adapter_id, is_valid_request_id,
+    ReplyWireOptionals, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldEngine, WorldOutcome,
+    decode_command_value_v4, decode_request, encode_error, is_valid_adapter_id,
+    is_valid_request_id,
+};
+use tiler_protocol::world_reply_write::{
+    BrokerGestureAssoc, BrokerReplyBind, write_bound_reply_v4, write_projection_reply_v4,
 };
 
 /// Broker wire contract version (equals the core/world protocol version).
@@ -390,13 +393,13 @@ impl Settlement {
 /// the caller to strip, project, bind, and remember, or an already-shaped
 /// core rejection for the caller to bind and remember without touching the
 /// presentation cache.
-#[derive(Debug)]
-enum FreshOutcome {
-    Reply(String),
-    Rejected {
-        kind: &'static str,
-        message: &'static str,
-    },
+struct PreparedCapture {
+    bound: String,
+    projection: String,
+    preview_assoc_is_some: bool,
+    has_preview_geometry: bool,
+    suspended: bool,
+    trace_meta: Option<BrokerPreviewTraceMeta>,
 }
 
 /// Sole world broker. Not Clone: exactly one lives behind the service lock.
@@ -465,6 +468,8 @@ pub struct WorldBroker {
     /// parked task collects exactly its own nonce; a lease expiry never
     /// creates one, so a lost wake reply re-uses the old cursor.
     wait_ready: Option<(String, String)>,
+    #[cfg(test)]
+    max_reply_bytes_override: Option<usize>,
 }
 
 /// Single parked server waiter. `waker` wakes the parked service task when
@@ -554,7 +559,27 @@ impl WorldBroker {
             wake_epoch: 0,
             waiter: None,
             wait_ready: None,
+            #[cfg(test)]
+            max_reply_bytes_override: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_max_reply_bytes_for_test(&mut self, limit: usize) {
+        self.max_reply_bytes_override = Some(limit);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gesture_map_debug(&self) -> String {
+        format!("{:?}", self.gesture_map)
+    }
+
+    fn final_reply_max_bytes(&self) -> usize {
+        #[cfg(test)]
+        if let Some(limit) = self.max_reply_bytes_override {
+            return limit;
+        }
+        WORLD_MAX_REPLY_BYTES
     }
 
     /// Replace backend state under a fresh generation (poison or
@@ -873,42 +898,87 @@ impl WorldBroker {
         // Parked FIFO batch: snapshot the whole queue for this fresh
         // capture. Commands arriving during this dispatch stay parked for
         // the next capture. Every entry decodes through the exact strict
-        // codec (queue-time validation passed, so a decode failure settles
-        // that command failed without touching the rest); the surviving
-        // batch drains inside ONE capture/run/publication through the
-        // batched core lane, which settles each command individually with a
-        // single final world.
+        // codec (queue-time validation passed, so any defensive decode
+        // failure is staged alongside the batch and settled only if the
+        // capture actually executes and passes final preparation); the
+        // surviving batch drains inside ONE capture/run/publication through
+        // the batched core lane, which settles each command individually
+        // with a single final world.
         let drained: VecDeque<QueuedCommand> = std::mem::take(&mut self.pending);
         let mut batch: Vec<(u64, tiler_core::world_report::WorldCommand)> = Vec::new();
+        let mut decode_failures: HashMap<u64, (String, String)> = HashMap::new();
         for queued in &drained {
             match decode_command_value_v4(&queued.command) {
                 Ok(command) => batch.push((queued.global_seq, command)),
                 Err(error) => {
-                    self.settle_drained(
-                        queued,
-                        Settlement::Failed {
-                            global_seq: queued.global_seq,
-                            kind: error.kind.to_owned(),
-                            message: error.message.to_owned(),
-                        },
-                    )?;
+                    decode_failures.insert(
+                        queued.global_seq,
+                        (error.kind.to_owned(), error.message.to_owned()),
+                    );
                 }
             }
         }
-        let (outcome, settlements) = self.engine.handle_report(&plain_report, &batch);
-        self.finish_capture_outcome(
+        let wake_epoch = self.wake_epoch;
+        let max_reply_bytes = self.final_reply_max_bytes();
+        let mut prepared: Option<PreparedCapture> = None;
+        let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::new();
+        let (outcome, settlements) = match self.engine.handle_report_with_gate_and_prepare(
+            &plain_report,
+            &batch,
+            &gate,
+            |candidate| {
+                let issued_count: u64 =
+                    if candidate.reply.ready && !candidate.reply.command_consumed {
+                        drained
+                            .iter()
+                            .filter(|queued| {
+                                decode_failures.contains_key(&queued.global_seq)
+                                    || candidate
+                                        .settlements
+                                        .iter()
+                                        .any(|settlement| settlement.seq == queued.global_seq)
+                            })
+                            .count() as u64
+                    } else {
+                        0
+                    };
+                if wake_epoch.checked_add(issued_count).is_none() {
+                    return Err(BrokerError::Rotate);
+                }
+                prepared = Some(prepare_capture_reply(
+                    candidate.reply,
+                    candidate.active_gesture_id,
+                    true,
+                    max_reply_bytes,
+                    &parsed,
+                    clock,
+                    &mut staged_gesture_map,
+                    gesture_assoc.as_ref(),
+                )?);
+                Ok(())
+            },
+        ) {
+            Ok(result) => result,
+            Err(err) => {
+                self.repark_batch(drained);
+                return Err(err);
+            }
+        };
+        self.finish_capture_outcome_prepared(
             &parsed,
             envelope,
             clock,
             covered,
             staged_gesture_map,
-            gesture_assoc,
             drained,
+            &mut decode_failures,
             outcome,
             settlements,
+            prepared,
         )
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn finish_capture_outcome(
         &mut self,
@@ -922,193 +992,150 @@ impl WorldBroker {
         outcome: WorldOutcome,
         settlements: Vec<tiler_core::world_report::BatchSettlement>,
     ) -> Result<String, BrokerError> {
-        // Settle FIFO from the per-command settlements: a typed `Rejected`
-        // result settles that command terminally as failed with the core
-        // kind, any other result readies it with the encoded outcome.
-        // Drained entries WITHOUT a settlement were never executed (a
-        // pre-ready bootstrap, a whole-capture refusal, or a defensive
-        // duplicate/consumed verdict): they repark at the head in order,
-        // ahead of arrivals filed during this dispatch, so nothing parked
-        // is ever silently lost.
-        // `CommandConsumed` is a genuine accepted observation progression
-        // (it can open, settle, or close an active gesture), so pins must
-        // reconcile there just like `Accepted`, while still reparking any
-        // drained batch. `Duplicate` is a cached replay with no transition.
-        let (outcome, reply_drag_preview_id, reply_gesture_settled, trace_meta) = match outcome {
-            WorldOutcome::Accepted(reply) => {
-                let trace_meta = BrokerPreviewTraceMeta::from_reply(&reply);
-                let encoded = encode_world_reply(&reply)?;
-                let preview_id = reply.drag_preview.as_ref().map(|preview| preview.id);
-                self.settle_batch(&drained, &settlements)?;
-                staged_gesture_map.reconcile_pins(
+        let mut decode_failures = HashMap::new();
+        let prepared = match &outcome {
+            WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => {
+                Some(prepare_capture_reply(
+                    reply,
                     self.engine.active_gesture_id(),
-                    reply.gesture_settled.map(|settled| settled.id),
+                    true,
+                    self.final_reply_max_bytes(),
+                    parsed,
+                    clock,
+                    &mut staged_gesture_map,
                     gesture_assoc.as_ref(),
-                );
-                (
-                    FreshOutcome::Reply(encoded),
-                    preview_id,
-                    reply.gesture_settled,
-                    trace_meta,
-                )
+                )?)
             }
-            WorldOutcome::CommandConsumed(reply) => {
-                let trace_meta = BrokerPreviewTraceMeta::from_reply(&reply);
-                let encoded = encode_world_reply(&reply)?;
-                let preview_id = reply.drag_preview.as_ref().map(|preview| preview.id);
+            WorldOutcome::Duplicate(_) | WorldOutcome::Rejected { .. } => None,
+        };
+        self.finish_capture_outcome_prepared(
+            parsed,
+            envelope,
+            clock,
+            covered,
+            staged_gesture_map,
+            drained,
+            &mut decode_failures,
+            outcome,
+            settlements,
+            prepared,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_capture_outcome_prepared(
+        &mut self,
+        parsed: &ParsedCapture,
+        envelope: &str,
+        clock: u64,
+        covered: Option<CoverWitness>,
+        staged_gesture_map: crate::kde_gesture::KdeGestureMap,
+        drained: VecDeque<QueuedCommand>,
+        decode_failures: &mut HashMap<u64, (String, String)>,
+        outcome: WorldOutcome,
+        settlements: Vec<tiler_core::world_report::BatchSettlement>,
+        prepared: Option<PreparedCapture>,
+    ) -> Result<String, BrokerError> {
+        let prepared = match outcome {
+            WorldOutcome::Accepted(reply) => {
+                if reply.ready {
+                    self.settle_batch_with_failures(&drained, &settlements, decode_failures);
+                } else {
+                    // Pre-ready bootstrap can install pending intent without
+                    // advancing replay, and never executes the drained batch.
+                    self.repark_batch(drained);
+                }
+                prepared.expect("prepare callback runs before Accepted adoption")
+            }
+            WorldOutcome::CommandConsumed(_) => {
                 self.repark_batch(drained);
-                staged_gesture_map.reconcile_pins(
-                    self.engine.active_gesture_id(),
-                    reply.gesture_settled.map(|settled| settled.id),
-                    gesture_assoc.as_ref(),
-                );
-                (
-                    FreshOutcome::Reply(encoded),
-                    preview_id,
-                    reply.gesture_settled,
-                    trace_meta,
-                )
+                prepared.expect("prepare callback runs before CommandConsumed adoption")
             }
             WorldOutcome::Duplicate(reply) => {
-                let trace_meta = BrokerPreviewTraceMeta::from_reply(&reply);
-                let encoded = encode_world_reply(&reply)?;
-                let preview_id = reply.drag_preview.as_ref().map(|preview| preview.id);
+                // Defensive core duplicate returns cached publication with no
+                // transition: repark drained batch and return without
+                // installing gesture_map, projection, coverage, watermark,
+                // or source replay.
                 self.repark_batch(drained);
-                (
-                    FreshOutcome::Reply(encoded),
-                    preview_id,
-                    reply.gesture_settled,
-                    trace_meta,
-                )
+                let mut committed_gesture_map = self.gesture_map.clone();
+                let prepared = prepare_capture_reply(
+                    &reply,
+                    None,
+                    false,
+                    self.final_reply_max_bytes(),
+                    parsed,
+                    clock,
+                    &mut committed_gesture_map,
+                    None,
+                )?;
+                return Ok(prepared.bound);
             }
             WorldOutcome::Rejected { kind, message } => {
                 self.repark_batch(drained);
-                (FreshOutcome::Rejected { kind, message }, None, None, None)
+                return self.remember_rejection(parsed, envelope, kind, message, clock);
             }
         };
-        match outcome {
-            FreshOutcome::Rejected { kind, message } => {
-                // The engine refusal verdict: bind it for this source and
-                // remember it, but touch neither the presentation cache
-                // (last accepted projection only) nor the watermark floor,
-                // so a failed drain can never wedge or poison the cached
-                // full reply. The batch already reparks and stays untouched.
-                self.remember_rejection(parsed, envelope, kind, message, clock)
-            }
-            FreshOutcome::Reply(encoded) => {
-                // Staged gesture map installs only on the accepted reply:
-                // malformed report fields, the attempt-clock gate, the
-                // engine rejection, and every other non-accepted outcome
-                // above discarded their staged mutation by reaching this
-                // arm selectively.
-                self.gesture_map = staged_gesture_map;
-                let settled_assoc = self
-                    .gesture_map
-                    .terminal_assoc_for(reply_gesture_settled.map(|settled| settled.id))
-                    .cloned();
-                // Core replies carry no command-result lane (command
-                // outcomes settle requester-only via `TakeCommandResult`);
-                // the projection cache keeps the snapshot plus presentation
-                // only, with write tokens stripped. The renderer-only drop
-                // preview is the single exception: when the accepted reply
-                // carried a retained `dragPreview`, its paint geometry plus
-                // subject proof (`rect`, mover-home source,
-                // insertion-neighbor window; no hover chain, no id, no
-                // session revision) rides the projection as `preview`
-                // (null otherwise) so a renderer without take-lane
-                // authority paints exactly what core published. The preview
-                // names its producing native gesture
-                // (`producerInstance`/`producerSerial`) only when the
-                // reconciled `active_assoc` pin matches `dragPreview.id`
-                // exactly; a missing or mismatched association rides with
-                // null producer fields and the renderer hides it (fail
-                // closed). The covered causal witness rides alongside for
-                // the read lane. The expanded bound reply always fits the
-                // reply cap; oversize fails closed without caching.
-                // Neutral focused-fullscreen suspension consumes the core
-                // verdict mechanically: a preview resolving on the
-                // suspended output never rides the projection, so the
-                // cache cannot retain an older preview across the
-                // suspension. Cross-output previews stay intact.
-                let suspended = preview_suspended_by_presentation(&encoded);
-                let preview_geometry = if suspended {
-                    None
-                } else {
-                    drag_preview_of(&encoded)
-                };
-                let has_preview_geometry = preview_geometry.is_some();
-                let preview_assoc = self.gesture_map.active_assoc_for(reply_drag_preview_id);
-                let preview = match (&preview_geometry, preview_assoc) {
-                    (Some(_), Some(assoc)) => CarriedPreview::proven(preview_geometry, assoc),
-                    _ => CarriedPreview::unproven(preview_geometry),
-                };
-                let with_assoc =
-                    inject_gesture_assocs(&encoded, gesture_assoc.as_ref(), settled_assoc.as_ref());
-                let bound =
-                    bind_response(&with_assoc, &parsed.source, parsed.native_invalid, clock);
-                if bound.len() > WORLD_MAX_REPLY_BYTES {
-                    return Err(BrokerError::Oversized);
-                }
-                if let Some(meta) = trace_meta {
-                    let decision = if suspended {
-                        "suspended"
-                    } else if meta.preview_id.is_none() {
-                        "absent"
-                    } else if !has_preview_geometry {
-                        "malformed"
-                    } else if preview_assoc.is_some() {
-                        "projected-proven"
-                    } else {
-                        "projected-unproven"
-                    };
-                    let core_preview = if meta.preview_id.is_some() {
-                        "present"
-                    } else {
-                        "none"
-                    };
-                    let id_str = meta
-                        .preview_id
-                        .map(|id| id.to_string())
-                        .unwrap_or_else(|| "-".to_owned());
-                    let domain_out = meta
-                        .domain_out
-                        .as_deref()
-                        .map(crate::float_intent_store::sanitize_correlation)
-                        .unwrap_or("-");
-                    let suspended_out = meta
-                        .suspended_output
-                        .as_deref()
-                        .map(crate::float_intent_store::sanitize_correlation)
-                        .unwrap_or("-");
-                    let assoc_state = if !has_preview_geometry {
-                        "-"
-                    } else if preview_assoc.is_some() {
-                        "proven"
-                    } else {
-                        "none"
-                    };
-                    emit_broker_trace(format!(
-                        "omnitiler:broker:trace ev=drag-preview-projection gen={} req={} rev={} obs={} corePreview={} id={} domainOut={} suspendedOutput={} assoc={} decision={}",
-                        meta.gen_id,
-                        meta.req_id,
-                        meta.rev,
-                        meta.obs,
-                        core_preview,
-                        id_str,
-                        domain_out,
-                        suspended_out,
-                        assoc_state,
-                        decision,
-                    ));
-                }
-                self.presentation = Some(project_reply(&encoded, preview.as_ref()));
-                self.presentation_covered = covered;
-                self.watermarks
-                    .insert(parsed.adapter.clone(), parsed.native_invalid);
-                self.remember_response(&parsed.source, envelope.as_bytes(), &bound);
-                Ok(bound)
-            }
+        // Staged gesture map, projection, coverage, watermark, and source
+        // replay install only after final preparation and settlement succeed.
+        self.gesture_map = staged_gesture_map;
+        if let Some(meta) = prepared.trace_meta {
+            let decision = if prepared.suspended {
+                "suspended"
+            } else if meta.preview_id.is_none() {
+                "absent"
+            } else if !prepared.has_preview_geometry {
+                "malformed"
+            } else if prepared.preview_assoc_is_some {
+                "projected-proven"
+            } else {
+                "projected-unproven"
+            };
+            let core_preview = if meta.preview_id.is_some() {
+                "present"
+            } else {
+                "none"
+            };
+            let id_str = meta
+                .preview_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "-".to_owned());
+            let domain_out = meta
+                .domain_out
+                .as_deref()
+                .map(crate::float_intent_store::sanitize_correlation)
+                .unwrap_or("-");
+            let suspended_out = meta
+                .suspended_output
+                .as_deref()
+                .map(crate::float_intent_store::sanitize_correlation)
+                .unwrap_or("-");
+            let assoc_state = if !prepared.has_preview_geometry {
+                "-"
+            } else if prepared.preview_assoc_is_some {
+                "proven"
+            } else {
+                "none"
+            };
+            emit_broker_trace(format!(
+                "omnitiler:broker:trace ev=drag-preview-projection gen={} req={} rev={} obs={} corePreview={} id={} domainOut={} suspendedOutput={} assoc={} decision={}",
+                meta.gen_id,
+                meta.req_id,
+                meta.rev,
+                meta.obs,
+                core_preview,
+                id_str,
+                domain_out,
+                suspended_out,
+                assoc_state,
+                decision,
+            ));
         }
+        self.presentation = Some(prepared.projection);
+        self.presentation_covered = covered;
+        self.watermarks
+            .insert(parsed.adapter.clone(), parsed.native_invalid);
+        self.remember_response(&parsed.source, envelope.as_bytes(), &prepared.bound);
+        Ok(prepared.bound)
     }
 
     /// Bind one in-band rejection for its source, remember it for exact
@@ -1157,15 +1184,13 @@ impl WorldBroker {
     /// result, failed carries the explicit rejection kind/message. Each
     /// settlement advances the wake epoch and completes a parked waiter
     /// while work remains.
-    fn settle_drained(
-        &mut self,
-        queued: &QueuedCommand,
-        settlement: Settlement,
-    ) -> Result<(), BrokerError> {
+    fn settle_drained_infallible(&mut self, queued: &QueuedCommand, settlement: Settlement) {
         self.insert_settlement(queued.key(), settlement);
-        self.take_wake_epoch()?;
+        self.wake_epoch = self
+            .wake_epoch
+            .checked_add(1)
+            .expect("wake_epoch prechecked before adoption");
         self.complete_waiter_if_work();
-        Ok(())
     }
 
     /// Settle one drained FIFO batch from the core per-command settlements.
@@ -1174,18 +1199,47 @@ impl WorldBroker {
     /// result masquerading as success), any other result readies with the
     /// encoded outcome. Drained entries without a settlement were never
     /// executed and repark at the head in order (see `repark_batch`).
+    #[cfg(test)]
     fn settle_batch(
         &mut self,
         drained: &VecDeque<QueuedCommand>,
         settlements: &[tiler_core::world_report::BatchSettlement],
     ) -> Result<(), BrokerError> {
-        use std::collections::HashMap;
+        let issued_count = drained
+            .iter()
+            .filter(|q| settlements.iter().any(|s| s.seq == q.global_seq))
+            .count() as u64;
+        if self.wake_epoch.checked_add(issued_count).is_none() {
+            return Err(BrokerError::Rotate);
+        }
+        let mut decode_failures = HashMap::new();
+        self.settle_batch_with_failures(drained, settlements, &mut decode_failures);
+        Ok(())
+    }
+
+    fn settle_batch_with_failures(
+        &mut self,
+        drained: &VecDeque<QueuedCommand>,
+        settlements: &[tiler_core::world_report::BatchSettlement],
+        decode_failures: &mut HashMap<u64, (String, String)>,
+    ) {
         let mut by_seq: HashMap<u64, &tiler_core::world_report::BatchSettlement> = HashMap::new();
         for settlement in settlements {
             by_seq.insert(settlement.seq, settlement);
         }
         let mut repark: Vec<QueuedCommand> = Vec::new();
         for queued in drained {
+            if let Some((kind, message)) = decode_failures.remove(&queued.global_seq) {
+                self.settle_drained_infallible(
+                    queued,
+                    Settlement::Failed {
+                        global_seq: queued.global_seq,
+                        kind,
+                        message,
+                    },
+                );
+                continue;
+            }
             let Some(settlement) = by_seq.get(&queued.global_seq) else {
                 repark.push(queued.clone());
                 continue;
@@ -1193,28 +1247,27 @@ impl WorldBroker {
             match &settlement.result {
                 Some(tiler_core::world_report::CommandResult::Rejected { kind }) => {
                     let kind_str = kind.as_str();
-                    self.settle_drained(
+                    self.settle_drained_infallible(
                         queued,
                         Settlement::Failed {
                             global_seq: queued.global_seq,
                             kind: kind_str.to_owned(),
                             message: kind_str.to_owned(),
                         },
-                    )?;
+                    );
                 }
                 result => {
-                    self.settle_drained(
+                    self.settle_drained_infallible(
                         queued,
                         Settlement::Ready {
                             global_seq: queued.global_seq,
                             result: encode_result_value(result),
                         },
-                    )?;
+                    );
                 }
             }
         }
         self.repark_batch_vec(repark);
-        Ok(())
     }
 
     /// Repark drained-but-unexecuted commands at the head in FIFO order,
@@ -1683,8 +1736,8 @@ fn is_generation_token(text: &str) -> bool {
 /// the parsed source watermark so the actuator can fence the rejection.
 fn parse_capture_envelope(envelope: &str) -> Result<ParsedCapture, CaptureFailure> {
     let failure = |kind: &'static str, message: &'static str| CaptureFailure::blind(kind, message);
-    let value: serde_json::Value =
-        serde_json::from_str(envelope).map_err(|_| failure("malformed", "request is malformed"))?;
+    let value = tiler_protocol::connection_protocol::parse_strict_json(envelope)
+        .map_err(|_| failure("malformed", "request is malformed"))?;
     let map = value
         .as_object()
         .ok_or_else(|| failure("malformed", "request is malformed"))?;
@@ -2023,28 +2076,79 @@ fn stamp_probe(
     }
 }
 
+fn to_broker_assoc(assoc: &crate::kde_gesture::GestureAssoc) -> BrokerGestureAssoc<'_> {
+    BrokerGestureAssoc {
+        instance: &assoc.instance,
+        serial: &assoc.serial,
+        core_id: assoc.core_id,
+    }
+}
+
 /// Checked canonical encode of one v4 engine reply for the broker lane.
 /// The wire presence flag mirrors the typed presentation so the strict
 /// codec accepts its own output. Any encode failure fails closed as
 /// oversize (the caller never serves a partial reply).
-fn encode_world_reply(
+#[allow(clippy::too_many_arguments)]
+fn prepare_capture_reply(
     reply: &tiler_core::world_report::WorldReplyV4,
-) -> Result<String, BrokerError> {
-    let decoded = DecodedReplyV4 {
-        reply: reply.clone(),
-        wire: ReplyWireOptionals {
-            suspended_output_present: reply.presentation.suspended_output.is_some(),
-        },
-    };
-    match encode_reply(&decoded) {
-        Ok(encoded) => {
-            if encoded.len() > WORLD_MAX_REPLY_BYTES {
-                return Err(BrokerError::Oversized);
-            }
-            Ok(encoded)
-        }
-        Err(_) => Err(BrokerError::Oversized),
+    active_gesture_id: Option<u64>,
+    reconcile_pins: bool,
+    max_reply_bytes: usize,
+    parsed: &ParsedCapture,
+    clock: u64,
+    staged_gesture_map: &mut crate::kde_gesture::KdeGestureMap,
+    gesture_assoc: Option<&crate::kde_gesture::GestureAssoc>,
+) -> Result<PreparedCapture, BrokerError> {
+    let trace_meta = BrokerPreviewTraceMeta::from_reply(reply);
+    let preview_id = reply.drag_preview.as_ref().map(|preview| preview.id);
+    if reconcile_pins {
+        staged_gesture_map.reconcile_pins(
+            active_gesture_id,
+            reply.gesture_settled.map(|settled| settled.id),
+            gesture_assoc,
+        );
     }
+    let settled_assoc = staged_gesture_map
+        .terminal_assoc_for(reply.gesture_settled.map(|settled| settled.id))
+        .cloned();
+    let wire = ReplyWireOptionals {
+        suspended_output_present: reply.presentation.suspended_output.is_some(),
+    };
+    let bind = BrokerReplyBind {
+        source: &parsed.source,
+        native_invalid: parsed.native_invalid,
+        clock,
+        gesture_assoc: gesture_assoc.map(to_broker_assoc),
+        gesture_settled_assoc: settled_assoc.as_ref().map(to_broker_assoc),
+    };
+    let bound = write_bound_reply_v4(reply, &wire, &bind).map_err(|_| BrokerError::Oversized)?;
+    if bound.len() > max_reply_bytes {
+        return Err(BrokerError::Oversized);
+    }
+    let suspended = reply.drag_preview.as_ref().is_some_and(|preview| {
+        reply
+            .presentation
+            .suspended_output
+            .as_ref()
+            .is_some_and(|suspended| preview.domain.output == *suspended)
+    });
+    let has_preview_geometry = !suspended && reply.drag_preview.is_some();
+    let preview_assoc = staged_gesture_map.active_assoc_for(preview_id);
+    let producer = if has_preview_geometry {
+        preview_assoc.map(|assoc| (assoc.instance.as_str(), assoc.serial.as_str()))
+    } else {
+        None
+    };
+    let projection =
+        write_projection_reply_v4(reply, &wire, producer).map_err(|_| BrokerError::Oversized)?;
+    Ok(PreparedCapture {
+        bound,
+        projection,
+        preview_assoc_is_some: preview_assoc.is_some(),
+        has_preview_geometry,
+        suspended,
+        trace_meta,
+    })
 }
 
 /// Extend a core reply or in-band error object with the source watermark
@@ -2074,35 +2178,6 @@ fn bind_response(reply: &str, source: &str, watermark: u64, clock: u64) -> Strin
     value.to_string()
 }
 
-fn assoc_json(assoc: Option<&crate::kde_gesture::GestureAssoc>) -> serde_json::Value {
-    match assoc {
-        Some(a) => serde_json::json!({
-            "instance": a.instance,
-            "serial": a.serial,
-            "coreId": a.core_id.to_string(),
-        }),
-        None => serde_json::Value::Null,
-    }
-}
-
-/// Attach the broker-only bound actuator associations for the actual
-/// normalized ingress (`gestureAssoc`) and the retained gesture terminal
-/// (`gestureSettledAssoc`) to one accepted reply, or explicit nulls when
-/// absent. Both keys are broker-owned (never core/protocol): the exact
-/// response replay caches them verbatim. Pure over the strings.
-fn inject_gesture_assocs(
-    reply: &str,
-    assoc: Option<&crate::kde_gesture::GestureAssoc>,
-    settled_assoc: Option<&crate::kde_gesture::GestureAssoc>,
-) -> String {
-    let mut value: serde_json::Value = serde_json::from_str(reply).unwrap_or_default();
-    if let Some(map) = value.as_object_mut() {
-        map.insert("gestureAssoc".to_owned(), assoc_json(assoc));
-        map.insert("gestureSettledAssoc".to_owned(), assoc_json(settled_assoc));
-    }
-    value.to_string()
-}
-
 /// Encode one per-command terminal result through the exact canonical lane:
 /// `Rejected` never reaches here (the caller fails those with the core
 /// kind); anything else (including `None`) readies with the encoded
@@ -2111,7 +2186,7 @@ fn encode_result_value(
     result: &Option<tiler_core::world_report::CommandResult>,
 ) -> serde_json::Value {
     let mut encoded = String::new();
-    tiler_core::world_sizing::encode_command_result(&mut encoded, result);
+    tiler_protocol::world_command_result::encode_command_result(&mut encoded, result);
     serde_json::from_str(&encoded).unwrap_or(serde_json::Value::Null)
 }
 
@@ -2252,12 +2327,14 @@ pub fn normalize_invalidation_witness(
 /// Renderer-carried drop preview: the paint geometry plus subject proof,
 /// with the producing native gesture when proven. Unproven previews ride
 /// with null producer fields and the renderer hides them (fail closed).
+#[cfg(test)]
 #[derive(Debug, Clone)]
 struct CarriedPreview {
     geometry: serde_json::Value,
     producer: Option<(String, String)>,
 }
 
+#[cfg(test)]
 impl CarriedPreview {
     fn proven(
         geometry: Option<serde_json::Value>,
@@ -2283,6 +2360,7 @@ impl CarriedPreview {
 /// Mechanical consumption of the core-published verdict, no broker policy:
 /// the mover-home source may differ, so a cross-output preview resolving
 /// on another output stays intact.
+#[cfg(test)]
 fn preview_suspended_by_presentation(encoded: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(encoded)
         .ok()
@@ -2311,6 +2389,7 @@ fn preview_suspended_by_presentation(encoded: &str) -> bool {
 /// generation/revision/coverage, and applies live hide-only vetoes at
 /// dispatch.
 /// Malformed shapes fail closed to `None`, never a fabricated preview.
+#[cfg(test)]
 fn drag_preview_of(encoded: &str) -> Option<serde_json::Value> {
     let value: serde_json::Value = serde_json::from_str(encoded).ok()?;
     let preview = value.get("dragPreview")?.as_object()?;
@@ -2345,6 +2424,7 @@ fn drag_preview_of(encoded: &str) -> Option<serde_json::Value> {
 /// or nulls when unproven; null when no drop preview was published) plus
 /// the causal coverage bound at read time. The `gen`/`req` binding is added
 /// at read time.
+#[cfg(test)]
 fn project_reply(encoded: &str, preview: Option<&CarriedPreview>) -> String {
     let value: serde_json::Value = serde_json::from_str(encoded).unwrap_or_default();
     let get = |key: &str| value.get(key).cloned().unwrap_or(serde_json::Value::Null);
@@ -2648,6 +2728,27 @@ mod tests {
                 .kind,
             "malformed"
         );
+    }
+
+    #[test]
+    fn capture_envelope_rejects_duplicate_outer_and_nested_keys() {
+        let dup_outer = r#"{"v":1,"v":4,"adapter":"a","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":4}}"#;
+        let failure = parse_capture_envelope(dup_outer).expect_err("duplicate outer key refuses");
+        assert_eq!(failure.kind, "malformed");
+        assert_eq!(failure.source, "");
+        assert_eq!(failure.native_invalid, 0);
+
+        let dup_report = r#"{"v":4,"adapter":"a","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":1,"v":4}}"#;
+        let failure = parse_capture_envelope(dup_report).expect_err("duplicate report key refuses");
+        assert_eq!(failure.kind, "malformed");
+        assert_eq!(failure.source, "");
+        assert_eq!(failure.native_invalid, 0);
+
+        let dup_nested = r#"{"v":4,"adapter":"a","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":4,"nested":{"k":1,"k":2}}}"#;
+        let failure = parse_capture_envelope(dup_nested).expect_err("duplicate nested key refuses");
+        assert_eq!(failure.kind, "malformed");
+        assert_eq!(failure.source, "");
+        assert_eq!(failure.native_invalid, 0);
     }
 
     #[test]
@@ -3785,5 +3886,327 @@ mod tests {
                 "omnitiler:broker:trace ev=drag-preview-projection gen={generation} req=req-suspended rev=5 obs=5 corePreview=present id=2 domainOut=DP-1 suspendedOutput=DP-1 assoc=- decision=suspended"
             )]
         );
+    }
+
+    #[test]
+    fn wake_epoch_exhaustion_rotates_before_partial_publish_or_settle() {
+        let mut broker = WorldBroker::new();
+        let adapter = "kwin-actuator-1";
+        let hs = format!(
+            "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"hs-1\",\
+              \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\
+              \"processId\":\"pid-own-1\"}},\
+              \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
+              \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
+              \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+        );
+        broker.discover_connection(&hs).expect("handshake");
+        let generation = broker.generation().to_owned();
+        let settings = format!(
+            "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+              \"req\":\"set-1\",\"rev\":\"1\",\
+              \"values\":{{\"mode\":\"tiling\",\"gap\":8,\"outer\":8,\"bornMaximized\":\"tile-on-launch\"}}}}"
+        );
+        broker.discover_connection(&settings).expect("settings");
+
+        let win_a = "{\"win\":\"win-a\",\"out\":\"DP-1\",\"rect\":[0,0,200,200],\
+            \"floating\":false,\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\
+            \"hostHidden\":false,\"privileged\":false,\"managed\":true,\"acceptsInput\":true,\
+            \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\
+            \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\"owner\":null,\
+            \"parent\":null,\"role\":null,\"appId\":null,\"executable\":null,\
+            \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
+            \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
+            \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"lastWrite\":null}";
+        let inner = format!(
+            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+            \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
+            \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
+            \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
+            \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
+            \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
+            \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
+            \"witness\":null,\"foregroundOut\":null}},\
+            \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}"
+        );
+        let cap1 = format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+            \"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\"report\":{inner}}}"
+        );
+        let cap1_reply = broker.dispatch_capture(&cap1).expect("initial capture");
+        assert!(
+            cap1_reply.contains("\"rev\":\"1\""),
+            "cap1 accepted: {cap1_reply}"
+        );
+        let rev_before = broker.engine.state_revision();
+
+        for idx in 0..2 {
+            let cmd = format!(
+                "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"{}\",\
+                \"command\":{{\"op\":\"focus\",\"win\":\"win-a\"}}}}",
+                idx + 1
+            );
+            broker.queue_command(":1.42", &cmd).expect("queued");
+        }
+        broker.settled.clear();
+        broker.settled_order.clear();
+        // Leave room for 1 settlement, while the drained batch will issue 2.
+        broker.wake_epoch = u64::MAX - 1;
+
+        let cap2 = format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+            \"source\":\"src-2\",\"sourceSeq\":\"2\",\"nativeInvalid\":\"2\",\"report\":{inner}}}"
+        );
+        let err = broker.dispatch_capture(&cap2).expect_err("must rotate");
+        assert!(matches!(err, BrokerError::Rotate));
+        assert!(
+            broker.settled.is_empty(),
+            "no partial settlement allowed on wake epoch exhaustion"
+        );
+        assert_eq!(broker.pending.len(), 2, "drained batch must repark intact");
+        assert_eq!(
+            broker.engine.state_revision(),
+            rev_before,
+            "core world must not adopt on wake epoch exhaustion"
+        );
+    }
+
+    #[test]
+    fn defensive_decode_failure_does_not_leak_before_final_prepare() {
+        let mut broker = WorldBroker::new();
+        let adapter = "kwin-actuator-1";
+        let hs = format!(
+            "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"hs-1\",\
+              \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\
+              \"processId\":\"pid-own-1\"}},\
+              \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
+              \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
+              \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+        );
+        broker.discover_connection(&hs).expect("handshake");
+        let generation = broker.generation().to_owned();
+        let settings = format!(
+            "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+              \"req\":\"set-1\",\"rev\":\"1\",\
+              \"values\":{{\"mode\":\"tiling\",\"gap\":8,\"outer\":8,\"bornMaximized\":\"tile-on-launch\"}}}}"
+        );
+        broker.discover_connection(&settings).expect("settings");
+
+        let win_a = "{\"win\":\"win-a\",\"out\":\"DP-1\",\"rect\":[0,0,200,200],\
+            \"floating\":false,\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\
+            \"hostHidden\":false,\"privileged\":false,\"managed\":true,\"acceptsInput\":true,\
+            \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\
+            \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\"owner\":null,\
+            \"parent\":null,\"role\":null,\"appId\":null,\"executable\":null,\
+            \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
+            \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
+            \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"lastWrite\":null}";
+        let inner = format!(
+            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+            \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
+            \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
+            \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
+            \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
+            \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
+            \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
+            \"witness\":null,\"foregroundOut\":null}},\
+            \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}"
+        );
+        let cap1 = format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+            \"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\"report\":{inner}}}"
+        );
+        let cap1_reply = broker.dispatch_capture(&cap1).expect("initial capture");
+        assert!(
+            cap1_reply.contains("\"rev\":\"1\""),
+            "cap1 accepted: {cap1_reply}"
+        );
+
+        let cmd1 = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"1\",\
+            \"command\":{{\"op\":\"focus\",\"win\":\"win-a\"}}}}"
+        );
+        let cmd2 = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"2\",\
+            \"command\":{{\"op\":\"focus\",\"win\":\"win-a\"}}}}"
+        );
+        broker.queue_command(":1.42", &cmd1).expect("queued 1");
+        broker.queue_command(":1.42", &cmd2).expect("queued 2");
+        // Corrupt the first queued command after queue-time validation so it hits
+        // the defensive decode-failure path during dispatch.
+        broker.pending[0].command = serde_json::json!({"op": "no-such-op"});
+        broker.set_max_reply_bytes_for_test(64);
+
+        let cap2 = format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+            \"source\":\"src-2\",\"sourceSeq\":\"2\",\"nativeInvalid\":\"2\",\"report\":{inner}}}"
+        );
+        let err = broker.dispatch_capture(&cap2).expect_err("oversized");
+        assert!(matches!(err, BrokerError::Oversized));
+        assert!(
+            broker.settled.is_empty(),
+            "defensive decode failure must not settle before final prepare passes"
+        );
+        assert_eq!(broker.pending.len(), 2);
+        assert_eq!(broker.pending[0].client_cmd, "1");
+        assert_eq!(broker.pending[1].client_cmd, "2");
+    }
+
+    #[test]
+    fn defensive_duplicate_reparks_without_installing_broker_state() {
+        let mut broker = WorldBroker::new();
+        let adapter = "kwin-actuator-1";
+        let hs = format!(
+            "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"hs-1\",\
+              \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\
+              \"processId\":\"pid-own-1\"}},\
+              \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
+              \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
+              \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+        );
+        broker.discover_connection(&hs).expect("handshake");
+        let generation = broker.generation().to_owned();
+        let settings = format!(
+            "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+              \"req\":\"set-1\",\"rev\":\"1\",\
+              \"values\":{{\"mode\":\"tiling\",\"gap\":8,\"outer\":8,\"bornMaximized\":\"tile-on-launch\"}}}}"
+        );
+        broker.discover_connection(&settings).expect("settings");
+
+        let win_a = "{\"win\":\"win-a\",\"out\":\"DP-1\",\"rect\":[0,0,200,200],\
+            \"floating\":false,\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\
+            \"hostHidden\":false,\"privileged\":false,\"managed\":true,\"acceptsInput\":true,\
+            \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\
+            \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\"owner\":null,\
+            \"parent\":null,\"role\":null,\"appId\":null,\"executable\":null,\
+            \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
+            \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
+            \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"lastWrite\":null}";
+        let inner = format!(
+            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+            \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
+            \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
+            \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
+            \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
+            \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
+            \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
+            \"witness\":null,\"foregroundOut\":null}},\
+            \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\
+            \"nativeInvalidWitness\":{{\"instance\":\"inst-1\",\"counter\":\"5\"}}}}"
+        );
+        let cap1 = format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+            \"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\"report\":{inner}}}"
+        );
+        broker.dispatch_capture(&cap1).expect("initial capture");
+
+        let presentation_before = broker.presentation.clone();
+        let covered_before = broker.presentation_covered.clone();
+        let watermarks_before = broker.watermarks.clone();
+        let responses_before = broker.responses.clone();
+        let gesture_map_before = broker.gesture_map.clone();
+
+        let cmd = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"1\",\
+            \"command\":{{\"op\":\"focus\",\"win\":\"win-a\"}}}}"
+        );
+        broker.queue_command(":1.42", &cmd).expect("queued");
+        let drained = std::mem::take(&mut broker.pending);
+
+        let mut staged_map = broker.gesture_map.clone();
+        let mut fake_raw = serde_json::Map::new();
+        fake_raw.insert(
+            "nativeGesture".to_owned(),
+            serde_json::json!({
+                "v": 1, "instance": "g-dup", "serial": "9", "revision": "1",
+                "phase": "started", "win": "win-a", "kind": "move",
+                "startRect": [0, 0, 200, 200], "startCursor": [10, 10],
+                "cursor": [150, 50], "modalMove": 1, "changed": 1,
+                "superseded": 0, "available": 1
+            }),
+        );
+        let assoc = staged_map
+            .normalize_gesture_lane(&mut fake_raw)
+            .expect("staged gesture");
+        assert!(assoc.is_some());
+        assert_ne!(format!("{staged_map:?}"), format!("{gesture_map_before:?}"));
+
+        let mut cached_value: serde_json::Value =
+            serde_json::from_str(&broker.responses.get("src-1").expect("cached").1)
+                .expect("cached reply json");
+        if let Some(obj) = cached_value.as_object_mut() {
+            for key in [
+                "source",
+                "nativeInvalid",
+                "clock",
+                "gestureAssoc",
+                "gestureSettledAssoc",
+            ] {
+                obj.remove(key);
+            }
+        }
+        let cached_unbound = serde_json::to_string(&cached_value).expect("serialize unbound");
+        let mut cached_reply = tiler_protocol::world_protocol::decode_reply_v4(&cached_unbound)
+            .expect("decode cached")
+            .reply;
+        cached_reply.state_revision = 999;
+
+        let parsed = ParsedCapture {
+            adapter: adapter.to_owned(),
+            generation: generation.clone(),
+            source: "src-dup".to_owned(),
+            source_seq: 2,
+            native_invalid: 99,
+            inner: serde_json::Map::new(),
+        };
+        let reply = broker
+            .finish_capture_outcome(
+                &parsed,
+                "{\"synthetic\":true}",
+                77,
+                Some(CoverWitness {
+                    instance: "inst-new".to_owned(),
+                    counter: "99".to_owned(),
+                }),
+                staged_map,
+                assoc,
+                drained,
+                WorldOutcome::Duplicate(cached_reply),
+                Vec::new(),
+            )
+            .expect("duplicate finishes");
+        assert!(reply.contains("\"rev\":\"999\""));
+        let reply_json: serde_json::Value = serde_json::from_str(&reply).expect("reply json");
+        assert!(
+            reply_json["gestureAssoc"].is_null(),
+            "defensive duplicate must not attach unaccepted ingress gestureAssoc"
+        );
+        assert_eq!(broker.pending.len(), 1, "drained batch reparked");
+        assert_eq!(
+            format!("{:?}", broker.gesture_map),
+            format!("{gesture_map_before:?}")
+        );
+        assert_eq!(broker.presentation, presentation_before);
+        assert_eq!(broker.presentation_covered, covered_before);
+        assert_eq!(broker.watermarks, watermarks_before);
+        assert_eq!(broker.responses, responses_before);
     }
 }

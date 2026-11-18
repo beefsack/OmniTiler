@@ -19,6 +19,7 @@
 //! `decorate_sticky_visibility` and native state publication in
 //! `decorate_native_sticky_state` below.
 
+use crate::world_transaction::WorldTransaction;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::directional::{WindowId, WorkspaceId};
@@ -28,7 +29,6 @@ use crate::session::{DomainKey, OutputDomain};
 use crate::world_commands::CommandApplied;
 use crate::world_engine::{
     KIND_IN_FLIGHT, KIND_OPERATION, KIND_SCOPE_HELD, MSG_IN_FLIGHT, MSG_OPERATION, MSG_SCOPE_HELD,
-    WorldEngine,
 };
 use crate::world_layout::centered_float_rect;
 use crate::world_members::MemberState;
@@ -49,9 +49,9 @@ fn refused(kind: &'static str, message: &'static str) -> CommandApplied {
     CommandApplied::Rejected { kind, message }
 }
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     pub(crate) fn sticky_route(&self) -> StickyRoute {
-        let caps = self.capabilities();
+        let caps = self.connection.capabilities();
         if caps.is_some_and(|c| c.native_sticky) {
             return StickyRoute::Native;
         }
@@ -62,10 +62,12 @@ impl WorldEngine {
     }
 
     fn usable_pending_sticky(&self, window: &WindowId) -> Option<IntentData> {
-        self.pending_intent
+        self.world
+            .intent
+            .pending_intent
             .get(window)
             .copied()
-            .filter(|_| !self.intent_conflicts.contains(window))
+            .filter(|_| !self.world.intent.intent_conflicts.contains(window))
             .filter(|data| data.sticky_prior.is_some())
     }
 
@@ -80,6 +82,7 @@ impl WorldEngine {
         // keeps the semantic fallback.
         if self.sticky_route() == StickyRoute::Native
             && self
+                .world
                 .staged
                 .facts
                 .get(window)
@@ -88,7 +91,7 @@ impl WorldEngine {
         {
             return None;
         }
-        if self.restored_sticky.contains_key(window) {
+        if self.world.intent.restored_sticky.contains_key(window) {
             return Some(true);
         }
         if self.usable_pending_sticky(window).is_some() {
@@ -96,19 +99,31 @@ impl WorldEngine {
         }
         match self.sticky_route() {
             StickyRoute::Composed | StickyRoute::Unsupported => Some(false),
-            StickyRoute::Native => self.staged.facts.get(window).and_then(|fact| fact.sticky),
+            StickyRoute::Native => self
+                .world
+                .staged
+                .facts
+                .get(window)
+                .and_then(|fact| fact.sticky),
         }
     }
 
     fn sticky_prior_for_off(&self, window: &WindowId) -> Option<bool> {
-        if let Some(prior) = self.restored_sticky.get(window).copied() {
+        if let Some(prior) = self.world.intent.restored_sticky.get(window).copied() {
             return Some(prior);
         }
         if let Some(data) = self.usable_pending_sticky(window) {
             return data.sticky_prior;
         }
         // Adopted native sticky with no same-runtime origin: prior-float.
-        if self.staged.facts.get(window).and_then(|fact| fact.sticky) == Some(true) {
+        if self
+            .world
+            .staged
+            .facts
+            .get(window)
+            .and_then(|fact| fact.sticky)
+            == Some(true)
+        {
             return Some(true);
         }
         None
@@ -119,6 +134,7 @@ impl WorldEngine {
     /// head. `None` when the output names no known workspace.
     fn sticky_dest(&self, src: &DomainKey, window: &WindowId) -> Option<DomainKey> {
         let output = self
+            .world
             .staged
             .facts
             .get(window)?
@@ -137,6 +153,8 @@ impl WorldEngine {
 
     fn native_unknown_safety_refusal(&self, window: &WindowId) -> Option<CommandApplied> {
         if self
+            .world
+            .settlement
             .retained
             .iter()
             .any(|transfer| matches!(&transfer.target.kind, TransferKind::Window(w) if w == window))
@@ -147,6 +165,7 @@ impl WorldEngine {
             return Some(refused(KIND_OPERATION, MSG_OPERATION));
         }
         if self
+            .world
             .staged
             .facts
             .get(window)
@@ -181,6 +200,7 @@ impl WorldEngine {
             return Err(refused(KIND_SCOPE_HELD, MSG_SCOPE_HELD));
         }
         if !self
+            .world
             .staged
             .domains
             .iter()
@@ -188,10 +208,12 @@ impl WorldEngine {
         {
             return Err(refused(KIND_OPERATION, MSG_OPERATION));
         }
-        let Some(fact) = self.staged.facts.get(window) else {
+        let Some(fact) = self.world.staged.facts.get(window) else {
             return Err(refused(KIND_OPERATION, MSG_OPERATION));
         };
         if self
+            .world
+            .settlement
             .retained
             .iter()
             .any(|transfer| matches!(&transfer.target.kind, TransferKind::Window(w) if w == window))
@@ -223,6 +245,7 @@ impl WorldEngine {
             return Err(refused(KIND_SCOPE_HELD, MSG_SCOPE_HELD));
         }
         if !self
+            .world
             .staged
             .domains
             .iter()
@@ -250,7 +273,7 @@ impl WorldEngine {
                 };
                 let _ = (src, dest);
             } else {
-                self.command_result = Some(CommandResult::Rejected {
+                self.world.command_result = Some(CommandResult::Rejected {
                     kind: CommandRejectKind::StateUnknown,
                 });
                 self.note_command(command_seq);
@@ -264,7 +287,7 @@ impl WorldEngine {
         match self.sticky_route() {
             StickyRoute::Native => {}
             StickyRoute::Unsupported => {
-                self.command_result = Some(CommandResult::Rejected {
+                self.world.command_result = Some(CommandResult::Rejected {
                     kind: CommandRejectKind::StateUnsupported,
                 });
                 self.note_command(command_seq);
@@ -314,7 +337,7 @@ impl WorldEngine {
             None => match self.sticky_current(window) {
                 Some(current) => !current,
                 None => {
-                    self.command_result = Some(CommandResult::Rejected {
+                    self.world.command_result = Some(CommandResult::Rejected {
                         kind: CommandRejectKind::StateUnknown,
                     });
                     self.note_command(command_seq);
@@ -324,7 +347,7 @@ impl WorldEngine {
         };
         match self.sticky_current(window) {
             None => {
-                self.command_result = Some(CommandResult::Rejected {
+                self.world.command_result = Some(CommandResult::Rejected {
                     kind: CommandRejectKind::StateUnknown,
                 });
                 self.note_command(command_seq);
@@ -347,6 +370,8 @@ impl WorldEngine {
 
     fn native_sticky_needs_reauthorize(&self, window: &WindowId) -> bool {
         match self
+            .world
+            .settlement
             .retained_states
             .get(&(window.clone(), StateProperty::Sticky))
         {
@@ -362,19 +387,24 @@ impl WorldEngine {
     }
 
     fn native_prior_exact(&self, window: &WindowId) -> (Option<IntentData>, bool) {
-        let prior_saved = self.intent_desired.get(window).and_then(|entry| *entry);
+        let prior_saved = self
+            .world
+            .intent
+            .intent_desired
+            .get(window)
+            .and_then(|entry| *entry);
         let mut unknown = false;
-        if self.intent_conflicts.contains(window) {
+        if self.world.intent.intent_conflicts.contains(window) {
             unknown = true;
         }
-        if self.intent_sticky_saturated {
+        if self.world.intent.intent_sticky_saturated {
             unknown = true;
         }
-        if self.sticky_saved_incomplete {
+        if self.world.intent.sticky_saved_incomplete {
             unknown = true;
         }
         if prior_saved.is_none()
-            && self.intent_desired.len() >= crate::world_report::MAX_INTENT_DESIRED
+            && self.world.intent.intent_desired.len() >= crate::world_report::MAX_INTENT_DESIRED
         {
             unknown = true;
         }
@@ -382,9 +412,11 @@ impl WorldEngine {
     }
 
     fn native_check_binding_cap(&self, window: &WindowId) -> bool {
-        self.retained_states
+        self.world
+            .settlement
+            .retained_states
             .contains_key(&(window.clone(), StateProperty::Sticky))
-            || self.retained_states.len() < MAX_RETAINED_STATE_BINDINGS
+            || self.world.settlement.retained_states.len() < MAX_RETAINED_STATE_BINDINGS
     }
 
     /// Shared native sticky-on binding mint: one unspent `Sticky=true`
@@ -404,7 +436,7 @@ impl WorldEngine {
         prior_restored_floats: bool,
         prior_float: bool,
     ) {
-        let revision = self.state_revision + 1;
+        let revision = self.world.state_revision + 1;
         let meta = NativeStickyMeta {
             command_seq,
             prior_saved,
@@ -418,7 +450,7 @@ impl WorldEngine {
             is_toggle_float_clear: false,
             followup_done: false,
         };
-        self.retained_states.insert(
+        self.world.settlement.retained_states.insert(
             (window.clone(), StateProperty::Sticky),
             crate::world_state::RetainedStateBinding {
                 target: crate::world_state::RetainedStateTarget {
@@ -452,6 +484,8 @@ impl WorldEngine {
             return;
         }
         if self
+            .world
+            .settlement
             .retained_states
             .contains_key(&(window.clone(), StateProperty::Sticky))
         {
@@ -473,9 +507,14 @@ impl WorldEngine {
         let Some(dest) = self.sticky_dest(&home, window) else {
             return;
         };
-        let prior_saved = self.intent_desired.get(window).and_then(|entry| *entry);
-        let prior_restored_floats = self.restored_floats.contains(window);
-        let prior_float = self.is_exception_window_any(window);
+        let prior_saved = self
+            .world
+            .intent
+            .intent_desired
+            .get(window)
+            .and_then(|entry| *entry);
+        let prior_restored_floats = self.world.intent.restored_floats.contains(window);
+        let prior_float = self.world.is_exception_window_any(window);
         let requested_save = IntentData::new(Some(true), Some(prior));
         // Rollback preserve: the snapshot keeps the just-committed import,
         // so a proven refusal restores (not erases) sticky provenance.
@@ -513,9 +552,9 @@ impl WorldEngine {
         let dest_key = dest.clone();
         // Pre-mutation snapshot for settlement/rollback: capture before
         // any transition or write-cache mutation.
-        let snap_restored = self.restored_sticky.get(window).copied();
-        let snap_floats = self.restored_floats.contains(window);
-        let snap_float = self.is_exception_window_any(window);
+        let snap_restored = self.world.intent.restored_sticky.get(window).copied();
+        let snap_floats = self.world.intent.restored_floats.contains(window);
+        let snap_float = self.world.is_exception_window_any(window);
         // Spent-ambiguous retry on the same semantic: the composed
         // transition would no-op with no queued save, yet a new target is
         // minted. Re-emit the canonical save preserving the original
@@ -527,10 +566,11 @@ impl WorldEngine {
                 None => return refused(KIND_OPERATION, MSG_OPERATION),
             };
             let requested_save = IntentData::new(Some(true), Some(prior));
-            if !self.intent_desired.contains_key(window)
-                && (self.intent_desired.len() >= crate::world_report::MAX_INTENT_DESIRED
+            if !self.world.intent.intent_desired.contains_key(window)
+                && (self.world.intent.intent_desired.len()
+                    >= crate::world_report::MAX_INTENT_DESIRED
                     || (self.intent_ledger_used() >= crate::world_report::MAX_INTENT_RECORDS
-                        && !self.restored_sticky.contains_key(window)))
+                        && !self.world.intent.restored_sticky.contains_key(window)))
             {
                 return refused(KIND_OPERATION, MSG_OPERATION);
             }
@@ -551,11 +591,13 @@ impl WorldEngine {
         }
         let applied =
             self.run_sticky_transition(issue, command_seq, window, src, dest, true, held_scopes);
-        match (&applied, &self.command_result) {
+        match (&applied, &self.world.command_result) {
             (CommandApplied::NoEffect, None) => {}
             _ => return applied,
         }
         let requested_save = self
+            .world
+            .intent
             .intent_desired
             .get(window)
             .and_then(|entry| *entry)
@@ -590,9 +632,9 @@ impl WorldEngine {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
         // Pre-mutation snapshot for settlement/rollback.
-        let snap_restored = self.restored_sticky.get(window).copied();
-        let snap_floats = self.restored_floats.contains(window);
-        let snap_float = self.is_exception_window_any(window);
+        let snap_restored = self.world.intent.restored_sticky.get(window).copied();
+        let snap_floats = self.world.intent.restored_floats.contains(window);
+        let snap_float = self.world.is_exception_window_any(window);
         let requested_save = if is_toggle_float_clear {
             IntentData::new(Some(false), None)
         } else {
@@ -602,16 +644,16 @@ impl WorldEngine {
             };
             IntentData::new(Some(prior_bool), None)
         };
-        if !self.intent_desired.contains_key(window)
-            && (self.intent_desired.len() >= crate::world_report::MAX_INTENT_DESIRED
+        if !self.world.intent.intent_desired.contains_key(window)
+            && (self.world.intent.intent_desired.len() >= crate::world_report::MAX_INTENT_DESIRED
                 || (self.intent_ledger_used() >= crate::world_report::MAX_INTENT_RECORDS
-                    && !self.restored_sticky.contains_key(window)))
+                    && !self.world.intent.restored_sticky.contains_key(window)))
         {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
         let home = src.clone();
         let dest_key = dest.clone();
-        let revision = self.state_revision + 1;
+        let revision = self.world.state_revision + 1;
         // Adopted native sticky (raw true with no restored provenance) would
         // otherwise lose its sticky-float hold if raw flips false before the
         // correlated clear proof arrives: the ordinary sweep would tile it
@@ -619,12 +661,21 @@ impl WorldEngine {
         // the binding awaits proof. Joint-ledger bound plus runtime preimage
         // (captured above) gate the insert; raw facts are never rewritten.
         if snap_restored.is_none()
-            && self.staged.facts.get(window).and_then(|fact| fact.sticky) == Some(true)
+            && self
+                .world
+                .staged
+                .facts
+                .get(window)
+                .and_then(|fact| fact.sticky)
+                == Some(true)
         {
             if self.intent_ledger_used() >= crate::world_report::MAX_INTENT_RECORDS {
                 return refused(KIND_OPERATION, MSG_OPERATION);
             }
-            self.restored_sticky.insert(window.clone(), true);
+            self.world
+                .intent
+                .restored_sticky
+                .insert(window.clone(), true);
         }
         self.upsert_retained_intent_desire(window, Some(requested_save));
         let meta = NativeStickyMeta {
@@ -640,7 +691,7 @@ impl WorldEngine {
             is_toggle_float_clear,
             followup_done: false,
         };
-        self.retained_states.insert(
+        self.world.settlement.retained_states.insert(
             (window.clone(), StateProperty::Sticky),
             crate::world_state::RetainedStateBinding {
                 target: crate::world_state::RetainedStateTarget {
@@ -674,7 +725,7 @@ impl WorldEngine {
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
         if self.sticky_route() == StickyRoute::Unsupported {
-            self.command_result = Some(CommandResult::Rejected {
+            self.world.command_result = Some(CommandResult::Rejected {
                 kind: CommandRejectKind::StateUnsupported,
             });
             self.note_command(command_seq);
@@ -684,7 +735,7 @@ impl WorldEngine {
             if self.sticky_current(window) != Some(true) {
                 match self.sticky_current(window) {
                     None => {
-                        self.command_result = Some(CommandResult::Rejected {
+                        self.world.command_result = Some(CommandResult::Rejected {
                             kind: CommandRejectKind::StateUnknown,
                         });
                         self.note_command(command_seq);
@@ -699,7 +750,7 @@ impl WorldEngine {
             };
             return self.run_native_sticky_off(command_seq, window, &src, &dest, true);
         }
-        if !self.restored_sticky.contains_key(window)
+        if !self.world.intent.restored_sticky.contains_key(window)
             && self.usable_pending_sticky(window).is_none()
         {
             return refused(KIND_OPERATION, MSG_OPERATION);
@@ -734,30 +785,40 @@ impl WorldEngine {
         dest: &DomainKey,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
-        let mut staged = self.clone();
-        let dest_floating = staged.floating_scopes.contains(dest);
-        staged.restored_sticky.remove(window);
-        staged.pending_intent.remove(window);
-        staged.intent_conflicts.remove(window);
-        staged.intent_sticky_blocks.remove(window);
-        staged.sticky_visible_rev.remove(window);
+        let mut staged_world = self.world.clone();
+        let mut staged = WorldTransaction::new(
+            self.connection,
+            self.prev_reply_transfers,
+            &mut staged_world,
+        );
+        let dest_floating = staged.world.floating_scopes.contains(dest);
+        staged.world.intent.restored_sticky.remove(window);
+        staged.world.intent.pending_intent.remove(window);
+        staged.world.intent.intent_conflicts.remove(window);
+        staged.world.intent.intent_sticky_blocks.remove(window);
+        staged.world.intent.sticky_visible_rev.remove(window);
         // The clear intends a tile: a floating destination lands floated
         // for workspace reasons only, with no explicit-float mark, so a
         // later retiling restores the saved tile base.
-        staged.restored_floats.remove(window);
+        staged.world.intent.restored_floats.remove(window);
         if staged.intent_ledger_used() > crate::world_report::MAX_INTENT_RECORDS {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
         let save = IntentData::new(Some(false), None);
-        if staged.intent_desired.contains_key(window)
-            || staged.intent_desired.len() < crate::world_report::MAX_INTENT_DESIRED
+        if staged.world.intent.intent_desired.contains_key(window)
+            || staged.world.intent.intent_desired.len() < crate::world_report::MAX_INTENT_DESIRED
         {
             staged.upsert_retained_intent_desire(window, Some(save));
         } else {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
-        let rect = staged.staged.facts.get(window).and_then(|fact| fact.rect);
-        match staged.members.get_mut(window) {
+        let rect = staged
+            .world
+            .staged
+            .facts
+            .get(window)
+            .and_then(|fact| fact.rect);
+        match staged.world.workspace.members.get_mut(window) {
             Some(state) => {
                 state.home = dest.clone();
                 state.floating = dest_floating;
@@ -765,7 +826,7 @@ impl WorldEngine {
                 state.geometry = rect;
             }
             None => {
-                staged.members.insert(
+                staged.world.workspace.members.insert(
                     window.clone(),
                     MemberState {
                         home: dest.clone(),
@@ -789,9 +850,9 @@ impl WorldEngine {
             if dest != src {
                 affected.push(dest.clone());
             }
-            let domains = staged.staged.domains.clone();
+            let domains = staged.world.staged.domains.clone();
             for key in &affected {
-                if staged.floating_scopes.contains(key) {
+                if staged.world.floating_scopes.contains(key) {
                     continue;
                 }
                 let Some(domain) = domains.iter().find(|domain| domain.key == *key) else {
@@ -802,10 +863,10 @@ impl WorldEngine {
             if affected.iter().any(|key| held.contains(key)) {
                 return refused(KIND_OPERATION, MSG_OPERATION);
             }
-            if dest != src && !staged.floating_scopes.contains(src) {
-                staged.layout.forget_minimized_slot(src, window);
+            if dest != src && !staged.world.floating_scopes.contains(src) {
+                staged.world.layout.forget_minimized_slot(src, window);
             }
-            staged.command_result = Some(CommandResult::Float {
+            staged.world.command_result = Some(CommandResult::Float {
                 window: window.clone(),
                 rect: None,
                 no_space: false,
@@ -813,9 +874,13 @@ impl WorldEngine {
             // Workspace-driven float landing carries no explicit-float
             // mark: spend any outstanding sticky-on placement token so a
             // later retiling restores the saved tile base.
-            staged.retained_floats.retain(|held| held.window != *window);
+            staged
+                .world
+                .settlement
+                .retained_floats
+                .retain(|held| held.window != *window);
             staged.note_command(command_seq);
-            *self = staged;
+            *self.world = staged_world;
             return CommandApplied::NoEffect;
         }
         // The explicit unfloat binds observed flags to the retained
@@ -825,6 +890,7 @@ impl WorldEngine {
         // classifies float after the clear, so it rides the explicit
         // event; an ordinary carrier converges through the sweep.
         let floated_carrier = staged
+            .world
             .staged
             .domains
             .iter()
@@ -841,14 +907,14 @@ impl WorldEngine {
             // through sweeps over both affected scopes.
             let owner = issue.owner.clone();
             let correlation = issue.correlation.clone();
-            let domains = staged.staged.domains.clone();
+            let domains = staged.world.staged.domains.clone();
             let mut affected = vec![src.clone()];
             if dest != src {
                 affected.push(dest.clone());
             }
             let mut held = held_scopes.clone();
             for key in &affected {
-                if staged.floating_scopes.contains(key) {
+                if staged.world.floating_scopes.contains(key) {
                     continue;
                 }
                 let Some(domain) = domains.iter().find(|domain| domain.key == *key) else {
@@ -859,28 +925,33 @@ impl WorldEngine {
             if affected.iter().any(|key| held.contains(key)) {
                 return refused(KIND_OPERATION, MSG_OPERATION);
             }
-            if dest != src && !staged.floating_scopes.contains(src) {
-                staged.layout.forget_minimized_slot(src, window);
+            if dest != src && !staged.world.floating_scopes.contains(src) {
+                staged.world.layout.forget_minimized_slot(src, window);
             }
-            let tiled = staged.layout.is_tiled_window(dest, window);
+            let tiled = staged.world.layout.is_tiled_window(dest, window);
             if !tiled {
                 return refused(KIND_OPERATION, MSG_OPERATION);
             }
-            staged.layout.commit_fixed_tile_override(window);
-            staged.command_result = Some(CommandResult::Float {
+            staged.world.layout.commit_fixed_tile_override(window);
+            staged.world.command_result = Some(CommandResult::Float {
                 window: window.clone(),
                 rect: None,
                 no_space: false,
             });
             // The direct clear bypasses `finish_operation_event`, so spend
             // any outstanding sticky-on placement token here.
-            staged.retained_floats.retain(|held| held.window != *window);
+            staged
+                .world
+                .settlement
+                .retained_floats
+                .retain(|held| held.window != *window);
             staged.reset_frame_burst(window);
             staged.note_command(command_seq);
-            *self = staged;
+            *self.world = staged_world;
             return CommandApplied::NoEffect;
         }
         let domain_report = match staged
+            .world
             .staged
             .domains
             .iter()
@@ -896,8 +967,8 @@ impl WorldEngine {
         // tile lands at the destination; a held source refuses atomically.
         let owner = issue.owner.clone();
         let correlation = issue.correlation.clone();
-        if dest != src && !staged.floating_scopes.contains(src) {
-            let domains = staged.staged.domains.clone();
+        if dest != src && !staged.world.floating_scopes.contains(src) {
+            let domains = staged.world.staged.domains.clone();
             if let Some(source_domain) = domains.iter().find(|domain| domain.key == *src) {
                 let mut held = held_scopes.clone();
                 staged.sweep_domain(source_domain, &owner, &correlation, &mut held);
@@ -920,7 +991,7 @@ impl WorldEngine {
         };
         let applied =
             staged.run_sticky_unfloat_typed(command_seq, dest, &domain_report, &inset, window);
-        match (&applied, &staged.command_result) {
+        match (&applied, &staged.world.command_result) {
             (
                 CommandApplied::NoEffect,
                 Some(CommandResult::Float {
@@ -929,11 +1000,11 @@ impl WorldEngine {
                     ..
                 }),
             ) => {
-                staged.layout.commit_fixed_tile_override(window);
-                if dest != src && !staged.floating_scopes.contains(src) {
-                    staged.layout.forget_minimized_slot(src, window);
+                staged.world.layout.commit_fixed_tile_override(window);
+                if dest != src && !staged.world.floating_scopes.contains(src) {
+                    staged.world.layout.forget_minimized_slot(src, window);
                 }
-                *self = staged;
+                *self.world = staged_world;
                 CommandApplied::NoEffect
             }
             (CommandApplied::Rejected { .. }, _) => applied,
@@ -970,8 +1041,13 @@ impl WorldEngine {
                 None => return refused(KIND_OPERATION, MSG_OPERATION),
             }
         };
-        let was_float = self.is_exception_window_any(window);
-        let mut staged = self.clone();
+        let was_float = self.world.is_exception_window_any(window);
+        let mut staged_world = self.world.clone();
+        let mut staged = WorldTransaction::new(
+            self.connection,
+            self.prev_reply_transfers,
+            &mut staged_world,
+        );
         // A sticky clear spends any outstanding sticky-on placement
         // token up front: the sweep below must stage exactly as if no
         // token existed (a kept float holds its frame under ordinary
@@ -979,7 +1055,11 @@ impl WorldEngine {
         // would leave the token visible to classification and to the
         // unfloat fallback's early return.
         if !desired {
-            staged.retained_floats.retain(|held| held.window != *window);
+            staged
+                .world
+                .settlement
+                .retained_floats
+                .retain(|held| held.window != *window);
         }
         // Tiled-origin sticky-on takes intentional-float placement (user
         // 2026-11-10): durable retained geometry else the centered 60%
@@ -987,10 +1067,11 @@ impl WorldEngine {
         // Float-origin preserves the observed frame.
         let tile_origin_on = desired && !was_float;
         let float_placement: Option<Rect> = if tile_origin_on {
-            if let Some(retained) = staged.layout.retained_float_geometry(dest, window) {
+            if let Some(retained) = staged.world.layout.retained_float_geometry(dest, window) {
                 Some(retained)
             } else {
                 staged
+                    .world
                     .staged
                     .domains
                     .iter()
@@ -1014,48 +1095,59 @@ impl WorldEngine {
         // intent lands floated there with its base tile intent saved, and
         // no session is forced until a retiling. Every other path lands
         // exactly as desired.
-        let dest_floating = staged.floating_scopes.contains(dest);
+        let dest_floating = staged.world.floating_scopes.contains(dest);
         let landing_float =
             desired || off_prior == Some(true) || (off_prior.is_some() && dest_floating);
         let save = if desired {
-            staged.restored_sticky.insert(window.clone(), was_float);
-            staged.pending_intent.remove(window);
-            staged.intent_conflicts.remove(window);
-            staged.intent_sticky_blocks.remove(window);
-            staged.restored_floats.remove(window);
             staged
+                .world
+                .intent
+                .restored_sticky
+                .insert(window.clone(), was_float);
+            staged.world.intent.pending_intent.remove(window);
+            staged.world.intent.intent_conflicts.remove(window);
+            staged.world.intent.intent_sticky_blocks.remove(window);
+            staged.world.intent.restored_floats.remove(window);
+            staged
+                .world
+                .intent
                 .sticky_visible_rev
-                .insert(window.clone(), staged.state_revision + 1);
+                .insert(window.clone(), staged.world.state_revision + 1);
             IntentData::new(Some(true), Some(was_float))
         } else {
             let prior = off_prior.expect("off always resolves a prior");
-            staged.restored_sticky.remove(window);
-            staged.pending_intent.remove(window);
-            staged.intent_conflicts.remove(window);
-            staged.intent_sticky_blocks.remove(window);
-            staged.sticky_visible_rev.remove(window);
+            staged.world.intent.restored_sticky.remove(window);
+            staged.world.intent.pending_intent.remove(window);
+            staged.world.intent.intent_conflicts.remove(window);
+            staged.world.intent.intent_sticky_blocks.remove(window);
+            staged.world.intent.sticky_visible_rev.remove(window);
             // Genuine float intent keeps explicit provenance; a
             // workspace-forced float over a tile base carries no
             // explicit-float mark, so a later retiling restores the
             // saved tile instead of pinning the float.
             if prior {
-                staged.restored_floats.insert(window.clone());
+                staged.world.intent.restored_floats.insert(window.clone());
             } else {
-                staged.restored_floats.remove(window);
+                staged.world.intent.restored_floats.remove(window);
             }
             IntentData::new(Some(prior), None)
         };
         if staged.intent_ledger_used() > crate::world_report::MAX_INTENT_RECORDS {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
-        if staged.intent_desired.contains_key(window)
-            || staged.intent_desired.len() < crate::world_report::MAX_INTENT_DESIRED
+        if staged.world.intent.intent_desired.contains_key(window)
+            || staged.world.intent.intent_desired.len() < crate::world_report::MAX_INTENT_DESIRED
         {
             staged.upsert_retained_intent_desire(window, Some(save));
         } else {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
-        let rect = staged.staged.facts.get(window).and_then(|fact| fact.rect);
+        let rect = staged
+            .world
+            .staged
+            .facts
+            .get(window)
+            .and_then(|fact| fact.rect);
         // A tiled-origin sticky-on carries the intentional-float placement
         // as its member geometry (falling back to the observed frame only
         // when no placement resolved); every other path keeps the frame.
@@ -1064,7 +1156,7 @@ impl WorldEngine {
         } else {
             rect
         };
-        match staged.members.get_mut(window) {
+        match staged.world.workspace.members.get_mut(window) {
             Some(state) => {
                 state.home = dest.clone();
                 state.floating = landing_float;
@@ -1072,7 +1164,7 @@ impl WorldEngine {
                 state.geometry = geometry;
             }
             None => {
-                staged.members.insert(
+                staged.world.workspace.members.insert(
                     window.clone(),
                     MemberState {
                         home: dest.clone(),
@@ -1097,9 +1189,9 @@ impl WorldEngine {
         if dest != src {
             affected.push(dest.clone());
         }
-        let domains = staged.staged.domains.clone();
+        let domains = staged.world.staged.domains.clone();
         for key in &affected {
-            if staged.floating_scopes.contains(key) {
+            if staged.world.floating_scopes.contains(key) {
                 continue;
             }
             let Some(domain) = domains.iter().find(|domain| domain.key == *key) else {
@@ -1110,11 +1202,11 @@ impl WorldEngine {
         if affected.iter().any(|key| held.contains(key)) {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
-        if dest != src && !staged.floating_scopes.contains(src) {
+        if dest != src && !staged.world.floating_scopes.contains(src) {
             // A moved tiled leaf minimizes at the source; forget the slot
             // so no stale minimized lifetime survives the move. A moved
             // exception drops cleanly and the forget is a no-op.
-            staged.layout.forget_minimized_slot(src, window);
+            staged.world.layout.forget_minimized_slot(src, window);
         }
         // Genuine capacity fallback never commits a false tile save: a
         // tile outcome that did not land tiled refuses with no mutation
@@ -1124,15 +1216,17 @@ impl WorldEngine {
         // explicit `ToggleFloat` event at the destination where an
         // ordinary carrier converges through the sweep above.
         let converged = if landing_float {
-            staged.floating_scopes.contains(dest) || staged.layout.is_exception(dest, window)
+            staged.world.floating_scopes.contains(dest)
+                || staged.world.layout.is_exception(dest, window)
         } else {
-            staged.layout.is_tiled_window(dest, window)
+            staged.world.layout.is_tiled_window(dest, window)
         };
         if !converged {
             if landing_float {
                 return refused(KIND_OPERATION, MSG_OPERATION);
             }
             let floated_carrier = staged
+                .world
                 .staged
                 .domains
                 .iter()
@@ -1148,6 +1242,7 @@ impl WorldEngine {
                 return refused(KIND_OPERATION, MSG_OPERATION);
             }
             let domain_report = match staged
+                .world
                 .staged
                 .domains
                 .iter()
@@ -1173,7 +1268,7 @@ impl WorldEngine {
             };
             let applied =
                 staged.run_sticky_unfloat_typed(command_seq, dest, &domain_report, &inset, window);
-            match (&applied, &staged.command_result) {
+            match (&applied, &staged.world.command_result) {
                 (
                     CommandApplied::NoEffect,
                     Some(CommandResult::Float {
@@ -1182,10 +1277,10 @@ impl WorldEngine {
                         ..
                     }),
                 ) => {
-                    staged.layout.commit_fixed_tile_override(window);
-                    staged.command_result = None;
+                    staged.world.layout.commit_fixed_tile_override(window);
+                    staged.world.command_result = None;
                     staged.note_command(command_seq);
-                    *self = staged;
+                    *self.world = staged_world;
                     return CommandApplied::NoEffect;
                 }
                 (CommandApplied::Rejected { .. }, _) => return applied,
@@ -1193,7 +1288,7 @@ impl WorldEngine {
             }
         }
         if !landing_float {
-            staged.layout.commit_fixed_tile_override(window);
+            staged.world.layout.commit_fixed_tile_override(window);
         }
         if tile_origin_on && let Some(target) = float_placement {
             // Seed the layout exception plus durable retained placement,
@@ -1202,10 +1297,20 @@ impl WorldEngine {
             // commit). A floating-scope landing has no layout exception,
             // so a failed adopt keeps the membership-only outcome with no
             // token.
-            if staged.layout.adopt_float_placement(dest, window, target) {
-                staged.retained_floats.retain(|held| held.window != *window);
+            if staged
+                .world
+                .layout
+                .adopt_float_placement(dest, window, target)
+            {
+                staged
+                    .world
+                    .settlement
+                    .retained_floats
+                    .retain(|held| held.window != *window);
                 staged.reset_frame_burst(window);
                 staged
+                    .world
+                    .settlement
                     .retained_floats
                     .push(crate::world_engine::RetainedFloat {
                         operation_id: format!("op-{command_seq}"),
@@ -1222,7 +1327,7 @@ impl WorldEngine {
         }
         staged.reset_frame_burst(window);
         staged.note_command(command_seq);
-        *self = staged;
+        *self.world = staged_world;
         CommandApplied::NoEffect
     }
 
@@ -1249,11 +1354,11 @@ impl WorldEngine {
         issue: &crate::world_engine::EventIssue,
         held_scopes: &BTreeSet<DomainKey>,
     ) {
-        if !self.staged.observation.inventory_complete || self.staged.gesture_barrier {
+        if !self.world.staged.observation.inventory_complete || self.world.staged.gesture_barrier {
             return;
         }
         let window = key.0.clone();
-        let Some(fact) = self.staged.facts.get(&window) else {
+        let Some(fact) = self.world.staged.facts.get(&window) else {
             return;
         };
         if fact.minimized == Some(true) {
@@ -1262,7 +1367,7 @@ impl WorldEngine {
         if self.is_held_window(&window) || self.is_excluded_window(&window) {
             return;
         }
-        if self.retained.iter().any(
+        if self.world.settlement.retained.iter().any(
             |transfer| matches!(&transfer.target.kind, TransferKind::Window(w) if *w == window),
         ) {
             return;
@@ -1277,11 +1382,13 @@ impl WorldEngine {
             return;
         }
         let home_readable = self
+            .world
             .staged
             .domains
             .iter()
             .any(|domain| domain.key == meta.home && domain.readable);
         let dest_readable = self
+            .world
             .staged
             .domains
             .iter()
@@ -1292,32 +1399,47 @@ impl WorldEngine {
         if held_scopes.contains(&meta.home) || held_scopes.contains(&meta.dest) {
             return;
         }
-        if !(self.engine_knows_window_any(&window) || self.members.contains_key(&window)) {
+        if !(self.world.engine_knows_window_any(&window)
+            || self.world.workspace.members.contains_key(&window))
+        {
             return;
         }
-        let mut staged = self.clone();
+        let mut staged_world = self.world.clone();
+        let mut staged = WorldTransaction::new(
+            self.connection,
+            self.prev_reply_transfers,
+            &mut staged_world,
+        );
         match meta.prior_restored_sticky {
             Some(prior) => {
-                staged.restored_sticky.insert(window.clone(), prior);
+                staged
+                    .world
+                    .intent
+                    .restored_sticky
+                    .insert(window.clone(), prior);
             }
             None => {
-                staged.restored_sticky.remove(&window);
+                staged.world.intent.restored_sticky.remove(&window);
             }
         }
         if meta.prior_restored_floats {
-            staged.restored_floats.insert(window.clone());
+            staged.world.intent.restored_floats.insert(window.clone());
         } else {
-            staged.restored_floats.remove(&window);
+            staged.world.intent.restored_floats.remove(&window);
         }
         // A fresh ON inserted the stable visibility revision; a reauth ON
         // (already sticky) and every OFF/clear never touched it.
         if meta.requested && meta.prior_restored_sticky.is_none() {
-            staged.sticky_visible_rev.remove(&window);
+            staged.world.intent.sticky_visible_rev.remove(&window);
         }
         // A refused ON spends the placement token its transition retained;
         // OFF/clear rollbacks never minted one.
         if meta.requested {
-            staged.retained_floats.retain(|held| held.window != window);
+            staged
+                .world
+                .settlement
+                .retained_floats
+                .retain(|held| held.window != window);
         }
         let home = meta.home.clone();
         let floating = if meta.requested {
@@ -1325,8 +1447,13 @@ impl WorldEngine {
         } else {
             true
         };
-        let rect = staged.staged.facts.get(&window).and_then(|fact| fact.rect);
-        match staged.members.get_mut(&window) {
+        let rect = staged
+            .world
+            .staged
+            .facts
+            .get(&window)
+            .and_then(|fact| fact.rect);
+        match staged.world.workspace.members.get_mut(&window) {
             Some(state) => {
                 state.home = home.clone();
                 state.floating = floating;
@@ -1334,7 +1461,7 @@ impl WorldEngine {
                 state.geometry = rect;
             }
             None => {
-                staged.members.insert(
+                staged.world.workspace.members.insert(
                     window.clone(),
                     MemberState {
                         home: home.clone(),
@@ -1349,10 +1476,10 @@ impl WorldEngine {
         // null clear when there was none) in the single retained owner.
         // Cap-safe: a full map holds proof for retry (same-key replacement
         // stays allowed) instead of silently dropping the desire.
-        if !staged.intent_desired.contains_key(&window)
-            && staged.intent_desired.len() >= crate::world_report::MAX_INTENT_DESIRED
+        if !staged.world.intent.intent_desired.contains_key(&window)
+            && staged.world.intent.intent_desired.len() >= crate::world_report::MAX_INTENT_DESIRED
         {
-            staged.sticky_saved_incomplete = true;
+            staged.world.intent.sticky_saved_incomplete = true;
             return;
         }
         staged.upsert_retained_intent_desire(&window, meta.prior_saved);
@@ -1368,9 +1495,9 @@ impl WorldEngine {
         if meta.dest != home {
             affected.push(meta.dest.clone());
         }
-        let domains = staged.staged.domains.clone();
+        let domains = staged.world.staged.domains.clone();
         for key in &affected {
-            if staged.floating_scopes.contains(key) {
+            if staged.world.floating_scopes.contains(key) {
                 continue;
             }
             let Some(domain) = domains.iter().find(|domain| domain.key == *key) else {
@@ -1385,7 +1512,10 @@ impl WorldEngine {
         // minimized slot at the dest is forgotten exactly like the
         // producer forgot the source slot on the way out.
         if meta.requested && meta.dest != home {
-            staged.layout.forget_minimized_slot(&meta.dest, &window);
+            staged
+                .world
+                .layout
+                .forget_minimized_slot(&meta.dest, &window);
         }
         // Joint-ledger cap after restoring the exact prior runtime: the
         // restored sticky provenance shares the single MAX_INTENT_RECORDS
@@ -1394,12 +1524,12 @@ impl WorldEngine {
         if staged.intent_ledger_used() > crate::world_report::MAX_INTENT_RECORDS {
             return;
         }
-        if let Some(binding) = staged.retained_states.get_mut(key)
+        if let Some(binding) = staged.world.settlement.retained_states.get_mut(key)
             && let Some(meta_mut) = binding.sticky_meta.as_mut()
         {
             meta_mut.followup_done = true;
         }
-        *self = staged;
+        *self.world = staged_world;
     }
 
     /// One-time native dependent followup after generic `settle_property_attempts`.
@@ -1438,13 +1568,15 @@ impl WorldEngine {
             return;
         }
         let keys: Vec<(WindowId, crate::world_report::StateProperty)> = self
+            .world
+            .settlement
             .retained_states
             .keys()
             .filter(|(_, property)| *property == crate::world_report::StateProperty::Sticky)
             .cloned()
             .collect();
         for key in keys {
-            let (meta, disposition, spent) = match self.retained_states.get(&key) {
+            let (meta, disposition, spent) = match self.world.settlement.retained_states.get(&key) {
                 Some(binding) => match binding.sticky_meta.as_ref() {
                     Some(meta) => (meta.clone(), binding.disposition, binding.spent),
                     None => continue,
@@ -1468,18 +1600,20 @@ impl WorldEngine {
                 continue;
             }
             if meta.requested {
-                if let Some(binding) = self.retained_states.get_mut(&key)
+                if let Some(binding) = self.world.settlement.retained_states.get_mut(&key)
                     && let Some(meta_mut) = binding.sticky_meta.as_mut()
                 {
                     meta_mut.followup_done = true;
                 }
                 continue;
             }
-            if !self.staged.observation.inventory_complete || self.staged.gesture_barrier {
+            if !self.world.staged.observation.inventory_complete
+                || self.world.staged.gesture_barrier
+            {
                 continue;
             }
             let window = key.0.clone();
-            let Some(fact) = self.staged.facts.get(&window) else {
+            let Some(fact) = self.world.staged.facts.get(&window) else {
                 continue;
             };
             if fact.minimized == Some(true) {
@@ -1488,7 +1622,7 @@ impl WorldEngine {
             if self.is_held_window(&window) || self.is_excluded_window(&window) {
                 continue;
             }
-            if self.retained.iter().any(
+            if self.world.settlement.retained.iter().any(
                 |transfer| matches!(&transfer.target.kind, TransferKind::Window(w) if *w == window),
             ) {
                 continue;
@@ -1503,11 +1637,13 @@ impl WorldEngine {
                 continue;
             }
             let home_readable = self
+                .world
                 .staged
                 .domains
                 .iter()
                 .any(|domain| domain.key == meta.home && domain.readable);
             let dest_readable = self
+                .world
                 .staged
                 .domains
                 .iter()
@@ -1518,7 +1654,9 @@ impl WorldEngine {
             if held_scopes.contains(&meta.home) || held_scopes.contains(&meta.dest) {
                 continue;
             }
-            if !(self.engine_knows_window_any(&window) || self.members.contains_key(&window)) {
+            if !(self.world.engine_knows_window_any(&window)
+                || self.world.workspace.members.contains_key(&window))
+            {
                 continue;
             }
             // Stale-proof guard: an Applied off/clear proof only unlocks
@@ -1535,17 +1673,16 @@ impl WorldEngine {
             if fact.sticky != Some(false) {
                 continue;
             }
-            let mut staged = self.clone();
-            let pre_desire = staged.intent_desired.get(&window).cloned();
-            let pre_result = staged.command_result.clone();
             // OFF followups replay the originating command: commandless
             // restore bindings (requested ON) never reach here, and a
             // missing sequence must never invent one.
             let Some(cmd_seq) = meta.command_seq else {
                 continue;
             };
+            let pre_desire = self.world.intent.intent_desired.get(&window).cloned();
+            let pre_result = self.world.command_result.clone();
             let applied = if meta.is_toggle_float_clear {
-                staged.run_sticky_toggle_float(
+                self.run_sticky_toggle_float(
                     issue,
                     cmd_seq,
                     &window,
@@ -1554,7 +1691,7 @@ impl WorldEngine {
                     held_scopes,
                 )
             } else {
-                staged.run_sticky_transition(
+                self.run_sticky_transition(
                     issue,
                     cmd_seq,
                     &window,
@@ -1570,19 +1707,21 @@ impl WorldEngine {
             }
             match pre_desire {
                 Some(desire) => {
-                    staged.intent_desired.insert(window.clone(), desire);
+                    self.world
+                        .intent
+                        .intent_desired
+                        .insert(window.clone(), desire);
                 }
                 None => {
-                    staged.intent_desired.remove(&window);
+                    self.world.intent.intent_desired.remove(&window);
                 }
             }
-            staged.command_result = pre_result;
-            if let Some(binding) = staged.retained_states.get_mut(&key)
+            self.world.command_result = pre_result;
+            if let Some(binding) = self.world.settlement.retained_states.get_mut(&key)
                 && let Some(meta_mut) = binding.sticky_meta.as_mut()
             {
                 meta_mut.followup_done = true;
             }
-            *self = staged;
         }
     }
 
@@ -1607,19 +1746,27 @@ impl WorldEngine {
             return;
         }
         let caps_ok = self
+            .connection
             .capabilities()
             .is_some_and(|caps| caps.window_suppression && !caps.native_sticky);
         for desire in windows.iter_mut() {
             let window = desire.lifetime.clone();
-            if !self.restored_sticky.contains_key(&window) {
+            if !self.world.intent.restored_sticky.contains_key(&window) {
                 continue;
             }
-            let Some(rev) = self.sticky_visible_rev.get(&window).copied() else {
+            let Some(rev) = self.world.intent.sticky_visible_rev.get(&window).copied() else {
                 continue;
             };
             // Native sticky facts never take a composed target: raw truth
             // stays authoritative and no composed desire is fabricated.
-            if self.staged.facts.get(&window).and_then(|fact| fact.sticky) == Some(true) {
+            if self
+                .world
+                .staged
+                .facts
+                .get(&window)
+                .and_then(|fact| fact.sticky)
+                == Some(true)
+            {
                 continue;
             }
             let Some(home) = self.staged_homing(&window) else {
@@ -1637,19 +1784,21 @@ impl WorldEngine {
             let excluded_lane =
                 self.is_excluded_window(&window) || derived.excluded || derived.own_excluded;
             let domain_readable = self
+                .world
                 .staged
                 .domains
                 .iter()
                 .any(|domain| domain.key == home && domain.readable);
             let mut controlled = caps_ok
-                && self.staged.observation.inventory_complete
-                && !self.staged.gesture_barrier
+                && self.world.staged.observation.inventory_complete
+                && !self.world.staged.gesture_barrier
                 && !held_scopes.contains(&home)
                 && !self.is_held_window(&window)
                 && !excluded_lane
                 && domain_readable
-                && (self.engine_knows_window_any(&window) || self.members.contains_key(&window));
-            match self.staged.facts.get(&window) {
+                && (self.world.engine_knows_window_any(&window)
+                    || self.world.workspace.members.contains_key(&window));
+            match self.world.staged.facts.get(&window) {
                 Some(fact) => {
                     if fact.suppression_available != Some(true) {
                         controlled = false;
@@ -1659,7 +1808,7 @@ impl WorldEngine {
                     {
                         controlled = false;
                     }
-                    let owned_supported = self.capabilities().is_none_or(|caps| {
+                    let owned_supported = self.connection.capabilities().is_none_or(|caps| {
                         !caps
                             .unavailable_facts
                             .contains(&crate::connection::FactName::Owned)
@@ -1681,7 +1830,10 @@ impl WorldEngine {
                     {
                         controlled = false;
                     }
-                    let maximize_supported = self.capabilities().is_some_and(|caps| caps.maximize);
+                    let maximize_supported = self
+                        .connection
+                        .capabilities()
+                        .is_some_and(|caps| caps.maximize);
                     if maximize_supported && fact.maximized != Some(false) {
                         controlled = false;
                     }
@@ -1703,18 +1855,19 @@ impl WorldEngine {
             desire.visibility = Some(target);
             if excluded_lane {
                 desire.visibility_authority = ScopeAuthority::Untouched;
-            } else if self.staged.gesture_barrier {
+            } else if self.world.staged.gesture_barrier {
                 desire.visibility_authority = ScopeAuthority::Hold(HoldReason::GestureBarrier);
-            } else if !self.staged.observation.inventory_complete {
+            } else if !self.world.staged.observation.inventory_complete {
                 desire.visibility_authority = ScopeAuthority::Hold(HoldReason::IncompleteInventory);
             } else if self
+                .world
                 .staged
                 .facts
                 .get(&window)
                 .is_some_and(|fact| fact.minimized == Some(true))
             {
                 desire.visibility_authority = ScopeAuthority::Hold(HoldReason::Minimized);
-            } else if let Some(reason) = self.hold_reasons.get(&home).copied() {
+            } else if let Some(reason) = self.world.hold_reasons.get(&home).copied() {
                 desire.visibility_authority = ScopeAuthority::Hold(reason);
             } else {
                 desire.visibility_authority = ScopeAuthority::Hold(HoldReason::Unreadable);
@@ -1744,12 +1897,18 @@ impl WorldEngine {
         if self.sticky_route() != StickyRoute::Native {
             return;
         }
-        if !self.capabilities().is_some_and(|caps| caps.native_sticky) {
+        if !self
+            .connection
+            .capabilities()
+            .is_some_and(|caps| caps.native_sticky)
+        {
             return;
         }
         for desire in windows.iter_mut() {
             let window = desire.lifetime.clone();
             let Some(binding) = self
+                .world
+                .settlement
                 .retained_states
                 .get(&(window.clone(), StateProperty::Sticky))
             else {
@@ -1770,22 +1929,23 @@ impl WorldEngine {
             let excluded_lane =
                 self.is_excluded_window(&window) || derived.excluded || derived.own_excluded;
             let domain_readable = self
+                .world
                 .staged
                 .domains
                 .iter()
                 .any(|domain| domain.key == home && domain.readable);
             let mut controlled = !binding.spent
-                && self.staged.observation.inventory_complete
-                && !self.staged.gesture_barrier
+                && self.world.staged.observation.inventory_complete
+                && !self.world.staged.gesture_barrier
                 && !held_scopes.contains(&home)
                 && !self.is_held_window(&window)
                 && !excluded_lane
                 && domain_readable
-                && !self.retained.iter().any(
+                && !self.world.settlement.retained.iter().any(
                     |transfer| matches!(&transfer.target.kind, TransferKind::Window(w) if *w == window),
                 )
-                && (self.engine_knows_window_any(&window) || self.members.contains_key(&window));
-            match self.staged.facts.get(&window) {
+                && (self.world.engine_knows_window_any(&window) || self.world.workspace.members.contains_key(&window));
+            match self.world.staged.facts.get(&window) {
                 Some(fact) => {
                     if fact.minimized == Some(true)
                         || fact.host_hidden != Some(false)
@@ -1813,18 +1973,19 @@ impl WorldEngine {
                 ScopeAuthority::Controlled
             } else if excluded_lane {
                 ScopeAuthority::Untouched
-            } else if self.staged.gesture_barrier {
+            } else if self.world.staged.gesture_barrier {
                 ScopeAuthority::Hold(HoldReason::GestureBarrier)
-            } else if !self.staged.observation.inventory_complete {
+            } else if !self.world.staged.observation.inventory_complete {
                 ScopeAuthority::Hold(HoldReason::IncompleteInventory)
             } else if self
+                .world
                 .staged
                 .facts
                 .get(&window)
                 .is_some_and(|fact| fact.minimized == Some(true))
             {
                 ScopeAuthority::Hold(HoldReason::Minimized)
-            } else if let Some(reason) = self.hold_reasons.get(&home).copied() {
+            } else if let Some(reason) = self.world.hold_reasons.get(&home).copied() {
                 ScopeAuthority::Hold(reason)
             } else {
                 ScopeAuthority::Hold(HoldReason::Unreadable)

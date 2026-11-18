@@ -239,11 +239,17 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
         "closed lifetime drops from published rows: {ids:?}"
     );
     assert!(
-        !engine.engine_knows_window_any(&WindowId("wClose".to_owned())),
+        !engine
+            .world
+            .engine_knows_window_any(&WindowId("wClose".to_owned())),
         "closed lifetime drops from sessions"
     );
     assert!(
-        !engine.members.contains_key(&WindowId("wClose".to_owned())),
+        !engine
+            .world
+            .workspace
+            .members
+            .contains_key(&WindowId("wClose".to_owned())),
         "closed lifetime drops from membership"
     );
     let w2 = reply
@@ -272,6 +278,8 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
     // Pre-command frame settlement is adopted despite the refusal.
     assert_eq!(
         engine
+            .world
+            .settlement
             .consumed_frames
             .get(&WindowId("w0".to_owned()))
             .and_then(crate::world_attempts::PropertyAttempt::as_frame)
@@ -490,7 +498,7 @@ fn creation_exhaustion_stays_envelope_without_adoption() {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("base accepted, got {other:?}"),
     };
-    engine.creation_counter = u64::MAX;
+    engine.world.workspace.creation_counter = u64::MAX;
     // Occupy the live trailing empty so the next trailing selection must
     // create (the exhaustion path) instead of reusing.
     match engine
@@ -542,8 +550,8 @@ fn creation_exhaustion_stays_envelope_without_adoption() {
         WorldOutcome::Accepted(reply) => reply.state_revision,
         other => panic!("observation base accepted, got {other:?}"),
     };
-    let highwater_before = engine.command_highwater;
-    let revision_before = engine.state_revision;
+    let highwater_before = engine.world.command_highwater;
+    let revision_before = engine.state_revision();
     match engine
         .handle_report(
             &report(
@@ -564,16 +572,17 @@ fn creation_exhaustion_stays_envelope_without_adoption() {
     // Envelope rejects adopt nothing: revision, command watermark, and
     // cached reply all stay exactly as before.
     assert_eq!(
-        engine.state_revision, revision_before,
+        engine.state_revision(),
+        revision_before,
         "envelope mutates no revision"
     );
     assert_eq!(
-        engine.command_highwater, highwater_before,
+        engine.world.command_highwater, highwater_before,
         "envelope consumes no sequence"
     );
     assert_eq!(
         engine
-            .last_reply_v4
+            .last_reply_v4()
             .as_ref()
             .map(|reply| reply.state_revision),
         Some(rev_before),
@@ -749,10 +758,10 @@ fn sticky_trailing_create_refusal_rolls_back_creation() {
         WorldOutcome::Accepted(_) => {}
         other => panic!("send to trailing accepted, got {other:?}"),
     }
-    let retained_before = engine.retained.len();
+    let retained_before = engine.world.settlement.retained.len();
     assert!(
         engine
-            .ring_occupied(&OutputId("out-a".to_owned()))
+            .tx_ro(|tx| tx.ring_occupied(&OutputId("out-a".to_owned())))
             .contains("ws-2"),
         "trailing occupied so the numbered send must take the Create path"
     );
@@ -803,27 +812,27 @@ fn sticky_trailing_create_refusal_rolls_back_creation() {
         "sticky send refuses with its catalog kind"
     );
     assert_eq!(
-        engine.mapping, control.mapping,
+        engine.world.workspace.mapping, control.world.workspace.mapping,
         "trailing creation rolls back to control: {:?} vs {:?}",
-        engine.mapping, control.mapping
+        engine.world.workspace.mapping, control.world.workspace.mapping
     );
     assert_eq!(
-        engine.creation_counter, control.creation_counter,
+        engine.world.workspace.creation_counter, control.world.workspace.creation_counter,
         "creation counter matches control"
     );
     assert_eq!(
-        engine.retained.len(),
+        engine.world.settlement.retained.len(),
         retained_before,
         "no transfer minted for the refused mover: {:?}",
-        engine.retained
+        engine.world.settlement.retained
     );
     assert!(
         !engine
-            .retained
+            .world.settlement.retained
             .iter()
             .any(|r| matches!(&r.target.kind, crate::world_report::TransferKind::Window(w) if w.0 == "wSticky")),
         "refused sticky leaves no flight: {:?}",
-        engine.retained
+        engine.world.settlement.retained
     );
 }
 
@@ -1007,7 +1016,9 @@ fn resize_refusal_diagnostic_reports_actual_internal_cause_with_context() {
         owner: OwnerId::parse("adapter-1").expect("owner"),
         correlation: CorrelationId::parse("req-1").expect("correlation"),
     };
-    let kind = match engine.execute_command(&issue, 2, &command, &BTreeSet::new(), None, None) {
+    let kind = match engine
+        .tx(|tx| tx.execute_command(&issue, 2, &command, &BTreeSet::new(), None, None))
+    {
         CommandApplied::Rejected { kind, .. } => kind,
         CommandApplied::NoEffect => panic!("singleton resize refuses, got NoEffect"),
         CommandApplied::Effect(_) => panic!("singleton resize refuses, got Effect"),
@@ -1061,24 +1072,28 @@ fn resize_refusal_diagnostic_reports_actual_internal_cause_with_context() {
 fn resize_diag(engine: &WorldEngine, report: &WorldReportV4, kind: &str) -> Option<String> {
     // Legacy `resize_refusal_diagnostic` read the inline command pair off
     // the report; the v4 twin binds the executing command explicitly.
-    engine.resize_refusal_diagnostic_v4_for_command(
-        report,
-        report.command.as_ref().expect("probe carries a command"),
-        report
-            .command_seq
-            .expect("probe carries a command sequence"),
-        kind,
-    )
+    engine.tx_ro(|tx| {
+        tx.resize_refusal_diagnostic_v4_for_command(
+            report,
+            report.command.as_ref().expect("probe carries a command"),
+            report
+                .command_seq
+                .expect("probe carries a command sequence"),
+            kind,
+        )
+    })
 }
 
 fn staged_domain_rows(engine: &WorldEngine, window: &str) -> usize {
     let key = engine
+        .world
         .staged
         .homing
         .get(&WindowId(window.to_owned()))
         .expect("homed subject")
         .clone();
     engine
+        .world
         .staged
         .domains
         .iter()
@@ -1310,20 +1325,22 @@ fn v4verbatim_kind(engine: &mut WorldEngine, seq: u64, command: &WorldCommand) -
     // The verbatim internal cause comes from the command seam itself, never
     // from a hand-picked test string (same pattern as the legacy diagnostic
     // test above).
-    match engine.execute_command(
-        &v4issue(&v4report(
+    match engine.tx(|tx| {
+        tx.execute_command(
+            &v4issue(&v4report(
+                seq,
+                vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
+                "w0",
+                None,
+                None,
+            )),
             seq,
-            vec![fact("w0", "out-a", 0), fact("w1", "out-a", 100)],
-            "w0",
+            command,
+            &BTreeSet::new(),
             None,
             None,
-        )),
-        seq,
-        command,
-        &BTreeSet::new(),
-        None,
-        None,
-    ) {
+        )
+    }) {
         CommandApplied::Rejected { kind, .. } => kind,
         CommandApplied::NoEffect => panic!("expected refusal, got NoEffect"),
         CommandApplied::Effect(_) => panic!("expected refusal, got Effect"),
@@ -1380,8 +1397,8 @@ fn v4_queued_resize_refusal_keeps_executing_identity_and_internal_kind() {
     // The per-command diagnostic joins that same sequence to the resolved
     // bookkeeping identity and the verbatim internal kind (not just the
     // mapped wire token).
-    let bookkeeping = engine.bookkeeping_command(&command);
-    let line = engine.command_refusal_diagnostic_v4(&probe, &bookkeeping, 9, kind);
+    let bookkeeping = engine.tx(|tx| tx.bookkeeping_command(&command));
+    let line = engine.tx(|tx| tx.command_refusal_diagnostic_v4(&probe, &bookkeeping, 9, kind));
     let wire = wire_kind.as_str();
     for token in [
         "cmdseq=9",
@@ -1400,7 +1417,7 @@ fn v4_queued_resize_refusal_keeps_executing_identity_and_internal_kind() {
     // The queued resize keeps its staged-context detail line too, bound to
     // the executing sequence instead of the absent report pair.
     let detail = engine
-        .resize_refusal_diagnostic_v4_for_command(&probe, &bookkeeping, 9, kind)
+        .tx_ro(|tx| tx.resize_refusal_diagnostic_v4_for_command(&probe, &bookkeeping, 9, kind))
         .expect("queued resize keeps detail");
     for token in [
         "cmdseq=9",
@@ -1468,8 +1485,9 @@ fn v4_command_refusal_diagnostic_covers_focus_and_move_with_actual_kind() {
         );
     }
     for (seq, command, kind) in [(7, &focus, focus_kind), (8, &mov, move_kind)] {
-        let bookkeeping = engine.bookkeeping_command(command);
-        let line = engine.command_refusal_diagnostic_v4(&probe, &bookkeeping, seq, kind);
+        let bookkeeping = engine.tx(|tx| tx.bookkeeping_command(command));
+        let line =
+            engine.tx(|tx| tx.command_refusal_diagnostic_v4(&probe, &bookkeeping, seq, kind));
         let wire = CommandRejectKind::parse(kind)
             .unwrap_or(CommandRejectKind::OperationRefused)
             .as_str();
@@ -1486,30 +1504,21 @@ fn v4_command_refusal_diagnostic_covers_focus_and_move_with_actual_kind() {
             "bounded line: {line:?}"
         );
     }
-    let focus_line = engine.command_refusal_diagnostic_v4(
-        &probe,
-        &engine.bookkeeping_command(&focus),
-        7,
-        focus_kind,
-    );
+    let focus_cmd = engine.tx(|tx| tx.bookkeeping_command(&focus));
+    let focus_line =
+        engine.tx(|tx| tx.command_refusal_diagnostic_v4(&probe, &focus_cmd, 7, focus_kind));
     assert!(focus_line.contains("op=focus"), "focus op: {focus_line}");
-    let move_line = engine.command_refusal_diagnostic_v4(
-        &probe,
-        &engine.bookkeeping_command(&mov),
-        8,
-        move_kind,
-    );
+    let move_cmd = engine.tx(|tx| tx.bookkeeping_command(&mov));
+    let move_line =
+        engine.tx(|tx| tx.command_refusal_diagnostic_v4(&probe, &move_cmd, 8, move_kind));
     assert!(
         move_line.contains("op=move") && move_line.contains("dir=left"),
         "move op and direction: {move_line}"
     );
     // Non-resize commands keep no resize detail line.
     assert_eq!(
-        engine.resize_refusal_diagnostic_v4_for_command(
-            &probe,
-            &engine.bookkeeping_command(&focus),
-            7,
-            focus_kind
+        engine.tx_ro(
+            |tx| tx.resize_refusal_diagnostic_v4_for_command(&probe, &focus_cmd, 7, focus_kind)
         ),
         None,
         "focus keeps the generic line only"
@@ -1535,7 +1544,8 @@ fn v4_command_refusal_diagnostic_is_safe_bounded_and_pure() {
         window: WindowId("w\n0".to_owned()),
         direction: "LEFT".to_owned(),
     };
-    let line = engine.command_refusal_diagnostic_v4(&probe, &hostile, 11, "weird kind!");
+    let line =
+        engine.tx(|tx| tx.command_refusal_diagnostic_v4(&probe, &hostile, 11, "weird kind!"));
     assert!(!line.contains('\n'), "no log injection: {line:?}");
     for token in [
         "req=-",
@@ -1558,7 +1568,8 @@ fn v4_command_refusal_diagnostic_is_safe_bounded_and_pure() {
     assert!(line.len() <= 512, "bounded line: {line:?}");
     // Pure formatting: repeated calls agree and engine state is untouched,
     // so the surviving batch settles exactly as it would without the probe.
-    let again = engine.command_refusal_diagnostic_v4(&probe, &hostile, 11, "weird kind!");
+    let again =
+        engine.tx(|tx| tx.command_refusal_diagnostic_v4(&probe, &hostile, 11, "weird kind!"));
     assert_eq!(line, again, "diagnostic is deterministic");
     let revision_before = engine.state_revision();
     let clean = v4report(2, vec![fact("w0", "out-a", 0)], "w0", None, None);

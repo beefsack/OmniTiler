@@ -6,19 +6,20 @@
 //! retains the core-owned live topology directional commands resolve
 //! against. No behavior change.
 
+use crate::world_transaction::WorldTransaction;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::directional::{Direction, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
-use crate::world_engine::{StagedDomain, StagedObservation, StagedReport, WorldEngine};
+use crate::world_engine::{StagedDomain, StagedObservation, WorldEngine};
 use crate::world_report::{
-    AuthorityScope, HeldScreenRow, HeldWindowRow, HoldReason, PresentationRowV4, RowDiagnostic,
-    RowDiagnosticKind, RowDiagnosticLane, StateProperty, TransferKind, WindowFact, WorldReportV4,
+    AuthorityScope, HoldReason, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, TransferKind,
+    WorldReportV4,
 };
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Retain (or fence) the core-owned live output topology from one
     /// accepted report, before any command planning on that same report.
     /// A report with every screen complete and carrying valid FULL
@@ -31,8 +32,8 @@ impl WorldEngine {
     /// window frames.
     pub(crate) fn retain_live_topology(&mut self) {
         let mut fresh: BTreeMap<String, Rect> = BTreeMap::new();
-        let mut complete = !self.staged.screens.is_empty();
-        for screen in &self.staged.screens {
+        let mut complete = !self.world.staged.screens.is_empty();
+        for screen in &self.world.staged.screens {
             if !screen.complete {
                 complete = false;
                 break;
@@ -50,16 +51,18 @@ impl WorldEngine {
             }
         }
         if complete {
-            self.live_topology = fresh;
+            self.world.workspace.live_topology = fresh;
         } else {
-            self.live_topology.clear();
+            self.world.workspace.live_topology.clear();
         }
     }
 
     /// Live FULL rectangles as shared selector entries, in stable output
     /// order. Empty when no complete topology is retained.
     pub(crate) fn live_topology_entries(&self) -> Vec<crate::output_selection::OutputEntry> {
-        self.live_topology
+        self.world
+            .workspace
+            .live_topology
             .iter()
             .map(|(id, rect)| crate::output_selection::OutputEntry {
                 id: OutputId(id.clone()),
@@ -71,14 +74,15 @@ impl WorldEngine {
     /// Staged logical homing for one window, if the staged observation
     /// assigns it to a known logical workspace.
     pub(crate) fn staged_homing(&self, window: &WindowId) -> Option<DomainKey> {
-        self.staged.homing.get(window).cloned()
+        self.world.staged.homing.get(window).cloned()
     }
 
     /// Whether one window rides a narrowly held row this report: live
     /// presence with no usable facts. Held windows keep membership and
     /// slots but authorize no writes.
     pub(crate) fn is_held_window(&self, window: &WindowId) -> bool {
-        self.staged
+        self.world
+            .staged
             .held_windows
             .iter()
             .any(|held| held.window == *window)
@@ -88,7 +92,8 @@ impl WorldEngine {
     /// host-hidden known-true. Per-window staged truth only, never a
     /// report-wide inventory verdict; unknown (`None`) is not hidden.
     pub(crate) fn staged_hidden(&self, window: &WindowId) -> bool {
-        self.staged
+        self.world
+            .staged
             .facts
             .get(window)
             .is_some_and(|fact| fact.minimized == Some(true) || fact.host_hidden == Some(true))
@@ -98,7 +103,7 @@ impl WorldEngine {
     /// Excluded windows hold no membership, slot, or control, complete
     /// and incomplete alike.
     pub(crate) fn is_excluded_window(&self, window: &WindowId) -> bool {
-        self.staged.excluded.contains(window)
+        self.world.staged.excluded.contains(window)
     }
 
     /// Core-derived classification for one staged window. Missing entries
@@ -108,7 +113,7 @@ impl WorldEngine {
         &self,
         window: &WindowId,
     ) -> crate::window_classify::ClassifiedWindow {
-        self.staged.derived.get(window).copied().unwrap_or(
+        self.world.staged.derived.get(window).copied().unwrap_or(
             crate::window_classify::ClassifiedWindow {
                 floating: false,
                 fit_excluded: true,
@@ -132,7 +137,7 @@ impl WorldEngine {
     /// `fact.output` no longer names the logical screen. Tiled rows
     /// never use this: physical screen affinity is their arrival proof.
     pub(crate) fn owning_output(&self, workspace: &str) -> Option<OutputId> {
-        for (output, ring) in &self.mapping {
+        for (output, ring) in &self.world.workspace.mapping {
             if ring.iter().any(|id| id == workspace) {
                 return Some(OutputId(output.clone()));
             }
@@ -143,7 +148,8 @@ impl WorldEngine {
     /// Screen completeness from the staged observation: `None` when the
     /// screen is not reported at all.
     pub(crate) fn screen_complete(&self, output: &OutputId) -> Option<bool> {
-        self.staged
+        self.world
+            .staged
             .screens
             .iter()
             .find(|screen| screen.output == *output)
@@ -157,16 +163,16 @@ impl WorldEngine {
     /// owns no ring. Native-free outputs always resolve through the
     /// retained core view.
     pub(crate) fn effective_view(&self, output: &OutputId) -> Option<String> {
-        let ring = self.mapping.get(&output.0)?;
+        let ring = self.world.workspace.mapping.get(&output.0)?;
         if ring.is_empty() {
             return None;
         }
-        if let Some(echo) = self.staged.echoes.get(&output.0)
+        if let Some(echo) = self.world.staged.echoes.get(&output.0)
             && ring.iter().any(|id| id == echo)
         {
             return Some(echo.clone());
         }
-        if let Some(view) = self.views.get(&output.0)
+        if let Some(view) = self.world.workspace.views.get(&output.0)
             && ring.iter().any(|id| id == view)
         {
             return Some(view.clone());
@@ -177,8 +183,10 @@ impl WorldEngine {
     /// Reported echo for one screen, when the adapter names a known ring
     /// member. Unknown echoes never authorize homing or views.
     pub(crate) fn known_echo(&self, output: &OutputId) -> Option<String> {
-        let echo = self.staged.echoes.get(&output.0)?;
+        let echo = self.world.staged.echoes.get(&output.0)?;
         if self
+            .world
+            .workspace
             .mapping
             .get(&output.0)
             .is_some_and(|ring| ring.iter().any(|id| id == echo))
@@ -193,77 +201,17 @@ impl WorldEngine {
     /// survivor, keeping the logical id. `None` when the key is live or
     /// no live survivor hosts it.
     pub(crate) fn rehome_displaced(&self, key: DomainKey) -> Option<DomainKey> {
-        if self.mapping.contains_key(&key.output.0) {
-            return Some(key);
-        }
-        let dest = self.displaced.get(&key.output.0)?.dest.clone();
-        if !self.mapping.contains_key(&dest) {
-            return None;
-        }
-        Some(DomainKey {
-            output: OutputId(dest),
-            workspace: key.workspace,
-        })
+        crate::world_members::rehome_displaced_in(
+            &self.world.workspace.mapping,
+            &self.world.workspace.displaced,
+            key,
+        )
     }
+}
 
-    /// Resolve output-less held window rows to a real scope: the row's actual
-    /// reported output first, then the retained home (live session
-    /// membership, else the previous report's homing). An unhomed
-    /// output-less row keeps `None`: evidence retained, no authority.
-    /// The preserved `kind` carries the invalid-vs-conflicting reason
-    /// so scope resolution never loses it; the rebuilt diagnostic
-    /// reuses that kind, defaulting to `InvalidFact` only when the
-    /// row never graded a reason. Corpus held rows always carry
-    /// their output, so this path never fires there. Shared by the legacy
-    /// and v4 intakes so scope resolution cannot drift.
-    pub(crate) fn resolve_held_window_scopes(
-        &self,
-        held: &[HeldWindowRow],
-        prior_homing: &BTreeMap<WindowId, DomainKey>,
-    ) -> Vec<HeldWindowRow> {
-        held.iter()
-            .map(|held| {
-                let scope = match &held.output {
-                    Some(out) => Some(AuthorityScope::Output(out.clone())),
-                    None => self
-                        .layout
-                        .retained_home_any(&held.window)
-                        .or_else(|| prior_homing.get(&held.window).map(|key| key.output.clone()))
-                        .map(AuthorityScope::Output),
-                };
-                let mut held = held.clone();
-                held.diagnostic = scope.map(|scope| RowDiagnostic {
-                    scope,
-                    row: RowDiagnosticLane::Window,
-                    id: Some(held.window.0.clone()),
-                    kind: held.kind,
-                });
-                held
-            })
-            .collect()
-    }
-
-    /// Narrow-hold diagnostics shared by both intakes: held screens' typed
-    /// diagnostics first, then the resolved held windows' diagnostics, in
-    /// report order. Callers append their own lane diagnostics after this
-    /// prefix so lane order cannot drift.
-    pub(crate) fn staged_screen_window_diagnostics(
-        held_screens: &[HeldScreenRow],
-        resolved_held: &[HeldWindowRow],
-    ) -> Vec<RowDiagnostic> {
-        held_screens
-            .iter()
-            .map(|held| held.diagnostic.clone())
-            .chain(
-                resolved_held
-                    .iter()
-                    .filter_map(|held| held.diagnostic.clone()),
-            )
-            .collect()
-    }
-
+impl WorldEngine {
     /// Capture the raw observation lanes of a v4 report verbatim, in
-    /// source order. Same boundary as [`Self::capture_observation_v4`]: the
+    /// source order. Same boundary as [`WorldEngine::capture_observation_v4`]: the
     /// caller passes the original typed rows, never capability-graded
     /// effective rows, so the capture retains the true original facts.
     /// Pure.
@@ -318,245 +266,35 @@ impl WorldEngine {
             intent_records: report.intent_records.clone(),
         }
     }
+}
 
-    /// Stage the per-window classification loop plus explicit closes:
-    /// own-process exclusion, the excluded set, fact output, facts, and
-    /// derived carriers. Shared by the legacy and v4 intakes so
-    /// classification cannot drift.
-    pub(crate) fn stage_window_facts(
-        &self,
-        windows: &[WindowFact],
-        closes: &[WindowId],
-        staged: &mut StagedReport,
-    ) {
-        let unavailable: &[crate::connection::FactName] = self
-            .capabilities()
-            .map(|capabilities| capabilities.unavailable_facts.as_slice())
-            .unwrap_or(&[]);
-        let own_process_id = self
-            .application_identity()
-            .and_then(|identity| identity.process_id.as_deref());
-        let fixed_predicate = self.fixed_size_predicate_setting();
-        let maximize_supported = crate::world_state::state_property_supported(
-            self.capabilities(),
-            StateProperty::Maximized,
-        );
-        let native_sticky_supported = crate::world_state::state_property_supported(
-            self.capabilities(),
-            StateProperty::Sticky,
-        );
-        for fact in windows {
-            // Core-derived classification per staged fact: retained tile
-            // membership from the previous member set, explicit
-            // tile/float overrides from the session and retained floats.
-            // Resizable never feeds admission here.
-            let member_tiled = self
-                .members
-                .get(&fact.window)
-                .is_some_and(|state| !state.floating);
-            // The members map refreshes its floating mark from this same
-            // classification, so a capacity-floated exception still reads
-            // tiled here and would force the staged observation untiled
-            // (the D5 retry then mismatches the retained exception as
-            // `partial-observation`). The engine session is ground truth
-            // for tile vs exception: never claim retained tile for a
-            // window the session holds floated.
-            let engine_exception = self.layout.is_exception_window_any(&fact.window);
-            let retained_tiled = member_tiled && !engine_exception;
-            // Same-lifetime safety-exclusion fallback: the sweep retires
-            // the excluded slot (never a native close), so a lifted
-            // lifetime would otherwise lose its approved intent. The
-            // neutral ledger restores only what the session held when the
-            // exclusion landed; explicit closes clear it, never reuse it.
-            let automatic_fixed = self.layout.is_automatic_fixed_float_any(&fact.window)
-                || self
-                    .excluded_intent
-                    .get(&fact.window)
-                    .is_some_and(|intent| intent.automatic_fixed);
-            let tile_override = self.layout.has_fixed_tile_override_any(&fact.window)
-                || self
-                    .excluded_intent
-                    .get(&fact.window)
-                    .is_some_and(|intent| intent.tile_override)
-                || self.pending_intent.get(&fact.window).is_some_and(|data| {
-                    data.float == Some(false)
-                        && data.sticky_prior.is_none()
-                        && !self.intent_conflicts.contains(&fact.window)
-                });
-            let explicit_float = self
-                .retained_floats
-                .iter()
-                .any(|retained| retained.window == fact.window)
-                || self.restored_floats.contains(&fact.window)
-                || self.pending_intent.get(&fact.window).is_some_and(|data| {
-                    data.float == Some(true)
-                        && data.sticky_prior.is_none()
-                        && !self.intent_conflicts.contains(&fact.window)
-                });
-            // Restored semantic sticky intent: a pending whole
-            // sticky-bearing record (any float lane, exact prior kept) or
-            // committed sticky-prior provenance. Conflicted subjects confer
-            // no authority. Never an adapter fact projection: raw facts
-            // stay the sole public input and this carrier only proves the
-            // sticky float, never a native write.
-            let semantic_sticky = self.restored_sticky.contains_key(&fact.window)
-                || self.pending_intent.get(&fact.window).is_some_and(|data| {
-                    data.sticky_prior.is_some() && !self.intent_conflicts.contains(&fact.window)
-                });
-            let classified =
-                crate::window_classify::classify_window(crate::window_classify::ClassifyInput {
-                    fact,
-                    unavailable,
-                    fixed_predicate,
-                    maximize_supported,
-                    native_sticky_supported,
-                    retained_tiled,
-                    automatic_fixed,
-                    tile_override,
-                    explicit_float,
-                    semantic_sticky,
-                    own_process_id,
-                });
-            // Own-process exclusion drops the facts before closes: the
-            // project's own overlays, borders, pager, carriers, and
-            // proof/control UI never enter membership, geometry, or
-            // focus. A separate process of the same executable is never
-            // excluded by identity alone.
-            if classified.own_excluded {
-                staged.excluded.insert(fact.window.clone());
-                continue;
-            }
-            // Known safety exclusions stay staged as facts (so focus and
-            // publish gates can deny them explicitly) but are tracked
-            // alongside: they never home, never keep membership or
-            // slots, and never authorize writes, complete and
-            // incomplete alike.
-            if classified.excluded {
-                staged.excluded.insert(fact.window.clone());
-            }
-            staged
-                .fact_output
-                .insert(fact.window.clone(), fact.output.clone());
-            staged.facts.insert(fact.window.clone(), fact.clone());
-            staged.derived.insert(fact.window.clone(), classified);
-        }
-        // Normalize wire-bound visibility `LastWrite` evidence into the single
-        // canonical attempt lane exactly once, after capability grading: a
-        // staged healthy fact wins per window, else the first losslessly
-        // decoded held row by lifetime, with malformed held raw skipped. Doing
-        // this here (not at capture) preserves the exact graded/held precedence
-        // of the old settlement intake and keeps the raw capture as the single
-        // ingestion boundary. The explicit observation flag is set even for a
-        // report with zero visibility evidence, so classification restages can
-        // never re-ingest or duplicate; no settlement lane rebuilds the DTO.
-        if !staged.observation.visibility_normalized {
-            let mut covered: BTreeSet<WindowId> = BTreeSet::new();
-            for (window, fact) in &staged.facts {
-                if let Some(last) = fact.last_write {
-                    staged.observation.property_attempts.push(
-                        crate::world_attempts::PropertyAttempt::from_last_write(window, &last),
-                    );
-                    covered.insert(window.clone());
-                }
-            }
-            for held_row in &staged.held_windows {
-                if covered.contains(&held_row.window) {
-                    continue;
-                }
-                if let Some(attempt) =
-                    crate::world_attempts::PropertyAttempt::from_held_last_write(held_row)
-                {
-                    covered.insert(held_row.window.clone());
-                    staged.observation.property_attempts.push(attempt);
-                }
-            }
-            staged.observation.visibility_normalized = true;
-        }
-        for id in closes {
-            staged.closes.insert(id.clone());
-        }
-    }
-
-    /// Classification-only restage from already-captured inputs: the raw
-    /// observation capture (ingestion boundary, moved unchanged, never
-    /// re-ingested), the effective classified rows (capability-graded on
-    /// v4, verbatim on legacy), and the retained raw held/screens/v4-only
-    /// lanes. Re-resolves held scopes against prior staged homing,
-    /// rebuilds diagnostics in original lane order, re-runs the shared
-    /// per-window classification loop over the effective rows (raw rows
-    /// are never classified), and resets derived/homing/domain indexes.
-    /// Use-time scale diagnostics are not duplicated here: they are owned
-    /// by the next `build_staged_domains`, which guards repeats. Takes no
-    /// ledger action; callers own exactly-once ingestion.
+impl WorldTransaction<'_> {
+    /// Classification-only restage from retained stable capture inputs:
+    /// rebuilds derived classification, held-row diagnostic scopes,
+    /// diagnostics, and index carriers in place without copying raw/effective
+    /// capture lanes or re-ingesting intent/visibility. Preserves echoes,
+    /// revision, and batch focus state; clears derived domains and homing.
     pub(crate) fn restage_classification(&mut self) {
-        // Held scope resolution reads the previous homes, never the homes
-        // this restage is about to assign. Resolution preserves each raw
-        // output field and refreshes only its derived diagnostic scope.
-        let prior_homing = self.staged.homing.clone();
-        let resolved_held =
-            self.resolve_held_window_scopes(&self.staged.held_windows.clone(), &prior_homing);
-        let effective = self.staged.effective_windows.clone();
-        let state_offroute: Vec<RowDiagnostic> = self
-            .staged
-            .observation
-            .property_attempts
-            .iter()
-            .filter_map(crate::world_attempts::PropertyAttempt::as_state)
-            .filter(|evidence| {
-                !crate::world_state::state_property_supported(
-                    self.capabilities(),
-                    evidence.property,
-                )
-            })
-            .filter_map(|evidence| {
-                self.state_offroute_diagnostic_for(
-                    &effective,
-                    &self.staged.held_windows,
-                    &evidence.window,
-                )
-            })
-            .collect();
-        let mut diagnostics =
-            Self::staged_screen_window_diagnostics(&self.staged.held_screens, &resolved_held);
-        diagnostics.extend(
-            self.staged
-                .held_native
-                .iter()
-                .map(|held| held.diagnostic.clone()),
-        );
-        diagnostics.extend(
-            self.staged
-                .held_attempts
-                .iter()
-                .filter_map(|held| held.diagnostic.clone()),
-        );
-        diagnostics.extend(state_offroute);
-        if let Some(PresentationRowV4::Held(held)) = &self.staged.presentation_v4
-            && let Some(diagnostic) = &held.diagnostic
-        {
-            diagnostics.push(diagnostic.clone());
-        }
-        let closed = self.staged.observation.closed.clone();
-        let mut restaged = StagedReport {
-            observation: self.staged.observation.clone(),
-            screens: self.staged.screens.clone(),
-            held_screens: self.staged.held_screens.clone(),
-            held_windows: resolved_held,
-            diagnostics,
-            gesture_barrier: self.staged.gesture_barrier,
-            held_native: self.staged.held_native.clone(),
-            held_attempts: self.staged.held_attempts.clone(),
-            presentation_v4: self.staged.presentation_v4.clone(),
-            renderer_input: self.staged.renderer_input.clone(),
-            effective_windows: effective,
-            echoes: self.staged.echoes.clone(),
-            revision: self.staged.revision,
-            batch_focus_issued: self.staged.batch_focus_issued,
-            ..StagedReport::default()
+        let derived = {
+            let ctx = crate::world_classification::StageClassificationContext::new(
+                self.connection,
+                self.world,
+            );
+            let input = crate::world_classification::StageClassificationInput {
+                windows: &self.world.staged.effective_windows,
+                closed: &self.world.staged.observation.closed,
+                held_screens: &self.world.staged.held_screens,
+                held_windows: &self.world.staged.held_windows,
+                held_native: &self.world.staged.held_native,
+                held_attempts: &self.world.staged.held_attempts,
+                presentation: self.world.staged.presentation_v4.as_ref(),
+                state_attempts: crate::world_classification::StateAttemptSource::Normalized(
+                    &self.world.staged.observation.property_attempts,
+                ),
+            };
+            crate::world_classification::classify_stage(&ctx, input)
         };
-        let effective = restaged.effective_windows.clone();
-        self.stage_window_facts(&effective, &closed, &mut restaged);
-        self.staged = restaged;
+        self.world.staged.apply_derived(derived);
     }
 
     /// Occupied logical ids on one screen's ring: homed non-sticky
@@ -565,15 +303,16 @@ impl WorldEngine {
     /// presence, never an empty workspace.
     pub(crate) fn ring_occupied(&self, output: &OutputId) -> BTreeSet<String> {
         let mut occupied = BTreeSet::new();
-        if let Some(ring) = self.mapping.get(&output.0) {
+        if let Some(ring) = self.world.workspace.mapping.get(&output.0) {
             for id in ring {
                 let key = DomainKey {
                     output: output.clone(),
                     workspace: WorkspaceId(id.clone()),
                 };
-                for (window, homed) in &self.staged.homing {
+                for (window, homed) in &self.world.staged.homing {
                     if homed == &key
                         && self
+                            .world
                             .staged
                             .facts
                             .get(window)
@@ -586,7 +325,7 @@ impl WorldEngine {
                 if occupied.contains(id) {
                     continue;
                 }
-                for held in &self.staged.held_windows {
+                for held in &self.world.staged.held_windows {
                     if self.core_homing(&held.window).as_ref() == Some(&key) {
                         occupied.insert(id.clone());
                         break;
@@ -608,10 +347,11 @@ impl WorldEngine {
     /// existing lifecycle role only. Empty means no non-sticky homed fact
     /// for the id, mirroring the converge lifecycle facts.
     pub(crate) fn trailing_marked_id(&self, output: &str) -> Option<String> {
-        if !self.staged.observation.inventory_complete {
+        if !self.world.staged.observation.inventory_complete {
             return None;
         }
         if !self
+            .world
             .staged
             .screens
             .iter()
@@ -623,18 +363,19 @@ impl WorldEngine {
         if self.native_order_conflict() {
             return None;
         }
-        let ring = self.mapping.get(output)?;
+        let ring = self.world.workspace.mapping.get(output)?;
         let last = ring.last()?;
-        let occupied: BTreeSet<String> =
-            if self.workspace_mode_setting() == crate::workspace_scope::WorkspaceMode::Shared {
-                let mut union = BTreeSet::new();
-                for out in self.mapping.keys() {
-                    union.extend(self.ring_occupied(&OutputId(out.clone())));
-                }
-                union
-            } else {
-                self.ring_occupied(&OutputId(output.to_owned()))
-            };
+        let occupied: BTreeSet<String> = if self.connection.workspace_mode_setting()
+            == crate::workspace_scope::WorkspaceMode::Shared
+        {
+            let mut union = BTreeSet::new();
+            for out in self.world.workspace.mapping.keys() {
+                union.extend(self.ring_occupied(&OutputId(out.clone())));
+            }
+            union
+        } else {
+            self.ring_occupied(&OutputId(output.to_owned()))
+        };
         let last_occupied = occupied.contains(last.as_str());
         if crate::workspace::trailing_reusable(!last_occupied, last_occupied) {
             Some(last.clone())
@@ -653,7 +394,7 @@ impl WorldEngine {
 
     /// Strip one logical workspace id from every ring except `keep`.
     pub(crate) fn take_workspace_from_all(&mut self, id: &str, keep: &str) {
-        for (output, list) in self.mapping.iter_mut() {
+        for (output, list) in self.world.workspace.mapping.iter_mut() {
             if output != keep {
                 list.retain(|kept| kept != id);
             }
@@ -671,8 +412,8 @@ impl WorldEngine {
             output: OutputId(from_output.to_owned()),
             workspace: WorkspaceId(workspace.to_owned()),
         };
-        if let Some(mode) = self.tiling.remove(&from) {
-            self.tiling.insert(
+        if let Some(mode) = self.world.workspace.tiling.remove(&from) {
+            self.world.workspace.tiling.insert(
                 DomainKey {
                     output: OutputId(to_output.to_owned()),
                     workspace: WorkspaceId(workspace.to_owned()),
@@ -690,16 +431,18 @@ impl WorldEngine {
         let mut homing: BTreeMap<WindowId, DomainKey> = BTreeMap::new();
         // Stage admitted facts only: own-process exclusion and known
         // safety exclusions never home (logical_homing enforces both).
-        let mut staged_ids: Vec<WindowId> = self.staged.facts.keys().cloned().collect();
+        let mut staged_ids: Vec<WindowId> = self.world.staged.facts.keys().cloned().collect();
         staged_ids.sort_by(|a, b| a.0.cmp(&b.0));
         for window in &staged_ids {
             if let Some(key) = self.logical_homing(window) {
                 homing.insert(window.clone(), key);
             }
         }
-        self.staged.homing = homing;
+        self.world.staged.homing = homing;
         let mut domains: Vec<StagedDomain> = Vec::new();
         let mut rings: Vec<(String, Vec<String>)> = self
+            .world
+            .workspace
             .mapping
             .iter()
             .map(|(output, ring)| (output.clone(), ring.clone()))
@@ -707,11 +450,13 @@ impl WorldEngine {
         rings.sort_by(|a, b| a.0.cmp(&b.0));
         for (output, ring) in rings {
             let screen = self
+                .world
                 .staged
                 .screens
                 .iter()
                 .find(|screen| screen.output.0 == output);
             let held = self
+                .world
                 .staged
                 .held_screens
                 .iter()
@@ -722,7 +467,7 @@ impl WorldEngine {
                     // once by this screen's scale. An overflowing scale holds
                     // the scope as unreadable with a staged diagnostic (never
                     // a clamped gap, never silent).
-                    match self.scaled_gaps(screen.scale) {
+                    match self.connection.scaled_gaps(screen.scale) {
                         Some((gap, outer_gap)) => {
                             (screen.work_area, gap, outer_gap, screen.complete, false)
                         }
@@ -740,8 +485,8 @@ impl WorldEngine {
                     id: Some(output.clone()),
                     kind: RowDiagnosticKind::Unreadable,
                 };
-                if !self.staged.diagnostics.contains(&diagnostic) {
-                    self.staged.diagnostics.push(diagnostic);
+                if !self.world.staged.diagnostics.contains(&diagnostic) {
+                    self.world.staged.diagnostics.push(diagnostic);
                 }
             }
             for id in ring {
@@ -752,11 +497,11 @@ impl WorldEngine {
                 let mut windows = Vec::new();
                 let mut minimized = Vec::new();
                 let mut unreadable = Vec::new();
-                for (window, homed) in &self.staged.homing {
+                for (window, homed) in &self.world.staged.homing {
                     if homed != &key {
                         continue;
                     }
-                    let Some(fact) = self.staged.facts.get(window) else {
+                    let Some(fact) = self.world.staged.facts.get(window) else {
                         continue;
                     };
                     let classified = self.derived_for(window);
@@ -791,17 +536,17 @@ impl WorldEngine {
                     }
                 }
                 let mut closed = Vec::new();
-                for id in &self.staged.closes.clone() {
+                for id in &self.world.staged.closes.clone() {
                     if self.homing_for_closed(id).as_ref() == Some(&key) {
                         closed.push(id.clone());
                     }
                 }
-                let focused = if self.staged.observation.focused_global.is_empty() {
+                let focused = if self.world.staged.observation.focused_global.is_empty() {
                     WindowId(String::new())
                 } else {
-                    let active = WindowId(self.staged.observation.focused_global.clone());
-                    let homed_here = self.staged.homing.get(&active).as_ref() == Some(&&key);
-                    let active_live = self.staged.facts.get(&active).is_some_and(|_| {
+                    let active = WindowId(self.world.staged.observation.focused_global.clone());
+                    let homed_here = self.world.staged.homing.get(&active).as_ref() == Some(&&key);
+                    let active_live = self.world.staged.facts.get(&active).is_some_and(|_| {
                         let classified = self.derived_for(&active);
                         !classified.hidden && !classified.hold
                     });
@@ -812,8 +557,8 @@ impl WorldEngine {
                     }
                 };
                 // Host-owned domains need a complete inventory to read.
-                let inventory_readable = !self.host_owned_workspace_domains()
-                    || self.staged.observation.inventory_complete;
+                let inventory_readable = !self.connection.host_owned_workspace_domains()
+                    || self.world.staged.observation.inventory_complete;
                 let readable = complete
                     && inventory_readable
                     && work_area.is_some()
@@ -856,7 +601,7 @@ impl WorldEngine {
                 });
             }
         }
-        self.staged.domains = domains;
+        self.world.staged.domains = domains;
     }
 
     /// Retained logical homing for one window: the single-owner core
@@ -883,12 +628,12 @@ impl WorldEngine {
         // the pointer mid-gesture while the committed topology must not
         // flap; the release intent derives from the carried start frame
         // plus the raw release fact, never from this shielded homing.
-        if let Some(session) = self.gesture.as_ref()
+        if let Some(session) = self.world.gesture.retained.as_ref()
             && session.window == *window
         {
             return Some(session.home.clone());
         }
-        let staged_fact = self.staged.facts.get(window)?.clone();
+        let staged_fact = self.world.staged.facts.get(window)?.clone();
         let fact = &staged_fact;
         let derived = self.derived_for(window);
         // Known safety exclusions and own-process windows never home:
@@ -912,24 +657,26 @@ impl WorldEngine {
         // (arrival); observed at the source screen homes to the source
         // cell (delayed, never yanked by the committed target session or
         // a view change).
-        if let Some((source_key, target_key)) = self.retained.iter().find_map(|r| {
-            if matches!(&r.target.kind, TransferKind::Migration)
-                && r.members.iter().any(|m| m == window)
-            {
-                Some((
-                    DomainKey {
-                        output: r.source_output.clone(),
-                        workspace: WorkspaceId(r.source_workspace.clone()),
-                    },
-                    DomainKey {
-                        output: r.target.target_output.clone(),
-                        workspace: WorkspaceId(r.target.target_workspace.clone()),
-                    },
-                ))
-            } else {
-                None
-            }
-        }) {
+        if let Some((source_key, target_key)) =
+            self.world.settlement.retained.iter().find_map(|r| {
+                if matches!(&r.target.kind, TransferKind::Migration)
+                    && r.members.iter().any(|m| m == window)
+                {
+                    Some((
+                        DomainKey {
+                            output: r.source_output.clone(),
+                            workspace: WorkspaceId(r.source_workspace.clone()),
+                        },
+                        DomainKey {
+                            output: r.target.target_output.clone(),
+                            workspace: WorkspaceId(r.target.target_workspace.clone()),
+                        },
+                    ))
+                } else {
+                    None
+                }
+            })
+        {
             // Truthful member receipts win over the raw screen: an explicit
             // contrary logical receipt must never count as arrival proof.
             // Unknown membership proves arrival only in the native-free
@@ -947,7 +694,7 @@ impl WorldEngine {
                             workspace: WorkspaceId(observed.to_owned()),
                         });
                     }
-                    None if !self.host_owned_workspace_domains() => {
+                    None if !self.connection.host_owned_workspace_domains() => {
                         return Some(target_key);
                     }
                     None => {
@@ -1016,10 +763,16 @@ impl WorldEngine {
         // require the exact target id when the adapter reports one.
         // With host-owned domains unknown native membership never proves
         // arrival (it holds at the source until native evidence arrives).
-        if let Some(found) = self.retained.iter().find_map(|r| match &r.target.kind {
-            TransferKind::Window(w) if w == window => Some(r.clone()),
-            _ => None,
-        }) {
+        if let Some(found) =
+            self.world
+                .settlement
+                .retained
+                .iter()
+                .find_map(|r| match &r.target.kind {
+                    TransferKind::Window(w) if w == window => Some(r.clone()),
+                    _ => None,
+                })
+        {
             let target = found.target.clone();
             if Some(fact_output) == Some(&target.target_output) {
                 let same_output = found.source_output == target.target_output;
@@ -1047,7 +800,7 @@ impl WorldEngine {
                             workspace: WorkspaceId(observed.to_owned()),
                         });
                     }
-                    None if !same_output && !self.host_owned_workspace_domains() => {
+                    None if !same_output && !self.connection.host_owned_workspace_domains() => {
                         return Some(DomainKey {
                             output: target.target_output,
                             workspace: WorkspaceId(target.target_workspace),
@@ -1136,7 +889,7 @@ impl WorldEngine {
         if self.core_homing(window).is_none()
             && !self.engine_knows_window(window)
             && self.fresh_placement_armed_for(&crate::world_engine::RawRouting::from_staged(
-                &self.staged,
+                &self.world.staged,
             ))
             && !derived.floating
             && !derived.sticky
@@ -1169,7 +922,7 @@ impl WorldEngine {
     /// lifetimes never join it, so map absence alone would mistake them
     /// for newcomers.
     pub(crate) fn engine_knows_window(&self, window: &WindowId) -> bool {
-        self.layout.knows_window_any(window)
+        self.world.layout.knows_window_any(window)
     }
 
     /// Cursor output for one report: the reported cursor position looked
@@ -1208,7 +961,7 @@ impl WorldEngine {
         }
         // Staged admitted facts only: exclusions never provide focus proof.
         let window = WindowId(ctx.focused_global.to_owned());
-        let fact = self.staged.facts.get(&window)?;
+        let fact = self.world.staged.facts.get(&window)?;
         let derived = self.derived_for(&window);
         if derived.own_excluded || derived.excluded {
             return None;
@@ -1265,13 +1018,13 @@ impl WorldEngine {
     /// affinity instead of inventing focus.
     /// Routing reads the captured staged observation.
     pub(crate) fn resolve_fresh_key_staged(&mut self) -> Option<DomainKey> {
-        let ctx = crate::world_engine::RawRouting::from_staged(&self.staged);
+        let ctx = crate::world_engine::RawRouting::from_staged(&self.world.staged);
         let cursor_output = self.fresh_cursor_output(&ctx);
         let (focused_output, trace) = self.fresh_focused_output(&ctx);
         let primary_first = self.primary_first_outputs(&ctx);
-        self.fresh_focus.trace = trace;
+        self.world.focus.fresh_focus.trace = trace;
         let output = crate::cursor_targeting::resolve_fresh_output(
-            self.fresh_placement_setting(),
+            self.connection.fresh_placement_setting(),
             cursor_output.as_ref(),
             focused_output.as_ref(),
             &primary_first,
@@ -1302,7 +1055,7 @@ type DirectionalPair = (
     Direction,
 );
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Strict unique-reciprocal target output for one source in one
     /// direction over the retained live FULL topology. `None` fences:
     /// cleared topology, gaps, or ambiguous edges.
@@ -1436,6 +1189,7 @@ impl WorldEngine {
         held_scopes: &BTreeSet<DomainKey>,
     ) -> Option<DirectionalPair> {
         let source = self
+            .world
             .staged
             .domains
             .iter()
@@ -1466,6 +1220,7 @@ impl WorldEngine {
         }
         let current = self.effective_view(target_output);
         let candidates: Vec<&crate::world_engine::StagedDomain> = self
+            .world
             .staged
             .domains
             .iter()
@@ -1527,6 +1282,7 @@ impl WorldEngine {
         held_scopes: &BTreeSet<DomainKey>,
     ) -> Result<Option<DirectionalPair>, crate::output_selection::SelectionError> {
         let Some(source) = self
+            .world
             .staged
             .domains
             .iter()

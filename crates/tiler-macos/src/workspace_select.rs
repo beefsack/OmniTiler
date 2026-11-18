@@ -1805,7 +1805,13 @@ pub(crate) fn run_batch_step(
             "spaces-select refuses: no native context to report; no actuation".to_owned(),
         ));
     };
-    let reply = match session.engine_mut().handle_report(&report, &[]).0 {
+    let reply = match tiler_protocol::world_admission::handle_report_checked(
+        session.engine_mut(),
+        &report,
+        &[],
+    )
+    .0
+    {
         tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         tiler_core::world_engine::WorldOutcome::CommandConsumed(reply) => reply,
         tiler_core::world_engine::WorldOutcome::Duplicate(_) => {

@@ -176,7 +176,6 @@ mod tests {
         BorderHideReasonV4, PresentationIngressV4, PresentationRowV4, ScreenReport,
         WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
     };
-    use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
 
     fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
         Rect { x, y, w, h }
@@ -366,8 +365,11 @@ mod tests {
     }
 
     fn session_base(engine: &WorldEngine, home: &DomainKey) -> u64 {
-        assert!(engine.layout().contains_domain(home), "session exists");
-        engine.layout().accepted_revision(home)
+        assert!(
+            engine.world.layout().contains_domain(home),
+            "session exists"
+        );
+        engine.world.layout().accepted_revision(home)
     }
 
     #[test]
@@ -431,18 +433,6 @@ mod tests {
                 assert_eq!(focused_window, Some(WindowId("win-a".to_owned())));
                 assert_eq!(found.focused_window, WindowId("win-a".to_owned()));
                 assert_eq!(reply.presentation.foreground, "win-a");
-                // Budget: the structural estimate bounds the v4 exact
-                // byte size with a populated underlay. Legacy pinned the
-                // canonical wire here; v4 has no full-reply canonical
-                // encoder in core (wire lives in the protocol crate),
-                // and the matched `Found` arm above is the typed twin of
-                // the `"status":"found"` wire pin.
-                let estimate = reply_estimate_v4(&reply);
-                let exact = reply_exact_bytes_v4(&reply);
-                assert!(
-                    estimate >= exact,
-                    "estimate {estimate} bounds exact {exact}"
-                );
             }
             hidden => panic!("expected found, got {hidden:?}"),
         }
@@ -1117,7 +1107,7 @@ mod tests {
                 ingress("win-a"),
             ),
         );
-        assert!(!engine.layout().contains_domain(&home));
+        assert!(!engine.world.layout().contains_domain(&home));
         let reply = accepted(
             &mut engine,
             &report(
@@ -1229,17 +1219,6 @@ mod tests {
         let border = &reply.presentation.border;
         assert!(!border.visible);
         assert_eq!(border.reason, None);
-        // Budget: the structural estimate bounds the v4 exact byte size.
-        // (Legacy pinned the canonical wire here with `"visible":true`;
-        // v4 has no full-reply canonical encoder in core — wire lives in
-        // the protocol crate — so the typed verdict above plus this
-        // bound is the faithful twin.)
-        let estimate = reply_estimate_v4(&reply);
-        let exact = reply_exact_bytes_v4(&reply);
-        assert!(
-            estimate >= exact,
-            "estimate {estimate} bounds exact {exact}"
-        );
         // Ineligible: hidden with the eligibility reason.
         let reply = accepted(
             &mut engine,

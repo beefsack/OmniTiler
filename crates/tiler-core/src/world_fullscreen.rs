@@ -18,6 +18,7 @@
 //! or maximize writes. Publication rides `decorate_native_fullscreen_state`
 //! below, which coexists with the sticky row on one window.
 
+use crate::world_transaction::WorldTransaction;
 use std::collections::BTreeSet;
 
 use crate::directional::WindowId;
@@ -25,7 +26,6 @@ use crate::session::DomainKey;
 use crate::world_commands::CommandApplied;
 use crate::world_engine::{
     KIND_IN_FLIGHT, KIND_OPERATION, KIND_SCOPE_HELD, MSG_IN_FLIGHT, MSG_OPERATION, MSG_SCOPE_HELD,
-    WorldEngine,
 };
 use crate::world_report::{
     AttemptOutcome, CommandRejectKind, CommandResult, HoldReason, ScopeAuthority, StateProperty,
@@ -37,9 +37,10 @@ fn refused(kind: &'static str, message: &'static str) -> CommandApplied {
     CommandApplied::Rejected { kind, message }
 }
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     fn fullscreen_current(&self, window: &WindowId) -> Option<bool> {
-        self.staged
+        self.world
+            .staged
             .facts
             .get(window)
             .and_then(|fact| fact.fullscreen)
@@ -47,6 +48,8 @@ impl WorldEngine {
 
     fn fullscreen_unknown_safety_refusal(&self, window: &WindowId) -> Option<CommandApplied> {
         if self
+            .world
+            .settlement
             .retained
             .iter()
             .any(|transfer| matches!(&transfer.target.kind, crate::world_report::TransferKind::Window(w) if w == window))
@@ -57,6 +60,7 @@ impl WorldEngine {
             return Some(refused(KIND_OPERATION, MSG_OPERATION));
         }
         if self
+            .world
             .staged
             .facts
             .get(window)
@@ -88,6 +92,7 @@ impl WorldEngine {
             return Err(refused(KIND_SCOPE_HELD, MSG_SCOPE_HELD));
         }
         if !self
+            .world
             .staged
             .domains
             .iter()
@@ -95,10 +100,12 @@ impl WorldEngine {
         {
             return Err(refused(KIND_OPERATION, MSG_OPERATION));
         }
-        let Some(fact) = self.staged.facts.get(window) else {
+        let Some(fact) = self.world.staged.facts.get(window) else {
             return Err(refused(KIND_OPERATION, MSG_OPERATION));
         };
         if self
+            .world
+            .settlement
             .retained
             .iter()
             .any(|transfer| matches!(&transfer.target.kind, crate::world_report::TransferKind::Window(w) if w == window))
@@ -136,14 +143,18 @@ impl WorldEngine {
             {
                 return rejected;
             }
-            if !self.capabilities().is_some_and(|caps| caps.fullscreen) {
-                self.command_result = Some(CommandResult::Rejected {
+            if !self
+                .connection
+                .capabilities()
+                .is_some_and(|caps| caps.fullscreen)
+            {
+                self.world.command_result = Some(CommandResult::Rejected {
                     kind: CommandRejectKind::StateUnsupported,
                 });
                 self.note_command(command_seq);
                 return CommandApplied::NoEffect;
             }
-            self.command_result = Some(CommandResult::Rejected {
+            self.world.command_result = Some(CommandResult::Rejected {
                 kind: CommandRejectKind::StateUnknown,
             });
             self.note_command(command_seq);
@@ -153,8 +164,12 @@ impl WorldEngine {
             Ok(home) => home,
             Err(rejected) => return rejected,
         };
-        if !self.capabilities().is_some_and(|caps| caps.fullscreen) {
-            self.command_result = Some(CommandResult::Rejected {
+        if !self
+            .connection
+            .capabilities()
+            .is_some_and(|caps| caps.fullscreen)
+        {
+            self.world.command_result = Some(CommandResult::Rejected {
                 kind: CommandRejectKind::StateUnsupported,
             });
             self.note_command(command_seq);
@@ -165,7 +180,7 @@ impl WorldEngine {
             None => match self.fullscreen_current(window) {
                 Some(current) => !current,
                 None => {
-                    self.command_result = Some(CommandResult::Rejected {
+                    self.world.command_result = Some(CommandResult::Rejected {
                         kind: CommandRejectKind::StateUnknown,
                     });
                     self.note_command(command_seq);
@@ -175,11 +190,15 @@ impl WorldEngine {
         };
         if self.fullscreen_current(window) == Some(desired) {
             let obsolete_opposite = self
+                .world
+                .settlement
                 .retained_states
                 .get(&(window.clone(), StateProperty::Fullscreen))
                 .is_some_and(|binding| binding.target.value != desired);
             if obsolete_opposite {
-                self.retained_states
+                self.world
+                    .settlement
+                    .retained_states
                     .remove(&(window.clone(), StateProperty::Fullscreen));
             }
             self.note_command(command_seq);
@@ -187,6 +206,7 @@ impl WorldEngine {
         }
         if !desired {
             match self
+                .world
                 .staged
                 .facts
                 .get(window)
@@ -194,14 +214,14 @@ impl WorldEngine {
             {
                 Some(true) => {}
                 Some(false) => {
-                    self.command_result = Some(CommandResult::Rejected {
+                    self.world.command_result = Some(CommandResult::Rejected {
                         kind: CommandRejectKind::FullscreenNotExitable,
                     });
                     self.note_command(command_seq);
                     return CommandApplied::NoEffect;
                 }
                 None => {
-                    self.command_result = Some(CommandResult::Rejected {
+                    self.world.command_result = Some(CommandResult::Rejected {
                         kind: CommandRejectKind::StateUnknown,
                     });
                     self.note_command(command_seq);
@@ -210,14 +230,16 @@ impl WorldEngine {
             }
         }
         if !self
+            .world
+            .settlement
             .retained_states
             .contains_key(&(window.clone(), StateProperty::Fullscreen))
-            && self.retained_states.len() >= MAX_RETAINED_STATE_BINDINGS
+            && self.world.settlement.retained_states.len() >= MAX_RETAINED_STATE_BINDINGS
         {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
-        let revision = self.state_revision + 1;
-        self.retained_states.insert(
+        let revision = self.world.state_revision + 1;
+        self.world.settlement.retained_states.insert(
             (window.clone(), StateProperty::Fullscreen),
             crate::world_state::RetainedStateBinding {
                 target: crate::world_state::RetainedStateTarget {
@@ -259,12 +281,18 @@ impl WorldEngine {
         held_scopes: &BTreeSet<DomainKey>,
         windows: &mut [WindowDesire],
     ) {
-        if !self.capabilities().is_some_and(|caps| caps.fullscreen) {
+        if !self
+            .connection
+            .capabilities()
+            .is_some_and(|caps| caps.fullscreen)
+        {
             return;
         }
         for desire in windows.iter_mut() {
             let window = desire.lifetime.clone();
             let Some(binding) = self
+                .world
+                .settlement
                 .retained_states
                 .get(&(window.clone(), StateProperty::Fullscreen))
             else {
@@ -285,22 +313,24 @@ impl WorldEngine {
             let excluded_lane =
                 self.is_excluded_window(&window) || derived.excluded || derived.own_excluded;
             let domain_readable = self
+                .world
                 .staged
                 .domains
                 .iter()
                 .any(|domain| domain.key == home && domain.readable);
             let mut controlled = !binding.spent
-                && self.staged.observation.inventory_complete
-                && !self.staged.gesture_barrier
+                && self.world.staged.observation.inventory_complete
+                && !self.world.staged.gesture_barrier
                 && !held_scopes.contains(&home)
                 && !self.is_held_window(&window)
                 && !excluded_lane
                 && domain_readable
-                && !self.retained.iter().any(
+                && !self.world.settlement.retained.iter().any(
                     |transfer| matches!(&transfer.target.kind, TransferKind::Window(w) if *w == window),
                 )
-                && (self.engine_knows_window_any(&window) || self.members.contains_key(&window));
-            match self.staged.facts.get(&window) {
+                && (self.world.engine_knows_window_any(&window)
+                    || self.world.workspace.members.contains_key(&window));
+            match self.world.staged.facts.get(&window) {
                 Some(fact) => {
                     if fact.minimized == Some(true) || fact.host_hidden != Some(false) {
                         controlled = false;
@@ -314,7 +344,7 @@ impl WorldEngine {
             if binding.spent {
                 controlled = false;
             }
-            if let Some(fact) = self.staged.facts.get(&window) {
+            if let Some(fact) = self.world.staged.facts.get(&window) {
                 if fact.fullscreen.is_none() {
                     controlled = false;
                 }
@@ -329,18 +359,19 @@ impl WorldEngine {
                 ScopeAuthority::Controlled
             } else if excluded_lane {
                 ScopeAuthority::Untouched
-            } else if self.staged.gesture_barrier {
+            } else if self.world.staged.gesture_barrier {
                 ScopeAuthority::Hold(HoldReason::GestureBarrier)
-            } else if !self.staged.observation.inventory_complete {
+            } else if !self.world.staged.observation.inventory_complete {
                 ScopeAuthority::Hold(HoldReason::IncompleteInventory)
             } else if self
+                .world
                 .staged
                 .facts
                 .get(&window)
                 .is_some_and(|fact| fact.minimized == Some(true))
             {
                 ScopeAuthority::Hold(HoldReason::Minimized)
-            } else if let Some(reason) = self.hold_reasons.get(&home).copied() {
+            } else if let Some(reason) = self.world.hold_reasons.get(&home).copied() {
                 ScopeAuthority::Hold(reason)
             } else {
                 ScopeAuthority::Hold(HoldReason::Unreadable)

@@ -160,10 +160,8 @@ fn admit_with(layout: &mut WorldLayout, window: &str, suppress: bool, hints: Win
     windows.push(admitted);
     windows.sort_by(|a, b| a.window.0.cmp(&b.window.0));
     if !layout.contains_domain(&k) {
-        if suppress {
-            if let Some(entry) = windows.iter_mut().find(|e| e.window.0 == window) {
-                entry.fixed_suppress = true;
-            }
+        if suppress && let Some(entry) = windows.iter_mut().find(|e| e.window.0 == window) {
+            entry.fixed_suppress = true;
         }
         layout
             .converge_fresh_domain(&dom, 0, &windows, None)
@@ -2188,7 +2186,7 @@ fn one_axis_hints() -> WindowSizeHints {
 
 #[test]
 fn predicate_defaults_to_both_axes_matching_delivered_behavior() {
-    use crate::size_hints::{fixed_size_reason_with, is_fixed_size_with, FixedSizePredicate};
+    use crate::size_hints::{FixedSizePredicate, fixed_size_reason_with, is_fixed_size_with};
     assert_eq!(FixedSizePredicate::default(), FixedSizePredicate::BothAxes);
     assert_eq!(
         FixedSizePredicate::BothAxes.as_wire_str(),

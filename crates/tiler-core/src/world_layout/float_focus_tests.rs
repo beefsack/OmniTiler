@@ -340,11 +340,13 @@ fn float_cross_edge_conditions_refuse_without_mutation() {
         correlation: CorrelationId::parse("corr-1").expect("valid correlation"),
     };
     engine
+        .world
+        .workspace
         .live_topology
         .insert("out-1".to_owned(), lone_dom.bounds);
     let win_a = eng("win-a", &k1, false);
     let win_f = eng("win-f", &k1, true);
-    engine.staged.domains = vec![StagedDomain {
+    engine.world.staged.domains = vec![StagedDomain {
         key: k1.clone(),
         bounds: lone_dom.bounds,
         gap: lone_dom.gap,
@@ -368,7 +370,7 @@ fn float_cross_edge_conditions_refuse_without_mutation() {
         float_subject: true,
     };
     assert!(matches!(
-        engine.execute_operation(&issue, 1, &cmd, &by_id, &held),
+        engine.tx(|tx| tx.execute_operation(&issue, 1, &cmd, &by_id, &held)),
         crate::world_commands::CommandApplied::Rejected {
             kind: KIND_OPERATION,
             ..

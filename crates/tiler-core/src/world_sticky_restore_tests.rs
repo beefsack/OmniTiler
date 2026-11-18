@@ -90,12 +90,12 @@ fn with_records(mut report: WorldReportV4, records: Vec<IntentRecord>) -> WorldR
 
 fn is_tiled(engine: &WorldEngine, win: &str) -> bool {
     let id = WindowId(win.to_owned());
-    engine.layout.is_tiled_window_any(&id)
+    engine.world.layout.is_tiled_window_any(&id)
 }
 
 fn is_floated(engine: &WorldEngine, win: &str) -> bool {
     let id = WindowId(win.to_owned());
-    engine.layout.is_exception_window_any(&id)
+    engine.world.layout.is_exception_window_any(&id)
 }
 
 /// Fresh restart admission of one saved sticky import through the record
@@ -132,6 +132,8 @@ fn restart_binding<'a>(
     window: &str,
 ) -> &'a crate::world_state::RetainedStateBinding {
     engine
+        .world
+        .settlement
         .retained_states
         .get(&(
             WindowId(window.to_owned()),
@@ -182,16 +184,16 @@ fn all_six_sticky_bearing_records_ingest_whole_into_pending() {
     for (float, prior, win) in &combos {
         let id = WindowId(win.to_string());
         assert_eq!(
-            engine.pending_intent.get(&id).copied(),
+            engine.world.intent.pending_intent.get(&id).copied(),
             Some(IntentData::new(*float, Some(*prior))),
             "{win}"
         );
         assert!(
-            engine.intent_sticky_blocks.contains(&id),
+            engine.world.intent.intent_sticky_blocks.contains(&id),
             "sticky scan must block saves for {win}"
         );
     }
-    assert!(engine.intent_conflicts.is_empty());
+    assert!(engine.world.intent.intent_conflicts.is_empty());
 }
 
 #[test]
@@ -251,24 +253,38 @@ fn sticky_dominates_float_lane_and_commits_exact_prior_without_ops() {
         assert!(row.clear_operation.is_none(), "{row:?}");
     }
     assert_eq!(
-        engine.restored_sticky.get(&WindowId("win-a".to_owned())),
+        engine
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-a".to_owned())),
         Some(&true),
         "prior must stay the exact bool"
     );
     assert_eq!(
-        engine.restored_sticky.get(&WindowId("win-b".to_owned())),
+        engine
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-b".to_owned())),
         Some(&false),
         "prior must stay the exact bool"
     );
-    assert!(engine.restored_floats.is_empty(), "never ordinary float");
+    assert!(
+        engine.world.intent.restored_floats.is_empty(),
+        "never ordinary float"
+    );
     assert!(
         !engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-a".to_owned())),
         "sticky float:false must never commit a tile override"
     );
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );
@@ -319,7 +335,11 @@ fn sticky_provenance_survives_record_free_report_and_prunes_on_close() {
     );
     assert!(is_floated(&engine, "win-a"));
     assert_eq!(
-        engine.restored_sticky.get(&WindowId("win-a".to_owned())),
+        engine
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-a".to_owned())),
         Some(&false)
     );
     // Explicit close prunes the lifetime.
@@ -337,16 +357,22 @@ fn sticky_provenance_survives_record_free_report_and_prunes_on_close() {
     accepted(&mut engine, &closed);
     assert!(
         !engine
+            .world
+            .intent
             .restored_sticky
             .contains_key(&WindowId("win-a".to_owned()))
     );
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );
     assert!(
         !engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -406,26 +432,31 @@ fn all_six_sticky_priors_admit_as_semantic_float_with_exact_prior() {
         );
         assert!(!is_tiled(&engine, "win-a"), "float={float:?} prior={prior}");
         assert_eq!(
-            engine.restored_sticky.get(&WindowId("win-a".to_owned())),
+            engine
+                .world
+                .intent
+                .restored_sticky
+                .get(&WindowId("win-a".to_owned())),
             Some(&prior),
             "float={float:?} prior={prior}"
         );
         assert!(
-            engine.restored_floats.is_empty(),
+            engine.world.intent.restored_floats.is_empty(),
             "float={float:?} prior={prior}"
         );
         assert!(
             !engine
+                .world
                 .layout
                 .has_fixed_tile_override_any(&WindowId("win-a".to_owned())),
             "float={float:?} prior={prior}"
         );
         assert!(
-            engine.pending_intent.is_empty(),
+            engine.world.intent.pending_intent.is_empty(),
             "float={float:?} prior={prior}"
         );
         assert!(
-            engine.intent_conflicts.is_empty(),
+            engine.world.intent.intent_conflicts.is_empty(),
             "float={float:?} prior={prior}"
         );
         let row = row_for(&reply, "win-a").expect("float row");
@@ -493,12 +524,17 @@ fn native_false_composed_null_tiles_but_sticky_record_forces_float() {
     assert!(is_floated(&engine, "win-c"));
     assert!(!is_tiled(&engine, "win-c"));
     assert_eq!(
-        engine.restored_sticky.get(&WindowId("win-c".to_owned())),
+        engine
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-c".to_owned())),
         Some(&true)
     );
-    assert!(engine.restored_floats.is_empty());
+    assert!(engine.world.intent.restored_floats.is_empty());
     assert!(
         !engine
+            .world
             .layout
             .has_fixed_tile_override_any(&WindowId("win-c".to_owned()))
     );
@@ -542,22 +578,33 @@ fn native_false_nonnull_fact_with_sticky_record_stays_fail_closed() {
     assert!(!reply.windows.iter().any(|row| row.lifetime.0 == "win-x"));
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-x".to_owned())),
         "unsupported hold retains pending sticky"
     );
     assert!(
         !engine
+            .world
+            .intent
             .intent_admitted
             .contains(&WindowId("win-x".to_owned()))
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-x".to_owned()))
     );
     assert!(
-        !engine.members.keys().any(|id| id.0 == "win-x"),
+        !engine
+            .world
+            .workspace
+            .members
+            .keys()
+            .any(|id| id.0 == "win-x"),
         "conflicted subject takes no membership"
     );
     // Composed-null recovery consumes the retained sticky and floats with
@@ -585,11 +632,17 @@ fn native_false_nonnull_fact_with_sticky_record_stays_fail_closed() {
     );
     assert!(is_floated(&engine, "win-x"));
     assert_eq!(
-        engine.restored_sticky.get(&WindowId("win-x".to_owned())),
+        engine
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-x".to_owned())),
         Some(&false)
     );
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-x".to_owned()))
     );
@@ -632,12 +685,16 @@ fn native_true_null_holds_pending_and_recovers_record_free() {
     assert!(!is_tiled(&engine, "win-u"));
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-u".to_owned())),
         "supported null holds sticky classification"
     );
     assert!(
         !engine
+            .world
+            .intent
             .intent_admitted
             .contains(&WindowId("win-u".to_owned()))
     );
@@ -666,17 +723,25 @@ fn native_true_null_holds_pending_and_recovers_record_free() {
     );
     assert!(is_floated(&engine, "win-u"));
     assert_eq!(
-        engine.restored_sticky.get(&WindowId("win-u".to_owned())),
+        engine
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-u".to_owned())),
         Some(&true),
         "prior stays exact, not the raw fact"
     );
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-u".to_owned()))
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_admitted
             .contains(&WindowId("win-u".to_owned()))
     );
@@ -714,6 +779,8 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
         assert!(!is_floated(&engine, "win-a"));
         assert!(
             engine
+                .world
+                .intent
                 .pending_intent
                 .contains_key(&WindowId("win-a".to_owned()))
         );
@@ -738,7 +805,11 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
         );
         assert!(is_floated(&engine, "win-a"));
         assert_eq!(
-            engine.restored_sticky.get(&WindowId("win-a".to_owned())),
+            engine
+                .world
+                .intent
+                .restored_sticky
+                .get(&WindowId("win-a".to_owned())),
             Some(&true)
         );
     }
@@ -766,11 +837,15 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
         assert!(reply.intent_desired.is_empty());
         assert!(
             engine
+                .world
+                .intent
                 .pending_intent
                 .contains_key(&WindowId("win-a".to_owned()))
         );
         assert!(
             !engine
+                .world
+                .intent
                 .restored_sticky
                 .contains_key(&WindowId("win-a".to_owned()))
         );
@@ -795,7 +870,11 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
         );
         assert!(is_floated(&engine, "win-a"));
         assert_eq!(
-            engine.restored_sticky.get(&WindowId("win-a".to_owned())),
+            engine
+                .world
+                .intent
+                .restored_sticky
+                .get(&WindowId("win-a".to_owned())),
             Some(&true)
         );
     }
@@ -824,6 +903,8 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
         assert!(!is_floated(&engine, "win-a"));
         assert!(
             engine
+                .world
+                .intent
                 .pending_intent
                 .contains_key(&WindowId("win-a".to_owned()))
         );
@@ -848,7 +929,11 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
         );
         assert!(is_floated(&engine, "win-a"));
         assert_eq!(
-            engine.restored_sticky.get(&WindowId("win-a".to_owned())),
+            engine
+                .world
+                .intent
+                .restored_sticky
+                .get(&WindowId("win-a".to_owned())),
             Some(&true)
         );
     }
@@ -883,7 +968,11 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
         );
         assert!(is_floated(&engine, "win-a"));
         assert_eq!(
-            engine.restored_sticky.get(&WindowId("win-a".to_owned())),
+            engine
+                .world
+                .intent
+                .restored_sticky
+                .get(&WindowId("win-a".to_owned())),
             Some(&true)
         );
     }
@@ -909,6 +998,8 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
         assert!(reply.intent_desired.is_empty());
         assert!(
             engine
+                .world
+                .intent
                 .pending_intent
                 .contains_key(&WindowId("win-a".to_owned()))
         );
@@ -933,7 +1024,11 @@ fn sticky_pending_survives_unhealthy_shapes_then_admits() {
         );
         assert!(is_floated(&engine, "win-a"));
         assert_eq!(
-            engine.restored_sticky.get(&WindowId("win-a".to_owned())),
+            engine
+                .world
+                .intent
+                .restored_sticky
+                .get(&WindowId("win-a".to_owned())),
             Some(&true)
         );
     }
@@ -990,14 +1085,20 @@ fn sticky_late_and_conflicting_records_stay_ignored_after_admission() {
         Some(IntentData::new(Some(true), Some(false)))
     );
     assert!(is_floated(&engine, "win-a"));
-    assert!(engine.pending_intent.is_empty());
-    assert!(engine.intent_conflicts.is_empty());
+    assert!(engine.world.intent.pending_intent.is_empty());
+    assert!(engine.world.intent.intent_conflicts.is_empty());
     assert_eq!(
-        engine.restored_sticky.get(&WindowId("win-a".to_owned())),
+        engine
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-a".to_owned())),
         Some(&false)
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -1035,10 +1136,14 @@ fn sticky_late_and_conflicting_records_stay_ignored_after_admission() {
         "duplicate conflict still projects admitted target"
     );
     assert!(is_floated(&engine, "win-a"));
-    assert!(engine.pending_intent.is_empty());
-    assert!(engine.intent_conflicts.is_empty());
+    assert!(engine.world.intent.pending_intent.is_empty());
+    assert!(engine.world.intent.intent_conflicts.is_empty());
     assert_eq!(
-        engine.restored_sticky.get(&WindowId("win-a".to_owned())),
+        engine
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-a".to_owned())),
         Some(&false)
     );
 }
@@ -1068,11 +1173,15 @@ fn sticky_orphan_pre_ready_and_close_own_rehandshake_cleanup() {
     assert!(!boot.ready, "incomplete first report bootstraps");
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-x".to_owned()))
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-x".to_owned()))
     );
@@ -1093,16 +1202,22 @@ fn sticky_orphan_pre_ready_and_close_own_rehandshake_cleanup() {
     );
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-x".to_owned()))
     );
     assert!(
         !engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-x".to_owned()))
     );
     assert!(
         !engine
+            .world
+            .intent
             .intent_conflicts
             .contains(&WindowId("win-x".to_owned()))
     );
@@ -1128,6 +1243,8 @@ fn sticky_orphan_pre_ready_and_close_own_rehandshake_cleanup() {
     accepted(&mut engine, &gapped);
     assert!(
         engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );
@@ -1148,11 +1265,15 @@ fn sticky_orphan_pre_ready_and_close_own_rehandshake_cleanup() {
     );
     assert!(
         !engine
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned()))
     );
     assert!(
         !engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -1178,7 +1299,11 @@ fn sticky_orphan_pre_ready_and_close_own_rehandshake_cleanup() {
         ),
     );
     assert_eq!(
-        engine.restored_sticky.get(&WindowId("win-a".to_owned())),
+        engine
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-a".to_owned())),
         Some(&false)
     );
     let mut closed = report_full(
@@ -1195,16 +1320,22 @@ fn sticky_orphan_pre_ready_and_close_own_rehandshake_cleanup() {
     accepted(&mut engine, &closed);
     assert!(
         !engine
+            .world
+            .intent
             .restored_sticky
             .contains_key(&WindowId("win-a".to_owned()))
     );
     assert!(
         !engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned()))
     );
     assert!(
         !engine
+            .world
+            .intent
             .intent_admitted
             .contains(&WindowId("win-a".to_owned()))
     );
@@ -1232,17 +1363,19 @@ fn sticky_orphan_pre_ready_and_close_own_rehandshake_cleanup() {
     );
     assert!(
         engine
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-a".to_owned()))
     );
     let _ = rehandshake(&mut engine);
-    assert!(engine.pending_intent.is_empty());
-    assert!(engine.intent_conflicts.is_empty());
-    assert!(engine.intent_admitted.is_empty());
-    assert!(engine.restored_sticky.is_empty());
-    assert!(engine.restored_floats.is_empty());
-    assert!(engine.intent_sticky_blocks.is_empty());
-    assert!(!engine.intent_sticky_saturated);
+    assert!(engine.world.intent.pending_intent.is_empty());
+    assert!(engine.world.intent.intent_conflicts.is_empty());
+    assert!(engine.world.intent.intent_admitted.is_empty());
+    assert!(engine.world.intent.restored_sticky.is_empty());
+    assert!(engine.world.intent.restored_floats.is_empty());
+    assert!(engine.world.intent.intent_sticky_blocks.is_empty());
+    assert!(!engine.world.intent.intent_sticky_saturated);
 }
 
 #[test]
@@ -1312,14 +1445,20 @@ fn sticky_floating_first_appearance_then_reenable_keeps_provenance() {
         reply.intent_desired[0].data,
         Some(IntentData::new(Some(false), Some(true)))
     );
-    assert!(engine.pending_intent.is_empty());
+    assert!(engine.world.intent.pending_intent.is_empty());
     assert_eq!(
-        engine.restored_sticky.get(&WindowId("win-n".to_owned())),
+        engine
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-n".to_owned())),
         Some(&true)
     );
-    assert!(engine.restored_floats.is_empty());
+    assert!(engine.world.intent.restored_floats.is_empty());
     assert!(
         engine
+            .world
+            .workspace
             .members
             .get(&WindowId("win-n".to_owned()))
             .is_some_and(|state| state.floating)
@@ -1354,7 +1493,11 @@ fn sticky_floating_first_appearance_then_reenable_keeps_provenance() {
     assert!(is_floated(&engine, "win-n"));
     assert!(!is_tiled(&engine, "win-n"));
     assert_eq!(
-        engine.restored_sticky.get(&WindowId("win-n".to_owned())),
+        engine
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-n".to_owned())),
         Some(&true)
     );
     let row = row_for(&reply, "win-n").expect("float row");
@@ -1386,7 +1529,11 @@ fn sticky_joint_ledger_commit_steady_and_overflow_fail_closed() {
     );
     gapped.inventory_complete = false;
     accepted(&mut engine, &gapped);
-    assert_eq!(engine.intent_ledger_used(), 2, "pending plus block");
+    assert_eq!(
+        engine.tx(|tx| tx.intent_ledger_used()),
+        2,
+        "pending plus block"
+    );
     let reply = accepted(
         &mut engine,
         &report_full(
@@ -1407,16 +1554,24 @@ fn sticky_joint_ledger_commit_steady_and_overflow_fail_closed() {
         Some(IntentData::new(Some(true), Some(false)))
     );
     assert_eq!(
-        engine.restored_sticky.get(&WindowId("win-a".to_owned())),
+        engine
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-a".to_owned())),
         Some(&false)
     );
-    assert_eq!(engine.intent_ledger_used(), 2, "block plus provenance");
-    assert!(!engine.intent_sticky_saturated);
+    assert_eq!(
+        engine.tx(|tx| tx.intent_ledger_used()),
+        2,
+        "block plus provenance"
+    );
+    assert!(!engine.world.intent.intent_sticky_saturated);
 
     // Full ledger refuses a new sticky insert fail-closed and latches.
     let mut capped = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     for i in 0..crate::world_report::MAX_INTENT_RECORDS {
-        capped.pending_intent.insert(
+        capped.world.intent.pending_intent.insert(
             WindowId(format!("win-{i:05}")),
             IntentData::new(Some(false), None),
         );
@@ -1440,19 +1595,26 @@ fn sticky_joint_ledger_commit_steady_and_overflow_fail_closed() {
     gapped.inventory_complete = false;
     let reply = accepted(&mut capped, &gapped);
     assert!(reply.intent_desired.is_empty());
-    assert!(capped.intent_sticky_saturated, "overflow latches");
+    assert!(
+        capped.world.intent.intent_sticky_saturated,
+        "overflow latches"
+    );
     assert!(
         !capped
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-new".to_owned()))
     );
     assert!(
         !capped
+            .world
+            .intent
             .intent_sticky_blocks
             .contains(&WindowId("win-new".to_owned()))
     );
     assert_eq!(
-        capped.intent_ledger_used(),
+        capped.tx(|tx| tx.intent_ledger_used()),
         crate::world_report::MAX_INTENT_RECORDS
     );
 }
@@ -1482,10 +1644,12 @@ fn sticky_toggle_refuses_only_usable_pending_or_restored() {
         accepted(&mut local, &gapped);
         assert!(
             local
+                .world
+                .intent
                 .pending_intent
                 .contains_key(&WindowId("win-a".to_owned()))
         );
-        let _revision = local.state_revision;
+        let _revision = local.state_revision();
         let native_clear = report_full(
             2,
             2,
@@ -1504,6 +1668,8 @@ fn sticky_toggle_refuses_only_usable_pending_or_restored() {
         assert!(settlements[0].result.is_none());
         assert_eq!(
             local
+                .world
+                .settlement
                 .retained_states
                 .get(&(
                     WindowId("win-a".to_owned()),
@@ -1512,7 +1678,7 @@ fn sticky_toggle_refuses_only_usable_pending_or_restored() {
                 .map(|binding| binding.target.value),
             Some(false)
         );
-        assert_eq!(local.command_highwater, Some(2));
+        assert_eq!(local.world.command_highwater, Some(2));
     }
 
     // Restored sticky refuses without mutation.
@@ -1556,6 +1722,8 @@ fn sticky_toggle_refuses_only_usable_pending_or_restored() {
         assert!(settlements[0].result.is_none());
         assert_eq!(
             local
+                .world
+                .settlement
                 .retained_states
                 .get(&(
                     WindowId("win-a".to_owned()),
@@ -1564,7 +1732,7 @@ fn sticky_toggle_refuses_only_usable_pending_or_restored() {
                 .map(|binding| binding.target.value),
             Some(false)
         );
-        assert_eq!(local.command_highwater, Some(2));
+        assert_eq!(local.world.command_highwater, Some(2));
         assert!(is_floated(&local, "win-a"));
     }
 
@@ -1598,25 +1766,33 @@ fn sticky_toggle_refuses_only_usable_pending_or_restored() {
         accepted(&mut local, &gapped);
         assert!(
             local
+                .world
+                .intent
                 .intent_conflicts
                 .contains(&WindowId("win-a".to_owned()))
         );
         assert!(
             local
+                .world
+                .intent
                 .intent_sticky_blocks
                 .contains(&WindowId("win-a".to_owned()))
         );
         assert!(
             !local
+                .world
+                .intent
                 .pending_intent
                 .contains_key(&WindowId("win-a".to_owned()))
         );
         assert!(
             !local
+                .world
+                .intent
                 .restored_sticky
                 .contains_key(&WindowId("win-a".to_owned()))
         );
-        let revision = local.state_revision;
+        let revision = local.state_revision();
         let conflicted_toggle = report_full(
             2,
             2,
@@ -1630,7 +1806,7 @@ fn sticky_toggle_refuses_only_usable_pending_or_restored() {
         let reply = accepted(&mut local, &conflicted_toggle);
         assert_eq!(
             revision + 1,
-            local.state_revision,
+            local.state_revision(),
             "unrelated toggle still runs"
         );
         assert_eq!(
@@ -1756,6 +1932,8 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
             assert_eq!(save.win.0, "win-a");
         }
         let saved_data = origin
+            .world
+            .intent
             .intent_desired
             .get(&WindowId("win-a".to_owned()))
             .and_then(|entry| *entry)
@@ -1795,7 +1973,11 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
         );
         assert!(is_floated(&fresh, "win-a"), "prior={prior}");
         assert_eq!(
-            fresh.restored_sticky.get(&WindowId("win-a".to_owned())),
+            fresh
+                .world
+                .intent
+                .restored_sticky
+                .get(&WindowId("win-a".to_owned())),
             Some(&prior),
             "prior={prior}"
         );
@@ -1807,6 +1989,8 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
             "prior={prior}: restart must publish native sticky reacquire"
         );
         let binding = fresh
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
             .expect("restored binding");
@@ -1863,6 +2047,8 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
             "prior={prior}"
         );
         let settled = fresh
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
             .expect("binding");
@@ -1902,6 +2088,8 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
             "prior={prior}"
         );
         let off_rev = fresh
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
             .expect("off binding")
@@ -1909,6 +2097,8 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
             .revision;
         assert_eq!(
             fresh
+                .world
+                .settlement
                 .retained_states
                 .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
                 .expect("off binding")
@@ -1947,6 +2137,8 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
         accepted(&mut fresh, &off_proof);
         assert!(
             !fresh
+                .world
+                .intent
                 .restored_sticky
                 .contains_key(&WindowId("win-a".to_owned())),
             "prior={prior}"
@@ -2009,12 +2201,18 @@ fn sticky_restart_refusal_preserves_import_without_retry() {
         }]
     );
     assert_eq!(
-        fresh.restored_sticky.get(&WindowId("win-a".to_owned())),
+        fresh
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-a".to_owned())),
         Some(&false),
         "proven refusal keeps the import"
     );
     assert_eq!(
         fresh
+            .world
+            .intent
             .intent_desired
             .get(&WindowId("win-a".to_owned()))
             .and_then(|entry| entry.as_ref()),
@@ -2091,11 +2289,17 @@ fn sticky_restart_ambiguous_evidence_keeps_import_without_retry() {
         "ambiguous never completes"
     );
     assert_eq!(
-        fresh.restored_sticky.get(&WindowId("win-a".to_owned())),
+        fresh
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-a".to_owned())),
         Some(&true)
     );
     assert_eq!(
         fresh
+            .world
+            .intent
             .intent_desired
             .get(&WindowId("win-a".to_owned()))
             .and_then(|entry| entry.as_ref()),
@@ -2131,6 +2335,8 @@ fn sticky_restart_unknown_holds_then_record_free_recovers() {
     );
     assert!(
         fresh
+            .world
+            .intent
             .pending_intent
             .contains_key(&WindowId("win-a".to_owned())),
         "unknown sticky holds pending"
@@ -2138,6 +2344,8 @@ fn sticky_restart_unknown_holds_then_record_free_recovers() {
     assert!(!is_floated(&fresh, "win-a"));
     assert!(
         !fresh
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Sticky)),
         "held import mints no binding"
@@ -2165,7 +2373,11 @@ fn sticky_restart_unknown_holds_then_record_free_recovers() {
     assert_eq!(reply.intent_desired[0].data, Some(saved));
     assert!(is_floated(&fresh, "win-a"));
     assert_eq!(
-        fresh.restored_sticky.get(&WindowId("win-a".to_owned())),
+        fresh
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-a".to_owned())),
         Some(&true),
         "prior stays exact, not the raw fact"
     );
@@ -2240,10 +2452,16 @@ fn sticky_restart_floating_route_mints_binding_next_observation() {
     assert_eq!(reply.intent_desired[0].win, WindowId("win-n".to_owned()));
     assert_eq!(reply.intent_desired[0].data, Some(saved));
     assert_eq!(
-        engine.restored_sticky.get(&WindowId("win-n".to_owned())),
+        engine
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-n".to_owned())),
         Some(&true)
     );
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-n".to_owned()), StateProperty::Sticky))
         .expect("floating binding");
@@ -2359,11 +2577,17 @@ fn sticky_restart_import_shapes_share_binding_policy() {
     assert_eq!(reply.intent_desired[0].win, WindowId("win-a".to_owned()));
     assert_eq!(reply.intent_desired[0].data, Some(saved));
     assert_eq!(
-        composed.restored_sticky.get(&WindowId("win-a".to_owned())),
+        composed
+            .world
+            .intent
+            .restored_sticky
+            .get(&WindowId("win-a".to_owned())),
         Some(&true)
     );
     assert!(
         !composed
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Sticky)),
         "composed mints no state target"

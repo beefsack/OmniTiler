@@ -179,7 +179,7 @@ fn ordinary_max_mints_binding_and_revokes_stale_fullscreen_entry() {
         &mut engine,
         &bootstrap(vec![max_fact("win-a", None, false, false)]),
     );
-    engine.retained_states.insert(
+    engine.world.settlement.retained_states.insert(
         (WindowId("win-a".to_owned()), StateProperty::Fullscreen),
         crate::world_state::RetainedStateBinding {
             target: crate::world_state::RetainedStateTarget {
@@ -197,7 +197,7 @@ fn ordinary_max_mints_binding_and_revokes_stale_fullscreen_entry() {
             above_meta: None,
         },
     );
-    let rev_before = engine.state_revision;
+    let rev_before = engine.state_revision();
     let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
@@ -224,11 +224,15 @@ fn ordinary_max_mints_binding_and_revokes_stale_fullscreen_entry() {
     }
     assert!(
         !engine
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen)),
         "stale fullscreen entry revoked by explicit maximize"
     );
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("maximized binding");
@@ -246,7 +250,7 @@ fn fullscreen_replacement_pairs_same_rev_seq() {
         &mut engine,
         &bootstrap(vec![max_fact("win-a", Some(true), true, false)]),
     );
-    let rev_before = engine.state_revision;
+    let rev_before = engine.state_revision();
     let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
@@ -272,10 +276,14 @@ fn fullscreen_replacement_pairs_same_rev_seq() {
         other => panic!("expected maximize result, got {other:?}"),
     }
     let full = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("fullscreen leg");
     let max = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("maximize leg");
@@ -302,7 +310,7 @@ fn both_true_mints_only_fullscreen_leg_and_cancels_obsolete_max() {
         &mut engine,
         &bootstrap(vec![max_fact("win-a", Some(true), true, true)]),
     );
-    engine.retained_states.insert(
+    engine.world.settlement.retained_states.insert(
         (WindowId("win-a".to_owned()), StateProperty::Maximized),
         crate::world_state::RetainedStateBinding {
             target: crate::world_state::RetainedStateTarget {
@@ -345,12 +353,16 @@ fn both_true_mints_only_fullscreen_leg_and_cancels_obsolete_max() {
         other => panic!("expected maximize result, got {other:?}"),
     }
     let full = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("fullscreen leg");
     assert!(!full.target.value);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Maximized)),
         "obsolete opposite maximize binding cancelled, no extra maximize write"
@@ -384,7 +396,7 @@ fn unexitable_or_unknown_exitability_rejects_without_mutation() {
             "exitable {exitable:?}"
         );
         assert!(
-            engine.retained_states.is_empty(),
+            engine.world.settlement.retained_states.is_empty(),
             "no binding minted on exitability refusal"
         );
     }
@@ -402,7 +414,7 @@ fn unknown_maximized_home_unreadable_refuses_without_mutation() {
     );
     let mut row = max_fact("win-a", None, false, false);
     row.maximized = None;
-    let revision = engine.state_revision;
+    let revision = engine.state_revision();
     match engine.handle_report(&cmd(2, 1, vec![row], toggle("win-a")), &[]) {
         (WorldOutcome::Accepted(_), settlements) => {
             assert_eq!(settlements.len(), 1);
@@ -416,8 +428,8 @@ fn unknown_maximized_home_unreadable_refuses_without_mutation() {
         }
         (other, _) => panic!("expected readability refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision + 1, "refusal issues");
-    assert!(engine.retained_states.is_empty());
+    assert_eq!(engine.state_revision(), revision + 1, "refusal issues");
+    assert!(engine.world.settlement.retained_states.is_empty());
 }
 
 #[test]
@@ -427,9 +439,9 @@ fn dual_pair_cap_refusal_mints_neither_leg() {
         &mut engine,
         &bootstrap(vec![max_fact("win-a", Some(true), true, false)]),
     );
-    let need = MAX_RETAINED_STATE_BINDINGS - engine.retained_states.len();
+    let need = MAX_RETAINED_STATE_BINDINGS - engine.world.settlement.retained_states.len();
     for i in 0..need {
-        engine.retained_states.insert(
+        engine.world.settlement.retained_states.insert(
             (WindowId(format!("win-fill-{i:05}")), StateProperty::Above),
             crate::world_state::RetainedStateBinding {
                 target: crate::world_state::RetainedStateTarget {
@@ -449,11 +461,11 @@ fn dual_pair_cap_refusal_mints_neither_leg() {
         );
     }
     assert_eq!(
-        engine.retained_states.len(),
+        engine.world.settlement.retained_states.len(),
         MAX_RETAINED_STATE_BINDINGS,
         "exact bound before dual attempt"
     );
-    let revision = engine.state_revision;
+    let revision = engine.state_revision();
     match engine.handle_report(
         &cmd(
             3,
@@ -475,15 +487,19 @@ fn dual_pair_cap_refusal_mints_neither_leg() {
         }
         (other, _) => panic!("expected cap refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision + 1, "refusal issues");
+    assert_eq!(engine.state_revision(), revision + 1, "refusal issues");
     assert!(
         !engine
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Maximized)),
         "no partial maximize leg past the cap"
     );
     assert!(
         !engine
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen)),
         "no partial fullscreen leg past the cap"
@@ -492,7 +508,7 @@ fn dual_pair_cap_refusal_mints_neither_leg() {
 
 fn fill_above(engine: &mut WorldEngine, prefix: &str, count: usize) {
     for i in 0..count {
-        engine.retained_states.insert(
+        engine.world.settlement.retained_states.insert(
             (WindowId(format!("{prefix}-{i:05}")), StateProperty::Above),
             crate::world_state::RetainedStateBinding {
                 target: crate::world_state::RetainedStateTarget {
@@ -522,14 +538,14 @@ fn both_true_at_cap_refuses_without_mutation() {
         &mut engine,
         &bootstrap(vec![max_fact("win-a", Some(true), true, true)]),
     );
-    let fill = MAX_RETAINED_STATE_BINDINGS - engine.retained_states.len();
+    let fill = MAX_RETAINED_STATE_BINDINGS - engine.world.settlement.retained_states.len();
     fill_above(&mut engine, "win-fill", fill);
     assert_eq!(
-        engine.retained_states.len(),
+        engine.world.settlement.retained_states.len(),
         MAX_RETAINED_STATE_BINDINGS,
         "exact bound before both-true attempt"
     );
-    let revision = engine.state_revision;
+    let revision = engine.state_revision();
     let refused_obs = cmd(
         3,
         2,
@@ -558,18 +574,20 @@ fn both_true_at_cap_refuses_without_mutation() {
         }
         (other, _) => panic!("expected cap refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision + 1, "refusal issues");
+    assert_eq!(engine.state_revision(), revision + 1, "refusal issues");
     assert_eq!(
-        engine.retained_states, control.retained_states,
+        engine.world.settlement.retained_states, control.world.settlement.retained_states,
         "refusal converges with the commandless control"
     );
     assert_eq!(
-        engine.retained_states.len(),
-        control.retained_states.len(),
+        engine.world.settlement.retained_states.len(),
+        control.world.settlement.retained_states.len(),
         "no insertion past the cap"
     );
     assert!(
         !engine
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen)),
         "no fullscreen leg past the cap"
@@ -585,14 +603,14 @@ fn dual_pair_one_vacant_slot_refuses_with_no_partial_pair() {
         &mut engine,
         &bootstrap(vec![max_fact("win-a", Some(true), true, false)]),
     );
-    let fill = MAX_RETAINED_STATE_BINDINGS - engine.retained_states.len() - 1;
+    let fill = MAX_RETAINED_STATE_BINDINGS - engine.world.settlement.retained_states.len() - 1;
     fill_above(&mut engine, "win-fill", fill);
     assert_eq!(
-        engine.retained_states.len(),
+        engine.world.settlement.retained_states.len(),
         MAX_RETAINED_STATE_BINDINGS - 1,
         "one vacant slot before dual attempt"
     );
-    let revision = engine.state_revision;
+    let revision = engine.state_revision();
     match engine.handle_report(
         &cmd(
             3,
@@ -614,15 +632,19 @@ fn dual_pair_one_vacant_slot_refuses_with_no_partial_pair() {
         }
         (other, _) => panic!("expected cap refusal, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision + 1, "refusal issues");
+    assert_eq!(engine.state_revision(), revision + 1, "refusal issues");
     assert!(
         !engine
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Maximized)),
         "no partial maximize leg with one slot"
     );
     assert!(
         !engine
+            .world
+            .settlement
             .retained_states
             .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen)),
         "no partial fullscreen leg with one slot"
@@ -647,14 +669,14 @@ fn exact_cap_existing_both_keys_replacement_valid() {
             toggle("win-a"),
         ),
     );
-    let fill = MAX_RETAINED_STATE_BINDINGS - engine.retained_states.len();
+    let fill = MAX_RETAINED_STATE_BINDINGS - engine.world.settlement.retained_states.len();
     fill_above(&mut engine, "win-fill", fill);
     assert_eq!(
-        engine.retained_states.len(),
+        engine.world.settlement.retained_states.len(),
         MAX_RETAINED_STATE_BINDINGS,
         "exact bound with both subject keys present"
     );
-    let rev_before = engine.state_revision;
+    let rev_before = engine.state_revision();
     let (_reply, settlements) = accepted_with_settlements(
         &mut engine,
         &cmd(
@@ -676,10 +698,14 @@ fn exact_cap_existing_both_keys_replacement_valid() {
         other => panic!("expected maximize result, got {other:?}"),
     }
     let full = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("fullscreen leg");
     let max = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("maximize leg");
@@ -745,10 +771,14 @@ fn dual_pair_both_controlled_same_rev_seq() {
     assert_eq!((max_value, max_seq), (true, Some(1)));
     assert_eq!(max_authority, ScopeAuthority::Controlled);
     let full = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("clear leg");
     let max = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg");
@@ -801,6 +831,8 @@ fn exitability_loss_holds_max_then_recovery_resumes_tuple() {
         ),
     );
     let rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg")
@@ -836,6 +868,8 @@ fn exitability_loss_holds_max_then_recovery_resumes_tuple() {
     assert_eq!(seq, Some(1));
     assert_eq!(
         engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
             .expect("max leg")
@@ -864,6 +898,8 @@ fn superseded_mismatched_and_spent_clear_hold_max_while_raw_full() {
         ),
     );
     let stale_rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg")
@@ -893,6 +929,8 @@ fn superseded_mismatched_and_spent_clear_hold_max_while_raw_full() {
     assert_eq!(seq, Some(1));
     assert_eq!(
         engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
             .expect("max leg")
@@ -917,12 +955,16 @@ fn superseded_mismatched_and_spent_clear_hold_max_while_raw_full() {
         ),
     );
     let rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg")
         .target
         .revision;
     engine
+        .world
+        .settlement
         .retained_states
         .get_mut(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("clear leg")
@@ -942,6 +984,8 @@ fn superseded_mismatched_and_spent_clear_hold_max_while_raw_full() {
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
             .expect("max leg")
@@ -966,6 +1010,8 @@ fn superseded_mismatched_and_spent_clear_hold_max_while_raw_full() {
         ),
     );
     let rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("clear leg")
@@ -1012,6 +1058,8 @@ fn matched_max_attempt_settles_without_renewal() {
         ),
     );
     let rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg")
@@ -1028,6 +1076,8 @@ fn matched_max_attempt_settles_without_renewal() {
     )];
     let settled = accepted(&mut engine, &proof);
     let after = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("retained");
@@ -1052,6 +1102,8 @@ fn matched_max_attempt_settles_without_renewal() {
         ),
     );
     let rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg")
@@ -1068,6 +1120,8 @@ fn matched_max_attempt_settles_without_renewal() {
     )];
     accepted(&mut engine, &refused);
     let stuck = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("binding");
@@ -1089,6 +1143,8 @@ fn matched_max_attempt_settles_without_renewal() {
         ),
     );
     let rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg")
@@ -1105,6 +1161,8 @@ fn matched_max_attempt_settles_without_renewal() {
     )];
     let reply = accepted(&mut engine, &ambiguous);
     let stuck = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("binding");
@@ -1144,6 +1202,8 @@ fn fences_hold_max_without_renewal() {
     let (_, authority, _) = max_row(&minted, "win-a").expect("max");
     assert_eq!(authority, ScopeAuthority::Controlled);
     let rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg")
@@ -1176,6 +1236,8 @@ fn fences_hold_max_without_renewal() {
     assert_eq!(seq, Some(1));
     assert_eq!(
         engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
             .expect("max leg")
@@ -1263,6 +1325,8 @@ fn unmax_target_holds_while_raw_fullscreen_true_then_resumes() {
     assert_eq!((value, seq), (false, Some(1)));
     assert_eq!(authority, ScopeAuthority::Controlled);
     let rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg")
@@ -1286,6 +1350,8 @@ fn unmax_target_holds_while_raw_fullscreen_true_then_resumes() {
     assert_eq!((value, seq), (false, Some(1)));
     assert_eq!(authority, ScopeAuthority::Controlled);
     let binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg");
@@ -1316,6 +1382,8 @@ fn newer_fullscreen_on_holds_pending_max_true_before_raw_flips() {
     assert_eq!((value, seq), (true, Some(1)));
     assert_eq!(authority, ScopeAuthority::Controlled);
     let max_rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg")
@@ -1335,6 +1403,8 @@ fn newer_fullscreen_on_holds_pending_max_true_before_raw_flips() {
     assert_eq!(pending_settlements.len(), 1);
     assert!(pending_settlements[0].result.is_none());
     let full_rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("fullscreen leg")
@@ -1359,6 +1429,8 @@ fn newer_fullscreen_on_holds_pending_max_true_before_raw_flips() {
         "no same-reply Fullscreen=true + Maximized write authority"
     );
     let max_binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg");
@@ -1384,6 +1456,8 @@ fn newer_fullscreen_on_holds_pending_max_true_before_raw_flips() {
     );
     assert_eq!(
         engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
             .expect("max leg")
@@ -1402,6 +1476,8 @@ fn newer_fullscreen_on_holds_pending_max_true_before_raw_flips() {
         ),
     );
     let exit_rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("exit leg")
@@ -1428,6 +1504,8 @@ fn newer_fullscreen_on_holds_pending_max_true_before_raw_flips() {
     assert_eq!((value, seq), (true, Some(1)));
     assert_eq!(authority, ScopeAuthority::Controlled);
     let max_binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg");
@@ -1459,6 +1537,8 @@ fn newer_fullscreen_on_holds_pending_max_false_before_raw_flips() {
     assert_eq!((value, seq), (false, Some(1)));
     assert_eq!(authority, ScopeAuthority::Controlled);
     let max_rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg")
@@ -1476,6 +1556,8 @@ fn newer_fullscreen_on_holds_pending_max_false_before_raw_flips() {
     assert_eq!(pending_settlements.len(), 1);
     assert!(pending_settlements[0].result.is_none());
     let full_rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("fullscreen leg")
@@ -1521,6 +1603,8 @@ fn newer_fullscreen_on_holds_pending_max_false_before_raw_flips() {
         ),
     );
     let exit_rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("exit leg")
@@ -1546,6 +1630,8 @@ fn newer_fullscreen_on_holds_pending_max_false_before_raw_flips() {
     assert_eq!((value, seq), (false, Some(1)));
     assert_eq!(authority, ScopeAuthority::Controlled);
     let max_binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg");
@@ -1579,6 +1665,8 @@ fn ambiguous_fullscreen_on_releases_max_on_first_readable_false() {
         ),
     );
     let max_rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg")
@@ -1594,6 +1682,8 @@ fn ambiguous_fullscreen_on_releases_max_on_first_readable_false() {
         ),
     );
     let full_rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("fullscreen leg")
@@ -1624,6 +1714,8 @@ fn ambiguous_fullscreen_on_releases_max_on_first_readable_false() {
     )];
     let settled = accepted(&mut engine, &threw);
     let full_binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("fullscreen leg");
@@ -1640,6 +1732,8 @@ fn ambiguous_fullscreen_on_releases_max_on_first_readable_false() {
     assert_eq!((value, seq), (true, Some(1)));
     assert_eq!(authority, ScopeAuthority::Controlled);
     let max_binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg");
@@ -1655,6 +1749,8 @@ fn ambiguous_fullscreen_on_releases_max_on_first_readable_false() {
     assert_eq!((value, seq), (true, Some(1)));
     assert_eq!(authority, ScopeAuthority::Controlled);
     let full_binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("fullscreen leg");
@@ -1678,6 +1774,8 @@ fn ambiguous_fullscreen_on_releases_max_on_first_readable_false() {
         ),
     );
     let max_rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg")
@@ -1693,6 +1791,8 @@ fn ambiguous_fullscreen_on_releases_max_on_first_readable_false() {
         ),
     );
     let full_rev = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("fullscreen leg")
@@ -1711,6 +1811,8 @@ fn ambiguous_fullscreen_on_releases_max_on_first_readable_false() {
     )];
     let held = accepted(&mut engine, &threw);
     let full_binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("fullscreen leg");
@@ -1730,6 +1832,8 @@ fn ambiguous_fullscreen_on_releases_max_on_first_readable_false() {
     assert_eq!((value, seq), (true, Some(1)));
     assert_eq!(authority, ScopeAuthority::Controlled);
     let max_binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
         .expect("max leg");
@@ -1737,6 +1841,8 @@ fn ambiguous_fullscreen_on_releases_max_on_first_readable_false() {
     assert!(!max_binding.spent);
     assert_eq!(max_binding.disposition, AttemptOutcome::Unattempted);
     let full_binding = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("win-a".to_owned()), StateProperty::Fullscreen))
         .expect("fullscreen leg");

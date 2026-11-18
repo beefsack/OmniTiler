@@ -722,7 +722,7 @@ fn world_directional_pair_refusal_priority_and_preflight_order() {
         float_subject: false,
     };
     assert!(matches!(
-        engine.execute_operation(&issue, 1, &missing_focus, &empty_by_id, &empty_held),
+        engine.tx(|tx| tx.execute_operation(&issue, 1, &missing_focus, &empty_by_id, &empty_held)),
         CommandApplied::Rejected {
             kind: KIND_OPERATION,
             ..
@@ -742,7 +742,7 @@ fn world_directional_pair_refusal_priority_and_preflight_order() {
         same_axis_move: SameAxisMove::GroupWithNeighbor,
     };
     assert!(matches!(
-        engine.execute_operation(&issue, 2, &held_move, &by_id, &held_src),
+        engine.tx(|tx| tx.execute_operation(&issue, 2, &held_move, &by_id, &held_src)),
         CommandApplied::Rejected {
             kind: KIND_SCOPE_HELD,
             ..
@@ -758,7 +758,7 @@ fn world_directional_pair_refusal_priority_and_preflight_order() {
         float_subject: false,
     };
     assert!(matches!(
-        engine.execute_operation(&issue, 3, &bad_id_focus, &by_id, &empty_held),
+        engine.tx(|tx| tx.execute_operation(&issue, 3, &bad_id_focus, &by_id, &empty_held)),
         CommandApplied::Rejected {
             kind: KIND_OPERATION,
             ..
@@ -769,12 +769,16 @@ fn world_directional_pair_refusal_priority_and_preflight_order() {
     let src_dom = source_output_domain();
     let dst_dom = target_output_domain();
     engine
+        .world
+        .workspace
         .live_topology
         .insert(src_key.output.0.clone(), src_dom.bounds);
     engine
+        .world
+        .workspace
         .live_topology
         .insert(dst_key.output.0.clone(), dst_dom.bounds);
-    engine.staged.domains = vec![
+    engine.world.staged.domains = vec![
         StagedDomain {
             key: src_key.clone(),
             bounds: src_dom.bounds,
@@ -803,7 +807,7 @@ fn world_directional_pair_refusal_priority_and_preflight_order() {
         },
     ];
     assert!(matches!(
-        engine.execute_operation(&issue, 4, &bad_id_focus, &by_id, &empty_held),
+        engine.tx(|tx| tx.execute_operation(&issue, 4, &bad_id_focus, &by_id, &empty_held)),
         CommandApplied::Rejected {
             kind: "focus-window-invalid",
             ..
@@ -816,7 +820,7 @@ fn world_directional_pair_refusal_priority_and_preflight_order() {
         same_axis_move: SameAxisMove::GroupWithNeighbor,
     };
     assert!(matches!(
-        engine.execute_operation(&issue, 5, &bad_id_move, &by_id, &empty_held),
+        engine.tx(|tx| tx.execute_operation(&issue, 5, &bad_id_move, &by_id, &empty_held)),
         CommandApplied::Rejected {
             kind: "move-window-invalid",
             ..

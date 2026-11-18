@@ -132,7 +132,7 @@ fn frozen_v4(
     command: Option<&WorldCommand>,
     report: &WorldReportV4,
 ) -> FrozenSources {
-    engine.freeze_command_sources(command, &RawRouting::from_v4(report))
+    engine.tx_ro(|tx| tx.freeze_command_sources(command, &RawRouting::from_v4(report)))
 }
 
 fn issue(seq: u64) -> EventIssue {
@@ -367,21 +367,23 @@ fn frozen_migration_new_view_cannot_authorize_after_v4_converge() {
     assert_eq!(frozen, (None, None), "same-report view refuses on v4 lanes");
     // Genuine v4 staging plus shared pre-convergence creates the view the
     // freeze predates.
-    engine.stage_facts_v4(&report);
-    engine.converge_logical_pre();
-    engine.build_staged_domains();
+    engine.tx(|tx| tx.stage_facts_v4(&report));
+    engine.tx(|tx| tx.converge_logical_pre());
+    engine.tx(|tx| tx.build_staged_domains());
     assert!(
         engine.logical_view("out-zzz").is_some(),
         "convergence created the new view the freeze predates"
     );
-    match engine.execute_command(
-        &issue(2),
-        12,
-        &command,
-        &BTreeSet::new(),
-        frozen.0,
-        frozen.1,
-    ) {
+    match engine.tx(|tx| {
+        tx.execute_command(
+            &issue(2),
+            12,
+            &command,
+            &BTreeSet::new(),
+            frozen.0,
+            frozen.1,
+        )
+    }) {
         CommandApplied::Rejected { kind, message } => {
             assert_eq!(kind, KIND_MIGRATION, "frozen refusal kind");
             assert_eq!(message, MSG_MIGRATION_SOURCE, "frozen refusal message");
@@ -423,18 +425,20 @@ fn frozen_migration_unplugged_source_refuses_at_staged_topology_gate() {
     // through the unchanged staged gate. `retain_live_topology` mirrors
     // the accepted path, which retains the report's own geometry before
     // command planning so the gate below reads staged topology.
-    engine.stage_facts_v4(&report);
-    engine.converge_logical_pre();
-    engine.build_staged_domains();
-    engine.retain_live_topology();
-    match engine.execute_command(
-        &issue(2),
-        12,
-        &command,
-        &BTreeSet::new(),
-        frozen.0,
-        frozen.1,
-    ) {
+    engine.tx(|tx| tx.stage_facts_v4(&report));
+    engine.tx(|tx| tx.converge_logical_pre());
+    engine.tx(|tx| tx.build_staged_domains());
+    engine.tx(|tx| tx.retain_live_topology());
+    match engine.tx(|tx| {
+        tx.execute_command(
+            &issue(2),
+            12,
+            &command,
+            &BTreeSet::new(),
+            frozen.0,
+            frozen.1,
+        )
+    }) {
         CommandApplied::Rejected { kind, message } => {
             assert_eq!(kind, KIND_MIGRATION, "staged topology refusal kind");
             assert_eq!(
@@ -454,9 +458,9 @@ fn freeze_neither_ingests_nor_stages() {
     // identical before and after freezing.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     seed_homed(&mut engine);
-    let pending_before = engine.pending_intent.len();
-    let staged_seq_before = engine.staged.observation.observation_seq;
-    let staged_facts_before = engine.staged.facts.len();
+    let pending_before = engine.world.intent.pending_intent.len();
+    let staged_seq_before = engine.world.staged.observation.observation_seq;
+    let staged_facts_before = engine.world.staged.facts.len();
     let command = implicit_numbered("win-a");
     let report = v4_full(
         2,
@@ -473,16 +477,16 @@ fn freeze_neither_ingests_nor_stages() {
     };
     let _ = frozen_v4(&engine, Some(&migrate), &report);
     assert_eq!(
-        engine.pending_intent.len(),
+        engine.world.intent.pending_intent.len(),
         pending_before,
         "no intent ingested"
     );
     assert_eq!(
-        engine.staged.observation.observation_seq, staged_seq_before,
+        engine.world.staged.observation.observation_seq, staged_seq_before,
         "no observation staged"
     );
     assert_eq!(
-        engine.staged.facts.len(),
+        engine.world.staged.facts.len(),
         staged_facts_before,
         "no facts staged"
     );
@@ -511,17 +515,21 @@ fn frozen_send_refuses_staged_rehome_through_execute_command() {
     // The observation moves win-a to out-b; staging re-homes the mover
     // while the freeze still pins the retired out-a home.
     let moved_windows = vec![fact("win-a", "out-b", 800)];
-    engine.stage_facts_v4(&v4_full(
-        2,
-        two_screens(),
-        moved_windows,
-        None,
-        None,
-        vec!["out-a", "out-b"],
-        None,
-    ));
-    engine.build_staged_domains();
-    match engine.execute_command(&issue(2), 12, &command, &BTreeSet::new(), frozen.0, None) {
+    engine.tx(|tx| {
+        tx.stage_facts_v4(&v4_full(
+            2,
+            two_screens(),
+            moved_windows,
+            None,
+            None,
+            vec!["out-a", "out-b"],
+            None,
+        ))
+    });
+    engine.tx(|tx| tx.build_staged_domains());
+    match engine
+        .tx(|tx| tx.execute_command(&issue(2), 12, &command, &BTreeSet::new(), frozen.0, None))
+    {
         CommandApplied::Rejected { kind, .. } => assert_eq!(
             kind,
             RefusalKind::CrossDomainMismatch.as_str(),

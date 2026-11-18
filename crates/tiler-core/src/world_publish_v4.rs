@@ -6,14 +6,15 @@
 //! validation. The narrow producer style hold applies before any write
 //! authority is assembled, as a per-reply projection over a local held
 //! set: retained holds and staged state are never mutated.
+use crate::world_transaction::WorldTransaction;
 use std::collections::BTreeSet;
 
 use crate::directional::{OutputId, WorkspaceId};
 use crate::session::DomainKey;
-use crate::world_engine::WorldEngine;
+use crate::world_presentation::PresentationUnderlay;
 use crate::world_report::{
-    HoldReason, OneShotEffect, TransferTargetV4, WORLD_CONTRACT_VERSION_V4, WorldCommand,
-    WorldReplyV4,
+    BorderPresentationV4, HoldReason, OneShotEffect, TransferTargetV4, WORLD_CONTRACT_VERSION_V4,
+    WorldCommand, WorldPresentationV4, WorldReplyV4,
 };
 
 /// Direct v4 publication envelope: the reply identity the legacy path reads
@@ -28,7 +29,7 @@ pub(crate) struct PublishEnvelopeV4 {
     pub issuing_revision: u64,
 }
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Assemble a genuine v4 reply from staged/retained state: shared scope
     /// and window rows, planner-owned workspace and output rows, retained
     /// transfer correlation, verbatim staged diagnostics, and retained
@@ -61,6 +62,7 @@ impl WorldEngine {
         let mut local_held = held_scopes.clone();
         if let Some(output) = &style_output {
             let staged_keys: Vec<DomainKey> = self
+                .world
                 .staged
                 .domains
                 .iter()
@@ -70,7 +72,7 @@ impl WorldEngine {
             for key in staged_keys {
                 local_held.insert(key);
             }
-            if let Some(ring) = self.mapping.get(&output.0) {
+            if let Some(ring) = self.world.workspace.mapping.get(&output.0) {
                 for workspace in ring.clone() {
                     local_held.insert(DomainKey {
                         output: output.clone(),
@@ -79,6 +81,8 @@ impl WorldEngine {
                 }
             }
             let transfer_keys: Vec<DomainKey> = self
+                .world
+                .settlement
                 .retained
                 .iter()
                 .flat_map(|retained| {
@@ -113,7 +117,8 @@ impl WorldEngine {
                 let Some(output) = &style_output else {
                     return true;
                 };
-                self.staged
+                self.world
+                    .staged
                     .homing
                     .get(&effect.target)
                     .is_none_or(|home| home.output != *output)
@@ -146,9 +151,15 @@ impl WorldEngine {
         let cursor_warp = self.warp_for_publish(&effects, &windows, &local_held);
         self.prune_settled_outcomes();
         self.prune_drag_preview(&local_held);
-        let drag_preview = self.drag_preview.clone();
-        let gesture_settled = self.gesture_terminal;
-        let operation_settled = self.operation_settled.values().cloned().collect();
+        let drag_preview = self.world.gesture.drag_preview.clone();
+        let gesture_settled = self.world.gesture.terminal;
+        let operation_settled = self
+            .world
+            .settlement
+            .operation_settled
+            .values()
+            .cloned()
+            .collect();
         let native_creations = self
             .native_creation_desires()
             .into_iter()
@@ -159,13 +170,21 @@ impl WorldEngine {
             })
             .collect();
         let intent_desired = self.project_intent_desired();
-        let switch_settled = self.switch_settled.values().cloned().collect();
+        let switch_settled = self
+            .world
+            .settlement
+            .switch_settled
+            .values()
+            .cloned()
+            .collect();
         // Retained transfer projection: the explicit originating command
         // correlation rides verbatim (never parsed from operation ids), with
         // `held` set when the style-held output is the transfer source or
         // target. A per-reply projection only: retained settlement meaning
         // is untouched.
         let transfers = self
+            .world
+            .settlement
             .retained
             .iter()
             .map(|retained| TransferTargetV4 {
@@ -182,9 +201,6 @@ impl WorldEngine {
                 command_seq: retained.command_seq,
             })
             .collect();
-        let mut presentation = self.presentation_for_publish_v4();
-        presentation.rev = envelope.issuing_revision;
-        self.latest_published_presentation_rev_v4 = envelope.issuing_revision;
         // Retained focus lane: post-convergence eligibility gates run
         // here so every publication carries the current row, and re-emission
         // alone never marks it attempted. The `afterShown` projection
@@ -196,7 +212,7 @@ impl WorldEngine {
         WorldReplyV4 {
             contract_version: WORLD_CONTRACT_VERSION_V4,
             adapter_incarnation: envelope.adapter_incarnation,
-            core_generation: self.core_generation_str.clone(),
+            core_generation: self.connection.core_generation_str.clone(),
             request_id: envelope.request_id,
             based_on_observation_seq: envelope.observation_seq,
             state_revision: envelope.issuing_revision,
@@ -205,7 +221,7 @@ impl WorldEngine {
             scopes: rows.scopes,
             workspaces,
             outputs,
-            diagnostics: self.staged.diagnostics.clone(),
+            diagnostics: self.world.staged.diagnostics.clone(),
             windows,
             transfers,
             effects: wire_effects,
@@ -215,7 +231,22 @@ impl WorldEngine {
             operation_settled,
             native_creations,
             cursor_warp,
-            presentation,
+            presentation: WorldPresentationV4 {
+                foreground: String::new(),
+                rev: 0,
+                suspended_output: None,
+                border: BorderPresentationV4 {
+                    visible: false,
+                    reason: None,
+                    subject: None,
+                    outsets: None,
+                    width: None,
+                    radius: None,
+                    witness: None,
+                },
+                underlay: PresentationUnderlay::default(),
+                pager: Vec::new(),
+            },
             intent_desired,
             switch_settled,
         }

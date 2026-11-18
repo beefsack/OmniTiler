@@ -115,6 +115,7 @@ impl PairCandidate {
 
     /// Split the pair back into independent domain-scoped [`DomainLayout`]
     /// candidates, preserving the existing outer gaps on each domain.
+    #[cfg(test)]
     pub(super) fn split(
         &self,
     ) -> Result<(DomainLayout, Option<DomainLayout>), PairAssemblyFailure> {
@@ -318,6 +319,7 @@ impl PairCandidate {
 
 impl WorldLayout {
     /// Assemble a directional pair requiring reciprocal cross-output adjacency.
+    #[cfg(test)]
     pub(super) fn assemble_directional_pair(
         &self,
         source_domain: &OutputDomain,
@@ -328,6 +330,7 @@ impl WorldLayout {
 
     /// Assemble an explicit-send pair skipping cross-output reciprocal adjacency
     /// while still validating descriptor and adjacency structure.
+    #[cfg(test)]
     pub(super) fn assemble_send_pair(
         &self,
         source_domain: &OutputDomain,
@@ -454,10 +457,10 @@ impl WorldLayout {
             return Err(PairAssemblyFailure::DomainMismatch);
         }
 
-        if let Some(target_orig) = target_orig {
-            if !domains_disjoint(source_orig, target_orig) {
-                return Err(PairAssemblyFailure::DuplicateState);
-            }
+        if let Some(target_orig) = target_orig
+            && !domains_disjoint(source_orig, target_orig)
+        {
+            return Err(PairAssemblyFailure::DuplicateState);
         }
 
         let pair_revision = source_orig

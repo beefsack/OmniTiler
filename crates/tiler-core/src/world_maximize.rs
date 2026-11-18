@@ -36,20 +36,19 @@
 use crate::directional::WindowId;
 use crate::session::DomainKey;
 use crate::world_commands::CommandApplied;
-use crate::world_engine::{
-    KIND_FOCUS, KIND_OPERATION, MSG_FOCUS, MSG_OPERATION, RetainedFloat, WorldEngine,
-};
+use crate::world_engine::{KIND_FOCUS, KIND_OPERATION, MSG_FOCUS, MSG_OPERATION, RetainedFloat};
 use crate::world_report::{
     AttemptOutcome, CommandRejectKind, CommandResult, HoldReason, ScopeAuthority, StateProperty,
     StateTarget, TransferKind, WindowDesire,
 };
 use crate::world_state::{MAX_RETAINED_STATE_BINDINGS, NativeFullscreenMeta, NativeMaximizeMeta};
+use crate::world_transaction::WorldTransaction;
 
 fn refused(kind: &'static str, message: &'static str) -> CommandApplied {
     CommandApplied::Rejected { kind, message }
 }
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Native maximize toggle after the shared focused/subject/homing/
     /// readability/held-scope/in-flight gates. `home` is the staged homing
     /// scope; `fullscreen`/`maximized` are the proven raw values and
@@ -67,6 +66,7 @@ impl WorldEngine {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
         if self
+            .world
             .staged
             .facts
             .get(window)
@@ -83,8 +83,12 @@ impl WorldEngine {
         }
         let decision = crate::session::decide_maximize_toggle(fullscreen, maximized);
         if decision.clear_fullscreen {
-            if !self.capabilities().is_some_and(|caps| caps.fullscreen) {
-                self.command_result = Some(CommandResult::Rejected {
+            if !self
+                .connection
+                .capabilities()
+                .is_some_and(|caps| caps.fullscreen)
+            {
+                self.world.command_result = Some(CommandResult::Rejected {
                     kind: CommandRejectKind::StateUnsupported,
                 });
                 self.note_command(command_seq);
@@ -93,14 +97,14 @@ impl WorldEngine {
             match exitable {
                 Some(true) => {}
                 Some(false) => {
-                    self.command_result = Some(CommandResult::Rejected {
+                    self.world.command_result = Some(CommandResult::Rejected {
                         kind: CommandRejectKind::FullscreenNotExitable,
                     });
                     self.note_command(command_seq);
                     return CommandApplied::NoEffect;
                 }
                 None => {
-                    self.command_result = Some(CommandResult::Rejected {
+                    self.world.command_result = Some(CommandResult::Rejected {
                         kind: CommandRejectKind::StateUnknown,
                     });
                     self.note_command(command_seq);
@@ -113,21 +117,27 @@ impl WorldEngine {
         let need_full = decision.clear_fullscreen;
         let need_max = !decision.clear_fullscreen || !maximized;
         let mut missing = 0;
-        if need_max && !self.retained_states.contains_key(&max_key) {
+        if need_max && !self.world.settlement.retained_states.contains_key(&max_key) {
             missing += 1;
         }
-        if need_full && !self.retained_states.contains_key(&full_key) {
+        if need_full
+            && !self
+                .world
+                .settlement
+                .retained_states
+                .contains_key(&full_key)
+        {
             missing += 1;
         }
-        if self.retained_states.len() + missing > MAX_RETAINED_STATE_BINDINGS {
+        if self.world.settlement.retained_states.len() + missing > MAX_RETAINED_STATE_BINDINGS {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
-        let revision = self.state_revision + 1;
+        let revision = self.world.state_revision + 1;
         if decision.clear_fullscreen {
             // One actual fullscreen-false leg for both the dual pair and
             // the already-maximized single: the adapter clears fullscreen
             // first, ordering max after it with no intermediate wait.
-            self.retained_states.insert(
+            self.world.settlement.retained_states.insert(
                 full_key.clone(),
                 crate::world_state::RetainedStateBinding {
                     target: crate::world_state::RetainedStateTarget {
@@ -150,7 +160,7 @@ impl WorldEngine {
             );
         }
         if need_max {
-            self.retained_states.insert(
+            self.world.settlement.retained_states.insert(
                 max_key,
                 crate::world_state::RetainedStateBinding {
                     target: crate::world_state::RetainedStateTarget {
@@ -173,25 +183,29 @@ impl WorldEngine {
                 },
             );
         } else if self
+            .world
+            .settlement
             .retained_states
             .get(&max_key)
             .is_some_and(|binding| binding.target.value != maximized)
         {
             // Already maximized: cancel the obsolete opposite maximize
             // binding; no extra maximize write.
-            self.retained_states.remove(&max_key);
+            self.world.settlement.retained_states.remove(&max_key);
         }
         if !decision.clear_fullscreen
             && self
+                .world
+                .settlement
                 .retained_states
                 .get(&full_key)
                 .is_some_and(|binding| binding.target.value)
         {
             // Ordinary maximize: revoke the stale opposite fullscreen
             // entry so an old pending fullscreen cannot undo this command.
-            self.retained_states.remove(&full_key);
+            self.world.settlement.retained_states.remove(&full_key);
         }
-        self.command_result = Some(CommandResult::Maximize {
+        self.world.command_result = Some(CommandResult::Maximize {
             window: window.clone(),
             maximized: decision.maximized,
             clear_fullscreen: decision.clear_fullscreen,
@@ -227,7 +241,7 @@ impl WorldEngine {
         window: &WindowId,
         home: DomainKey,
     ) -> CommandApplied {
-        let Some(fact) = self.staged.facts.get(window) else {
+        let Some(fact) = self.world.staged.facts.get(window) else {
             return refused(KIND_FOCUS, MSG_FOCUS);
         };
         // R-MAX-11 replacement starts here: readable fullscreen arms the
@@ -237,7 +251,7 @@ impl WorldEngine {
             Some(false) => false,
             Some(true) => true,
             None => {
-                self.command_result = Some(CommandResult::Rejected {
+                self.world.command_result = Some(CommandResult::Rejected {
                     kind: CommandRejectKind::StateUnknown,
                 });
                 self.note_command(command_seq);
@@ -251,6 +265,7 @@ impl WorldEngine {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
         if self
+            .world
             .staged
             .held_windows
             .iter()
@@ -276,14 +291,15 @@ impl WorldEngine {
         // Frame-write availability mirrors the publish lane: the overlay
         // grants no write the row itself could not carry. Floating
         // workspaces publish untouched rows, held scopes never compose.
-        if !self.staged.observation.inventory_complete
-            || self.staged.gesture_barrier
-            || self.floating_scopes.contains(&home)
-            || self.hold_reasons.contains_key(&home)
+        if !self.world.staged.observation.inventory_complete
+            || self.world.staged.gesture_barrier
+            || self.world.floating_scopes.contains(&home)
+            || self.world.hold_reasons.contains_key(&home)
         {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
         let work_area = self
+            .world
             .staged
             .screens
             .iter()
@@ -302,6 +318,7 @@ impl WorldEngine {
         // above keeps its specified retain-and-withhold path.
         if derived.floating
             && self
+                .world
                 .staged
                 .facts
                 .get(window)
@@ -309,14 +326,18 @@ impl WorldEngine {
         {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
-        let was = self.composed_maximized.contains(window);
+        let was = self.world.runtime.composed_maximized.contains(window);
         if needs_fullscreen_clear {
             // Explicit fullscreen replacement resolves the native veto
             // through the existing gates exactly: missing capability and
             // unproven exitability consume the typed rejections with no
             // intent change, like the native replacement leg.
-            if !self.capabilities().is_some_and(|caps| caps.fullscreen) {
-                self.command_result = Some(CommandResult::Rejected {
+            if !self
+                .connection
+                .capabilities()
+                .is_some_and(|caps| caps.fullscreen)
+            {
+                self.world.command_result = Some(CommandResult::Rejected {
                     kind: CommandRejectKind::StateUnsupported,
                 });
                 self.note_command(command_seq);
@@ -325,14 +346,14 @@ impl WorldEngine {
             match fact.fullscreen_exitable {
                 Some(true) => {}
                 Some(false) => {
-                    self.command_result = Some(CommandResult::Rejected {
+                    self.world.command_result = Some(CommandResult::Rejected {
                         kind: CommandRejectKind::FullscreenNotExitable,
                     });
                     self.note_command(command_seq);
                     return CommandApplied::NoEffect;
                 }
                 None => {
-                    self.command_result = Some(CommandResult::Rejected {
+                    self.world.command_result = Some(CommandResult::Rejected {
                         kind: CommandRejectKind::StateUnknown,
                     });
                     self.note_command(command_seq);
@@ -340,13 +361,17 @@ impl WorldEngine {
                 }
             }
             let full_key = (window.clone(), StateProperty::Fullscreen);
-            if !self.retained_states.contains_key(&full_key)
-                && self.retained_states.len() >= MAX_RETAINED_STATE_BINDINGS
+            if !self
+                .world
+                .settlement
+                .retained_states
+                .contains_key(&full_key)
+                && self.world.settlement.retained_states.len() >= MAX_RETAINED_STATE_BINDINGS
             {
                 return refused(KIND_OPERATION, MSG_OPERATION);
             }
-            let revision = self.state_revision + 1;
-            self.retained_states.insert(
+            let revision = self.world.state_revision + 1;
+            self.world.settlement.retained_states.insert(
                 full_key,
                 crate::world_state::RetainedStateBinding {
                     target: crate::world_state::RetainedStateTarget {
@@ -370,9 +395,12 @@ impl WorldEngine {
             // A new explicit max-on revokes the obsolete same-window float
             // placement token before the work-area frame; the session base
             // stays retained and other windows keep their tokens.
-            self.retained_floats.retain(|held| held.window != *window);
-            self.composed_maximized.insert(window.clone());
-            self.command_result = Some(CommandResult::Maximize {
+            self.world
+                .settlement
+                .retained_floats
+                .retain(|held| held.window != *window);
+            self.world.runtime.composed_maximized.insert(window.clone());
+            self.world.command_result = Some(CommandResult::Maximize {
                 window: window.clone(),
                 maximized: true,
                 clear_fullscreen: true,
@@ -394,23 +422,32 @@ impl WorldEngine {
             // restore. Tiled clear needs no token (the lane above carries
             // it Controlled).
             let session_base = self
+                .world
                 .layout
                 .exception_record(&home, window)
                 .and_then(|record| record.floating_geometry);
-            let is_float = self.layout.is_exception(&home, window);
+            let is_float = self.world.layout.is_exception(&home, window);
             if is_float && session_base.is_none() {
                 return refused(KIND_OPERATION, MSG_OPERATION);
             }
-            self.composed_maximized.remove(window);
+            self.world.runtime.composed_maximized.remove(window);
             // Float clear restores the retained session base through the
             // existing one-shot placement token (same retain-then-push
             // lane as explicit placements): the adapter actuates the
             // base exactly once and observation confirms it.
             if let Some(base) = session_base {
-                let source = self.staged.facts.get(window).and_then(|fact| fact.rect);
+                let source = self
+                    .world
+                    .staged
+                    .facts
+                    .get(window)
+                    .and_then(|fact| fact.rect);
                 let operation_id = format!("op-{command_seq}");
-                self.retained_floats.retain(|held| held.window != *window);
-                self.retained_floats.push(RetainedFloat {
+                self.world
+                    .settlement
+                    .retained_floats
+                    .retain(|held| held.window != *window);
+                self.world.settlement.retained_floats.push(RetainedFloat {
                     operation_id,
                     command_seq,
                     window: window.clone(),
@@ -428,20 +465,27 @@ impl WorldEngine {
             // intent supersedes the unattempted entry, so the overlay
             // activates immediately with no new policy fork.
             if self
+                .world
+                .settlement
                 .retained_states
                 .get(&(window.clone(), StateProperty::Fullscreen))
                 .is_some_and(|binding| binding.target.value)
             {
-                self.retained_states
+                self.world
+                    .settlement
+                    .retained_states
                     .remove(&(window.clone(), StateProperty::Fullscreen));
             }
             // A new explicit max-on revokes the obsolete same-window float
             // placement token before the work-area frame; the session base
             // stays retained and other windows keep their tokens.
-            self.retained_floats.retain(|held| held.window != *window);
-            self.composed_maximized.insert(window.clone());
+            self.world
+                .settlement
+                .retained_floats
+                .retain(|held| held.window != *window);
+            self.world.runtime.composed_maximized.insert(window.clone());
         }
-        self.command_result = Some(CommandResult::Maximize {
+        self.world.command_result = Some(CommandResult::Maximize {
             window: window.clone(),
             maximized: !was,
             clear_fullscreen: false,
@@ -457,7 +501,8 @@ impl WorldEngine {
         &self,
         output: &crate::directional::OutputId,
     ) -> Option<crate::geometry::Rect> {
-        self.staged
+        self.world
+            .staged
             .screens
             .iter()
             .find(|screen| screen.output == *output)
@@ -503,12 +548,18 @@ impl WorldEngine {
         held_scopes: &std::collections::BTreeSet<DomainKey>,
         windows: &mut [WindowDesire],
     ) {
-        if !self.capabilities().is_some_and(|caps| caps.maximize) {
+        if !self
+            .connection
+            .capabilities()
+            .is_some_and(|caps| caps.maximize)
+        {
             return;
         }
         for desire in windows.iter_mut() {
             let window = desire.lifetime.clone();
             let Some(binding) = self
+                .world
+                .settlement
                 .retained_states
                 .get(&(window.clone(), StateProperty::Maximized))
             else {
@@ -529,22 +580,24 @@ impl WorldEngine {
             let excluded_lane =
                 self.is_excluded_window(&window) || derived.excluded || derived.own_excluded;
             let domain_readable = self
+                .world
                 .staged
                 .domains
                 .iter()
                 .any(|domain| domain.key == home && domain.readable);
             let mut controlled = !binding.spent
-                && self.staged.observation.inventory_complete
-                && !self.staged.gesture_barrier
+                && self.world.staged.observation.inventory_complete
+                && !self.world.staged.gesture_barrier
                 && !held_scopes.contains(&home)
                 && !self.is_held_window(&window)
                 && !excluded_lane
                 && domain_readable
-                && !self.retained.iter().any(
+                && !self.world.settlement.retained.iter().any(
                     |transfer| matches!(&transfer.target.kind, TransferKind::Window(w) if *w == window),
                 )
-                && (self.engine_knows_window_any(&window) || self.members.contains_key(&window));
-            match self.staged.facts.get(&window) {
+                && (self.world.engine_knows_window_any(&window)
+                    || self.world.workspace.members.contains_key(&window));
+            match self.world.staged.facts.get(&window) {
                 Some(fact) => {
                     if fact.minimized == Some(true) || fact.host_hidden != Some(false) {
                         controlled = false;
@@ -559,11 +612,13 @@ impl WorldEngine {
                 controlled = false;
             }
             let raw_full = self
+                .world
                 .staged
                 .facts
                 .get(&window)
                 .and_then(|fact| fact.fullscreen);
             let raw_max = self
+                .world
                 .staged
                 .facts
                 .get(&window)
@@ -574,6 +629,8 @@ impl WorldEngine {
             if controlled
                 && binding.pending.is_none()
                 && self
+                    .world
+                    .settlement
                     .retained_states
                     .get(&(window.clone(), StateProperty::Fullscreen))
                     .is_some_and(|full| {
@@ -591,7 +648,9 @@ impl WorldEngine {
             }
             if controlled && raw_full == Some(true) {
                 let paired =
-                    self.retained_states
+                    self.world
+                        .settlement
+                        .retained_states
                         .get(&(window.clone(), StateProperty::Fullscreen))
                         .filter(|full| {
                             !full.target.value
@@ -618,18 +677,19 @@ impl WorldEngine {
                 ScopeAuthority::Controlled
             } else if excluded_lane {
                 ScopeAuthority::Untouched
-            } else if self.staged.gesture_barrier {
+            } else if self.world.staged.gesture_barrier {
                 ScopeAuthority::Hold(HoldReason::GestureBarrier)
-            } else if !self.staged.observation.inventory_complete {
+            } else if !self.world.staged.observation.inventory_complete {
                 ScopeAuthority::Hold(HoldReason::IncompleteInventory)
             } else if self
+                .world
                 .staged
                 .facts
                 .get(&window)
                 .is_some_and(|fact| fact.minimized == Some(true))
             {
                 ScopeAuthority::Hold(HoldReason::Minimized)
-            } else if let Some(reason) = self.hold_reasons.get(&home).copied() {
+            } else if let Some(reason) = self.world.hold_reasons.get(&home).copied() {
                 ScopeAuthority::Hold(reason)
             } else {
                 ScopeAuthority::Hold(HoldReason::Unreadable)

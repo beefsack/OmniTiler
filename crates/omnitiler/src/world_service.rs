@@ -159,6 +159,15 @@ impl WorldService {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_max_reply_bytes_for_test(&self, limit: usize) {
+        self.backend
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .broker
+            .set_max_reply_bytes_for_test(limit);
+    }
+
     /// Non-queuing single-flight probe for tests: `true` when the world
     /// route is idle.
     #[must_use]
@@ -1568,5 +1577,356 @@ mod tests {
             Err(WorldServiceError::Oversized) => {}
             other => panic!("expected oversized, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn late_bound_oversize_leaves_world_coverage_pins_and_fifo_untouched_then_fitting_executes_once()
+     {
+        let service = WorldService::new();
+        let adapter = "kwin-actuator-1";
+        let hs = format!(
+            "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"hs-1\",\
+              \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\
+              \"processId\":\"pid-own-1\"}},\
+              \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
+              \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
+              \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+        );
+        let hs_reply: serde_json::Value =
+            serde_json::from_str(&service.discover(&hs).expect("handshake")).expect("json");
+        let generation = hs_reply["gen"].as_str().expect("gen").to_owned();
+        let settings = format!(
+            "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+              \"req\":\"set-1\",\"rev\":\"1\",\
+              \"values\":{{\"mode\":\"per-output-local\",\"gap\":8,\"outer\":8,\"bornMaximized\":\"tile-on-launch\"}}}}"
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &service.discover(&settings).expect("settings")
+            )
+            .expect("json")["status"],
+            "accepted"
+        );
+
+        let win_1 = "{\"win\":\"win-1\",\"out\":\"DP-1\",\"rect\":[0,0,480,1040],\
+            \"fullscreen\":false,\"maximized\":false,\"sticky\":false,\"minimized\":false,\
+            \"hints\":{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null},\
+            \"hostHidden\":false,\"privileged\":false,\"managed\":true,\"acceptsInput\":true,\
+            \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\
+            \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\"owner\":null,\
+            \"parent\":null,\"role\":null,\"appId\":null,\"executable\":null,\
+            \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
+            \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
+            \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"lastWrite\":null}";
+        let win_2 = "{\"win\":\"win-2\",\"out\":\"DP-1\",\"rect\":[480,0,480,1040],\
+            \"fullscreen\":false,\"maximized\":false,\"sticky\":false,\"minimized\":false,\
+            \"hints\":{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null},\
+            \"hostHidden\":false,\"privileged\":false,\"managed\":true,\"acceptsInput\":true,\
+            \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\
+            \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\"owner\":null,\
+            \"parent\":null,\"role\":null,\"appId\":null,\"executable\":null,\
+            \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
+            \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
+            \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"lastWrite\":null}";
+
+        let make_inner = |gesture: bool, native_gesture: &str, cursor: &str, witness: &str| {
+            format!(
+                "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+                \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+                \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
+                \"windows\":[{win_1},{win_2}],\"closed\":[],\"native\":[],\"focused\":\"win-1\",\
+                \"foregroundKnown\":true,\"complete\":true,\"gesture\":{gesture},\"cursor\":{cursor},\
+                \"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
+                \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
+                \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
+                \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\
+                \"witness\":null,\"foregroundOut\":null}},\
+                \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+                \"gestureIngress\":null,\"nativeGesture\":{native_gesture},\"cursorWindow\":null,\
+                \"nativeInvalidWitness\":{witness}}}"
+            )
+        };
+        let make_cap = |source: &str, seq: u64, inner: &str| {
+            format!(
+                "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+                \"source\":\"{source}\",\"sourceSeq\":\"{seq}\",\"nativeInvalid\":\"{seq}\",\
+                \"report\":{inner}}}"
+            )
+        };
+        let parse = |s: &str| -> serde_json::Value { serde_json::from_str(s).expect("json") };
+
+        let plain_inner = make_inner(false, "null", "null", "null");
+        let covered_inner = make_inner(
+            false,
+            "null",
+            "null",
+            "{\"instance\":\"inst-cover\",\"counter\":\"7\"}",
+        );
+        let admit_bound = service
+            .evaluate_capture(&make_cap("src-0", 1, &plain_inner))
+            .expect("bootstrap admit capture");
+        let setup_cmd = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-setup\",\"clientCmd\":\"1\",\
+            \"command\":{{\"op\":\"focus\",\"win\":\"win-1\"}}}}"
+        );
+        assert_eq!(
+            parse(
+                &service
+                    .queue_command(":1.42", &setup_cmd)
+                    .expect("queue setup")
+            )["outcome"],
+            "queued"
+        );
+        let initial_bound = service
+            .evaluate_capture(&make_cap("src-1", 2, &covered_inner))
+            .expect("initial covered capture");
+        let initial_json = parse(&initial_bound);
+        assert_eq!(initial_json["rev"], "2");
+        let x_of = |win: &str| -> i64 {
+            let row = initial_json["windows"]
+                .as_array()
+                .expect("windows")
+                .iter()
+                .find(|row| row["win"] == win)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "window row {win} missing in {} (admit={})",
+                        initial_json["windows"], admit_bound
+                    )
+                });
+            let rect = if !row["alloc"].is_null() {
+                &row["alloc"]
+            } else {
+                &row["frame"]
+            };
+            rect[0].as_i64().expect("x")
+        };
+        let (dir_a, dir_b) = if x_of("win-1") < x_of("win-2") {
+            ("right", "left")
+        } else {
+            ("left", "right")
+        };
+
+        let pres_before = parse(
+            &service
+                .read_presentation("{\"v\":4,\"req\":\"read-before\"}")
+                .expect("presentation"),
+        );
+        assert_eq!(pres_before["presentation"]["rev"], "2");
+        assert_eq!(pres_before["coveredInstance"], "inst-cover");
+        assert_eq!(pres_before["coveredInvalid"], "7");
+        assert!(pres_before["preview"].is_null());
+
+        let q1 = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+            \"command\":{{\"op\":\"focus-directional\",\"win\":{{\"currentFocus\":true}},\"direction\":\"{dir_a}\"}}}}"
+        );
+        let q2 = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"2\",\
+            \"command\":{{\"op\":\"focus-directional\",\"win\":{{\"currentFocus\":true}},\"direction\":\"{dir_b}\"}}}}"
+        );
+        assert_eq!(
+            parse(&service.queue_command(":1.42", &q1).expect("queue A"))["outcome"],
+            "queued"
+        );
+        assert_eq!(
+            parse(&service.queue_command(":1.42", &q2).expect("queue B"))["outcome"],
+            "queued"
+        );
+
+        let gesture_inner = make_inner(
+            true,
+            "{\"v\":1,\"instance\":\"gesture-1\",\"serial\":\"1\",\"revision\":\"1\",\
+            \"phase\":\"started\",\"win\":\"win-1\",\"kind\":\"move\",\"startRect\":[0,0,480,1040],\
+            \"startCursor\":[10,10],\"cursor\":[150,50],\"modalMove\":1,\"changed\":1,\
+            \"superseded\":0,\"available\":1}",
+            "[150,50]",
+            "null",
+        );
+
+        // Measure the exact inner (unbound) and bound byte lengths of the same
+        // gesture_inner shape on an unbounded probe so `inner <= limit < bound`
+        // is proven at the exact boundary.
+        let (probe_inner_len, probe_bound_len, probe_gen_len) = {
+            let probe = WorldService::new();
+            let p_hs: serde_json::Value =
+                serde_json::from_str(&probe.discover(&hs).expect("probe hs")).expect("json");
+            let p_gen = p_hs["gen"].as_str().expect("gen").to_owned();
+            let p_set = format!(
+                "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{p_gen}\",\
+                  \"req\":\"set-1\",\"rev\":\"1\",\
+                  \"values\":{{\"mode\":\"per-output-local\",\"gap\":8,\"outer\":8,\"bornMaximized\":\"tile-on-launch\"}}}}"
+            );
+            assert_eq!(
+                parse(&probe.discover(&p_set).expect("probe settings"))["status"],
+                "accepted"
+            );
+            let p_cap = |source: &str, seq: u64, inner: &str| {
+                format!(
+                    "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{p_gen}\",\
+                    \"source\":\"{source}\",\"sourceSeq\":\"{seq}\",\"nativeInvalid\":\"{seq}\",\
+                    \"report\":{inner}}}"
+                )
+            };
+            probe
+                .evaluate_capture(&p_cap("src-0", 1, &plain_inner))
+                .expect("probe admit");
+            let p_setup = format!(
+                "{{\"v\":4,\"gen\":\"{p_gen}\",\"client\":\"panel-setup\",\"clientCmd\":\"1\",\
+                \"command\":{{\"op\":\"focus\",\"win\":\"win-1\"}}}}"
+            );
+            probe.queue_command(":1.42", &p_setup).expect("probe setup");
+            probe
+                .evaluate_capture(&p_cap("src-1", 2, &covered_inner))
+                .expect("probe init");
+            let pq1 = format!(
+                "{{\"v\":4,\"gen\":\"{p_gen}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+                \"command\":{{\"op\":\"focus-directional\",\"win\":{{\"currentFocus\":true}},\"direction\":\"{dir_a}\"}}}}"
+            );
+            let pq2 = format!(
+                "{{\"v\":4,\"gen\":\"{p_gen}\",\"client\":\"panel-1\",\"clientCmd\":\"2\",\
+                \"command\":{{\"op\":\"focus-directional\",\"win\":{{\"currentFocus\":true}},\"direction\":\"{dir_b}\"}}}}"
+            );
+            probe.queue_command(":1.42", &pq1).expect("probe q1");
+            probe.queue_command(":1.42", &pq2).expect("probe q2");
+            let p_bound = probe
+                .evaluate_capture(&p_cap("src-gesture-over-bound-2", 3, &gesture_inner))
+                .expect("probe gesture fits unbounded");
+            let mut unbound_val = parse(&p_bound);
+            if let Some(obj) = unbound_val.as_object_mut() {
+                for key in [
+                    "source",
+                    "nativeInvalid",
+                    "clock",
+                    "gestureAssoc",
+                    "gestureSettledAssoc",
+                ] {
+                    obj.remove(key);
+                }
+            }
+            let p_inner = serde_json::to_string(&unbound_val).expect("serialize unbound");
+            (p_inner.len(), p_bound.len(), p_gen.len())
+        };
+
+        let gen_slack = probe_gen_len.saturating_sub(generation.len());
+        let limit = probe_bound_len - 1 - gen_slack - 2;
+        assert!(
+            probe_inner_len <= limit && limit < probe_bound_len,
+            "limit {limit} must satisfy inner ({probe_inner_len}) <= limit < bound ({probe_bound_len})"
+        );
+        service.set_max_reply_bytes_for_test(limit);
+        let pins_before = service
+            .backend
+            .lock()
+            .expect("lock")
+            .broker
+            .gesture_map_debug();
+
+        let over_env = make_cap("src-gesture-over-bound-2", 3, &gesture_inner);
+        let err = service
+            .evaluate_capture(&over_env)
+            .expect_err("late bound oversize must refuse");
+        assert_eq!(
+            err,
+            WorldServiceError::Unavailable("reply exceeds size bound".to_owned())
+        );
+
+        let retry_same =
+            parse(&service.evaluate_capture(&over_env).expect(
+                "unremembered oversize capture refuses as stale-source instead of replaying",
+            ));
+        assert_eq!(retry_same["outcome"], "rejected");
+        assert_eq!(retry_same["kind"], "stale-source");
+
+        assert_eq!(
+            service
+                .backend
+                .lock()
+                .expect("lock")
+                .broker
+                .gesture_map_debug(),
+            pins_before,
+            "oversize refusal must leave broker gesture pins untouched"
+        );
+        let pres_after = parse(
+            &service
+                .read_presentation("{\"v\":4,\"req\":\"read-after\"}")
+                .expect("presentation"),
+        );
+        assert_eq!(pres_after["presentation"], pres_before["presentation"]);
+        assert_eq!(
+            pres_after["coveredInstance"],
+            pres_before["coveredInstance"]
+        );
+        assert_eq!(pres_after["coveredInvalid"], pres_before["coveredInvalid"]);
+        assert!(pres_after["preview"].is_null());
+
+        let t1_req = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}}"
+        );
+        let t2_req = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"2\"}}"
+        );
+        assert_eq!(
+            parse(&service.take_result(":1.42", &t1_req).expect("take A"))["outcome"],
+            "pending"
+        );
+        assert_eq!(
+            parse(&service.take_result(":1.42", &t2_req).expect("take B"))["outcome"],
+            "pending"
+        );
+
+        // nativeInvalid=2 proves the failed oversize capture (nativeInvalid=3)
+        // left the watermark floor at 2.
+        let fit_cap = format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+            \"source\":\"src-3\",\"sourceSeq\":\"4\",\"nativeInvalid\":\"2\",\
+            \"report\":{plain_inner}}}"
+        );
+        let fit_bound = service
+            .evaluate_capture(&fit_cap)
+            .expect("fitting capture succeeds");
+        assert!(fit_bound.len() <= limit);
+        let fit_json = parse(&fit_bound);
+        assert_eq!(fit_json["rev"], "3");
+
+        let take_a = parse(&service.take_result(":1.42", &t1_req).expect("take A ready"));
+        let take_b = parse(&service.take_result(":1.42", &t2_req).expect("take B ready"));
+        assert_eq!(take_a["outcome"], "ready");
+        assert_eq!(take_b["outcome"], "ready");
+        let seq_a: u64 = take_a["globalCmd"]
+            .as_str()
+            .expect("seq A")
+            .parse()
+            .expect("u64");
+        let seq_b: u64 = take_b["globalCmd"]
+            .as_str()
+            .expect("seq B")
+            .parse()
+            .expect("u64");
+        assert!(seq_a < seq_b, "A must execute before B");
+
+        let neighbor = service
+            .evaluate_capture(&make_cap("src-4", 5, &plain_inner))
+            .expect("neighboring fitting capture succeeds");
+        assert!(neighbor.len() <= limit);
+        assert_eq!(parse(&neighbor)["rev"], "4");
+        let take_a_after = parse(
+            &service
+                .take_result(":1.42", &t1_req)
+                .expect("take A retired"),
+        );
+        let take_b_after = parse(
+            &service
+                .take_result(":1.42", &t2_req)
+                .expect("take B retired"),
+        );
+        assert_eq!(take_a_after["outcome"], "ready");
+        assert_eq!(take_b_after["outcome"], "ready");
+        assert_eq!(take_a_after["globalCmd"], take_a["globalCmd"]);
+        assert_eq!(take_b_after["globalCmd"], take_b["globalCmd"]);
     }
 }

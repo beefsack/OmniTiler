@@ -52,7 +52,7 @@ fn attempt(
 }
 
 fn insert(engine: &mut WorldEngine, window: &str, property: StateProperty, value: bool, rev: u64) {
-    engine.retained_states.insert(
+    engine.world.settlement.retained_states.insert(
         (WindowId(window.to_owned()), property),
         RetainedStateBinding {
             target: RetainedStateTarget {
@@ -78,6 +78,8 @@ fn binding(
     property: StateProperty,
 ) -> Option<RetainedStateBinding> {
     engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId(window.to_owned()), property))
         .cloned()
@@ -511,7 +513,7 @@ fn attempt_beyond_latest_published_revision_ignored() {
     )
     .state_revision;
     insert(&mut engine, "win-a", StateProperty::Above, true, rev);
-    let future = engine.state_revision + 1;
+    let future = engine.state_revision() + 1;
     let reply = accepted(
         &mut engine,
         &with_attempts(
@@ -598,7 +600,7 @@ fn spent_second_attempt_keeps_first_raw_evidence() {
             .disposition,
         AttemptOutcome::Applied,
     );
-    let latest = engine.state_revision;
+    let latest = engine.state_revision();
     let second = attempt(
         "win-a",
         StateProperty::Sticky,
@@ -674,7 +676,7 @@ fn original_revision_accepts_after_later_publications() {
             ),
         );
     }
-    assert!(engine.state_revision > rev + 1);
+    assert!(engine.state_revision() > rev + 1);
     let row = attempt(
         "win-a",
         StateProperty::Above,
@@ -1019,7 +1021,8 @@ fn offroute_matrix_all_four_properties_narrow() {
             rows.clone(),
         ),
     );
-    let last = engine.last_report_v4.as_ref().expect("last report");
+    let last_report = engine.last_report_v4();
+    let last = last_report.as_ref().expect("last report");
     assert_eq!(last.state_attempts, rows);
     assert_eq!(reply.diagnostics.len(), 4);
     for diagnostic in &reply.diagnostics {
@@ -1126,7 +1129,7 @@ fn offroute_scope_falls_back_to_proven_home_then_no_invention() {
     assert!(reply.diagnostics.is_empty());
     assert_eq!(
         engine
-            .last_report_v4
+            .last_report_v4()
             .as_ref()
             .expect("last")
             .state_attempts
@@ -1198,7 +1201,8 @@ fn offroute_held_first_appearance_uses_held_output() {
     ];
     held_report.state_attempts = rows.clone();
     let reply = accepted(&mut engine, &held_report);
-    let last = engine.last_report_v4.as_ref().expect("last");
+    let last_report = engine.last_report_v4();
+    let last = last_report.as_ref().expect("last");
     assert_eq!(last.state_attempts, rows);
     let attempt_diags: Vec<_> = reply
         .diagnostics
@@ -1272,7 +1276,11 @@ fn offroute_diagnostics_survive_command_restage() {
         other => panic!("expected accepted, got {other:?}"),
     };
     assert_eq!(
-        engine.last_report_v4.as_ref().expect("last").state_attempts,
+        engine
+            .last_report_v4()
+            .as_ref()
+            .expect("last")
+            .state_attempts,
         rows
     );
     assert_eq!(reply.diagnostics.len(), 1);
@@ -1380,14 +1388,14 @@ fn bounds_upsert_and_lifecycle_cleanup() {
     ] {
         insert(&mut engine, "win-a", property, true, 1);
     }
-    assert_eq!(engine.retained_states.len(), 4);
+    assert_eq!(engine.world.settlement.retained_states.len(), 4);
     insert(&mut engine, "win-a", StateProperty::Above, false, 2);
-    assert_eq!(engine.retained_states.len(), 4);
+    assert_eq!(engine.world.settlement.retained_states.len(), 4);
     let above = binding(&engine, "win-a", StateProperty::Above).expect("above");
     assert!(!above.target.value);
     assert_eq!(above.target.revision, 2);
     insert(&mut engine, "ghost", StateProperty::Above, true, 9);
-    assert_eq!(engine.retained_states.len(), 5);
+    assert_eq!(engine.world.settlement.retained_states.len(), 5);
     accepted(
         &mut engine,
         &report_full(
@@ -1415,13 +1423,13 @@ fn bounds_upsert_and_lifecycle_cleanup() {
     );
     closed.closed = vec![WindowId("win-a".to_owned())];
     accepted(&mut engine, &closed);
-    assert!(engine.retained_states.is_empty());
+    assert!(engine.world.settlement.retained_states.is_empty());
     assert_eq!(
         crate::world_state::MAX_RETAINED_STATE_BINDINGS,
         crate::world_report::MAX_WORLD_FACTS * 4,
     );
     for i in 0..crate::world_state::MAX_RETAINED_STATE_BINDINGS {
-        engine.retained_states.insert(
+        engine.world.settlement.retained_states.insert(
             (WindowId(format!("fill-{i}")), StateProperty::Above),
             RetainedStateBinding {
                 target: RetainedStateTarget {
@@ -1440,7 +1448,7 @@ fn bounds_upsert_and_lifecycle_cleanup() {
             },
         );
     }
-    let before = engine.retained_states.len();
+    let before = engine.world.settlement.retained_states.len();
     let mut incomplete = report_full(
         4,
         4,
@@ -1453,9 +1461,9 @@ fn bounds_upsert_and_lifecycle_cleanup() {
     );
     incomplete.inventory_complete = false;
     accepted(&mut engine, &incomplete);
-    assert_eq!(engine.retained_states.len(), before);
+    assert_eq!(engine.world.settlement.retained_states.len(), before);
     assert_eq!(
-        engine.retained_states.len(),
+        engine.world.settlement.retained_states.len(),
         crate::world_state::MAX_RETAINED_STATE_BINDINGS,
     );
     let probe = attempt(
@@ -1486,6 +1494,8 @@ fn bounds_upsert_and_lifecycle_cleanup() {
     );
     assert!(reply.diagnostics.is_empty());
     let settled = engine
+        .world
+        .settlement
         .retained_states
         .get(&(WindowId("fill-0".to_owned()), StateProperty::Above))
         .expect("exact-cap binding settles");
@@ -1494,6 +1504,8 @@ fn bounds_upsert_and_lifecycle_cleanup() {
     assert_eq!(settled.disposition, AttemptOutcome::Applied);
     for i in 0..crate::world_state::MAX_RETAINED_STATE_BINDINGS {
         engine
+            .world
+            .settlement
             .retained_states
             .entry((WindowId(format!("fill-{i}")), StateProperty::Above))
             .or_insert(RetainedStateBinding {
@@ -1512,7 +1524,7 @@ fn bounds_upsert_and_lifecycle_cleanup() {
                 above_meta: None,
             });
     }
-    engine.retained_states.insert(
+    engine.world.settlement.retained_states.insert(
         (WindowId("fill-over".to_owned()), StateProperty::Above),
         RetainedStateBinding {
             target: RetainedStateTarget {
@@ -1531,7 +1543,7 @@ fn bounds_upsert_and_lifecycle_cleanup() {
         },
     );
     assert_eq!(
-        engine.retained_states.len(),
+        engine.world.settlement.retained_states.len(),
         crate::world_state::MAX_RETAINED_STATE_BINDINGS + 1,
     );
     let over_probe = attempt(
@@ -1562,6 +1574,8 @@ fn bounds_upsert_and_lifecycle_cleanup() {
     assert!(reply.diagnostics.is_empty());
     assert!(
         engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("fill-1".to_owned()), StateProperty::Above))
             .expect("over-cap binding kept")
@@ -1626,7 +1640,7 @@ fn rehandshake_starts_with_no_bindings() {
     )
     .state_revision;
     insert(&mut engine, "win-a", StateProperty::Above, true, rev);
-    assert!(!engine.retained_states.is_empty());
+    assert!(!engine.world.settlement.retained_states.is_empty());
     let reply = engine.handshake(&crate::connection::HandshakeRequest {
         adapter: "adapter-2".to_owned(),
         request: "handshake-2".to_owned(),
@@ -1638,20 +1652,73 @@ fn rehandshake_starts_with_no_bindings() {
         capabilities: caps_all(),
     });
     assert!(reply.kind.is_none());
-    assert!(engine.retained_states.is_empty());
+    assert!(engine.world.settlement.retained_states.is_empty());
 }
 
 #[test]
 fn reply_bound_state_term_rejected_without_mutation() {
-    use crate::world_report::WORLD_MAX_REPLY_BYTES;
-    use crate::world_sizing::MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES;
-    use crate::world_sizing_v4::{
-        reply_upper_bound_v4 as reply_upper_bound, report_estimate_v4 as report_estimate,
+    // Local format-neutral preflight gate proves state-attempt factual counts
+    // and non-mutation on preflight refusal, plus retry recovery. Protocol
+    // diagnostic bound crossing lives in
+    // `tiler-protocol/tests/world_envelope_budget.rs`.
+    use crate::world_engine::{
+        AdmissionGateDecision, CoreAdmissionGate, ExactInnerCheck, ExactInnerDecision,
+        FutureReserveGateFacts, PreflightGateFacts,
     };
+    use std::cell::{Cell, RefCell};
+
+    struct LocalStatePreflightGate {
+        refuse_preflight: Cell<bool>,
+        observed_attempts: RefCell<Option<usize>>,
+        observed_domains: RefCell<Option<usize>>,
+        observed_screens: RefCell<Option<usize>>,
+        observed_staged: RefCell<Option<usize>>,
+        observed_retained: RefCell<Option<usize>>,
+    }
+
+    impl CoreAdmissionGate for LocalStatePreflightGate {
+        fn check_request_size(&self, _report: &WorldReportV4) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+
+        fn check_preflight(
+            &self,
+            report: &WorldReportV4,
+            facts: &PreflightGateFacts<'_>,
+        ) -> AdmissionGateDecision {
+            *self.observed_attempts.borrow_mut() = Some(report.state_attempts.len());
+            *self.observed_domains.borrow_mut() = Some(facts.domain_count);
+            *self.observed_screens.borrow_mut() = Some(facts.screen_count);
+            *self.observed_staged.borrow_mut() = Some(facts.staged_window_count);
+            *self.observed_retained.borrow_mut() = Some(facts.retained_publish_footprint);
+            if self.refuse_preflight.get() {
+                AdmissionGateDecision::Refuse
+            } else {
+                AdmissionGateDecision::Allow
+            }
+        }
+
+        fn check_exact_inner(
+            &self,
+            _reply: &crate::world_report::WorldReplyV4,
+        ) -> ExactInnerDecision {
+            ExactInnerDecision::Allow(ExactInnerCheck::new(0))
+        }
+
+        fn check_future_reserve(
+            &self,
+            _reply: &crate::world_report::WorldReplyV4,
+            _facts: &FutureReserveGateFacts,
+            _exact: ExactInnerCheck,
+        ) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+    }
+
     let mut engine = engine_with(crate::connection::HostCapabilities {
         native_sticky: true,
         // Fixtures carry native maximize facts; the lane under test is
-        // reply-bound sizing, so the orthogonal native route stays valid.
+        // preflight gating, so the orthogonal native route stays valid.
         maximize: true,
         ..Default::default()
     });
@@ -1668,16 +1735,16 @@ fn reply_bound_state_term_rejected_without_mutation() {
             None,
         ),
     );
-    let logical = engine.layout.domain_keys().len();
-    let staged = engine.staged.facts.len() + engine.staged.held_windows.len();
-    let retained = engine.retained_publish_footprint();
+    let expected_domains = engine.world.layout.domain_keys().len();
+    let expected_staged = engine.world.staged.facts.len() + engine.world.staged.held_windows.len();
+    let expected_retained = engine.world.retained_publish_footprint();
     let attempts = 400usize;
-    let mut windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)];
+    let windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)];
     let mut report: WorldReportV4 = report_full(
         2,
         2,
         vec![screen("out-a", 0)],
-        windows.clone(),
+        windows,
         vec![],
         "",
         None,
@@ -1697,49 +1764,34 @@ fn reply_bound_state_term_rejected_without_mutation() {
             )
         })
         .collect();
-    while reply_upper_bound(&report, 0, logical, 1, staged, retained) <= WORLD_MAX_REPLY_BYTES {
-        let i = windows.len();
-        windows.push(fact(&format!("win-pad-{i:05}"), "out-a", 0));
-        assert!(windows.len() < crate::world_report::MAX_WORLD_FACTS);
-        report = report_full(
-            2,
-            2,
-            vec![screen("out-a", 0)],
-            windows.clone(),
-            vec![],
-            "",
-            None,
-            None,
-        );
-        report.state_attempts = (0..attempts)
-            .map(|i| {
-                attempt(
-                    &format!("win-pad-{i:05}"),
-                    StateProperty::Above,
-                    true,
-                    9,
-                    FrameSetter::Accepted,
-                    Some(false),
-                    Some(true),
-                    1,
-                )
-            })
-            .collect();
-        assert!(report_estimate(&report) <= crate::world_report::WORLD_MAX_REQUEST_BYTES);
-    }
-    let state_term = attempts * MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES;
-    let without_state = reply_upper_bound(&report, 0, logical, 1, staged, retained) - state_term;
-    assert!(without_state <= WORLD_MAX_REPLY_BYTES, "{without_state}");
-    assert!(without_state + state_term > WORLD_MAX_REPLY_BYTES);
-    assert_eq!(crate::world_sizing::MAX_TARGET_LANES_PER_WINDOW, 626);
-    let revision = engine.state_revision;
-    match engine.handle_report(&report, &[]).0 {
+    let revision = engine.state_revision();
+    let gate = LocalStatePreflightGate {
+        refuse_preflight: Cell::new(true),
+        observed_attempts: RefCell::new(None),
+        observed_domains: RefCell::new(None),
+        observed_screens: RefCell::new(None),
+        observed_staged: RefCell::new(None),
+        observed_retained: RefCell::new(None),
+    };
+    match engine
+        .handle_report_with_gate_and_prepare(&report, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .0
+    {
         crate::world_engine::WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
         }
         other => panic!("expected reply-oversize, got {other:?}"),
     }
-    assert_eq!(engine.state_revision, revision);
+    assert_eq!(*gate.observed_attempts.borrow(), Some(attempts));
+    assert_eq!(*gate.observed_domains.borrow(), Some(expected_domains));
+    assert_eq!(*gate.observed_screens.borrow(), Some(1));
+    assert_eq!(*gate.observed_staged.borrow(), Some(expected_staged));
+    assert_eq!(*gate.observed_retained.borrow(), Some(expected_retained));
+    assert_eq!(engine.state_revision(), revision);
+    gate.refuse_preflight.set(false);
     let retry = report_full(
         2,
         2,
@@ -1750,7 +1802,13 @@ fn reply_bound_state_term_rejected_without_mutation() {
         None,
         None,
     );
-    match engine.handle_report(&retry, &[]).0 {
+    match engine
+        .handle_report_with_gate_and_prepare(&retry, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .0
+    {
         crate::world_engine::WorldOutcome::Accepted(_)
         | crate::world_engine::WorldOutcome::CommandConsumed(_) => {}
         other => panic!("expected accepted retry, got {other:?}"),

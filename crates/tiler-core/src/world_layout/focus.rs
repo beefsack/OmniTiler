@@ -146,14 +146,6 @@ impl WorldLayout {
             .is_some_and(|layout| domain_focus_resolves(layout, leaf))
     }
 
-    /// Focus leaf eligible for directional descent: the domain's focused leaf
-    /// only when it still resolves to a linked leaf.
-    #[must_use]
-    pub(crate) fn eligible_focus_in(&self, key: &DomainKey) -> Option<NodeId> {
-        let leaf = self.domain(key)?.focused_leaf.clone()?;
-        self.focus_resolves(key, &leaf).then_some(leaf)
-    }
-
     /// Last-active leaf while it still resolves in its domain.
     #[must_use]
     pub(crate) fn remembered_leaf(&self, target: &DomainKey) -> Option<NodeId> {
@@ -210,21 +202,10 @@ impl WorldLayout {
         out
     }
 
-    /// Newest resolving leaf from the domain removal-fallback MRU stack.
-    #[must_use]
-    pub(crate) fn focus_stack_fallback(&self, target: &DomainKey) -> Option<NodeId> {
-        let domain = self.domain(target)?;
-        let index = FocusPruneIndex::new(domain);
-        domain
-            .focus_stack
-            .iter()
-            .rev()
-            .find_map(|leaf| index.resolves(leaf).then(|| leaf.clone()))
-    }
-
     /// Focus-stack recency after pruning stale/domain-mismatched leaves and
     /// appending an observed focus leaf. The append is unconditional here so
     /// an unresolved committed focus still seeds the fallback stack.
+    #[cfg(test)]
     #[must_use]
     pub(super) fn updated_focus_stack_on(
         &self,
@@ -243,6 +224,7 @@ impl WorldLayout {
 
     /// Accepted focus-history recency after pruning. Only a resolving accepted
     /// focus is appended; native convergence must prune without appending.
+    #[cfg(test)]
     #[must_use]
     pub(super) fn updated_focus_history_on(
         &self,
@@ -359,14 +341,6 @@ impl WorldLayout {
         domain.focus_history.retain(|leaf| index.resolves(leaf));
     }
 
-    /// Prune accepted focus history without appending observed focus.
-    pub(super) fn prune_focus_history(&mut self, key: &DomainKey) {
-        let Some(domain) = self.domains.get_mut(key) else {
-            return;
-        };
-        Self::prune_domain_focus_history(domain);
-    }
-
     /// Apply the domain-scoped convergence focus tail: set the focused leaf,
     /// prune then unconditionally demote/re-append the selected leaf on the
     /// MRU stack, prune accepted history without appending observed focus,
@@ -390,14 +364,6 @@ impl WorldLayout {
         );
     }
 
-    /// Set or clear a domain's focused leaf (convergence/bookkeeping only,
-    /// revision-neutral).
-    pub(super) fn set_focus_leaf(&mut self, key: &DomainKey, leaf: Option<NodeId>) {
-        if let Some(domain) = self.domains.get_mut(key) {
-            domain.focused_leaf = leaf;
-        }
-    }
-
     /// Drop automatic-fixed and explicit-tile overrides in this domain for
     /// windows no longer linked, excepted or restore-slotted. A reused id
     /// classifies again on next admission.
@@ -415,15 +381,6 @@ impl WorldLayout {
         });
     }
 
-    /// Drop fixed-size bookkeeping for windows no longer linked, excepted or
-    /// restore-slotted in the affected domain.
-    pub(super) fn prune_fixed_size_state(&mut self, key: &DomainKey) {
-        let Some(domain) = self.domains.get_mut(key) else {
-            return;
-        };
-        Self::prune_domain_fixed_size_state(domain);
-    }
-
     /// Drop capacity-float provenance for windows no longer linked or
     /// excepted (minimize slots do not carry capacity provenance), and
     /// admission order for windows no longer linked, excepted or
@@ -438,14 +395,5 @@ impl WorldLayout {
                 || domain.exceptions.contains_key(id)
                 || domain.minimized_slots.contains_key(id)
         });
-    }
-
-    /// Drop capacity provenance and stale admission order in the affected
-    /// domain.
-    pub(super) fn prune_capacity_state(&mut self, key: &DomainKey) {
-        let Some(domain) = self.domains.get_mut(key) else {
-            return;
-        };
-        Self::prune_domain_capacity_state(domain);
     }
 }

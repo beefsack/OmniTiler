@@ -448,13 +448,14 @@ fn wholly_unarrived_refusal_restores_unit_and_focus() {
         workspace: crate::directional::WorkspaceId(view_a.clone()),
     };
     let pre_snapshot: Vec<String> = engine
+        .world
         .layout()
         .tiled_windows(&src_key)
         .map(|window| window.0.clone())
         .collect();
     assert!(pre_snapshot.len() >= 3, "three members: {pre_snapshot:?}");
-    let pre_tree = engine.layout().tree(&src_key).cloned();
-    let pre_focus = engine.layout().focus_leaf(&src_key).cloned();
+    let pre_tree = engine.world.layout().tree(&src_key).cloned();
+    let pre_focus = engine.world.layout().focus_leaf(&src_key).cloned();
     let pre_ring: Vec<String> = first
         .workspaces
         .iter()
@@ -600,6 +601,7 @@ fn wholly_unarrived_refusal_restores_unit_and_focus() {
     // same remembered focus leaf.
     let mut pre_ids: Vec<String> = pre_snapshot;
     let mut post_ids: Vec<String> = engine
+        .world
         .layout()
         .tiled_windows(&src_key)
         .map(|window| window.0.clone())
@@ -608,12 +610,12 @@ fn wholly_unarrived_refusal_restores_unit_and_focus() {
     post_ids.sort();
     assert_eq!(pre_ids, post_ids, "membership preserved");
     assert_eq!(
-        engine.layout().tree(&src_key),
+        engine.world.layout().tree(&src_key),
         pre_tree.as_ref(),
         "tree/shares preserved"
     );
     assert_eq!(
-        engine.layout().focus_leaf(&src_key),
+        engine.world.layout().focus_leaf(&src_key),
         pre_focus.as_ref(),
         "focus leaf preserved"
     );
@@ -943,8 +945,8 @@ fn gap_refusal_holds_then_proven_rollback_preserves_unit() {
         output: OutputId("out-a".to_owned()),
         workspace: crate::directional::WorkspaceId(view_a.clone()),
     };
-    let pre_tree = engine.layout().tree(&src_key).cloned();
-    let pre_focus = engine.layout().focus_leaf(&src_key).cloned();
+    let pre_tree = engine.world.layout().tree(&src_key).cloned();
+    let pre_focus = engine.world.layout().focus_leaf(&src_key).cloned();
     let pre_ring: Vec<String> = first
         .workspaces
         .iter()
@@ -1057,12 +1059,12 @@ fn gap_refusal_holds_then_proven_rollback_preserves_unit() {
         .collect();
     assert_eq!(pre_ring, post_ring, "ring position restored");
     assert_eq!(
-        engine.layout().tree(&src_key),
+        engine.world.layout().tree(&src_key),
         pre_tree.as_ref(),
         "tree/shares preserved"
     );
     assert_eq!(
-        engine.layout().focus_leaf(&src_key),
+        engine.world.layout().focus_leaf(&src_key),
         pre_focus.as_ref(),
         "focus leaf preserved"
     );
@@ -1184,8 +1186,8 @@ fn refusal_without_hostable_source_holds_without_destruction() {
         output: OutputId("out-a".to_owned()),
         workspace: crate::directional::WorkspaceId(view_a.clone()),
     };
-    let pre_tree = engine.layout().tree(&src_key).cloned();
-    let pre_focus = engine.layout().focus_leaf(&src_key).cloned();
+    let pre_tree = engine.world.layout().tree(&src_key).cloned();
+    let pre_focus = engine.world.layout().focus_leaf(&src_key).cloned();
     accepted(
         &mut engine,
         &report(
@@ -1279,12 +1281,12 @@ fn refusal_without_hostable_source_holds_without_destruction() {
         .expect("mapping restored");
     assert_eq!(row.output.0, "out-a");
     assert_eq!(
-        engine.layout().tree(&src_key),
+        engine.world.layout().tree(&src_key),
         pre_tree.as_ref(),
         "tree preserved through gap"
     );
     assert_eq!(
-        engine.layout().focus_leaf(&src_key),
+        engine.world.layout().focus_leaf(&src_key),
         pre_focus.as_ref(),
         "focus preserved"
     );
@@ -1337,8 +1339,8 @@ fn acknowledged_refusal_recovers_without_attempt_replay() {
         output: OutputId("out-a".to_owned()),
         workspace: crate::directional::WorkspaceId(view_a.clone()),
     };
-    let pre_tree = engine.layout().tree(&src_key).cloned();
-    let pre_focus = engine.layout().focus_leaf(&src_key).cloned();
+    let pre_tree = engine.world.layout().tree(&src_key).cloned();
+    let pre_focus = engine.world.layout().focus_leaf(&src_key).cloned();
     let pre_ring: Vec<String> = first
         .workspaces
         .iter()
@@ -1489,12 +1491,12 @@ fn acknowledged_refusal_recovers_without_attempt_replay() {
         "source view restored"
     );
     assert_eq!(
-        engine.layout().tree(&src_key),
+        engine.world.layout().tree(&src_key),
         pre_tree.as_ref(),
         "tree/shares preserved"
     );
     assert_eq!(
-        engine.layout().focus_leaf(&src_key),
+        engine.world.layout().focus_leaf(&src_key),
         pre_focus.as_ref(),
         "focus leaf preserved"
     );

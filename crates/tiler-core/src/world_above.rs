@@ -46,28 +46,28 @@
 //! Runs once per [`WorldEngine::publish_v4`](crate::world_engine::WorldEngine::publish_v4), after all
 //! rows assemble and before the sticky/fullscreen/maximize decorators.
 
+use crate::world_transaction::WorldTransaction;
 use std::collections::BTreeSet;
 
 use crate::directional::{WindowId, WorkspaceId};
 use crate::session::DomainKey;
-use crate::world_engine::WorldEngine;
 use crate::world_report::{
     AttemptOutcome, HoldReason, ScopeAuthority, StateProperty, StateTarget, TransferKind,
     WindowDesire,
 };
 use crate::world_state::{MAX_RETAINED_STATE_BINDINGS, NativeAboveMeta};
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Focused-fullscreen homed suspension scope: the staged homing of the
     /// focused lifetime when its fact reads fullscreen. `None` otherwise.
     /// Other scopes are unaffected; the overlay subject itself holds via
     /// the healthy gate, never a replan.
     fn above_suspended_scope(&self) -> Option<DomainKey> {
-        if self.staged.observation.focused_global.is_empty() {
+        if self.world.staged.observation.focused_global.is_empty() {
             return None;
         }
-        let focused = WindowId(self.staged.observation.focused_global.clone());
-        let fact = self.staged.facts.get(&focused)?;
+        let focused = WindowId(self.world.staged.observation.focused_global.clone());
+        let fact = self.world.staged.facts.get(&focused)?;
         if fact.fullscreen != Some(true) {
             return None;
         }
@@ -83,7 +83,11 @@ impl WorldEngine {
         held_scopes: &BTreeSet<DomainKey>,
         windows: &mut [WindowDesire],
     ) {
-        if !self.capabilities().is_some_and(|caps| caps.above) {
+        if !self
+            .connection
+            .capabilities()
+            .is_some_and(|caps| caps.above)
+        {
             return;
         }
         let mut seen: BTreeSet<WindowId> = BTreeSet::new();
@@ -98,7 +102,7 @@ impl WorldEngine {
                 output: desire.output.clone(),
                 workspace: WorkspaceId(desire.workspace.clone()),
             });
-            if desire.floating || self.floating_scopes.contains(&home) {
+            if desire.floating || self.world.floating_scopes.contains(&home) {
                 float_now.insert(desire.lifetime.clone());
             }
             homes.insert(desire.lifetime.clone(), home);
@@ -106,7 +110,7 @@ impl WorldEngine {
         let suspended = self.above_suspended_scope();
         // Latch reset: native preowned-above drops the latch untouched.
         let mut unlatch: Vec<(WindowId, StateProperty)> = Vec::new();
-        for ((window, property), binding) in self.retained_states.iter() {
+        for ((window, property), binding) in self.world.settlement.retained_states.iter() {
             if *property != StateProperty::Above {
                 continue;
             }
@@ -117,6 +121,7 @@ impl WorldEngine {
                 continue;
             }
             if self
+                .world
                 .staged
                 .facts
                 .get(window)
@@ -126,7 +131,7 @@ impl WorldEngine {
             }
         }
         for key in unlatch {
-            self.retained_states.remove(&key);
+            self.world.settlement.retained_states.remove(&key);
         }
         // External below on any core-owned producer binding relinquishes
         // into a latched binding in place: bookkeeping only, preserving the
@@ -135,7 +140,7 @@ impl WorldEngine {
         // External above-clear only applies to proven true: a pending false
         // transition legitimately reads false, so it must never be
         // misread as an external clear.
-        for ((window, property), binding) in self.retained_states.iter_mut() {
+        for ((window, property), binding) in self.world.settlement.retained_states.iter_mut() {
             if *property != StateProperty::Above {
                 continue;
             }
@@ -145,7 +150,7 @@ impl WorldEngine {
             if meta.latched {
                 continue;
             }
-            let Some(fact) = self.staged.facts.get(window) else {
+            let Some(fact) = self.world.staged.facts.get(window) else {
                 continue;
             };
             if fact.below == Some(true)
@@ -156,16 +161,16 @@ impl WorldEngine {
                 meta.latched = true;
             }
         }
-        let revision = self.state_revision + 1;
+        let revision = self.world.state_revision + 1;
         // Acquire: newly eligible safe floats with explicit false stacking
         // facts mint exactly one unspent true target. Suspended scopes,
         // latched tombstones, and a full binding table mint nothing.
         // Running count keeps the bound exact; replacements below reuse keys.
         let mut acquire: Vec<(WindowId, DomainKey)> = Vec::new();
-        let mut used = self.retained_states.len();
+        let mut used = self.world.settlement.retained_states.len();
         for window in &float_now {
             let key = (window.clone(), StateProperty::Above);
-            if self.retained_states.contains_key(&key) {
+            if self.world.settlement.retained_states.contains_key(&key) {
                 continue;
             }
             let home = homes.get(window).cloned().unwrap_or_else(|| {
@@ -180,7 +185,7 @@ impl WorldEngine {
             if !self.above_publish_healthy(held_scopes, window, &home) {
                 continue;
             }
-            let Some(fact) = self.staged.facts.get(window) else {
+            let Some(fact) = self.world.staged.facts.get(window) else {
                 continue;
             };
             if fact.above != Some(false) || fact.below != Some(false) {
@@ -197,7 +202,7 @@ impl WorldEngine {
         let mut release: Vec<(WindowId, DomainKey)> = Vec::new();
         let mut reacquire: Vec<(WindowId, DomainKey)> = Vec::new();
         let mut drop_unowned: Vec<(WindowId, StateProperty)> = Vec::new();
-        for ((window, property), binding) in self.retained_states.iter() {
+        for ((window, property), binding) in self.world.settlement.retained_states.iter() {
             if *property != StateProperty::Above {
                 continue;
             }
@@ -244,7 +249,7 @@ impl WorldEngine {
                 if !self.above_publish_healthy(held_scopes, window, &home) {
                     continue;
                 }
-                let Some(fact) = self.staged.facts.get(window) else {
+                let Some(fact) = self.world.staged.facts.get(window) else {
                     continue;
                 };
                 if fact.above != Some(false) || fact.below != Some(false) {
@@ -254,7 +259,7 @@ impl WorldEngine {
             }
         }
         for (window, home) in acquire.into_iter().chain(reacquire) {
-            self.retained_states.insert(
+            self.world.settlement.retained_states.insert(
                 (window.clone(), StateProperty::Above),
                 crate::world_state::RetainedStateBinding {
                     target: crate::world_state::RetainedStateTarget {
@@ -277,7 +282,7 @@ impl WorldEngine {
             );
         }
         for (window, home) in release {
-            self.retained_states.insert(
+            self.world.settlement.retained_states.insert(
                 (window.clone(), StateProperty::Above),
                 crate::world_state::RetainedStateBinding {
                     target: crate::world_state::RetainedStateTarget {
@@ -300,7 +305,7 @@ impl WorldEngine {
             );
         }
         for key in drop_unowned {
-            self.retained_states.remove(&key);
+            self.world.settlement.retained_states.remove(&key);
         }
         // Central decoration: producer-owned bindings publish exactly one
         // Above row except latched tombstones (no row). Commandless always:
@@ -311,6 +316,8 @@ impl WorldEngine {
         for desire in windows.iter_mut() {
             let window = desire.lifetime.clone();
             let Some(binding) = self
+                .world
+                .settlement
                 .retained_states
                 .get(&(window.clone(), StateProperty::Above))
             else {
@@ -339,7 +346,7 @@ impl WorldEngine {
             // above false, below false is universal. Never a global
             // above-false gate: an owned false release from raw above true
             // stays reachable.
-            let stack_ok = self.staged.facts.get(&window).is_some_and(|fact| {
+            let stack_ok = self.world.staged.facts.get(&window).is_some_and(|fact| {
                 fact.below == Some(false) && (!binding.target.value || fact.above == Some(false))
             });
             let controlled = !binding.spent
@@ -350,18 +357,19 @@ impl WorldEngine {
                 ScopeAuthority::Controlled
             } else if excluded_lane {
                 ScopeAuthority::Untouched
-            } else if self.staged.gesture_barrier {
+            } else if self.world.staged.gesture_barrier {
                 ScopeAuthority::Hold(HoldReason::GestureBarrier)
-            } else if !self.staged.observation.inventory_complete {
+            } else if !self.world.staged.observation.inventory_complete {
                 ScopeAuthority::Hold(HoldReason::IncompleteInventory)
             } else if self
+                .world
                 .staged
                 .facts
                 .get(&window)
                 .is_some_and(|fact| fact.minimized == Some(true))
             {
                 ScopeAuthority::Hold(HoldReason::Minimized)
-            } else if let Some(reason) = self.hold_reasons.get(&home).copied() {
+            } else if let Some(reason) = self.world.hold_reasons.get(&home).copied() {
                 ScopeAuthority::Hold(reason)
             } else {
                 ScopeAuthority::Hold(HoldReason::Unreadable)
@@ -385,7 +393,7 @@ impl WorldEngine {
         window: &WindowId,
         home: &DomainKey,
     ) -> bool {
-        if !self.staged.observation.inventory_complete || self.staged.gesture_barrier {
+        if !self.world.staged.observation.inventory_complete || self.world.staged.gesture_barrier {
             return false;
         }
         if held_scopes.contains(home) {
@@ -395,6 +403,7 @@ impl WorldEngine {
             return false;
         }
         if !self
+            .world
             .staged
             .domains
             .iter()
@@ -403,24 +412,26 @@ impl WorldEngine {
             return false;
         }
         if self
+            .world
+            .settlement
             .retained
             .iter()
             .any(|transfer| matches!(&transfer.target.kind, TransferKind::Window(w) if w == window))
         {
             return false;
         }
-        if !(self.engine_knows_window_any(window)
-            || self.members.contains_key(window)
+        if !(self.world.engine_knows_window_any(window)
+            || self.world.workspace.members.contains_key(window)
             // Floating scopes host no session, so retained knowledge only
             // arrives one report later via post-publish membership
             // convergence: staged homing on the readable floating scope is
             // the first-report evidence.
-            || (self.floating_scopes.contains(home)
+            || (self.world.floating_scopes.contains(home)
                 && self.staged_homing(window).as_ref() == Some(home)))
         {
             return false;
         }
-        match self.staged.facts.get(window) {
+        match self.world.staged.facts.get(window) {
             Some(fact) => {
                 if fact.minimized == Some(true)
                     || fact.host_hidden != Some(false)
@@ -513,6 +524,8 @@ mod tests {
         assert_eq!(row.authority, ScopeAuthority::Controlled);
         assert_eq!(row.command_seq, None);
         let binding = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("binding retained");
@@ -563,6 +576,8 @@ mod tests {
         }];
         let reply = accepted(&mut engine, &proven);
         let binding = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("binding retained");
@@ -592,6 +607,8 @@ mod tests {
             ),
         );
         let binding = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("binding retained");
@@ -650,6 +667,8 @@ mod tests {
         assert_eq!(row.command_seq, None);
         assert_eq!(
             engine
+                .world
+                .settlement
                 .retained_states
                 .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
                 .expect("binding retained")
@@ -683,6 +702,8 @@ mod tests {
         proven.state_attempts = vec![attempt_row.clone()];
         accepted(&mut engine, &proven);
         let binding = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("binding retained");
@@ -758,6 +779,8 @@ mod tests {
         assert_eq!(row.authority, ScopeAuthority::Controlled);
         assert_eq!(row.command_seq, None);
         let binding = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("binding retained");
@@ -784,6 +807,8 @@ mod tests {
         );
         assert!(
             engine
+                .world
+                .settlement
                 .retained_states
                 .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Above))
         );
@@ -805,6 +830,8 @@ mod tests {
         assert!(above_row(&reply, "win-a").is_none());
         assert!(
             !engine
+                .world
+                .settlement
                 .retained_states
                 .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Above))
         );
@@ -842,6 +869,8 @@ mod tests {
             );
             assert!(
                 !engine
+                    .world
+                    .settlement
                     .retained_states
                     .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Above)),
                 "above={above:?} below={below:?}"
@@ -866,7 +895,7 @@ mod tests {
             ),
         );
         assert!(above_row(&reply, "win-a").is_none());
-        assert!(engine.retained_states.is_empty());
+        assert!(engine.world.settlement.retained_states.is_empty());
     }
 
     #[test]
@@ -908,6 +937,8 @@ mod tests {
         }];
         accepted(&mut engine, &refused);
         let binding = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("binding retained");
@@ -928,6 +959,8 @@ mod tests {
             ),
         );
         let binding = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("binding retained");
@@ -961,6 +994,8 @@ mod tests {
         assert!(above_row(&reply, "win-a").is_none());
         assert!(
             !engine
+                .world
+                .settlement
                 .retained_states
                 .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Above))
         );
@@ -1043,6 +1078,8 @@ mod tests {
         }
         for window in ["win-float", "win-other"] {
             let binding = engine
+                .world
+                .settlement
                 .retained_states
                 .get(&(WindowId(window.to_owned()), StateProperty::Above))
                 .expect("proven binding");
@@ -1075,6 +1112,8 @@ mod tests {
         assert_eq!(suspended.command_seq, None);
         // Other output unaffected: no fresh false, revision stable.
         let other_rev = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-other".to_owned()), StateProperty::Above))
             .expect("other retained")
@@ -1085,6 +1124,8 @@ mod tests {
                 .is_none_or(|row| row.value || row.authority != ScopeAuthority::Controlled)
         );
         let suspension_rev = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-float".to_owned()), StateProperty::Above))
             .expect("suspension binding")
@@ -1096,6 +1137,8 @@ mod tests {
         );
         assert_eq!(
             engine
+                .world
+                .settlement
                 .retained_states
                 .get(&(WindowId("win-other".to_owned()), StateProperty::Above))
                 .expect("other retained")
@@ -1132,6 +1175,8 @@ mod tests {
         }];
         accepted(&mut engine, &proven);
         let binding = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-float".to_owned()), StateProperty::Above))
             .expect("proven suspension");
@@ -1178,6 +1223,8 @@ mod tests {
         );
         prove_above(&mut engine, 2, "win-a", first.state_revision, false);
         let owned = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("proven owned")
@@ -1201,6 +1248,8 @@ mod tests {
         );
         assert!(above_row(&reply, "win-a").is_none());
         let binding = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("latch tombstone");
@@ -1230,6 +1279,8 @@ mod tests {
         assert!(above_row(&reply, "win-a").is_none());
         assert!(
             engine
+                .world
+                .settlement
                 .retained_states
                 .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
                 .is_some_and(|binding| binding
@@ -1256,6 +1307,8 @@ mod tests {
         assert!(above_row(&reply, "win-a").is_none());
         assert!(
             !engine
+                .world
+                .settlement
                 .retained_states
                 .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Above))
         );
@@ -1315,6 +1368,8 @@ mod tests {
         assert!(above_row(&reply, "win-b").is_none());
         assert!(
             engine
+                .world
+                .settlement
                 .retained_states
                 .get(&(WindowId("win-b".to_owned()), StateProperty::Above))
                 .is_some_and(|binding| binding
@@ -1343,6 +1398,8 @@ mod tests {
             ),
         );
         let owned = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("pending acquire")
@@ -1367,6 +1424,8 @@ mod tests {
         );
         assert!(above_row(&reply, "win-a").is_none());
         let binding = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("latched")
@@ -1394,6 +1453,8 @@ mod tests {
         assert!(above_row(&reply, "win-a").is_none());
         assert!(
             engine
+                .world
+                .settlement
                 .retained_states
                 .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
                 .is_some_and(|binding| binding
@@ -1467,6 +1528,8 @@ mod tests {
         }];
         accepted(&mut engine, &report);
         let binding = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("latched binding retained")
@@ -1489,6 +1552,8 @@ mod tests {
         assert!(above_row(&reply, "win-a").is_none());
         assert!(
             engine
+                .world
+                .settlement
                 .retained_states
                 .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
                 .is_some_and(|binding| binding
@@ -1535,6 +1600,8 @@ mod tests {
             ),
         );
         let owned = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("pending release")
@@ -1559,6 +1626,8 @@ mod tests {
         );
         assert!(above_row(&reply, "win-a").is_none());
         let binding = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("latched")
@@ -1589,6 +1658,8 @@ mod tests {
         assert!(above_row(&reply, "win-a").is_none());
         assert!(
             engine
+                .world
+                .settlement
                 .retained_states
                 .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
                 .is_some_and(|binding| binding
@@ -1639,6 +1710,8 @@ mod tests {
                 .is_none_or(|row| row.authority != ScopeAuthority::Controlled)
         );
         let binding = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("pending binding retained");
@@ -1667,6 +1740,8 @@ mod tests {
         );
         prove_above(&mut engine, 2, "win-a", first.state_revision, false);
         let owned_rev = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("proven owned")
@@ -1689,6 +1764,8 @@ mod tests {
         );
         assert!(above_row(&reply, "win-a").is_none());
         let binding = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("latched");
@@ -1715,6 +1792,8 @@ mod tests {
         );
         prove_above(&mut engine, 2, "win-a", first.state_revision, false);
         let owned_rev = engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
             .expect("owned")
@@ -1743,6 +1822,8 @@ mod tests {
         );
         assert_eq!(
             engine
+                .world
+                .settlement
                 .retained_states
                 .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
                 .expect("retained across sticky")
@@ -1904,6 +1985,7 @@ mod tests {
         assert_eq!(row.float_origin, None, "empty diagnostic origin");
         assert!(
             engine
+                .world
                 .floating_scopes
                 .iter()
                 .any(|key| key.workspace.0 == ws)
@@ -2064,12 +2146,14 @@ mod tests {
         );
         assert!(
             engine
+                .world
+                .settlement
                 .retained_states
                 .contains_key(&(WindowId("win-a".to_owned()), StateProperty::Above))
         );
-        let need = MAX_RETAINED_STATE_BINDINGS - engine.retained_states.len() - 1;
+        let need = MAX_RETAINED_STATE_BINDINGS - engine.world.settlement.retained_states.len() - 1;
         for i in 0..need {
-            engine.retained_states.insert(
+            engine.world.settlement.retained_states.insert(
                 (WindowId(format!("win-fill-{i:05}")), StateProperty::Above),
                 crate::world_state::RetainedStateBinding {
                     target: crate::world_state::RetainedStateTarget {
@@ -2089,7 +2173,7 @@ mod tests {
             );
         }
         assert_eq!(
-            engine.retained_states.len(),
+            engine.world.settlement.retained_states.len(),
             MAX_RETAINED_STATE_BINDINGS - 1,
             "exactly one vacancy"
         );
@@ -2111,7 +2195,7 @@ mod tests {
             ),
         );
         assert!(
-            engine.retained_states.len() <= MAX_RETAINED_STATE_BINDINGS,
+            engine.world.settlement.retained_states.len() <= MAX_RETAINED_STATE_BINDINGS,
             "never exceeds the bound"
         );
         let minted = ["win-b", "win-c"]
@@ -2129,6 +2213,8 @@ mod tests {
             .iter()
             .filter(|window| {
                 engine
+                    .world
+                    .settlement
                     .retained_states
                     .contains_key(&(WindowId(window.to_string()), StateProperty::Above))
             })
@@ -2161,9 +2247,9 @@ mod tests {
             ),
         );
         prove_above(&mut engine, 2, "win-a", first.state_revision, false);
-        let fill = MAX_RETAINED_STATE_BINDINGS - engine.retained_states.len();
+        let fill = MAX_RETAINED_STATE_BINDINGS - engine.world.settlement.retained_states.len();
         for i in 0..fill {
-            engine.retained_states.insert(
+            engine.world.settlement.retained_states.insert(
                 (WindowId(format!("win-fill-{i:05}")), StateProperty::Above),
                 crate::world_state::RetainedStateBinding {
                     target: crate::world_state::RetainedStateTarget {
@@ -2183,7 +2269,7 @@ mod tests {
             );
         }
         assert_eq!(
-            engine.retained_states.len(),
+            engine.world.settlement.retained_states.len(),
             MAX_RETAINED_STATE_BINDINGS,
             "exact bound with the owned key present"
         );
@@ -2208,11 +2294,13 @@ mod tests {
         assert_eq!(row.authority, ScopeAuthority::Controlled);
         assert_eq!(row.command_seq, None);
         assert!(
-            engine.retained_states.len() <= MAX_RETAINED_STATE_BINDINGS,
+            engine.world.settlement.retained_states.len() <= MAX_RETAINED_STATE_BINDINGS,
             "replacement never grows past the bound"
         );
         assert!(
             engine
+                .world
+                .settlement
                 .retained_states
                 .get(&(WindowId("win-a".to_owned()), StateProperty::Above))
                 .is_some_and(|binding| !binding.target.value),

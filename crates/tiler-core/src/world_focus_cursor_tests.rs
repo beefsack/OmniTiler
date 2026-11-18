@@ -200,7 +200,7 @@ fn cursor_focus_then_nonfocus_survives_and_implicit_acts_on_cursor() {
     assert_eq!(pending.target.0, "win-b");
     assert_eq!(pending.cause, FocusRequestCause::ExplicitCommand);
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-b".to_owned())),
         "accepted focus advances the cursor immediately"
     );
@@ -211,7 +211,7 @@ fn cursor_focus_then_nonfocus_survives_and_implicit_acts_on_cursor() {
     assert_eq!(again.target.0, "win-b");
     assert_eq!(again.id, pending.id, "re-emission never changes the id");
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-b".to_owned())),
         "stale observed A must not overwrite pending B"
     );
@@ -269,7 +269,7 @@ fn cursor_refused_nonfocus_never_cancels_pending() {
         .expect("pending B survives refusal");
     assert_eq!(pending.target.0, "win-b");
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-b".to_owned())),
         "refused non-focus must not erase the cursor"
     );
@@ -331,12 +331,17 @@ fn cursor_refused_pending_resets_to_observed_not_abandoned() {
         settled.focus_request
     );
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-a".to_owned())),
         "retired cursor resets to eligible observed A, not abandoned B"
     );
     assert!(
-        engine.last_active_window.values().any(|w| w.0 == "win-b"),
+        engine
+            .world
+            .focus
+            .last_active_window
+            .values()
+            .any(|w| w.0 == "win-b"),
         "per-workspace history stays on B while the cursor resets to A"
     );
     // The next implicit subject is observed A: moving left from A
@@ -370,7 +375,7 @@ fn empty_cursor_implicit_acts_on_restored_sticky_foreground() {
         .handle_report_v4_for_test(&observe(1, vec![fact("win-b", "out-a", 0)], "win-a"))
         .expect("admission observes");
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         None,
         "homeless first capture leaves no execution subject"
     );
@@ -390,15 +395,15 @@ fn empty_cursor_implicit_acts_on_restored_sticky_foreground() {
         recovered.focus_request
     );
     assert_eq!(
-        engine.logical_focus_cursor, None,
+        engine.world.focus.logical_focus_cursor, None,
         "recovery adopts A but sets no cursor slot"
     );
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-a".to_owned())),
         "empty cursor now observes live A as the implicit subject"
     );
-    let before = engine.last_active_window.clone();
+    let before = engine.world.focus.last_active_window.clone();
     let toggle = WorldCommand::Implicit(Box::new(WorldCommand::ToggleSticky {
         window: WindowId(String::new()),
     }));
@@ -408,11 +413,18 @@ fn empty_cursor_implicit_acts_on_restored_sticky_foreground() {
     assert_not_rejected(&settlements[0].result, "implicit sticky-off acts on live A");
     assert!(
         engine
+            .world
+            .settlement
             .retained_states
             .get(&(WindowId("win-a".to_owned()), StateProperty::Sticky))
             .is_some_and(|binding| !binding.target.value),
         "implicit sticky-off lands on win-a; got {:?}",
-        engine.retained_states.keys().collect::<Vec<_>>(),
+        engine
+            .world
+            .settlement
+            .retained_states
+            .keys()
+            .collect::<Vec<_>>(),
     );
     assert!(
         reply.focus_request.is_none(),
@@ -420,7 +432,7 @@ fn empty_cursor_implicit_acts_on_restored_sticky_foreground() {
         reply.focus_request
     );
     assert_eq!(
-        engine.last_active_window, before,
+        engine.world.focus.last_active_window, before,
         "fallback writes no canonical memory"
     );
 }
@@ -436,7 +448,7 @@ fn empty_cursor_implicit_acts_despite_withheld_automatic_guards() {
     sticky_engine
         .handle_report_v4_for_test(&observe(1, vec![fact("win-b", "out-a", 0)], "win-s"))
         .expect("admission observes");
-    assert_eq!(sticky_engine.execution_subject(), None);
+    assert_eq!(sticky_engine.tx(|tx| tx.execution_subject()), None);
     let sticky_windows = vec![
         WindowFact {
             sticky: Some(true),
@@ -469,7 +481,7 @@ fn empty_cursor_implicit_acts_despite_withheld_automatic_guards() {
     float_engine
         .handle_report_v4_for_test(&observe(1, vec![fact("win-a", "out-a", 0)], "win-f"))
         .expect("admission observes");
-    assert_eq!(float_engine.execution_subject(), None);
+    assert_eq!(float_engine.tx(|tx| tx.execution_subject()), None);
     let float_windows = vec![
         fact("win-a", "out-a", 0),
         WindowFact {
@@ -525,7 +537,7 @@ fn empty_cursor_implicit_acts_despite_withheld_automatic_guards() {
     max_engine
         .handle_report_v4_for_test(&observe(1, vec![fact("win-a", "out-a", 0)], "win-m"))
         .expect("admission observes");
-    assert_eq!(max_engine.execution_subject(), None);
+    assert_eq!(max_engine.tx(|tx| tx.execution_subject()), None);
     let max_windows = vec![
         fact("win-a", "out-a", 0),
         WindowFact {
@@ -566,7 +578,7 @@ fn empty_cursor_unknown_unbound_stale_still_refused() {
     unknown_engine
         .handle_report_v4_for_test(&observe(1, windows(), ""))
         .expect("admission observes");
-    assert_eq!(unknown_engine.execution_subject(), None);
+    assert_eq!(unknown_engine.tx(|tx| tx.execution_subject()), None);
     let (_, settlements) = run_batched(
         &mut unknown_engine,
         &observe(2, windows(), "win-ghost"),
@@ -651,8 +663,8 @@ fn empty_cursor_stale_generation_ingress_refuses_before_run() {
     gen_engine
         .handle_report_v4_for_test(&observe(1, windows(), ""))
         .expect("admission observes");
-    assert_eq!(gen_engine.execution_subject(), None);
-    let revision = gen_engine.state_revision;
+    assert_eq!(gen_engine.tx(|tx| tx.execution_subject()), None);
+    let revision = gen_engine.state_revision();
     let mut bad = observe(2, windows(), "win-a");
     bad.core_generation = "gen-999".to_owned();
     let (outcome, settlements) =
@@ -669,21 +681,22 @@ fn empty_cursor_stale_generation_ingress_refuses_before_run() {
         "gate refusal settles nothing; got {settlements:?}",
     );
     assert_eq!(
-        gen_engine.execution_subject(),
+        gen_engine.tx(|tx| tx.execution_subject()),
         None,
         "gate refusal adopts no subject",
     );
     assert_eq!(
-        gen_engine.logical_focus_cursor, None,
+        gen_engine.world.focus.logical_focus_cursor, None,
         "gate refusal sets no cursor slot",
     );
     assert!(
-        gen_engine.pending_focus_request().is_none(),
+        gen_engine.tx(|tx| tx.pending_focus_request()).is_none(),
         "gate refusal mints no request; got {:?}",
-        gen_engine.pending_focus_request(),
+        gen_engine.tx(|tx| tx.pending_focus_request()),
     );
     assert_eq!(
-        gen_engine.state_revision, revision,
+        gen_engine.state_revision(),
+        revision,
         "gate refusal mutates no state",
     );
     // The next current-bound report is unaffected by the gate refusal:
@@ -722,7 +735,7 @@ fn pending_live_empty_cursor_guards_implicit_subject() {
             "win-a",
         ))
         .expect("admission observes");
-    assert_eq!(pending_engine.execution_subject(), None);
+    assert_eq!(pending_engine.tx(|tx| tx.execution_subject()), None);
     // win-h rides a narrowly held row (live rows stay unheld) so its
     // retained scope -- also win-n's home -- fences the canonical
     // record without refusing the explicit effect.
@@ -748,11 +761,11 @@ fn pending_live_empty_cursor_guards_implicit_subject() {
         .expect("held-scope explicit focus is retained");
     assert_eq!(pending.target.0, "win-n");
     assert_eq!(
-        pending_engine.logical_focus_cursor, None,
+        pending_engine.world.focus.logical_focus_cursor, None,
         "fail-closed canonical record leaves the cursor slot empty",
     );
     assert_eq!(
-        pending_engine.execution_subject(),
+        pending_engine.tx(|tx| tx.execution_subject()),
         None,
         "a live retained request owns the subject; empty cursor never falls back",
     );
@@ -780,7 +793,7 @@ fn pending_live_empty_cursor_guards_implicit_subject() {
         settlements[0].result
     );
     let still = pending_engine
-        .pending_focus_request()
+        .tx(|tx| tx.pending_focus_request())
         .expect("retained request stays live across the refusal");
     assert_eq!(still.target.0, "win-n");
     assert_eq!(still.id, pending.id);
@@ -804,7 +817,7 @@ fn logical_cursor_wins_over_divergent_observed() {
     let (held, _) = run_batched(&mut engine, &observe(3, windows(), "win-a"), &[]);
     assert!(held.focus_request.is_some(), "pending B survives");
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-b".to_owned())),
         "divergent observed A must not override cursor B"
     );
@@ -888,11 +901,11 @@ fn gap_prefix(engine: &mut WorldEngine) -> WorldReplyV4 {
         recovered.focus_request
     );
     assert_eq!(
-        engine.logical_focus_cursor, None,
+        engine.world.focus.logical_focus_cursor, None,
         "no focus decision ever ran, so the cursor slot stays empty"
     );
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-b".to_owned())),
         "recovery subject is observed B"
     );
@@ -1058,7 +1071,7 @@ fn held_live_baseline_newcomer_restores_cursor_and_probes_act_from_it() {
         ))
         .expect("admission observes");
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-b".to_owned()))
     );
     let live = vec![
@@ -1080,11 +1093,11 @@ fn held_live_baseline_newcomer_restores_cursor_and_probes_act_from_it() {
         changed.scopes
     );
     assert_eq!(
-        engine.logical_focus_cursor, None,
+        engine.world.focus.logical_focus_cursor, None,
         "no focus decision ran, so the cursor slot stays empty"
     );
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-c".to_owned())),
         "empty-cursor fallback observes live C under held change"
     );
@@ -1107,7 +1120,7 @@ fn held_live_baseline_newcomer_restores_cursor_and_probes_act_from_it() {
         kept.focus_request
     );
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-n".to_owned())),
         "live N restores the cursor even while held"
     );
@@ -1161,7 +1174,7 @@ fn held_live_baseline_newcomer_restores_cursor_and_probes_act_from_it() {
         repeat_settlements[1].result
     );
     assert_eq!(
-        engine.logical_focus_cursor,
+        engine.world.focus.logical_focus_cursor,
         Some(WindowId("win-n".to_owned())),
         "repeated same-target held focus must keep matching cursor N"
     );
@@ -1269,11 +1282,11 @@ fn held_absent_target_retains_row_with_empty_cursor_until_live_recovery() {
         kept.focus_request
     );
     assert_eq!(
-        engine.logical_focus_cursor, None,
+        engine.world.focus.logical_focus_cursor, None,
         "absent target cannot restore the cursor slot"
     );
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-c".to_owned())),
         "newer report with unavailable pending target acts on live bound observed C"
     );
@@ -1299,9 +1312,9 @@ fn held_absent_target_retains_row_with_empty_cursor_until_live_recovery() {
         "focus refusal retains the identical row; got {:?}",
         still.focus_request
     );
-    assert_eq!(engine.logical_focus_cursor, None);
+    assert_eq!(engine.world.focus.logical_focus_cursor, None);
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-c".to_owned()))
     );
     // Queued implicit move likewise resolves subject C and hits the held
@@ -1325,9 +1338,9 @@ fn held_absent_target_retains_row_with_empty_cursor_until_live_recovery() {
         "move refusal retains the identical row; got {:?}",
         again.focus_request
     );
-    assert_eq!(engine.logical_focus_cursor, None);
+    assert_eq!(engine.world.focus.logical_focus_cursor, None);
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-c".to_owned()))
     );
     // Recovery with N live on the unchanged C baseline: the returning
@@ -1339,7 +1352,7 @@ fn held_absent_target_retains_row_with_empty_cursor_until_live_recovery() {
     assert_eq!(readmitted.cause, FocusRequestCause::AutomaticAdmission);
     assert_eq!(readmitted.id, "focus-7");
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-n".to_owned())),
         "live N restores the subject on recovery"
     );
@@ -1400,7 +1413,7 @@ fn held_absent_target_retains_row_with_empty_cursor_until_live_recovery() {
         changed_user.focus_request
     );
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-b".to_owned())),
         "observed B owns the subject after retirement"
     );
@@ -1492,9 +1505,9 @@ fn unavailable_pending_same_batch_refuses_then_newer_report_acts_on_observed_and
     assert_eq!(pending.issued_revision, 2);
     assert_eq!(pending.cause, FocusRequestCause::ExplicitCommand);
     assert_eq!(pending.cmd_seq, Some(1));
-    assert_eq!(engine.logical_focus_cursor, None);
+    assert_eq!(engine.world.focus.logical_focus_cursor, None);
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         None,
         "immediately after minting report with no newer report yet, subject remains None"
     );
@@ -1556,9 +1569,9 @@ fn unavailable_pending_same_batch_refuses_then_newer_report_acts_on_observed_and
         "acted_c must publish win-c Maximized controlled state with command_seq Some(3); got {:?}",
         acted_c.windows
     );
-    assert_eq!(engine.logical_focus_cursor, None);
+    assert_eq!(engine.world.focus.logical_focus_cursor, None);
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-c".to_owned()))
     );
 
@@ -1574,7 +1587,7 @@ fn unavailable_pending_same_batch_refuses_then_newer_report_acts_on_observed_and
         "when pending N returns live, implicit command must act on N",
     );
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-n".to_owned()))
     );
     assert_eq!(
@@ -1604,7 +1617,7 @@ fn unavailable_pending_same_batch_refuses_then_newer_report_acts_on_observed_and
     let (completed, final_settlements) = run_batched(&mut engine, &r5, &[(5, toggle())]);
     assert_eq!(completed.focus_request, None, "target equality retires");
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-n".to_owned()))
     );
     assert_eq!(final_settlements.len(), 1);
@@ -1823,8 +1836,8 @@ fn same_batch_focus_decision_blocks_fallback_even_with_older_unavailable_pending
         minted_n.focus_request.as_ref().map(|r| r.target.0.as_str()),
         Some("win-n")
     );
-    assert_eq!(engine.logical_focus_cursor, None);
-    assert_eq!(engine.execution_subject(), None);
+    assert_eq!(engine.world.focus.logical_focus_cursor, None);
+    assert_eq!(engine.tx(|tx| tx.execution_subject()), None);
 }
 
 /// (d) Newer report with unavailable pending target and unknown or
@@ -1902,7 +1915,7 @@ fn unavailable_pending_newer_unknown_or_unbound_foreground_refuses() {
         u_settlements[0].result
     );
     assert_eq!(u_after.focus_request, Some(u_pending));
-    assert_eq!(engine_unknown.execution_subject(), None);
+    assert_eq!(engine_unknown.tx(|tx| tx.execution_subject()), None);
 
     // Case 2: unbound/foreign foreground (not present in windows).
     let mut engine_foreign = engine();
@@ -1958,7 +1971,7 @@ fn unavailable_pending_newer_unknown_or_unbound_foreground_refuses() {
         f_settlements[0].result
     );
     assert_eq!(f_after.focus_request, Some(f_pending));
-    assert_eq!(engine_foreign.execution_subject(), None);
+    assert_eq!(engine_foreign.tx(|tx| tx.execution_subject()), None);
 }
 
 /// Non-`record_command_focus` focus-effect carriers (`settle_send` follow/stay
@@ -2027,7 +2040,7 @@ fn send_follow_effect_preserves_command_focus_cursor() {
         "post-batch drain_focus_candidates retains SendRelative's explicit focus winner"
     );
     assert_eq!(
-        engine_follow.logical_focus_cursor,
+        engine_follow.world.focus.logical_focus_cursor,
         Some(WindowId("win-a".to_owned()))
     );
 }
@@ -2103,7 +2116,7 @@ fn send_stay_effect_preserves_command_focus_cursor() {
         "post-batch drain_focus_candidates retains SendRelative's source-survivor winner"
     );
     assert_eq!(
-        engine_stay.logical_focus_cursor,
+        engine_stay.world.focus.logical_focus_cursor,
         Some(WindowId("win-c".to_owned()))
     );
 }
@@ -2178,7 +2191,7 @@ fn move_directional_effect_preserves_command_focus_cursor() {
         "post-batch drain_focus_candidates retains MoveDirectional's mover focus winner"
     );
     assert_eq!(
-        engine_move.logical_focus_cursor,
+        engine_move.world.focus.logical_focus_cursor,
         Some(WindowId("win-a".to_owned()))
     );
 }
@@ -2249,8 +2262,8 @@ fn failed_record_command_focus_clears_prior_cursor() {
             .map(|req| req.target.0.as_str()),
         Some("win-n")
     );
-    assert_eq!(engine.logical_focus_cursor, None);
-    assert_eq!(engine.execution_subject(), None);
+    assert_eq!(engine.world.focus.logical_focus_cursor, None);
+    assert_eq!(engine.tx(|tx| tx.execution_subject()), None);
 }
 
 fn engine_with_hover() -> WorldEngine {
@@ -2285,8 +2298,8 @@ fn admit_h_vab_c(engine: &mut WorldEngine) -> u64 {
     engine
         .handle_report_v4_for_test(&observe(3, vec![wa, wb, wc], "win-a"))
         .expect("admit B under A");
-    let key = engine.layout.domain_keys()[0].clone();
-    let tree = engine.layout.tree(&key).expect("tree");
+    let key = engine.world.layout.domain_keys()[0].clone();
+    let tree = engine.world.layout.tree(&key).expect("tree");
     match tree {
         crate::directional::Node::Group { axis, children, .. } => {
             assert_eq!(*axis, crate::directional::Axis::Horizontal);
@@ -2602,7 +2615,7 @@ fn perpendicular_descent_accepted_hover_focus_updates_history() {
     assert_eq!(hover_req.target.0, "win-a");
     assert_eq!(hover_req.cause, FocusRequestCause::FocusFollowsCursor);
     assert_eq!(
-        eng.logical_focus_cursor,
+        eng.world.focus.logical_focus_cursor,
         Some(WindowId("win-a".to_owned())),
         "accepted logical hover must advance logical_focus_cursor before host actuation"
     );

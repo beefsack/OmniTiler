@@ -153,8 +153,9 @@ fn committed_focus(engine: &WorldEngine, output: &str, workspace: &str) -> Optio
         output: OutputId(output.to_owned()),
         workspace: WorkspaceId(workspace.to_owned()),
     };
-    let leaf = engine.layout().focus_leaf(&key)?;
+    let leaf = engine.world.layout().focus_leaf(&key)?;
     engine
+        .world
         .layout()
         .window_for_leaf(&key, leaf)
         .map(|window| window.0.clone())
@@ -698,6 +699,8 @@ fn adopted_view_change_supersedes_pending_request() {
     // the frozen source-domain request even with unchanged focus. The new
     // view joins the mapping ring so lifecycle view sanity keeps it.
     let mut ring = engine
+        .world
+        .workspace
         .mapping
         .get("out-a")
         .cloned()
@@ -705,8 +708,14 @@ fn adopted_view_change_supersedes_pending_request() {
     if !ring.contains(&"ws-moved".to_owned()) {
         ring.push("ws-moved".to_owned());
     }
-    engine.mapping.insert("out-a".to_owned(), ring);
     engine
+        .world
+        .workspace
+        .mapping
+        .insert("out-a".to_owned(), ring);
+    engine
+        .world
+        .workspace
         .views
         .insert("out-a".to_owned(), "ws-moved".to_owned());
     let superseded = accepted(
@@ -723,6 +732,8 @@ fn close_on_noncurrent_workspace_mints_no_request() {
     focus_sequence(&mut engine, 1, &windows, &["win-a", "win-b"]);
     // The source workspace is no longer current: background reflow only.
     engine
+        .world
+        .workspace
         .views
         .insert("out-a".to_owned(), "ws-elsewhere".to_owned());
     let closed = accepted(
@@ -1593,7 +1604,7 @@ fn same_report_close_beats_hover_cursor_follows_winner() {
     assert_eq!(request.cause, FocusRequestCause::PositiveClose);
     assert_eq!(request.id, "focus-5");
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-c".to_owned())),
         "cursor follows published winner C, not hover D"
     );
@@ -1626,7 +1637,7 @@ fn same_report_close_beats_hover_cursor_follows_winner() {
     assert_eq!(still.target.0, "win-c");
     assert_eq!(still.id, request.id, "re-emission never changes the id");
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-c".to_owned())),
         "implicit subject stays on winner C, not hover D"
     );
@@ -1752,6 +1763,8 @@ fn close_live_non_target_baseline_freezes_a_and_probes_act_from_a() {
     assert_eq!(issued.id, "focus-3");
     assert_eq!(
         engine
+            .world
+            .focus
             .pending_focus
             .as_ref()
             .expect("pending")
@@ -1760,7 +1773,7 @@ fn close_live_non_target_baseline_freezes_a_and_probes_act_from_a() {
         "freeze anchors on the live host fallback C"
     );
     assert_eq!(
-        engine.execution_subject(),
+        engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-a".to_owned())),
         "preserved cursor owns the subject over live C"
     );
@@ -1880,7 +1893,7 @@ fn close_retirement_equality_changed_focus_target_loss() {
     );
     assert_eq!(superseded.focus_request, None);
     assert_eq!(
-        changed.execution_subject(),
+        changed.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-d".to_owned())),
         "changed user focus owns the subject after retirement"
     );
@@ -2203,6 +2216,8 @@ fn trace_emits_retained_equality_and_terminal_retirements_for_admission_and_clos
     );
     let view_req = minted.focus_request.clone().expect("minted close");
     let mut ring = view_engine
+        .world
+        .workspace
         .mapping
         .get("out-a")
         .cloned()
@@ -2210,8 +2225,14 @@ fn trace_emits_retained_equality_and_terminal_retirements_for_admission_and_clos
     if !ring.contains(&"ws-moved".to_owned()) {
         ring.push("ws-moved".to_owned());
     }
-    view_engine.mapping.insert("out-a".to_owned(), ring);
     view_engine
+        .world
+        .workspace
+        .mapping
+        .insert("out-a".to_owned(), ring);
+    view_engine
+        .world
+        .workspace
         .views
         .insert("out-a".to_owned(), "ws-moved".to_owned());
     let view_lines = crate::world_engine::with_focus_trace_capture(|| {

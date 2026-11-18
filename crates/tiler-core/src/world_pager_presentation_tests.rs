@@ -19,7 +19,6 @@ use crate::world_report::{
     RowDiagnosticKind, ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldReplyV4,
     WorldReportV4,
 };
-use crate::world_sizing_v4::{reply_estimate_v4, reply_exact_bytes_v4};
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
@@ -358,7 +357,7 @@ fn pager_retains_last_live_frame_across_reports() {
         .frame;
     assert_eq!(painted, live);
     assert_eq!(
-        engine.presentation_order_v4,
+        engine.world.presentation.order_v4,
         vec![
             WindowId("win-a".to_owned()),
             WindowId("win-b".to_owned()),
@@ -454,7 +453,7 @@ fn pager_hidden_and_minimized_keep_retained_frame() {
         .frame;
     assert_eq!(painted, hidden_frame);
     assert_eq!(
-        engine.presentation_order_v4,
+        engine.world.presentation.order_v4,
         vec![WindowId("win-a".to_owned()), WindowId("win-b".to_owned())]
     );
 }
@@ -475,7 +474,7 @@ fn pager_native_order_retention_reordering_duplicates_pruning() {
         &pager_report_ordered(3, 3, members(), "win-a", true, &["win-a", "win-b", "win-c"]),
     );
     assert_eq!(
-        engine.presentation_order_v4,
+        engine.world.presentation.order_v4,
         vec![
             WindowId("win-a".to_owned()),
             WindowId("win-b".to_owned()),
@@ -495,7 +494,7 @@ fn pager_native_order_retention_reordering_duplicates_pruning() {
         ),
     );
     assert_eq!(
-        engine.presentation_order_v4,
+        engine.world.presentation.order_v4,
         vec![
             WindowId("win-a".to_owned()),
             WindowId("win-b".to_owned()),
@@ -508,7 +507,7 @@ fn pager_native_order_retention_reordering_duplicates_pruning() {
         &pager_report_ordered(5, 5, members(), "win-a", true, &["win-c", "win-b", "win-a"]),
     );
     assert_eq!(
-        engine.presentation_order_v4,
+        engine.world.presentation.order_v4,
         vec![
             WindowId("win-c".to_owned()),
             WindowId("win-b".to_owned()),
@@ -529,7 +528,9 @@ fn pager_native_order_retention_reordering_duplicates_pruning() {
     );
     assert!(
         !engine
-            .presentation_order_v4
+            .world
+            .presentation
+            .order_v4
             .contains(&WindowId("ghost".to_owned())),
         "complete inventory prunes pager-order-only identities immediately"
     );
@@ -548,7 +549,9 @@ fn pager_native_order_retention_reordering_duplicates_pruning() {
     );
     assert!(
         !engine
-            .presentation_order_v4
+            .world
+            .presentation
+            .order_v4
             .contains(&WindowId("ghost".to_owned()))
     );
     // Closing win-c prunes its slot on the next report.
@@ -564,12 +567,14 @@ fn pager_native_order_retention_reordering_duplicates_pruning() {
         ),
     );
     assert_eq!(
-        engine.presentation_order_v4,
+        engine.world.presentation.order_v4,
         vec![WindowId("win-b".to_owned()), WindowId("win-a".to_owned())]
     );
     assert!(
         !engine
-            .presentation_order_v4
+            .world
+            .presentation
+            .order_v4
             .contains(&WindowId("win-c".to_owned()))
     );
 }
@@ -623,7 +628,9 @@ fn pager_candidate_frame_survives_same_report_admission() {
     );
     assert!(
         !engine
-            .presentation_order_v4
+            .world
+            .presentation
+            .order_v4
             .contains(&WindowId("win-new".to_owned()))
     );
     let reply = accepted(
@@ -666,7 +673,9 @@ fn pager_candidate_frame_survives_same_report_admission() {
     );
     assert!(
         !engine
-            .presentation_order_v4
+            .world
+            .presentation
+            .order_v4
             .contains(&WindowId("win-new".to_owned())),
         "complete inventory prunes the re-verified token immediately"
     );
@@ -699,7 +708,9 @@ fn pager_candidate_frame_survives_same_report_admission() {
     );
     assert!(
         !engine
-            .presentation_order_v4
+            .world
+            .presentation
+            .order_v4
             .contains(&WindowId("win-new".to_owned())),
         "the re-verified token stays pruned while unadmitted"
     );
@@ -730,13 +741,17 @@ fn pager_held_without_fact_retains_order_slot() {
     accepted(&mut engine, &report);
     assert!(
         engine
-            .presentation_order_v4
+            .world
+            .presentation
+            .order_v4
             .contains(&WindowId("win-c".to_owned())),
         "held identity with no fact retains its order slot"
     );
     assert!(
         engine
-            .presentation_live_v4
+            .world
+            .presentation
+            .live_v4
             .contains_key(&WindowId("win-c".to_owned())),
         "held identity with no fact retains its live frame"
     );
@@ -926,10 +941,8 @@ fn trailing_marks_only_the_final_spare_in_both_streams() {
         );
     }
     // The typed flags carry the key exactly when marked (one plan plus
-    // one pager mark per output); the v4 lane has no full-reply
-    // canonical encoder in core (wire encoding lives in the protocol
-    // crate), so the port counts typed marks and checks the structural
-    // estimate against the v4 exact byte size instead of wire bytes.
+    // one pager mark per output); canonical wire encoding and byte
+    // sizing live in `tiler-protocol`.
     let marked: usize = engine
         .logical_outputs()
         .iter()
@@ -948,12 +961,6 @@ fn trailing_marks_only_the_final_spare_in_both_streams() {
         marked,
         2 * engine.logical_outputs().len(),
         "one plan plus one pager mark per output"
-    );
-    let estimate = reply_estimate_v4(&reply);
-    let exact = reply_exact_bytes_v4(&reply);
-    assert!(
-        estimate >= exact,
-        "estimate {estimate} bounds exact {exact}"
     );
 }
 

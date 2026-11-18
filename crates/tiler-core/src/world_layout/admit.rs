@@ -42,6 +42,7 @@ impl WorldLayout {
     /// tolerates a fullscreen-only subject for an explicit unfloat. On success
     /// the per-domain accepted revision advances by exactly one and no native
     /// acceptance is claimed.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn admit_window(
         &mut self,

@@ -13,11 +13,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::active_group::{ActiveGroup, describe_active_group_with_hints};
 use crate::directional::{Node, NodeId, WindowId};
 use crate::geometry::Rect;
 use crate::seed::EngineWindow;
 use crate::session::{DesiredGeometry, DomainKey};
 use crate::size_hints::WindowSizeHints;
+use crate::world_presentation::GroupHideReason;
 
 use super::state::{DomainLayout, WorldLayout};
 use super::topology::collect_leaves;
@@ -193,26 +195,11 @@ pub(super) fn project_retained_candidate(
 }
 
 impl WorldLayout {
-    /// Advisory hints-aware projection of one retained domain in source child
-    /// order. An unknown domain or a domain with no tree yields an empty vector.
-    pub(crate) fn project_domain(
-        &self,
-        key: &DomainKey,
-        hints: &BTreeMap<WindowId, WindowSizeHints>,
-    ) -> Result<Vec<DesiredGeometry>, ProjectionFailure> {
-        let Some(domain) = self.domain(key) else {
-            return Ok(Vec::new());
-        };
-        let Some(tree) = &domain.tree else {
-            return Ok(Vec::new());
-        };
-        project_borrowed(key, tree, &domain.leaves, domain.bounds, domain.gap, hints)
-    }
-
     /// Affected-domain geometry gate: hinted projection plus a nonempty check
     /// for a non-empty tree, in source child order. `None` means the domain is
     /// unknown, has no tree, or fails the hinted/nonempty gate. Complete
     /// binding and topology are validated separately by the caller.
+    #[cfg(test)]
     pub(crate) fn project_domain_geometry(
         &self,
         key: &DomainKey,
@@ -221,23 +208,6 @@ impl WorldLayout {
         let domain = self.domain(key)?;
         let tree = domain.tree.as_ref()?;
         project_borrowed_geometry(key, tree, &domain.leaves, domain.bounds, domain.gap, hints)
-    }
-
-    /// Admission/repair fit proof for one retained domain: complete binding
-    /// plus plain geometric fit and successful hinted projection. Distinct
-    /// from the affected-domain geometry gate; orientation does not use it.
-    pub(crate) fn project_domain_fit(
-        &self,
-        key: &DomainKey,
-        hints: &BTreeMap<WindowId, WindowSizeHints>,
-    ) -> bool {
-        let Some(domain) = self.domain(key) else {
-            return false;
-        };
-        let Some(tree) = &domain.tree else {
-            return false;
-        };
-        project_borrowed_fit(key, tree, &domain.leaves, domain.bounds, domain.gap, hints)
     }
 
     /// Reconcile-projection geometry for one retained domain at already-inset
@@ -261,5 +231,53 @@ impl WorldLayout {
     pub(crate) fn accepted_revision(&self, key: &DomainKey) -> u64 {
         self.domain(key)
             .map_or(0, |domain| domain.accepted_revision)
+    }
+
+    /// Describe the active focused group for `key` when `foreground` matches the
+    /// retained focused leaf binding, using caller-supplied size hints.
+    /// Single-visible-window-per-leaf reverse binding stays localized here.
+    pub(crate) fn describe_active_group(
+        &self,
+        key: &DomainKey,
+        foreground: &WindowId,
+        hints_for_domain: impl FnOnce() -> BTreeMap<WindowId, WindowSizeHints>,
+    ) -> Result<(NodeId, ActiveGroup), GroupHideReason> {
+        let Some(domain) = self.domain(key) else {
+            return Err(GroupHideReason::NoGroup);
+        };
+        let Some(focus_leaf) = domain.focused_leaf.as_ref() else {
+            return Err(GroupHideReason::FocusChanged);
+        };
+        let Some(tree) = domain.tree.as_ref() else {
+            return Err(GroupHideReason::NoGroup);
+        };
+        let leaf_to_window: BTreeMap<NodeId, WindowId> = domain
+            .leaves
+            .iter()
+            .map(|(window, leaf)| (leaf.clone(), window.clone()))
+            .collect();
+        match leaf_to_window.get(focus_leaf) {
+            Some(window) if window == foreground => {}
+            _ => return Err(GroupHideReason::FocusChanged),
+        }
+        let hints = hints_for_domain();
+        let resolve = |leaf: &NodeId| {
+            leaf_to_window
+                .get(leaf)
+                .and_then(|window| hints.get(window))
+                .copied()
+                .unwrap_or_else(WindowSizeHints::none)
+        };
+        let Some(group) = describe_active_group_with_hints(
+            tree,
+            domain.bounds,
+            domain.gap,
+            focus_leaf,
+            &leaf_to_window,
+            &resolve,
+        ) else {
+            return Err(GroupHideReason::RootLeaf);
+        };
+        Ok((focus_leaf.clone(), group))
     }
 }

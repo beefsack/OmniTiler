@@ -9,10 +9,10 @@
 //! Verdicts never confer foreground or selection authority: selection keeps
 //! its own independent member/visibility completion.
 
+use crate::world_transaction::WorldTransaction;
 use std::collections::BTreeSet;
 
 use crate::directional::WindowId;
-use crate::world_engine::WorldEngine;
 use crate::world_report::{FocusFeedback, VisibilitySetter};
 
 /// Verdict for one first-correlated feedback row.
@@ -48,7 +48,7 @@ pub(crate) fn classify_focus_feedback(target: &WindowId, row: &FocusFeedback) ->
     FocusVerdict::Unproven
 }
 
-impl WorldEngine {
+impl WorldTransaction<'_> {
     /// Intern one compact automatic-focus token per live lifetime: the
     /// first automatic-focus candidate's issuing revision for that
     /// lifetime, not necessarily the first emitted effect revision
@@ -62,11 +62,14 @@ impl WorldEngine {
     /// increase, giving exact distinct tokens without hashing, truncation,
     /// or another counter. Explicit `fx-` identities are disjoint.
     pub(crate) fn automatic_focus_token(&mut self, target: &WindowId) -> u64 {
-        if let Some(token) = self.automatic_focus_tokens.get(target) {
+        if let Some(token) = self.world.focus.automatic_focus_tokens.get(target) {
             return *token;
         }
-        let token = self.state_revision + 1;
-        self.automatic_focus_tokens.insert(target.clone(), token);
+        let token = self.world.state_revision + 1;
+        self.world
+            .focus
+            .automatic_focus_tokens
+            .insert(target.clone(), token);
         token
     }
 
@@ -75,10 +78,12 @@ impl WorldEngine {
     /// stay). A same-lifetime temporary slot exclusion never drops the
     /// mapping, so the spent fence is never renewed for the same lifetime.
     pub(crate) fn prune_automatic_focus_tokens(&mut self) {
-        let observation = &self.staged.observation;
+        let observation = &self.world.staged.observation;
         if !observation.closed.is_empty() {
             let closed: BTreeSet<WindowId> = observation.closed.iter().cloned().collect();
-            self.automatic_focus_tokens
+            self.world
+                .focus
+                .automatic_focus_tokens
                 .retain(|target, _| !closed.contains(target));
         }
         if !observation.inventory_complete {
@@ -90,21 +95,25 @@ impl WorldEngine {
             .map(|fact| &fact.window)
             .collect();
         let held: BTreeSet<&WindowId> = self
+            .world
             .staged
             .held_windows
             .iter()
             .map(|held| &held.window)
             .collect();
-        let excluded = self.staged.excluded.clone();
+        let excluded = self.world.staged.excluded.clone();
         let known: BTreeSet<WindowId> = self
+            .world
+            .focus
             .automatic_focus_tokens
             .keys()
             .filter(|target| {
-                self.members.contains_key(target) || self.engine_knows_window_any(target)
+                self.world.workspace.members.contains_key(target)
+                    || self.world.engine_knows_window_any(target)
             })
             .cloned()
             .collect();
-        self.automatic_focus_tokens.retain(|target, _| {
+        self.world.focus.automatic_focus_tokens.retain(|target, _| {
             live.contains(target)
                 || held.contains(target)
                 || excluded.contains(target)

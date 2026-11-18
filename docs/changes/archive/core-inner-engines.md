@@ -2,14 +2,15 @@
 
 ## Goal, scope and status
 
-- Status: approved (User 2026-11-17); implementation in progress.
+- Status: complete against scoped offline acceptance. Native adapter
+  adoption and target compilation remain separate.
 - Make `WorldEngine` the sole engine. Fold retained layout state into its
   workspace model and replace the inner event/acknowledge/verify protocol with
   typed, synchronous layout operations. Keep the algorithms and behaviour.
-- Authority: [C1 decision and finding](core-v4-review.md#c1-core-is-three-engines-stacked),
-  [approved sequence](core-v4-review.md#user-decisions-2026-11-12),
-  [Simplicity](../principles.md#simplicity), and
-  [world ownership](../decisions/engine.md#core-owned-world-and-platform-boundary).
+- Authority: [C1 decision and finding](../core-v4-review.md#c1-core-is-three-engines-stacked),
+  [approved sequence](../core-v4-review.md#user-decisions-2026-11-12),
+  [Simplicity](../../principles.md#simplicity), and
+  [world ownership](../../decisions/engine.md#core-owned-world-and-platform-boundary).
 - C1 introduces the first owned layout sub-state for C2 to build on, not the
   rest of C2: no general decomposition of connection, focus, settlement,
   intent or presentation, and no replay-cache redesign.
@@ -20,18 +21,18 @@
 
 - Verified: the review's suggested prerequisite list names C3, C4, C10 and
   the C6 flags (`core-v4-review.md:332-365`). The
-  [backlog](../backlog.md) records the flags removed and retains C6 settings
+  [backlog](../../backlog.md) records the flags removed and retains C6 settings
   exposure plus shell classification; shell conversion is explicitly with
   the Windows port. The later backlog goal puts all core/contract work before
   full dogfooding, not all C6 before C1.
 - Verified: remaining `HostCaps` in `settings_catalog.rs:171-185,223` describes
   which hosts expose a settings UI, including macOS's absent UI. It is not a
   world handshake capability or a field in the
-  [settings message](../porting/world-contract.md#revisioned-settings).
+  [settings message](../../porting/world-contract.md#revisioned-settings).
   Moving that exposure metadata to adapters need not change contract shape.
 - No evidenced outstanding prerequisite blocks this proposal. Cursor warp is
   separately deferred to Windows; C4 is
-  [complete offline](archive/unified-property-attempts.md), retaining the
+  [complete offline](unified-property-attempts.md), retaining the
   existing wire locations for C5. Platform adoption/native acceptance remains
   separate, not claimed complete here.
 
@@ -66,7 +67,7 @@
 - Split `world_layout/` by responsibility: state/API, convergence/admission,
   local operations, transfers/pair planning and gesture geometry, with focused
   test modules. Replace the oversized `engine.rs`/`session.rs`, not move their
-  monoliths intact. Follow the [File Size](../principles.md#file-size) soft caps:
+  monoliths intact. Follow the [File Size](../../principles.md#file-size) soft caps:
   about 1,500 production and 3,000 test lines per file; split for responsibility,
   not arbitrary fragments or a new hard line-count gate.
 - Keep `members` as the single lifetime/homing authority, and existing
@@ -137,7 +138,7 @@
 
 - Execute every command in order against preceding core state; native apply
   never gates the next keypress. Platforms still apply latest world.
-  [Ordered-command rule](../decisions/commands.md#ordered-core-commands-and-latest-world-application).
+  [Ordered-command rule](../../decisions/commands.md#ordered-core-commands-and-latest-world-application).
 - Synthetic commit removal is not native success. Preserve C4 attempt phases,
   retained focus, transfers and predecessors, arrival dependencies, visibility,
   birth/state clears and all held/lifetime/fullscreen/capability fences.
@@ -199,8 +200,8 @@
    useful. Keep its 24M/100M instructions-per-report ceilings and
    6.5 growth bound; do not loosen them to accommodate an unexplained regression.
    Check manual release latency with `report_scale all 31 3 all` at completion
-   against the [approved budget](../decisions/engine.md#core-per-report-latency).
-   Preserve the [cost optimizations](archive/core-per-report-cost.md), not
+   against the [approved budget](../../decisions/engine.md#core-per-report-latency).
+   Preserve the [cost optimizations](core-per-report-cost.md), not
    merely a passing aggregate threshold.
 
 ## Decisions and evidence limits
@@ -219,7 +220,7 @@
   implementation proof obligations, not asserted outcomes.
 - If implementation uncovers a behavioural ambiguity, stop that change and
   add the minimal discriminating sequence to
-  [reference outcomes](../spec/reference-outcomes.md); unsupported outcomes
+  [reference outcomes](../../spec/reference-outcomes.md); unsupported outcomes
   remain TBD for a user decision rather than being changed by the refactor.
 
 ## Implementation evidence
@@ -610,3 +611,26 @@
   frame-setter type mismatch), so this is pre-existing. Native-target
   compilation was not checked because the target standard libraries are
   unavailable; Linux host checks cannot substitute for it.
+
+## Closing outcome
+
+- `WorldEngine` owns one private `WorldLayout` and executes typed operations
+  against retained state. Removed inner session identity, dispatch,
+  acknowledgement and fabricated post-observations. Ordered core commands,
+  latest-world application, the public contract and frozen fixtures remain
+  unchanged. Independent final source review found no blocking issues.
+- Rust suite: 3,446 passed, down 67 from 3,513. Before removal, the rebuild
+  added 122 net tests. Removing the old machines removed 204 embedded cases,
+  audited against the replacement coverage; 68 focused tests recover missing
+  behavior. Migrating surviving rigs removed 53 net cases tied to retired
+  handshakes, identity, capabilities and pending state. Replacement coverage
+  includes conservative reconcile skips, retirement high-watermarks, allocator
+  burns and exhaustion, topology/geometry, drag prior and synchronous refusals.
+- Workspace format and scoped all-target build and strict Clippy passed.
+  The Rust run excluded `workspace_unsafe_posture`. KWin typecheck and all
+  1,378 tests passed. Launcher 703, native-effect 204 and live helper unit
+  tests 58 passed, unchanged from baseline. The launcher passed on rerun
+  after an isolated teardown race in the first run.
+- Callgrind: 9.26M and 40.31M instructions per report at 50 and 200 windows;
+  growth 4.35, below 24M/100M and 6.5 ceilings. Worst measured steady-state p95
+  at 10/50/200 windows was 0.3134/2.1135/5.0683 ms, below 1/4/10 ms budgets.

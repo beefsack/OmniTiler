@@ -2,17 +2,24 @@
 //! [`validate_report_v4_reason`](tiler_core::world_report_v4_checks::validate_report_v4_reason),
 //! [`grade_conflicting_windows_v4`](tiler_core::world_report_v4_checks::grade_conflicting_windows_v4),
 //! [`report_digest_v4`](tiler_core::world_report_v4_checks::report_digest_v4),
-//! and [`report_estimate_v4`](tiler_core::world_sizing_v4::report_estimate_v4)
+//! and [`report_estimate_v4`](tiler_protocol::world_admission_sizing::report_estimate_v4)
 //! over the `test-fixtures/world-wire/v4` WorldReport fixtures.
 //! Offline only: no adapters, no live work, no engine.
 
-use tiler_core::connection::FactName;
-use tiler_core::directional::WindowId;
-use tiler_core::world_report::{PresentationRowV4, RowDiagnosticKind, WorldReportV4};
+use tiler_core::connection::{FactName, RawSettingValue};
+use tiler_core::directional::{OutputId, WindowId};
+use tiler_core::geometry::Rect;
+use tiler_core::ids::NativeWorkspaceId;
+use tiler_core::world_report::{
+    ArrivalBracket, ArrivalLocation, AuthorityScope, FocusFeedback, HeldScreenRow,
+    PresentationRowV4, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, VisibilityFact,
+    VisibilityReason, VisibilitySample, VisibilitySetter, WorkspaceRef, WorldCommand,
+    WorldReportV4,
+};
 use tiler_core::world_report_v4_checks::{
     grade_conflicting_windows_v4, report_digest_v4, validate_report_v4_reason,
 };
-use tiler_core::world_sizing_v4::report_estimate_v4;
+use tiler_protocol::world_admission_sizing::report_estimate_v4;
 use tiler_protocol::world_protocol::{decode_report_v4, encode_report_v4};
 
 fn fixture_root() -> std::path::PathBuf {
@@ -304,4 +311,183 @@ fn v4_digest_sees_each_lane_family() {
     let before = report_digest_v4(&renderer);
     renderer.renderer_input.as_mut().expect("renderer").rev += 1;
     assert_ne!(report_digest_v4(&renderer), before, "renderer_input");
+}
+
+/// Prevalidation sizing stays total on non-finite typed and held scalars and
+/// counts surrounding held structure without collapsing.
+#[test]
+fn v4_estimate_nonfinite_total_and_held_structure_delta() {
+    let mut report = decode_ok("messages/report-observe.json");
+    report.screens[0].scale = f64::NAN;
+    report.held_screens.push(HeldScreenRow {
+        output: OutputId("out-held".to_owned()),
+        ordinal: 1,
+        fields: vec![("scale".to_owned(), RawSettingValue::Number(f64::INFINITY))],
+        diagnostic: RowDiagnostic {
+            scope: AuthorityScope::Output(OutputId("out-held".to_owned())),
+            row: RowDiagnosticLane::Screen,
+            id: Some("out-held".to_owned()),
+            kind: RowDiagnosticKind::InvalidFact,
+        },
+    });
+    assert!(report_estimate_v4(&report) > 0);
+    assert_eq!(
+        validate_report_v4_reason(&report),
+        Some("screen-scale-invalid")
+    );
+
+    let big = "s".repeat(1000);
+    let nested = RawSettingValue::Object(vec![
+        ("big".to_owned(), RawSettingValue::String(big.clone())),
+        ("bad".to_owned(), RawSettingValue::Number(f64::NAN)),
+    ]);
+    let mut structure = decode_ok("messages/report-observe.json");
+    let before = report_estimate_v4(&structure);
+    structure.held_screens.push(HeldScreenRow {
+        output: OutputId("out-held".to_owned()),
+        ordinal: 1,
+        fields: vec![("extra".to_owned(), nested)],
+        diagnostic: RowDiagnostic {
+            scope: AuthorityScope::Output(OutputId("out-held".to_owned())),
+            row: RowDiagnosticLane::Screen,
+            id: Some("out-held".to_owned()),
+            kind: RowDiagnosticKind::InvalidFact,
+        },
+    });
+    let expected_delta = serde_json::to_string(&serde_json::json!({
+        "extra": {
+            "big": big,
+            "bad": null,
+        }
+    }))
+    .expect("json")
+    .len();
+    assert_eq!(report_estimate_v4(&structure) - before, expected_delta);
+}
+
+/// Focus-feedback sizing delta matches the checked canonical wire encoder
+/// across both output and native arrival arms.
+#[test]
+fn v4_estimate_delta_matches_encoded_focus_feedback() {
+    let null_sample = |obs| VisibilitySample {
+        obs,
+        lifetime_matched: None,
+        visibility: VisibilityFact {
+            visible: None,
+            suppression_owned: None,
+        },
+        minimized: None,
+        host_hidden: None,
+    };
+    let row_out = FocusFeedback {
+        id: "fb-1".to_owned(),
+        target: WindowId("win-a".to_owned()),
+        revision: 7,
+        setter: VisibilitySetter::Accepted,
+        reason: VisibilityReason::Empty,
+        pre: Some(WindowId("win-f".to_owned())),
+        post: None,
+        foreground_proven: true,
+        arrival: vec![ArrivalBracket {
+            window: WindowId("win-a".to_owned()),
+            obs: 3,
+            before: VisibilitySample {
+                obs: 3,
+                lifetime_matched: Some(true),
+                visibility: VisibilityFact {
+                    visible: Some(true),
+                    suppression_owned: None,
+                },
+                minimized: Some(false),
+                host_hidden: None,
+            },
+            location: ArrivalLocation::Output {
+                out: Some(OutputId("out-a".to_owned())),
+            },
+            frame: Some(Rect {
+                x: 0,
+                y: 0,
+                w: 40,
+                h: 90,
+            }),
+            after: VisibilitySample {
+                obs: 3,
+                lifetime_matched: None,
+                visibility: VisibilityFact {
+                    visible: None,
+                    suppression_owned: None,
+                },
+                minimized: None,
+                host_hidden: Some(true),
+            },
+        }],
+        attempt_ms: 9,
+    };
+    let bracket_native_home = ArrivalBracket {
+        window: WindowId("win-b".to_owned()),
+        obs: 44,
+        before: null_sample(44),
+        location: ArrivalLocation::Native {
+            home: Some(WorkspaceRef::Native {
+                output: OutputId("out-a".to_owned()),
+                workspace: NativeWorkspaceId::parse("ws-1").expect("native workspace"),
+            }),
+        },
+        frame: None,
+        after: null_sample(44),
+    };
+    let mut bracket_native_null = bracket_native_home.clone();
+    bracket_native_null.window = WindowId("win-c".to_owned());
+    bracket_native_null.obs = 5;
+    bracket_native_null.location = ArrivalLocation::Native { home: None };
+    let row_native = FocusFeedback {
+        id: "fb-2".to_owned(),
+        target: WindowId("win-b".to_owned()),
+        revision: 12345,
+        setter: VisibilitySetter::NotCalled,
+        reason: VisibilityReason::Unreadable,
+        pre: None,
+        post: Some(WindowId("win-g".to_owned())),
+        foreground_proven: false,
+        arrival: vec![bracket_native_home, bracket_native_null],
+        attempt_ms: 100,
+    };
+
+    let bare = decode_report_v4(&fixture_text("messages/report-empty.json")).expect("bare decodes");
+    let wire_bare = encode_report_v4(&bare).expect("bare encodes");
+
+    let mut with_out = bare.clone();
+    with_out.report.focus_feedback = vec![row_out.clone()];
+    let wire_out = encode_report_v4(&with_out).expect("with_out encodes");
+    assert_eq!(
+        report_estimate_v4(&with_out.report) - report_estimate_v4(&bare.report),
+        wire_out.len() - wire_bare.len()
+    );
+
+    let mut with_both = bare.clone();
+    with_both.report.focus_feedback = vec![row_out, row_native];
+    let wire_both = encode_report_v4(&with_both).expect("with_both encodes");
+    assert_eq!(
+        report_estimate_v4(&with_both.report) - report_estimate_v4(&with_out.report),
+        wire_both.len() - wire_out.len()
+    );
+}
+
+/// Toggle-maximize command sizing delta covers the checked canonical wire delta.
+#[test]
+fn v4_estimate_delta_covers_toggle_maximize_command() {
+    let bare = decode_report_v4(&fixture_text("messages/report-empty.json")).expect("bare decodes");
+    let wire_bare = encode_report_v4(&bare).expect("bare encodes");
+
+    let mut with_cmd = bare.clone();
+    with_cmd.report.command_seq = Some(6);
+    with_cmd.report.command = Some(WorldCommand::ToggleMaximize {
+        window: WindowId("win-a".to_owned()),
+    });
+    let wire_cmd = encode_report_v4(&with_cmd).expect("with_cmd encodes");
+
+    assert!(
+        report_estimate_v4(&with_cmd.report) - report_estimate_v4(&bare.report)
+            >= wire_cmd.len() - wire_bare.len()
+    );
 }

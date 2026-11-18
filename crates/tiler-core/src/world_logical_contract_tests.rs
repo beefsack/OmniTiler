@@ -1115,8 +1115,12 @@ fn queued_cross_output_alternating_eight_separate_captures_drain_and_consume() {
     assert_eq!(latest.operation_id, "op-18");
     assert_eq!(latest.target_output.0, "out-a");
     assert!(!latest.held);
-    assert_eq!(engine.retained.len(), 1, "one latest retained entry");
-    let predecessor_ops: Vec<String> = engine.retained[0]
+    assert_eq!(
+        engine.world.settlement.retained.len(),
+        1,
+        "one latest retained entry"
+    );
+    let predecessor_ops: Vec<String> = engine.world.settlement.retained[0]
         .member_predecessors
         .iter()
         .map(|(target, _)| target.operation_id.clone())
@@ -1260,7 +1264,7 @@ fn queued_cross_output_latest_call_proof_survives_lagging_prior_arrival() {
 
     let mut control = queued_cross_output_bootstrap();
     let source = control
-        .staged_homing(&WindowId("win-a".to_owned()))
+        .tx(|tx| tx.staged_homing(&WindowId("win-a".to_owned())))
         .unwrap();
     let (outcome, _) = control.handle_report(
         &queued_cross_output_lagging_capture(2),
@@ -3069,6 +3073,8 @@ fn migrated_selection_binding(
     parent_op: &str,
 ) -> crate::world_selection::RetainedSelection {
     engine
+        .world
+        .settlement
         .retained_selection
         .values()
         .find(|binding| binding.parent_op == parent_op)
@@ -3203,6 +3209,7 @@ fn valid_migration_holds_target_without_suppression_then_retires_on_arrival() {
     };
     assert!(
         engine
+            .world
             .layout()
             .is_tiled_window(&target_key, &WindowId("win-a".to_owned()))
     );
@@ -3250,6 +3257,8 @@ fn valid_migration_holds_target_without_suppression_then_retires_on_arrival() {
     );
     assert!(
         engine
+            .world
+            .settlement
             .retained_selection
             .values()
             .any(|binding| binding.parent_op == "op-11"),
@@ -3832,6 +3841,7 @@ fn multi_member_migration_preserves_tree_and_focus() {
         workspace: crate::directional::WorkspaceId(view_a.clone()),
     };
     let mut homed: Vec<String> = engine
+        .world
         .layout()
         .tiled_windows(&target_key)
         .map(|window| window.0.clone())
@@ -3946,7 +3956,7 @@ fn empty_migration_binds_focusless_and_retires_without_echoes() {
     // The zero-obligation binding already completed at issuing: no
     // retained selection, no refill child, and no Migration parent.
     assert!(
-        engine.retained_selection.is_empty(),
+        engine.world.settlement.retained_selection.is_empty(),
         "zero-member binding completes at issuing"
     );
     assert!(
@@ -4166,6 +4176,7 @@ fn tiled_to_float_output_crossing_leaves_source_state_unchanged() {
     };
     assert!(
         engine
+            .world
             .layout()
             .is_tiled_window(&source_key, &WindowId("win-a".to_owned()))
     );
@@ -4774,9 +4785,9 @@ fn hotplug_displacement_preserves_logical_units_on_the_survivor() {
         ),
     );
     assert!(
-        !engine.displaced.contains_key("out-b"),
+        !engine.world.workspace.displaced.contains_key("out-b"),
         "same-panel return reclaims by physical identity: {:?}",
-        engine.displaced
+        engine.world.workspace.displaced
     );
     assert!(!workspace_ids(&back, "out-b").is_empty());
 }
@@ -4835,6 +4846,8 @@ fn cross_output_follow_ineligible_moves_view_without_binding() {
     assert_eq!(followed.transfers[0].target_workspace, view_b);
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-b".to_owned())),
         "ineligible mover binds nothing"
@@ -4881,6 +4894,8 @@ fn cross_output_follow_ineligible_moves_view_without_binding() {
     );
     assert!(
         !engine
+            .world
+            .settlement
             .retained_selection
             .contains_key(&OutputId("out-b".to_owned())),
         "no binding pends"
@@ -5131,6 +5146,8 @@ fn standalone_view_hold_completes_through_member_verdict_not_echo() {
     // common terminal and retires the flight: the views row below names
     // the preimage yet proves nothing on its own.
     let binding_rev = engine
+        .world
+        .settlement
         .retained_selection
         .values()
         .find(|binding| binding.parent_op == "op-11")
@@ -6165,7 +6182,7 @@ fn floating_migration_rekeys_floating_scope_and_migrates_back_sessionless() {
         workspace: crate::directional::WorkspaceId(view_a.clone()),
     };
     assert!(
-        !engine.layout().contains_domain(&home),
+        !engine.world.layout().contains_domain(&home),
         "floating inverse stays sessionless"
     );
 }

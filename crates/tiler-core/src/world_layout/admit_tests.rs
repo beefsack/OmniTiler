@@ -359,3 +359,277 @@ fn admit_binding_mismatch_stays_refused() {
         LayoutFailure::Semantics(RefusalKind::ExceptionBehaviorUnselected)
     );
 }
+
+fn collect_group_ids(node: &Node, out: &mut std::collections::BTreeSet<NodeId>) {
+    if let Node::Group { id, children, .. } = node {
+        out.insert(id.clone());
+        for child in children {
+            collect_group_ids(child, out);
+        }
+    }
+}
+
+fn domain_group_ids(layout: &WorldLayout, k: &DomainKey) -> std::collections::BTreeSet<NodeId> {
+    let mut ids = std::collections::BTreeSet::new();
+    if let Some(tree) = layout.tree(k) {
+        collect_group_ids(tree, &mut ids);
+    }
+    ids
+}
+
+#[test]
+fn alloc_ordinary_remove_never_reissues() {
+    let k = key();
+    let mut layout = empty_domain_layout();
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 120,
+        h: 80,
+    };
+    let w1 = WindowId("win-1".to_owned());
+    let w2 = WindowId("win-2".to_owned());
+    let w3 = WindowId("win-3".to_owned());
+
+    layout
+        .admit_window(
+            &k,
+            &w1,
+            ExceptionFlags::none(),
+            None,
+            bounds,
+            false,
+            false,
+            &[observed_window("win-1", false)],
+        )
+        .expect("admit win-1");
+    layout
+        .admit_window(
+            &k,
+            &w2,
+            ExceptionFlags::none(),
+            None,
+            bounds,
+            false,
+            false,
+            &[
+                observed_window("win-1", false),
+                observed_window("win-2", false),
+            ],
+        )
+        .expect("admit win-2");
+    assert_eq!(
+        domain_group_ids(&layout, &k),
+        std::collections::BTreeSet::from([NodeId("grp-0".to_owned())])
+    );
+    assert_eq!(layout.group_alloc.next_value(), 1);
+
+    // Removing win-2 collapses the wrapper; the serial is gone.
+    layout
+        .converge_domain(
+            &k,
+            &[observed_window("win-1", false)],
+            Some(&w1),
+            &std::collections::BTreeSet::new(),
+        )
+        .expect("remove win-2");
+    assert!(domain_group_ids(&layout, &k).is_empty());
+
+    // Readmission mints the next serial, never the removed id.
+    layout
+        .admit_window(
+            &k,
+            &w3,
+            ExceptionFlags::none(),
+            None,
+            bounds,
+            false,
+            false,
+            &[
+                observed_window("win-1", false),
+                observed_window("win-3", false),
+            ],
+        )
+        .expect("admit win-3");
+    assert_eq!(
+        domain_group_ids(&layout, &k),
+        std::collections::BTreeSet::from([NodeId("grp-1".to_owned())])
+    );
+    assert_eq!(layout.group_alloc.next_value(), 2);
+}
+
+#[test]
+fn alloc_cap_fallback_burns_tried_serials() {
+    let k = DomainKey {
+        output: OutputId("o".to_owned()),
+        workspace: WorkspaceId("w".to_owned()),
+    };
+    let mut layout = WorldLayout::new();
+    layout.domains.insert(
+        k.clone(),
+        DomainLayout::new(
+            Rect {
+                x: 0,
+                y: 0,
+                w: 12,
+                h: 12,
+            },
+            4,
+            0,
+        ),
+    );
+    let placed = Rect {
+        x: 0,
+        y: 0,
+        w: 12,
+        h: 4,
+    };
+    let obs = |name: &str| ObservedWindow {
+        window: WindowId(name.to_owned()),
+        output: k.output.clone(),
+        workspace: k.workspace.clone(),
+        floating: false,
+        fullscreen: false,
+        maximized: false,
+        sticky: false,
+        fixed_auto: false,
+        fixed_suppress: false,
+        hints: WindowSizeHints::none(),
+    };
+
+    layout
+        .admit_window(
+            &k,
+            &WindowId("a".to_owned()),
+            ExceptionFlags::none(),
+            None,
+            placed,
+            false,
+            false,
+            &[obs("a")],
+        )
+        .expect("admit a");
+    layout
+        .admit_window(
+            &k,
+            &WindowId("b".to_owned()),
+            ExceptionFlags::none(),
+            None,
+            placed,
+            false,
+            false,
+            &[obs("a"), obs("b")],
+        )
+        .expect("admit b");
+    assert_eq!(
+        domain_group_ids(&layout, &k),
+        std::collections::BTreeSet::from([NodeId("grp-0".to_owned())])
+    );
+
+    layout
+        .admit_window(
+            &k,
+            &WindowId("c".to_owned()),
+            ExceptionFlags::none(),
+            None,
+            placed,
+            false,
+            false,
+            &[obs("a"), obs("b"), obs("c")],
+        )
+        .expect("admit c via fallback");
+    // Failed ordinary wrap burned grp-1; fallback split minted grp-2.
+    assert_eq!(
+        domain_group_ids(&layout, &k),
+        std::collections::BTreeSet::from([NodeId("grp-0".to_owned()), NodeId("grp-2".to_owned()),])
+    );
+    assert_eq!(layout.group_alloc.next_value(), 3);
+    assert!(layout.is_tiled_window(&k, &WindowId("c".to_owned())));
+
+    // Remove c and admit again: repeat burns ordinary/fallback pair and never reissues grp-2.
+    layout
+        .converge_domain(
+            &k,
+            &[obs("a"), obs("b")],
+            Some(&WindowId("b".to_owned())),
+            &std::collections::BTreeSet::new(),
+        )
+        .expect("remove c");
+    assert_eq!(
+        domain_group_ids(&layout, &k),
+        std::collections::BTreeSet::from([NodeId("grp-0".to_owned())])
+    );
+
+    layout
+        .admit_window(
+            &k,
+            &WindowId("c".to_owned()),
+            ExceptionFlags::none(),
+            None,
+            placed,
+            false,
+            false,
+            &[obs("a"), obs("b"), obs("c")],
+        )
+        .expect("readmit c via fallback");
+    assert_eq!(
+        domain_group_ids(&layout, &k),
+        std::collections::BTreeSet::from([NodeId("grp-0".to_owned()), NodeId("grp-4".to_owned()),])
+    );
+    assert_eq!(layout.group_alloc.next_value(), 5);
+}
+
+#[test]
+fn alloc_exhausted_ordinary_refuses_instead_of_floating() {
+    let k = key();
+    let mut layout = empty_domain_layout();
+    let bounds = Rect {
+        x: 0,
+        y: 0,
+        w: 100,
+        h: 50,
+    };
+    let w1 = WindowId("win-1".to_owned());
+    let w2 = WindowId("win-2".to_owned());
+
+    layout
+        .admit_window(
+            &k,
+            &w1,
+            ExceptionFlags::none(),
+            None,
+            bounds,
+            false,
+            false,
+            &[observed_window("win-1", false)],
+        )
+        .expect("admit win-1");
+    layout.group_alloc = super::super::group_alloc::GroupAllocator::test_with_next(u64::MAX);
+
+    let err = layout
+        .admit_window(
+            &k,
+            &w2,
+            ExceptionFlags::none(),
+            None,
+            bounds,
+            false,
+            false,
+            &[
+                observed_window("win-1", false),
+                observed_window("win-2", false),
+            ],
+        )
+        .expect_err("exhausted admission refuses");
+    assert_eq!(
+        err,
+        LayoutFailure::Semantics(RefusalKind::MalformedTopology),
+        "fail-closed refusal, got {err:?}"
+    );
+    assert!(
+        !layout.is_capacity_float(&k, &w2),
+        "exhausted window never silently floats"
+    );
+    assert!(!layout.is_exception(&k, &w2));
+    assert_eq!(layout.tiled_count(&k), 1);
+}

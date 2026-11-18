@@ -126,7 +126,7 @@ pub(super) fn opposite_direction(direction: Direction) -> Direction {
     }
 }
 
-pub(super) fn pair_known_windows<'a>(pair: &'a PairCandidate) -> BTreeSet<&'a WindowId> {
+pub(super) fn pair_known_windows(pair: &PairCandidate) -> BTreeSet<&WindowId> {
     pair.source
         .leaves
         .keys()

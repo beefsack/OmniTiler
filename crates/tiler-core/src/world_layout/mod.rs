@@ -100,18 +100,19 @@ mod workspace_swap_tests;
 pub(crate) use float::centered_float_rect;
 pub(crate) use group_alloc::GroupAllocator;
 pub(crate) use local_operation::LocalOperationContext;
+#[cfg(test)]
 pub(crate) use outcome::{
-    AdmissionOutcome, DragDropOutcome, DragPreviewOutcome, FittedAdmissionDecline,
-    FittedAdmissionReason, FloatOutcome, FreshDomainFailure, FreshDomainOutcome, FreshOutcomeKind,
-    LayoutFailure, LocalFocusOutcome, LocalMoveOutcome, LocalOperationFailure, OrientationOutcome,
-    PairFocusOutcome, PairMoveCross, PairMoveOutcome, PairOperationFailure, PairSendKind,
-    PairSendOutcome, PointerCornerResizeOutcome, ResizeOutcome, RetainedProjectionOutcome,
-    RetainedReconcileFailure, WorkspaceMigrationFailure, WorkspaceMigrationOutcome,
-    WorkspaceSwapFailure, WorkspaceSwapOutcome,
+    AdmissionOutcome, FreshDomainOutcome, FreshOutcomeKind, PairSendKind, ResizeOutcome,
+    RetainedProjectionOutcome,
 };
+pub(crate) use outcome::{
+    DragPreviewOutcome, FreshDomainFailure, LayoutFailure, LocalOperationFailure, PairMoveOutcome,
+    PairOperationFailure, RetainedReconcileFailure, WorkspaceMigrationFailure,
+};
+#[cfg(test)]
 pub(crate) use pair::PairAssemblyFailure;
 pub(crate) use pair_operation::PairOperationContext;
-pub(crate) use projection::ProjectionFailure;
+#[cfg(test)]
 pub(crate) use queries::rank_cross_output_edge_candidates;
 pub(crate) use state::WorldLayout;
 pub(crate) use workspace_swap::WorkspaceSwapSide;

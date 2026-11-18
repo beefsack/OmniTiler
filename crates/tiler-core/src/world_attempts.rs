@@ -580,18 +580,20 @@ pub(crate) enum PropertyAttemptPhase<'a> {
     Frames,
 }
 
-impl crate::world_engine::WorldEngine {
+impl crate::world_transaction::WorldTransaction<'_> {
     /// Unified ordered settlement entry for canonical property attempts.
     /// Each phase correlates/retains evidence under its property's rule,
     /// then runs that property's policy against the staged facts.
     pub(crate) fn settle_property_attempts(&mut self, phase: PropertyAttemptPhase<'_>) {
         match phase {
             PropertyAttemptPhase::States => {
-                if self.retained_states.len() > crate::world_state::MAX_RETAINED_STATE_BINDINGS {
+                if self.world.settlement.retained_states.len()
+                    > crate::world_state::MAX_RETAINED_STATE_BINDINGS
+                {
                     return;
                 }
                 // Latest completed publication bounds incoming evidence.
-                let latest = self.state_revision;
+                let latest = self.world.state_revision;
                 self.correlate_retain_state_attempts(latest);
                 self.evaluate_state_bindings();
             }
@@ -627,17 +629,19 @@ impl crate::world_engine::WorldEngine {
     /// at proof time, not an intake filter. Spent bindings never reopen, so
     /// later or contradictory rows cannot replace the retained row.
     fn correlate_retain_state_attempts(&mut self, latest: u64) {
-        let attempts = &self.staged.observation.property_attempts;
+        let attempts = &self.world.staged.observation.property_attempts;
         for attempt in attempts {
             let Some(evidence) = attempt.as_state() else {
                 continue;
             };
-            if !crate::world_state::state_property_supported(self.capabilities(), evidence.property)
-            {
+            if !crate::world_state::state_property_supported(
+                self.connection.capabilities(),
+                evidence.property,
+            ) {
                 continue;
             }
             let key = (evidence.window.clone(), evidence.property);
-            let Some(binding) = self.retained_states.get_mut(&key) else {
+            let Some(binding) = self.world.settlement.retained_states.get_mut(&key) else {
                 continue;
             };
             if binding.target.window != evidence.window
@@ -663,9 +667,9 @@ impl crate::world_engine::WorldEngine {
     /// prunes first, so no evidence is retained for a binding the policy
     /// drops below. Exact op/window matching rejects forged rows.
     fn correlate_retain_clear_attempts(&mut self) {
-        let attempts = &self.staged.observation.property_attempts;
-        let closes = &self.staged.closes;
-        for retained in &mut self.retained_clears {
+        let attempts = &self.world.staged.observation.property_attempts;
+        let closes = &self.world.staged.closes;
+        for retained in &mut self.world.settlement.retained_clears {
             if closes.contains(&retained.window) {
                 continue;
             }
@@ -682,7 +686,7 @@ impl crate::world_engine::WorldEngine {
                 RetentionPolicy::ReplacePending,
             );
         }
-        for retained in &mut self.retained_born {
+        for retained in &mut self.world.settlement.retained_born {
             if closes.contains(&retained.window) {
                 continue;
             }
@@ -710,11 +714,11 @@ impl crate::world_engine::WorldEngine {
         // Native-free views are proved by the frozen selection binding, never
         // by the echo/attempt lane: the old `settle_views_pre` kept them
         // unstaged and that gate must stay here.
-        if !self.host_owned_workspace_domains() {
+        if !self.connection.host_owned_workspace_domains() {
             return;
         }
-        let attempts = &self.staged.observation.property_attempts;
-        for retained in &mut self.retained {
+        let attempts = &self.world.staged.observation.property_attempts;
+        for retained in &mut self.world.settlement.retained {
             // Standalone/follow/refill view flights; the migration parent's
             // target-view proof rides the parent entry and is staged with its
             // migration settlement (still through the shared primitive).
@@ -749,8 +753,8 @@ impl crate::world_engine::WorldEngine {
     /// per-member latest evidence. Staging happens before any hold; forged
     /// rows read as absent.
     fn correlate_retain_member_attempts(&mut self) {
-        let attempts = &self.staged.observation.property_attempts;
-        for retained in &mut self.retained {
+        let attempts = &self.world.staged.observation.property_attempts;
+        for retained in &mut self.world.settlement.retained {
             match &retained.target.kind {
                 TransferKind::Window(window) => {
                     let operation_id = retained.target.operation_id.clone();
@@ -834,12 +838,18 @@ impl crate::world_engine::WorldEngine {
     /// then store the verdict. Terminal verdicts stay stable and are never
     /// recomputed from a later observation.
     fn evaluate_state_bindings(&mut self) {
-        let keys: Vec<(WindowId, StateProperty)> = self.retained_states.keys().cloned().collect();
+        let keys: Vec<(WindowId, StateProperty)> = self
+            .world
+            .settlement
+            .retained_states
+            .keys()
+            .cloned()
+            .collect();
         for key in keys {
             if self.state_binding_terminal(&key) {
                 continue;
             }
-            let (target, evidence) = match self.retained_states.get(&key) {
+            let (target, evidence) = match self.world.settlement.retained_states.get(&key) {
                 Some(binding) => {
                     if binding.target.window != key.0 || binding.target.property != key.1 {
                         continue;
@@ -857,7 +867,7 @@ impl crate::world_engine::WorldEngine {
                 None => continue,
             };
             let next = self.classify_state_attempt(&target, &evidence);
-            if let Some(binding) = self.retained_states.get_mut(&key) {
+            if let Some(binding) = self.world.settlement.retained_states.get_mut(&key) {
                 binding.disposition = next;
             }
         }
