@@ -348,7 +348,7 @@ struct QueuedCommand {
     client: String,
     client_cmd: String,
     global_seq: u64,
-    command: serde_json::Value,
+    command: tiler_core::world_report::WorldCommand,
 }
 
 impl QueuedCommand {
@@ -897,27 +897,15 @@ impl WorldBroker {
         }
         // Parked FIFO batch: snapshot the whole queue for this fresh
         // capture. Commands arriving during this dispatch stay parked for
-        // the next capture. Every entry decodes through the exact strict
-        // codec (queue-time validation passed, so any defensive decode
-        // failure is staged alongside the batch and settled only if the
-        // capture actually executes and passes final preparation); the
-        // surviving batch drains inside ONE capture/run/publication through
-        // the batched core lane, which settles each command individually
-        // with a single final world.
+        // the next capture. Every entry is already a typed WorldCommand
+        // decoded once at queue ingress; the batch drains inside ONE
+        // capture/run/publication through the batched core lane, which
+        // settles each command individually with a single final world.
         let drained: VecDeque<QueuedCommand> = std::mem::take(&mut self.pending);
-        let mut batch: Vec<(u64, tiler_core::world_report::WorldCommand)> = Vec::new();
-        let mut decode_failures: HashMap<u64, (String, String)> = HashMap::new();
-        for queued in &drained {
-            match decode_command_value_v4(&queued.command) {
-                Ok(command) => batch.push((queued.global_seq, command)),
-                Err(error) => {
-                    decode_failures.insert(
-                        queued.global_seq,
-                        (error.kind.to_owned(), error.message.to_owned()),
-                    );
-                }
-            }
-        }
+        let batch: Vec<(u64, tiler_core::world_report::WorldCommand)> = drained
+            .iter()
+            .map(|queued| (queued.global_seq, queued.command.clone()))
+            .collect();
         let wake_epoch = self.wake_epoch;
         let max_reply_bytes = self.final_reply_max_bytes();
         let mut prepared: Option<PreparedCapture> = None;
@@ -932,11 +920,10 @@ impl WorldBroker {
                         drained
                             .iter()
                             .filter(|queued| {
-                                decode_failures.contains_key(&queued.global_seq)
-                                    || candidate
-                                        .settlements
-                                        .iter()
-                                        .any(|settlement| settlement.seq == queued.global_seq)
+                                candidate
+                                    .settlements
+                                    .iter()
+                                    .any(|settlement| settlement.seq == queued.global_seq)
                             })
                             .count() as u64
                     } else {
@@ -971,7 +958,6 @@ impl WorldBroker {
             covered,
             staged_gesture_map,
             drained,
-            &mut decode_failures,
             outcome,
             settlements,
             prepared,
@@ -992,7 +978,6 @@ impl WorldBroker {
         outcome: WorldOutcome,
         settlements: Vec<tiler_core::world_report::BatchSettlement>,
     ) -> Result<String, BrokerError> {
-        let mut decode_failures = HashMap::new();
         let prepared = match &outcome {
             WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => {
                 Some(prepare_capture_reply(
@@ -1015,7 +1000,6 @@ impl WorldBroker {
             covered,
             staged_gesture_map,
             drained,
-            &mut decode_failures,
             outcome,
             settlements,
             prepared,
@@ -1031,7 +1015,6 @@ impl WorldBroker {
         covered: Option<CoverWitness>,
         staged_gesture_map: crate::kde_gesture::KdeGestureMap,
         drained: VecDeque<QueuedCommand>,
-        decode_failures: &mut HashMap<u64, (String, String)>,
         outcome: WorldOutcome,
         settlements: Vec<tiler_core::world_report::BatchSettlement>,
         prepared: Option<PreparedCapture>,
@@ -1039,7 +1022,7 @@ impl WorldBroker {
         let prepared = match outcome {
             WorldOutcome::Accepted(reply) => {
                 if reply.ready {
-                    self.settle_batch_with_failures(&drained, &settlements, decode_failures);
+                    self.settle_batch_infallible(&drained, &settlements);
                 } else {
                     // Pre-ready bootstrap can install pending intent without
                     // advancing replay, and never executes the drained batch.
@@ -1212,16 +1195,14 @@ impl WorldBroker {
         if self.wake_epoch.checked_add(issued_count).is_none() {
             return Err(BrokerError::Rotate);
         }
-        let mut decode_failures = HashMap::new();
-        self.settle_batch_with_failures(drained, settlements, &mut decode_failures);
+        self.settle_batch_infallible(drained, settlements);
         Ok(())
     }
 
-    fn settle_batch_with_failures(
+    fn settle_batch_infallible(
         &mut self,
         drained: &VecDeque<QueuedCommand>,
         settlements: &[tiler_core::world_report::BatchSettlement],
-        decode_failures: &mut HashMap<u64, (String, String)>,
     ) {
         let mut by_seq: HashMap<u64, &tiler_core::world_report::BatchSettlement> = HashMap::new();
         for settlement in settlements {
@@ -1229,17 +1210,6 @@ impl WorldBroker {
         }
         let mut repark: Vec<QueuedCommand> = Vec::new();
         for queued in drained {
-            if let Some((kind, message)) = decode_failures.remove(&queued.global_seq) {
-                self.settle_drained_infallible(
-                    queued,
-                    Settlement::Failed {
-                        global_seq: queued.global_seq,
-                        kind,
-                        message,
-                    },
-                );
-                continue;
-            }
             let Some(settlement) = by_seq.get(&queued.global_seq) else {
                 repark.push(queued.clone());
                 continue;
@@ -1302,16 +1272,16 @@ impl WorldBroker {
             Some(sender) => sender,
             None => return Ok(self.error_body("unauthorized", "unauthorized")),
         };
-        let (generation, client, client_cmd, command) = match parse_queue_request(request) {
+        let (generation, client, client_cmd, command_value) = match parse_queue_request(request) {
             Ok(parsed) => parsed,
             Err((kind, message)) => return Ok(self.error_body(kind, message)),
         };
         if generation != self.generation() {
             return Ok(self.error_body("generation-mismatch", "generation mismatch"));
         }
-        if !command_shape_valid(self.generation(), &command) {
+        let Ok(command) = decode_command_value_v4(&command_value) else {
             return Ok(self.error_body("snapshot-invalid", "command-invalid"));
-        }
+        };
         let namespace = (sender.clone(), client.clone());
         let mark = self.highwater.get(&namespace).copied().unwrap_or(0);
         if client_cmd <= mark {
@@ -2009,71 +1979,6 @@ fn parse_read_request(request: &str) -> Result<String, (&'static str, &'static s
         .filter(|s| is_valid_request_id(s))
         .ok_or(("unknown-value", "request contains an unknown value"))?;
     Ok(req.to_owned())
-}
-
-/// Validate one queued command through the exact strict codec by embedding
-/// it in a fixed minimal observation (or its commandless twin as the
-/// harness). No core changes: the codec owns the whole command vocabulary,
-/// so queue-time validation can never drift from dispatch-time decoding.
-/// Decoding is inventory-independent, so inventory races (a window the
-/// world outgrew between queue and dispatch) resolve at dispatch with
-/// bounded retries, never here. `false` fails the command closed at queue
-/// time instead of poisoning a later actuator capture.
-fn command_shape_valid(generation: &str, command: &serde_json::Value) -> bool {
-    // The harness (commandless twin) must decode: otherwise the probe
-    // itself is broken, and failing closed is the only safe answer.
-    let mut harness_inner = minimal_skeleton();
-    stamp_probe(&mut harness_inner, generation, None);
-    if decode_request(&serde_json::Value::Object(harness_inner).to_string()).is_err() {
-        return false;
-    }
-    let mut probe_inner = minimal_skeleton();
-    stamp_probe(&mut probe_inner, generation, Some(command));
-    decode_request(&serde_json::Value::Object(probe_inner).to_string()).is_ok()
-}
-
-/// Minimal observation skeleton for pre-first-capture validation: no
-/// inventory, so only inventory-free commands queue.
-fn minimal_skeleton() -> serde_json::Map<String, serde_json::Value> {
-    serde_json::from_str::<serde_json::Value>(
-        "{\"v\":4,\"screens\":[],\"windows\":[],\"closed\":[],\"native\":[],\
-          \"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\
-          \"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[],\
-          \"presentation\":{\"foreground\":\"\",\"minimized\":null,\"maximized\":null,\
-          \"fullscreen\":null,\"hostHidden\":null,\"hiddenWorkspace\":null,\"frame\":null,\
-          \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\
-          \"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\
-          \"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null}",
-    )
-    .expect("skeleton is a JSON object")
-    .as_object()
-    .expect("skeleton is an object")
-    .clone()
-}
-
-/// Stamp one probe report with the broker-owned namespace plus the optional
-/// candidate command.
-fn stamp_probe(
-    inner: &mut serde_json::Map<String, serde_json::Value>,
-    generation: &str,
-    command: Option<&serde_json::Value>,
-) {
-    inner.insert("adapter".to_owned(), json_string("broker-probe"));
-    inner.insert("gen".to_owned(), json_string(generation));
-    inner.insert("obs".to_owned(), json_string("1"));
-    inner.insert("reqSeq".to_owned(), json_string("1"));
-    inner.insert("req".to_owned(), json_string("probe-1"));
-    inner.insert("monotonicMs".to_owned(), json_string("1"));
-    match command {
-        Some(command) => {
-            inner.insert("cmdSeq".to_owned(), json_string("1"));
-            inner.insert("command".to_owned(), command.clone());
-        }
-        None => {
-            inner.insert("cmdSeq".to_owned(), serde_json::Value::Null);
-            inner.insert("command".to_owned(), serde_json::Value::Null);
-        }
-    }
 }
 
 fn to_broker_assoc(assoc: &crate::kde_gesture::GestureAssoc) -> BrokerGestureAssoc<'_> {
@@ -3434,27 +3339,49 @@ mod tests {
 
     #[test]
     fn queued_command_validates_through_the_strict_codec() {
-        let broker = WorldBroker::new();
+        let mut broker = WorldBroker::new();
+        let generation = broker.generation().to_owned();
         let select = serde_json::json!({"op":"select-numbered","out":null,"index":3});
-        // Before the first accepted capture only inventory-free commands
-        // queue; validation still runs through the strict codec.
-        assert!(command_shape_valid(broker.generation(), &select));
+        assert!(decode_command_value_v4(&select).is_ok());
         let bogus = serde_json::json!({"op":"no-such-op"});
-        assert!(!command_shape_valid(broker.generation(), &bogus));
+        assert!(decode_command_value_v4(&bogus).is_err());
         // Explicit string outputs stay valid (genuinely semantic outputs);
         // only unknown ops and shapes refuse.
         let explicit = serde_json::json!({"op":"select-numbered","out":"DP-1","index":3});
-        assert!(command_shape_valid(broker.generation(), &explicit));
+        assert!(decode_command_value_v4(&explicit).is_ok());
         let bad_index = serde_json::json!({"op":"select-numbered","out":null,"index":10});
-        assert!(!command_shape_valid(broker.generation(), &bad_index));
+        assert!(decode_command_value_v4(&bad_index).is_err());
         // Direction-only commands carry no float key on this wire (the
         // stale TS vocabulary did): exact shape or refusal.
         let focus = serde_json::json!({"op":"focus-directional","win":"win-001",
             "direction":"left"});
-        assert!(command_shape_valid(broker.generation(), &focus));
+        assert!(decode_command_value_v4(&focus).is_ok());
         let stale_float = serde_json::json!({"op":"focus-directional","win":"win-001",
             "direction":"left","floatSubject":false});
-        assert!(!command_shape_valid(broker.generation(), &stale_float));
+        assert!(decode_command_value_v4(&stale_float).is_err());
+
+        // Queue ingress preserves the exact command-invalid mapping.
+        let bad_req = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"1\",\
+              \"command\":{stale_float}}}"
+        );
+        let bad_reply: serde_json::Value =
+            serde_json::from_str(&broker.queue_command(":1.42", &bad_req).expect("in-band"))
+                .expect("JSON");
+        assert_eq!(bad_reply["outcome"], "rejected");
+        assert_eq!(bad_reply["kind"], "snapshot-invalid");
+        assert_eq!(bad_reply["message"], "command-invalid");
+        assert!(broker.pending.is_empty());
+
+        let good_req = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"1\",\
+              \"command\":{focus}}}"
+        );
+        let good_reply: serde_json::Value =
+            serde_json::from_str(&broker.queue_command(":1.42", &good_req).expect("queued"))
+                .expect("JSON");
+        assert_eq!(good_reply["outcome"], "queued");
+        assert_eq!(broker.pending.len(), 1);
     }
 
     #[test]
@@ -3582,7 +3509,10 @@ mod tests {
             sender: ":1.1".to_owned(),
             client: "client-1".to_owned(),
             client_cmd: "cmd-parked".to_owned(),
-            command: serde_json::json!({"op":"select-numbered","out":null,"index":1}),
+            command: decode_command_value_v4(
+                &serde_json::json!({"op":"select-numbered","out":null,"index":1}),
+            )
+            .expect("valid command"),
         };
         let mut drained = VecDeque::new();
         drained.push_back(parked);
@@ -3978,7 +3908,7 @@ mod tests {
     }
 
     #[test]
-    fn defensive_decode_failure_does_not_leak_before_final_prepare() {
+    fn late_oversize_rolls_back_and_reparks_batch_in_order() {
         let mut broker = WorldBroker::new();
         let adapter = "kwin-actuator-1";
         let hs = format!(
@@ -4044,9 +3974,6 @@ mod tests {
         );
         broker.queue_command(":1.42", &cmd1).expect("queued 1");
         broker.queue_command(":1.42", &cmd2).expect("queued 2");
-        // Corrupt the first queued command after queue-time validation so it hits
-        // the defensive decode-failure path during dispatch.
-        broker.pending[0].command = serde_json::json!({"op": "no-such-op"});
         broker.set_max_reply_bytes_for_test(64);
 
         let cap2 = format!(
@@ -4057,11 +3984,49 @@ mod tests {
         assert!(matches!(err, BrokerError::Oversized));
         assert!(
             broker.settled.is_empty(),
-            "defensive decode failure must not settle before final prepare passes"
+            "late oversize must not settle before final prepare passes"
         );
         assert_eq!(broker.pending.len(), 2);
         assert_eq!(broker.pending[0].client_cmd, "1");
         assert_eq!(broker.pending[1].client_cmd, "2");
+
+        // Retry with normal reply budget and a fresh capture source drains the
+        // reparked batch in FIFO order.
+        broker.set_max_reply_bytes_for_test(WORLD_MAX_REPLY_BYTES);
+        let cap3 = format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+            \"source\":\"src-3\",\"sourceSeq\":\"3\",\"nativeInvalid\":\"3\",\"report\":{inner}}}"
+        );
+        let cap3_retry = broker.dispatch_capture(&cap3).expect("retry succeeds");
+        assert!(
+            cap3_retry.contains("\"rev\":\"2\""),
+            "cap3 retry: {cap3_retry}"
+        );
+        assert!(broker.pending.is_empty());
+        let take1: serde_json::Value = serde_json::from_str(
+            &broker
+                .take_result(
+                    ":1.42",
+                    &format!(
+                        "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"1\"}}"
+                    ),
+                )
+                .expect("take 1"),
+        )
+        .expect("JSON");
+        let take2: serde_json::Value = serde_json::from_str(
+            &broker
+                .take_result(
+                    ":1.42",
+                    &format!(
+                        "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"2\"}}"
+                    ),
+                )
+                .expect("take 2"),
+        )
+        .expect("JSON");
+        assert_eq!(take1["globalCmd"], "1");
+        assert_eq!(take2["globalCmd"], "2");
     }
 
     #[test]
