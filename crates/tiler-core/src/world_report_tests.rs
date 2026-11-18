@@ -159,7 +159,6 @@ fn digest_covers_every_section() {
         output: OutputId("out".to_owned()),
         ordinal: 0,
         order_len: 0,
-        fields: Vec::new(),
         diagnostic: RowDiagnostic {
             scope: AuthorityScope::Output(OutputId("out".to_owned())),
             row: RowDiagnosticLane::Native,

@@ -75,7 +75,6 @@ fn held_native_row(output: &str, ordinal: usize) -> HeldNativeRow {
         output: OutputId(output.to_owned()),
         ordinal,
         order_len: 0,
-        fields: Vec::new(),
         diagnostic: diag(output, RowDiagnosticLane::Native, None),
     }
 }
@@ -86,7 +85,6 @@ fn held_frame_row(ordinal: usize) -> HeldAttemptRow {
         ordinal,
         identity: Vec::new(),
         has_native_ref: false,
-        fields: Vec::new(),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }
@@ -98,7 +96,6 @@ fn held_member_row(ordinal: usize) -> HeldAttemptRow {
         ordinal,
         identity: vec!["win-a".to_owned()],
         has_native_ref: false,
-        fields: Vec::new(),
         diagnostic: Some(diag("out-a", RowDiagnosticLane::Attempt, Some("win-a"))),
         kind: RowDiagnosticKind::InvalidFact,
     }

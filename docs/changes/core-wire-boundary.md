@@ -260,6 +260,12 @@ focus subject once and uses it for dispatch, diagnostics and bookkeeping.
 The active and frozen wire fixtures are unchanged; the scoped Rust suite
 passed 3,458 tests, with the workspace unsafe-posture test excluded.
 
+Native and attempt holds now supply typed evidence to core; protocol
+retains raw fields for exact reconstruction, byte accounting and replay
+comparison. The scoped Rust suite passed 3,464 tests with the workspace
+unsafe-posture test excluded, including the Stage 5 production routes and
+byte oracles. Active and frozen fixtures are unchanged.
+
 For the final broker comparison, the release harness at `b6f097d0` used
 the original active genesis fixture and the workload above. Median series
 p50/p95 was 198.5/205.5 us fresh and 205.6/214.7 us warm; replies were

@@ -5,12 +5,12 @@ use std::collections::BTreeSet;
 
 use tiler_core::boundary::CoreCommand;
 use tiler_core::world_report::{
-    AttemptLaneV4, NativeWorkspaceFact, WorldCommand, WorldReportV4, is_intent_save_command_v4,
+    NativeWorkspaceFact, WorldCommand, WorldReportV4, is_intent_save_command_v4,
 };
 
 use crate::world_admission_rows::{
     bool_len, command_estimate_owned, focus_feedback_estimate, gesture_ingress_v4_estimate,
-    held_fields_estimate, int_len, intent_records_estimate, json_string_len, last_write_estimate,
+    int_len, intent_records_estimate, json_string_len, last_write_estimate,
     presentation_row_v4_estimate, rect_len, renderer_input_estimate, u64_len, usize_len,
     workspace_ref_option_len,
 };
@@ -197,9 +197,6 @@ pub fn report_estimate_v4_with_residual(
                 + row.count.map_or(4, |count| u64_len(u64::from(count)));
         }
     }
-    for held in &report.held_native {
-        bytes += held_fields_estimate(&held.fields);
-    }
     bytes += 20;
     for attempt in &report.frames {
         bytes += 98
@@ -220,13 +217,6 @@ pub fn report_estimate_v4_with_residual(
                 5 + int_len(rect.x) + int_len(rect.y) + int_len(rect.w) + int_len(rect.h)
             });
     }
-    for held in report
-        .held_attempts
-        .iter()
-        .filter(|held| held.lane == AttemptLaneV4::Frame)
-    {
-        bytes += held_fields_estimate(&held.fields);
-    }
     bytes += 21;
     for attempt in &report.member_attempts {
         bytes += "{\"op\":\"\",\"win\":\"\",\"out\":\"\",\"ws\":\"\",\"setter\":\"\",\"pre\":null,\"post\":null,\"attemptMs\":\"\"}".len() - 12
@@ -238,13 +228,6 @@ pub fn report_estimate_v4_with_residual(
             + workspace_ref_option_len(&attempt.pre)
             + workspace_ref_option_len(&attempt.post)
             + u64_len(attempt.attempt_ms);
-    }
-    for held in report
-        .held_attempts
-        .iter()
-        .filter(|held| held.lane == AttemptLaneV4::Member)
-    {
-        bytes += held_fields_estimate(&held.fields);
     }
     bytes += 19;
     for attempt in &report.view_attempts {
@@ -258,13 +241,6 @@ pub fn report_estimate_v4_with_residual(
             + workspace_ref_option_len(&attempt.baseline)
             + u64_len(attempt.attempt_ms);
     }
-    for held in report
-        .held_attempts
-        .iter()
-        .filter(|held| held.lane == AttemptLaneV4::View)
-    {
-        bytes += held_fields_estimate(&held.fields);
-    }
     bytes += 20;
     for attempt in &report.clear_attempts {
         bytes += 62
@@ -274,13 +250,6 @@ pub fn report_estimate_v4_with_residual(
             + 5
             + 5
             + u64_len(attempt.attempt_ms);
-    }
-    for held in report
-        .held_attempts
-        .iter()
-        .filter(|held| held.lane == AttemptLaneV4::Clear)
-    {
-        bytes += held_fields_estimate(&held.fields);
     }
     bytes += 22;
     for attempt in &report.creation_attempts {
@@ -297,13 +266,6 @@ pub fn report_estimate_v4_with_residual(
         for id in &attempt.order_after {
             bytes += json_string_len(id) + 1;
         }
-    }
-    for held in report
-        .held_attempts
-        .iter()
-        .filter(|held| held.lane == AttemptLaneV4::Creation)
-    {
-        bytes += held_fields_estimate(&held.fields);
     }
     bytes += gesture_ingress_v4_estimate(&report.gesture);
     if let Some(primary) = &report.primary_output {

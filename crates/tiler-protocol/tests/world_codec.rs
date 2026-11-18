@@ -17,7 +17,7 @@ use tiler_core::world_report_v4_checks::{report_digest_v4, validate_report_v4_re
 use tiler_protocol::world_admission_sizing::report_estimate_v4;
 use tiler_protocol::world_protocol::{
     DecodedReplyV4, ReplyWireOptionals, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES,
-    WorldOutcome, decode_reply_v4, decode_request, encode_reply_v4,
+    WorldOutcome, decode_reply_v4, decode_report_v4, decode_request, encode_reply_v4,
 };
 use tiler_protocol::world_reply_write::count_reply_v4;
 
@@ -1380,16 +1380,22 @@ fn empty_view_attempt_refs_hold_identifiable_row() {
         "op": "op-9", "out": "out-a", "ws": "ws-2", "setter": "threw",
         "pre": "", "post": "", "base": "", "attemptMs": "1",
     }]);
-    let report = decode_request(&value.to_string()).expect("empty refs hold");
+    let decoded = decode_report_v4(&value.to_string()).expect("empty refs hold");
+    let report = &decoded.report;
     assert!(report.view_attempts.is_empty(), "no valid view row");
     assert_eq!(report.held_attempts.len(), 1, "one held attempt row");
     let held = &report.held_attempts[0];
     assert_eq!(held.lane, tiler_core::world_report::AttemptLaneV4::View);
     assert_eq!(held.ordinal, 0);
     assert_eq!(held.identity, vec!["op-9".to_owned()]);
+    let fields = decoded
+        .residual
+        .as_deref()
+        .and_then(|r| r.attempt_fields(held.lane, held.ordinal))
+        .expect("held attempt retains residual fields");
     for key in ["pre", "post", "base"] {
         assert!(
-            held.fields.iter().any(|(name, value)| name == key
+            fields.iter().any(|(name, value)| name == key
                 && *value == tiler_core::connection::RawSettingValue::String(String::new())),
             "{key} empty ref retained"
         );
@@ -1561,27 +1567,33 @@ fn native_current_null_strict_and_creation_attempts_decode() {
     assert_eq!(report.native[0].current_native, None);
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "current": "", "occupancy": [{"native": "ws", "count": null}]}]);
-    let report = decode_request(&value.to_string()).expect("empty current holds");
+    let decoded = decode_report_v4(&value.to_string()).expect("empty current holds");
+    let report = &decoded.report;
     assert!(report.native.is_empty(), "no valid native row");
     assert_eq!(report.held_native.len(), 1, "one held native row");
+    let fields = decoded
+        .residual
+        .as_deref()
+        .and_then(|r| r.native_fields(report.held_native[0].ordinal))
+        .expect("held native retains residual fields");
     assert!(
-        report.held_native[0]
-            .fields
-            .iter()
-            .any(|(name, field)| name == "current"
-                && *field == tiler_core::connection::RawSettingValue::String(String::new())),
+        fields.iter().any(|(name, field)| name == "current"
+            && *field == tiler_core::connection::RawSettingValue::String(String::new())),
         "empty spelling retained"
     );
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["native"] = serde_json::json!([{"out": "out", "order": ["ws"], "occupancy": [{"native": "ws", "count": null}]}]);
-    let report = decode_request(&value.to_string()).expect("missing current holds");
+    let decoded = decode_report_v4(&value.to_string()).expect("missing current holds");
+    let report = &decoded.report;
     assert!(report.native.is_empty(), "no valid native row");
     assert_eq!(report.held_native.len(), 1, "one held native row");
+    let fields = decoded
+        .residual
+        .as_deref()
+        .and_then(|r| r.native_fields(report.held_native[0].ordinal))
+        .expect("held native retains residual fields");
     assert!(
-        !report.held_native[0]
-            .fields
-            .iter()
-            .any(|(name, _)| name == "current"),
+        !fields.iter().any(|(name, _)| name == "current"),
         "missing stays missing"
     );
     // Creation attempts decode tolerantly (missing backfills) and strictly
@@ -2064,14 +2076,20 @@ fn creation_created_receipt_decodes_tolerantly_and_bounds() {
         "op": "op-native-1", "ws": "ws-1", "out": "out", "setter": "accepted",
         "before": ["ws"], "after": ["ws"], "createdId": "ws-new", "attemptMs": "5",
     }]);
-    let report = decode_request(&value.to_string()).expect("unknown receipt field holds");
+    let decoded = decode_report_v4(&value.to_string()).expect("unknown receipt field holds");
+    let report = &decoded.report;
     assert!(report.creation_attempts.is_empty(), "no valid creation row");
     assert_eq!(report.held_attempts.len(), 1, "one held attempt row");
     let held = &report.held_attempts[0];
     assert_eq!(held.lane, tiler_core::world_report::AttemptLaneV4::Creation);
     assert_eq!(held.identity, vec!["op-native-1".to_owned()]);
+    let fields = decoded
+        .residual
+        .as_deref()
+        .and_then(|r| r.attempt_fields(held.lane, held.ordinal))
+        .expect("held attempt retains residual fields");
     assert!(
-        held.fields.iter().any(|(name, _)| name == "createdId"),
+        fields.iter().any(|(name, _)| name == "createdId"),
         "carried key retained"
     );
 }
@@ -4716,4 +4734,155 @@ fn v4_held_rows_project_typed_facts_with_wire_parity() {
     assert_eq!(report.held_native[0].order_len, 2);
     assert_eq!(report.held_attempts.len(), 1);
     assert!(report.held_attempts[0].has_native_ref);
+}
+
+#[test]
+fn held_native_and_attempt_replay_residual_and_order_len_cap() {
+    use tiler_core::world_report::{MAX_NATIVE_PER_OUTPUT, MAX_WORLD_NATIVE};
+    use tiler_protocol::world_admission::ProtocolAdmissionGate;
+
+    // Malformed native row preserves order_len for MAX_WORLD_NATIVE capacity check.
+    let mut over_cap: serde_json::Value =
+        serde_json::from_str(&one_window_request()).expect("valid");
+    let order: Vec<String> = (0..MAX_NATIVE_PER_OUTPUT)
+        .map(|i| format!("ws-{i}"))
+        .collect();
+    let occupancy: Vec<serde_json::Value> = order
+        .iter()
+        .map(|id| serde_json::json!({"native": id, "count": 0}))
+        .collect();
+    over_cap["native"] = serde_json::json!([{
+        "out": "out",
+        "order": order,
+        "current": "",
+        "occupancy": occupancy
+    }]);
+    let over_decoded = decode_report_v4(&over_cap.to_string()).expect("held native decodes");
+    assert_eq!(
+        over_decoded.report.held_native[0].order_len,
+        MAX_NATIVE_PER_OUTPUT
+    );
+    let mut cap_report = over_decoded.report.clone();
+    let needed = MAX_WORLD_NATIVE / MAX_NATIVE_PER_OUTPUT;
+    for idx in 1..needed {
+        let out_id = tiler_core::directional::OutputId(format!("out-{idx}"));
+        let mut screen = cap_report.screens[0].clone();
+        screen.output = out_id.clone();
+        cap_report.screens.push(screen);
+        let mut held = cap_report.held_native[0].clone();
+        held.output = out_id.clone();
+        held.ordinal = idx;
+        held.diagnostic.scope = tiler_core::world_report::AuthorityScope::Output(out_id);
+        held.diagnostic.id = Some(format!("out-{idx}"));
+        cap_report.held_native.push(held);
+    }
+    cap_report.held_native[0].order_len += 1;
+    assert_eq!(
+        validate_report_v4_reason(&cap_report),
+        Some("native-over-cap")
+    );
+
+    // Checked admission preserves decoded-content replay differences on malformed
+    // native and attempt rows via protocol residual, while whitespace-only diffs replay.
+    let caps = HostCapabilities {
+        host_owned: true,
+        ..Default::default()
+    };
+    let mut engine = connected_engine("gen-1", caps);
+    let mut first_val: serde_json::Value =
+        serde_json::from_str(&one_window_request()).expect("valid");
+    first_val["gen"] = serde_json::json!("gen-1");
+    first_val["native"] = serde_json::json!([{
+        "out": "out",
+        "order": ["ws-1"],
+        "current": "",
+        "occupancy": [{"native": "ws-1", "count": 1}],
+        "extra": "v1"
+    }]);
+    first_val["memberAttempts"] = serde_json::json!([{
+        "op": "op-m",
+        "win": "win-a",
+        "out": "out",
+        "ws": "ws-1",
+        "setter": "accepted",
+        "pre": {"kind": "native", "out": "out", "ws": "ws-1"},
+        "post": null,
+        "attemptMs": "1",
+        "extraAttempt": "a1"
+    }]);
+    let first = decode_report_v4(&first_val.to_string()).expect("first decodes");
+    let first_gate = ProtocolAdmissionGate::with_residual(first.residual.as_ref());
+    let (first_out, _) = engine
+        .handle_report_with_gate_and_prepare(&first.report, &[], &first_gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .expect("first admits");
+    let first_reply = match first_out {
+        WorldOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted, got {other:?}"),
+    };
+
+    // Whitespace-only difference (pretty-printed) replays cached reply.
+    let pretty = serde_json::to_string_pretty(&first_val).expect("pretty");
+    let replay_decoded = decode_report_v4(&pretty).expect("pretty decodes");
+    let replay_gate = ProtocolAdmissionGate::with_residual(replay_decoded.residual.as_ref());
+    let (replay_out, _) = engine
+        .handle_report_with_gate_and_prepare(&replay_decoded.report, &[], &replay_gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .expect("replay admits");
+    match replay_out {
+        WorldOutcome::Duplicate(reply) => {
+            assert_eq!(reply, first_reply);
+        }
+        other => panic!("expected cached replay, got {other:?}"),
+    }
+
+    // Changed extra field in malformed held_native refuses request-reused.
+    let mut changed_native = first_val.clone();
+    changed_native["native"][0]["extra"] = serde_json::json!("v2");
+    let changed_native_decoded =
+        decode_report_v4(&changed_native.to_string()).expect("changed native decodes");
+    assert_eq!(changed_native_decoded.report, first.report);
+    let changed_native_gate =
+        ProtocolAdmissionGate::with_residual(changed_native_decoded.residual.as_ref());
+    match engine
+        .handle_report_with_gate_and_prepare(
+            &changed_native_decoded.report,
+            &[],
+            &changed_native_gate,
+            |_| Ok::<(), std::convert::Infallible>(()),
+        )
+        .expect("evaluates")
+        .0
+    {
+        WorldOutcome::Rejected { kind, .. } => {
+            assert_eq!(kind, "request-reused");
+        }
+        other => panic!("expected request-reused on native residual diff, got {other:?}"),
+    }
+
+    // Changed extra field in malformed held_attempt refuses request-reused.
+    let mut changed_attempt = first_val;
+    changed_attempt["memberAttempts"][0]["extraAttempt"] = serde_json::json!("a2");
+    let changed_attempt_decoded =
+        decode_report_v4(&changed_attempt.to_string()).expect("changed attempt decodes");
+    assert_eq!(changed_attempt_decoded.report, first.report);
+    let changed_attempt_gate =
+        ProtocolAdmissionGate::with_residual(changed_attempt_decoded.residual.as_ref());
+    match engine
+        .handle_report_with_gate_and_prepare(
+            &changed_attempt_decoded.report,
+            &[],
+            &changed_attempt_gate,
+            |_| Ok::<(), std::convert::Infallible>(()),
+        )
+        .expect("evaluates")
+        .0
+    {
+        WorldOutcome::Rejected { kind, .. } => {
+            assert_eq!(kind, "request-reused");
+        }
+        other => panic!("expected request-reused on attempt residual diff, got {other:?}"),
+    }
 }

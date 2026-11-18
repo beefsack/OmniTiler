@@ -2302,10 +2302,6 @@ fn slice_7_1_held_native_capability_fence() {
         output: OutputId("out-a".to_owned()),
         ordinal: 0,
         order_len: 0,
-        fields: vec![(
-            "out".to_owned(),
-            RawSettingValue::String("out-a".to_owned()),
-        )],
         diagnostic: RowDiagnostic {
             scope: AuthorityScope::Output(OutputId("out-a".to_owned())),
             row: RowDiagnosticLane::Native,
@@ -2344,52 +2340,12 @@ fn slice_7_1_raw_invalid_never_aliases_preheld() {
     assert_eq!(engine.last_report_v4().as_ref(), Some(&raw));
 }
 
-fn workspace_ref_value(native: bool) -> RawSettingValue {
-    RawSettingValue::Object(vec![
-        (
-            "kind".to_owned(),
-            RawSettingValue::String(if native {
-                "native".to_owned()
-            } else {
-                "logical".to_owned()
-            }),
-        ),
-        (
-            "out".to_owned(),
-            RawSettingValue::String("out-a".to_owned()),
-        ),
-        ("ws".to_owned(), RawSettingValue::String("ws-1".to_owned())),
-    ])
-}
-
 fn held_member_row(pre_native: bool, post_native: bool) -> HeldAttemptRow {
     HeldAttemptRow {
         lane: AttemptLaneV4::Member,
         ordinal: 0,
         identity: vec!["op-1".to_owned(), "win-a".to_owned()],
         has_native_ref: pre_native || post_native,
-        fields: vec![
-            ("op".to_owned(), RawSettingValue::String("op-1".to_owned())),
-            (
-                "win".to_owned(),
-                RawSettingValue::String("win-a".to_owned()),
-            ),
-            (
-                "out".to_owned(),
-                RawSettingValue::String("out-a".to_owned()),
-            ),
-            ("ws".to_owned(), RawSettingValue::String("ws-1".to_owned())),
-            (
-                "setter".to_owned(),
-                RawSettingValue::String("accepted".to_owned()),
-            ),
-            ("pre".to_owned(), workspace_ref_value(pre_native)),
-            ("post".to_owned(), workspace_ref_value(post_native)),
-            (
-                "attemptMs".to_owned(),
-                RawSettingValue::String("1".to_owned()),
-            ),
-        ],
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }
@@ -2401,7 +2357,6 @@ fn held_view_row() -> HeldAttemptRow {
         ordinal: 0,
         identity: vec!["op-v".to_owned()],
         has_native_ref: false,
-        fields: vec![("op".to_owned(), RawSettingValue::String("op-v".to_owned()))],
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }

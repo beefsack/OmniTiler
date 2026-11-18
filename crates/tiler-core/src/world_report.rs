@@ -1317,25 +1317,22 @@ pub struct HeldWindowRow {
 /// instead of refusing the whole report. `output` is the valid live output
 /// handle; `ordinal` is the row's original index in the carried `native`
 /// array so a future exact request encoder can reconstruct the original
-/// order (valid rows keep relative order in `native`); `fields` retains
-/// every carried native key in canonical schema key order (`out`, `order`,
-/// `current`, `occupancy`, then any other carried keys in lexicographic
-/// order) as JSON-agnostic
-/// [`RawSettingValue`](crate::connection::RawSettingValue) facts so the
-/// canonical writer round-trips the row losslessly; `diagnostic` is the
-/// emitted typed diagnostic for the held scope.
+/// order (valid rows keep relative order in `native`); `order_len` is the
+/// carried `order` array length for native capacity accounting; `diagnostic`
+/// is the emitted typed diagnostic for the held scope. Any raw carried fields
+/// for lossless wire round-tripping and exact replay reside in protocol-owned
+/// residual evidence (`WorldReportResidual`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HeldNativeRow {
     pub output: OutputId,
     pub ordinal: usize,
     pub order_len: usize,
-    pub fields: Vec<(String, crate::connection::RawSettingValue)>,
     pub diagnostic: RowDiagnostic,
 }
 
 /// Staged v4 attempt lane for one narrowly held attempt row: which
 /// carried attempt array the row came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AttemptLaneV4 {
     Frame,
     Member,
@@ -1363,22 +1360,21 @@ impl AttemptLaneV4 {
 /// array; `ordinal` is the row's original index in that array so a future
 /// exact request encoder can reconstruct the original order (valid rows
 /// keep relative order); `identity` carries the row's carried `win`/`op`
-/// strings when present (empty when the row carried neither); `fields`
-/// retains every carried attempt key in the lane's canonical schema key
-/// order, then any other carried keys in lexicographic order, as
-/// JSON-agnostic [`RawSettingValue`](crate::connection::RawSettingValue)
-/// facts so the canonical writer round-trips the row losslessly;
-/// `diagnostic` is `Some` typed diagnostic for the row's actual reported
-/// target output, and `None` when the row carried no output (frame attempts
-/// name no output: such a row has no output authority); `kind` is the
-/// mandatory narrow-hold reason, independent of the scoped `diagnostic`.
+/// strings when present (empty when the row carried neither);
+/// `has_native_ref` records whether a held member row carried a native
+/// workspace reference; `diagnostic` is `Some` typed diagnostic for the
+/// row's actual reported target output, and `None` when the row carried no
+/// output (frame attempts name no output: such a row has no output
+/// authority); `kind` is the mandatory narrow-hold reason, independent of
+/// the scoped `diagnostic`. Any raw carried fields for lossless wire
+/// round-tripping and exact replay reside in protocol-owned residual
+/// evidence (`WorldReportResidual`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HeldAttemptRow {
     pub lane: AttemptLaneV4,
     pub ordinal: usize,
     pub identity: Vec<String>,
     pub has_native_ref: bool,
-    pub fields: Vec<(String, crate::connection::RawSettingValue)>,
     pub diagnostic: Option<RowDiagnostic>,
     pub kind: RowDiagnosticKind,
 }

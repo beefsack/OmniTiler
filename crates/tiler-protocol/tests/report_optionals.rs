@@ -1002,19 +1002,21 @@ fn malformed_optionals_reject_identically_on_both_apis() {
     }]);
     let unknown_wire = unknown_field.to_string();
     assert_same_hold(&unknown_wire, AttemptLaneV4::Frame, &["win-a"]);
-    let held = decode_request(&unknown_wire).expect("held decodes");
-    assert!(held.frames.is_empty(), "unknown field holds the frame row");
+    let decoded = decode_request_with_wire(&unknown_wire).expect("held decodes");
     assert!(
-        decode_request_with_wire(&unknown_wire)
-            .expect("held decodes")
-            .wire
-            .frame_attempts_present,
-        "lane stays present"
+        decoded.report.frames.is_empty(),
+        "unknown field holds the frame row"
     );
+    assert!(decoded.wire.frame_attempts_present, "lane stays present");
     assert_eq!(
-        held.held_attempts[0]
-            .fields
-            .last()
+        decoded
+            .residual
+            .as_deref()
+            .and_then(|r| r.attempt_fields(
+                AttemptLaneV4::Frame,
+                decoded.report.held_attempts[0].ordinal
+            ))
+            .and_then(|fields| fields.last())
             .map(|(name, _)| name.as_str()),
         Some("verdict"),
         "retired key stages last"

@@ -390,10 +390,10 @@ fn v4_structural_held_rows_accept_with_exact_retention() {
         match lane {
             "screens" => assert_screen_hold(&decoded, &doc, &invalid, fixture),
             "windows" => assert_window_hold(&decoded, &doc, &invalid, fixture),
-            "native" => assert_native_hold(report, &doc, &invalid, fixture),
+            "native" => assert_native_hold(&decoded, &doc, &invalid, fixture),
             "presentation" => assert_presentation_hold(&decoded, &doc, &invalid, fixture),
             "frameAttempts" | "memberAttempts" | "viewAttempts" | "clearAttempts"
-            | "creationAttempts" => assert_attempt_hold(report, &doc, &invalid, fixture),
+            | "creationAttempts" => assert_attempt_hold(&decoded, &doc, &invalid, fixture),
             other => panic!("{} unexpected held lane {other}", fixture.id),
         }
     }
@@ -582,11 +582,12 @@ fn order_last_write(value: &mut RawSettingValue) {
 }
 
 fn assert_native_hold(
-    report: &tiler_core::world_report::WorldReportV4,
+    decoded: &DecodedReportV4,
     doc: &serde_json::Value,
     invalid: &InvalidRef,
     fixture: &ManifestFixture,
 ) {
+    let report = &decoded.report;
     let ordinal: usize = invalid
         .pointer
         .split('/')
@@ -614,14 +615,19 @@ fn assert_native_hold(
     );
     assert_eq!(held.diagnostic.id.as_deref(), Some(out), "{}", fixture.id);
     let expected = expected_fields(row, &["out", "order", "current", "occupancy"]);
+    let fields = decoded
+        .residual
+        .as_deref()
+        .and_then(|r| r.native_fields(held.ordinal))
+        .expect("held native retains residual fields");
     assert_eq!(
-        held.fields.iter().map(|(key, _)| key).collect::<Vec<_>>(),
+        fields.iter().map(|(key, _)| key).collect::<Vec<_>>(),
         expected.iter().map(|(key, _)| key).collect::<Vec<_>>(),
         "{} field order",
         fixture.id
     );
     assert_eq!(
-        normalize_fields(&held.fields),
+        normalize_fields(fields),
         normalize_fields(&expected),
         "{} field values",
         fixture.id
@@ -687,11 +693,12 @@ fn lane_key(lane: &str) -> (&'static str, AttemptLaneV4) {
 }
 
 fn assert_attempt_hold(
-    report: &tiler_core::world_report::WorldReportV4,
+    decoded: &DecodedReportV4,
     doc: &serde_json::Value,
     invalid: &InvalidRef,
     fixture: &ManifestFixture,
 ) {
+    let report = &decoded.report;
     let lane_name = invalid.pointer.split('/').nth(1).expect("lane");
     let (array_key, lane) = lane_key(lane_name);
     let ordinal: usize = invalid
@@ -740,14 +747,19 @@ fn assert_attempt_hold(
         (Some(_), None) => panic!("{} attempt diagnostic without output", fixture.id),
     }
     let expected = expected_fields(row, attempt_schema(lane));
+    let fields = decoded
+        .residual
+        .as_deref()
+        .and_then(|r| r.attempt_fields(held.lane, held.ordinal))
+        .expect("held attempt retains residual fields");
     assert_eq!(
-        held.fields.iter().map(|(key, _)| key).collect::<Vec<_>>(),
+        fields.iter().map(|(key, _)| key).collect::<Vec<_>>(),
         expected.iter().map(|(key, _)| key).collect::<Vec<_>>(),
         "{} field order",
         fixture.id
     );
     assert_eq!(
-        normalize_fields(&held.fields),
+        normalize_fields(fields),
         normalize_fields(&expected),
         "{} field values",
         fixture.id

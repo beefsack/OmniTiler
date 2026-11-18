@@ -206,7 +206,6 @@ fn v4_stages_new_lanes_verbatim() {
         output: OutputId("out-a".to_owned()),
         ordinal: 0,
         order_len: 0,
-        fields: Vec::new(),
         diagnostic: diagnostic("out-a", RowDiagnosticLane::Native, None),
     }];
     report.held_attempts = vec![
@@ -215,7 +214,6 @@ fn v4_stages_new_lanes_verbatim() {
             ordinal: 0,
             identity: Vec::new(),
             has_native_ref: false,
-            fields: Vec::new(),
             diagnostic: None,
             kind: RowDiagnosticKind::InvalidFact,
         },
@@ -224,7 +222,6 @@ fn v4_stages_new_lanes_verbatim() {
             ordinal: 1,
             identity: vec!["win-a".to_owned()],
             has_native_ref: false,
-            fields: Vec::new(),
             diagnostic: Some(diagnostic(
                 "out-a",
                 RowDiagnosticLane::Attempt,
@@ -293,7 +290,6 @@ fn v4_lane_order_with_held_presentation_last() {
         output: OutputId("out-a".to_owned()),
         ordinal: 0,
         order_len: 0,
-        fields: Vec::new(),
         diagnostic: diagnostic("out-a", RowDiagnosticLane::Native, None),
     }];
     report.held_attempts = vec![HeldAttemptRow {
@@ -301,7 +297,6 @@ fn v4_lane_order_with_held_presentation_last() {
         ordinal: 0,
         identity: Vec::new(),
         has_native_ref: false,
-        fields: Vec::new(),
         diagnostic: Some(diagnostic(
             "out-a",
             RowDiagnosticLane::Attempt,
@@ -1135,7 +1130,6 @@ fn v4_offroute_orders_before_presentation_last() {
         output: OutputId("out-a".to_owned()),
         ordinal: 0,
         order_len: 0,
-        fields: Vec::new(),
         diagnostic: diagnostic("out-a", RowDiagnosticLane::Native, None),
     }];
     report.held_attempts = vec![HeldAttemptRow {
@@ -1143,7 +1137,6 @@ fn v4_offroute_orders_before_presentation_last() {
         ordinal: 0,
         identity: Vec::new(),
         has_native_ref: false,
-        fields: Vec::new(),
         diagnostic: Some(diagnostic(
             "out-a",
             RowDiagnosticLane::Attempt,

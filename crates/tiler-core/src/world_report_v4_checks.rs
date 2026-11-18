@@ -1028,33 +1028,6 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         rect.map(|rect| format!("{},{},{},{}", rect.x, rect.y, rect.w, rect.h))
             .unwrap_or_default()
     }
-    fn feed_raw(hash: &mut u64, value: &crate::connection::RawSettingValue) {
-        match value {
-            crate::connection::RawSettingValue::Null => feed(hash, "null"),
-            crate::connection::RawSettingValue::Bool(set) => {
-                feed(hash, if *set { "true" } else { "false" });
-            }
-            crate::connection::RawSettingValue::Number(number) => {
-                feed(hash, &number.to_bits().to_string());
-            }
-            crate::connection::RawSettingValue::String(text) => feed(hash, text),
-            crate::connection::RawSettingValue::Array(items) => {
-                for item in items {
-                    feed_raw(hash, item);
-                    sep(hash);
-                }
-            }
-            crate::connection::RawSettingValue::Object(entries) => {
-                for (key, item) in entries {
-                    feed(hash, key);
-                    sep(hash);
-                    feed_raw(hash, item);
-                    sep(hash);
-                }
-            }
-        }
-        sep(hash);
-    }
     fn feed_diagnostic(hash: &mut u64, diagnostic: &crate::world_report::RowDiagnostic) {
         feed(hash, diagnostic.kind.as_str());
         sep(hash);
@@ -1369,11 +1342,8 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         sep(&mut hash);
         feed(&mut hash, &held.ordinal.to_string());
         sep(&mut hash);
-        for (key, value) in &held.fields {
-            feed(&mut hash, key);
-            sep(&mut hash);
-            feed_raw(&mut hash, value);
-        }
+        feed(&mut hash, &held.order_len.to_string());
+        sep(&mut hash);
         feed_diagnostic(&mut hash, &held.diagnostic);
     }
     feed(&mut hash, &monotonic_ms.to_string());
@@ -1977,33 +1947,6 @@ fn feed_held_attempt(hash: &mut u64, held: &HeldAttemptRow) {
         feed(hash, if set { "1" } else { "0" });
         sep(hash);
     }
-    fn feed_raw(hash: &mut u64, value: &crate::connection::RawSettingValue) {
-        match value {
-            crate::connection::RawSettingValue::Null => feed(hash, "null"),
-            crate::connection::RawSettingValue::Bool(set) => {
-                feed(hash, if *set { "true" } else { "false" });
-            }
-            crate::connection::RawSettingValue::Number(number) => {
-                feed(hash, &number.to_bits().to_string());
-            }
-            crate::connection::RawSettingValue::String(text) => feed(hash, text),
-            crate::connection::RawSettingValue::Array(items) => {
-                for item in items {
-                    feed_raw(hash, item);
-                    sep(hash);
-                }
-            }
-            crate::connection::RawSettingValue::Object(entries) => {
-                for (key, item) in entries {
-                    feed(hash, key);
-                    sep(hash);
-                    feed_raw(hash, item);
-                    sep(hash);
-                }
-            }
-        }
-        sep(hash);
-    }
     feed(hash, held.lane.as_str());
     sep(hash);
     feed(hash, &held.ordinal.to_string());
@@ -2014,11 +1957,7 @@ fn feed_held_attempt(hash: &mut u64, held: &HeldAttemptRow) {
     }
     feed(hash, "#identity-end");
     sep(hash);
-    for (key, value) in &held.fields {
-        feed(hash, key);
-        sep(hash);
-        feed_raw(hash, value);
-    }
+    flag(hash, held.has_native_ref);
     feed(hash, held.kind.as_str());
     sep(hash);
     flag(hash, held.diagnostic.is_some());

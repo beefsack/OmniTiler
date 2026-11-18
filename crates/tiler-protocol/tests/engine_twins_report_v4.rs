@@ -340,8 +340,7 @@ fn v4_estimate_nonfinite_total_and_held_structure_delta() {
             1,
             vec![("scale".to_owned(), RawSettingValue::Number(f64::INFINITY))],
         )],
-        held_window_fields: Vec::new(),
-        held_presentation_fields: None,
+        ..Default::default()
     };
     assert!(report_estimate_v4_with_residual(&report, Some(&residual)) > 0);
     assert_eq!(
@@ -368,8 +367,7 @@ fn v4_estimate_nonfinite_total_and_held_structure_delta() {
     });
     let structure_residual = WorldReportResidual {
         held_screen_fields: vec![(1, vec![("extra".to_owned(), nested)])],
-        held_window_fields: Vec::new(),
-        held_presentation_fields: None,
+        ..Default::default()
     };
     let expected_delta = serde_json::to_string(&serde_json::json!({
         "extra": {
@@ -384,7 +382,8 @@ fn v4_estimate_nonfinite_total_and_held_structure_delta() {
         expected_delta
     );
 
-    // Mixed held screen + held presentation charges residual.estimate_bytes once.
+    // Mixed held screen + held window + held native + held attempt + held presentation
+    // charges residual.estimate_bytes once.
     let mut mixed = structure.clone();
     mixed.presentation = tiler_core::world_report::PresentationRowV4::Held(
         tiler_core::world_report::HeldPresentationRow {
@@ -399,6 +398,21 @@ fn v4_estimate_nonfinite_total_and_held_structure_delta() {
             vec![(
                 "title".to_owned(),
                 RawSettingValue::String("held-title".to_owned()),
+            )],
+        )],
+        held_native_fields: vec![(
+            0,
+            vec![(
+                "out".to_owned(),
+                RawSettingValue::String("out-held".to_owned()),
+            )],
+        )],
+        held_attempt_fields: vec![(
+            tiler_core::world_report::AttemptLaneV4::Member,
+            0,
+            vec![(
+                "op".to_owned(),
+                RawSettingValue::String("op-held".to_owned()),
             )],
         )],
         held_presentation_fields: Some(vec![(
@@ -416,10 +430,24 @@ fn v4_estimate_nonfinite_total_and_held_structure_delta() {
     }))
     .expect("json")
     .len();
+    let expected_native_delta = serde_json::to_string(&serde_json::json!({
+        "out": "out-held"
+    }))
+    .expect("json")
+    .len();
+    let expected_attempt_delta = serde_json::to_string(&serde_json::json!({
+        "op": "op-held"
+    }))
+    .expect("json")
+    .len();
     assert_eq!(
         report_estimate_v4_with_residual(&mixed, Some(&mixed_residual))
             - report_estimate_v4(&mixed),
-        expected_delta + expected_win_delta + expected_pres_delta
+        expected_delta
+            + expected_win_delta
+            + expected_native_delta
+            + expected_attempt_delta
+            + expected_pres_delta
     );
 }
 

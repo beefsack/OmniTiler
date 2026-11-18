@@ -2792,24 +2792,31 @@ pub struct DecodedReportV4 {
     /// in order (one entry per valid row).
     pub creation_receipts: Vec<CreationReceiptWire>,
     /// Protocol-owned residual evidence (retained raw fields for held
-    /// `screens` rows, held `windows` rows, and a held `presentation`
-    /// singleton) for lossless re-encoding, sizing, and exact replay
-    /// discrimination. `None` when no held-row residual is carried.
+    /// `screens` rows, held `windows` rows, held `native` rows, held
+    /// attempt rows, and a held `presentation` singleton) for lossless
+    /// re-encoding, sizing, and exact replay discrimination. `None` when
+    /// no held-row residual is carried.
     pub residual: Option<std::sync::Arc<crate::world_report_residual::WorldReportResidual>>,
 }
 
 /// Staged v4 attempt-row outcome: either a usable row or an identifiable
-/// row held narrowly with its carried fields retained.
+/// row held narrowly with its carried fields retained in protocol residual.
 enum AttemptRowOutcome<T> {
     Valid(T),
-    Held(HeldAttemptRow),
+    Held {
+        row: HeldAttemptRow,
+        fields: crate::world_report_residual::HeldFields,
+    },
 }
 
 /// Staged v4 native-row outcome: either a usable row or an identifiable
-/// row held narrowly with its carried fields retained.
+/// row held narrowly with its carried fields retained in protocol residual.
 enum NativeRowOutcome {
     Valid(NativeObservation),
-    Held(HeldNativeRow),
+    Held {
+        row: HeldNativeRow,
+        fields: crate::world_report_residual::HeldFields,
+    },
 }
 
 /// Retain one identifiable-but-bad v4 attempt row: every carried key in
@@ -2822,7 +2829,7 @@ fn held_attempt_row(
     schema: &[&str],
     identity: Vec<String>,
     diagnostic: Option<RowDiagnostic>,
-) -> HeldAttemptRow {
+) -> (HeldAttemptRow, crate::world_report_residual::HeldFields) {
     let mut fields = Vec::with_capacity(map.len());
     for key in schema {
         if let Some(value) = map.get(*key) {
@@ -2845,15 +2852,17 @@ fn held_attempt_row(
                     if matches!(entries.get("kind"), Some(serde_json::Value::String(kind)) if kind == "native")
             )
         });
-    HeldAttemptRow {
-        lane,
-        ordinal,
-        identity,
-        has_native_ref,
+    (
+        HeldAttemptRow {
+            lane,
+            ordinal,
+            identity,
+            has_native_ref,
+            diagnostic,
+            kind: RowDiagnosticKind::InvalidFact,
+        },
         fields,
-        diagnostic,
-        kind: RowDiagnosticKind::InvalidFact,
-    }
+    )
 }
 
 /// Attempt-hold scope: the row's actual reported target output, when the
@@ -2918,7 +2927,7 @@ fn held_native_row(
     output: &OutputId,
     ordinal: usize,
     map: &serde_json::Map<String, serde_json::Value>,
-) -> HeldNativeRow {
+) -> (HeldNativeRow, crate::world_report_residual::HeldFields) {
     const SCHEMA_ORDER: &[&str] = &["out", "order", "current", "occupancy"];
     let mut fields = Vec::with_capacity(map.len());
     for key in SCHEMA_ORDER {
@@ -2943,18 +2952,20 @@ fn held_native_row(
         Some(serde_json::Value::Array(items)) => items.len(),
         _ => 0,
     };
-    HeldNativeRow {
-        output: output.clone(),
-        ordinal,
-        order_len,
-        fields,
-        diagnostic: RowDiagnostic {
-            scope: AuthorityScope::Output(output.clone()),
-            row: RowDiagnosticLane::Native,
-            id: Some(output.0.clone()),
-            kind: RowDiagnosticKind::InvalidFact,
+    (
+        HeldNativeRow {
+            output: output.clone(),
+            ordinal,
+            order_len,
+            diagnostic: RowDiagnostic {
+                scope: AuthorityScope::Output(output.clone()),
+                row: RowDiagnosticLane::Native,
+                id: Some(output.0.clone()),
+                kind: RowDiagnosticKind::InvalidFact,
+            },
         },
-    }
+        fields,
+    )
 }
 
 /// Retain one held v4 presentation ingress: every carried key in canonical
@@ -3548,9 +3559,8 @@ fn decode_native_v4(
         }
     }
     if held {
-        return Ok(NativeRowOutcome::Held(held_native_row(
-            &output, ordinal, map,
-        )));
+        let (row, fields) = held_native_row(&output, ordinal, map);
+        return Ok(NativeRowOutcome::Held { row, fields });
     }
     Ok(NativeRowOutcome::Valid(NativeObservation {
         output,
@@ -3639,14 +3649,9 @@ fn decode_frame_attempt_v4(
         {
             identity.push(op.to_owned());
         }
-        return Ok(AttemptRowOutcome::Held(held_attempt_row(
-            AttemptLaneV4::Frame,
-            ordinal,
-            map,
-            SCHEMA,
-            identity,
-            None,
-        )));
+        let (row, fields) =
+            held_attempt_row(AttemptLaneV4::Frame, ordinal, map, SCHEMA, identity, None);
+        return Ok(AttemptRowOutcome::Held { row, fields });
     }
     // Valid rows keep the core structural shape: a nonempty operation id
     // must be opaque (mirrors the core gate).
@@ -3731,14 +3736,15 @@ fn decode_member_attempt_v4(
             }
             if extra {
                 let diagnostic = attempt_hold_scope(map);
-                return Ok(AttemptRowOutcome::Held(held_attempt_row(
+                let (row, fields) = held_attempt_row(
                     AttemptLaneV4::Member,
                     ordinal,
                     map,
                     SCHEMA,
                     vec![attempt.operation_id, attempt.window.0],
                     diagnostic,
-                )));
+                );
+                return Ok(AttemptRowOutcome::Held { row, fields });
             }
             Ok(AttemptRowOutcome::Valid(attempt))
         }
@@ -3752,14 +3758,15 @@ fn decode_member_attempt_v4(
                             message: "duplicate-member",
                         });
                     }
-                    Ok(AttemptRowOutcome::Held(held_attempt_row(
+                    let (row, fields) = held_attempt_row(
                         AttemptLaneV4::Member,
                         ordinal,
                         map,
                         SCHEMA,
                         vec![op, win],
                         attempt_hold_scope(map),
-                    )))
+                    );
+                    Ok(AttemptRowOutcome::Held { row, fields })
                 }
                 _ => Err(reason),
             }
@@ -3798,14 +3805,15 @@ fn decode_view_attempt_v4(
             }
             if extra {
                 let diagnostic = attempt_hold_scope(map);
-                return Ok(AttemptRowOutcome::Held(held_attempt_row(
+                let (row, fields) = held_attempt_row(
                     AttemptLaneV4::View,
                     ordinal,
                     map,
                     SCHEMA,
                     vec![attempt.operation_id],
                     diagnostic,
-                )));
+                );
+                return Ok(AttemptRowOutcome::Held { row, fields });
             }
             Ok(AttemptRowOutcome::Valid(attempt))
         }
@@ -3819,14 +3827,15 @@ fn decode_view_attempt_v4(
                             message: "duplicate-view-attempt",
                         });
                     }
-                    Ok(AttemptRowOutcome::Held(held_attempt_row(
+                    let (row, fields) = held_attempt_row(
                         AttemptLaneV4::View,
                         ordinal,
                         map,
                         SCHEMA,
                         vec![op],
                         attempt_hold_scope(map),
-                    )))
+                    );
+                    Ok(AttemptRowOutcome::Held { row, fields })
                 }
                 None => Err(reason),
             }
@@ -3855,14 +3864,15 @@ fn decode_clear_attempt_v4(
                 });
             }
             if extra {
-                return Ok(AttemptRowOutcome::Held(held_attempt_row(
+                let (row, fields) = held_attempt_row(
                     AttemptLaneV4::Clear,
                     ordinal,
                     map,
                     SCHEMA,
                     vec![attempt.operation_id, attempt.window.0],
                     attempt_hold_scope(map),
-                )));
+                );
+                return Ok(AttemptRowOutcome::Held { row, fields });
             }
             Ok(AttemptRowOutcome::Valid(attempt))
         }
@@ -3876,14 +3886,15 @@ fn decode_clear_attempt_v4(
                             message: "duplicate-clear-attempt",
                         });
                     }
-                    Ok(AttemptRowOutcome::Held(held_attempt_row(
+                    let (row, fields) = held_attempt_row(
                         AttemptLaneV4::Clear,
                         ordinal,
                         map,
                         SCHEMA,
                         vec![op, win],
                         attempt_hold_scope(map),
-                    )))
+                    );
+                    Ok(AttemptRowOutcome::Held { row, fields })
                 }
                 _ => Err(reason),
             }
@@ -4043,26 +4054,30 @@ fn decode_creation_attempt_v4(
         Ok(attempt) => {
             if extra {
                 let diagnostic = attempt_hold_scope(map);
-                return Ok(AttemptRowOutcome::Held(held_attempt_row(
+                let (row, fields) = held_attempt_row(
                     AttemptLaneV4::Creation,
                     ordinal,
                     map,
                     SCHEMA,
                     vec![attempt.operation_id],
                     diagnostic,
-                )));
+                );
+                return Ok(AttemptRowOutcome::Held { row, fields });
             }
             Ok(AttemptRowOutcome::Valid(attempt))
         }
         Err(reason) => match op {
-            Some(op) => Ok(AttemptRowOutcome::Held(held_attempt_row(
-                AttemptLaneV4::Creation,
-                ordinal,
-                map,
-                SCHEMA,
-                vec![op],
-                attempt_hold_scope(map),
-            ))),
+            Some(op) => {
+                let (row, fields) = held_attempt_row(
+                    AttemptLaneV4::Creation,
+                    ordinal,
+                    map,
+                    SCHEMA,
+                    vec![op],
+                    attempt_hold_scope(map),
+                );
+                Ok(AttemptRowOutcome::Held { row, fields })
+            }
             None => Err(reason),
         },
     }
@@ -4638,6 +4653,7 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
     let native_value = map.get("native").ok_or_else(malformed)?;
     let mut native = Vec::new();
     let mut held_native = Vec::new();
+    let mut held_native_fields = Vec::new();
     let mut seen_native_outputs = std::collections::BTreeSet::new();
     for (ordinal, item) in native_value
         .as_array()
@@ -4647,7 +4663,10 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
     {
         match decode_native_v4(item, ordinal, &mut seen_native_outputs)? {
             NativeRowOutcome::Valid(row) => native.push(row),
-            NativeRowOutcome::Held(held) => held_native.push(held),
+            NativeRowOutcome::Held { row, fields } => {
+                held_native_fields.push((row.ordinal, fields));
+                held_native.push(row);
+            }
         }
     }
     if native.len().saturating_add(held_native.len()) > tiler_core::world_report::MAX_WORLD_SCREENS
@@ -4710,6 +4729,7 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
     };
     let mut frames = Vec::new();
     let mut held_attempts: Vec<HeldAttemptRow> = Vec::new();
+    let mut held_attempt_fields = Vec::new();
     let mut seen_frames = std::collections::BTreeSet::new();
     if let Some(frames_value) = map.get("frameAttempts") {
         let items = frames_value.as_array().ok_or_else(malformed)?;
@@ -4724,7 +4744,10 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
         for (ordinal, item) in items.iter().enumerate() {
             match decode_frame_attempt_v4(item, ordinal, &mut seen_frames)? {
                 AttemptRowOutcome::Valid(attempt) => frames.push(attempt),
-                AttemptRowOutcome::Held(held) => held_attempts.push(held),
+                AttemptRowOutcome::Held { row, fields } => {
+                    held_attempt_fields.push((AttemptLaneV4::Frame, row.ordinal, fields));
+                    held_attempts.push(row);
+                }
             }
         }
     }
@@ -4741,7 +4764,10 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
         for (ordinal, item) in items.iter().enumerate() {
             match decode_member_attempt_v4(item, ordinal, &mut seen_members)? {
                 AttemptRowOutcome::Valid(attempt) => member_attempts.push(attempt),
-                AttemptRowOutcome::Held(held) => held_attempts.push(held),
+                AttemptRowOutcome::Held { row, fields } => {
+                    held_attempt_fields.push((AttemptLaneV4::Member, row.ordinal, fields));
+                    held_attempts.push(row);
+                }
             }
         }
     }
@@ -4758,7 +4784,10 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
         for (ordinal, item) in items.iter().enumerate() {
             match decode_view_attempt_v4(item, ordinal, &mut seen_views)? {
                 AttemptRowOutcome::Valid(attempt) => view_attempts.push(attempt),
-                AttemptRowOutcome::Held(held) => held_attempts.push(held),
+                AttemptRowOutcome::Held { row, fields } => {
+                    held_attempt_fields.push((AttemptLaneV4::View, row.ordinal, fields));
+                    held_attempts.push(row);
+                }
             }
         }
     }
@@ -4775,7 +4804,10 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
         for (ordinal, item) in items.iter().enumerate() {
             match decode_clear_attempt_v4(item, ordinal, &mut seen_clears)? {
                 AttemptRowOutcome::Valid(attempt) => clear_attempts.push(attempt),
-                AttemptRowOutcome::Held(held) => held_attempts.push(held),
+                AttemptRowOutcome::Held { row, fields } => {
+                    held_attempt_fields.push((AttemptLaneV4::Clear, row.ordinal, fields));
+                    held_attempts.push(row);
+                }
             }
         }
     }
@@ -4813,7 +4845,10 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
                     creation_attempts.push(attempt);
                     creation_receipts.push(spelling);
                 }
-                AttemptRowOutcome::Held(held) => held_attempts.push(held),
+                AttemptRowOutcome::Held { row, fields } => {
+                    held_attempt_fields.push((AttemptLaneV4::Creation, row.ordinal, fields));
+                    held_attempts.push(row);
+                }
             }
         }
     }
@@ -5066,6 +5101,8 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
     };
     let residual = if held_screen_fields.is_empty()
         && held_window_fields.is_empty()
+        && held_native_fields.is_empty()
+        && held_attempt_fields.is_empty()
         && held_presentation_fields.is_none()
     {
         None
@@ -5074,6 +5111,8 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
             crate::world_report_residual::WorldReportResidual {
                 held_screen_fields,
                 held_window_fields,
+                held_native_fields,
+                held_attempt_fields,
                 held_presentation_fields,
             },
         ))
@@ -6476,6 +6515,23 @@ fn snapshot_invalid(message: &'static str) -> WorldProtocolError {
     }
 }
 
+/// Validate that held ordinals are unique and inside the merged lane
+/// before looking up residual fields.
+fn validate_held_ordinals(
+    valid_len: usize,
+    held_len: usize,
+    ordinals: impl IntoIterator<Item = usize>,
+) -> Result<()> {
+    let total = valid_len + held_len;
+    let mut seen = std::collections::BTreeSet::new();
+    for ordinal in ordinals {
+        if ordinal >= total || !seen.insert(ordinal) {
+            return Err(snapshot_invalid("held-ordinal-invalid"));
+        }
+    }
+    Ok(())
+}
+
 /// Merge one report lane from its valid rows (kept in relative order) and
 /// its held rows (pinned to their carried ordinals) into wire order.
 /// Held ordinals must be unique and inside the merged lane.
@@ -7432,6 +7488,11 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
         screens.push(encode_screen_canonical(screen).map_err(|_| snapshot_invalid("nonfinite"))?);
     }
     let residual_ref = decoded.residual.as_deref();
+    validate_held_ordinals(
+        report.screens.len(),
+        report.held_screens.len(),
+        report.held_screens.iter().map(|held| held.ordinal),
+    )?;
     let mut held_screens = Vec::with_capacity(report.held_screens.len());
     let mut residual_screens = residual_ref
         .map(|r| r.held_screen_fields.as_slice())
@@ -7468,6 +7529,11 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
     for fact in &report.windows {
         windows.push(encode_window_canonical(fact).map_err(|_| snapshot_invalid("nonfinite"))?);
     }
+    validate_held_ordinals(
+        report.windows.len(),
+        report.held_windows.len(),
+        report.held_windows.iter().map(|held| held.ordinal),
+    )?;
     let mut held_windows = Vec::with_capacity(report.held_windows.len());
     let mut residual_windows = residual_ref
         .map(|r| r.held_window_fields.as_slice())
@@ -7511,9 +7577,32 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
     for row in &report.native {
         native.push(encode_native_observation_v4(row)?);
     }
+    validate_held_ordinals(
+        report.native.len(),
+        report.held_native.len(),
+        report.held_native.iter().map(|held| held.ordinal),
+    )?;
     let mut held_native = Vec::with_capacity(report.held_native.len());
+    let mut residual_native = residual_ref
+        .map(|r| r.held_native_fields.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .peekable();
     for held in &report.held_native {
-        held_native.push((held.ordinal, encode_held_fields(&held.fields)?));
+        while let Some((ord, _)) = residual_native.peek() {
+            if *ord < held.ordinal {
+                residual_native.next();
+            } else {
+                break;
+            }
+        }
+        let fields = residual_native
+            .peek()
+            .filter(|(ord, _)| *ord == held.ordinal)
+            .map(|(_, fields)| fields.as_slice())
+            .ok_or_else(|| snapshot_invalid("held-native-residual-missing"))?;
+        residual_native.next();
+        held_native.push((held.ordinal, encode_held_fields(fields)?));
     }
     for (i, row) in merge_lane(native, held_native)?.iter().enumerate() {
         if i > 0 {
@@ -7583,6 +7672,46 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
         out.push_str(&report.monotonic_ms.to_string());
         out.push('"');
     }
+    let mut residual_attempts = residual_ref
+        .map(|r| r.held_attempt_fields.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .peekable();
+    let mut collect_held_attempts =
+        |lane: AttemptLaneV4, valid_len: usize| -> Result<Vec<(usize, String)>> {
+            let held_count = report
+                .held_attempts
+                .iter()
+                .filter(|held| held.lane == lane)
+                .count();
+            validate_held_ordinals(
+                valid_len,
+                held_count,
+                report
+                    .held_attempts
+                    .iter()
+                    .filter(|held| held.lane == lane)
+                    .map(|held| held.ordinal),
+            )?;
+            let mut rows = Vec::with_capacity(held_count);
+            for held in report.held_attempts.iter().filter(|held| held.lane == lane) {
+                while let Some((row_lane, ord, _)) = residual_attempts.peek() {
+                    if (*row_lane, *ord) < (lane, held.ordinal) {
+                        residual_attempts.next();
+                    } else {
+                        break;
+                    }
+                }
+                let fields = residual_attempts
+                    .peek()
+                    .filter(|(row_lane, ord, _)| *row_lane == lane && *ord == held.ordinal)
+                    .map(|(_, _, fields)| fields.as_slice())
+                    .ok_or_else(|| snapshot_invalid("held-attempt-residual-missing"))?;
+                residual_attempts.next();
+                rows.push((held.ordinal, encode_held_fields(fields)?));
+            }
+            Ok(rows)
+        };
     emit_attempt_lane(
         &mut out,
         "frameAttempts",
@@ -7593,12 +7722,7 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
                 .iter()
                 .map(encode_frame_attempt_v4)
                 .collect::<Result<Vec<_>>>()?,
-            report
-                .held_attempts
-                .iter()
-                .filter(|held| held.lane == AttemptLaneV4::Frame)
-                .map(|held| encode_held_fields(&held.fields).map(|bytes| (held.ordinal, bytes)))
-                .collect::<Result<Vec<_>>>()?,
+            collect_held_attempts(AttemptLaneV4::Frame, report.frames.len())?,
         )?,
     );
     emit_attempt_lane(
@@ -7611,12 +7735,7 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
                 .iter()
                 .map(encode_member_attempt_v4)
                 .collect::<Result<Vec<_>>>()?,
-            report
-                .held_attempts
-                .iter()
-                .filter(|held| held.lane == AttemptLaneV4::Member)
-                .map(|held| encode_held_fields(&held.fields).map(|bytes| (held.ordinal, bytes)))
-                .collect::<Result<Vec<_>>>()?,
+            collect_held_attempts(AttemptLaneV4::Member, report.member_attempts.len())?,
         )?,
     );
     emit_attempt_lane(
@@ -7629,12 +7748,7 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
                 .iter()
                 .map(encode_view_attempt_v4)
                 .collect::<Result<Vec<_>>>()?,
-            report
-                .held_attempts
-                .iter()
-                .filter(|held| held.lane == AttemptLaneV4::View)
-                .map(|held| encode_held_fields(&held.fields).map(|bytes| (held.ordinal, bytes)))
-                .collect::<Result<Vec<_>>>()?,
+            collect_held_attempts(AttemptLaneV4::View, report.view_attempts.len())?,
         )?,
     );
     emit_attempt_lane(
@@ -7647,12 +7761,7 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
                 .iter()
                 .map(encode_clear_attempt_v4)
                 .collect::<Result<Vec<_>>>()?,
-            report
-                .held_attempts
-                .iter()
-                .filter(|held| held.lane == AttemptLaneV4::Clear)
-                .map(|held| encode_held_fields(&held.fields).map(|bytes| (held.ordinal, bytes)))
-                .collect::<Result<Vec<_>>>()?,
+            collect_held_attempts(AttemptLaneV4::Clear, report.clear_attempts.len())?,
         )?,
     );
     emit_attempt_lane(
@@ -7666,12 +7775,7 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
                 .zip(decoded.creation_receipts.iter())
                 .map(|(row, receipt)| encode_creation_attempt_v4(row, *receipt))
                 .collect::<Result<Vec<_>>>()?,
-            report
-                .held_attempts
-                .iter()
-                .filter(|held| held.lane == AttemptLaneV4::Creation)
-                .map(|held| encode_held_fields(&held.fields).map(|bytes| (held.ordinal, bytes)))
-                .collect::<Result<Vec<_>>>()?,
+            collect_held_attempts(AttemptLaneV4::Creation, report.creation_attempts.len())?,
         )?,
     );
     match (&report.gesture, wire.gesture_ingress) {
