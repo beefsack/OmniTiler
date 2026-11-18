@@ -759,7 +759,9 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
             "w0",
             Some(10),
             Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "wf".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "wf".to_owned(),
+                )),
                 float_rect: None,
             })),
         ),

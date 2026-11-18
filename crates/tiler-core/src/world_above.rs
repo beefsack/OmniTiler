@@ -1968,7 +1968,7 @@ mod tests {
                 Some(11),
                 Some(WorldCommand::SetWorkspaceTiling {
                     output: OutputId("out-a".to_owned()),
-                    workspace: ws.clone(),
+                    workspace: crate::directional::WorkspaceId(ws.clone()),
                     tiled: false,
                 }),
             ),
@@ -2075,7 +2075,7 @@ mod tests {
                 Some(11),
                 Some(WorldCommand::SetWorkspaceTiling {
                     output: OutputId("out-a".to_owned()),
-                    workspace: ws.clone(),
+                    workspace: crate::directional::WorkspaceId(ws.clone()),
                     tiled: false,
                 }),
             ),

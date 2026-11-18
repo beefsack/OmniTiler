@@ -282,7 +282,9 @@ fn malformed_reports_are_transactional() {
                 vec![fact("win-a", "out-a", 0)],
                 Some(11),
                 Some(WorldCommand::FocusDirectional {
-                    window: WindowId("!!!".to_owned()),
+                    window: tiler_core::world_report::FocusDirectionalSubject::Window(WindowId(
+                        "!!!".to_owned()
+                    )),
                     direction: tiler_core::directional::Direction::Right,
                 }),
             )
@@ -326,9 +328,11 @@ fn late_command_refusal_rolls_back_without_mutation() {
             vec![fact("win-a", "out-a", 0)],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: "ws-999".to_owned(),
+                target_workspace: tiler_core::directional::WorkspaceId("ws-999".to_owned()),
                 follow: false,
             }),
         ),

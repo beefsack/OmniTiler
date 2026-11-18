@@ -298,7 +298,7 @@ fn host_owned_workspace_switch_and_return_preserves_fullscreen_and_focuses_cover
         Some(1),
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: ws2,
+            workspace: tiler_core::directional::WorkspaceId(ws2),
         }),
     );
     let away_reply = accepted(&mut engine, &switch_away);
@@ -340,7 +340,7 @@ fn host_owned_workspace_switch_and_return_preserves_fullscreen_and_focuses_cover
         Some(2),
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: ws1,
+            workspace: tiler_core::directional::WorkspaceId(ws1),
         }),
     );
     let return_reply = accepted(&mut engine, &return_ws1);
@@ -405,7 +405,9 @@ fn host_owned_focused_fullscreen_toggle_orientation_and_move_refuse() {
         "w1",
         Some(1),
         Some(WorldCommand::Operation(CoreCommand::ToggleOrientation {
-            window: "w1".to_owned(),
+            window: tiler_core::directional::WindowSubject::Window(
+                tiler_core::directional::WindowId("w1".to_owned()),
+            ),
         })),
     );
     let (toggle_outcome, toggle_settlements) = engine.handle_report(&toggle_orient, &[]);
@@ -455,7 +457,7 @@ fn host_owned_focused_fullscreen_toggle_orientation_and_move_refuse() {
         "w1",
         Some(2),
         Some(WorldCommand::MoveDirectional {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             direction: tiler_core::directional::Direction::Right,
             same_axis: SameAxisMove::default(),
         }),
@@ -521,7 +523,7 @@ fn workspace_tiling_toggle_off_and_on_preserves_fullscreen_without_automatic_eff
         Some(1),
         Some(WorldCommand::ToggleWorkspaceTiling {
             output: OutputId("out-a".to_owned()),
-            workspace: ws1.clone(),
+            workspace: tiler_core::directional::WorkspaceId(ws1.clone()),
         }),
     );
     let off_reply = accepted(&mut engine, &toggle_off);
@@ -554,7 +556,7 @@ fn workspace_tiling_toggle_off_and_on_preserves_fullscreen_without_automatic_eff
         Some(2),
         Some(WorldCommand::ToggleWorkspaceTiling {
             output: OutputId("out-a".to_owned()),
-            workspace: ws1.clone(),
+            workspace: tiler_core::directional::WorkspaceId(ws1.clone()),
         }),
     );
     let on_reply = accepted(&mut engine, &toggle_on);
@@ -599,7 +601,7 @@ fn native_free_workspace_return_to_fullscreen_preserves_safety_gates() {
         Some(1),
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: "ws-2".to_owned(),
+            workspace: tiler_core::directional::WorkspaceId("ws-2".to_owned()),
         }),
     );
     let _ = accepted(&mut engine, &switch_ws2);
@@ -617,7 +619,7 @@ fn native_free_workspace_return_to_fullscreen_preserves_safety_gates() {
         Some(2),
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: "ws-1".to_owned(),
+            workspace: tiler_core::directional::WorkspaceId("ws-1".to_owned()),
         }),
     );
     let reply = accepted(&mut engine, &return_ws1);

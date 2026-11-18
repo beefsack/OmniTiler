@@ -705,7 +705,9 @@ fn measure_case(case: &Case, samples: usize, shape: Shape) -> (f64, f64, f64, u6
                 let queued = [(
                     cmd_seq,
                     WorldCommand::Operation(CoreCommand::ToggleOrientation {
-                        window: "win-0".to_owned(),
+                        window: tiler_core::directional::WindowSubject::Window(
+                            tiler_core::directional::WindowId("win-0".to_owned()),
+                        ),
                     }),
                 )];
                 let (ms, reply, settlements) = call_command(&mut engine, &base, &queued);

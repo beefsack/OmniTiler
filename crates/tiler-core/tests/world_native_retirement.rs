@@ -775,7 +775,7 @@ fn known_raw_current_vetoes_despite_command_moved_view() {
             Some(1),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: d3.clone(),
+                workspace: tiler_core::directional::WorkspaceId(d3.clone()),
             }),
             true,
         ),
@@ -933,7 +933,7 @@ fn shared_mirror_flight_vetoes_observing_projection() {
             Some(1),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-b".to_owned()),
-                workspace: ln.clone(),
+                workspace: tiler_core::directional::WorkspaceId(ln.clone()),
             }),
             true,
         ),
@@ -1382,9 +1382,11 @@ fn retained_send_blocks_candidate() {
             )],
             Some(1),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: d3.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(d3.clone()),
                 follow: false,
             }),
             true,
@@ -2287,7 +2289,7 @@ fn kde_shared_roster_d4_cross_output_send_then_reobserve() {
         ],
         Some(1),
         Some(WorldCommand::SendDirectional {
-            window: WindowId("win-a".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             direction: tiler_core::directional::Direction::Right,
             follow: false,
         }),
@@ -2427,7 +2429,7 @@ fn kde_shared_roster_migration_inserts_after_destination_current() {
         Some(WorldCommand::MigrateWorkspace {
             source_output: OutputId("out-a".to_owned()),
             target_output: OutputId("out-b".to_owned()),
-            workspace: moved.clone(),
+            workspace: tiler_core::directional::WorkspaceId(moved.clone()),
         }),
         true,
     );
@@ -2910,7 +2912,7 @@ fn kde_shared_migration_survives_settlement() {
         Some(WorldCommand::MigrateWorkspace {
             source_output: tiler_core::directional::OutputId("out-a".to_owned()),
             target_output: tiler_core::directional::OutputId("out-b".to_owned()),
-            workspace: moved.clone(),
+            workspace: tiler_core::directional::WorkspaceId(moved.clone()),
         }),
         true,
     );
@@ -3061,7 +3063,7 @@ fn kde_shared_migration_chained_anchor_reverse_lexical() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: first.clone(),
+                workspace: tiler_core::directional::WorkspaceId(first.clone()),
             }),
             true,
         ),
@@ -3150,7 +3152,7 @@ fn kde_shared_migration_chained_anchor_reverse_lexical() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: second.clone(),
+                workspace: tiler_core::directional::WorkspaceId(second.clone()),
             }),
             true,
         ),
@@ -3570,7 +3572,7 @@ fn kde_shared_disconnect_retained_refill_orphan_survives() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-b".to_owned()),
                 target_output: OutputId("out-a".to_owned()),
-                workspace: moved_b2.clone(),
+                workspace: tiler_core::directional::WorkspaceId(moved_b2.clone()),
             }),
             true,
         ),
@@ -5014,7 +5016,7 @@ fn idle_stale_echo_never_overrides_pending_view_transfer() {
             Some(1),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: d2.clone(),
+                workspace: tiler_core::directional::WorkspaceId(d2.clone()),
             }),
             true,
         ),
@@ -5163,7 +5165,7 @@ fn idle_prune_fallback_prefers_known_echo_over_ring_head() {
             Some(1),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: d2.clone(),
+                workspace: tiler_core::directional::WorkspaceId(d2.clone()),
             }),
             true,
         ),
@@ -5496,9 +5498,9 @@ fn idle_d2_two_output_activation_send_close_leave_journey() {
         ],
         Some(1),
         Some(WorldCommand::Send {
-            window: WindowId("win-z".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("win-z".to_owned())),
             target_output: OutputId("out-b".to_owned()),
-            target_workspace: b3.clone(),
+            target_workspace: tiler_core::directional::WorkspaceId(b3.clone()),
             follow: false,
         }),
         true,
@@ -5761,7 +5763,7 @@ fn idle_migration_target_and_refill_hold_through_stale_echo() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: migrated.clone(),
+                workspace: tiler_core::directional::WorkspaceId(migrated.clone()),
             }),
             true,
         ),

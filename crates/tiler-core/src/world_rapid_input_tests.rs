@@ -145,44 +145,40 @@ fn run_batched(
 
 fn focus_cmd(window: &str) -> WorldCommand {
     WorldCommand::Focus {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
         direction: None,
     }
 }
 
-fn implicit(command: WorldCommand) -> WorldCommand {
-    WorldCommand::Implicit(Box::new(command))
-}
-
 fn implicit_maximize() -> WorldCommand {
-    implicit(WorldCommand::ToggleMaximize {
-        window: WindowId(String::new()),
-    })
+    WorldCommand::ToggleMaximize {
+        window: crate::directional::WindowSubject::CurrentFocus,
+    }
 }
 
 fn implicit_resize_dir(direction: &str, mode: &str) -> WorldCommand {
-    implicit(WorldCommand::Operation(CoreCommand::Resize {
-        window: String::new(),
+    WorldCommand::Operation(CoreCommand::Resize {
+        window: crate::directional::WindowSubject::CurrentFocus,
         direction: crate::directional::Direction::parse_wire(direction)
             .expect("valid test direction"),
         mode: crate::directional::ResizeSelector::parse_wire(mode).expect("valid test mode"),
         press_index: 1,
-    }))
+    })
 }
 
 fn implicit_move_dir(direction: &str) -> WorldCommand {
-    implicit(WorldCommand::MoveDirectional {
-        window: WindowId(String::new()),
+    WorldCommand::MoveDirectional {
+        window: crate::directional::WindowSubject::CurrentFocus,
         direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
         same_axis: SameAxisMove::GroupWithNeighbor,
-    })
+    }
 }
 
 fn implicit_focus_dir(direction: &str) -> WorldCommand {
-    implicit(WorldCommand::FocusDirectional {
-        window: WindowId(String::new()),
+    WorldCommand::FocusDirectional {
+        window: crate::world_report::FocusDirectionalSubject::CurrentFocus,
         direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
-    })
+    }
 }
 
 fn has_focus_effect(reply: &WorldReplyV4, window: &str) -> bool {
@@ -359,7 +355,7 @@ fn rapid_input_explicit_maximize_keeps_settled_native_gate() {
         &[(
             2,
             WorldCommand::ToggleMaximize {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
             },
         )],
     );
@@ -514,7 +510,9 @@ fn rapid_input_mixed_100_action_burst_single_capture() {
             2 => implicit_maximize(),
             3 => focus_cmd("win-c"),
             4 => WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "win-c".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "win-c".to_owned(),
+                )),
                 float_rect: None,
             }),
             _ => focus_cmd("win-b"),
@@ -542,7 +540,7 @@ fn rapid_input_mixed_100_action_burst_single_capture() {
     queued.push((
         96,
         WorldCommand::MoveDirectional {
-            window: WindowId("win-b".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
             direction: crate::directional::Direction::Right,
             same_axis: SameAxisMove::GroupWithNeighbor,
         },
@@ -550,16 +548,16 @@ fn rapid_input_mixed_100_action_burst_single_capture() {
     queued.push((
         97,
         WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: "win-c".to_owned(),
+            window: crate::directional::WindowSubject::Window(WindowId("win-c".to_owned())),
             float_rect: None,
         }),
     ));
     queued.push((
         98,
-        implicit(WorldCommand::Focus {
-            window: WindowId(String::new()),
+        WorldCommand::Focus {
+            window: crate::directional::WindowSubject::CurrentFocus,
             direction: None,
-        }),
+        },
     ));
     queued.push((99, focus_cmd("win-b")));
     queued.push((100, implicit_resize_dir("up", "inwards")));
@@ -784,7 +782,7 @@ fn rapid_input_empty_focus_directional_stays_no_focus() {
             (
                 1,
                 WorldCommand::FocusDirectional {
-                    window: WindowId(String::new()),
+                    window: crate::world_report::FocusDirectionalSubject::NoFocus,
                     direction: crate::directional::Direction::Right,
                 },
             ),
@@ -844,7 +842,7 @@ fn rapid_input_batch_refusal_keeps_rollback_and_command_saves() {
             (
                 1,
                 WorldCommand::SetSticky {
-                    window: WindowId("win-a".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                     value: true,
                 },
             ),
@@ -1149,24 +1147,24 @@ fn rapid_input_alternating_implicit_directional_burst_resolves_sequentially() {
 }
 
 fn implicit_toggle_float() -> WorldCommand {
-    implicit(WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: String::new(),
+    WorldCommand::Operation(CoreCommand::ToggleFloat {
+        window: crate::directional::WindowSubject::CurrentFocus,
         float_rect: None,
-    }))
+    })
 }
 
 fn explicit_toggle_float(window: &str) -> WorldCommand {
     WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: window.to_owned(),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
         float_rect: None,
     })
 }
 
 fn implicit_set_sticky(value: bool) -> WorldCommand {
-    implicit(WorldCommand::SetSticky {
-        window: WindowId(String::new()),
+    WorldCommand::SetSticky {
+        window: crate::directional::WindowSubject::CurrentFocus,
         value,
-    })
+    }
 }
 
 fn float_write_pair(write: &IntentDesire) -> (String, IntentData) {
@@ -1473,12 +1471,12 @@ fn rapid_input_implicit_fixed_tile_unfloat_records_tile_save() {
 }
 
 fn implicit_send_numbered_home() -> WorldCommand {
-    WorldCommand::Implicit(Box::new(WorldCommand::SendNumbered {
-        window: WindowId(String::new()),
+    WorldCommand::SendNumbered {
+        window: crate::directional::WindowSubject::CurrentFocus,
         source: SendSource::HomeThenAction,
         index: 0,
         follow: false,
-    }))
+    }
 }
 
 fn two_screen_capture(
@@ -1876,7 +1874,9 @@ fn rapid_input_batch_rowcap_leaves_batch_unsettled() {
     let queued = vec![(
         1,
         WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: "win-a".to_owned(),
+            window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                "win-a".to_owned(),
+            )),
             float_rect: None,
         }),
     )];
@@ -1920,13 +1920,13 @@ fn implicit_resize_press0(direction: &str, mode: &str) -> WorldCommand {
     // Live-faithful press index: every resize in the 60-command burst carries
     // `press:0` (out/in alternate on the same key and focus changes reset the
     // shared key-repeat counter).
-    implicit(WorldCommand::Operation(CoreCommand::Resize {
-        window: String::new(),
+    WorldCommand::Operation(CoreCommand::Resize {
+        window: crate::directional::WindowSubject::CurrentFocus,
         direction: crate::directional::Direction::parse_wire(direction)
             .expect("valid test direction"),
         mode: crate::directional::ResizeSelector::parse_wire(mode).expect("valid test mode"),
         press_index: 0,
-    }))
+    })
 }
 
 #[test]
@@ -2112,10 +2112,10 @@ fn rapid_input_start_floating_unfloat_then_refloat_retains_moved_frame() {
         run_batched(&mut engine, &observe(4, moved_windows(), "win-a"), &[]);
     assert_accepted(&settled_settlements, "moved float settles");
 
-    let unfloat_with_moved = implicit(WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: String::new(),
+    let unfloat_with_moved = WorldCommand::Operation(CoreCommand::ToggleFloat {
+        window: crate::directional::WindowSubject::CurrentFocus,
         float_rect: Some(moved_rect),
-    }));
+    });
     let (reply, settlements) = run_batched(
         &mut engine,
         &observe(5, moved_windows(), "win-a"),

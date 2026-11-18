@@ -698,7 +698,7 @@ fn rich_v4(seq: u64, lanes: RichLanes) -> WorldReportV4 {
         request_id: format!("req-{seq}"),
         command_seq: Some(9),
         command: Some(crate::world_report::WorldCommand::Focus {
-            window: WindowId("win-a".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             direction: None,
         }),
         screens: vec![
@@ -5652,7 +5652,9 @@ fn settle_float_holds_own_prior_tile_echo_not_external() {
         start.foreground_known = true;
         start.command_seq = Some(11);
         start.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: "win-a".to_owned(),
+            window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                "win-a".to_owned(),
+            )),
             float_rect: Some(float_rect),
         }));
         let start_reply = accepted(&mut engine, &start);
@@ -5710,7 +5712,9 @@ fn settle_float_holds_own_prior_tile_echo_not_external() {
         unfloat.foreground_known = true;
         unfloat.command_seq = Some(12);
         unfloat.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: "win-a".to_owned(),
+            window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                "win-a".to_owned(),
+            )),
             float_rect: None,
         }));
         let tile_reply = accepted(&mut engine, &unfloat);
@@ -5769,7 +5773,9 @@ fn settle_float_holds_own_prior_tile_echo_not_external() {
         refloat.foreground_known = true;
         refloat.command_seq = Some(13);
         refloat.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: "win-a".to_owned(),
+            window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                "win-a".to_owned(),
+            )),
             float_rect: None,
         }));
         let own_attempt = FrameAttempt {
@@ -12514,9 +12520,9 @@ fn host_return_keeps_outstanding_send_without_pullback() {
             Some((
                 11,
                 WorldCommand::Send {
-                    window: WindowId("win-b".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                     target_output: OutputId("out-a".to_owned()),
-                    target_workspace: rig.b1.clone(),
+                    target_workspace: crate::directional::WorkspaceId(rig.b1.clone()),
                     follow: false,
                 },
             )),
@@ -13386,9 +13392,9 @@ fn host_predisconnect_send_survives_displacement_without_replacement() {
             Some((
                 11,
                 WorldCommand::Send {
-                    window: WindowId("win-b".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                     target_output: OutputId("out-b".to_owned()),
-                    target_workspace: rig.b2.clone(),
+                    target_workspace: crate::directional::WorkspaceId(rig.b2.clone()),
                     follow: false,
                 },
             )),
@@ -13416,9 +13422,9 @@ fn host_predisconnect_send_survives_displacement_without_replacement() {
             Some((
                 12,
                 WorldCommand::Send {
-                    window: WindowId("win-a".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                     target_output: OutputId("out-a".to_owned()),
-                    target_workspace: rig.a2.clone(),
+                    target_workspace: crate::directional::WorkspaceId(rig.a2.clone()),
                     follow: false,
                 },
             )),

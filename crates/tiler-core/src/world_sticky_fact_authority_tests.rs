@@ -728,7 +728,9 @@ fn native_false_null_toggle_float_save_preserved() {
         "",
         Some(2),
         Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: "win-a".to_owned(),
+            window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                "win-a".to_owned(),
+            )),
             float_rect: None,
         })),
     );

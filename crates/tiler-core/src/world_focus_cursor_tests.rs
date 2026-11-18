@@ -133,20 +133,16 @@ fn run_batched(
 
 fn focus_cmd(window: &str) -> WorldCommand {
     WorldCommand::Focus {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
         direction: None,
     }
 }
 
-fn implicit(command: WorldCommand) -> WorldCommand {
-    WorldCommand::Implicit(Box::new(command))
-}
-
 fn implicit_focus_dir(direction: &str) -> WorldCommand {
-    implicit(WorldCommand::FocusDirectional {
-        window: WindowId(String::new()),
+    WorldCommand::FocusDirectional {
+        window: crate::world_report::FocusDirectionalSubject::CurrentFocus,
         direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
-    })
+    }
 }
 
 fn assert_not_rejected(result: &Option<CommandResult>, what: &str) {
@@ -242,9 +238,9 @@ fn cursor_refused_nonfocus_never_cancels_pending() {
         .handle_report_v4_for_test(&observe(1, windows(), "win-a"))
         .expect("admission observes");
     let refused_send = WorldCommand::Send {
-        window: WindowId("win-zzz".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-zzz".to_owned())),
         target_output: crate::directional::OutputId("out-a".to_owned()),
-        target_workspace: "ws-1".to_owned(),
+        target_workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
         follow: false,
     };
     let (reply, settlements) = run_batched(
@@ -276,7 +272,7 @@ fn cursor_refused_nonfocus_never_cancels_pending() {
     // The CoreCommand operation seam stays non-focus vocabulary: an
     // operation refusal is equally powerless over pending focus.
     let refused_op = WorldCommand::Operation(CoreCommand::Move {
-        window: "win-zzz".to_owned(),
+        window: crate::directional::WindowId("win-zzz".to_owned()),
         direction: crate::directional::Direction::Left,
         cross_output_transfer: false,
         same_axis_move: crate::directional::SameAxisMove::GroupWithNeighbor,
@@ -404,9 +400,9 @@ fn empty_cursor_implicit_acts_on_restored_sticky_foreground() {
         "empty cursor now observes live A as the implicit subject"
     );
     let before = engine.world.focus.last_active_window.clone();
-    let toggle = WorldCommand::Implicit(Box::new(WorldCommand::ToggleSticky {
-        window: WindowId(String::new()),
-    }));
+    let toggle = WorldCommand::ToggleSticky {
+        window: crate::directional::WindowSubject::CurrentFocus,
+    };
     let (reply, settlements) =
         run_batched(&mut engine, &observe(3, windows, "win-a"), &[(1, toggle)]);
     assert_eq!(settlements.len(), 1);
@@ -456,9 +452,9 @@ fn empty_cursor_implicit_acts_despite_withheld_automatic_guards() {
         },
         fact("win-b", "out-a", 100),
     ];
-    let toggle = WorldCommand::Implicit(Box::new(WorldCommand::ToggleMaximize {
-        window: WindowId(String::new()),
-    }));
+    let toggle = WorldCommand::ToggleMaximize {
+        window: crate::directional::WindowSubject::CurrentFocus,
+    };
     let (reply, settlements) = run_batched(
         &mut sticky_engine,
         &observe(2, sticky_windows, "win-s"),
@@ -490,9 +486,9 @@ fn empty_cursor_implicit_acts_despite_withheld_automatic_guards() {
         },
         fact("win-t", "out-a", 200),
     ];
-    let toggle = WorldCommand::Implicit(Box::new(WorldCommand::ToggleMaximize {
-        window: WindowId(String::new()),
-    }));
+    let toggle = WorldCommand::ToggleMaximize {
+        window: crate::directional::WindowSubject::CurrentFocus,
+    };
     let (reply, settlements) = run_batched(
         &mut float_engine,
         &observe(2, float_windows.clone(), "win-f"),
@@ -511,9 +507,9 @@ fn empty_cursor_implicit_acts_despite_withheld_automatic_guards() {
     // T, with no rearmed automatic focus. No canonical-memory assertion
     // here: the genuine native focus change F -> T records through the
     // pre-existing native path.
-    let toggle = WorldCommand::Implicit(Box::new(WorldCommand::ToggleMaximize {
-        window: WindowId(String::new()),
-    }));
+    let toggle = WorldCommand::ToggleMaximize {
+        window: crate::directional::WindowSubject::CurrentFocus,
+    };
     let (reply, settlements) = run_batched(
         &mut float_engine,
         &observe(3, float_windows, "win-t"),
@@ -546,9 +542,9 @@ fn empty_cursor_implicit_acts_despite_withheld_automatic_guards() {
             ..fact("win-m", "out-a", 100)
         },
     ];
-    let toggle = WorldCommand::Implicit(Box::new(WorldCommand::ToggleMaximize {
-        window: WindowId(String::new()),
-    }));
+    let toggle = WorldCommand::ToggleMaximize {
+        window: crate::directional::WindowSubject::CurrentFocus,
+    };
     let (reply, settlements) = run_batched(
         &mut max_engine,
         &observe(2, max_windows, "win-m"),
@@ -568,10 +564,8 @@ fn empty_cursor_implicit_acts_despite_withheld_automatic_guards() {
 /// (closed) foreground is still refused as focus-unknown.
 #[test]
 fn empty_cursor_unknown_unbound_stale_still_refused() {
-    let toggle = || {
-        WorldCommand::Implicit(Box::new(WorldCommand::ToggleMaximize {
-            window: WindowId(String::new()),
-        }))
+    let toggle = || WorldCommand::ToggleMaximize {
+        window: crate::directional::WindowSubject::CurrentFocus,
     };
     // Unknown: names no live fact.
     let mut unknown_engine = engine();
@@ -654,10 +648,8 @@ fn empty_cursor_unknown_unbound_stale_still_refused() {
 /// command FocusUnknown that follows it.
 #[test]
 fn empty_cursor_stale_generation_ingress_refuses_before_run() {
-    let toggle = || {
-        WorldCommand::Implicit(Box::new(WorldCommand::ToggleMaximize {
-            window: WindowId(String::new()),
-        }))
+    let toggle = || WorldCommand::ToggleMaximize {
+        window: crate::directional::WindowSubject::CurrentFocus,
     };
     let mut gen_engine = engine();
     gen_engine
@@ -773,9 +765,9 @@ fn pending_live_empty_cursor_guards_implicit_subject() {
     // baseline: the preserve-slot logic cannot rehome it, so the cursor
     // stays empty while the retained request stays live, and the queued
     // implicit refuses focus-unknown under the guard.
-    let toggle = WorldCommand::Implicit(Box::new(WorldCommand::ToggleMaximize {
-        window: WindowId(String::new()),
-    }));
+    let toggle = WorldCommand::ToggleMaximize {
+        window: crate::directional::WindowSubject::CurrentFocus,
+    };
     let (_, settlements) = run_batched(
         &mut pending_engine,
         &observe(3, vec![fact("win-b", "out-a", 0)], "win-a"),
@@ -844,11 +836,11 @@ fn gap_windows() -> Vec<WindowFact> {
 }
 
 fn implicit_move_dir(direction: &str) -> WorldCommand {
-    implicit(WorldCommand::MoveDirectional {
-        window: WindowId(String::new()),
+    WorldCommand::MoveDirectional {
+        window: crate::directional::WindowSubject::CurrentFocus,
         direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
         same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
-    })
+    }
 }
 
 fn scope_hold_any(reply: &WorldReplyV4) -> bool {
@@ -1018,9 +1010,9 @@ fn send_follow_satisfies_at_next_observation_and_changed_focus_runs_new_baseline
         .find(|id| *id != &view_a)
         .expect("second workspace");
     let send = WorldCommand::Send {
-        window: WindowId("win-a".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
         target_output: crate::directional::OutputId("out-a".to_owned()),
-        target_workspace: other.clone(),
+        target_workspace: crate::directional::WorkspaceId(other.clone()),
         follow: true,
     };
     let (sent, _) = run_batched(
@@ -1197,9 +1189,9 @@ fn held_live_baseline_newcomer_restores_cursor_and_probes_act_from_it() {
     assert_eq!(next.target.0, "win-c", "observed leftward probe from N");
     assert_eq!(next.cause, FocusRequestCause::ExplicitCommand);
     assert_ne!(next.id, pending.id, "focus probe supersedes with a new id");
-    let toggle = WorldCommand::Implicit(Box::new(WorldCommand::ToggleMaximize {
-        window: WindowId(String::new()),
-    }));
+    let toggle = WorldCommand::ToggleMaximize {
+        window: crate::directional::WindowSubject::CurrentFocus,
+    };
     let (_, toggle_settlements) = run_batched(
         &mut engine,
         &observe(8, live.clone(), "win-c"),
@@ -1476,10 +1468,8 @@ fn unavailable_pending_same_batch_refuses_then_newer_report_acts_on_observed_and
         },
     ];
     r2.held_windows = vec![held_h.clone()];
-    let toggle = || {
-        implicit(WorldCommand::ToggleMaximize {
-            window: WindowId(String::new()),
-        })
+    let toggle = || WorldCommand::ToggleMaximize {
+        window: crate::directional::WindowSubject::CurrentFocus,
     };
     let (minted, same_batch_settlements) = run_batched(&mut engine, &r2, &[(2, toggle())]);
     assert_eq!(same_batch_settlements.len(), 2);
@@ -1704,9 +1694,9 @@ fn unavailable_pending_newer_accepted_report_with_equal_observation_seq_acts_on_
         },
     ];
     r3.held_windows = vec![held_row("win-n", 0), held_row("win-h", 1)];
-    let toggle = implicit(WorldCommand::ToggleMaximize {
-        window: WindowId(String::new()),
-    });
+    let toggle = WorldCommand::ToggleMaximize {
+        window: crate::directional::WindowSubject::CurrentFocus,
+    };
     let (acted_c, c_settlements) = run_batched(&mut engine, &r3, &[(2, toggle)]);
     assert_eq!(c_settlements.len(), 1);
     assert_maximize_on(
@@ -1813,9 +1803,9 @@ fn same_batch_focus_decision_blocks_fallback_even_with_older_unavailable_pending
         },
     ];
     r3.held_windows = vec![held_row("win-x", 0), held_row("win-h", 1)];
-    let toggle = implicit(WorldCommand::ToggleMaximize {
-        window: WindowId(String::new()),
-    });
+    let toggle = WorldCommand::ToggleMaximize {
+        window: crate::directional::WindowSubject::CurrentFocus,
+    };
     let (minted_n, settlements) = run_batched(&mut engine, &r3, &[(3, toggle)]);
     assert_eq!(settlements.len(), 2);
     let trailing = settlements
@@ -1853,10 +1843,8 @@ fn unavailable_pending_newer_unknown_or_unbound_foreground_refuses() {
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     };
-    let toggle = || {
-        implicit(WorldCommand::ToggleMaximize {
-            window: WindowId(String::new()),
-        })
+    let toggle = || WorldCommand::ToggleMaximize {
+        window: crate::directional::WindowSubject::CurrentFocus,
     };
 
     // Case 1: unknown empty foreground (foreground_known = false).
@@ -1979,10 +1967,8 @@ fn unavailable_pending_newer_unknown_or_unbound_foreground_refuses() {
 /// when returning an `Effect(Focus)` with a different target.
 #[test]
 fn send_follow_effect_preserves_command_focus_cursor() {
-    let toggle = || {
-        implicit(WorldCommand::ToggleMaximize {
-            window: WindowId(String::new()),
-        })
+    let toggle = || WorldCommand::ToggleMaximize {
+        window: crate::directional::WindowSubject::CurrentFocus,
     };
     let mut engine_follow = engine();
     let mut r1 = observe(
@@ -2003,7 +1989,7 @@ fn send_follow_effect_preserves_command_focus_cursor() {
     );
     r2.screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let send_follow = WorldCommand::SendRelative {
-        window: WindowId("win-a".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
         source: SendSource::Explicit(OutputId("out-a".to_owned())),
         delta: 1,
         follow: true,
@@ -2047,10 +2033,8 @@ fn send_follow_effect_preserves_command_focus_cursor() {
 
 #[test]
 fn send_stay_effect_preserves_command_focus_cursor() {
-    let toggle = || {
-        implicit(WorldCommand::ToggleMaximize {
-            window: WindowId(String::new()),
-        })
+    let toggle = || WorldCommand::ToggleMaximize {
+        window: crate::directional::WindowSubject::CurrentFocus,
     };
     let mut engine_stay = engine();
     let mut r1_stay = observe(
@@ -2079,7 +2063,7 @@ fn send_stay_effect_preserves_command_focus_cursor() {
     );
     r2_stay.screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let send_stay = WorldCommand::SendRelative {
-        window: WindowId("win-a".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
         source: SendSource::Explicit(OutputId("out-a".to_owned())),
         delta: 1,
         follow: false,
@@ -2123,10 +2107,8 @@ fn send_stay_effect_preserves_command_focus_cursor() {
 
 #[test]
 fn move_directional_effect_preserves_command_focus_cursor() {
-    let toggle = || {
-        implicit(WorldCommand::ToggleMaximize {
-            window: WindowId(String::new()),
-        })
+    let toggle = || WorldCommand::ToggleMaximize {
+        window: crate::directional::WindowSubject::CurrentFocus,
     };
     let mut engine_move = engine();
     let mut m1 = observe(
@@ -2155,7 +2137,7 @@ fn move_directional_effect_preserves_command_focus_cursor() {
     );
     m2.screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let move_cmd = WorldCommand::MoveDirectional {
-        window: WindowId("win-a".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
         direction: crate::directional::Direction::Right,
         same_axis: SameAxisMove::SwapWithNeighbor,
     };
@@ -2239,9 +2221,9 @@ fn failed_record_command_focus_clears_prior_cursor() {
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];
-    let toggle = implicit(WorldCommand::ToggleMaximize {
-        window: WindowId(String::new()),
-    });
+    let toggle = WorldCommand::ToggleMaximize {
+        window: crate::directional::WindowSubject::CurrentFocus,
+    };
     let (reply, settlements) =
         run_batched(&mut engine, &r2, &[(2, focus_cmd("win-n")), (3, toggle)]);
     assert_eq!(settlements.len(), 3);
@@ -2348,7 +2330,9 @@ fn perpendicular_descent_both_histories_abc_vs_bac() {
         &[(
             1,
             WorldCommand::FocusDirectional {
-                window: WindowId("win-c".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-c".to_owned(),
+                )),
                 direction: crate::directional::Direction::Left,
             },
         )],
@@ -2377,7 +2361,9 @@ fn perpendicular_descent_both_histories_abc_vs_bac() {
         &[(
             1,
             WorldCommand::FocusDirectional {
-                window: WindowId("win-c".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-c".to_owned(),
+                )),
                 direction: crate::directional::Direction::Left,
             },
         )],
@@ -2458,7 +2444,9 @@ fn perpendicular_descent_no_history_fallback_and_nested() {
         &[(
             1,
             WorldCommand::FocusDirectional {
-                window: WindowId("win-c".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-c".to_owned(),
+                )),
                 direction: crate::directional::Direction::Left,
             },
         )],
@@ -2482,7 +2470,9 @@ fn perpendicular_descent_no_history_fallback_and_nested() {
         &[(
             2,
             WorldCommand::FocusDirectional {
-                window: WindowId("win-c".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-c".to_owned(),
+                )),
                 direction: crate::directional::Direction::Left,
             },
         )],
@@ -2522,7 +2512,9 @@ fn perpendicular_descent_no_history_fallback_and_nested() {
         &[(
             3,
             WorldCommand::FocusDirectional {
-                window: WindowId("win-d".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-d".to_owned(),
+                )),
                 direction: crate::directional::Direction::Down,
             },
         )],
@@ -2574,7 +2566,9 @@ fn perpendicular_descent_explicit_focus_command_and_rejected_observation() {
             (
                 3,
                 WorldCommand::FocusDirectional {
-                    window: WindowId("win-c".to_owned()),
+                    window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                        "win-c".to_owned(),
+                    )),
                     direction: crate::directional::Direction::Left,
                 },
             ),
@@ -2631,7 +2625,9 @@ fn perpendicular_descent_accepted_hover_focus_updates_history() {
             (
                 2,
                 WorldCommand::FocusDirectional {
-                    window: WindowId("win-c".to_owned()),
+                    window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                        "win-c".to_owned(),
+                    )),
                     direction: crate::directional::Direction::Left,
                 },
             ),
@@ -2695,7 +2691,9 @@ fn perpendicular_descent_accepted_hover_not_overwritten_by_lagging_foreground() 
             (
                 2,
                 WorldCommand::FocusDirectional {
-                    window: WindowId("win-a".to_owned()),
+                    window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                        "win-a".to_owned(),
+                    )),
                     direction: crate::directional::Direction::Right,
                 },
             ),
@@ -2875,14 +2873,18 @@ fn perpendicular_descent_closed_mru_falls_through_to_next_candidate() {
             (
                 1,
                 WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
-                    window: "win-d".to_owned(),
+                    window: crate::directional::WindowSubject::Window(
+                        crate::directional::WindowId("win-d".to_owned()),
+                    ),
                     float_rect: None,
                 }),
             ),
             (
                 2,
                 WorldCommand::FocusDirectional {
-                    window: WindowId("win-c".to_owned()),
+                    window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                        "win-c".to_owned(),
+                    )),
                     direction: crate::directional::Direction::Left,
                 },
             ),
@@ -2933,7 +2935,7 @@ fn perpendicular_descent_closed_mru_falls_through_to_next_candidate() {
         &[(
             3,
             WorldCommand::SendDirectional {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 direction: crate::directional::Direction::Left,
                 follow: false,
             },
@@ -2959,7 +2961,9 @@ fn perpendicular_descent_closed_mru_falls_through_to_next_candidate() {
         &[(
             4,
             WorldCommand::FocusDirectional {
-                window: WindowId("win-c".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-c".to_owned(),
+                )),
                 direction: crate::directional::Direction::Left,
             },
         )],
@@ -2998,7 +3002,7 @@ fn perpendicular_descent_leaves_move_and_send_unchanged() {
             &[(
                 1,
                 WorldCommand::MoveDirectional {
-                    window: WindowId("win-c".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("win-c".to_owned())),
                     direction: crate::directional::Direction::Left,
                     same_axis: SameAxisMove::GroupWithNeighbor,
                 },
@@ -3032,7 +3036,7 @@ fn perpendicular_descent_leaves_move_and_send_unchanged() {
             &[(
                 1,
                 WorldCommand::MoveDirectional {
-                    window: WindowId("win-c".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("win-c".to_owned())),
                     direction: crate::directional::Direction::Left,
                     same_axis: SameAxisMove::SwapWithNeighbor,
                 },
@@ -3078,7 +3082,7 @@ fn perpendicular_descent_leaves_move_and_send_unchanged() {
             &[(
                 1,
                 WorldCommand::SendDirectional {
-                    window: WindowId("win-d".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("win-d".to_owned())),
                     direction: crate::directional::Direction::Left,
                     follow: false,
                 },

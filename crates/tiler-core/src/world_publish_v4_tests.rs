@@ -367,7 +367,7 @@ fn transfer_seq_survives_commandless_and_unrelated() {
     assert!(!first.transfers[0].held);
     // An unrelated command alongside never rewrites the retained sequence.
     let unrelated = WorldCommand::Focus {
-        window: WindowId("win-a".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
         direction: Some(crate::directional::Direction::Left),
     };
     let second =
@@ -1172,9 +1172,9 @@ fn genuine_send_projects_explicit_seq() {
         .cloned()
         .unwrap_or_else(|| ring_b[0].clone());
     let cmd = WorldCommand::Send {
-        window: WindowId("win-a".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
         target_output: OutputId("out-a".to_owned()),
-        target_workspace: target_ws.clone(),
+        target_workspace: crate::directional::WorkspaceId(target_ws.clone()),
         follow: false,
     };
     let applied = engine.tx(|tx| {
@@ -1236,7 +1236,7 @@ fn genuine_select_workspace_projects_view_seq() {
         .unwrap_or_else(|| ring[0].clone());
     let cmd = WorldCommand::SelectWorkspace {
         output: OutputId("out-b".to_owned()),
-        workspace: other.clone(),
+        workspace: crate::directional::WorkspaceId(other.clone()),
     };
     let _ = engine.tx(|tx| {
         tx.execute_command(
@@ -1284,7 +1284,7 @@ fn genuine_migrate_workspace_projects_parent_seq() {
     let cmd = WorldCommand::MigrateWorkspace {
         source_output: OutputId("out-a".to_owned()),
         target_output: OutputId("out-b".to_owned()),
-        workspace: "ws-1".to_owned(),
+        workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
     };
     match engine.tx(|tx| {
         tx.execute_command(
@@ -1828,7 +1828,9 @@ fn operation_settle_cap_shares_two_phase_slots_at_1024() {
     );
     // Replacing an existing slot does not exceed 1024.
     let existing_cmd = WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
-        window: "w-0".to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            "w-0".to_owned(),
+        )),
         float_rect: None,
     });
     assert_eq!(
@@ -1839,7 +1841,9 @@ fn operation_settle_cap_shares_two_phase_slots_at_1024() {
     );
     // Adding a new window exceeds 1024.
     let new_cmd = WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
-        window: "w-new".to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            "w-new".to_owned(),
+        )),
         float_rect: None,
     });
     assert_eq!(
@@ -1908,7 +1912,9 @@ fn consumed_inline_command_at_1024_operation_cap_reconciles_instead_of_rejecting
         Some(1),
         Some(WorldCommand::Operation(
             crate::boundary::CoreCommand::ToggleFloat {
-                window: "w-new".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "w-new".to_owned(),
+                )),
                 float_rect: None,
             },
         )),
@@ -2007,7 +2013,9 @@ fn retained_born_clear_reserves_operation_slot_at_1024_cap() {
         Some(1),
         Some(WorldCommand::Operation(
             crate::boundary::CoreCommand::ToggleFloat {
-                window: "w-new".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "w-new".to_owned(),
+                )),
                 float_rect: None,
             },
         )),
@@ -2384,10 +2392,10 @@ fn toggle_maximize_and_toggle_sticky_reserve_float_slots_explicit_and_implicit()
 
     // Explicit ToggleMaximize / ToggleSticky on an existing Float slot do not add a slot.
     let max_existing = WorldCommand::ToggleMaximize {
-        window: WindowId("w-existing".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("w-existing".to_owned())),
     };
     let sticky_existing = WorldCommand::ToggleSticky {
-        window: WindowId("w-existing".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("w-existing".to_owned())),
     };
     assert_eq!(
         engine
@@ -2404,10 +2412,10 @@ fn toggle_maximize_and_toggle_sticky_reserve_float_slots_explicit_and_implicit()
 
     // Explicit ToggleMaximize / ToggleSticky on new windows reserve 1 Float slot each.
     let max_new = WorldCommand::ToggleMaximize {
-        window: WindowId("w-max".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("w-max".to_owned())),
     };
     let sticky_new = WorldCommand::ToggleSticky {
-        window: WindowId("w-sticky".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("w-sticky".to_owned())),
     };
     assert_eq!(
         engine
@@ -2416,16 +2424,35 @@ fn toggle_maximize_and_toggle_sticky_reserve_float_slots_explicit_and_implicit()
         3
     );
 
-    // Implicit variants conservatively reserve 1 slot each.
-    let imp_max = WorldCommand::Implicit(Box::new(max_new));
-    let imp_sticky = WorldCommand::Implicit(Box::new(WorldCommand::ToggleSticky {
-        window: WindowId("w-sticky".to_owned()),
-    }));
+    // Current-focus variants conservatively reserve 1 slot each.
+    let imp_max = WorldCommand::ToggleMaximize {
+        window: crate::directional::WindowSubject::CurrentFocus,
+    };
+    let imp_sticky = WorldCommand::ToggleSticky {
+        window: crate::directional::WindowSubject::CurrentFocus,
+    };
     assert_eq!(
         engine
             .world
             .operation_settle_slot_count(Some(&imp_max), &[(1, imp_sticky)]),
         3
+    );
+
+    // Genuine NoFocus FocusDirectional reserves 2 deduplicated slots once
+    // across inline + FIFO, distinct from per-command CurrentFocus slots.
+    let no_focus = WorldCommand::FocusDirectional {
+        window: crate::world_report::FocusDirectionalSubject::NoFocus,
+        direction: crate::directional::Direction::Right,
+    };
+    let cur_focus = WorldCommand::FocusDirectional {
+        window: crate::world_report::FocusDirectionalSubject::CurrentFocus,
+        direction: crate::directional::Direction::Right,
+    };
+    assert_eq!(
+        engine
+            .world
+            .operation_settle_slot_count(Some(&no_focus), &[(1, no_focus.clone()), (2, cur_focus)]),
+        5
     );
 }
 
@@ -2478,26 +2505,26 @@ fn toggle_maximize_and_toggle_sticky_at_1024_cap_reject_or_reconcile_consumed() 
         (
             2,
             WorldCommand::ToggleMaximize {
-                window: WindowId("w-new".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("w-new".to_owned())),
             },
         ),
         (
             3,
             WorldCommand::ToggleSticky {
-                window: WindowId("w-new".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("w-new".to_owned())),
             },
         ),
         (
             4,
-            WorldCommand::Implicit(Box::new(WorldCommand::ToggleMaximize {
-                window: WindowId("w-new".to_owned()),
-            })),
+            WorldCommand::ToggleMaximize {
+                window: crate::directional::WindowSubject::CurrentFocus,
+            },
         ),
         (
             5,
-            WorldCommand::Implicit(Box::new(WorldCommand::ToggleSticky {
-                window: WindowId("w-new".to_owned()),
-            })),
+            WorldCommand::ToggleSticky {
+                window: crate::directional::WindowSubject::CurrentFocus,
+            },
         ),
     ] {
         let rep = report_full_v4(
@@ -2531,13 +2558,13 @@ fn toggle_maximize_and_toggle_sticky_at_1024_cap_reject_or_reconcile_consumed() 
         (
             2,
             WorldCommand::ToggleMaximize {
-                window: WindowId("w-new".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("w-new".to_owned())),
             },
         ),
         (
             3,
             WorldCommand::ToggleSticky {
-                window: WindowId("w-new".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("w-new".to_owned())),
             },
         ),
     ] {
@@ -2608,7 +2635,9 @@ fn published_settlement_trace_operation_q1_q2_duplicate_late_toggle_and_reset() 
     );
     r2.command_seq = Some(2);
     r2.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: "win-a".to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            "win-a".to_owned(),
+        )),
         float_rect: None,
     }));
     let reply2 = accepted_v4(&mut engine, &r2);
@@ -2675,7 +2704,9 @@ fn published_settlement_trace_operation_q1_q2_duplicate_late_toggle_and_reset() 
     );
     r4.command_seq = Some(4);
     r4.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: "win-a".to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            "win-a".to_owned(),
+        )),
         float_rect: None,
     }));
     let _ = accepted_v4(&mut engine, &r4);
@@ -2689,7 +2720,9 @@ fn published_settlement_trace_operation_q1_q2_duplicate_late_toggle_and_reset() 
     );
     r5.command_seq = Some(5);
     r5.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: "win-a".to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            "win-a".to_owned(),
+        )),
         float_rect: None,
     }));
     let pending_lines = crate::world_engine::with_settlement_trace_capture(|| {
@@ -2748,7 +2781,9 @@ fn published_settlement_trace_operation_q1_q2_duplicate_late_toggle_and_reset() 
             );
             r7.command_seq = Some(7);
             r7.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "win-b".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "win-b".to_owned(),
+                )),
                 float_rect: None,
             }));
             let reply7 = accepted_v4(&mut engine, &r7);
@@ -2856,7 +2891,7 @@ fn published_settlement_trace_operation_q1_q2_duplicate_late_toggle_and_reset() 
     );
     r_move.command_seq = Some(2);
     r_move.command = Some(WorldCommand::MoveDirectional {
-        window: WindowId("win-max".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
         direction: crate::directional::Direction::Right,
         same_axis: crate::directional::SameAxisMove::default(),
     });
@@ -2941,9 +2976,9 @@ fn published_settlement_trace_switch_q1_lifecycle_genuine() {
     );
     r_send.command_seq = Some(2);
     r_send.command = Some(WorldCommand::Send {
-        window: WindowId("win-b".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
         target_output: OutputId("out-a".to_owned()),
-        target_workspace: away.clone(),
+        target_workspace: crate::directional::WorkspaceId(away.clone()),
         follow: false,
     });
     let _ = accepted_v4(&mut engine, &r_send);
@@ -2959,7 +2994,7 @@ fn published_settlement_trace_switch_q1_lifecycle_genuine() {
     r3.command_seq = Some(3);
     r3.command = Some(WorldCommand::SelectWorkspace {
         output: OutputId("out-a".to_owned()),
-        workspace: away,
+        workspace: crate::directional::WorkspaceId(away),
     });
     let grant3 = accepted_v4(&mut engine, &r3);
     let rev3 = grant3.state_revision;
@@ -3067,7 +3102,7 @@ fn published_settlement_trace_switch_q1_lifecycle_genuine() {
     r5.command_seq = Some(5);
     r5.command = Some(WorldCommand::SelectWorkspace {
         output: OutputId("out-a".to_owned()),
-        workspace: home,
+        workspace: crate::directional::WorkspaceId(home),
     });
     let mut grant5_opt = None;
     let pending_lines = crate::world_engine::with_settlement_trace_capture(|| {
@@ -3453,7 +3488,9 @@ fn retained_state_and_pending_op_trace_exposes_unspent_ownership_and_pending_tot
     let mut r3 = report_v4(3, screens, vec![win_a, win_b], "win-b", ingress_v4("win-b"));
     r3.command_seq = Some(3);
     r3.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: "win-b".to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            "win-b".to_owned(),
+        )),
         float_rect: None,
     }));
     let lines3 = crate::world_engine::with_retained_state_trace_capture(|| {
@@ -3501,7 +3538,9 @@ fn q2_dropped_trace_rejects_outbound_gate_preserves_same_obs_and_dedups() {
     );
     r2.command_seq = Some(2);
     r2.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: "win-a".to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            "win-a".to_owned(),
+        )),
         float_rect: None,
     }));
     let reply2 = accepted_v4(&mut engine, &r2);

@@ -314,7 +314,9 @@ fn same_report_command_supersedes_restore() {
             "",
             Some(1),
             Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "win-a".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "win-a".to_owned(),
+                )),
                 float_rect: None,
             })),
         ),
@@ -1066,7 +1068,9 @@ fn restored_false_then_user_float_clears_override_and_survives_exclusion() {
             "",
             Some(2),
             Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "win-a".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "win-a".to_owned(),
+                )),
                 float_rect: None,
             })),
         ),
@@ -1447,7 +1451,9 @@ fn restored_true_unfloat_clears_and_late_record_stays_ignored() {
             "",
             Some(2),
             Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "win-a".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "win-a".to_owned(),
+                )),
                 float_rect: None,
             })),
         ),
@@ -1668,7 +1674,7 @@ fn floating_pending_false_survives_tiling_enable_as_explicit_tile() {
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: crate::directional::OutputId("out-a".to_owned()),
-                workspace: ws.clone(),
+                workspace: crate::directional::WorkspaceId(ws.clone()),
                 tiled: false,
             }),
         ),
@@ -1741,7 +1747,7 @@ fn floating_pending_false_survives_tiling_enable_as_explicit_tile() {
             Some(12),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: crate::directional::OutputId("out-a".to_owned()),
-                workspace: ws.clone(),
+                workspace: crate::directional::WorkspaceId(ws.clone()),
                 tiled: true,
             }),
         ),
@@ -1809,7 +1815,7 @@ fn floating_pending_true_stays_intentional_across_tiling_changes() {
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: crate::directional::OutputId("out-a".to_owned()),
-                workspace: ws.clone(),
+                workspace: crate::directional::WorkspaceId(ws.clone()),
                 tiled: false,
             }),
         ),
@@ -1893,7 +1899,7 @@ fn floating_pending_true_stays_intentional_across_tiling_changes() {
             Some(12),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: crate::directional::OutputId("out-a".to_owned()),
-                workspace: ws.clone(),
+                workspace: crate::directional::WorkspaceId(ws.clone()),
                 tiled: true,
             }),
         ),
@@ -2050,7 +2056,7 @@ fn floating_workspace_first_admission_ignores_late_record() {
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: crate::directional::OutputId("out-a".to_owned()),
-                workspace: ws.clone(),
+                workspace: crate::directional::WorkspaceId(ws.clone()),
                 tiled: false,
             }),
         ),
@@ -2426,7 +2432,9 @@ fn same_report_true_restore_with_unfloat_then_late_ignored() {
             "",
             Some(1),
             Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "win-a".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "win-a".to_owned(),
+                )),
                 float_rect: None,
             })),
         ),

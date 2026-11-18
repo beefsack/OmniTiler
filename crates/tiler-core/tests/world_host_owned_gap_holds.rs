@@ -297,7 +297,7 @@ fn inventory_gap_withholds_native_echo_and_holds_domain() {
             Some(11),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: bound[D2].clone(),
+                workspace: tiler_core::directional::WorkspaceId(bound[D2].clone()),
             }),
             true,
         ),
@@ -405,7 +405,7 @@ fn per_screen_gap_withholds_echo_on_gapped_output_only() {
             Some(11),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-b".to_owned()),
-                workspace: bound_b[D2].clone(),
+                workspace: tiler_core::directional::WorkspaceId(bound_b[D2].clone()),
             }),
             true,
         ),
@@ -821,7 +821,7 @@ fn shared_first_incomplete_reports_empty_then_complete_mints_and_latches() {
             Some(11),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: spare.clone(),
+                workspace: tiler_core::directional::WorkspaceId(spare.clone()),
             }),
             false,
         ),
@@ -894,9 +894,11 @@ fn shared_gap_withholds_desires_and_recovery_republishes() {
             vec![],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: spare.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(spare.clone()),
                 follow: false,
             }),
             true,
@@ -988,7 +990,7 @@ fn inventory_gap_recovery_restores_echo_without_duplication() {
             Some(11),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: bound[D2].clone(),
+                workspace: tiler_core::directional::WorkspaceId(bound[D2].clone()),
             }),
             true,
         ),
@@ -1335,9 +1337,11 @@ fn shared_screen_gap_withholds_desires_and_recovers() {
             vec![],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: spare.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(spare.clone()),
                 follow: false,
             }),
             true,
@@ -1435,9 +1439,11 @@ fn shared_missing_native_row_mints_nothing_new() {
             vec![],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: spare.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(spare.clone()),
                 follow: false,
             }),
             true,
@@ -1586,9 +1592,11 @@ fn shared_retained_desire_withholds_on_missing_and_empty_native_row() {
             vec![],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: spare.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(spare.clone()),
                 follow: false,
             }),
             true,
@@ -1702,9 +1710,11 @@ fn shared_other_screen_gap_withholds_desires_and_recovers() {
             vec![],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: spare.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(spare.clone()),
                 follow: false,
             }),
             true,
@@ -2184,9 +2194,11 @@ fn shared_desire_omitted_occupant_gap_recovers_same_op() {
             vec![],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: spare.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(spare.clone()),
                 follow: false,
             }),
             true,
@@ -2299,9 +2311,11 @@ fn shared_desire_conflicting_occupant_gap_recovers_same_op() {
             vec![],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: spare.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(spare.clone()),
                 follow: false,
             }),
             true,

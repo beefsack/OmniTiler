@@ -790,9 +790,9 @@ mod tests {
                 "win-a",
                 Some(11),
                 Some(WorldCommand::Send {
-                    window: WindowId("win-a".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                     target_output: OutputId("out-a".to_owned()),
-                    target_workspace: target,
+                    target_workspace: crate::directional::WorkspaceId(target),
                     follow: false,
                 }),
                 None,
@@ -1100,7 +1100,7 @@ mod tests {
                 Some(12),
                 Some(WorldCommand::SetWorkspaceTiling {
                     output: OutputId("out-a".to_owned()),
-                    workspace: view,
+                    workspace: crate::directional::WorkspaceId(view),
                     tiled: false,
                 }),
                 None,

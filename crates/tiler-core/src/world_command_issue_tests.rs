@@ -223,7 +223,7 @@ fn contra_v4(seq: u64) -> WorldReportV4 {
 
 fn focus_command(window: &str) -> WorldCommand {
     WorldCommand::Focus {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
         direction: Some(crate::directional::Direction::Left),
     }
 }
@@ -564,7 +564,9 @@ fn local_toggle_orientation_uses_issue_owner_with_ownerless_connection() {
     let by_id: BTreeMap<&WindowId, &EngineWindow> =
         owned.iter().map(|row| (&row.window, row)).collect();
     let command = CoreCommand::ToggleOrientation {
-        window: "win-a".to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            "win-a".to_owned(),
+        )),
     };
     match engine.tx(|tx| tx.run_local_operation(&issue, 7, &command, &by_id, &BTreeSet::new())) {
         CommandApplied::NoEffect => {
@@ -600,7 +602,7 @@ fn toggle_maximize_focus_gate_reads_staged_not_contra() {
             &test_issue(&probe),
             12,
             &WorldCommand::ToggleMaximize {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             },
             &BTreeSet::new(),
             None,
@@ -653,7 +655,7 @@ fn toggle_maximize_focus_gate_reads_staged_not_contra() {
             &test_issue(&eligible_probe),
             12,
             &WorldCommand::ToggleMaximize {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             },
             &BTreeSet::new(),
             None,
@@ -679,7 +681,7 @@ fn toggle_maximize_focus_gate_reads_staged_not_contra() {
             &test_issue(&held_probe),
             12,
             &WorldCommand::ToggleMaximize {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             },
             &held,
             None,
@@ -726,7 +728,7 @@ fn composed_maximize_staged_inventory_and_barrier_gates() {
             &test_issue(&probe),
             12,
             &WorldCommand::ToggleMaximize {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             },
             &BTreeSet::new(),
             None,
@@ -768,7 +770,7 @@ fn composed_maximize_staged_inventory_and_barrier_gates() {
             &test_issue(&complete_probe),
             12,
             &WorldCommand::ToggleMaximize {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             },
             &BTreeSet::new(),
             None,
@@ -801,7 +803,7 @@ fn composed_maximize_staged_inventory_and_barrier_gates() {
             &test_issue(&barrier_probe),
             12,
             &WorldCommand::ToggleMaximize {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             },
             &BTreeSet::new(),
             None,
@@ -854,7 +856,7 @@ fn move_float_destination_reads_staged_screens_not_contra() {
             &test_issue(&probe),
             12,
             &WorldCommand::MoveDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: crate::directional::Direction::Left,
                 same_axis: SameAxisMove::GroupWithNeighbor,
             },
@@ -914,7 +916,7 @@ fn move_float_destination_reads_staged_screens_not_contra() {
             &test_issue(&home_probe),
             12,
             &WorldCommand::MoveDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: crate::directional::Direction::Left,
                 same_axis: SameAxisMove::GroupWithNeighbor,
             },
@@ -1013,7 +1015,7 @@ fn shared_retain_view_fans_out_across_staged_screens_not_contra() {
                 12,
                 &WorldCommand::SwitchView {
                     output: OutputId("out-a".to_owned()),
-                    workspace: "ws-9".to_owned(),
+                    workspace: crate::directional::WorkspaceId("ws-9".to_owned()),
                 },
                 &BTreeSet::new(),
                 None,
@@ -1095,7 +1097,7 @@ fn global_unique_select_swap_gated_by_staged_inventory_not_contra() {
             12,
             &WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: "ws-9".to_owned(),
+                workspace: crate::directional::WorkspaceId("ws-9".to_owned()),
             },
             &BTreeSet::new(),
             None,
@@ -1159,7 +1161,7 @@ fn global_unique_select_swap_gated_by_staged_inventory_not_contra() {
             12,
             &WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: "ws-9".to_owned(),
+                workspace: crate::directional::WorkspaceId("ws-9".to_owned()),
             },
             &BTreeSet::new(),
             None,
@@ -1238,7 +1240,7 @@ fn migrate_mode_and_inventory_gates_read_staged_not_contra() {
     let migrate = || WorldCommand::MigrateWorkspace {
         source_output: OutputId("out-a".to_owned()),
         target_output: OutputId("out-b".to_owned()),
-        workspace: "ws-1".to_owned(),
+        workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
     };
     // Eligible: the floating source workspace carries to out-b through
     // the sessionless membership remap. The contra probe carries one
@@ -1418,7 +1420,7 @@ fn send_source_freeze_prefers_retained_home_over_current_action() {
             &test_issue(&probe),
             12,
             &WorldCommand::SendNumbered {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 source: SendSource::HomeThenAction,
                 index: 1,
                 follow: false,
@@ -1564,7 +1566,7 @@ fn switch_view_command_moves_view_parity() {
     let probe = contra_v4(90);
     let command = WorldCommand::SwitchView {
         output: OutputId("out-a".to_owned()),
-        workspace: "ws-9".to_owned(),
+        workspace: crate::directional::WorkspaceId("ws-9".to_owned()),
     };
     let applied = engine.tx(|tx| {
         tx.execute_command(
@@ -1814,7 +1816,9 @@ fn hidden_directional_source_refuses_stale_complete_and_incomplete() {
                 &test_issue(&probe),
                 12,
                 &WorldCommand::FocusDirectional {
-                    window: WindowId("win-b".to_owned()),
+                    window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                        "win-b".to_owned(),
+                    )),
                     direction: crate::directional::Direction::Left,
                 },
                 &BTreeSet::new(),
@@ -1856,7 +1860,9 @@ fn hidden_directional_source_refuses_stale_complete_and_incomplete() {
                 &test_issue(&probe),
                 13,
                 &WorldCommand::FocusDirectional {
-                    window: WindowId("win-a".to_owned()),
+                    window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                        "win-a".to_owned(),
+                    )),
                     direction: crate::directional::Direction::Left,
                 },
                 &BTreeSet::new(),
@@ -1908,7 +1914,9 @@ fn local_preconvergence_persists_after_invalid_direction_refusal() {
             &issue,
             1,
             &CoreCommand::ToggleOrientation {
-                window: "win-a".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "win-a".to_owned(),
+                )),
             },
             &by_id,
             &BTreeSet::new(),
@@ -1952,7 +1960,9 @@ fn local_preconvergence_persists_after_invalid_direction_refusal() {
             &issue,
             2,
             &CoreCommand::Resize {
-                window: "win-a".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "win-a".to_owned(),
+                )),
                 direction: crate::directional::Direction::Left,
                 mode: crate::directional::ResizeSelector::Horizontal,
                 press_index: 0,
@@ -2009,7 +2019,9 @@ fn local_composed_maximize_rollback_and_pointer_half_pair_refusal() {
             &issue,
             1,
             &CoreCommand::ToggleFloat {
-                window: "win-a".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "win-a".to_owned(),
+                )),
                 float_rect: Some(rect(10, 20, 300, 200)),
             },
             &by_id,
@@ -2033,7 +2045,9 @@ fn local_composed_maximize_rollback_and_pointer_half_pair_refusal() {
             &issue,
             2,
             &CoreCommand::ToggleFloat {
-                window: "win-a".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "win-a".to_owned(),
+                )),
                 float_rect: None,
             },
             &empty_by_id,
@@ -2051,7 +2065,7 @@ fn local_composed_maximize_rollback_and_pointer_half_pair_refusal() {
             &issue,
             3,
             &CoreCommand::PointerResize {
-                window: "win-b".to_owned(),
+                window: crate::directional::WindowId("win-b".to_owned()),
                 direction: crate::directional::Direction::Right,
                 boundary: 250,
                 second: Some((crate::directional::Direction::Left, 250)),

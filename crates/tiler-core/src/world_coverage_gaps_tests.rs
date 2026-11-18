@@ -325,7 +325,9 @@ fn explicit_tile_retry_failure_mints_no_focus_and_never_loops() {
                 vec![],
                 Some(seq),
                 Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                    window: victim.clone(),
+                    window: crate::directional::WindowSubject::Window(
+                        crate::directional::WindowId(victim.clone()),
+                    ),
                     float_rect: None,
                 })),
             ),
@@ -1366,7 +1368,7 @@ fn explicit_focus_command_after_withhold_succeeds_without_admission_token() {
             vec![],
             Some(10),
             Some(WorldCommand::Focus {
-                window: WindowId("wf".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("wf".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -1511,7 +1513,7 @@ fn restart_adoption_stays_quiet_without_origin() {
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
                 tiled: false,
             }),
         ),
@@ -1532,7 +1534,7 @@ fn restart_adoption_stays_quiet_without_origin() {
             Some(12),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_a,
+                workspace: crate::directional::WorkspaceId(view_a),
                 tiled: true,
             }),
         ),
@@ -1665,7 +1667,7 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
             vec![],
             Some(11),
             Some(WorldCommand::SendDirectional {
-                window: WindowId("w0".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("w0".to_owned())),
                 direction: crate::directional::Direction::Right,
                 follow: false,
             }),
@@ -1733,7 +1735,7 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
             vec![],
             Some(12),
             Some(WorldCommand::SendDirectional {
-                window: WindowId("w0".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("w0".to_owned())),
                 direction: crate::directional::Direction::Left,
                 follow: true,
             }),
@@ -1830,7 +1832,7 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
             vec![],
             Some(11),
             Some(WorldCommand::SendDirectional {
-                window: WindowId("wb".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("wb".to_owned())),
                 direction: crate::directional::Direction::Left,
                 follow: false,
             }),
@@ -1903,7 +1905,7 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
             vec![],
             Some(12),
             Some(WorldCommand::SendDirectional {
-                window: WindowId("wb".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("wb".to_owned())),
                 direction: crate::directional::Direction::Right,
                 follow: true,
             }),
@@ -1996,9 +1998,9 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
             vec![],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId(window.to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: ring[1].clone(),
+                target_workspace: crate::directional::WorkspaceId(ring[1].clone()),
                 follow: true,
             }),
         );
@@ -2053,7 +2055,7 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
             vec![],
             Some(11),
             Some(WorldCommand::SendDirectional {
-                window: WindowId("w0".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("w0".to_owned())),
                 direction: crate::directional::Direction::Right,
                 follow: false,
             }),
@@ -2139,7 +2141,7 @@ fn refused_and_held_sends_emit_no_focus_and_retain_nothing() {
             vec![],
             Some(11),
             Some(WorldCommand::SendDirectional {
-                window: WindowId("w0".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("w0".to_owned())),
                 direction: crate::directional::Direction::Right,
                 follow: false,
             }),
@@ -2200,7 +2202,7 @@ fn second_migration_explicit_refuses_while_directional_resolves_current() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
         ),
     );
@@ -2224,7 +2226,7 @@ fn second_migration_explicit_refuses_while_directional_resolves_current() {
         Some(WorldCommand::MigrateWorkspace {
             source_output: OutputId("out-a".to_owned()),
             target_output: OutputId("out-b".to_owned()),
-            workspace: view_a.clone(),
+            workspace: crate::directional::WorkspaceId(view_a.clone()),
         }),
     );
     retry_explicit.action_foreground = Some(OutputId("out-a".to_owned()));
@@ -2334,7 +2336,7 @@ fn floating_source_migration_carries_without_engine_tree() {
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
                 tiled: false,
             }),
         ),
@@ -2351,7 +2353,7 @@ fn floating_source_migration_carries_without_engine_tree() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
         ),
     );
@@ -2540,7 +2542,7 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
                 tiled: false,
             }),
         ),
@@ -2557,7 +2559,7 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
         ),
     );
@@ -2787,7 +2789,7 @@ fn tiled_workspace_migration_carries_float_members() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a,
+                workspace: crate::directional::WorkspaceId(view_a),
             }),
         ),
     );
@@ -2869,9 +2871,9 @@ fn float_send_into_empty_and_occupied_trailings_stays_controlled() {
                 vec![],
                 Some(11),
                 Some(WorldCommand::Send {
-                    window: WindowId("wf".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("wf".to_owned())),
                     target_output: OutputId("out-a".to_owned()),
-                    target_workspace: ring[1].clone(),
+                    target_workspace: crate::directional::WorkspaceId(ring[1].clone()),
                     follow: false,
                 }),
             ),
@@ -3008,9 +3010,9 @@ fn float_send_into_empty_and_occupied_trailings_stays_controlled() {
                 vec![],
                 Some(11),
                 Some(WorldCommand::Send {
-                    window: WindowId("wf".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("wf".to_owned())),
                     target_output: OutputId("out-a".to_owned()),
-                    target_workspace: ring[1].clone(),
+                    target_workspace: crate::directional::WorkspaceId(ring[1].clone()),
                     follow: false,
                 }),
             ),
@@ -3101,7 +3103,9 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             vec![],
             Some(2),
             Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "w1".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "w1".to_owned(),
+                )),
                 float_rect: None,
             })),
         ),
@@ -3224,7 +3228,9 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             vec![],
             Some(4),
             Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "w1".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "w1".to_owned(),
+                )),
                 float_rect: None,
             })),
         ),
@@ -3299,7 +3305,9 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
                 vec![],
                 Some(2),
                 Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                    window: "w1".to_owned(),
+                    window: crate::directional::WindowSubject::Window(
+                        crate::directional::WindowId("w1".to_owned()),
+                    ),
                     float_rect: None,
                 })),
             ),
@@ -3374,7 +3382,9 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
                 vec![],
                 Some(2),
                 Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                    window: "w1".to_owned(),
+                    window: crate::directional::WindowSubject::Window(
+                        crate::directional::WindowId("w1".to_owned()),
+                    ),
                     float_rect: None,
                 })),
             ),
@@ -3393,7 +3403,9 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
                 vec![],
                 Some(3),
                 Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                    window: "w1".to_owned(),
+                    window: crate::directional::WindowSubject::Window(
+                        crate::directional::WindowId("w1".to_owned()),
+                    ),
                     float_rect: None,
                 })),
             ),
@@ -3458,7 +3470,9 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
                 vec![],
                 Some(2),
                 Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                    window: "w1".to_owned(),
+                    window: crate::directional::WindowSubject::Window(
+                        crate::directional::WindowId("w1".to_owned()),
+                    ),
                     float_rect: Some(durable),
                 })),
             ),
@@ -3476,7 +3490,9 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
                 vec![],
                 Some(3),
                 Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                    window: "w1".to_owned(),
+                    window: crate::directional::WindowSubject::Window(
+                        crate::directional::WindowId("w1".to_owned()),
+                    ),
                     float_rect: None,
                 })),
             ),
@@ -3494,7 +3510,9 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
                 vec![],
                 Some(4),
                 Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                    window: "w1".to_owned(),
+                    window: crate::directional::WindowSubject::Window(
+                        crate::directional::WindowId("w1".to_owned()),
+                    ),
                     float_rect: None,
                 })),
             ),
@@ -3525,7 +3543,9 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             vec![],
             Some(5),
             Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "w1".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "w1".to_owned(),
+                )),
                 float_rect: None,
             })),
         ),
@@ -3559,7 +3579,9 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             vec![],
             Some(2),
             Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "w1".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "w1".to_owned(),
+                )),
                 float_rect: None,
             })),
         ),
@@ -3581,7 +3603,9 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             vec![],
             Some(3),
             Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "w1".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "w1".to_owned(),
+                )),
                 float_rect: None,
             })),
         ),
@@ -3605,7 +3629,7 @@ fn toggle_maximize_command_decides_and_reports() {
     // the snapshot IS the outcome (no retain, no topology mutation).
     fn toggle(window: &str) -> WorldCommand {
         WorldCommand::ToggleMaximize {
-            window: WindowId(window.to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
         }
     }
     fn maximize_of(settlements: &[crate::world_report::BatchSettlement]) -> (bool, bool, bool) {
@@ -3847,7 +3871,9 @@ fn toggle_maximize_command_decides_and_reports() {
                 vec![],
                 Some(2),
                 Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                    window: "w1".to_owned(),
+                    window: crate::directional::WindowSubject::Window(
+                        crate::directional::WindowId("w1".to_owned()),
+                    ),
                     float_rect: Some(durable),
                 })),
             ),
@@ -4025,9 +4051,9 @@ fn toggle_maximize_command_decides_and_reports() {
                 vec![],
                 Some(2),
                 Some(WorldCommand::Send {
-                    window: WindowId("w0".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("w0".to_owned())),
                     target_output: OutputId("out-a".to_owned()),
-                    target_workspace: ring[1].clone(),
+                    target_workspace: crate::directional::WorkspaceId(ring[1].clone()),
                     follow: false,
                 }),
             ),
@@ -4650,7 +4676,9 @@ fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
             vec![],
             Some(10),
             Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "wf".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "wf".to_owned(),
+                )),
                 float_rect: None,
             })),
         ),
@@ -4759,7 +4787,7 @@ fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
                 tiled: false,
             }),
         ),
@@ -4780,7 +4808,7 @@ fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
             Some(12),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_a,
+                workspace: crate::directional::WorkspaceId(view_a),
                 tiled: true,
             }),
         ),

@@ -107,7 +107,7 @@ fn homed_windows() -> Vec<WindowFact> {
 
 fn implicit_numbered(window: &str) -> WorldCommand {
     WorldCommand::SendNumbered {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
         source: SendSource::HomeThenAction,
         index: 0,
         follow: false,
@@ -116,7 +116,7 @@ fn implicit_numbered(window: &str) -> WorldCommand {
 
 fn implicit_relative(window: &str) -> WorldCommand {
     WorldCommand::SendRelative {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
         source: SendSource::HomeThenAction,
         delta: 1,
         follow: false,
@@ -204,13 +204,13 @@ fn freeze_explicit_send_bypasses_both_lanes() {
     let explicit = SendSource::Explicit(OutputId("out-b".to_owned()));
     for command in [
         WorldCommand::SendNumbered {
-            window: WindowId("win-a".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             source: explicit.clone(),
             index: 0,
             follow: false,
         },
         WorldCommand::SendRelative {
-            window: WindowId("win-a".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             source: explicit.clone(),
             delta: 1,
             follow: false,

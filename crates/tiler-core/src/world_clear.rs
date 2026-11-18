@@ -46,38 +46,67 @@ impl WorldState {
             slots.insert((retained.window.0.as_str(), OperationKind::Clear));
         }
         let mut implicit_slots = 0usize;
+        let mut no_focus_directional = false;
         for cmd in command.into_iter().chain(queued.iter().map(|(_, c)| c)) {
-            if matches!(cmd, WorldCommand::Implicit(_)) {
-                match crate::world_report::unwrap_implicit(cmd) {
-                    WorldCommand::FocusDirectional { .. }
-                    | WorldCommand::MoveDirectional { .. } => {
-                        implicit_slots = implicit_slots.saturating_add(2);
-                    }
-                    WorldCommand::Operation(CoreCommand::ToggleFloat { .. })
-                    | WorldCommand::ToggleMaximize { .. }
-                    | WorldCommand::ToggleSticky { .. } => {
-                        implicit_slots = implicit_slots.saturating_add(1);
-                    }
-                    _ => {}
-                }
-                continue;
-            }
             match cmd {
-                WorldCommand::FocusDirectional { window, .. }
-                | WorldCommand::MoveDirectional { window, .. } => {
+                WorldCommand::FocusDirectional {
+                    window: crate::world_report::FocusDirectionalSubject::CurrentFocus,
+                    ..
+                }
+                | WorldCommand::MoveDirectional {
+                    window: crate::directional::WindowSubject::CurrentFocus,
+                    ..
+                } => {
+                    implicit_slots = implicit_slots.saturating_add(2);
+                }
+                WorldCommand::Operation(CoreCommand::ToggleFloat {
+                    window: crate::directional::WindowSubject::CurrentFocus,
+                    ..
+                })
+                | WorldCommand::ToggleMaximize {
+                    window: crate::directional::WindowSubject::CurrentFocus,
+                }
+                | WorldCommand::ToggleSticky {
+                    window: crate::directional::WindowSubject::CurrentFocus,
+                } => {
+                    implicit_slots = implicit_slots.saturating_add(1);
+                }
+                WorldCommand::FocusDirectional {
+                    window: crate::world_report::FocusDirectionalSubject::Window(window),
+                    ..
+                }
+                | WorldCommand::MoveDirectional {
+                    window: crate::directional::WindowSubject::Window(window),
+                    ..
+                } => {
                     slots.insert((window.0.as_str(), OperationKind::Clear));
                     slots.insert((window.0.as_str(), OperationKind::Float));
                 }
-                WorldCommand::Operation(CoreCommand::ToggleFloat { window, .. }) => {
-                    slots.insert((window.as_str(), OperationKind::Float));
+                WorldCommand::FocusDirectional {
+                    window: crate::world_report::FocusDirectionalSubject::NoFocus,
+                    ..
+                } => {
+                    no_focus_directional = true;
                 }
-                WorldCommand::ToggleMaximize { window } | WorldCommand::ToggleSticky { window } => {
+                WorldCommand::Operation(CoreCommand::ToggleFloat {
+                    window: crate::directional::WindowSubject::Window(window),
+                    ..
+                })
+                | WorldCommand::ToggleMaximize {
+                    window: crate::directional::WindowSubject::Window(window),
+                }
+                | WorldCommand::ToggleSticky {
+                    window: crate::directional::WindowSubject::Window(window),
+                } => {
                     slots.insert((window.0.as_str(), OperationKind::Float));
                 }
                 _ => {}
             }
         }
-        slots.len().saturating_add(implicit_slots)
+        slots
+            .len()
+            .saturating_add(implicit_slots)
+            .saturating_add(if no_focus_directional { 2 } else { 0 })
     }
 }
 
@@ -660,13 +689,13 @@ impl WorldTransaction<'_> {
                 let by_id: std::collections::BTreeMap<&WindowId, &EngineWindow> =
                     owned.iter().collect();
                 let applied = if let Some(target) = pinned {
+                    let window_name = retained.window.clone();
                     let command = crate::boundary::CoreCommand::Move {
-                        window: retained.window.0.clone(),
+                        window: window_name.clone(),
                         direction: direction_parsed,
                         cross_output_transfer: true,
                         same_axis_move: retained.same_axis,
                     };
-                    let window_name = retained.window.0.clone();
                     self.operation_directional(
                         issue,
                         command_seq,
@@ -679,7 +708,7 @@ impl WorldTransaction<'_> {
                     )
                 } else {
                     let command = crate::boundary::CoreCommand::Move {
-                        window: retained.window.0.clone(),
+                        window: retained.window.clone(),
                         direction: direction_parsed,
                         cross_output_transfer: false,
                         same_axis_move: retained.same_axis,

@@ -348,7 +348,7 @@ fn disabled_explicit_directional_clear_unaffected() {
         "win-max",
         Some(13),
         Some(WorldCommand::MoveDirectional {
-            window: WindowId("win-max".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
             direction: crate::directional::Direction::Right,
             same_axis: crate::directional::SameAxisMove::default(),
         }),
@@ -985,7 +985,7 @@ fn floating_scope_never_clears_and_latches_floating_first() {
             Some(7),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: "ws-1".to_owned(),
+                workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
                 tiled: false,
             }),
         ),
@@ -1020,7 +1020,7 @@ fn floating_scope_never_clears_and_latches_floating_first() {
             Some(8),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: "ws-1".to_owned(),
+                workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
                 tiled: true,
             }),
         ),
@@ -1978,7 +1978,7 @@ fn migration_gap_defers_born_mint_until_complete_inventory() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a,
+                workspace: crate::directional::WorkspaceId(view_a),
             }),
         ),
     );
@@ -2354,7 +2354,9 @@ fn toggle_float_on_maximized_birth_refuses_without_clear() {
             "",
             Some(7),
             Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "win-born".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "win-born".to_owned(),
+                )),
                 float_rect: Some(target),
             })),
         ),

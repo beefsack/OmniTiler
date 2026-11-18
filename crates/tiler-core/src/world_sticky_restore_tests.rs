@@ -31,7 +31,9 @@ fn engine_with(native_sticky: bool) -> WorldEngine {
 
 fn toggle(window: &str) -> WorldCommand {
     WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: window.to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            window.to_owned(),
+        )),
         float_rect: None,
     })
 }
@@ -1412,7 +1414,7 @@ fn sticky_floating_first_appearance_then_reenable_keeps_provenance() {
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: crate::directional::OutputId("out-a".to_owned()),
-                workspace: ws.clone(),
+                workspace: crate::directional::WorkspaceId(ws.clone()),
                 tiled: false,
             }),
         ),
@@ -1479,7 +1481,7 @@ fn sticky_floating_first_appearance_then_reenable_keeps_provenance() {
             Some(12),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: crate::directional::OutputId("out-a".to_owned()),
-                workspace: ws.clone(),
+                workspace: crate::directional::WorkspaceId(ws.clone()),
                 tiled: true,
             }),
         ),
@@ -1826,7 +1828,7 @@ fn sticky_restart_reacquires_native_and_off_restores_prior() {
 
     fn set_sticky(window: &str, value: bool) -> WorldCommand {
         WorldCommand::SetSticky {
-            window: WindowId(window.to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
             value,
         }
     }
@@ -2426,7 +2428,7 @@ fn sticky_restart_floating_route_mints_binding_next_observation() {
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: crate::directional::OutputId("out-a".to_owned()),
-                workspace: ws,
+                workspace: crate::directional::WorkspaceId(ws),
                 tiled: false,
             }),
         ),

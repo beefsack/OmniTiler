@@ -1263,7 +1263,7 @@ fn offroute_diagnostics_survive_command_restage() {
             "win-a",
             Some(1),
             Some(crate::world_report::WorldCommand::Focus {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: Some(crate::directional::Direction::Left),
             }),
         ),

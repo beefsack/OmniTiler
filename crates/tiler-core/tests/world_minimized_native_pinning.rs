@@ -534,9 +534,9 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
         vec![native_obs("out-a", &[N1, N2], Some(N1))],
         Some(11),
         Some(WorldCommand::Send {
-            window: WindowId("win-b".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
             target_output: OutputId("out-a".to_owned()),
-            target_workspace: bound[N1].clone(),
+            target_workspace: tiler_core::directional::WorkspaceId(bound[N1].clone()),
             follow: false,
         }),
     );
@@ -564,7 +564,7 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
         vec![native_obs("out-a", &[N1, N2], Some(N1))],
         Some(12),
         Some(WorldCommand::Focus {
-            window: WindowId("win-b".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
             direction: Some(tiler_core::directional::Direction::Left),
         }),
     );
@@ -593,7 +593,9 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
             vec![native_obs("out-a", &[N1, N2], Some(N1))],
             Some(13),
             Some(WorldCommand::FocusDirectional {
-                window: WindowId("win-b".to_owned()),
+                window: tiler_core::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-b".to_owned(),
+                )),
                 direction: tiler_core::directional::Direction::Left,
             }),
         ),
@@ -1125,7 +1127,7 @@ fn pager_click_minimized_refuses_while_tiled_focus_succeeds() {
         vec![native_obs("out-a", &[N1, N2], Some(N1))],
         Some(11),
         Some(WorldCommand::Focus {
-            window: WindowId("win-b".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
             direction: Some(tiler_core::directional::Direction::Left),
         }),
     );
@@ -1152,7 +1154,7 @@ fn pager_click_minimized_refuses_while_tiled_focus_succeeds() {
         vec![native_obs("out-a", &[N1, N2], Some(N1))],
         Some(12),
         Some(WorldCommand::Focus {
-            window: WindowId("win-a".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             direction: Some(tiler_core::directional::Direction::Left),
         }),
     );

@@ -616,7 +616,7 @@ fn inline_command_supersedes_pending_request() {
             true,
             Some(4),
             Some(WorldCommand::Focus {
-                window: WindowId("win-c".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-c".to_owned())),
                 direction: Some(crate::directional::Direction::Left),
             }),
         ),
@@ -643,7 +643,7 @@ fn consumed_sequence_report_supersedes_pending_request() {
             true,
             Some(1),
             Some(WorldCommand::Focus {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: Some(crate::directional::Direction::Left),
             }),
         ),
@@ -670,7 +670,7 @@ fn consumed_sequence_report_supersedes_pending_request() {
                 true,
                 Some(1),
                 Some(WorldCommand::Focus {
-                    window: WindowId("win-a".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                     direction: Some(crate::directional::Direction::Left),
                 }),
             ),
@@ -1336,7 +1336,7 @@ fn same_report_explicit_beats_admission_and_close() {
             true,
             Some(4),
             Some(WorldCommand::Focus {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: Some(crate::directional::Direction::Left),
             }),
         ),
@@ -1614,12 +1614,10 @@ fn same_report_close_beats_hover_cursor_follows_winner() {
     let mut follow = report(6, survivors, vec![], "win-a", true, None, None);
     follow.cursor = Some((310, 10));
     follow.cursor_hit = Some(WindowId("win-d".to_owned()));
-    let toggle = WorldCommand::Implicit(Box::new(WorldCommand::Operation(
-        CoreCommand::ToggleFloat {
-            window: String::new(),
-            float_rect: None,
-        },
-    )));
+    let toggle = WorldCommand::Operation(CoreCommand::ToggleFloat {
+        window: crate::directional::WindowSubject::CurrentFocus,
+        float_rect: None,
+    });
     let (reply, settlements) = match engine.handle_report(&follow, &[(5, toggle)]) {
         (V4RunOutcome::Accepted(reply), settlements) => (reply, settlements),
         (other, _) => panic!("expected accepted batch, got {other:?}"),
@@ -1717,18 +1715,18 @@ fn four_windows() -> Vec<WindowFact> {
 }
 
 fn implicit_focus_dir(direction: &str) -> WorldCommand {
-    WorldCommand::Implicit(Box::new(WorldCommand::FocusDirectional {
-        window: WindowId(String::new()),
+    WorldCommand::FocusDirectional {
+        window: crate::world_report::FocusDirectionalSubject::CurrentFocus,
         direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
-    }))
+    }
 }
 
 fn implicit_move_dir(direction: &str) -> WorldCommand {
-    WorldCommand::Implicit(Box::new(WorldCommand::MoveDirectional {
-        window: WindowId(String::new()),
+    WorldCommand::MoveDirectional {
+        window: crate::directional::WindowSubject::CurrentFocus,
         direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
         same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
-    }))
+    }
 }
 
 fn mint_close_a(engine: &mut WorldEngine) -> crate::world_report::FocusRequest {

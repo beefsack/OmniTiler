@@ -76,7 +76,7 @@ fn cmd(
 
 fn toggle(window: &str) -> WorldCommand {
     WorldCommand::ToggleMaximize {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
     }
 }
 
@@ -102,7 +102,7 @@ fn full_attempt(
 
 fn set_fullscreen(window: &str, value: bool) -> WorldCommand {
     WorldCommand::SetFullscreen {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
         value,
     }
 }
@@ -912,7 +912,7 @@ fn superseded_mismatched_and_spent_clear_hold_max_while_raw_full() {
             2,
             vec![max_fact("win-a", Some(true), true, false)],
             WorldCommand::SetFullscreen {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 value: false,
             },
         ),
@@ -1220,9 +1220,9 @@ fn fences_hold_max_without_renewal() {
             "win-a",
             Some(2),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 target_output: crate::directional::OutputId("out-a".to_owned()),
-                target_workspace: ring[1].clone(),
+                target_workspace: crate::directional::WorkspaceId(ring[1].clone()),
                 follow: false,
             }),
         ),

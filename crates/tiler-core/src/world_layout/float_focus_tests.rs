@@ -364,7 +364,7 @@ fn float_cross_edge_conditions_refuse_without_mutation() {
     by_id.insert(&win_f.window, &win_f);
     let held = BTreeSet::new();
     let cmd = CoreCommand::Focus {
-        window: "win-f".to_owned(),
+        window: crate::directional::WindowId("win-f".to_owned()),
         direction: Direction::Right,
         cross_output_transfer: true,
         float_subject: true,

@@ -468,9 +468,11 @@ fn send_to_new_workspace_binds_late_desktop_exactly_once() {
             vec![],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: spare_id.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(spare_id.clone()),
                 follow: false,
             }),
             true,
@@ -602,9 +604,11 @@ fn ambiguous_creation_holds_and_never_blind_recreates() {
             vec![],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: spare_id.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(spare_id.clone()),
                 follow: false,
             }),
             true,
@@ -746,9 +750,11 @@ fn creation_collision_holds_without_guessing() {
             vec![],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: spare_id.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(spare_id.clone()),
                 follow: false,
             }),
             true,
@@ -911,9 +917,11 @@ fn delayed_send_settles_while_unmatched_outside_evidence_adopts() {
             vec![],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: bound[D2].clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(bound[D2].clone()),
                 follow: false,
             }),
             true,
@@ -1411,7 +1419,7 @@ fn migrated_workspace_desires_creation_then_binds_late_desktop() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: tiler_core::directional::WorkspaceId(view_a.clone()),
             }),
             true,
         ),
@@ -1532,9 +1540,11 @@ fn occupy_spare(engine: &mut WorldEngine, spare_seq: u64) -> (String, String) {
             vec![],
             Some(spare_seq),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: spare_id.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(spare_id.clone()),
                 follow: false,
             }),
             true,
@@ -2146,9 +2156,9 @@ fn stale_attempt_before_mint_holds() {
         vec![],
         Some(11),
         Some(WorldCommand::Send {
-            window: WindowId("win-a".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             target_output: OutputId("out-a".to_owned()),
-            target_workspace: spare_id.clone(),
+            target_workspace: tiler_core::directional::WorkspaceId(spare_id.clone()),
             follow: false,
         }),
         true,
@@ -2756,7 +2766,7 @@ fn multiple_outstanding_creations_hold_without_blind_recreate() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: tiler_core::directional::WorkspaceId(view_a.clone()),
             }),
             true,
         ),
@@ -2793,9 +2803,11 @@ fn multiple_outstanding_creations_hold_without_blind_recreate() {
             vec![],
             Some(12),
             Some(WorldCommand::Send {
-                window: WindowId("win-c".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-c".to_owned(),
+                )),
                 target_output: OutputId("out-b".to_owned()),
-                target_workspace: spare_b.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(spare_b.clone()),
                 follow: false,
             }),
             true,
@@ -3000,7 +3012,7 @@ fn two_correlated_creations_settle_sequentially() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: tiler_core::directional::WorkspaceId(view_a.clone()),
             }),
             true,
         ),
@@ -3034,9 +3046,11 @@ fn two_correlated_creations_settle_sequentially() {
             vec![],
             Some(12),
             Some(WorldCommand::Send {
-                window: WindowId("win-c".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-c".to_owned(),
+                )),
                 target_output: OutputId("out-b".to_owned()),
-                target_workspace: spare_b.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(spare_b.clone()),
                 follow: false,
             }),
             true,
@@ -3191,7 +3205,7 @@ fn none_current_conflicting_view_holds_flight_until_native_proof() {
             Some(11),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: bound[D2].clone(),
+                workspace: tiler_core::directional::WorkspaceId(bound[D2].clone()),
             }),
             true,
         ),
@@ -3294,7 +3308,7 @@ fn actual_native_current_settles_despite_bogus_view() {
             Some(11),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: bound[D2].clone(),
+                workspace: tiler_core::directional::WorkspaceId(bound[D2].clone()),
             }),
             true,
         ),

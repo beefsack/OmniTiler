@@ -422,7 +422,9 @@ fn place_float_with_settlements(
             "",
             Some(10 + seq),
             Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: window.to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    window.to_owned(),
+                )),
                 float_rect: target,
             })),
         ),
@@ -1721,7 +1723,9 @@ fn float_lost_result_recovers_stale_never_replays() {
     let replay = WorldReportV4 {
         command_seq: Some(12),
         command: Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: "win-a".to_owned(),
+            window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                "win-a".to_owned(),
+            )),
             float_rect: Some(target),
         })),
         ..report(4, roomy, two_tiled(), "", None, None)

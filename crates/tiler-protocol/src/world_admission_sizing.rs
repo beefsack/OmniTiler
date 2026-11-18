@@ -6,7 +6,6 @@ use std::collections::BTreeSet;
 use tiler_core::boundary::CoreCommand;
 use tiler_core::world_report::{
     AttemptLaneV4, NativeWorkspaceFact, WorldCommand, WorldReportV4, is_intent_save_command_v4,
-    unwrap_implicit,
 };
 
 use crate::world_admission_rows::{
@@ -331,40 +330,47 @@ pub fn report_estimate_v4(report: &WorldReportV4) -> usize {
 
 #[must_use]
 pub fn max_intent_save_bound_v4(report: &WorldReportV4) -> usize {
-    let unwrapped = report.command.as_ref().map(unwrap_implicit);
-    let is_implicit = matches!(report.command.as_ref(), Some(WorldCommand::Implicit(_)));
-    let window: &str = match unwrapped {
-        Some(WorldCommand::SetSticky { window, .. })
-        | Some(WorldCommand::ToggleSticky { window }) => window.0.as_str(),
-        Some(WorldCommand::Operation(CoreCommand::ToggleFloat { window, .. })) => window.as_str(),
+    use tiler_core::directional::WindowSubject;
+    let Some(command) = report.command.as_ref() else {
+        return 0;
+    };
+    let subject = match command {
+        WorldCommand::SetSticky { window, .. } | WorldCommand::ToggleSticky { window } => window,
+        WorldCommand::Operation(CoreCommand::ToggleFloat { window, .. }) => window,
         _ => return 0,
     };
-    if is_implicit {
-        return 16 + 130 + MAX_INTENT_DESIRED_DATA_JSON;
+    match subject {
+        WindowSubject::CurrentFocus => 16 + 130 + MAX_INTENT_DESIRED_DATA_JSON,
+        WindowSubject::Window(window) => {
+            16 + json_string_len(&window.0) + MAX_INTENT_DESIRED_DATA_JSON
+        }
     }
-    16 + json_string_len(window) + MAX_INTENT_DESIRED_DATA_JSON
 }
 
 #[must_use]
 pub fn max_intent_save_batch_bound_v4(queued: &[(u64, WorldCommand)]) -> usize {
+    use tiler_core::directional::WindowSubject;
     let mut distinct: BTreeSet<&str> = BTreeSet::new();
     let mut implicit: usize = 0;
     for (_, command) in queued {
         if !is_intent_save_command_v4(command) {
             continue;
         }
-        if matches!(command, WorldCommand::Implicit(_)) {
-            implicit = implicit.saturating_add(1);
-            continue;
-        }
-        match unwrap_implicit(command) {
+        let subject = match command {
             WorldCommand::SetSticky { window, .. } | WorldCommand::ToggleSticky { window } => {
+                Some(window)
+            }
+            WorldCommand::Operation(CoreCommand::ToggleFloat { window, .. }) => Some(window),
+            _ => None,
+        };
+        match subject {
+            Some(WindowSubject::CurrentFocus) => {
+                implicit = implicit.saturating_add(1);
+            }
+            Some(WindowSubject::Window(window)) => {
                 distinct.insert(window.0.as_str());
             }
-            WorldCommand::Operation(CoreCommand::ToggleFloat { window, .. }) => {
-                distinct.insert(window.as_str());
-            }
-            _ => {}
+            None => {}
         }
     }
     let mut bytes = 0usize;

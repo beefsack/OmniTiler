@@ -390,7 +390,7 @@ fn suppressed_same_target_automatic_candidate_keeps_token_for_later_hover() {
     );
     arrival.command_seq = Some(2);
     arrival.command = Some(WorldCommand::Focus {
-        window: WindowId("win-b".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
         direction: Some(crate::directional::Direction::Right),
     });
     let commanded = accepted(&mut engine, &arrival);
@@ -1148,7 +1148,7 @@ fn duplicate_cache_and_consumed_command_mint_no_new_identities() {
     );
     commanded.command_seq = Some(7);
     commanded.command = Some(WorldCommand::Focus {
-        window: WindowId("win-a".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
         direction: Some(crate::directional::Direction::Left),
     });
     let focus_reply = accepted(&mut engine, &commanded);
@@ -1217,7 +1217,7 @@ fn rejected_command_keeps_admission_mapping_envelope_rejection_adopts_nothing() 
     );
     refused.command_seq = Some(2);
     refused.command = Some(WorldCommand::Focus {
-        window: WindowId("w-unknown".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("w-unknown".to_owned())),
         direction: Some(crate::directional::Direction::Left),
     });
     let (outcome, settlements) = engine.handle_report(&refused, &[]);

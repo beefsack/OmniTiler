@@ -91,14 +91,14 @@ fn observe(seq: u64, windows: Vec<crate::world_report::WindowFact>) -> WorldRepo
 
 fn set_fullscreen(window: &str, value: bool) -> WorldCommand {
     WorldCommand::SetFullscreen {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
         value,
     }
 }
 
 fn toggle_fullscreen(window: &str) -> WorldCommand {
     WorldCommand::ToggleFullscreen {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
     }
 }
 
@@ -584,7 +584,7 @@ fn fullscreen_coexists_with_sticky_on_one_row() {
             1,
             vec![fs_fact("win-a", None, false)],
             crate::world_report::WorldCommand::SetSticky {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 value: true,
             },
         ),
@@ -1102,9 +1102,9 @@ fn pending_window_transfer_holds_fullscreen_publication() {
             "win-a",
             Some(2),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 target_output: crate::directional::OutputId("out-a".to_owned()),
-                target_workspace: ring[1].clone(),
+                target_workspace: crate::directional::WorkspaceId(ring[1].clone()),
                 follow: false,
             }),
         ),

@@ -96,20 +96,22 @@ fn cmd(
 
 fn toggle(window: &str) -> WorldCommand {
     WorldCommand::ToggleMaximize {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
     }
 }
 
 fn set_fullscreen(window: &str, value: bool) -> WorldCommand {
     WorldCommand::SetFullscreen {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
         value,
     }
 }
 
 fn toggle_float(window: &str) -> WorldCommand {
     WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: window.to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            window.to_owned(),
+        )),
         float_rect: None,
     })
 }
@@ -2783,14 +2785,14 @@ fn cmd_two(
 
 fn focus_dir(window: &str, direction: &str) -> WorldCommand {
     WorldCommand::FocusDirectional {
-        window: WindowId(window.to_owned()),
+        window: crate::world_report::FocusDirectionalSubject::Window(WindowId(window.to_owned())),
         direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
     }
 }
 
 fn move_dir(window: &str, direction: &str) -> WorldCommand {
     WorldCommand::MoveDirectional {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
         direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
         same_axis: SameAxisMove::default(),
     }
@@ -3125,7 +3127,7 @@ fn composed_float_focus_crosses_to_remembered_target() {
                 "win-t",
                 Some(3),
                 Some(WorldCommand::Focus {
-                    window: WindowId("win-t".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("win-t".to_owned())),
                     direction: Some(
                         crate::directional::Direction::parse_wire(dir).expect("direction"),
                     ),
@@ -3143,7 +3145,7 @@ fn composed_float_focus_crosses_to_remembered_target() {
                 "win-a",
                 Some(4),
                 Some(WorldCommand::Focus {
-                    window: WindowId("win-a".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                     direction: Some(
                         crate::directional::Direction::parse_wire(dir).expect("direction"),
                     ),
@@ -3236,7 +3238,7 @@ fn composed_float_cross_preserves_destination_bit() {
                 "win-a",
                 Some(2),
                 Some(WorldCommand::Focus {
-                    window: WindowId("win-a".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                     direction: Some(
                         crate::directional::Direction::parse_wire(dir).expect("direction"),
                     ),
@@ -3383,7 +3385,7 @@ fn composed_tiled_cross_preserves_destination_bit() {
                 "win-a",
                 Some(2),
                 Some(WorldCommand::Focus {
-                    window: WindowId("win-a".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                     direction: Some(
                         crate::directional::Direction::parse_wire(dir).expect("direction"),
                     ),
@@ -3568,7 +3570,7 @@ fn composed_tiled_move_clears_bit_without_native_clear() {
             windows(),
             "win-a",
             WorldCommand::MoveDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: SameAxisMove::SwapWithNeighbor,
             },
@@ -3671,7 +3673,7 @@ fn composed_move_latest_home_refusal_restores_bit() {
             windows(),
             "win-a",
             WorldCommand::SendDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: crate::directional::Direction::Right,
                 follow: false,
             },
@@ -3896,7 +3898,7 @@ fn work_area_out_b() -> Rect {
 
 fn send_right(window: &str, follow: bool) -> WorldCommand {
     WorldCommand::SendDirectional {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
         direction: crate::directional::Direction::Right,
         follow,
     }

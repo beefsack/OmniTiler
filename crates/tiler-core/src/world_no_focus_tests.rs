@@ -241,7 +241,7 @@ fn accepted_with_settlements(
 
 fn no_focus_command(direction: &str) -> WorldCommand {
     WorldCommand::FocusDirectional {
-        window: WindowId(String::new()),
+        window: crate::world_report::FocusDirectionalSubject::NoFocus,
         direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
     }
 }
@@ -1005,7 +1005,9 @@ fn no_focus_unknown_window_stays_stale() {
             "",
             Some(11),
             Some(WorldCommand::FocusDirectional {
-                window: WindowId("win-gone".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-gone".to_owned(),
+                )),
                 direction: crate::directional::Direction::Right,
             }),
             Some("out-a"),
@@ -1040,7 +1042,9 @@ fn no_focus_invalid_direction_rejects() {
         "",
         Some(11),
         Some(WorldCommand::FocusDirectional {
-            window: WindowId("!!!".to_owned()),
+            window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                "!!!".to_owned(),
+            )),
             direction: crate::directional::Direction::Right,
         }),
         Some("out-a"),
@@ -1128,7 +1132,7 @@ fn no_focus_floating_source_stops_navigation() {
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_a,
+                workspace: crate::directional::WorkspaceId(view_a),
                 tiled: false,
             }),
             Some("out-a"),
@@ -1191,7 +1195,7 @@ fn no_focus_floating_destination_is_noop() {
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-b".to_owned()),
-                workspace: view_b,
+                workspace: crate::directional::WorkspaceId(view_b),
                 tiled: false,
             }),
             Some("out-a"),

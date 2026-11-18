@@ -252,7 +252,7 @@ fn stale_memory_to(engine: &mut WorldEngine, seq: u64, window: &str, focused: &s
             focused,
             Some(10),
             Some(WorldCommand::Focus {
-                window: WindowId(window.to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -273,7 +273,7 @@ fn no_focus_report(
         "",
         Some(command_seq),
         Some(WorldCommand::FocusDirectional {
-            window: WindowId(String::new()),
+            window: crate::world_report::FocusDirectionalSubject::NoFocus,
             direction: crate::directional::Direction::parse_wire(direction).expect("direction"),
         }),
     );
@@ -299,7 +299,7 @@ fn direct_linked_focus_records_before_native_writes() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -365,7 +365,7 @@ fn view_return_select_records_linked_target_before_native_writes() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -383,9 +383,9 @@ fn view_return_select_records_linked_target_before_native_writes() {
             "win-b",
             Some(12),
             Some(WorldCommand::Send {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: target_ws.clone(),
+                target_workspace: crate::directional::WorkspaceId(target_ws.clone()),
                 follow: false,
             }),
         ),
@@ -414,7 +414,7 @@ fn view_return_select_records_linked_target_before_native_writes() {
             Some(13),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: target_ws.clone(),
+                workspace: crate::directional::WorkspaceId(target_ws.clone()),
             }),
         ),
     );
@@ -444,7 +444,7 @@ fn view_return_select_records_linked_target_before_native_writes() {
                 Some(13),
                 Some(WorldCommand::SwitchView {
                     output: OutputId("out-a".to_owned()),
-                    workspace: target_ws.clone(),
+                    workspace: crate::directional::WorkspaceId(target_ws.clone()),
                 }),
             ),
             &[],
@@ -580,7 +580,7 @@ fn rejected_unknown_focus_records_nothing() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-gone".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-gone".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -618,7 +618,7 @@ fn redundant_view_select_records_nothing_extra() {
             Some(11),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: view,
+                workspace: crate::directional::WorkspaceId(view),
             }),
         ),
     );
@@ -668,7 +668,7 @@ fn exception_focus_effect_leaves_memory_unchanged() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-f".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-f".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -829,7 +829,7 @@ fn global_swap_records_effect_target_in_moved_domain() {
             Some(11),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_b.clone(),
+                workspace: crate::directional::WorkspaceId(view_b.clone()),
             }),
         ),
     );
@@ -939,7 +939,7 @@ fn local_move_preserves_mover_memory() {
             "win-b",
             Some(11),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
             }),
@@ -984,7 +984,9 @@ fn ordinary_directional_focus_records_effect_target() {
             "win-c",
             Some(12),
             Some(WorldCommand::FocusDirectional {
-                window: WindowId("win-c".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-c".to_owned(),
+                )),
                 direction: crate::directional::Direction::Down,
             }),
         ),
@@ -1028,7 +1030,7 @@ fn cross_output_move_records_mover_in_target() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-c".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-c".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -1050,7 +1052,7 @@ fn cross_output_move_records_mover_in_target() {
             "win-a",
             Some(12),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
             }),
@@ -1095,7 +1097,7 @@ fn swap_neighbor_move_preserves_mover_memory() {
             "win-b",
             Some(12),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::SwapWithNeighbor,
             }),
@@ -1152,7 +1154,9 @@ fn float_lane_focus_leaves_memory_unchanged() {
             "win-f1",
             Some(11),
             Some(WorldCommand::FocusDirectional {
-                window: WindowId("win-f1".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-f1".to_owned(),
+                )),
                 direction: crate::directional::Direction::Right,
             }),
         ),
@@ -1208,7 +1212,7 @@ fn send_follow_records_mover_in_target_before_native_writes() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -1223,9 +1227,9 @@ fn send_follow_records_mover_in_target_before_native_writes() {
             "win-a",
             Some(12),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: target_ws.clone(),
+                target_workspace: crate::directional::WorkspaceId(target_ws.clone()),
                 follow: true,
             }),
         ),
@@ -1263,7 +1267,7 @@ fn close_focused_falls_back_to_mru_survivor_without_command_effect() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -1330,7 +1334,7 @@ fn local_move_direct_records_mover_without_sweep() {
         fact("win-c", "out-a", 400),
     ];
     let command = WorldCommand::MoveDirectional {
-        window: WindowId("win-b".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
         direction: crate::directional::Direction::Right,
         same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
     };
@@ -1401,7 +1405,7 @@ fn swap_neighbor_move_direct_records_mover_without_sweep() {
         fact("win-c", "out-a", 400),
     ];
     let command = WorldCommand::MoveDirectional {
-        window: WindowId("win-b".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
         direction: crate::directional::Direction::Right,
         same_axis: crate::directional::SameAxisMove::SwapWithNeighbor,
     };
@@ -1476,7 +1480,7 @@ fn send_directional_follow_records_mover_in_target() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-d".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-d".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -1497,7 +1501,7 @@ fn send_directional_follow_records_mover_in_target() {
             "win-a",
             Some(12),
             Some(WorldCommand::SendDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: crate::directional::Direction::Right,
                 follow: true,
             }),
@@ -1553,7 +1557,7 @@ fn send_directional_stay_records_survivor_in_source() {
             "win-b",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -1574,7 +1578,7 @@ fn send_directional_stay_records_survivor_in_source() {
             "win-a",
             Some(12),
             Some(WorldCommand::SendDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: crate::directional::Direction::Right,
                 follow: false,
             }),
@@ -1634,7 +1638,7 @@ fn observed_float_away_back_returns_float() {
             Some(11),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -1649,7 +1653,7 @@ fn observed_float_away_back_returns_float() {
             Some(12),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: home.workspace.0.clone(),
+                workspace: crate::directional::WorkspaceId(home.workspace.0.clone()),
             }),
         ),
     );
@@ -1703,7 +1707,9 @@ fn keyboard_float_lane_leave_before_observe_returns_float() {
             "win-f1",
             Some(11),
             Some(WorldCommand::FocusDirectional {
-                window: WindowId("win-f1".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-f1".to_owned(),
+                )),
                 direction: crate::directional::Direction::Right,
             }),
         ),
@@ -1724,7 +1730,7 @@ fn keyboard_float_lane_leave_before_observe_returns_float() {
             Some(12),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -1738,7 +1744,7 @@ fn keyboard_float_lane_leave_before_observe_returns_float() {
             Some(13),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: home.workspace.0.clone(),
+                workspace: crate::directional::WorkspaceId(home.workspace.0.clone()),
             }),
         ),
     );
@@ -1784,9 +1790,9 @@ fn float_only_workspace_returns_float() {
             "win-a",
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: other.clone(),
+                target_workspace: crate::directional::WorkspaceId(other.clone()),
                 follow: false,
             }),
         ),
@@ -1802,7 +1808,7 @@ fn float_only_workspace_returns_float() {
             Some(12),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -1816,7 +1822,7 @@ fn float_only_workspace_returns_float() {
             Some(13),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: home.workspace.0.clone(),
+                workspace: crate::directional::WorkspaceId(home.workspace.0.clone()),
             }),
         ),
     );
@@ -1867,7 +1873,7 @@ fn sticky_shown_away_from_home_returns_sticky() {
             Some(11),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -1882,7 +1888,7 @@ fn sticky_shown_away_from_home_returns_sticky() {
             "win-a",
             Some(12),
             Some(WorldCommand::Focus {
-                window: WindowId("win-s".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-s".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -1906,7 +1912,7 @@ fn sticky_shown_away_from_home_returns_sticky() {
             Some(13),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: home.workspace.0.clone(),
+                workspace: crate::directional::WorkspaceId(home.workspace.0.clone()),
             }),
         ),
     );
@@ -1920,7 +1926,7 @@ fn sticky_shown_away_from_home_returns_sticky() {
             Some(14),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -1980,7 +1986,7 @@ fn later_tile_outranks_stale_home_sticky_on_return() {
             Some(11),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -1995,7 +2001,7 @@ fn later_tile_outranks_stale_home_sticky_on_return() {
             "win-a",
             Some(12),
             Some(WorldCommand::Focus {
-                window: WindowId("win-s".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-s".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -2028,7 +2034,7 @@ fn later_tile_outranks_stale_home_sticky_on_return() {
             Some(13),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: home.workspace.0.clone(),
+                workspace: crate::directional::WorkspaceId(home.workspace.0.clone()),
             }),
         ),
     );
@@ -2042,7 +2048,7 @@ fn later_tile_outranks_stale_home_sticky_on_return() {
             Some(14),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -2070,7 +2076,7 @@ fn later_tile_outranks_stale_home_sticky_on_return() {
             "win-a",
             Some(15),
             Some(WorldCommand::Focus {
-                window: WindowId("win-t".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-t".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -2092,7 +2098,7 @@ fn later_tile_outranks_stale_home_sticky_on_return() {
             Some(16),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: home.workspace.0.clone(),
+                workspace: crate::directional::WorkspaceId(home.workspace.0.clone()),
             }),
         ),
     );
@@ -2106,7 +2112,7 @@ fn later_tile_outranks_stale_home_sticky_on_return() {
             Some(17),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -2165,7 +2171,7 @@ fn last_active_sticky_after_tile_same_home_returns_sticky() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -2180,7 +2186,7 @@ fn last_active_sticky_after_tile_same_home_returns_sticky() {
             "win-b",
             Some(12),
             Some(WorldCommand::Focus {
-                window: WindowId("win-s".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-s".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -2200,7 +2206,7 @@ fn last_active_sticky_after_tile_same_home_returns_sticky() {
             Some(13),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -2214,7 +2220,7 @@ fn last_active_sticky_after_tile_same_home_returns_sticky() {
             Some(14),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: home.workspace.0.clone(),
+                workspace: crate::directional::WorkspaceId(home.workspace.0.clone()),
             }),
         ),
     );
@@ -2268,7 +2274,7 @@ fn last_active_sticky_after_tile_on_spare_returns_sticky() {
             Some(11),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -2290,7 +2296,7 @@ fn last_active_sticky_after_tile_on_spare_returns_sticky() {
             "win-a",
             Some(12),
             Some(WorldCommand::Focus {
-                window: WindowId("win-t".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-t".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -2309,7 +2315,7 @@ fn last_active_sticky_after_tile_on_spare_returns_sticky() {
             "win-t",
             Some(13),
             Some(WorldCommand::Focus {
-                window: WindowId("win-s".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-s".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -2329,7 +2335,7 @@ fn last_active_sticky_after_tile_on_spare_returns_sticky() {
             Some(14),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: home.workspace.0.clone(),
+                workspace: crate::directional::WorkspaceId(home.workspace.0.clone()),
             }),
         ),
     );
@@ -2343,7 +2349,7 @@ fn last_active_sticky_after_tile_on_spare_returns_sticky() {
             Some(15),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -2393,7 +2399,7 @@ fn last_active_later_tile_after_float_returns_tile() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-f".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-f".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -2408,7 +2414,7 @@ fn last_active_later_tile_after_float_returns_tile() {
             "win-f",
             Some(12),
             Some(WorldCommand::Focus {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -2424,7 +2430,7 @@ fn last_active_later_tile_after_float_returns_tile() {
             Some(13),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -2438,7 +2444,7 @@ fn last_active_later_tile_after_float_returns_tile() {
             Some(14),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: home.workspace.0.clone(),
+                workspace: crate::directional::WorkspaceId(home.workspace.0.clone()),
             }),
         ),
     );
@@ -2484,7 +2490,7 @@ fn last_active_unchanged_tile_observation_preserves_float_command() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-f".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-f".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -2510,7 +2516,7 @@ fn last_active_unchanged_tile_observation_preserves_float_command() {
             Some(12),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -2524,7 +2530,7 @@ fn last_active_unchanged_tile_observation_preserves_float_command() {
             Some(13),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: home.workspace.0.clone(),
+                workspace: crate::directional::WorkspaceId(home.workspace.0.clone()),
             }),
         ),
     );
@@ -2568,7 +2574,7 @@ fn last_active_closed_float_prunes_memory_no_ghost() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-f".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-f".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -2600,7 +2606,7 @@ fn last_active_closed_float_prunes_memory_no_ghost() {
             Some(12),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -2614,7 +2620,7 @@ fn last_active_closed_float_prunes_memory_no_ghost() {
             Some(13),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: home.workspace.0.clone(),
+                workspace: crate::directional::WorkspaceId(home.workspace.0.clone()),
             }),
         ),
     );
@@ -2658,7 +2664,7 @@ fn last_active_no_focus_report_preserves_float_memory() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-f".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-f".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -2683,7 +2689,7 @@ fn last_active_no_focus_report_preserves_float_memory() {
             Some(12),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -2697,7 +2703,7 @@ fn last_active_no_focus_report_preserves_float_memory() {
             Some(13),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: home.workspace.0.clone(),
+                workspace: crate::directional::WorkspaceId(home.workspace.0.clone()),
             }),
         ),
     );
@@ -2743,7 +2749,7 @@ fn last_active_no_focus_empty_target_with_visible_sticky_stays_quiet() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-s".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-s".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -2759,7 +2765,7 @@ fn last_active_no_focus_empty_target_with_visible_sticky_stays_quiet() {
             Some(12),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -2791,7 +2797,7 @@ fn last_active_no_focus_empty_target_with_visible_sticky_stays_quiet() {
             Some(13),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: home.workspace.0.clone(),
+                workspace: crate::directional::WorkspaceId(home.workspace.0.clone()),
             }),
         ),
     );
@@ -2843,7 +2849,7 @@ fn last_active_tiled_operation_focus_supersedes_stale_sticky() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-s".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-s".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -2864,7 +2870,7 @@ fn last_active_tiled_operation_focus_supersedes_stale_sticky() {
             Some(12),
             Some(WorldCommand::Operation(
                 crate::boundary::CoreCommand::Focus {
-                    window: "win-s".to_owned(),
+                    window: crate::directional::WindowId("win-s".to_owned()),
                     direction: crate::directional::Direction::Left,
                     cross_output_transfer: false,
                     float_subject: false,
@@ -2894,7 +2900,7 @@ fn last_active_tiled_operation_focus_supersedes_stale_sticky() {
             Some(13),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -2908,7 +2914,7 @@ fn last_active_tiled_operation_focus_supersedes_stale_sticky() {
             Some(14),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: home.workspace.0.clone(),
+                workspace: crate::directional::WorkspaceId(home.workspace.0.clone()),
             }),
         ),
     );
@@ -2959,7 +2965,7 @@ fn last_active_send_stay_survivor_supersedes_stale_sticky() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-f".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-f".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -2974,9 +2980,9 @@ fn last_active_send_stay_survivor_supersedes_stale_sticky() {
             "win-a",
             Some(12),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: other.clone(),
+                target_workspace: crate::directional::WorkspaceId(other.clone()),
                 follow: false,
             }),
         ),
@@ -3003,7 +3009,7 @@ fn last_active_send_stay_survivor_supersedes_stale_sticky() {
             Some(13),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -3017,7 +3023,7 @@ fn last_active_send_stay_survivor_supersedes_stale_sticky() {
             Some(14),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: home.workspace.0.clone(),
+                workspace: crate::directional::WorkspaceId(home.workspace.0.clone()),
             }),
         ),
     );
@@ -3068,7 +3074,7 @@ fn last_active_admission_newcomer_supersedes_stale_sticky() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-s".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-s".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -3104,7 +3110,7 @@ fn last_active_admission_newcomer_supersedes_stale_sticky() {
             Some(12),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -3118,7 +3124,7 @@ fn last_active_admission_newcomer_supersedes_stale_sticky() {
             Some(13),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: home.workspace.0.clone(),
+                workspace: crate::directional::WorkspaceId(home.workspace.0.clone()),
             }),
         ),
     );
@@ -3170,7 +3176,7 @@ fn last_active_close_after_tile_supersession_falls_back_to_tiled() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-s".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-s".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -3186,7 +3192,7 @@ fn last_active_close_after_tile_supersession_falls_back_to_tiled() {
             Some(12),
             Some(WorldCommand::Operation(
                 crate::boundary::CoreCommand::Focus {
-                    window: "win-s".to_owned(),
+                    window: crate::directional::WindowId("win-s".to_owned()),
                     direction: crate::directional::Direction::Left,
                     cross_output_transfer: false,
                     float_subject: false,
@@ -3237,7 +3243,7 @@ fn last_active_close_after_tile_supersession_falls_back_to_tiled() {
             Some(13),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -3251,7 +3257,7 @@ fn last_active_close_after_tile_supersession_falls_back_to_tiled() {
             Some(14),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: home.workspace.0.clone(),
+                workspace: crate::directional::WorkspaceId(home.workspace.0.clone()),
             }),
         ),
     );
@@ -3316,7 +3322,7 @@ fn sticky_visibility_switch_mints_no_admission_and_no_spare_memory() {
             Some(11),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -3362,7 +3368,7 @@ fn sticky_visibility_switch_mints_no_admission_and_no_spare_memory() {
             Some(12),
             Some(WorldCommand::SwitchView {
                 output: OutputId("out-a".to_owned()),
-                workspace: home.workspace.0.clone(),
+                workspace: crate::directional::WorkspaceId(home.workspace.0.clone()),
             }),
         ),
     );

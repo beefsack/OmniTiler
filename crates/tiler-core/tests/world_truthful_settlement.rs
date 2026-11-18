@@ -197,9 +197,11 @@ fn contradictory_receipt_never_proves_send_arrival() {
             vec![],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: target.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(target.clone()),
                 follow: false,
             }),
             vec![],
@@ -272,7 +274,7 @@ fn migration_contradictory_receipt_does_not_settle() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: tiler_core::directional::WorkspaceId(view_a.clone()),
             }),
             vec![],
             true,
@@ -464,7 +466,9 @@ fn host_owned_unknown_holds_exact_settles() {
             vec![],
             Some(11),
             Some(WorldCommand::SendDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 direction: tiler_core::directional::Direction::Right,
                 follow: true,
             }),
@@ -538,7 +542,7 @@ fn host_owned_unknown_holds_exact_settles() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: tiler_core::directional::WorkspaceId(view_a.clone()),
             }),
             vec![],
             true,
@@ -795,9 +799,11 @@ fn possibly_executed_persists_held_across_disappearance() {
             vec![],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: target.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(target.clone()),
                 follow: false,
             }),
             vec![],
@@ -908,9 +914,11 @@ fn explicit_close_settles_across_gaps() {
             vec![],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: ring[1].clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(ring[1].clone()),
                 follow: false,
             }),
             vec![],
@@ -953,7 +961,7 @@ fn explicit_close_settles_across_gaps() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a,
+                workspace: tiler_core::directional::WorkspaceId(view_a),
             }),
             vec![],
             true,
@@ -1011,9 +1019,9 @@ fn retained_settlements_grant_no_extra_writes_or_spend_pending_obligations() {
         vec![],
         Some(2),
         Some(WorldCommand::Send {
-            window: WindowId("w2".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w2".to_owned())),
             target_output: OutputId("out-a".to_owned()),
-            target_workspace: away.clone(),
+            target_workspace: tiler_core::directional::WorkspaceId(away.clone()),
             follow: false,
         }),
         vec![],
@@ -1050,7 +1058,7 @@ fn retained_settlements_grant_no_extra_writes_or_spend_pending_obligations() {
             Some(3),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: away.clone(),
+                workspace: tiler_core::directional::WorkspaceId(away.clone()),
             }),
             vec![],
             true,
@@ -1136,7 +1144,9 @@ fn retained_settlements_grant_no_extra_writes_or_spend_pending_obligations() {
         Some(5),
         Some(WorldCommand::Operation(
             tiler_core::boundary::CoreCommand::ToggleFloat {
-                window: "w2".to_owned(),
+                window: tiler_core::directional::WindowSubject::Window(
+                    tiler_core::directional::WindowId("w2".to_owned()),
+                ),
                 float_rect: Some(rect(50, 50, 300, 200)),
             },
         )),
@@ -1205,7 +1215,7 @@ fn retained_settlements_grant_no_extra_writes_or_spend_pending_obligations() {
         Some(7),
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: home,
+            workspace: tiler_core::directional::WorkspaceId(home),
         }),
         vec![],
         true,

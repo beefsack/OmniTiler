@@ -830,7 +830,9 @@ fn world_fullscreen_tiled_skips_sibling_and_crosses_output() {
             "win-a",
             Some(11),
             Some(WorldCommand::FocusDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 direction: crate::directional::Direction::Right,
             }),
         ),
@@ -896,7 +898,9 @@ fn world_non_fullscreen_control_plans_local_sibling() {
             "win-a",
             Some(11),
             Some(WorldCommand::FocusDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 direction: crate::directional::Direction::Right,
             }),
         ),
@@ -931,7 +935,9 @@ fn world_fullscreen_single_output_retains_without_effect() {
                 "win-a",
                 Some(11),
                 Some(WorldCommand::FocusDirectional {
-                    window: WindowId("win-a".to_owned()),
+                    window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                        "win-a".to_owned(),
+                    )),
                     direction: crate::directional::Direction::Right,
                 }),
             ),
@@ -998,7 +1004,9 @@ fn world_fullscreen_vertical_is_noop() {
                 "win-a",
                 Some(11),
                 Some(WorldCommand::FocusDirectional {
-                    window: WindowId("win-a".to_owned()),
+                    window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                        "win-a".to_owned(),
+                    )),
                     direction: crate::directional::Direction::Up,
                 }),
             ),
@@ -1066,7 +1074,7 @@ fn world_fullscreen_float_skips_lattice_and_crosses_remembered() {
             "win-t",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-t".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-t".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -1084,7 +1092,7 @@ fn world_fullscreen_float_skips_lattice_and_crosses_remembered() {
             "win-sub",
             Some(12),
             Some(WorldCommand::Focus {
-                window: WindowId("win-sub".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-sub".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -1107,7 +1115,9 @@ fn world_fullscreen_float_skips_lattice_and_crosses_remembered() {
             "win-sub",
             Some(13),
             Some(WorldCommand::FocusDirectional {
-                window: WindowId("win-sub".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-sub".to_owned(),
+                )),
                 direction: crate::directional::Direction::Right,
             }),
         ),
@@ -1149,7 +1159,9 @@ fn world_fullscreen_float_vertical_retains() {
             "win-sub",
             Some(11),
             Some(WorldCommand::FocusDirectional {
-                window: WindowId("win-sub".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-sub".to_owned(),
+                )),
                 direction: crate::directional::Direction::Up,
             }),
         ),
@@ -1203,7 +1215,9 @@ fn world_fullscreen_float_single_output_retains() {
             "win-sub",
             Some(11),
             Some(WorldCommand::FocusDirectional {
-                window: WindowId("win-sub".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-sub".to_owned(),
+                )),
                 direction: crate::directional::Direction::Right,
             }),
         ),
@@ -1255,7 +1269,7 @@ fn world_explicit_focus_by_window_works_under_fullscreen() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 direction: Some(crate::directional::Direction::Right),
             }),
         ),
@@ -1317,7 +1331,9 @@ fn world_native_maximized_tiled_skips_sibling_and_crosses_output() {
                 "win-a",
                 Some(11),
                 Some(WorldCommand::FocusDirectional {
-                    window: WindowId("win-a".to_owned()),
+                    window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                        "win-a".to_owned(),
+                    )),
                     direction: crate::directional::Direction::parse_wire(dir).expect("direction"),
                 }),
             ),
@@ -1353,7 +1369,9 @@ fn world_native_maximized_tiled_single_output_stays_unchanged() {
                 "win-a",
                 Some(11),
                 Some(WorldCommand::FocusDirectional {
-                    window: WindowId("win-a".to_owned()),
+                    window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                        "win-a".to_owned(),
+                    )),
                     direction: crate::directional::Direction::Right,
                 }),
             ),
@@ -1421,7 +1439,9 @@ fn world_native_maximized_tiled_no_vertical_neighbor_retains() {
                     "win-a",
                     Some(11),
                     Some(WorldCommand::FocusDirectional {
-                        window: WindowId("win-a".to_owned()),
+                        window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                            "win-a".to_owned(),
+                        )),
                         direction: crate::directional::Direction::parse_wire(dir)
                             .expect("direction"),
                     }),
@@ -1497,7 +1517,9 @@ fn world_native_maximized_cross_preserves_destination_overlay() {
                 "win-a",
                 Some(11),
                 Some(WorldCommand::FocusDirectional {
-                    window: WindowId("win-a".to_owned()),
+                    window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                        "win-a".to_owned(),
+                    )),
                     direction: crate::directional::Direction::parse_wire(dir).expect("direction"),
                 }),
             ),
@@ -1569,7 +1591,7 @@ fn world_native_maximized_float_skips_lattice_and_crosses_remembered() {
                 "win-t",
                 Some(11),
                 Some(WorldCommand::Focus {
-                    window: WindowId("win-t".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("win-t".to_owned())),
                     direction: Some(
                         crate::directional::Direction::parse_wire(dir).expect("direction"),
                     ),
@@ -1589,7 +1611,9 @@ fn world_native_maximized_float_skips_lattice_and_crosses_remembered() {
                 "win-sub",
                 Some(12),
                 Some(WorldCommand::Focus {
-                    window: WindowId("win-sub".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId(
+                        "win-sub".to_owned(),
+                    )),
                     direction: Some(
                         crate::directional::Direction::parse_wire(dir).expect("direction"),
                     ),
@@ -1611,7 +1635,9 @@ fn world_native_maximized_float_skips_lattice_and_crosses_remembered() {
                 "win-sub",
                 Some(13),
                 Some(WorldCommand::FocusDirectional {
-                    window: WindowId("win-sub".to_owned()),
+                    window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                        "win-sub".to_owned(),
+                    )),
                     direction: crate::directional::Direction::parse_wire(dir).expect("direction"),
                 }),
             ),
@@ -1653,7 +1679,9 @@ fn world_native_maximized_float_no_vertical_neighbor_retains() {
             "win-sub",
             Some(11),
             Some(WorldCommand::FocusDirectional {
-                window: WindowId("win-sub".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-sub".to_owned(),
+                )),
                 direction: crate::directional::Direction::Up,
             }),
         ),
@@ -1704,7 +1732,9 @@ fn world_native_maximized_float_single_output_retains() {
             "win-sub",
             Some(11),
             Some(WorldCommand::FocusDirectional {
-                window: WindowId("win-sub".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-sub".to_owned(),
+                )),
                 direction: crate::directional::Direction::Right,
             }),
         ),

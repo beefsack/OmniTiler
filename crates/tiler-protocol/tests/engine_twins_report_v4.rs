@@ -482,7 +482,7 @@ fn v4_estimate_delta_covers_toggle_maximize_command() {
     let mut with_cmd = bare.clone();
     with_cmd.report.command_seq = Some(6);
     with_cmd.report.command = Some(WorldCommand::ToggleMaximize {
-        window: WindowId("win-a".to_owned()),
+        window: tiler_core::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
     });
     let wire_cmd = encode_report_v4(&with_cmd).expect("with_cmd encodes");
 

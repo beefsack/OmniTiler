@@ -1136,7 +1136,7 @@ fn migrate_workspace_publishes_no_destination_binding() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: tiler_core::directional::WorkspaceId(view_a.clone()),
             }),
             true,
         ),
@@ -1499,9 +1499,11 @@ fn pending_transfer_holds_on_unknown_native() {
             vec![native_obs("out-a", &[N1, N2], N1)],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: target,
+                target_workspace: tiler_core::directional::WorkspaceId(target),
                 follow: false,
             }),
             true,

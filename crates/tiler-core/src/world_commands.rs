@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::boundary::CoreCommand;
 use crate::contract::DivergenceKind;
+use crate::directional::WindowSubject;
 use crate::directional::{Direction, OutputId, WindowId};
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
@@ -45,6 +46,7 @@ impl WorldTransaction<'_> {
     /// command below must use it verbatim and never re-resolve, so
     /// first-tick admissions and rehomed movers keep the retired
     /// adapter contract exactly.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn execute_command(
         &mut self,
@@ -55,6 +57,43 @@ impl WorldTransaction<'_> {
         frozen_send_source: Option<OutputId>,
         frozen_migration_source: Option<(OutputId, String)>,
     ) -> CommandApplied {
+        let (resolved_focus, dispatched) = self.resolve_command_subject(command);
+        self.execute_resolved_command(
+            issue,
+            command_seq,
+            dispatched.as_ref(),
+            resolved_focus,
+            command.is_current_focus(),
+            held_scopes,
+            frozen_send_source,
+            frozen_migration_source,
+        )
+    }
+
+    /// Execute one already-resolved command without re-resolving
+    /// `execution_subject` or rebuilding the command. `resolved_focus`
+    /// carries the pre-execution resolved window only when the original
+    /// command carried `CurrentFocus`; `from_current_focus` preserves the
+    /// settled-native maximize focus-gate bypass only for execution-time
+    /// maximize requests.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn execute_resolved_command(
+        &mut self,
+        issue: &crate::world_engine::EventIssue,
+        command_seq: u64,
+        command: &WorldCommand,
+        resolved_focus: Option<WindowId>,
+        from_current_focus: bool,
+        held_scopes: &BTreeSet<DomainKey>,
+        frozen_send_source: Option<OutputId>,
+        frozen_migration_source: Option<(OutputId, String)>,
+    ) -> CommandApplied {
+        if from_current_focus && resolved_focus.is_none() {
+            return CommandApplied::Rejected {
+                kind: KIND_FOCUS,
+                message: MSG_FOCUS,
+            };
+        }
         // Staged carrier index for command planning: homed Engine
         // carriers keyed by lifetime. Owned locally so planning borrows
         // nothing from `self`.
@@ -75,58 +114,46 @@ impl WorldTransaction<'_> {
         for window in &owned {
             by_id.insert(&window.window, window);
         }
+        // Capture-boundary subject authority: the execution-time subject is
+        // core state for every queued command in the batch, even when the
+        // staged native focus lags unchanged behind the preserved slot.
+        // Carry the resolved subject as command-scoped proof so
+        // `effective_operation_focus` puts it into the operation event instead
+        // of the lagging capture. Explicit seams never set this; restored
+        // after dispatch (and by refusal rollback), so it never leaks.
+        let previous =
+            resolved_focus.map(|window| self.world.focus.implicit_event_focus.replace(window));
+        let applied = self.dispatch_resolved_command(
+            issue,
+            command_seq,
+            command,
+            from_current_focus,
+            &by_id,
+            held_scopes,
+            frozen_send_source,
+            frozen_migration_source,
+        );
+        if let Some(prev) = previous {
+            self.world.focus.implicit_event_focus = prev;
+        }
+        applied
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_resolved_command(
+        &mut self,
+        issue: &crate::world_engine::EventIssue,
+        command_seq: u64,
+        command: &WorldCommand,
+        from_current_focus: bool,
+        by_id: &BTreeMap<&WindowId, &EngineWindow>,
+        held_scopes: &BTreeSet<DomainKey>,
+        frozen_send_source: Option<OutputId>,
+        frozen_migration_source: Option<(OutputId, String)>,
+    ) -> CommandApplied {
         match command {
-            WorldCommand::Implicit(inner) => {
-                let Some(resolved) = self.execution_subject() else {
-                    return CommandApplied::Rejected {
-                        kind: KIND_FOCUS,
-                        message: MSG_FOCUS,
-                    };
-                };
-                // Capture-boundary subject authority: the execution-time
-                // subject is core state for every queued command in the
-                // batch, even when the staged native focus lags unchanged
-                // behind the preserved slot. Carry the resolved subject as
-                // command-scoped proof so `effective_operation_focus` puts
-                // it into the operation event instead of the lagging
-                // capture. Explicit seams never set this, so only implicit
-                // execution holds the authority; the carried value can only
-                // ever resolve to the homed live subject, never a foreign
-                // window. Restored after dispatch (and by refusal rollback),
-                // so it never leaks into sibling commands.
-                let previous = self
-                    .world
-                    .focus
-                    .implicit_event_focus
-                    .replace(resolved.clone());
-                // The implicit maximize bypasses the settled-native focus
-                // gate (retained core focus is the subject proof); every
-                // other implicit command maps to its explicit form and
-                // reuses the identical dispatch.
-                let applied = if matches!(inner.as_ref(), WorldCommand::ToggleMaximize { .. }) {
-                    self.toggle_maximize_inner(command_seq, &resolved, held_scopes, false)
-                } else if let Some(explicit) =
-                    crate::world_report::explicit_for_implicit(inner, resolved)
-                {
-                    self.execute_command(
-                        issue,
-                        command_seq,
-                        &explicit,
-                        held_scopes,
-                        frozen_send_source,
-                        frozen_migration_source,
-                    )
-                } else {
-                    CommandApplied::Rejected {
-                        kind: KIND_FOCUS,
-                        message: MSG_FOCUS,
-                    }
-                };
-                self.world.focus.implicit_event_focus = previous;
-                applied
-            }
             WorldCommand::Focus {
-                window,
+                window: WindowSubject::Window(window),
                 direction: _,
             } => {
                 // Hidden targets never take focus: a staged
@@ -161,7 +188,7 @@ impl WorldTransaction<'_> {
                 ))
             }
             WorldCommand::Send {
-                window,
+                window: WindowSubject::Window(window),
                 target_output,
                 target_workspace,
                 follow,
@@ -170,13 +197,13 @@ impl WorldTransaction<'_> {
                 command_seq,
                 window,
                 target_output,
-                target_workspace,
+                &target_workspace.0,
                 *follow,
-                &by_id,
+                by_id,
                 held_scopes,
             ),
             WorldCommand::SwitchView { output, workspace } => {
-                self.retain_view(command_seq, output, workspace, held_scopes, &by_id)
+                self.retain_view(command_seq, output, &workspace.0, held_scopes, by_id)
             }
             WorldCommand::SelectWorkspace { output, workspace } => {
                 // Global-unique visible-elsewhere swap: selecting a target
@@ -194,7 +221,7 @@ impl WorldTransaction<'_> {
                     if let Some(plan) = crate::workspace_scope::plan_global_swap(
                         &current_by_output,
                         &output.0,
-                        workspace,
+                        &workspace.0,
                     ) {
                         // Nonempty swap must move complete logical units:
                         // Engine sessions rekey to the moved outputs (tree,
@@ -271,9 +298,9 @@ impl WorldTransaction<'_> {
                             return self.retain_view(
                                 command_seq,
                                 output,
-                                workspace,
+                                &workspace.0,
                                 held_scopes,
-                                &by_id,
+                                by_id,
                             );
                         }
                         // Safety fences for the stateful move: complete
@@ -364,7 +391,7 @@ impl WorldTransaction<'_> {
                         // source layout; the post-commit staged lookup
                         // misses on the stale observation and the pre-moved
                         // views gate changed false, so capture before swap.
-                        let swap_focus = self.remembered_view_focus(&src_b, held_scopes, &by_id);
+                        let swap_focus = self.remembered_view_focus(&src_b, held_scopes, by_id);
                         if self
                             .world
                             .layout
@@ -484,7 +511,7 @@ impl WorldTransaction<'_> {
                         }
                         self.note_command(command_seq);
                         let applied =
-                            self.retain_view(command_seq, output, workspace, held_scopes, &by_id);
+                            self.retain_view(command_seq, output, &workspace.0, held_scopes, by_id);
                         // retain_view pushed the view flight for the active
                         // output; the views above already moved. Its
                         // post-commit lookup misses the stale staged domain
@@ -507,7 +534,7 @@ impl WorldTransaction<'_> {
                         };
                     }
                 }
-                self.retain_view(command_seq, output, workspace, held_scopes, &by_id)
+                self.retain_view(command_seq, output, &workspace.0, held_scopes, by_id)
             }
             WorldCommand::SelectNumbered { output, index } => {
                 let Some(resolved) = self.resolve_selection_output(
@@ -531,7 +558,7 @@ impl WorldTransaction<'_> {
                         message: MSG_SELECT_UNKNOWN,
                     };
                 };
-                self.retain_view(command_seq, &resolved, &target, held_scopes, &by_id)
+                self.retain_view(command_seq, &resolved, &target, held_scopes, by_id)
             }
             WorldCommand::SelectRelative { output, delta } => {
                 let Some(resolved) = self.resolve_selection_output(
@@ -556,7 +583,7 @@ impl WorldTransaction<'_> {
                         message: MSG_SELECT_UNKNOWN,
                     };
                 };
-                self.retain_view(command_seq, &resolved, &target, held_scopes, &by_id)
+                self.retain_view(command_seq, &resolved, &target, held_scopes, by_id)
             }
             WorldCommand::SelectPrevious { output } => {
                 let Some(resolved) = self.resolve_selection_output(
@@ -585,7 +612,7 @@ impl WorldTransaction<'_> {
                         .resolve_shared_for(&live, &current)
                     {
                         PreviousTarget::Select(target) => {
-                            self.retain_view(command_seq, &resolved, &target, held_scopes, &by_id)
+                            self.retain_view(command_seq, &resolved, &target, held_scopes, by_id)
                         }
                         PreviousTarget::AlreadyThere(_) | PreviousTarget::NoHistory => {
                             self.note_command(command_seq);
@@ -604,7 +631,7 @@ impl WorldTransaction<'_> {
                         &current,
                     ) {
                         PreviousTarget::Select(target) => {
-                            self.retain_view(command_seq, &resolved, &target, held_scopes, &by_id)
+                            self.retain_view(command_seq, &resolved, &target, held_scopes, by_id)
                         }
                         PreviousTarget::AlreadyThere(_) | PreviousTarget::NoHistory => {
                             // No-op until the next recorded change: reconcile
@@ -633,7 +660,7 @@ impl WorldTransaction<'_> {
                 let selection = resolve_trailing(&ring, &occupied);
                 match selection {
                     TrailingSelection::Reuse(target) => {
-                        self.retain_view(command_seq, &resolved, &target, held_scopes, &by_id)
+                        self.retain_view(command_seq, &resolved, &target, held_scopes, by_id)
                     }
                     TrailingSelection::Create => {
                         // Trailing workspaces exist immediately in the
@@ -646,12 +673,12 @@ impl WorldTransaction<'_> {
                                 message: MSG_CREATION_EXHAUSTED,
                             };
                         };
-                        self.retain_view(command_seq, &resolved, &logical, held_scopes, &by_id)
+                        self.retain_view(command_seq, &resolved, &logical, held_scopes, by_id)
                     }
                 }
             }
             WorldCommand::SendRelative {
-                window,
+                window: WindowSubject::Window(window),
                 source,
                 delta,
                 follow,
@@ -697,12 +724,12 @@ impl WorldTransaction<'_> {
                     &source,
                     &target_workspace,
                     *follow,
-                    &by_id,
+                    by_id,
                     held_scopes,
                 )
             }
             WorldCommand::SendNumbered {
-                window,
+                window: WindowSubject::Window(window),
                 source,
                 index,
                 follow,
@@ -726,7 +753,7 @@ impl WorldTransaction<'_> {
                     &output,
                     *index,
                     *follow,
-                    &by_id,
+                    by_id,
                     held_scopes,
                 )
             }
@@ -734,9 +761,9 @@ impl WorldTransaction<'_> {
                 output,
                 workspace,
                 tiled,
-            } => self.set_workspace_tiling(command_seq, output, workspace, *tiled),
+            } => self.set_workspace_tiling(command_seq, output, &workspace.0, *tiled),
             WorldCommand::ToggleWorkspaceTiling { output, workspace } => {
-                self.toggle_workspace_tiling(command_seq, output, workspace)
+                self.toggle_workspace_tiling(command_seq, output, &workspace.0)
             }
             WorldCommand::MigrateWorkspace {
                 source_output,
@@ -747,14 +774,14 @@ impl WorldTransaction<'_> {
                 command_seq,
                 source_output,
                 target_output,
-                workspace,
+                &workspace.0,
                 held_scopes,
             ),
             WorldCommand::FocusDirectional { window, direction } => {
-                self.focus_directional(issue, command_seq, window, *direction, &by_id, held_scopes)
+                self.focus_directional(issue, command_seq, window, *direction, by_id, held_scopes)
             }
             WorldCommand::MoveDirectional {
-                window,
+                window: WindowSubject::Window(window),
                 direction,
                 same_axis,
             } => self.move_directional(
@@ -763,11 +790,11 @@ impl WorldTransaction<'_> {
                 window,
                 *direction,
                 *same_axis,
-                &by_id,
+                by_id,
                 held_scopes,
             ),
             WorldCommand::SendDirectional {
-                window,
+                window: WindowSubject::Window(window),
                 direction,
                 follow,
             } => self.send_directional(
@@ -776,7 +803,7 @@ impl WorldTransaction<'_> {
                 window,
                 *direction,
                 *follow,
-                &by_id,
+                by_id,
                 held_scopes,
             ),
             WorldCommand::MigrateDirectional { direction } => {
@@ -799,28 +826,71 @@ impl WorldTransaction<'_> {
                     &source,
                     &view,
                     *direction,
-                    &by_id,
+                    by_id,
                     held_scopes,
                 )
             }
-            WorldCommand::ToggleMaximize { window } => {
-                self.toggle_maximize(command_seq, window, held_scopes)
-            }
-            WorldCommand::SetSticky { window, value } => {
-                self.execute_sticky_command(issue, command_seq, window, Some(*value), held_scopes)
-            }
-            WorldCommand::ToggleSticky { window } => {
-                self.execute_sticky_command(issue, command_seq, window, None, held_scopes)
-            }
-            WorldCommand::SetFullscreen { window, value } => {
-                self.execute_fullscreen_command(command_seq, window, Some(*value), held_scopes)
-            }
-            WorldCommand::ToggleFullscreen { window } => {
-                self.execute_fullscreen_command(command_seq, window, None, held_scopes)
-            }
+            WorldCommand::ToggleMaximize {
+                window: WindowSubject::Window(window),
+            } => self.toggle_maximize_inner(command_seq, window, held_scopes, !from_current_focus),
+            WorldCommand::SetSticky {
+                window: WindowSubject::Window(window),
+                value,
+            } => self.execute_sticky_command(issue, command_seq, window, Some(*value), held_scopes),
+            WorldCommand::ToggleSticky {
+                window: WindowSubject::Window(window),
+            } => self.execute_sticky_command(issue, command_seq, window, None, held_scopes),
+            WorldCommand::SetFullscreen {
+                window: WindowSubject::Window(window),
+                value,
+            } => self.execute_fullscreen_command(command_seq, window, Some(*value), held_scopes),
+            WorldCommand::ToggleFullscreen {
+                window: WindowSubject::Window(window),
+            } => self.execute_fullscreen_command(command_seq, window, None, held_scopes),
             WorldCommand::Operation(command) => {
-                self.execute_operation(issue, command_seq, command, &by_id, held_scopes)
+                self.execute_operation(issue, command_seq, command, by_id, held_scopes)
             }
+            WorldCommand::Focus {
+                window: WindowSubject::CurrentFocus,
+                ..
+            }
+            | WorldCommand::Send {
+                window: WindowSubject::CurrentFocus,
+                ..
+            }
+            | WorldCommand::SendRelative {
+                window: WindowSubject::CurrentFocus,
+                ..
+            }
+            | WorldCommand::SendNumbered {
+                window: WindowSubject::CurrentFocus,
+                ..
+            }
+            | WorldCommand::MoveDirectional {
+                window: WindowSubject::CurrentFocus,
+                ..
+            }
+            | WorldCommand::SendDirectional {
+                window: WindowSubject::CurrentFocus,
+                ..
+            }
+            | WorldCommand::ToggleMaximize {
+                window: WindowSubject::CurrentFocus,
+            }
+            | WorldCommand::SetSticky {
+                window: WindowSubject::CurrentFocus,
+                ..
+            }
+            | WorldCommand::ToggleSticky {
+                window: WindowSubject::CurrentFocus,
+            }
+            | WorldCommand::SetFullscreen {
+                window: WindowSubject::CurrentFocus,
+                ..
+            }
+            | WorldCommand::ToggleFullscreen {
+                window: WindowSubject::CurrentFocus,
+            } => unreachable!("current-focus commands resolve before dispatch"),
         }
     }
 
@@ -831,19 +901,8 @@ impl WorldTransaction<'_> {
     /// retained targets authorize the native transition while the result
     /// describes intent and the snapshot retains base membership. Never
     /// mutates topology. The composed route keeps the descriptive result only.
-    pub(crate) fn toggle_maximize(
-        &mut self,
-        command_seq: u64,
-        window: &WindowId,
-        held_scopes: &BTreeSet<DomainKey>,
-    ) -> CommandApplied {
-        self.toggle_maximize_inner(command_seq, window, held_scopes, true)
-    }
-
-    /// Shared maximize body: explicit commands check the settled-native
-    /// focus gate; execution-time implicit commands skip it (the resolved
-    /// retained core focus is the subject proof). All other gates stay
-    /// identical.
+    /// Explicit commands check settled native focus; current-focus commands
+    /// already carry proof from the execution cursor.
     pub(crate) fn toggle_maximize_inner(
         &mut self,
         command_seq: u64,

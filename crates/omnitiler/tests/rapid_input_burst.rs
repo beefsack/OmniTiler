@@ -941,18 +941,18 @@ fn rapid_input_batch_saves_canonical_bytes_fit_reserve() {
         (
             2u64,
             WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: id_a.clone(),
+                window: tiler_core::directional::WindowSubject::Window(
+                    tiler_core::directional::WindowId(id_a.clone()),
+                ),
                 float_rect: None,
             }),
         ),
         (
             3u64,
-            WorldCommand::Implicit(Box::new(WorldCommand::Operation(
-                CoreCommand::ToggleFloat {
-                    window: String::new(),
-                    float_rect: None,
-                },
-            ))),
+            WorldCommand::Operation(CoreCommand::ToggleFloat {
+                window: tiler_core::directional::WindowSubject::CurrentFocus,
+                float_rect: None,
+            }),
         ),
     ];
     let bound = max_intent_save_batch_bound_v4(&queued);

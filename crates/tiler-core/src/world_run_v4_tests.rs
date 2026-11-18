@@ -271,7 +271,7 @@ fn bare_focus_direction_gate_splits_legacy_and_v4_envelopes() {
     // the legacy envelope but valid in the v4 envelope; only the shared
     // dispatch gate admits it.
     let bare = WorldCommand::Focus {
-        window: WindowId("win-a".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
         direction: None,
     };
     assert!(
@@ -414,7 +414,7 @@ fn composed_sticky_clear_restages_and_keeps_tile_save() {
             ingress("win-a"),
             Some(1),
             Some(WorldCommand::SetSticky {
-                window: win.clone(),
+                window: crate::directional::WindowSubject::Window(win.clone()),
                 value: true,
             }),
             None,
@@ -443,7 +443,9 @@ fn composed_sticky_clear_restages_and_keeps_tile_save() {
             ingress("win-a"),
             Some(2),
             Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "win-a".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "win-a".to_owned(),
+                )),
                 float_rect: None,
             })),
             None,
@@ -487,7 +489,7 @@ fn ordinary_focus_command_dispatches_effect() {
         run(&mut engine, &observe(1, facts_pair(), "win-a"), false),
     );
     let command = WorldCommand::Focus {
-        window: WindowId("win-b".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
         direction: None,
     };
     let (outcome, settlements) = run_with_settlements(
@@ -535,7 +537,7 @@ fn consumed_command_reconciles_without_reexecution() {
         run(&mut engine, &observe(1, facts_pair(), "win-a"), false),
     );
     let command = WorldCommand::Focus {
-        window: WindowId("win-b".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
         direction: None,
     };
     let command_report = report(
@@ -579,7 +581,7 @@ fn consumed_rerun_with_new_observation_reconciles_without_revalidation() {
         run(&mut engine, &observe(1, facts_pair(), "win-a"), false),
     );
     let command = WorldCommand::Focus {
-        window: WindowId("win-b".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
         direction: None,
     };
     accepted_reply(
@@ -681,7 +683,7 @@ fn consumed_command_skips_renderer_validation() {
         },
     };
     let command = WorldCommand::Focus {
-        window: WindowId("win-b".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
         direction: None,
     };
     let command_report = report(
@@ -750,9 +752,9 @@ fn refused_command_preserves_observation_without_command_mutation() {
             ingress("w0"),
             Some(2),
             Some(WorldCommand::Send {
-                window: WindowId("w0".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("w0".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: "ws-2".to_owned(),
+                target_workspace: crate::directional::WorkspaceId("ws-2".to_owned()),
                 follow: true,
             }),
             None,
@@ -787,7 +789,7 @@ fn refused_command_preserves_observation_without_command_mutation() {
         PresentationRowV4::Valid(ingress("w0")),
         Some(3),
         Some(WorldCommand::SendNumbered {
-            window: WindowId("wSticky".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("wSticky".to_owned())),
             source: SendSource::Explicit(OutputId("out-a".to_owned())),
             index: 0,
             follow: false,
@@ -1024,7 +1026,7 @@ fn renderer_valid_target_proceeds_to_normal_command_gates() {
         },
     };
     let command = WorldCommand::Focus {
-        window: WindowId("win-gone".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-gone".to_owned())),
         direction: None,
     };
     let (outcome, settlements) = run_with_settlements(
@@ -1074,7 +1076,7 @@ fn renderer_unissued_revision_refuses_command() {
         },
     };
     let command = WorldCommand::Focus {
-        window: WindowId("win-b".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
         direction: None,
     };
     let (outcome, settlements) = run_with_settlements(
@@ -1154,7 +1156,7 @@ fn renderer_older_unchanged_target_executes_after_intervening_observation() {
             ingress("win-a"),
             Some(1),
             Some(WorldCommand::Focus {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 direction: None,
             }),
             Some(older),
@@ -1219,9 +1221,9 @@ fn renderer_target_rehomed_during_genuine_run_refuses_as_stale() {
             ingress("win-a"),
             Some(1),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: "ws-2".to_owned(),
+                target_workspace: crate::directional::WorkspaceId("ws-2".to_owned()),
                 follow: true,
             }),
             Some(old_renderer.clone()),
@@ -1251,7 +1253,7 @@ fn renderer_target_rehomed_during_genuine_run_refuses_as_stale() {
             ingress("win-a"),
             Some(2),
             Some(WorldCommand::Focus {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: None,
             }),
             Some(old_renderer),
@@ -1300,7 +1302,7 @@ fn renderer_equal_revision_with_exact_row_executes() {
         },
     };
     let command = WorldCommand::Focus {
-        window: WindowId("win-b".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
         direction: None,
     };
     let (outcome, settlements) = run_with_settlements(
@@ -1688,9 +1690,9 @@ fn creation_exhaustion_propagates_as_envelope_refusal() {
             ingress("win-a"),
             Some(1),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: "ws-2".to_owned(),
+                target_workspace: crate::directional::WorkspaceId("ws-2".to_owned()),
                 follow: false,
             }),
             None,
@@ -1778,7 +1780,7 @@ fn migration_unknown_minimized_refuses_before_engine_commit() {
         Some(WorldCommand::MigrateWorkspace {
             source_output: OutputId("out-a".to_owned()),
             target_output: OutputId("out-b".to_owned()),
-            workspace: source_view.clone(),
+            workspace: crate::directional::WorkspaceId(source_view.clone()),
         }),
         None,
         Vec::new(),
@@ -2019,7 +2021,7 @@ fn retained_all_desktop_core_sticky_on_off_roundtrip() {
             native(),
             1,
             WorldCommand::SetSticky {
-                window: WindowId("win-s".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-s".to_owned())),
                 value: true,
             },
         ),
@@ -2101,7 +2103,7 @@ fn retained_all_desktop_core_sticky_on_off_roundtrip() {
             native(),
             2,
             WorldCommand::SetSticky {
-                window: WindowId("win-s".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-s".to_owned())),
                 value: false,
             },
         ),
@@ -2369,7 +2371,7 @@ fn retained_all_desktop_native_sticky_off_no_prior_on() {
             native(),
             1,
             WorldCommand::SetSticky {
-                window: WindowId("win-f".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-f".to_owned())),
                 value: false,
             },
         ),
@@ -2534,7 +2536,7 @@ fn q1b_queued_and_inline_handle_report_emit_batch_settlements_and_non_issuing_st
         ingress("win-a"),
         Some(1),
         Some(WorldCommand::SetSticky {
-            window: WindowId("win-a".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             value: true,
         }),
         None,
@@ -2543,7 +2545,9 @@ fn q1b_queued_and_inline_handle_report_emit_batch_settlements_and_non_issuing_st
     let queued = [(
         2,
         WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: "win-b".to_owned(),
+            window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                "win-b".to_owned(),
+            )),
             float_rect: None,
         }),
     )];
@@ -2602,7 +2606,9 @@ fn q1b_queued_and_inline_handle_report_emit_batch_settlements_and_non_issuing_st
         ingress("win-a"),
         Some(2),
         Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: "win-a".to_owned(),
+            window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                "win-a".to_owned(),
+            )),
             float_rect: None,
         })),
         None,
@@ -2736,7 +2742,7 @@ fn restage_classification_preserves_native_echo_across_same_batch_command() {
         1,
         WorldCommand::SwitchView {
             output: out_a.clone(),
-            workspace: l2.clone(),
+            workspace: crate::directional::WorkspaceId(l2.clone()),
         },
     );
     assert!(matches!(
@@ -2755,14 +2761,16 @@ fn restage_classification_preserves_native_echo_across_same_batch_command() {
         native_n1(),
         2,
         WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: "win-a".to_owned(),
+            window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                "win-a".to_owned(),
+            )),
             float_rect: None,
         }),
     );
     let queued = [(
         3,
         WorldCommand::SetSticky {
-            window: WindowId("win-a".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             value: true,
         },
     )];

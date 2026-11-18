@@ -225,7 +225,7 @@ fn no_focus_journey_focuses_remembered_then_converges() {
             "",
             Some(11),
             Some(WorldCommand::FocusDirectional {
-                window: WindowId(String::new()),
+                window: tiler_core::world_report::FocusDirectionalSubject::NoFocus,
                 direction: tiler_core::directional::Direction::Right,
             }),
             Some("out-a"),
@@ -323,7 +323,7 @@ fn no_focus_noop_journey_stays_quiet() {
             "",
             Some(11),
             Some(WorldCommand::FocusDirectional {
-                window: WindowId(String::new()),
+                window: tiler_core::world_report::FocusDirectionalSubject::NoFocus,
                 direction: tiler_core::directional::Direction::Right,
             }),
             Some("out-a"),

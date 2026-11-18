@@ -720,10 +720,12 @@ pub(crate) fn build_command(
             let _ = seq_ok(action)?;
             Ok(Some(WorldCommand::SelectWorkspace {
                 output: OutputId(action.output.clone().expect("validated")),
-                workspace: binding
-                    .get(action.workspace.as_ref().expect("validated"))
-                    .cloned()
-                    .ok_or("unbound workspace alias".to_owned())?,
+                workspace: tiler_core::directional::WorkspaceId(
+                    binding
+                        .get(action.workspace.as_ref().expect("validated"))
+                        .cloned()
+                        .ok_or("unbound workspace alias".to_owned())?,
+                ),
             }))
         }
         "select-numbered" => Ok(Some(WorldCommand::SelectNumbered {
@@ -742,10 +744,13 @@ pub(crate) fn build_command(
                 action.direction.as_deref().expect("validated"),
             )
             .ok_or_else(|| "direction is not covered".to_owned())?;
-            Ok(Some(WorldCommand::FocusDirectional {
-                window: WindowId(action.window.clone().expect("validated")),
-                direction,
-            }))
+            let win = action.window.clone().expect("validated");
+            let window = if win.is_empty() {
+                tiler_core::world_report::FocusDirectionalSubject::NoFocus
+            } else {
+                tiler_core::world_report::FocusDirectionalSubject::Window(WindowId(win))
+            };
+            Ok(Some(WorldCommand::FocusDirectional { window, direction }))
         }
         "move-directional" => {
             let direction = tiler_core::directional::Direction::parse_wire(
@@ -758,18 +763,24 @@ pub(crate) fn build_command(
                 _ => return Err("same_axis is not covered".to_owned()),
             };
             Ok(Some(WorldCommand::MoveDirectional {
-                window: WindowId(action.window.clone().expect("validated")),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    action.window.clone().expect("validated"),
+                )),
                 direction,
                 same_axis,
             }))
         }
         "send" => Ok(Some(WorldCommand::Send {
-            window: WindowId(action.window.clone().expect("validated")),
+            window: tiler_core::directional::WindowSubject::Window(WindowId(
+                action.window.clone().expect("validated"),
+            )),
             target_output: OutputId(action.output.clone().expect("validated")),
-            target_workspace: binding
-                .get(action.workspace.as_ref().expect("validated"))
-                .cloned()
-                .ok_or("unbound workspace alias".to_owned())?,
+            target_workspace: tiler_core::directional::WorkspaceId(
+                binding
+                    .get(action.workspace.as_ref().expect("validated"))
+                    .cloned()
+                    .ok_or("unbound workspace alias".to_owned())?,
+            ),
             follow: action.follow.expect("validated"),
         })),
         "admit" | "close" | "checkpoint" => Ok(None),

@@ -290,16 +290,29 @@ impl WorldTransaction<'_> {
         // nothing, so execution refuses instead of falling back to action.
         let subject = self.execution_subject();
         let effective_send: Option<(&WindowId, &crate::world_report::SendSource)> = match command {
-            Some(WorldCommand::Implicit(inner)) => match inner.as_ref() {
-                WorldCommand::SendRelative { source, .. }
-                | WorldCommand::SendNumbered { source, .. } => {
-                    subject.as_ref().map(|slot| (slot, source))
-                }
-                _ => None,
-            },
             Some(
-                WorldCommand::SendRelative { window, source, .. }
-                | WorldCommand::SendNumbered { window, source, .. },
+                WorldCommand::SendRelative {
+                    window: crate::directional::WindowSubject::CurrentFocus,
+                    source,
+                    ..
+                }
+                | WorldCommand::SendNumbered {
+                    window: crate::directional::WindowSubject::CurrentFocus,
+                    source,
+                    ..
+                },
+            ) => subject.as_ref().map(|slot| (slot, source)),
+            Some(
+                WorldCommand::SendRelative {
+                    window: crate::directional::WindowSubject::Window(window),
+                    source,
+                    ..
+                }
+                | WorldCommand::SendNumbered {
+                    window: crate::directional::WindowSubject::Window(window),
+                    source,
+                    ..
+                },
             ) => Some((window, source)),
             _ => None,
         };
@@ -312,8 +325,7 @@ impl WorldTransaction<'_> {
             },
             None => None,
         };
-        let unwrapped = command.map(crate::world_report::unwrap_implicit);
-        let frozen_migration_source = match unwrapped {
+        let frozen_migration_source = match command {
             Some(WorldCommand::MigrateDirectional { .. }) => {
                 let resolved = self.resolve_action_output(routing);
                 match resolved {

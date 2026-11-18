@@ -670,35 +670,35 @@ fn command_validation_keeps_closed_vocabularies() {
     let out = OutputId("out".to_owned());
     let win = WindowId("win-a".to_owned());
     assert!(valid_command(&C::Focus {
-        window: win.clone(),
+        window: crate::directional::WindowSubject::Window(win.clone()),
         direction: Some(crate::directional::Direction::Left),
     }));
     assert!(!valid_command(&C::Focus {
-        window: win.clone(),
+        window: crate::directional::WindowSubject::Window(win.clone()),
         direction: None,
     }));
     assert!(valid_command(&C::MigrateWorkspace {
         source_output: out.clone(),
         target_output: OutputId("out-b".to_owned()),
-        workspace: "ws-1".to_owned(),
+        workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
     }));
     assert!(!valid_command(&C::MigrateWorkspace {
         source_output: out.clone(),
         target_output: out.clone(),
-        workspace: "ws-1".to_owned(),
+        workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
     }));
     assert!(valid_command(&C::SwitchView {
         output: out.clone(),
-        workspace: "ws-1".to_owned(),
+        workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
     }));
     assert!(valid_command(&C::SendNumbered {
-        window: win.clone(),
+        window: crate::directional::WindowSubject::Window(win.clone()),
         source: SendSource::Explicit(out.clone()),
         index: 0,
         follow: false,
     }));
     assert!(!valid_command(&C::SendNumbered {
-        window: win.clone(),
+        window: crate::directional::WindowSubject::Window(win.clone()),
         source: SendSource::Explicit(out.clone()),
         index: 10,
         follow: false,
@@ -706,13 +706,13 @@ fn command_validation_keeps_closed_vocabularies() {
     // Implicit sources are always well-formed: the core resolves or
     // refuses them without inventing focus.
     assert!(valid_command(&C::SendNumbered {
-        window: win.clone(),
+        window: crate::directional::WindowSubject::Window(win.clone()),
         source: SendSource::HomeThenAction,
         index: 9,
         follow: false,
     }));
     assert!(valid_command(&C::SendRelative {
-        window: win.clone(),
+        window: crate::directional::WindowSubject::Window(win.clone()),
         source: SendSource::HomeThenAction,
         delta: -1,
         follow: true,
@@ -746,22 +746,22 @@ fn sticky_commands_validate_typed_subjects_and_reject_catalog_is_closed() {
     use WorldCommand as C;
     let win = WindowId("win-a".to_owned());
     assert!(valid_command(&C::SetSticky {
-        window: win.clone(),
+        window: crate::directional::WindowSubject::Window(win.clone()),
         value: true,
     }));
     assert!(valid_command(&C::SetSticky {
-        window: win.clone(),
+        window: crate::directional::WindowSubject::Window(win.clone()),
         value: false,
     }));
     assert!(valid_command(&C::ToggleSticky {
-        window: win.clone(),
+        window: crate::directional::WindowSubject::Window(win.clone()),
     }));
     assert!(!valid_command(&C::SetSticky {
-        window: WindowId(String::new()),
+        window: crate::directional::WindowSubject::Window(WindowId(String::new())),
         value: true,
     }));
     assert!(!valid_command(&C::ToggleSticky {
-        window: WindowId(" ".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(" ".to_owned())),
     }));
     // Closed catalog: every wire token round-trips, nothing else parses.
     for (kind, token) in [
@@ -795,45 +795,45 @@ fn fullscreen_commands_validate_typed_subjects_and_digest_distinct() {
     use WorldCommand as C;
     let win = WindowId("win-a".to_owned());
     assert!(valid_command(&C::SetFullscreen {
-        window: win.clone(),
+        window: crate::directional::WindowSubject::Window(win.clone()),
         value: true,
     }));
     assert!(valid_command(&C::SetFullscreen {
-        window: win.clone(),
+        window: crate::directional::WindowSubject::Window(win.clone()),
         value: false,
     }));
     assert!(valid_command(&C::ToggleFullscreen {
-        window: win.clone(),
+        window: crate::directional::WindowSubject::Window(win.clone()),
     }));
     assert!(!valid_command(&C::SetFullscreen {
-        window: WindowId(String::new()),
+        window: crate::directional::WindowSubject::Window(WindowId(String::new())),
         value: true,
     }));
     assert!(!valid_command(&C::ToggleFullscreen {
-        window: WindowId(" ".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(" ".to_owned())),
     }));
     // Digest separates the fullscreen spellings: Debug covers the new
     // variants, so distinct commands never alias.
     let mut base = test_report();
     base.command = Some(C::SetFullscreen {
-        window: win.clone(),
+        window: crate::directional::WindowSubject::Window(win.clone()),
         value: true,
     });
     let set_digest = report_digest_v4(&base);
     let mut toggled = base.clone();
     toggled.command = Some(C::ToggleFullscreen {
-        window: win.clone(),
+        window: crate::directional::WindowSubject::Window(win.clone()),
     });
     assert_ne!(report_digest_v4(&toggled), set_digest);
     let mut unset = base.clone();
     unset.command = Some(C::SetFullscreen {
-        window: win.clone(),
+        window: crate::directional::WindowSubject::Window(win.clone()),
         value: false,
     });
     assert_ne!(report_digest_v4(&unset), set_digest);
     let mut sticky = base.clone();
     sticky.command = Some(C::SetSticky {
-        window: win.clone(),
+        window: crate::directional::WindowSubject::Window(win.clone()),
         value: true,
     });
     assert_ne!(report_digest_v4(&sticky), set_digest);

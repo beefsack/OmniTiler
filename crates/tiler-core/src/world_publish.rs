@@ -126,10 +126,11 @@ impl WorldTransaction<'_> {
         if self.world.intent.intent_sticky_saturated {
             return None;
         }
-        let window = match crate::world_report::unwrap_implicit(command) {
+        let window = match command {
             WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
-                window, ..
-            }) => WindowId(window.clone()),
+                window: crate::directional::WindowSubject::Window(window),
+                ..
+            }) => window.clone(),
             _ => return None,
         };
         if self.world.intent.intent_sticky_blocks.contains(&window) {

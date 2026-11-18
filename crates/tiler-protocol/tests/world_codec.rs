@@ -433,7 +433,7 @@ fn all_commands_decode_typed_and_refuse_bad_vocab() {
     match report.command {
         Some(C::ToggleWorkspaceTiling { output, workspace }) => {
             assert_eq!(output.0, "o");
-            assert_eq!(workspace, "ws-1");
+            assert_eq!(workspace.0, "ws-1");
         }
         _ => panic!("toggle-workspace-tiling decoded"),
     }
@@ -513,7 +513,12 @@ fn fullscreen_commands_decode_strictly() {
         .command
     {
         Some(C::SetFullscreen { window, value }) => {
-            assert_eq!(window.0, "win-a");
+            assert_eq!(
+                window,
+                tiler_core::directional::WindowSubject::Window(tiler_core::directional::WindowId(
+                    "win-a".to_owned()
+                ))
+            );
             assert!(value);
         }
         other => panic!("set-fullscreen decoded {other:?}"),
@@ -524,7 +529,12 @@ fn fullscreen_commands_decode_strictly() {
         .command
     {
         Some(C::SetFullscreen { window, value }) => {
-            assert_eq!(window.0, "win-a");
+            assert_eq!(
+                window,
+                tiler_core::directional::WindowSubject::Window(tiler_core::directional::WindowId(
+                    "win-a".to_owned()
+                ))
+            );
             assert!(!value);
         }
         other => panic!("set-fullscreen decoded {other:?}"),
@@ -534,7 +544,12 @@ fn fullscreen_commands_decode_strictly() {
         .expect("toggle decodes")
         .command
     {
-        Some(C::ToggleFullscreen { window }) => assert_eq!(window.0, "win-a"),
+        Some(C::ToggleFullscreen { window }) => assert_eq!(
+            window,
+            tiler_core::directional::WindowSubject::Window(tiler_core::directional::WindowId(
+                "win-a".to_owned()
+            ))
+        ),
         other => panic!("toggle-fullscreen decoded {other:?}"),
     }
     // Closed keys: extra keys refuse.
@@ -2048,7 +2063,10 @@ fn focus_directional_empty_win_decodes_as_no_focus_marker() {
     let report = decode_request(&with_command(&command, "7")).expect("empty win decodes");
     assert!(matches!(
         report.command,
-        Some(C::FocusDirectional { ref window, .. }) if window.0.is_empty()
+        Some(C::FocusDirectional {
+            window: tiler_core::world_report::FocusDirectionalSubject::NoFocus,
+            ..
+        })
     ));
     assert_eq!(report.command_seq, Some(7));
     for op in ["move-directional", "send-directional"] {
@@ -2284,9 +2302,12 @@ fn toggle_maximize_decodes_and_result_encodes() {
     value["focused"] = serde_json::Value::String("win-a".to_owned());
     value["foregroundKnown"] = serde_json::json!(true);
     let report = decode_request(&value.to_string()).expect("toggle-maximize decodes");
-    assert!(
-        matches!(report.command, Some(C::ToggleMaximize { ref window }) if window.0 == "win-a")
-    );
+    assert!(matches!(
+        &report.command,
+        Some(C::ToggleMaximize {
+            window: tiler_core::directional::WindowSubject::Window(w),
+        }) if w.0 == "win-a"
+    ));
     assert_eq!(report.command_seq, Some(7));
     let mut engine = connected_engine(
         "gen-1",
@@ -2360,8 +2381,11 @@ fn sticky_commands_decode_typed_and_rejected_result_encodes_exact() {
     let set = serde_json::json!({"op": "set-sticky", "win": "win-a", "value": true});
     let report = decode_request(&with_command(&set, "7")).expect("set-sticky decodes");
     assert!(matches!(
-        report.command,
-        Some(C::SetSticky { ref window, value: true }) if window.0 == "win-a"
+        &report.command,
+        Some(C::SetSticky {
+            window: tiler_core::directional::WindowSubject::Window(w),
+            value: true,
+        }) if w.0 == "win-a"
     ));
     assert_eq!(report.command_seq, Some(7));
     assert!(tiler_core::world_report::valid_command(
@@ -2370,8 +2394,10 @@ fn sticky_commands_decode_typed_and_rejected_result_encodes_exact() {
     let toggle = serde_json::json!({"op": "toggle-sticky", "win": "win-a"});
     let toggled = decode_request(&with_command(&toggle, "7")).expect("toggle-sticky decodes");
     assert!(matches!(
-        toggled.command,
-        Some(C::ToggleSticky { ref window }) if window.0 == "win-a"
+        &toggled.command,
+        Some(C::ToggleSticky {
+            window: tiler_core::directional::WindowSubject::Window(w),
+        }) if w.0 == "win-a"
     ));
     // Required keys stay required; unknown keys refuse.
     for bad in [

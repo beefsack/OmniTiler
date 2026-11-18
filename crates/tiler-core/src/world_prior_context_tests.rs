@@ -293,7 +293,7 @@ fn unchanged_raw_focus_preserves_command_selected_slot_without_cache() {
         Some(WindowId("win-a".to_owned()))
     );
     let focus_b = WorldCommand::Focus {
-        window: WindowId("win-b".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
         direction: Some(crate::directional::Direction::Left),
     };
     let reply = match engine
@@ -389,7 +389,7 @@ fn consumed_report_refreshes_prior_focus_and_empty_set() {
     // previous candidate's values.
     let mut engine = engine();
     let refused = || WorldCommand::Focus {
-        window: WindowId("win-zzz".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-zzz".to_owned())),
         direction: Some(crate::directional::Direction::Left),
     };
     let empty_id = match engine

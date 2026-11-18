@@ -654,40 +654,52 @@ mod tests {
         let cases = [
             (
                 WorldCommand::SetFullscreen {
-                    window: WindowId("win-a".to_owned()),
+                    window: tiler_core::directional::WindowSubject::Window(WindowId(
+                        "win-a".to_owned(),
+                    )),
                     value: true,
                 },
                 "{\"op\":\"set-fullscreen\",\"win\":\"win-a\",\"value\":true}".to_owned(),
             ),
             (
                 WorldCommand::SetFullscreen {
-                    window: WindowId("w".to_owned()),
+                    window: tiler_core::directional::WindowSubject::Window(WindowId(
+                        "w".to_owned(),
+                    )),
                     value: false,
                 },
                 "{\"op\":\"set-fullscreen\",\"win\":\"w\",\"value\":false}".to_owned(),
             ),
             (
                 WorldCommand::ToggleFullscreen {
-                    window: WindowId("win-a".to_owned()),
+                    window: tiler_core::directional::WindowSubject::Window(WindowId(
+                        "win-a".to_owned(),
+                    )),
                 },
                 "{\"op\":\"toggle-fullscreen\",\"win\":\"win-a\"}".to_owned(),
             ),
             (
                 WorldCommand::SetSticky {
-                    window: WindowId("win-a".to_owned()),
+                    window: tiler_core::directional::WindowSubject::Window(WindowId(
+                        "win-a".to_owned(),
+                    )),
                     value: true,
                 },
                 "{\"op\":\"set-sticky\",\"win\":\"win-a\",\"value\":true}".to_owned(),
             ),
             (
                 WorldCommand::ToggleSticky {
-                    window: WindowId("w".to_owned()),
+                    window: tiler_core::directional::WindowSubject::Window(WindowId(
+                        "w".to_owned(),
+                    )),
                 },
                 "{\"op\":\"toggle-sticky\",\"win\":\"w\"}".to_owned(),
             ),
             (
                 WorldCommand::ToggleSticky {
-                    window: WindowId(max_id.clone()),
+                    window: tiler_core::directional::WindowSubject::Window(WindowId(
+                        max_id.clone(),
+                    )),
                 },
                 format!("{{\"op\":\"toggle-sticky\",\"win\":\"{max_id}\"}}"),
             ),
@@ -728,15 +740,15 @@ mod tests {
             let expected_delta = row_delta_for(id);
             for cmd in [
                 WorldCommand::Operation(CoreCommand::ToggleFloat {
-                    window: id.to_owned(),
+                    window: tiler_core::directional::WindowSubject::Window(WindowId(id.to_owned())),
                     float_rect: None,
                 }),
                 WorldCommand::SetSticky {
-                    window: WindowId(id.to_owned()),
+                    window: tiler_core::directional::WindowSubject::Window(WindowId(id.to_owned())),
                     value: true,
                 },
                 WorldCommand::ToggleSticky {
-                    window: WindowId(id.to_owned()),
+                    window: tiler_core::directional::WindowSubject::Window(WindowId(id.to_owned())),
                 },
             ] {
                 let bound = max_intent_save_bound_v4(&with_cmd(Some(cmd)));
@@ -747,14 +759,12 @@ mod tests {
             }
         }
 
-        let implicit_toggle = with_cmd(Some(WorldCommand::Implicit(Box::new(
-            WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: String::new(),
-                float_rect: None,
-            }),
-        ))));
+        let implicit_toggle = with_cmd(Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: tiler_core::directional::WindowSubject::CurrentFocus,
+            float_rect: None,
+        })));
         let max_explicit = with_cmd(Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: "w".repeat(128),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w".repeat(128))),
             float_rect: None,
         })));
         assert_eq!(
@@ -766,7 +776,9 @@ mod tests {
         assert_eq!(max_intent_save_bound_v4(&with_cmd(None)), 0);
         assert_eq!(
             max_intent_save_bound_v4(&with_cmd(Some(WorldCommand::Focus {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned()
+                )),
                 direction: Some(tiler_core::directional::Direction::Left),
             }))),
             0
@@ -798,7 +810,10 @@ mod tests {
                 (
                     n,
                     WorldCommand::Operation(CoreCommand::ToggleFloat {
-                        window: format!("w{:0127}", n),
+                        window: tiler_core::directional::WindowSubject::Window(WindowId(format!(
+                            "w{:0127}",
+                            n
+                        ))),
                         float_rect: None,
                     }),
                 )
@@ -807,12 +822,10 @@ mod tests {
         for n in 101..=128u64 {
             queued.push((
                 n,
-                WorldCommand::Implicit(Box::new(WorldCommand::Operation(
-                    CoreCommand::ToggleFloat {
-                        window: String::new(),
-                        float_rect: None,
-                    },
-                ))),
+                WorldCommand::Operation(CoreCommand::ToggleFloat {
+                    window: tiler_core::directional::WindowSubject::CurrentFocus,
+                    float_rect: None,
+                }),
             ));
         }
 
@@ -835,7 +848,9 @@ mod tests {
         let single_explicit = vec![(
             1,
             WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "win-a".to_owned(),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 float_rect: None,
             }),
         )];
@@ -844,7 +859,9 @@ mod tests {
                 (
                     n,
                     WorldCommand::Operation(CoreCommand::ToggleFloat {
-                        window: "win-a".to_owned(),
+                        window: tiler_core::directional::WindowSubject::Window(WindowId(
+                            "win-a".to_owned(),
+                        )),
                         float_rect: None,
                     }),
                 )
@@ -860,14 +877,18 @@ mod tests {
             (
                 1,
                 WorldCommand::Focus {
-                    window: WindowId("win-a".to_owned()),
+                    window: tiler_core::directional::WindowSubject::Window(WindowId(
+                        "win-a".to_owned(),
+                    )),
                     direction: None,
                 },
             ),
             (
                 2,
                 WorldCommand::Focus {
-                    window: WindowId("win-b".to_owned()),
+                    window: tiler_core::directional::WindowSubject::Window(WindowId(
+                        "win-b".to_owned(),
+                    )),
                     direction: None,
                 },
             ),
@@ -881,14 +902,18 @@ mod tests {
             (
                 1,
                 WorldCommand::Operation(CoreCommand::ToggleFloat {
-                    window: "win-a".to_owned(),
+                    window: tiler_core::directional::WindowSubject::Window(WindowId(
+                        "win-a".to_owned(),
+                    )),
                     float_rect: None,
                 }),
             ),
             (
                 2,
                 WorldCommand::Operation(CoreCommand::ToggleFloat {
-                    window: "win-b".to_owned(),
+                    window: tiler_core::directional::WindowSubject::Window(WindowId(
+                        "win-b".to_owned(),
+                    )),
                     float_rect: None,
                 }),
             ),

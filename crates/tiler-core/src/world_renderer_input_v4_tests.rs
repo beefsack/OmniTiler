@@ -476,9 +476,9 @@ fn window_moved_workspace_refused() {
             "win-a",
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: target_ws.clone(),
+                target_workspace: crate::directional::WorkspaceId(target_ws.clone()),
                 follow: false,
             }),
         ),
@@ -580,7 +580,7 @@ fn workspace_moved_output_refused() {
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
                 tiled: false,
             }),
         ),
@@ -598,7 +598,7 @@ fn workspace_moved_output_refused() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
         ),
     );
@@ -780,9 +780,9 @@ fn ring_reorder_changes_ordinal_and_label_but_accepts_same_workspace() {
             "win-b",
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: spare.clone(),
+                target_workspace: crate::directional::WorkspaceId(spare.clone()),
                 follow: false,
             }),
         ),

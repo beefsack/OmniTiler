@@ -687,9 +687,9 @@ fn send_to_output_refused_when_target_unknown_source_preserved() {
             "b",
             Some(1),
             Some(WorldCommand::Operation(CoreCommand::SendToOutput {
-                window: "b".to_owned(),
-                target_output: "o9".to_owned(),
-                target_workspace: "ws-1".to_owned(),
+                window: crate::directional::WindowId("b".to_owned()),
+                target_output: crate::directional::OutputId("o9".to_owned()),
+                target_workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
                 follow: true,
             })),
         ),

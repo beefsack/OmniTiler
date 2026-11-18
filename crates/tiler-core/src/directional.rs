@@ -187,6 +187,14 @@ impl From<&str> for WindowId {
     }
 }
 
+/// Explicit command window subject: either a named window or execution-time
+/// canonical focus (`win:{"currentFocus":true}`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum WindowSubject {
+    Window(WindowId),
+    CurrentFocus,
+}
+
 /// Ordered N-ary tree node. Analogue of `CosmicNode` / `CosmicLeaf` / `CosmicGroup`.
 /// A group splits its extent along `axis` across `children` proportionally to
 /// `shares`: exactly one positive integer weight per child, in child order.

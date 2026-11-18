@@ -96,7 +96,7 @@ fn commandless_clear_continuation_float() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -225,7 +225,7 @@ fn tiled_maximize_publishes_clear_before_attempt() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -280,7 +280,7 @@ fn commandless_clear_continuation_tiled() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -371,7 +371,7 @@ fn clear_external_clear_alone_abandons_without_continuation() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -448,7 +448,7 @@ fn clear_refusal_retires_and_still_maximized_holds() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -506,7 +506,7 @@ fn clear_refusal_retires_and_still_maximized_holds() {
             "win-max",
             Some(15),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -587,7 +587,7 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -675,7 +675,7 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
         "win-max",
         Some(15),
         Some(WorldCommand::MoveDirectional {
-            window: WindowId("win-max".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
             direction: crate::directional::Direction::Right,
             same_axis: crate::directional::SameAxisMove::default(),
         }),
@@ -756,7 +756,7 @@ fn clear_unknown_current_focus_holds_not_abandons() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -837,7 +837,7 @@ fn clear_empty_original_focus_abandons_on_known_other() {
             "",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -942,7 +942,7 @@ fn clear_unknown_baseline_subject_focus_continues() {
             "",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -1020,7 +1020,7 @@ fn clear_known_non_subject_baseline_retires_promptly() {
             "win-target",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -1106,7 +1106,9 @@ fn clear_changed_focus_view_domain_abandons() {
                 "win-max",
                 Some(cmd),
                 Some(WorldCommand::MoveDirectional {
-                    window: WindowId("win-max".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId(
+                        "win-max".to_owned(),
+                    )),
                     direction: crate::directional::Direction::Right,
                     same_axis: crate::directional::SameAxisMove::default(),
                 }),
@@ -1175,7 +1177,7 @@ fn clear_changed_focus_view_domain_abandons() {
         Some(16),
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: spare.clone(),
+            workspace: crate::directional::WorkspaceId(spare.clone()),
         }),
     );
     let _ = accepted(&mut engine, &selected);
@@ -1287,7 +1289,7 @@ fn clear_close_prunes_and_abandoned_binding_never_reapplies() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -1332,7 +1334,7 @@ fn clear_close_prunes_and_abandoned_binding_never_reapplies() {
             "win-max",
             Some(15),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -1382,7 +1384,7 @@ fn clear_same_window_new_intent_supersedes_without_consuming() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -1405,7 +1407,7 @@ fn clear_same_window_new_intent_supersedes_without_consuming() {
             "win-max",
             Some(14),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Left,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -1497,7 +1499,7 @@ fn clear_same_report_proof_and_new_intent_supersedes_before_continuation() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -1516,7 +1518,7 @@ fn clear_same_report_proof_and_new_intent_supersedes_before_continuation() {
         "win-max",
         Some(14),
         Some(WorldCommand::MoveDirectional {
-            window: WindowId("win-max".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
             direction: crate::directional::Direction::Right,
             same_axis: crate::directional::SameAxisMove::default(),
         }),
@@ -1598,7 +1600,7 @@ fn clear_same_report_core_command_supersedes_before_continuation() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -1613,7 +1615,7 @@ fn clear_same_report_core_command_supersedes_before_continuation() {
         "win-max",
         Some(14),
         Some(WorldCommand::Operation(CoreCommand::Move {
-            window: "win-max".to_owned(),
+            window: crate::directional::WindowId("win-max".to_owned()),
             direction: crate::directional::Direction::Right,
             cross_output_transfer: true,
             same_axis_move: crate::directional::SameAxisMove::default(),
@@ -1677,7 +1679,7 @@ fn clear_consumed_replay_does_not_supersede() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -1693,7 +1695,7 @@ fn clear_consumed_replay_does_not_supersede() {
         "win-max",
         Some(13),
         Some(WorldCommand::MoveDirectional {
-            window: WindowId("win-max".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
             direction: crate::directional::Direction::Right,
             same_axis: crate::directional::SameAxisMove::default(),
         }),
@@ -1763,7 +1765,7 @@ fn clear_send_supersedes_without_consuming() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -1781,7 +1783,7 @@ fn clear_send_supersedes_without_consuming() {
             "win-max",
             Some(14),
             Some(WorldCommand::SendDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 follow: false,
             }),
@@ -1840,7 +1842,7 @@ fn clear_same_report_refused_intent_still_supersedes() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -1865,7 +1867,7 @@ fn clear_same_report_refused_intent_still_supersedes() {
         "win-max",
         Some(14),
         Some(WorldCommand::MoveDirectional {
-            window: WindowId("win-max".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
             direction: crate::directional::Direction::Right,
             same_axis: crate::directional::SameAxisMove::default(),
         }),
@@ -1947,7 +1949,7 @@ fn clear_held_and_unreadable_withhold_without_weakening() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -2041,7 +2043,7 @@ fn clear_held_domain_defers_continuation_until_authority_returns() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -2153,7 +2155,7 @@ fn clear_continuation_refusal_observable_with_original_op() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -2225,7 +2227,9 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
         ),
     );
     let focus = || WorldCommand::FocusDirectional {
-        window: WindowId("win-max".to_owned()),
+        window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+            "win-max".to_owned(),
+        )),
         direction: crate::directional::Direction::Right,
     };
     let (_reply, settlements) = accepted_with_settlements(
@@ -2259,7 +2263,7 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -2280,14 +2284,16 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
     let unknown = [
         (
             WorldCommand::FocusDirectional {
-                window: WindowId("win-gone".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-gone".to_owned(),
+                )),
                 direction: crate::directional::Direction::Right,
             },
             "focus-float-refused-stale",
         ),
         (
             WorldCommand::MoveDirectional {
-                window: WindowId("win-gone".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-gone".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             },
@@ -2373,7 +2379,9 @@ fn sticky_maximize_publishes_clear_before_attempt() {
             "win-sticky",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-sticky".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId(
+                    "win-sticky".to_owned(),
+                )),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -2425,7 +2433,9 @@ fn float_settled_outcomes_retain_and_replay_cached() {
             ],
             Some(11),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-subject".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId(
+                    "win-subject".to_owned(),
+                )),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -2526,7 +2536,7 @@ fn desire_cmdseq_explicit_clear_retained_across_observation_only_replies() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -2607,7 +2617,7 @@ fn desire_cmdseq_cleared_with_withheld_or_spent_token() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -2720,7 +2730,7 @@ fn desire_cmdseq_float_continuation_preserves_original_seq() {
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -2818,7 +2828,9 @@ fn desire_cmdseq_explicit_float_retained_then_withdrawn() {
             Some(9),
             Some(WorldCommand::Operation(
                 crate::boundary::CoreCommand::ToggleFloat {
-                    window: "win-a".to_owned(),
+                    window: crate::directional::WindowSubject::Window(
+                        crate::directional::WindowId("win-a".to_owned()),
+                    ),
                     float_rect: Some(target),
                 },
             )),
@@ -2852,7 +2864,9 @@ fn desire_cmdseq_explicit_float_retained_then_withdrawn() {
             Some(10),
             Some(WorldCommand::Operation(
                 crate::boundary::CoreCommand::ToggleFloat {
-                    window: "win-a".to_owned(),
+                    window: crate::directional::WindowSubject::Window(
+                        crate::directional::WindowId("win-a".to_owned()),
+                    ),
                     float_rect: None,
                 },
             )),
@@ -2965,7 +2979,9 @@ fn newer_clear_intent_supersedes_retained_float_placement() {
             Some(9),
             Some(WorldCommand::Operation(
                 crate::boundary::CoreCommand::ToggleFloat {
-                    window: "win-a".to_owned(),
+                    window: crate::directional::WindowSubject::Window(
+                        crate::directional::WindowId("win-a".to_owned()),
+                    ),
                     float_rect: Some(target),
                 },
             )),
@@ -3011,7 +3027,7 @@ fn newer_clear_intent_supersedes_retained_float_placement() {
             "win-a",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -3082,7 +3098,7 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -3181,7 +3197,7 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             "win-max",
             Some(14),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Left,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -3242,7 +3258,9 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             Some(15),
             Some(WorldCommand::Operation(
                 crate::boundary::CoreCommand::ToggleFloat {
-                    window: "win-ghost".to_owned(),
+                    window: crate::directional::WindowSubject::Window(
+                        crate::directional::WindowId("win-ghost".to_owned()),
+                    ),
                     float_rect: None,
                 },
             )),
@@ -3316,7 +3334,9 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             ],
             Some(21),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-subject".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId(
+                    "win-subject".to_owned(),
+                )),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -3351,7 +3371,9 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             vec![p1_arrived(), float_fact("win-target", "out-a", 300, 100)],
             Some(22),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-subject".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId(
+                    "win-subject".to_owned(),
+                )),
                 direction: crate::directional::Direction::Left,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -3464,7 +3486,7 @@ fn q2_operation_settled_retains_holds_minimize_incomplete_and_prunes_departure_w
             "win-max",
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-max".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),
@@ -3507,7 +3529,7 @@ fn q2_operation_settled_retains_holds_minimize_incomplete_and_prunes_departure_w
             vec![arrived_max(), float_fact("win-other", "out-a", 300, 100)],
             Some(15),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-other".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-other".to_owned())),
                 direction: crate::directional::Direction::Left,
                 same_axis: crate::directional::SameAxisMove::default(),
             }),

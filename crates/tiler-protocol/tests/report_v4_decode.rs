@@ -297,7 +297,12 @@ fn v4_valid_command_and_renderer_shapes() {
     let decoded = decode_ok("messages/report-command-focus.json");
     match decoded.report.command {
         Some(tiler_core::world_report::WorldCommand::Focus { window, direction }) => {
-            assert_eq!(window.0, "win-a");
+            assert_eq!(
+                window,
+                tiler_core::directional::WindowSubject::Window(tiler_core::directional::WindowId(
+                    "win-a".to_owned()
+                ))
+            );
             assert_eq!(direction, None);
         }
         other => panic!("focus decodes by id, got {other:?}"),
@@ -308,7 +313,12 @@ fn v4_valid_command_and_renderer_shapes() {
         Some(tiler_core::world_report::WorldCommand::Operation(
             tiler_core::boundary::CoreCommand::ToggleFloat { window, float_rect },
         )) => {
-            assert_eq!(window, "win-a");
+            assert_eq!(
+                window,
+                tiler_core::directional::WindowSubject::Window(tiler_core::directional::WindowId(
+                    "win-a".to_owned()
+                ))
+            );
             assert!(float_rect.is_some());
         }
         other => panic!("toggle-float promotes, got {other:?}"),
@@ -2057,7 +2067,9 @@ fn v4_writer_refuses_inconsistent_metadata() {
     // refuse instead of emitting unknown wire shapes.
     let mut decoded = decode_ok("messages/report-command-focus.json");
     decoded.report.command = Some(tiler_core::world_report::WorldCommand::Focus {
-        window: tiler_core::directional::WindowId("win-a".to_owned()),
+        window: tiler_core::directional::WindowSubject::Window(tiler_core::directional::WindowId(
+            "win-a".to_owned(),
+        )),
         direction: Some(tiler_core::directional::Direction::Left),
     });
     let error = encode_report_v4(&decoded).expect_err("focus direction refuses");
@@ -2067,7 +2079,7 @@ fn v4_writer_refuses_inconsistent_metadata() {
     decoded.report.command_seq = Some(1);
     decoded.report.command = Some(tiler_core::world_report::WorldCommand::SwitchView {
         output: tiler_core::directional::OutputId("out-a".to_owned()),
-        workspace: "ws-a".to_owned(),
+        workspace: tiler_core::directional::WorkspaceId("ws-a".to_owned()),
     });
     let error = encode_report_v4(&decoded).expect_err("switch-view refuses");
     assert_eq!(error.kind, "snapshot-invalid");
@@ -2109,7 +2121,9 @@ fn v4_writer_refuses_inconsistent_metadata() {
     // An ungrammatical id fails the self-check instead of emitting.
     let mut decoded = decode_ok("messages/report-command-focus.json");
     decoded.report.command = Some(tiler_core::world_report::WorldCommand::Focus {
-        window: tiler_core::directional::WindowId("!!!".to_owned()),
+        window: tiler_core::directional::WindowSubject::Window(tiler_core::directional::WindowId(
+            "!!!".to_owned(),
+        )),
         direction: None,
     });
     let error = encode_report_v4(&decoded).expect_err("bad id refuses");
@@ -2347,7 +2361,9 @@ fn v4_typed_core_command_wire_gates() {
         assert_eq!(
             decoded.report.command,
             Some(WorldCommand::Operation(CoreCommand::Resize {
-                window: "win-a".to_owned(),
+                window: tiler_core::directional::WindowSubject::Window(
+                    tiler_core::directional::WindowId("win-a".to_owned()),
+                ),
                 direction: Direction::Right,
                 mode: expected_mode,
                 press_index: 0,

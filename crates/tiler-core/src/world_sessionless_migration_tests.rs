@@ -178,7 +178,7 @@ fn migrated_session(
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
                 tiled: false,
             }),
         ),
@@ -193,7 +193,7 @@ fn migrated_session(
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
         ),
     );

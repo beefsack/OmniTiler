@@ -173,17 +173,17 @@ impl WorldTransaction<'_> {
         // unchanged, and no engine state is cloned.
         let first_implicit_home_send = matches!(
             first_command,
-            Some(WorldCommand::Implicit(inner))
-                if matches!(
-                    inner.as_ref(),
-                    WorldCommand::SendRelative {
-                        source: crate::world_report::SendSource::HomeThenAction,
-                        ..
-                    } | WorldCommand::SendNumbered {
-                        source: crate::world_report::SendSource::HomeThenAction,
-                        ..
-                    }
-                )
+            Some(
+                WorldCommand::SendRelative {
+                    window: crate::directional::WindowSubject::CurrentFocus,
+                    source: crate::world_report::SendSource::HomeThenAction,
+                    ..
+                } | WorldCommand::SendNumbered {
+                    window: crate::directional::WindowSubject::CurrentFocus,
+                    source: crate::world_report::SendSource::HomeThenAction,
+                    ..
+                }
+            )
         );
         let pre_send_homes: BTreeMap<WindowId, OutputId> = if first_implicit_home_send {
             self.world
@@ -551,7 +551,7 @@ impl WorldTransaction<'_> {
         // resolved execution subject carried from pre-execution state,
         // never focus after the action. The final publish drains with the
         // last executed command's identity.
-        let mut last_bookkeeping: Option<WorldCommand> = None;
+        let mut last_bookkeeping = None;
         let mut first = true;
         for (command_seq, command, is_inline) in commands
             .iter()
@@ -617,14 +617,16 @@ impl WorldTransaction<'_> {
             };
             first = false;
             let was_floating = self.world.floating_scopes.clone();
-            // Resolve the bookkeeping identity before execution: an
-            // implicit command maps to its explicit form against the
-            // current (pre-execution) subject slot.
-            let bookkeeping = self.bookkeeping_command(command);
-            match self.execute_command(
+            // Resolve the execution-time subject once per command before
+            // execution: both bookkeeping and dispatch share the single
+            // resolved command (explicit commands borrow without cloning).
+            let (resolved_focus, dispatched) = self.resolve_command_subject(command);
+            match self.execute_resolved_command(
                 issue,
                 command_seq,
-                command,
+                dispatched.as_ref(),
+                resolved_focus,
+                command.is_current_focus(),
                 &held_scopes,
                 send_source,
                 migration_source,
@@ -639,9 +641,9 @@ impl WorldTransaction<'_> {
                     let result = self.world.command_result.take();
                     self.build_staged_domains();
                     self.settle_intent_admissions();
-                    self.sync_toggle_float_command(&bookkeeping);
+                    self.sync_toggle_float_command(dispatched.as_ref());
                     self.finish_command_success_tail_v4(
-                        &bookkeeping,
+                        dispatched.as_ref(),
                         command_seq,
                         result,
                         Some(effect),
@@ -649,7 +651,7 @@ impl WorldTransaction<'_> {
                         &mut effects,
                         &mut settlements,
                     );
-                    last_bookkeeping = Some(bookkeeping);
+                    last_bookkeeping = Some(dispatched);
                 }
                 CommandApplied::NoEffect => {
                     self.resweep_retiled(
@@ -660,10 +662,10 @@ impl WorldTransaction<'_> {
                     );
                     self.build_staged_domains();
                     self.settle_intent_admissions();
-                    self.sync_toggle_float_command(&bookkeeping);
+                    self.sync_toggle_float_command(dispatched.as_ref());
                     let result = self.world.command_result.take();
                     self.finish_command_success_tail_v4(
-                        &bookkeeping,
+                        dispatched.as_ref(),
                         command_seq,
                         result,
                         None,
@@ -671,7 +673,7 @@ impl WorldTransaction<'_> {
                         &mut effects,
                         &mut settlements,
                     );
-                    last_bookkeeping = Some(bookkeeping);
+                    last_bookkeeping = Some(dispatched);
                 }
                 CommandApplied::Rejected { kind, message } => {
                     // Creation exhaustion is a protocol envelope failure:
@@ -686,13 +688,13 @@ impl WorldTransaction<'_> {
                     *self.world = precommand;
                     crate::world_engine::emit_resize_refusal(self.command_refusal_diagnostic_v4(
                         report,
-                        &bookkeeping,
+                        dispatched.as_ref(),
                         command_seq,
                         kind,
                     ));
                     if let Some(line) = self.resize_refusal_diagnostic_v4_for_command(
                         report,
-                        &bookkeeping,
+                        dispatched.as_ref(),
                         command_seq,
                         kind,
                     ) {
@@ -713,7 +715,7 @@ impl WorldTransaction<'_> {
                         seq: command_seq,
                         result,
                     });
-                    last_bookkeeping = Some(bookkeeping);
+                    last_bookkeeping = Some(dispatched);
                 }
             }
         }
@@ -723,9 +725,9 @@ impl WorldTransaction<'_> {
         // The final publish drains with the last executed command's
         // carried identity (resolved pre-execution subject); commands
         // that never executed fall back to the reported spelling.
-        let published_command: Option<WorldCommand> = last_bookkeeping
-            .clone()
-            .or_else(|| commands.last().map(|(_, command, _)| command.clone()));
+        let published_command = last_bookkeeping
+            .as_deref()
+            .or_else(|| commands.last().map(|(_, command, _)| command));
         // Winner pass before publication: the final focus decision
         // supersedes the retained slot here, while the carriers stay
         // internal for the selection freeze inside publication.
@@ -738,7 +740,7 @@ impl WorldTransaction<'_> {
                 command_consumed: false,
                 issuing_revision,
             },
-            published_command.as_ref(),
+            published_command,
             effects,
             &held_scopes,
         );

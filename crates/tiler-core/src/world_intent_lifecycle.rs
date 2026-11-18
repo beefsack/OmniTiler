@@ -365,33 +365,48 @@ impl WorldTransaction<'_> {
         }
     }
 
-    /// Resolve one command to its post-command bookkeeping identity: an
-    /// implicit (execution-time-subject) command maps to its explicit form
-    /// against the resolved subject; explicit commands clone unchanged. An
-    /// unresolvable implicit falls back to the original placeholder, which
-    /// matches no save arm (preserving mismatch/empty semantics). Call
-    /// BEFORE execution: the subject is the pre-execution slot, never
-    /// focus after the action.
-    pub(crate) fn bookkeeping_command(&self, command: &WorldCommand) -> WorldCommand {
-        match command {
-            WorldCommand::Implicit(inner) => self
-                .execution_subject()
-                .and_then(|window| crate::world_report::explicit_for_implicit(inner, window))
-                .unwrap_or_else(|| command.clone()),
-            _ => command.clone(),
+    /// Resolve one command to its pre-execution subject and bookkeeping
+    /// identity once per command: a `CurrentFocus` command resolves
+    /// `execution_subject()` into `(Some(window), Cow::Owned(resolved))`
+    /// (or `(None, Cow::Borrowed(command))` when no canonical focus is
+    /// available, preserving the original command for diagnostics/bookkeeping);
+    /// already-explicit commands return `(None, Cow::Borrowed(command))`
+    /// with zero cloning. Call BEFORE execution: the subject is the
+    /// pre-execution slot, never focus after the action.
+    pub(crate) fn resolve_command_subject<'a>(
+        &self,
+        command: &'a WorldCommand,
+    ) -> (Option<WindowId>, std::borrow::Cow<'a, WorldCommand>) {
+        if command.is_current_focus() {
+            if let Some(window) = self.execution_subject()
+                && let Some(resolved) = command.resolve_current_focus(window.clone())
+            {
+                return (Some(window), std::borrow::Cow::Owned(resolved));
+            }
+            return (None, std::borrow::Cow::Borrowed(command));
         }
+        (None, std::borrow::Cow::Borrowed(command))
     }
 
+    /// Resolve one command to its post-command bookkeeping identity: a
+    /// `CurrentFocus` command maps to its resolved explicit form; explicit
+    /// commands clone unchanged. An unresolvable `CurrentFocus` falls back
+    /// to the original command. Call BEFORE execution.
+    #[cfg(test)]
+    pub(crate) fn bookkeeping_command(&self, command: &WorldCommand) -> WorldCommand {
+        self.resolve_command_subject(command).1.into_owned()
+    }
     /// Synchronize explicit-float provenance with a successful runtime
     /// float toggle: a toggled-to-float non-automatic exception gains the
     /// durable mark, a toggled-to-tile lifetime loses it. Unknown or held
     /// subjects keep their mark. Only explicit command wins enter; generic
     /// automatic/capacity floats never do.
     pub(crate) fn sync_toggle_float_command(&mut self, command: &WorldCommand) {
-        let window = match crate::world_report::unwrap_implicit(command) {
+        let window = match command {
             WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
-                window, ..
-            }) => WindowId(window.clone()),
+                window: crate::directional::WindowSubject::Window(window),
+                ..
+            }) => window.clone(),
             _ => return,
         };
         if self.world.is_tiled_window_any(&window) {

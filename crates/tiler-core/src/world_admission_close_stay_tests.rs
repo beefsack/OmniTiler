@@ -746,7 +746,7 @@ fn view_switch_return_preserves_remembered_focus() {
             Some(11),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -761,7 +761,7 @@ fn view_switch_return_preserves_remembered_focus() {
             Some(12),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
         ),
     );
@@ -1458,7 +1458,7 @@ fn stay_send_pins_exact_source_focus_or_empty_or_unknown() {
             "win-a",
             Some(11),
             Some(WorldCommand::SendDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: crate::directional::Direction::Right,
                 follow: false,
             }),
@@ -1517,7 +1517,7 @@ fn stay_send_pins_exact_source_focus_or_empty_or_unknown() {
             "win-a",
             Some(11),
             Some(WorldCommand::SendDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: crate::directional::Direction::Right,
                 follow: false,
             }),
@@ -1559,7 +1559,7 @@ fn stay_send_pins_exact_source_focus_or_empty_or_unknown() {
             "win-a",
             Some(11),
             Some(WorldCommand::SendDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: crate::directional::Direction::Right,
                 follow: true,
             }),
@@ -1601,7 +1601,7 @@ fn stay_hidden_mover_scope_converges_without_staged_focus_or_close() {
             "win-b",
             Some(11),
             Some(WorldCommand::SendNumbered {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 source: crate::world_report::SendSource::Explicit(OutputId("out-a".to_owned())),
                 index: 0,
                 follow: false,
@@ -1698,9 +1698,9 @@ fn select_hidden_stay_arrival_without_history_focuses_first_leaf() {
             "win-b",
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: other.clone(),
+                target_workspace: crate::directional::WorkspaceId(other.clone()),
                 follow: false,
             }),
         ),
@@ -1963,9 +1963,9 @@ fn select_first_layout_sticky_skips_to_later_arrival() {
             "win-b",
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: other.clone(),
+                target_workspace: crate::directional::WorkspaceId(other.clone()),
                 follow: false,
             }),
         ),
@@ -2011,9 +2011,9 @@ fn select_first_layout_sticky_skips_to_later_arrival() {
             "win-a",
             Some(12),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: other.clone(),
+                target_workspace: crate::directional::WorkspaceId(other.clone()),
                 follow: false,
             }),
         ),
@@ -2817,7 +2817,7 @@ fn explicit_focus_stays_exempt_from_automatic_guards() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 direction: Some(crate::directional::Direction::Left),
             }),
         ),
@@ -2866,7 +2866,7 @@ fn explicit_focus_stays_exempt_for_maximized_float_target() {
             "win-a",
             Some(11),
             Some(WorldCommand::Focus {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 direction: Some(crate::directional::Direction::Left),
             }),
         ),

@@ -348,7 +348,7 @@ fn fresh_consumed_command_reconciles_without_reexecution() {
     let mut engine = engine();
     accepted_reply(1, admit(&mut engine, &observe(1, facts_pair(), "win-a")));
     let command = WorldCommand::Focus {
-        window: WindowId("win-b".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
         direction: None,
     };
     let executed = accepted_reply(
@@ -411,7 +411,7 @@ fn commandless_reports_leave_highwater_alone() {
     let mut engine = engine();
     accepted_reply(1, admit(&mut engine, &observe(1, facts_pair(), "win-a")));
     let command = WorldCommand::Focus {
-        window: WindowId("win-b".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
         direction: None,
     };
     accepted_reply(
@@ -441,7 +441,7 @@ fn commandless_reports_leave_highwater_alone() {
 fn pre_ready_bootstrap_emits_no_authority() {
     let mut engine = engine();
     let command = WorldCommand::Focus {
-        window: WindowId("win-b".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
         direction: None,
     };
     let incomplete = report_full(
@@ -654,7 +654,7 @@ fn late_import_ingests_but_admitted_latch_ignores() {
                 PresentationRowV4::Valid(ingress("win-a")),
                 Some(1),
                 Some(WorldCommand::SetSticky {
-                    window: win.clone(),
+                    window: crate::directional::WindowSubject::Window(win.clone()),
                     value: true,
                 }),
                 Vec::new(),
@@ -677,7 +677,9 @@ fn late_import_ingests_but_admitted_latch_ignores() {
             PresentationRowV4::Valid(ingress("win-a")),
             Some(2),
             Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: "win-a".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "win-a".to_owned(),
+                )),
                 float_rect: None,
             })),
             vec![("win-a".to_owned(), clear_data)],
@@ -912,9 +914,9 @@ fn creation_exhaustion_discards_candidate_atomically() {
         PresentationRowV4::Valid(ingress("win-a")),
         Some(1),
         Some(WorldCommand::Send {
-            window: WindowId("win-a".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             target_output: OutputId("out-a".to_owned()),
-            target_workspace: "ws-2".to_owned(),
+            target_workspace: crate::directional::WorkspaceId("ws-2".to_owned()),
             follow: false,
         }),
         Vec::new(),
@@ -1102,7 +1104,7 @@ fn handshake_resets_typed_admission_state() {
     let mut engine = engine();
     accepted_reply(1, admit(&mut engine, &observe(1, facts_pair(), "win-a")));
     let command = WorldCommand::Focus {
-        window: WindowId("win-b".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
         direction: None,
     };
     accepted_reply(
@@ -1663,9 +1665,9 @@ fn refused_numbered_send_rolls_back_trailing_create_through_boundary() {
             PresentationRowV4::Valid(ingress("w0")),
             Some(2),
             Some(WorldCommand::Send {
-                window: WindowId("w0".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("w0".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: "ws-2".to_owned(),
+                target_workspace: crate::directional::WorkspaceId("ws-2".to_owned()),
                 follow: true,
             }),
             Vec::new(),
@@ -1702,7 +1704,7 @@ fn refused_numbered_send_rolls_back_trailing_create_through_boundary() {
         PresentationRowV4::Valid(ingress("w0")),
         Some(3),
         Some(WorldCommand::SendNumbered {
-            window: WindowId("wSticky".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("wSticky".to_owned())),
             source: SendSource::Explicit(OutputId("out-a".to_owned())),
             index: 0,
             follow: false,
@@ -1815,7 +1817,7 @@ fn ingest_sensor_counts_adopted_and_discarded_trials() {
                 PresentationRowV4::Valid(ingress("win-a")),
                 Some(1),
                 Some(WorldCommand::Focus {
-                    window: WindowId("win-b".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                     direction: None,
                 }),
                 Vec::new(),
@@ -1837,9 +1839,9 @@ fn ingest_sensor_counts_adopted_and_discarded_trials() {
             PresentationRowV4::Valid(ingress("win-a")),
             Some(2),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: "ws-2".to_owned(),
+                target_workspace: crate::directional::WorkspaceId("ws-2".to_owned()),
                 follow: false,
             }),
             Vec::new(),
@@ -1937,9 +1939,9 @@ fn ingest_sensor_counts_adopted_and_discarded_trials() {
             PresentationRowV4::Valid(ingress("win-a")),
             Some(2),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: "ws-2".to_owned(),
+                target_workspace: crate::directional::WorkspaceId("ws-2".to_owned()),
                 follow: false,
             }),
             Vec::new(),
@@ -2486,7 +2488,7 @@ fn slice_7_1_invalid_screen_not_routing_authority() {
     // source from the action context: the cursor leg must not see the
     // invalid-held screen.
     let command = WorldCommand::SendRelative {
-        window: WindowId("win-new".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("win-new".to_owned())),
         source: SendSource::HomeThenAction,
         delta: 1,
         follow: false,

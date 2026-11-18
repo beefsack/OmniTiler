@@ -716,7 +716,7 @@ fn world_directional_pair_refusal_priority_and_preflight_order() {
     let empty_by_id: BTreeMap<&WindowId, &EngineWindow> = BTreeMap::new();
     let empty_held: BTreeSet<DomainKey> = BTreeSet::new();
     let missing_focus = CoreCommand::Focus {
-        window: "missing".to_owned(),
+        window: crate::directional::WindowId("missing".to_owned()),
         direction: Direction::Right,
         cross_output_transfer: true,
         float_subject: false,
@@ -736,7 +736,7 @@ fn world_directional_pair_refusal_priority_and_preflight_order() {
     let mut held_src = BTreeSet::new();
     held_src.insert(src_key.clone());
     let held_move = CoreCommand::Move {
-        window: "bad/id".to_owned(),
+        window: crate::directional::WindowId("bad/id".to_owned()),
         direction: Direction::Right,
         cross_output_transfer: true,
         same_axis_move: SameAxisMove::GroupWithNeighbor,
@@ -752,7 +752,7 @@ fn world_directional_pair_refusal_priority_and_preflight_order() {
     // 3) Pair world preflight runs before is_opaque_id gate:
     //    without staged pair/topology, non-opaque id still refuses KIND_OPERATION.
     let bad_id_focus = CoreCommand::Focus {
-        window: "bad/id".to_owned(),
+        window: crate::directional::WindowId("bad/id".to_owned()),
         direction: Direction::Right,
         cross_output_transfer: true,
         float_subject: false,
@@ -814,7 +814,7 @@ fn world_directional_pair_refusal_priority_and_preflight_order() {
         }
     ));
     let bad_id_move = CoreCommand::Move {
-        window: "bad/id".to_owned(),
+        window: crate::directional::WindowId("bad/id".to_owned()),
         direction: Direction::Right,
         cross_output_transfer: true,
         same_axis_move: SameAxisMove::GroupWithNeighbor,

@@ -313,7 +313,7 @@ fn global_unique_swap_preserves_nonempty_units() {
             Some(11),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_b.clone(),
+                workspace: crate::directional::WorkspaceId(view_b.clone()),
             }),
         ),
     );
@@ -539,7 +539,7 @@ fn global_unique_swap_keeps_sticky_on_physical_source() {
             Some(11),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_b.clone(),
+                workspace: crate::directional::WorkspaceId(view_b.clone()),
             }),
         ),
     );
@@ -686,7 +686,7 @@ fn global_unique_swap_sticky_only_side_keeps_both_rows() {
             Some(11),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_b.clone(),
+                workspace: crate::directional::WorkspaceId(view_b.clone()),
             }),
         ),
     );
@@ -762,7 +762,7 @@ fn global_unique_swap_empty_side_keeps_sticky_row() {
             Some(11),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_b.clone(),
+                workspace: crate::directional::WorkspaceId(view_b.clone()),
             }),
         ),
     );
@@ -840,7 +840,7 @@ fn global_unique_swap_carries_floating_side_mode_and_flights() {
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
                 tiled: false,
             }),
         ),
@@ -857,7 +857,7 @@ fn global_unique_swap_carries_floating_side_mode_and_flights() {
             Some(12),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_b.clone(),
+                workspace: crate::directional::WorkspaceId(view_b.clone()),
             }),
         ),
     );
@@ -1004,7 +1004,7 @@ fn global_unique_swap_failed_stay_keeps_world_unchanged() {
         Some(12),
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: view_b.clone(),
+            workspace: crate::directional::WorkspaceId(view_b.clone()),
         }),
     );
     let held = BTreeSet::new();
@@ -1080,7 +1080,7 @@ fn global_unique_swap_failed_stay_keeps_world_unchanged() {
             Some(12),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_b.clone(),
+                workspace: crate::directional::WorkspaceId(view_b.clone()),
             }),
         ),
     );
@@ -1190,7 +1190,7 @@ fn global_unique_swap_occupied_current_emits_destination_remembered_focus() {
             Some(11),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_b.clone(),
+                workspace: crate::directional::WorkspaceId(view_b.clone()),
             }),
         ),
     );
@@ -1258,7 +1258,7 @@ fn global_unique_swap_empty_current_emits_destination_remembered_focus() {
             Some(11),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_b.clone(),
+                workspace: crate::directional::WorkspaceId(view_b.clone()),
             }),
         ),
     );
@@ -1325,7 +1325,7 @@ fn global_unique_swap_to_empty_stays_quiet() {
             Some(11),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_b.clone(),
+                workspace: crate::directional::WorkspaceId(view_b.clone()),
             }),
         ),
     );

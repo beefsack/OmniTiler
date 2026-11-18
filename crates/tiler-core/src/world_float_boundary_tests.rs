@@ -218,7 +218,7 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
             Some(11),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: ws_b.clone(),
+                workspace: crate::directional::WorkspaceId(ws_b.clone()),
             }),
             true,
             true,
@@ -237,7 +237,7 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
             Some(12),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: ws_b.clone(),
+                workspace: crate::directional::WorkspaceId(ws_b.clone()),
                 tiled: false,
             }),
             true,
@@ -257,9 +257,9 @@ fn floating_boundary_send_keeps_source_and_proves_recipient() {
             vec![],
             Some(13),
             Some(WorldCommand::Send {
-                window: WindowId("win-t".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-t".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: ws_b.clone(),
+                target_workspace: crate::directional::WorkspaceId(ws_b.clone()),
                 follow: false,
             }),
             true,
@@ -351,7 +351,7 @@ fn default_seed_changes_only_new_workspaces() {
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: ws_a.clone(),
+                workspace: crate::directional::WorkspaceId(ws_a.clone()),
                 tiled: false,
             }),
             true,
@@ -406,7 +406,7 @@ fn default_seed_changes_only_new_workspaces() {
             Some(12),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: trailing.clone(),
+                workspace: crate::directional::WorkspaceId(trailing.clone()),
             }),
             true,
             true,

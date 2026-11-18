@@ -269,7 +269,7 @@ fn stacked_screens() -> Vec<ScreenReport> {
 
 fn move_up(window: &str) -> WorldCommand {
     WorldCommand::MoveDirectional {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
         direction: crate::directional::Direction::Up,
         same_axis: SameAxisMove::GroupWithNeighbor,
     }
@@ -277,7 +277,7 @@ fn move_up(window: &str) -> WorldCommand {
 
 fn send_up(window: &str, follow: bool) -> WorldCommand {
     WorldCommand::SendDirectional {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
         direction: crate::directional::Direction::Up,
         follow,
     }
@@ -792,7 +792,7 @@ fn exhausted_move_retains_identity_pinned_transfer_and_settles_on_arrival() {
             "win-a",
             Some(115),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: crate::directional::Direction::Down,
                 same_axis: SameAxisMove::GroupWithNeighbor,
             }),
@@ -862,7 +862,7 @@ fn capacity_float_fallback_retains_identity_pinned_window_transfer() {
             "win-a",
             Some(171),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: SameAxisMove::GroupWithNeighbor,
             }),
@@ -1124,7 +1124,9 @@ fn move_and_resize_ride_the_snapshot() {
         "win-b",
         Some(85),
         Some(WorldCommand::Operation(CoreCommand::Resize {
-            window: "win-b".to_owned(),
+            window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                "win-b".to_owned(),
+            )),
             direction: crate::directional::Direction::Right,
             mode: crate::directional::ResizeSelector::Outwards,
             press_index: 0,
@@ -1141,7 +1143,7 @@ fn move_and_resize_ride_the_snapshot() {
         "win-b",
         Some(86),
         Some(WorldCommand::Operation(CoreCommand::Move {
-            window: "win-b".to_owned(),
+            window: crate::directional::WindowId("win-b".to_owned()),
             direction: crate::directional::Direction::Right,
             cross_output_transfer: false,
             same_axis_move: SameAxisMove::GroupWithNeighbor,
@@ -1197,7 +1199,7 @@ fn drag_drop_pair_resolves_pointer_target() {
         "win-a",
         Some(87),
         Some(WorldCommand::Operation(CoreCommand::DragDrop {
-            window: "win-a".to_owned(),
+            window: crate::directional::WindowId("win-a".to_owned()),
             x: 810,
             y: 50,
             hover_prior: None,
@@ -1264,9 +1266,9 @@ fn operation_send_retains_and_foreign_routes_refuse() {
         "win-a",
         Some(32),
         Some(WorldCommand::Operation(CoreCommand::SendToWorkspace {
-            window: "win-a".to_owned(),
-            target_output: "out-a".to_owned(),
-            target_workspace: ring[1].clone(),
+            window: crate::directional::WindowId("win-a".to_owned()),
+            target_output: crate::directional::OutputId("out-a".to_owned()),
+            target_workspace: crate::directional::WorkspaceId(ring[1].clone()),
             follow: true,
         })),
     );
@@ -1401,9 +1403,9 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
             window,
             Some(42 + i as u64),
             Some(WorldCommand::Send {
-                window: WindowId(window.to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: ring[1].clone(),
+                target_workspace: crate::directional::WorkspaceId(ring[1].clone()),
                 follow: true,
             }),
         );
@@ -1439,9 +1441,9 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
         "win-f",
         Some(44),
         Some(WorldCommand::Send {
-            window: WindowId("win-f".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("win-f".to_owned())),
             target_output: OutputId("out-a".to_owned()),
-            target_workspace: ring[1].clone(),
+            target_workspace: crate::directional::WorkspaceId(ring[1].clone()),
             follow: true,
         }),
     );
@@ -1538,9 +1540,9 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
         "win-a",
         Some(45),
         Some(WorldCommand::Send {
-            window: WindowId("win-a".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             target_output: OutputId("out-a".to_owned()),
-            target_workspace: ring[1].clone(),
+            target_workspace: crate::directional::WorkspaceId(ring[1].clone()),
             follow: true,
         }),
     );
@@ -1582,9 +1584,9 @@ fn deterministic_sequence_replay_matches_exactly() {
             "win-a",
             Some(5),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: ring[1].clone(),
+                target_workspace: crate::directional::WorkspaceId(ring[1].clone()),
                 follow: true,
             }),
         ));
@@ -1615,7 +1617,7 @@ fn deterministic_sequence_replay_matches_exactly() {
             "win-b",
             Some(7),
             Some(WorldCommand::Focus {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 direction: Some(crate::directional::Direction::Left),
             }),
         ));
@@ -2020,7 +2022,7 @@ fn unknown_outputs_and_views_hold_fail_closed() {
         "win-a",
         Some(91),
         Some(WorldCommand::Focus {
-            window: WindowId("win-ghost".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("win-ghost".to_owned())),
             direction: Some(crate::directional::Direction::Left),
         }),
     );
@@ -2199,7 +2201,7 @@ fn operation_drag_pair_preserves_configured_outer_across_outputs() {
             "win-a",
             Some(drop_seq),
             Some(WorldCommand::Operation(CoreCommand::DragDrop {
-                window: "win-a".to_owned(),
+                window: crate::directional::WindowId("win-a".to_owned()),
                 x: 860,
                 y: 120,
                 hover_prior: None,
@@ -2335,45 +2337,47 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
         assert_pair_gaps(&engine, &key_a, &key_b);
         let command = match case {
             0 => WorldCommand::MoveDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: SameAxisMove::GroupWithNeighbor,
             },
             1 => WorldCommand::Operation(CoreCommand::Move {
-                window: "win-a".to_owned(),
+                window: crate::directional::WindowId("win-a".to_owned()),
                 direction: crate::directional::Direction::Right,
                 cross_output_transfer: true,
                 same_axis_move: SameAxisMove::GroupWithNeighbor,
             }),
             2 => WorldCommand::FocusDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 direction: crate::directional::Direction::Right,
             },
             3 => WorldCommand::Operation(CoreCommand::Focus {
-                window: "win-a".to_owned(),
+                window: crate::directional::WindowId("win-a".to_owned()),
                 direction: crate::directional::Direction::Right,
                 cross_output_transfer: true,
                 float_subject: false,
             }),
             4 => WorldCommand::Operation(CoreCommand::SendToWorkspace {
-                window: "win-a".to_owned(),
-                target_output: "out-a".to_owned(),
-                target_workspace: ring[1].clone(),
+                window: crate::directional::WindowId("win-a".to_owned()),
+                target_output: crate::directional::OutputId("out-a".to_owned()),
+                target_workspace: crate::directional::WorkspaceId(ring[1].clone()),
                 follow: true,
             }),
             5 => WorldCommand::Operation(CoreCommand::SendToWorkspace {
-                window: "win-a".to_owned(),
-                target_output: "out-a".to_owned(),
-                target_workspace: ring[1].clone(),
+                window: crate::directional::WindowId("win-a".to_owned()),
+                target_output: crate::directional::OutputId("out-a".to_owned()),
+                target_workspace: crate::directional::WorkspaceId(ring[1].clone()),
                 follow: false,
             }),
             6 => WorldCommand::SendDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: crate::directional::Direction::Right,
                 follow: true,
             },
             _ => WorldCommand::SendDirectional {
-                window: WindowId("win-a".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: crate::directional::Direction::Right,
                 follow: false,
             },
@@ -2525,9 +2529,9 @@ fn explicit_output_send_uses_output_route() {
         );
         assert_pair_gaps(&engine, &key_a, &key_b);
         let command = WorldCommand::Operation(CoreCommand::SendToOutput {
-            window: "win-a".to_owned(),
-            target_output: "out-b".to_owned(),
-            target_workspace: view_b.clone(),
+            window: crate::directional::WindowId("win-a".to_owned()),
+            target_output: crate::directional::OutputId("out-b".to_owned()),
+            target_workspace: crate::directional::WorkspaceId(view_b.clone()),
             follow,
         });
         let reply = match engine
@@ -2626,7 +2630,7 @@ fn explicit_output_send_uses_output_route() {
                 "win-a",
                 Some(11),
                 Some(WorldCommand::SendDirectional {
-                    window: WindowId("win-a".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                     direction: crate::directional::Direction::Right,
                     follow,
                 }),
@@ -2714,9 +2718,9 @@ fn explicit_output_send_uses_output_route() {
                 "win-a",
                 Some(11),
                 Some(WorldCommand::Operation(CoreCommand::SendToOutput {
-                    window: "win-a".to_owned(),
-                    target_output: "out-b".to_owned(),
-                    target_workspace: target_ws.clone(),
+                    window: crate::directional::WindowId("win-a".to_owned()),
+                    target_output: crate::directional::OutputId("out-b".to_owned()),
+                    target_workspace: crate::directional::WorkspaceId(target_ws.clone()),
                     follow: true,
                 })),
             ),
@@ -2762,9 +2766,9 @@ fn explicit_output_send_fences_match_output_route() {
             "win-a",
             Some(11),
             Some(WorldCommand::Operation(CoreCommand::SendToOutput {
-                window: "win-a".to_owned(),
-                target_output: "out-b".to_owned(),
-                target_workspace: view_b.clone(),
+                window: crate::directional::WindowId("win-a".to_owned()),
+                target_output: crate::directional::OutputId("out-b".to_owned()),
+                target_workspace: crate::directional::WorkspaceId(view_b.clone()),
                 follow,
             })),
         );
@@ -2798,9 +2802,9 @@ fn explicit_output_send_fences_match_output_route() {
             "win-a",
             Some(11),
             Some(WorldCommand::Operation(CoreCommand::SendToOutput {
-                window: "win-a".to_owned(),
-                target_output: "out-b".to_owned(),
-                target_workspace: view_b.clone(),
+                window: crate::directional::WindowId("win-a".to_owned()),
+                target_output: crate::directional::OutputId("out-b".to_owned()),
+                target_workspace: crate::directional::WorkspaceId(view_b.clone()),
                 follow,
             })),
         );
@@ -2836,9 +2840,9 @@ fn explicit_output_send_fences_match_output_route() {
             "win-a",
             Some(11),
             Some(WorldCommand::Operation(CoreCommand::SendToOutput {
-                window: "win-a".to_owned(),
-                target_output: "out-b".to_owned(),
-                target_workspace: view_b.clone(),
+                window: crate::directional::WindowId("win-a".to_owned()),
+                target_output: crate::directional::OutputId("out-b".to_owned()),
+                target_workspace: crate::directional::WorkspaceId(view_b.clone()),
                 follow,
             })),
         );
@@ -2861,9 +2865,9 @@ fn explicit_output_send_fences_match_output_route() {
             "win-a",
             Some(12),
             Some(WorldCommand::Operation(CoreCommand::SendToOutput {
-                window: "win-a".to_owned(),
-                target_output: "out-b".to_owned(),
-                target_workspace: view_b,
+                window: crate::directional::WindowId("win-a".to_owned()),
+                target_output: crate::directional::OutputId("out-b".to_owned()),
+                target_workspace: crate::directional::WorkspaceId(view_b),
                 follow,
             })),
         );
@@ -2924,7 +2928,7 @@ fn explicit_output_send_fences_match_output_route() {
                 Some(10),
                 Some(WorldCommand::SelectWorkspace {
                     output: OutputId("out-a".to_owned()),
-                    workspace: ring[1].clone(),
+                    workspace: crate::directional::WorkspaceId(ring[1].clone()),
                 }),
             ),
         );
@@ -2944,7 +2948,7 @@ fn explicit_output_send_fences_match_output_route() {
                 Some(WorldCommand::MigrateWorkspace {
                     source_output: OutputId("out-a".to_owned()),
                     target_output: OutputId("out-b".to_owned()),
-                    workspace: view_a.clone(),
+                    workspace: crate::directional::WorkspaceId(view_a.clone()),
                 }),
             ),
         );
@@ -2963,9 +2967,9 @@ fn explicit_output_send_fences_match_output_route() {
             "win-x",
             Some(12),
             Some(WorldCommand::Operation(CoreCommand::SendToOutput {
-                window: "win-x".to_owned(),
-                target_output: "out-b".to_owned(),
-                target_workspace: view_a.clone(),
+                window: crate::directional::WindowId("win-x".to_owned()),
+                target_output: crate::directional::OutputId("out-b".to_owned()),
+                target_workspace: crate::directional::WorkspaceId(view_a.clone()),
                 follow,
             })),
         );
@@ -3684,9 +3688,9 @@ fn physical_return_explicit_send_away_not_pulled_back() {
             "win-b",
             Some(11),
             Some(crate::world_report::WorldCommand::Send {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: view_a.clone(),
+                target_workspace: crate::directional::WorkspaceId(view_a.clone()),
                 follow: false,
             }),
         ),
@@ -5625,9 +5629,9 @@ fn physical_chain_return_moved_out_member_stays_away() {
                 "win-s",
                 Some(11),
                 Some(WorldCommand::Operation(CoreCommand::SendToWorkspace {
-                    window: "win-s".to_owned(),
-                    target_output: "out-u".to_owned(),
-                    target_workspace: view_u.clone(),
+                    window: crate::directional::WindowId("win-s".to_owned()),
+                    target_output: crate::directional::OutputId("out-u".to_owned()),
+                    target_workspace: crate::directional::WorkspaceId(view_u.clone()),
                     follow: false,
                 })),
             ),

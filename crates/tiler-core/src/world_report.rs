@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 
 use crate::boundary::CoreCommand;
 use crate::bounds::{GEOMETRY_BOUND, is_opaque_id, valid_carried_rect};
-use crate::directional::{Direction, NodeId, OutputId, WindowId, WorkspaceId};
+use crate::directional::{Direction, NodeId, OutputId, WindowId, WindowSubject, WorkspaceId};
 use crate::geometry::Rect;
 use crate::gesture::{GestureIngress, GestureSettled};
 use crate::ids::NativeWorkspaceId;
@@ -2081,6 +2081,15 @@ pub enum SendSource {
     HomeThenAction,
 }
 
+/// Subject of a [`WorldCommand::FocusDirectional`] command: an explicit window
+/// id, execution-time canonical focus (`win:{"currentFocus":true}`), or
+/// genuine no-focus (`win:""`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum FocusDirectionalSubject {
+    Window(WindowId),
+    CurrentFocus,
+    NoFocus,
+}
 /// Explicit world commands. At most one per report; observation-only
 /// reports carry none. Every variant consumes one `command_seq` (bound to
 /// the adapter incarnation/core generation high-watermark) and is retained
@@ -2100,21 +2109,27 @@ pub enum SendSource {
 pub enum WorldCommand {
     /// One-shot focus attempt (emits an effect, never retained).
     Focus {
-        window: WindowId,
+        window: WindowSubject,
         direction: Option<Direction>,
     },
     /// Window transfer (retained until confirmed/refused/superseded).
     Send {
-        window: WindowId,
+        window: WindowSubject,
         target_output: OutputId,
-        target_workspace: String,
+        target_workspace: WorkspaceId,
         follow: bool,
     },
     /// View-only switch (retained until confirmed/superseded; no window).
-    SwitchView { output: OutputId, workspace: String },
+    SwitchView {
+        output: OutputId,
+        workspace: WorkspaceId,
+    },
     /// Planner-resolved direct selection (D2): records history and retains
     /// a view target like [`WorldCommand::SwitchView`].
-    SelectWorkspace { output: OutputId, workspace: String },
+    SelectWorkspace {
+        output: OutputId,
+        workspace: WorkspaceId,
+    },
     /// Planner-resolved numbered selection (D2): positional `1..=9` over
     /// the scoped ring (`0` is the trailing path and is invalid here).
     /// `None` resolves the output in core from the cursor-first switch
@@ -2140,7 +2155,7 @@ pub enum WorldCommand {
     /// pre-observation retained home plus their fallback chain. Never an
     /// adapter output decision.
     SendRelative {
-        window: WindowId,
+        window: WindowSubject,
         source: SendSource,
         delta: i32,
         follow: bool,
@@ -2153,7 +2168,7 @@ pub enum WorldCommand {
     /// any view. Source resolution as above; explicit outputs bypass
     /// unchanged.
     SendNumbered {
-        window: WindowId,
+        window: WindowSubject,
         source: SendSource,
         index: u8,
         follow: bool,
@@ -2166,7 +2181,7 @@ pub enum WorldCommand {
     /// submit [`WorldCommand::ToggleWorkspaceTiling`] instead.
     SetWorkspaceTiling {
         output: OutputId,
-        workspace: String,
+        workspace: WorkspaceId,
         tiled: bool,
     },
     /// Neutral per-workspace tiling toggle: flip the mode retained for one
@@ -2174,14 +2189,17 @@ pub enum WorldCommand {
     /// compose (each execution re-reads the retained mode), so racing
     /// adapters resolve identically with no snapshot preselection.
     /// Semantics otherwise match [`WorldCommand::SetWorkspaceTiling`].
-    ToggleWorkspaceTiling { output: OutputId, workspace: String },
+    ToggleWorkspaceTiling {
+        output: OutputId,
+        workspace: WorkspaceId,
+    },
     /// Whole-workspace migration (D2): move one live logical workspace id
     /// from the source scope to the target scope. Retained until member
     /// arrival plus both view proofs confirm it.
     MigrateWorkspace {
         source_output: OutputId,
         target_output: OutputId,
-        workspace: String,
+        workspace: WorkspaceId,
     },
     /// Direction-only focus (core-owned topology): the adapter names the
     /// window and direction only, never the target or `crossOutput`. Core
@@ -2193,11 +2211,12 @@ pub enum WorldCommand {
     /// world-owned float-focus lattice (candidates/target in core), never
     /// an adapter bypass.
     ///
-    /// An empty window names no focused window: the core starts from the
-    /// current workspace/output (neutral action context) and crosses by
-    /// the existing cross-output selection, otherwise no effect.
+    /// [`FocusDirectionalSubject::NoFocus`] names no focused window: the
+    /// core starts from the current workspace/output (neutral action
+    /// context) and crosses by the existing cross-output selection,
+    /// otherwise no effect.
     FocusDirectional {
-        window: WindowId,
+        window: FocusDirectionalSubject,
         direction: Direction,
     },
     /// Direction-only move (core-owned topology): the adapter names the
@@ -2206,7 +2225,7 @@ pub enum WorldCommand {
     /// directions, otherwise the local R1-R3 move runs. Never silently
     /// refuses a local move for missing topology.
     MoveDirectional {
-        window: WindowId,
+        window: WindowSubject,
         direction: Direction,
         same_axis: crate::directional::SameAxisMove,
     },
@@ -2216,7 +2235,7 @@ pub enum WorldCommand {
     /// adapter `adjacentTarget`), then retains an ordinary window transfer.
     /// No resolvable target refuses without mutation.
     SendDirectional {
-        window: WindowId,
+        window: WindowSubject,
         direction: Direction,
         follow: bool,
     },
@@ -2235,22 +2254,22 @@ pub enum WorldCommand {
     /// adapter clears fullscreen first); `was_maximized` carries the source
     /// maximized preimage. Never retains or mutates topology: the snapshot
     /// retains base membership; the result authorizes the native transition.
-    ToggleMaximize { window: WindowId },
+    ToggleMaximize { window: WindowSubject },
     /// Neutral sticky set: the explicit on/off sticky intent for one
     /// window. Core resolves and retains the target; the adapter never
     /// decides.
-    SetSticky { window: WindowId, value: bool },
+    SetSticky { window: WindowSubject, value: bool },
     /// Neutral sticky toggle: flip the retained sticky state for one
     /// window at command-execution time. Queued toggles compose (each
     /// execution re-reads the retained state).
-    ToggleSticky { window: WindowId },
+    ToggleSticky { window: WindowSubject },
     /// Native fullscreen set: the explicit on/off fullscreen intent for one
     /// window. Core resolves and retains the target; the adapter never
     /// decides.
-    SetFullscreen { window: WindowId, value: bool },
+    SetFullscreen { window: WindowSubject, value: bool },
     /// Native fullscreen toggle: flip the readable native fullscreen fact
     /// at command-execution time. An unconfirmed target is not a native fact.
-    ToggleFullscreen { window: WindowId },
+    ToggleFullscreen { window: WindowSubject },
     /// Execute one [`CoreCommand`] through the world-owned layout against
     /// the homing (or first readable) domain.
     /// `SendToWorkspace`/`SendToOutput` retain a window transfer exactly
@@ -2259,12 +2278,6 @@ pub enum WorldCommand {
     /// directional migration, and domain release have dedicated world
     /// commands or no world route and are refused here.
     Operation(CoreCommand),
-    /// Execution-time core-focus subject (wire `win:{"currentFocus":true}`): the adapter
-    /// names the payload only, never the subject. The core resolves the
-    /// window from retained canonical focus at execution time, then runs
-    /// the wrapped explicit command. Wraps only windowed commands; the
-    /// inner carries a placeholder empty subject that never executes.
-    Implicit(Box<WorldCommand>),
 }
 
 /// Closed phase discriminator for retained operation settlement rows:
@@ -3380,22 +3393,33 @@ pub fn valid_send_source(source: &SendSource) -> bool {
 /// token is in a closed vocabulary, every index/delta is in range, and
 /// every rect/coordinate is within carried bounds.
 #[must_use]
+fn valid_window_subject(subject: &WindowSubject) -> bool {
+    match subject {
+        WindowSubject::Window(window) => is_opaque_id(&window.0),
+        WindowSubject::CurrentFocus => true,
+    }
+}
+
+#[must_use]
 pub fn valid_command(command: &WorldCommand) -> bool {
     match command {
-        WorldCommand::Focus { window, direction } => is_opaque_id(&window.0) && direction.is_some(),
+        WorldCommand::Focus { window, direction } => {
+            valid_window_subject(window)
+                && (matches!(window, WindowSubject::CurrentFocus) || direction.is_some())
+        }
         WorldCommand::Send {
             window,
             target_output,
             target_workspace,
             ..
         } => {
-            is_opaque_id(&window.0)
+            valid_window_subject(window)
                 && is_opaque_id(&target_output.0)
-                && is_opaque_id(target_workspace)
+                && is_opaque_id(&target_workspace.0)
         }
         WorldCommand::SwitchView { output, workspace }
         | WorldCommand::SelectWorkspace { output, workspace } => {
-            is_opaque_id(&output.0) && is_opaque_id(workspace)
+            is_opaque_id(&output.0) && is_opaque_id(&workspace.0)
         }
         WorldCommand::SelectNumbered { output, index } => {
             output.as_ref().is_none_or(|out| is_opaque_id(&out.0)) && (1..=9).contains(index)
@@ -3411,18 +3435,22 @@ pub fn valid_command(command: &WorldCommand) -> bool {
             source,
             delta,
             ..
-        } => is_opaque_id(&window.0) && valid_send_source(source) && (*delta == -1 || *delta == 1),
+        } => {
+            valid_window_subject(window)
+                && valid_send_source(source)
+                && (*delta == -1 || *delta == 1)
+        }
         WorldCommand::SendNumbered {
             window,
             source,
             index,
             ..
-        } => is_opaque_id(&window.0) && valid_send_source(source) && *index <= 9,
+        } => valid_window_subject(window) && valid_send_source(source) && *index <= 9,
         WorldCommand::SetWorkspaceTiling {
             output, workspace, ..
         }
         | WorldCommand::ToggleWorkspaceTiling { output, workspace } => {
-            is_opaque_id(&output.0) && is_opaque_id(workspace)
+            is_opaque_id(&output.0) && is_opaque_id(&workspace.0)
         }
         WorldCommand::MigrateWorkspace {
             source_output,
@@ -3431,84 +3459,30 @@ pub fn valid_command(command: &WorldCommand) -> bool {
         } => {
             is_opaque_id(&source_output.0)
                 && is_opaque_id(&target_output.0)
-                && is_opaque_id(workspace)
+                && is_opaque_id(&workspace.0)
                 && source_output != target_output
         }
-        WorldCommand::FocusDirectional { window, .. } => {
-            // An empty window is the no-focused-window form (start from
-            // the current workspace/output); every other form names its
-            // subject.
-            window.0.is_empty() || is_opaque_id(&window.0)
-        }
-        WorldCommand::MoveDirectional { window, .. } => is_opaque_id(&window.0),
-        WorldCommand::SendDirectional { window, .. } => is_opaque_id(&window.0),
+        WorldCommand::FocusDirectional { window, .. } => match window {
+            FocusDirectionalSubject::Window(id) => is_opaque_id(&id.0),
+            FocusDirectionalSubject::CurrentFocus | FocusDirectionalSubject::NoFocus => true,
+        },
+        WorldCommand::MoveDirectional { window, .. }
+        | WorldCommand::SendDirectional { window, .. }
+        | WorldCommand::ToggleMaximize { window }
+        | WorldCommand::SetSticky { window, .. }
+        | WorldCommand::ToggleSticky { window }
+        | WorldCommand::SetFullscreen { window, .. }
+        | WorldCommand::ToggleFullscreen { window } => valid_window_subject(window),
         WorldCommand::MigrateDirectional { .. } => true,
-        WorldCommand::ToggleMaximize { window } => is_opaque_id(&window.0),
-        WorldCommand::SetSticky { window, .. } | WorldCommand::ToggleSticky { window } => {
-            is_opaque_id(&window.0)
-        }
-        WorldCommand::SetFullscreen { window, .. } | WorldCommand::ToggleFullscreen { window } => {
-            is_opaque_id(&window.0)
-        }
         WorldCommand::Operation(command) => valid_operation(command),
-        WorldCommand::Implicit(inner) => valid_implicit_command(inner),
     }
 }
 
-/// Validate one execution-time (`win:{"currentFocus":true}`) command payload: the same
-/// checks as [`valid_command`] minus the subject identity (resolved at
-/// execution time from retained canonical focus). Only windowed commands
-/// may ride the implicit subject; windowless commands refuse.
+/// True when this command carries an execution-time canonical focus subject
+/// (`win:{"currentFocus":true}`).
 #[must_use]
-pub fn valid_implicit_command(command: &WorldCommand) -> bool {
-    match command {
-        WorldCommand::Focus { .. } => true,
-        WorldCommand::Send {
-            target_output,
-            target_workspace,
-            ..
-        } => is_opaque_id(&target_output.0) && is_opaque_id(target_workspace),
-        WorldCommand::SendRelative { source, delta, .. } => {
-            valid_send_source(source) && (*delta == -1 || *delta == 1)
-        }
-        WorldCommand::SendNumbered { source, index, .. } => {
-            valid_send_source(source) && *index <= 9
-        }
-        WorldCommand::FocusDirectional { .. } => true,
-        WorldCommand::MoveDirectional { .. } => true,
-        WorldCommand::SendDirectional { .. } => true,
-        WorldCommand::ToggleMaximize { .. }
-        | WorldCommand::ToggleSticky { .. }
-        | WorldCommand::ToggleFullscreen { .. } => true,
-        WorldCommand::SetSticky { .. } | WorldCommand::SetFullscreen { .. } => true,
-        WorldCommand::Operation(command) => valid_implicit_operation(command),
-        // Windowless commands never ride the implicit subject. Nested
-        // implicit wrappers are not a wire spelling.
-        _ => false,
-    }
-}
-
-/// Validate one execution-time operation payload minus the subject.
-#[must_use]
-pub fn valid_implicit_operation(command: &CoreCommand) -> bool {
-    match command {
-        CoreCommand::ToggleFloat { float_rect, .. } => {
-            float_rect.is_none_or(|r| valid_carried_rect(r.x, r.y, r.w, r.h))
-        }
-        CoreCommand::ToggleOrientation { .. } => true,
-        CoreCommand::Resize { .. } => true,
-        _ => false,
-    }
-}
-
-/// Borrow through one execution-time wrapper: the wrapped explicit
-/// payload, or the command itself when it is already explicit.
-#[must_use]
-pub fn unwrap_implicit(command: &WorldCommand) -> &WorldCommand {
-    match command {
-        WorldCommand::Implicit(inner) => inner,
-        other => other,
-    }
+pub fn is_current_focus_command(command: &WorldCommand) -> bool {
+    command.is_current_focus()
 }
 
 /// True when one queued command can replace a retained intent target: `SetSticky`,
@@ -3517,113 +3491,198 @@ pub fn unwrap_implicit(command: &WorldCommand) -> &WorldCommand {
 #[must_use]
 pub fn is_intent_save_command_v4(command: &WorldCommand) -> bool {
     matches!(
-        unwrap_implicit(command),
+        command,
         WorldCommand::SetSticky { .. }
             | WorldCommand::ToggleSticky { .. }
             | WorldCommand::Operation(CoreCommand::ToggleFloat { .. })
     )
 }
 
-/// Build the explicit command for one resolved execution-time subject:
-/// clone the wrapped payload with the resolved subject. Windowless
-/// payloads (never a valid implicit spelling) return `None`.
-#[must_use]
-pub fn explicit_for_implicit(inner: &WorldCommand, window: WindowId) -> Option<WorldCommand> {
-    let resolved = window.0.clone();
-    match inner {
-        WorldCommand::Focus { direction, .. } => Some(WorldCommand::Focus {
-            window,
-            direction: *direction,
-        }),
-        WorldCommand::Send {
-            target_output,
-            target_workspace,
-            follow,
-            ..
-        } => Some(WorldCommand::Send {
-            window,
-            target_output: target_output.clone(),
-            target_workspace: target_workspace.clone(),
-            follow: *follow,
-        }),
-        WorldCommand::SendRelative {
-            source,
-            delta,
-            follow,
-            ..
-        } => Some(WorldCommand::SendRelative {
-            window,
-            source: source.clone(),
-            delta: *delta,
-            follow: *follow,
-        }),
-        WorldCommand::SendNumbered {
-            source,
-            index,
-            follow,
-            ..
-        } => Some(WorldCommand::SendNumbered {
-            window,
-            source: source.clone(),
-            index: *index,
-            follow: *follow,
-        }),
-        WorldCommand::FocusDirectional { direction, .. } => Some(WorldCommand::FocusDirectional {
-            window,
-            direction: *direction,
-        }),
-        WorldCommand::MoveDirectional {
-            direction,
-            same_axis,
-            ..
-        } => Some(WorldCommand::MoveDirectional {
-            window,
-            direction: *direction,
-            same_axis: *same_axis,
-        }),
-        WorldCommand::SendDirectional {
-            direction, follow, ..
-        } => Some(WorldCommand::SendDirectional {
-            window,
-            direction: *direction,
-            follow: *follow,
-        }),
-        WorldCommand::ToggleMaximize { .. } => Some(WorldCommand::ToggleMaximize { window }),
-        WorldCommand::SetSticky { value, .. } => Some(WorldCommand::SetSticky {
-            window,
-            value: *value,
-        }),
-        WorldCommand::ToggleSticky { .. } => Some(WorldCommand::ToggleSticky { window }),
-        WorldCommand::SetFullscreen { value, .. } => Some(WorldCommand::SetFullscreen {
-            window,
-            value: *value,
-        }),
-        WorldCommand::ToggleFullscreen { .. } => Some(WorldCommand::ToggleFullscreen { window }),
-        WorldCommand::Operation(core) => {
-            let resolved_core = match core {
-                CoreCommand::ToggleFloat { float_rect, .. } => CoreCommand::ToggleFloat {
-                    window: resolved,
-                    float_rect: *float_rect,
-                },
-                CoreCommand::ToggleOrientation { .. } => {
-                    CoreCommand::ToggleOrientation { window: resolved }
-                }
-                CoreCommand::Resize {
-                    direction,
-                    mode,
-                    press_index,
+impl WorldCommand {
+    /// True when this command carries an execution-time canonical focus subject
+    /// (`win:{"currentFocus":true}`).
+    #[must_use]
+    pub fn is_current_focus(&self) -> bool {
+        matches!(
+            self,
+            Self::Focus {
+                window: WindowSubject::CurrentFocus,
+                ..
+            } | Self::Send {
+                window: WindowSubject::CurrentFocus,
+                ..
+            } | Self::SendRelative {
+                window: WindowSubject::CurrentFocus,
+                ..
+            } | Self::SendNumbered {
+                window: WindowSubject::CurrentFocus,
+                ..
+            } | Self::FocusDirectional {
+                window: FocusDirectionalSubject::CurrentFocus,
+                ..
+            } | Self::MoveDirectional {
+                window: WindowSubject::CurrentFocus,
+                ..
+            } | Self::SendDirectional {
+                window: WindowSubject::CurrentFocus,
+                ..
+            } | Self::ToggleMaximize {
+                window: WindowSubject::CurrentFocus,
+            } | Self::SetSticky {
+                window: WindowSubject::CurrentFocus,
+                ..
+            } | Self::ToggleSticky {
+                window: WindowSubject::CurrentFocus,
+            } | Self::SetFullscreen {
+                window: WindowSubject::CurrentFocus,
+                ..
+            } | Self::ToggleFullscreen {
+                window: WindowSubject::CurrentFocus,
+            } | Self::Operation(
+                CoreCommand::ToggleFloat {
+                    window: WindowSubject::CurrentFocus,
                     ..
-                } => CoreCommand::Resize {
-                    window: resolved,
-                    direction: *direction,
-                    mode: *mode,
-                    press_index: *press_index,
+                } | CoreCommand::ToggleOrientation {
+                    window: WindowSubject::CurrentFocus,
+                } | CoreCommand::Resize {
+                    window: WindowSubject::CurrentFocus,
+                    ..
                 },
-                _ => return None,
-            };
-            Some(WorldCommand::Operation(resolved_core))
+            )
+        )
+    }
+
+    /// Resolve an execution-time canonical focus subject once for both
+    /// bookkeeping and dispatch. Returns `None` when this command does not
+    /// carry `CurrentFocus` (callers borrow `self` directly).
+    #[must_use]
+    pub fn resolve_current_focus(&self, window: WindowId) -> Option<Self> {
+        match self {
+            Self::Focus {
+                window: WindowSubject::CurrentFocus,
+                direction,
+            } => Some(Self::Focus {
+                window: WindowSubject::Window(window),
+                direction: *direction,
+            }),
+            Self::Send {
+                window: WindowSubject::CurrentFocus,
+                target_output,
+                target_workspace,
+                follow,
+            } => Some(Self::Send {
+                window: WindowSubject::Window(window),
+                target_output: target_output.clone(),
+                target_workspace: target_workspace.clone(),
+                follow: *follow,
+            }),
+            Self::SendRelative {
+                window: WindowSubject::CurrentFocus,
+                source,
+                delta,
+                follow,
+            } => Some(Self::SendRelative {
+                window: WindowSubject::Window(window),
+                source: source.clone(),
+                delta: *delta,
+                follow: *follow,
+            }),
+            Self::SendNumbered {
+                window: WindowSubject::CurrentFocus,
+                source,
+                index,
+                follow,
+            } => Some(Self::SendNumbered {
+                window: WindowSubject::Window(window),
+                source: source.clone(),
+                index: *index,
+                follow: *follow,
+            }),
+            Self::FocusDirectional {
+                window: FocusDirectionalSubject::CurrentFocus,
+                direction,
+            } => Some(Self::FocusDirectional {
+                window: FocusDirectionalSubject::Window(window),
+                direction: *direction,
+            }),
+            Self::MoveDirectional {
+                window: WindowSubject::CurrentFocus,
+                direction,
+                same_axis,
+            } => Some(Self::MoveDirectional {
+                window: WindowSubject::Window(window),
+                direction: *direction,
+                same_axis: *same_axis,
+            }),
+            Self::SendDirectional {
+                window: WindowSubject::CurrentFocus,
+                direction,
+                follow,
+            } => Some(Self::SendDirectional {
+                window: WindowSubject::Window(window),
+                direction: *direction,
+                follow: *follow,
+            }),
+            Self::ToggleMaximize {
+                window: WindowSubject::CurrentFocus,
+            } => Some(Self::ToggleMaximize {
+                window: WindowSubject::Window(window),
+            }),
+            Self::SetSticky {
+                window: WindowSubject::CurrentFocus,
+                value,
+            } => Some(Self::SetSticky {
+                window: WindowSubject::Window(window),
+                value: *value,
+            }),
+            Self::ToggleSticky {
+                window: WindowSubject::CurrentFocus,
+            } => Some(Self::ToggleSticky {
+                window: WindowSubject::Window(window),
+            }),
+            Self::SetFullscreen {
+                window: WindowSubject::CurrentFocus,
+                value,
+            } => Some(Self::SetFullscreen {
+                window: WindowSubject::Window(window),
+                value: *value,
+            }),
+            Self::ToggleFullscreen {
+                window: WindowSubject::CurrentFocus,
+            } => Some(Self::ToggleFullscreen {
+                window: WindowSubject::Window(window),
+            }),
+            Self::Operation(core) => {
+                let resolved_core = match core {
+                    CoreCommand::ToggleFloat {
+                        window: WindowSubject::CurrentFocus,
+                        float_rect,
+                    } => CoreCommand::ToggleFloat {
+                        window: WindowSubject::Window(window),
+                        float_rect: *float_rect,
+                    },
+                    CoreCommand::ToggleOrientation {
+                        window: WindowSubject::CurrentFocus,
+                    } => CoreCommand::ToggleOrientation {
+                        window: WindowSubject::Window(window),
+                    },
+                    CoreCommand::Resize {
+                        window: WindowSubject::CurrentFocus,
+                        direction,
+                        mode,
+                        press_index,
+                    } => CoreCommand::Resize {
+                        window: WindowSubject::Window(window),
+                        direction: *direction,
+                        mode: *mode,
+                        press_index: *press_index,
+                    },
+                    _ => return None,
+                };
+                Some(Self::Operation(resolved_core))
+            }
+            _ => None,
         }
-        _ => None,
     }
 }
 
@@ -3633,24 +3692,24 @@ pub fn valid_operation(command: &CoreCommand) -> bool {
     match command {
         CoreCommand::Reconcile | CoreCommand::UpdateGaps | CoreCommand::ReleaseDomain => true,
         CoreCommand::Move { window, .. } | CoreCommand::Focus { window, .. } => {
-            is_opaque_id(window)
+            is_opaque_id(&window.0)
         }
-        CoreCommand::Resize { window, .. } => is_opaque_id(window),
+        CoreCommand::Resize { window, .. } => valid_window_subject(window),
         CoreCommand::PointerResize {
             window,
             boundary,
             second,
             ..
         } => {
-            is_opaque_id(window)
+            is_opaque_id(&window.0)
                 && (-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(boundary)
                 && second.is_none_or(|(_, b)| (-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(&b))
         }
         CoreCommand::ToggleFloat { window, float_rect } => {
-            is_opaque_id(window)
+            valid_window_subject(window)
                 && float_rect.is_none_or(|r| valid_carried_rect(r.x, r.y, r.w, r.h))
         }
-        CoreCommand::ToggleOrientation { window } => is_opaque_id(window),
+        CoreCommand::ToggleOrientation { window } => valid_window_subject(window),
         CoreCommand::SendToWorkspace {
             window,
             target_output,
@@ -3662,7 +3721,11 @@ pub fn valid_operation(command: &CoreCommand) -> bool {
             target_output,
             target_workspace,
             ..
-        } => is_opaque_id(window) && is_opaque_id(target_output) && is_opaque_id(target_workspace),
+        } => {
+            is_opaque_id(&window.0)
+                && is_opaque_id(&target_output.0)
+                && is_opaque_id(&target_workspace.0)
+        }
         CoreCommand::MigrateWorkspace { .. } => true,
         CoreCommand::DragDrop {
             window,
@@ -3678,7 +3741,7 @@ pub fn valid_operation(command: &CoreCommand) -> bool {
             source,
             ..
         } => {
-            is_opaque_id(window)
+            is_opaque_id(&window.0)
                 && (-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(x)
                 && (-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(y)
                 && source

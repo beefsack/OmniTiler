@@ -191,7 +191,7 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
         vec!["wClose"],
         Some(2),
         Some(WorldCommand::Focus {
-            window: WindowId("w-unknown".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("w-unknown".to_owned())),
             direction: Some(crate::directional::Direction::Left),
         }),
     );
@@ -343,7 +343,7 @@ fn rejected_seq_consumed_then_duplicate_replays() {
         vec![],
         Some(5),
         Some(WorldCommand::Focus {
-            window: WindowId("w-ghost".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("w-ghost".to_owned())),
             direction: Some(crate::directional::Direction::Left),
         }),
     );
@@ -402,7 +402,7 @@ fn rejected_seq_consumed_then_duplicate_replays() {
             vec![],
             Some(5),
             Some(WorldCommand::Focus {
-                window: WindowId("w-ghost".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("w-ghost".to_owned())),
                 direction: Some(crate::directional::Direction::Left),
             }),
         ),
@@ -449,7 +449,7 @@ fn noncatalog_legacy_refusal_normalizes_to_operation_refused_without_mutation() 
             vec![],
             Some(2),
             Some(WorldCommand::Operation(CoreCommand::Move {
-                window: "w-ghost".to_owned(),
+                window: crate::directional::WindowId("w-ghost".to_owned()),
                 direction: crate::directional::Direction::Left,
                 cross_output_transfer: false,
                 same_axis_move: crate::directional::SameAxisMove::GroupWithNeighbor,
@@ -527,9 +527,9 @@ fn creation_exhaustion_stays_envelope_without_adoption() {
                 vec![],
                 Some(11),
                 Some(WorldCommand::Send {
-                    window: WindowId("w0".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("w0".to_owned())),
                     target_output: OutputId("out-a".to_owned()),
-                    target_workspace: "ws-2".to_owned(),
+                    target_workspace: crate::directional::WorkspaceId("ws-2".to_owned()),
                     follow: true,
                 }),
             ),
@@ -596,7 +596,7 @@ fn creation_exhaustion_stays_envelope_without_adoption() {
         vec![],
         Some(12),
         Some(WorldCommand::Focus {
-            window: WindowId("w-ghost".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("w-ghost".to_owned())),
             direction: Some(crate::directional::Direction::Left),
         }),
     );
@@ -644,7 +644,7 @@ fn precommand_view_transfer_survives_rejection() {
                 Some(2),
                 Some(WorldCommand::SwitchView {
                     output: OutputId("out-a".to_owned()),
-                    workspace: "ws-2".to_owned(),
+                    workspace: crate::directional::WorkspaceId("ws-2".to_owned()),
                 }),
             ),
             &[],
@@ -670,7 +670,7 @@ fn precommand_view_transfer_survives_rejection() {
             vec![],
             Some(3),
             Some(WorldCommand::Focus {
-                window: WindowId("w-ghost".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("w-ghost".to_owned())),
                 direction: Some(crate::directional::Direction::Left),
             }),
         ),
@@ -745,9 +745,9 @@ fn sticky_trailing_create_refusal_rolls_back_creation() {
                 vec![],
                 Some(3),
                 Some(WorldCommand::Send {
-                    window: WindowId("w0".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("w0".to_owned())),
                     target_output: OutputId("out-a".to_owned()),
-                    target_workspace: "ws-2".to_owned(),
+                    target_workspace: crate::directional::WorkspaceId("ws-2".to_owned()),
                     follow: true,
                 }),
             ),
@@ -792,7 +792,7 @@ fn sticky_trailing_create_refusal_rolls_back_creation() {
             vec![],
             Some(4),
             Some(WorldCommand::SendNumbered {
-                window: WindowId("wSticky".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("wSticky".to_owned())),
                 source: crate::world_report::SendSource::Explicit(OutputId("out-a".to_owned())),
                 index: 0,
                 follow: false,
@@ -859,7 +859,9 @@ fn keyboard_resize_unknown_subject_stays_operation_refused() {
             vec![],
             Some(2),
             Some(WorldCommand::Operation(CoreCommand::Resize {
-                window: "w-ghost".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "w-ghost".to_owned(),
+                )),
                 direction: crate::directional::Direction::Left,
                 mode: crate::directional::ResizeSelector::Outwards,
                 press_index: 0,
@@ -913,7 +915,9 @@ fn keyboard_resize_singleton_no_neighbor_stays_operation_refused() {
             vec![],
             Some(2),
             Some(WorldCommand::Operation(CoreCommand::Resize {
-                window: "w0".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "w0".to_owned(),
+                )),
                 direction: crate::directional::Direction::Left,
                 mode: crate::directional::ResizeSelector::Outwards,
                 press_index: 0,
@@ -956,7 +960,7 @@ fn resize_refusal_diagnostic_none_for_non_resize() {
         vec![],
         Some(9),
         Some(WorldCommand::Focus {
-            window: WindowId("w0".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("w0".to_owned())),
             direction: Some(crate::directional::Direction::Left),
         }),
     );
@@ -973,7 +977,9 @@ fn resize_refusal_diagnostic_sanitizes_injection() {
         vec![],
         Some(9),
         Some(WorldCommand::Operation(CoreCommand::Resize {
-            window: "w\n0".to_owned(),
+            window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                "w\n0".to_owned(),
+            )),
             direction: crate::directional::Direction::Left,
             mode: crate::directional::ResizeSelector::Outwards,
             press_index: 0,
@@ -1013,7 +1019,9 @@ fn resize_refusal_diagnostic_reports_actual_internal_cause_with_context() {
     // The verbatim internal cause comes from the command seam itself,
     // never from a hand-picked test string.
     let command = WorldCommand::Operation(CoreCommand::Resize {
-        window: "w0".to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            "w0".to_owned(),
+        )),
         direction: crate::directional::Direction::Left,
         mode: crate::directional::ResizeSelector::Outwards,
         press_index: 0,
@@ -1135,7 +1143,9 @@ fn resize_refusal_diagnostic_counts_row_truncation() {
         vec![],
         Some(2),
         Some(WorldCommand::Operation(CoreCommand::Resize {
-            window: "w0".to_owned(),
+            window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                "w0".to_owned(),
+            )),
             direction: crate::directional::Direction::Left,
             mode: crate::directional::ResizeSelector::Outwards,
             press_index: 0,
@@ -1185,7 +1195,9 @@ fn resize_refusal_diagnostic_byte_truncates_long_ids() {
         vec![],
         Some(2),
         Some(WorldCommand::Operation(CoreCommand::Resize {
-            window: ids[0].clone(),
+            window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                ids[0].clone(),
+            )),
             direction: crate::directional::Direction::Left,
             mode: crate::directional::ResizeSelector::Outwards,
             press_index: 0,
@@ -1298,7 +1310,9 @@ fn keyboard_resize_singleton_no_neighbor_v4_stays_operation_refused() {
             "w0",
             Some(2),
             Some(WorldCommand::Operation(CoreCommand::Resize {
-                window: "w0".to_owned(),
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "w0".to_owned(),
+                )),
                 direction: crate::directional::Direction::Left,
                 mode: crate::directional::ResizeSelector::Outwards,
                 press_index: 0,
@@ -1367,7 +1381,9 @@ fn v4_queued_resize_refusal_keeps_executing_identity_and_internal_kind() {
         Err((kind, message)) => panic!("v4 base accepted, got {kind}: {message}"),
     }
     let command = WorldCommand::Operation(CoreCommand::Resize {
-        window: "w0".to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            "w0".to_owned(),
+        )),
         direction: crate::directional::Direction::Left,
         mode: crate::directional::ResizeSelector::Outwards,
         press_index: 0,
@@ -1454,14 +1470,14 @@ fn v4_command_refusal_diagnostic_covers_focus_and_move_with_actual_kind() {
         Err((kind, message)) => panic!("v4 base accepted, got {kind}: {message}"),
     }
     let focus = WorldCommand::Focus {
-        window: WindowId("w-ghost".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("w-ghost".to_owned())),
         direction: None,
     };
     // A ghost-window local move stays production-reachable (the subject
     // closes between park and drain) and refuses through the operation
     // route instead of the directional NoEffect-with-cause lane.
     let mov = WorldCommand::Operation(CoreCommand::Move {
-        window: "w-ghost".to_owned(),
+        window: crate::directional::WindowId("w-ghost".to_owned()),
         direction: crate::directional::Direction::Left,
         cross_output_transfer: false,
         same_axis_move: crate::directional::SameAxisMove::GroupWithNeighbor,
@@ -1547,7 +1563,7 @@ fn v4_command_refusal_diagnostic_is_safe_bounded_and_pure() {
     let mut probe = v4report(2, vec![fact("w0", "out-a", 0)], "w0", None, None);
     probe.request_id = "evil\nid".to_owned();
     let hostile = WorldCommand::Focus {
-        window: WindowId("w\n0".to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId("w\n0".to_owned())),
         direction: None,
     };
     let line =
@@ -1580,7 +1596,9 @@ fn v4_command_refusal_diagnostic_is_safe_bounded_and_pure() {
     let revision_before = engine.state_revision();
     let clean = v4report(2, vec![fact("w0", "out-a", 0)], "w0", None, None);
     let resize = WorldCommand::Operation(CoreCommand::Resize {
-        window: "w0".to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            "w0".to_owned(),
+        )),
         direction: crate::directional::Direction::Left,
         mode: crate::directional::ResizeSelector::Outwards,
         press_index: 0,

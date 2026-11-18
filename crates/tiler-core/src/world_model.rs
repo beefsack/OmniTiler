@@ -2367,7 +2367,7 @@ mod prior_empty_scope_tests {
     fn consumed_command_report_refreshes_controlled_empty_proof() {
         let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         let refused_focus = WorldCommand::Focus {
-            window: WindowId("win-zzz".to_owned()),
+            window: crate::directional::WindowSubject::Window(WindowId("win-zzz".to_owned())),
             direction: Some(crate::directional::Direction::Left),
         };
         // Empty observation plus a refusing command: the refusal reply
@@ -2404,7 +2404,7 @@ mod prior_empty_scope_tests {
             Vec::new(),
             Some(1),
             Some(WorldCommand::Focus {
-                window: WindowId("win-zzz".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-zzz".to_owned())),
                 direction: Some(crate::directional::Direction::Left),
             }),
         );

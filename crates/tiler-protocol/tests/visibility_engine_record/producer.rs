@@ -173,7 +173,7 @@ pub fn produce_order_failure() -> Vec<(String, String)> {
         "dummy-setup-2",
         1,
         Some(WorldCommand::SendNumbered {
-            window: WindowId("win-a".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             source: SendSource::HomeThenAction,
             index: 2,
             follow: false,
@@ -187,7 +187,7 @@ pub fn produce_order_failure() -> Vec<(String, String)> {
         1,
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: "ws-2".to_owned(),
+            workspace: tiler_core::directional::WorkspaceId("ws-2".to_owned()),
         }),
         "win-a",
         false,
@@ -203,7 +203,7 @@ pub fn produce_order_failure() -> Vec<(String, String)> {
         "apply-1",
         1,
         Some(WorldCommand::Focus {
-            window: WindowId("win-a".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             direction: None,
         }),
         "win-old",
@@ -219,7 +219,7 @@ pub fn produce_order_failure() -> Vec<(String, String)> {
         1,
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: "ws-1".to_owned(),
+            workspace: tiler_core::directional::WorkspaceId("ws-1".to_owned()),
         }),
         "win-old",
         false,
@@ -229,7 +229,7 @@ pub fn produce_order_failure() -> Vec<(String, String)> {
         2,
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: "ws-2".to_owned(),
+            workspace: tiler_core::directional::WorkspaceId("ws-2".to_owned()),
         }),
         "win-old",
         true,
@@ -242,7 +242,7 @@ pub fn produce_order_failure() -> Vec<(String, String)> {
         2,
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: "ws-1".to_owned(),
+            workspace: tiler_core::directional::WorkspaceId("ws-1".to_owned()),
         }),
         "win-old",
         false,
@@ -252,7 +252,7 @@ pub fn produce_order_failure() -> Vec<(String, String)> {
         3,
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: "ws-2".to_owned(),
+            workspace: tiler_core::directional::WorkspaceId("ws-2".to_owned()),
         }),
         "win-old",
         true,
@@ -265,7 +265,7 @@ pub fn produce_order_failure() -> Vec<(String, String)> {
         3,
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: "ws-1".to_owned(),
+            workspace: tiler_core::directional::WorkspaceId("ws-1".to_owned()),
         }),
         "win-old",
         false,
@@ -275,7 +275,7 @@ pub fn produce_order_failure() -> Vec<(String, String)> {
         3,
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: "ws-2".to_owned(),
+            workspace: tiler_core::directional::WorkspaceId("ws-2".to_owned()),
         }),
         "win-old",
         false,
@@ -329,7 +329,7 @@ pub fn produce_cross_output() -> Vec<(String, String)> {
         "dummy-setup-2",
         1,
         Some(WorldCommand::SendNumbered {
-            window: WindowId("win-a".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             source: SendSource::HomeThenAction,
             index: 2,
             follow: false,
@@ -344,7 +344,7 @@ pub fn produce_cross_output() -> Vec<(String, String)> {
         1,
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: "ws-3".to_owned(),
+            workspace: tiler_core::directional::WorkspaceId("ws-3".to_owned()),
         }),
         "win-a",
         true,
@@ -359,7 +359,7 @@ pub fn produce_cross_output() -> Vec<(String, String)> {
         1,
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: "ws-1".to_owned(),
+            workspace: tiler_core::directional::WorkspaceId("ws-1".to_owned()),
         }),
         "win-old",
         false,
@@ -369,7 +369,7 @@ pub fn produce_cross_output() -> Vec<(String, String)> {
         1,
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: "ws-3".to_owned(),
+            workspace: tiler_core::directional::WorkspaceId("ws-3".to_owned()),
         }),
         "win-old",
         false,
@@ -378,7 +378,7 @@ pub fn produce_cross_output() -> Vec<(String, String)> {
         "apply-2",
         1,
         Some(WorldCommand::Focus {
-            window: WindowId("win-b".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
             direction: None,
         }),
         "win-old",
@@ -392,7 +392,7 @@ pub fn produce_cross_output() -> Vec<(String, String)> {
         1,
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: "ws-1".to_owned(),
+            workspace: tiler_core::directional::WorkspaceId("ws-1".to_owned()),
         }),
         "win-old",
         false,
@@ -402,7 +402,7 @@ pub fn produce_cross_output() -> Vec<(String, String)> {
         1,
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: "ws-3".to_owned(),
+            workspace: tiler_core::directional::WorkspaceId("ws-3".to_owned()),
         }),
         "win-old",
         false,
@@ -418,7 +418,7 @@ pub fn produce_cross_output() -> Vec<(String, String)> {
         3,
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: "ws-1".to_owned(),
+            workspace: tiler_core::directional::WorkspaceId("ws-1".to_owned()),
         }),
         "win-a",
         true,
@@ -432,7 +432,7 @@ pub fn produce_cross_output() -> Vec<(String, String)> {
         4,
         Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
-            workspace: "ws-3".to_owned(),
+            workspace: tiler_core::directional::WorkspaceId("ws-3".to_owned()),
         }),
         "win-a",
         true,

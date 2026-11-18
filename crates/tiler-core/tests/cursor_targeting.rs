@@ -560,7 +560,7 @@ fn floating_scope_still_supports_later_fresh_placement() {
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-b".to_owned()),
-                workspace: view_b,
+                workspace: tiler_core::directional::WorkspaceId(view_b),
                 tiled: false,
             }),
         ),
@@ -1065,7 +1065,9 @@ fn sends_resolve_on_focused_member_output_despite_cursor() {
             "win-a",
             "out-a",
             WorldCommand::SendNumbered {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 source: SendSource::Explicit(OutputId("out-a".to_owned())),
                 index: 2,
                 follow: false,
@@ -1076,7 +1078,9 @@ fn sends_resolve_on_focused_member_output_despite_cursor() {
             "win-b1",
             "out-b",
             WorldCommand::SendRelative {
-                window: WindowId("win-b1".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-b1".to_owned(),
+                )),
                 source: SendSource::Explicit(OutputId("out-b".to_owned())),
                 delta: 1,
                 follow: false,

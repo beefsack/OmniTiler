@@ -86,7 +86,9 @@ fn sticky_tile() -> String {
 
 fn toggle(window: &str) -> WorldCommand {
     WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: window.to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            window.to_owned(),
+        )),
         float_rect: None,
     })
 }

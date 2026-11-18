@@ -582,7 +582,7 @@ fn cross_release_into_migration_cell_refuses_without_double_book() {
     migrate.command = Some(WorldCommand::MigrateWorkspace {
         source_output: OutputId("out-a".to_owned()),
         target_output: OutputId("out-b".to_owned()),
-        workspace: view_a.clone(),
+        workspace: crate::directional::WorkspaceId(view_a.clone()),
     });
     let migrated = accepted(&mut engine, &migrate);
     let cell = migrated

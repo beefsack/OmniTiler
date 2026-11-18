@@ -219,7 +219,7 @@ fn floating_toggle_keeps_membership_across_view_switch_and_unchanged_report() {
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
                 tiled: false,
             }),
         ),
@@ -278,7 +278,7 @@ fn floating_toggle_keeps_membership_across_view_switch_and_unchanged_report() {
             Some(12),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: other.clone(),
+                workspace: crate::directional::WorkspaceId(other.clone()),
             }),
         ),
     );
@@ -333,7 +333,7 @@ fn floating_toggle_keeps_membership_across_view_switch_and_unchanged_report() {
             Some(13),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
                 tiled: true,
             }),
         ),
@@ -543,7 +543,7 @@ fn migrated_session(
                 Some(11),
                 Some(WorldCommand::SetWorkspaceTiling {
                     output: OutputId("out-a".to_owned()),
-                    workspace: view_a.clone(),
+                    workspace: crate::directional::WorkspaceId(view_a.clone()),
                     tiled: false,
                 }),
             )
@@ -555,7 +555,7 @@ fn migrated_session(
                 Some(11),
                 Some(WorldCommand::SetWorkspaceTiling {
                     output: OutputId("out-a".to_owned()),
-                    workspace: view_a.clone(),
+                    workspace: crate::directional::WorkspaceId(view_a.clone()),
                     tiled: false,
                 }),
             )
@@ -572,7 +572,7 @@ fn migrated_session(
                 Some(WorldCommand::MigrateWorkspace {
                     source_output: OutputId("out-a".to_owned()),
                     target_output: OutputId("out-b".to_owned()),
-                    workspace: view_a.clone(),
+                    workspace: crate::directional::WorkspaceId(view_a.clone()),
                 }),
             )
         } else {
@@ -584,7 +584,7 @@ fn migrated_session(
                 Some(WorldCommand::MigrateWorkspace {
                     source_output: OutputId("out-a".to_owned()),
                     target_output: OutputId("out-b".to_owned()),
-                    workspace: view_a.clone(),
+                    workspace: crate::directional::WorkspaceId(view_a.clone()),
                 }),
             )
         },
@@ -1157,7 +1157,9 @@ fn dialog_hints_null_stays_float_member_without_frame_write() {
             Some(11),
             Some(WorldCommand::Operation(
                 crate::boundary::CoreCommand::ToggleFloat {
-                    window: "win-d".to_owned(),
+                    window: crate::directional::WindowSubject::Window(
+                        crate::directional::WindowId("win-d".to_owned()),
+                    ),
                     float_rect: None,
                 },
             )),
@@ -1262,7 +1264,7 @@ fn hints_null_float_move_refuses_without_side_effects() {
             vec![],
             Some(11),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-d".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-d".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: SameAxisMove::default(),
             }),
@@ -1329,7 +1331,7 @@ fn hints_null_float_move_refuses_without_side_effects() {
             vec![],
             Some(12),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-m".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-m".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: SameAxisMove::default(),
             }),
@@ -1368,7 +1370,7 @@ fn hints_null_float_move_refuses_without_side_effects() {
             vec![],
             Some(13),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-d".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-d".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: SameAxisMove::default(),
             }),
@@ -1424,7 +1426,7 @@ fn hints_null_float_move_refuses_without_side_effects() {
             vec![],
             Some(11),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-d".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-d".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: SameAxisMove::default(),
             }),
@@ -1576,7 +1578,9 @@ fn retained_explicit_automatic_null_cycle_keeps_home() {
             Some(11),
             Some(WorldCommand::Operation(
                 crate::boundary::CoreCommand::ToggleFloat {
-                    window: "win-e".to_owned(),
+                    window: crate::directional::WindowSubject::Window(
+                        crate::directional::WindowId("win-e".to_owned()),
+                    ),
                     float_rect: None,
                 },
             )),
@@ -1696,7 +1700,7 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
             vec![],
             Some(11),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-d".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-d".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: SameAxisMove::default(),
             }),
@@ -1830,7 +1834,7 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
             vec![],
             Some(12),
             Some(WorldCommand::MoveDirectional {
-                window: WindowId("win-m".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-m".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: SameAxisMove::default(),
             }),

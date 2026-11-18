@@ -203,6 +203,23 @@ fn drag_source_estimate(source: &Option<DomainKey>) -> usize {
     })
 }
 
+fn subject_estimate(subject: &tiler_core::directional::WindowSubject) -> usize {
+    match subject {
+        tiler_core::directional::WindowSubject::Window(w) => json_string_len(&w.0),
+        tiler_core::directional::WindowSubject::CurrentFocus => 21,
+    }
+}
+
+fn focus_directional_subject_estimate(
+    subject: &tiler_core::world_report::FocusDirectionalSubject,
+) -> usize {
+    match subject {
+        tiler_core::world_report::FocusDirectionalSubject::Window(w) => json_string_len(&w.0),
+        tiler_core::world_report::FocusDirectionalSubject::NoFocus => json_string_len(""),
+        tiler_core::world_report::FocusDirectionalSubject::CurrentFocus => 21,
+    }
+}
+
 fn operation_estimate(command: &CoreCommand) -> usize {
     match command {
         CoreCommand::Reconcile => 7 + json_string_len("reconcile"),
@@ -215,7 +232,7 @@ fn operation_estimate(command: &CoreCommand) -> usize {
             same_axis_move,
         } => {
             61 + bool_len(*cross_output_transfer)
-                + json_string_len(window)
+                + json_string_len(&window.0)
                 + json_string_len(direction.as_wire_str())
                 + json_string_len(same_axis_move.as_wire_str())
         }
@@ -227,7 +244,7 @@ fn operation_estimate(command: &CoreCommand) -> usize {
         } => {
             65 + bool_len(*cross_output_transfer)
                 + bool_len(*float_subject)
-                + json_string_len(window)
+                + json_string_len(&window.0)
                 + json_string_len(direction.as_wire_str())
         }
         CoreCommand::Resize {
@@ -236,7 +253,7 @@ fn operation_estimate(command: &CoreCommand) -> usize {
             mode,
             press_index,
         } => {
-            52 + json_string_len(window)
+            52 + subject_estimate(window)
                 + json_string_len(direction.as_wire_str())
                 + json_string_len(mode.as_wire_str())
                 + u64_len(u64::from(*press_index))
@@ -247,18 +264,18 @@ fn operation_estimate(command: &CoreCommand) -> usize {
             boundary,
             second,
         } => {
-            76 + json_string_len(window)
+            76 + json_string_len(&window.0)
                 + json_string_len(direction.as_wire_str())
                 + int_len(*boundary)
                 + second.map_or(8, |(d, b)| json_string_len(d.as_wire_str()) + int_len(b))
         }
         CoreCommand::ToggleFloat { window, float_rect } => {
-            36 + json_string_len(window)
+            36 + subject_estimate(window)
                 + float_rect.map_or(4, |r| {
                     int_len(r.x) + int_len(r.y) + int_len(r.w) + int_len(r.h) + 5
                 })
         }
-        CoreCommand::ToggleOrientation { window } => 34 + json_string_len(window),
+        CoreCommand::ToggleOrientation { window } => 34 + subject_estimate(window),
         CoreCommand::SendToWorkspace {
             window,
             target_output,
@@ -266,9 +283,9 @@ fn operation_estimate(command: &CoreCommand) -> usize {
             follow,
         } => {
             56 + bool_len(*follow)
-                + json_string_len(window)
-                + json_string_len(target_output)
-                + json_string_len(target_workspace)
+                + json_string_len(&window.0)
+                + json_string_len(&target_output.0)
+                + json_string_len(&target_workspace.0)
         }
         CoreCommand::SendToOutput {
             window,
@@ -277,9 +294,9 @@ fn operation_estimate(command: &CoreCommand) -> usize {
             follow,
         } => {
             53 + bool_len(*follow)
-                + json_string_len(window)
-                + json_string_len(target_output)
-                + json_string_len(target_workspace)
+                + json_string_len(&window.0)
+                + json_string_len(&target_output.0)
+                + json_string_len(&target_workspace.0)
         }
         CoreCommand::MigrateWorkspace { direction } => {
             38 + json_string_len(direction.as_wire_str())
@@ -303,7 +320,7 @@ fn operation_estimate(command: &CoreCommand) -> usize {
                 _ => json_string_len("drag-preview"),
             };
             43 + op_len
-                + json_string_len(window)
+                + json_string_len(&window.0)
                 + int_len(*x)
                 + int_len(*y)
                 + hover_estimate(hover_prior)
@@ -313,12 +330,9 @@ fn operation_estimate(command: &CoreCommand) -> usize {
 }
 
 pub(crate) fn command_estimate_owned(command: &WorldCommand) -> usize {
-    if let WorldCommand::Implicit(inner) = command {
-        return command_estimate_owned(inner) + 19;
-    }
     match command {
         WorldCommand::Focus { window, direction } => {
-            34 + json_string_len(&window.0)
+            34 + subject_estimate(window)
                 + json_string_len(
                     direction.map_or("", tiler_core::directional::Direction::as_wire_str),
                 )
@@ -330,15 +344,15 @@ pub(crate) fn command_estimate_owned(command: &WorldCommand) -> usize {
             follow,
         } => {
             43 + bool_len(*follow)
-                + json_string_len(&window.0)
+                + subject_estimate(window)
                 + json_string_len(&target_output.0)
-                + json_string_len(target_workspace)
+                + json_string_len(&target_workspace.0)
         }
         WorldCommand::SwitchView { output, workspace } => {
-            33 + json_string_len(&output.0) + json_string_len(workspace)
+            33 + json_string_len(&output.0) + json_string_len(&workspace.0)
         }
         WorldCommand::SelectWorkspace { output, workspace } => {
-            38 + json_string_len(&output.0) + json_string_len(workspace)
+            38 + json_string_len(&output.0) + json_string_len(&workspace.0)
         }
         WorldCommand::SelectNumbered { output, index } => {
             40 + output.as_ref().map_or(4, |out| json_string_len(&out.0))
@@ -357,7 +371,7 @@ pub(crate) fn command_estimate_owned(command: &WorldCommand) -> usize {
             follow,
         } => {
             58 + bool_len(*follow)
-                + json_string_len(&window.0)
+                + subject_estimate(window)
                 + send_source_estimate(source)
                 + int_len(*delta)
         }
@@ -368,7 +382,7 @@ pub(crate) fn command_estimate_owned(command: &WorldCommand) -> usize {
             follow,
         } => {
             59 + bool_len(*follow)
-                + json_string_len(&window.0)
+                + subject_estimate(window)
                 + send_source_estimate(source)
                 + usize_len(usize::from(*index))
         }
@@ -376,9 +390,9 @@ pub(crate) fn command_estimate_owned(command: &WorldCommand) -> usize {
             output,
             workspace,
             tiled,
-        } => 52 + bool_len(*tiled) + json_string_len(&output.0) + json_string_len(workspace),
+        } => 52 + bool_len(*tiled) + json_string_len(&output.0) + json_string_len(&workspace.0),
         WorldCommand::ToggleWorkspaceTiling { output, workspace } => {
-            44 + json_string_len(&output.0) + json_string_len(workspace)
+            44 + json_string_len(&output.0) + json_string_len(&workspace.0)
         }
         WorldCommand::MigrateWorkspace {
             source_output,
@@ -387,17 +401,18 @@ pub(crate) fn command_estimate_owned(command: &WorldCommand) -> usize {
         } => {
             45 + json_string_len(&source_output.0)
                 + json_string_len(&target_output.0)
-                + json_string_len(workspace)
+                + json_string_len(&workspace.0)
         }
         WorldCommand::FocusDirectional { window, direction } => {
-            44 + json_string_len(&window.0) + json_string_len(direction.as_wire_str())
+            44 + focus_directional_subject_estimate(window)
+                + json_string_len(direction.as_wire_str())
         }
         WorldCommand::MoveDirectional {
             window,
             direction,
             same_axis,
         } => {
-            57 + json_string_len(&window.0)
+            57 + subject_estimate(window)
                 + json_string_len(direction.as_wire_str())
                 + json_string_len(same_axis.as_wire_str())
         }
@@ -406,26 +421,23 @@ pub(crate) fn command_estimate_owned(command: &WorldCommand) -> usize {
             direction,
             follow,
         } => {
-            55 + json_string_len(&window.0)
+            55 + subject_estimate(window)
                 + json_string_len(direction.as_wire_str())
                 + bool_len(*follow)
         }
         WorldCommand::MigrateDirectional { direction } => {
             41 + json_string_len(direction.as_wire_str())
         }
-        WorldCommand::ToggleMaximize { window } => 31 + json_string_len(&window.0),
+        WorldCommand::ToggleMaximize { window } => 31 + subject_estimate(window),
         WorldCommand::SetSticky { window, value } => {
-            35 + json_string_len(&window.0) + bool_len(*value)
+            35 + subject_estimate(window) + bool_len(*value)
         }
-        WorldCommand::ToggleSticky { window } => 29 + json_string_len(&window.0),
+        WorldCommand::ToggleSticky { window } => 29 + subject_estimate(window),
         WorldCommand::SetFullscreen { window, value } => {
-            39 + json_string_len(&window.0) + bool_len(*value)
+            39 + subject_estimate(window) + bool_len(*value)
         }
-        WorldCommand::ToggleFullscreen { window } => 33 + json_string_len(&window.0),
+        WorldCommand::ToggleFullscreen { window } => 33 + subject_estimate(window),
         WorldCommand::Operation(command) => 30 + operation_estimate(command),
-        WorldCommand::Implicit(_) => {
-            unreachable!("implicit subjects unwrap before estimating")
-        }
     }
 }
 

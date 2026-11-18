@@ -87,27 +87,31 @@ fn cmd(
 
 fn set_sticky(window: &str, value: bool) -> WorldCommand {
     WorldCommand::SetSticky {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
         value,
     }
 }
 
 fn toggle_sticky(window: &str) -> WorldCommand {
     WorldCommand::ToggleSticky {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
     }
 }
 
 fn toggle_float(window: &str) -> WorldCommand {
     WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: window.to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            window.to_owned(),
+        )),
         float_rect: None,
     })
 }
 
 fn toggle_float_rect(window: &str, rect: Rect) -> WorldCommand {
     WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: window.to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            window.to_owned(),
+        )),
         float_rect: Some(rect),
     })
 }
@@ -916,7 +920,7 @@ fn sticky_off_into_a_floating_workspace_lands_float_without_a_session() {
             vec![cfact("win-a", "out-a", 0)],
             WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: "ws-1".to_owned(),
+                workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
                 tiled: false,
             },
         ),
@@ -989,7 +993,7 @@ fn sticky_off_into_a_floating_workspace_lands_float_without_a_session() {
             vec![cfact("win-a", "out-a", 0)],
             WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: "ws-1".to_owned(),
+                workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
                 tiled: true,
             },
         ),
@@ -2389,7 +2393,7 @@ fn toggle_float_from_a_floating_source_still_tiles_the_current_workspace() {
             vec![cfact("win-a", "out-a", 0)],
             WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: "ws-1".to_owned(),
+                workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
                 tiled: false,
             },
         ),
@@ -2472,7 +2476,7 @@ fn toggle_float_into_a_floating_destination_lands_float_with_tile_base() {
             vec![cfact("win-a", "out-a", 0)],
             WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: current.clone(),
+                workspace: crate::directional::WorkspaceId(current.clone()),
                 tiled: false,
             },
         ),
@@ -2537,7 +2541,7 @@ fn toggle_float_into_a_floating_destination_lands_float_with_tile_base() {
             vec![cfact("win-a", "out-a", 0)],
             WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: current.clone(),
+                workspace: crate::directional::WorkspaceId(current.clone()),
                 tiled: true,
             },
         ),

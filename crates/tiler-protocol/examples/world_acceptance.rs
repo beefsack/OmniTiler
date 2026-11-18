@@ -222,14 +222,16 @@ fn build_command(
         Some(cmd) => Ok(Some(match cmd.op.as_str() {
             "select-workspace" => WorldCommand::SelectWorkspace {
                 output: OutputId(cmd.output.clone().ok_or("select-workspace needs output")?),
-                workspace: binding
-                    .get(
-                        cmd.workspace
-                            .as_deref()
-                            .ok_or("select-workspace needs workspace")?,
-                    )
-                    .cloned()
-                    .ok_or_else(|| format!("{}: unbound workspace alias", step.name))?,
+                workspace: tiler_core::directional::WorkspaceId(
+                    binding
+                        .get(
+                            cmd.workspace
+                                .as_deref()
+                                .ok_or("select-workspace needs workspace")?,
+                        )
+                        .cloned()
+                        .ok_or_else(|| format!("{}: unbound workspace alias", step.name))?,
+                ),
             },
             "select-previous" => WorldCommand::SelectPrevious {
                 output: cmd.output.clone().map(OutputId),

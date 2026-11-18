@@ -4,7 +4,9 @@
 //! transport, JSON, platform, or process imports.
 //! This module owns no retained state.
 
-use crate::directional::{Direction, ResizeSelector, SameAxisMove};
+use crate::directional::{
+    Direction, OutputId, ResizeSelector, SameAxisMove, WindowId, WindowSubject, WorkspaceId,
+};
 use crate::geometry::Rect;
 use crate::session::{DomainKey, DragHoverPrior};
 
@@ -20,17 +22,16 @@ pub enum CoreCommand {
     UpdateGaps,
     ReleaseDomain,
     Move {
-        window: String,
+        window: WindowId,
         direction: Direction,
         cross_output_transfer: bool,
-        /// R-MOV-03 same-axis mode: validated at the protocol boundary
-        /// (missing wire field decodes to [`SameAxisMove::GroupWithNeighbor`]);
-        /// adapters constructing events directly (Windows) pass the default
-        /// to preserve the historical wrap behavior.
+        /// R-MOV-03 same-axis mode: required on the wire at the protocol
+        /// boundary; native adapters constructing events directly pass their
+        /// default.
         same_axis_move: SameAxisMove,
     },
     Focus {
-        window: String,
+        window: WindowId,
         direction: Direction,
         cross_output_transfer: bool,
         /// Float-origin cross-output focus (Left/Right miss with no local
@@ -41,13 +42,13 @@ pub enum CoreCommand {
         float_subject: bool,
     },
     Resize {
-        window: String,
+        window: WindowSubject,
         direction: Direction,
         mode: ResizeSelector,
         press_index: u32,
     },
     PointerResize {
-        window: String,
+        window: WindowId,
         direction: Direction,
         boundary: i32,
         /// Second-axis corner pair: `Some((direction, boundary))` for an
@@ -57,16 +58,16 @@ pub enum CoreCommand {
         second: Option<(Direction, i32)>,
     },
     ToggleFloat {
-        window: String,
+        window: WindowSubject,
         float_rect: Option<Rect>,
     },
     ToggleOrientation {
-        window: String,
+        window: WindowSubject,
     },
     SendToWorkspace {
-        window: String,
-        target_output: String,
-        target_workspace: String,
+        window: WindowId,
+        target_output: OutputId,
+        target_workspace: WorkspaceId,
         /// True follows the mover into the target (default, preserves the
         /// historical follow behavior); false stays on the source domain.
         follow: bool,
@@ -76,9 +77,9 @@ pub enum CoreCommand {
     /// explicit cross-output target. Distinct from `SendToWorkspace`, which
     /// stays same-output. Ordinary admission and explicit follow/stay.
     SendToOutput {
-        window: String,
-        target_output: String,
-        target_workspace: String,
+        window: WindowId,
+        target_output: OutputId,
+        target_workspace: WorkspaceId,
         /// True follows the mover into the target (default); false stays on
         /// the source domain.
         follow: bool,
@@ -92,7 +93,7 @@ pub enum CoreCommand {
         direction: Direction,
     },
     DragDrop {
-        window: String,
+        window: WindowId,
         x: i32,
         y: i32,
         /// Optional carried sticky hover prior, applied advisory-style between
@@ -106,7 +107,7 @@ pub enum CoreCommand {
         source: Option<DomainKey>,
     },
     DragPreview {
-        window: String,
+        window: WindowId,
         x: i32,
         y: i32,
         /// Optional carried sticky hover prior, applied advisory-style between
@@ -153,60 +154,60 @@ mod tests {
             CoreCommand::UpdateGaps,
             CoreCommand::ReleaseDomain,
             CoreCommand::Move {
-                window: "w".to_owned(),
+                window: WindowId::from("w"),
                 direction: Direction::Left,
                 cross_output_transfer: true,
                 same_axis_move: SameAxisMove::GroupWithNeighbor,
             },
             CoreCommand::Focus {
-                window: "w".to_owned(),
+                window: WindowId::from("w"),
                 direction: Direction::Left,
                 cross_output_transfer: true,
                 float_subject: false,
             },
             CoreCommand::Resize {
-                window: "w".to_owned(),
+                window: WindowSubject::Window(WindowId::from("w")),
                 direction: Direction::Left,
                 mode: ResizeSelector::Inwards,
                 press_index: 0,
             },
             CoreCommand::PointerResize {
-                window: "w".to_owned(),
+                window: WindowId::from("w"),
                 direction: Direction::Left,
                 boundary: 0,
                 second: None,
             },
             CoreCommand::ToggleFloat {
-                window: "w".to_owned(),
+                window: WindowSubject::Window(WindowId::from("w")),
                 float_rect: None,
             },
             CoreCommand::ToggleOrientation {
-                window: "w".to_owned(),
+                window: WindowSubject::Window(WindowId::from("w")),
             },
             CoreCommand::SendToWorkspace {
-                window: "w".to_owned(),
-                target_output: "o".to_owned(),
-                target_workspace: "s".to_owned(),
+                window: WindowId::from("w"),
+                target_output: OutputId::from("o"),
+                target_workspace: WorkspaceId::from("s"),
                 follow: true,
             },
             CoreCommand::SendToOutput {
-                window: "w".to_owned(),
-                target_output: "o".to_owned(),
-                target_workspace: "s".to_owned(),
+                window: WindowId::from("w"),
+                target_output: OutputId::from("o"),
+                target_workspace: WorkspaceId::from("s"),
                 follow: true,
             },
             CoreCommand::MigrateWorkspace {
                 direction: Direction::Right,
             },
             CoreCommand::DragDrop {
-                window: "w".to_owned(),
+                window: WindowId::from("w"),
                 x: 0,
                 y: 0,
                 hover_prior: None,
                 source: None,
             },
             CoreCommand::DragPreview {
-                window: "w".to_owned(),
+                window: WindowId::from("w"),
                 x: 0,
                 y: 0,
                 hover_prior: None,

@@ -425,7 +425,9 @@ fn build_command(
     match command["kind"].as_str().expect("command kind") {
         "select-trailing" => WorldCommand::SelectTrailing { output: None },
         "send-numbered" => WorldCommand::SendNumbered {
-            window: WindowId(command["window"].as_str().expect("window").to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId(
+                command["window"].as_str().expect("window").to_owned(),
+            )),
             source: tiler_core::world_report::SendSource::Explicit(OutputId(
                 outputs
                     .get(command["window"].as_str().expect("window"))

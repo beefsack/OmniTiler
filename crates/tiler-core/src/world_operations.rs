@@ -12,7 +12,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::boundary::CoreCommand;
 use crate::bounds::is_opaque_id;
 use crate::contract::DivergenceKind;
-use crate::directional::{Axis, Direction, OutputId, SameAxisMove, WindowId, WorkspaceId};
+use crate::directional::{
+    Axis, Direction, OutputId, SameAxisMove, WindowId, WindowSubject, WorkspaceId,
+};
 use crate::geometry::Rect;
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain, RefusalKind};
@@ -26,7 +28,8 @@ use crate::world_layout::{
     PairMoveOutcome, PairOperationContext, PairOperationFailure, RetainedReconcileFailure,
 };
 use crate::world_report::{
-    CommandResult, OneShotEffect, TransferKind, TransferTarget, WorldCommand,
+    CommandResult, FocusDirectionalSubject, OneShotEffect, TransferKind, TransferTarget,
+    WorldCommand,
 };
 
 use crate::world_commands::CommandApplied;
@@ -162,9 +165,9 @@ impl WorldTransaction<'_> {
             } => self.start_send(
                 issue,
                 command_seq,
-                &WindowId(window.clone()),
-                &OutputId(target_output.clone()),
-                target_workspace,
+                window,
+                target_output,
+                &target_workspace.0,
                 *follow,
                 by_id,
                 held_scopes,
@@ -177,9 +180,9 @@ impl WorldTransaction<'_> {
             } => self.start_output_send(
                 issue,
                 command_seq,
-                &WindowId(window.clone()),
-                &OutputId(target_output.clone()),
-                target_workspace,
+                window,
+                target_output,
+                &target_workspace.0,
                 *follow,
                 by_id,
                 held_scopes,
@@ -257,13 +260,13 @@ impl WorldTransaction<'_> {
         _issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         command: &CoreCommand,
-        window: &str,
+        window: &WindowId,
         direction: Direction,
         pinned_target: Option<&OutputId>,
         by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> CommandApplied {
-        let window_id = WindowId(window.to_owned());
+        let window_id = window.clone();
         let Some(source_row) = by_id.get(&window_id) else {
             return CommandApplied::Rejected {
                 kind: KIND_OPERATION,
@@ -657,7 +660,7 @@ impl WorldTransaction<'_> {
         &mut self,
         _issue: &crate::world_engine::EventIssue,
         command_seq: u64,
-        window: &WindowId,
+        window: &FocusDirectionalSubject,
         direction: Direction,
         by_id: &BTreeMap<&WindowId, &EngineWindow>,
         held_scopes: &BTreeSet<DomainKey>,
@@ -666,12 +669,15 @@ impl WorldTransaction<'_> {
             DirectionalOutcome, DirectionalVerdict, early_verdict, effective_domain,
             float_focus_candidates, select_float_focus_target,
         };
-        // No focused window: the adapter claimed no subject, so the core
-        // starts from the current workspace/output instead of resolving a
-        // subject row. Unknown non-empty windows keep the stale refusal.
-        if window.0.is_empty() {
-            return self.focus_directional_no_focus(command_seq, direction, held_scopes, by_id);
-        }
+        let window = match window {
+            FocusDirectionalSubject::NoFocus => {
+                return self.focus_directional_no_focus(command_seq, direction, held_scopes, by_id);
+            }
+            FocusDirectionalSubject::Window(window) => window,
+            FocusDirectionalSubject::CurrentFocus => {
+                unreachable!("current-focus FocusDirectional resolves before dispatch")
+            }
+        };
         // Hidden subjects never navigate: a staged minimized/host-hidden
         // source refuses with the existing stale vocabulary, like an
         // unknown window (no new kind, no wire change).
@@ -1694,13 +1700,13 @@ impl WorldTransaction<'_> {
                 message: MSG_SCOPE_HELD,
             };
         };
-        if !is_opaque_id(window) {
+        if !is_opaque_id(&window.0) {
             return CommandApplied::Rejected {
                 kind: "drag-drop-window-invalid",
                 message: OPAQUE_ID_MESSAGE,
             };
         }
-        let mover = WindowId(window.clone());
+        let mover = window.clone();
         let ctx = PairOperationContext {
             source_domain: &inset_source,
             target_domain: &inset_target,
@@ -1847,12 +1853,15 @@ impl WorldTransaction<'_> {
     ) -> CommandApplied {
         // No convergence on unreadable hints; the carrier `none`
         // never decides admission.
-        if let CoreCommand::ToggleFloat { window, .. } = command
+        if let CoreCommand::ToggleFloat {
+            window: WindowSubject::Window(window),
+            ..
+        } = command
             && self
                 .world
                 .staged
                 .facts
-                .get(&WindowId(window.clone()))
+                .get(window)
                 .is_some_and(|fact| fact.hints.is_none())
         {
             return CommandApplied::Rejected {
@@ -1872,8 +1881,12 @@ impl WorldTransaction<'_> {
         // authority, so their ordinary commands still run while
         // publication stays blocked. Existing native sticky refusals in
         // the session lane are unchanged.
-        if let CoreCommand::ToggleFloat { window, .. } = command {
-            let window_id = WindowId(window.clone());
+        if let CoreCommand::ToggleFloat {
+            window: WindowSubject::Window(window),
+            ..
+        } = command
+        {
+            let window_id = window.clone();
             let usable_pending = self
                 .world
                 .intent
@@ -1917,18 +1930,17 @@ impl WorldTransaction<'_> {
         // The actual removal runs after the inset gate; a rejected finish
         // below still restores it.
         let mut composed_should_clear = false;
-        if let CoreCommand::ToggleFloat { window, .. } = command
+        if let CoreCommand::ToggleFloat {
+            window: WindowSubject::Window(window),
+            ..
+        } = command
             && !self
                 .connection
                 .capabilities()
                 .is_some_and(|caps| caps.maximize)
-            && self
-                .world
-                .runtime
-                .composed_maximized
-                .contains(&WindowId(window.clone()))
+            && self.world.runtime.composed_maximized.contains(window)
         {
-            let subject = WindowId(window.clone());
+            let subject = window.clone();
             if self.world.is_exception_window_any(&subject) {
                 composed_should_clear = true;
             } else if self.world.is_tiled_window_any(&subject) {
@@ -1963,12 +1975,13 @@ impl WorldTransaction<'_> {
             };
         };
         let mut composed_cleared = false;
-        if composed_should_clear && let CoreCommand::ToggleFloat { window, .. } = command {
-            composed_cleared = self
-                .world
-                .runtime
-                .composed_maximized
-                .remove(&WindowId(window.clone()));
+        if composed_should_clear
+            && let CoreCommand::ToggleFloat {
+                window: WindowSubject::Window(window),
+                ..
+            } = command
+        {
+            composed_cleared = self.world.runtime.composed_maximized.remove(window);
         }
         let applied = match command {
             CoreCommand::DragPreview {
@@ -1978,7 +1991,7 @@ impl WorldTransaction<'_> {
                 hover_prior,
                 source,
             } => {
-                if !is_opaque_id(window) {
+                if !is_opaque_id(&window.0) {
                     CommandApplied::Rejected {
                         kind: "drag-drop-window-invalid",
                         message: OPAQUE_ID_MESSAGE,
@@ -1991,7 +2004,7 @@ impl WorldTransaction<'_> {
                     match self.world.layout.run_local_drag_preview_with_source(
                         &inset,
                         domain_report.outer_gap,
-                        &WindowId(window.clone()),
+                        window,
                         &focused_window,
                         &windows,
                         *x,
@@ -2016,7 +2029,7 @@ impl WorldTransaction<'_> {
             } => match self.converge_local_observation(&domain_key, &domain_report) {
                 Err(rejected) => rejected,
                 Ok((focused_window, windows, _)) => {
-                    if !is_opaque_id(window) {
+                    if !is_opaque_id(&window.0) {
                         CommandApplied::Rejected {
                             kind: "drag-drop-window-invalid",
                             message: OPAQUE_ID_MESSAGE,
@@ -2025,7 +2038,7 @@ impl WorldTransaction<'_> {
                         match self.world.layout.run_local_drag_drop_with_source(
                             &inset,
                             domain_report.outer_gap,
-                            &WindowId(window.clone()),
+                            window,
                             &focused_window,
                             &windows,
                             *x,
@@ -2118,28 +2131,26 @@ impl WorldTransaction<'_> {
                             preconverged,
                         };
                         match command {
-                            CoreCommand::ToggleFloat { window, float_rect } => {
-                                let subject = WindowId(window.clone());
-                                self.run_local_toggle_float_with_ctx(
-                                    command_seq,
-                                    &domain_key,
-                                    &ctx,
-                                    &subject,
-                                    *float_rect,
-                                )
-                            }
-                            CoreCommand::ToggleOrientation { window } => {
-                                if !is_opaque_id(window) {
+                            CoreCommand::ToggleFloat {
+                                window: WindowSubject::Window(window),
+                                float_rect,
+                            } => self.run_local_toggle_float_with_ctx(
+                                command_seq,
+                                &domain_key,
+                                &ctx,
+                                window,
+                                *float_rect,
+                            ),
+                            CoreCommand::ToggleOrientation {
+                                window: WindowSubject::Window(window),
+                            } => {
+                                if !is_opaque_id(&window.0) {
                                     CommandApplied::Rejected {
                                         kind: "toggle-orient-window-invalid",
                                         message: OPAQUE_ID_MESSAGE,
                                     }
                                 } else {
-                                    match self
-                                        .world
-                                        .layout
-                                        .run_toggle_orientation(&ctx, &WindowId(window.clone()))
-                                    {
+                                    match self.world.layout.run_toggle_orientation(&ctx, window) {
                                         Ok(_) => {
                                             self.note_command(command_seq);
                                             CommandApplied::NoEffect
@@ -2154,7 +2165,7 @@ impl WorldTransaction<'_> {
                                 same_axis_move,
                                 ..
                             } => {
-                                if !is_opaque_id(window) {
+                                if !is_opaque_id(&window.0) {
                                     CommandApplied::Rejected {
                                         kind: "move-window-invalid",
                                         message: OPAQUE_ID_MESSAGE,
@@ -2163,7 +2174,7 @@ impl WorldTransaction<'_> {
                                     self.run_local_move_with_ctx(
                                         command_seq,
                                         &ctx,
-                                        &WindowId(window.clone()),
+                                        window,
                                         *direction,
                                         *same_axis_move,
                                     )
@@ -2172,7 +2183,7 @@ impl WorldTransaction<'_> {
                             CoreCommand::Focus {
                                 window, direction, ..
                             } => {
-                                if !is_opaque_id(window) {
+                                if !is_opaque_id(&window.0) {
                                     CommandApplied::Rejected {
                                         kind: "focus-window-invalid",
                                         message: OPAQUE_ID_MESSAGE,
@@ -2181,19 +2192,19 @@ impl WorldTransaction<'_> {
                                     self.run_local_focus_with_ctx(
                                         command_seq,
                                         &ctx,
-                                        &WindowId(window.clone()),
+                                        window,
                                         *direction,
                                         held_scopes,
                                     )
                                 }
                             }
                             CoreCommand::Resize {
-                                window,
+                                window: WindowSubject::Window(window),
                                 direction,
                                 mode,
                                 press_index,
                             } => {
-                                if !is_opaque_id(window) {
+                                if !is_opaque_id(&window.0) {
                                     CommandApplied::Rejected {
                                         kind: "resize-window-invalid",
                                         message: OPAQUE_ID_MESSAGE,
@@ -2201,7 +2212,7 @@ impl WorldTransaction<'_> {
                                 } else if let Some(parsed_mode) = mode.as_resize_mode() {
                                     match self.world.layout.run_keyboard_resize(
                                         &ctx,
-                                        &WindowId(window.clone()),
+                                        window,
                                         *direction,
                                         parsed_mode,
                                         *press_index,
@@ -2225,16 +2236,16 @@ impl WorldTransaction<'_> {
                                 boundary,
                                 second,
                             } => {
-                                if !is_opaque_id(window) {
+                                if !is_opaque_id(&window.0) {
                                     CommandApplied::Rejected {
                                         kind: "pointer-resize-window-invalid",
                                         message: OPAQUE_ID_MESSAGE,
                                     }
                                 } else {
-                                    let subject = WindowId(window.clone());
+                                    let subject = window;
                                     match second {
                                         None => match self.world.layout.run_pointer_resize(
-                                            &ctx, &subject, *direction, *boundary,
+                                            &ctx, subject, *direction, *boundary,
                                         ) {
                                             Ok(_) => {
                                                 self.note_command(command_seq);
@@ -2253,7 +2264,7 @@ impl WorldTransaction<'_> {
                                             } else {
                                                 match self.world.layout.run_pointer_resize_corner(
                                                     &ctx,
-                                                    &subject,
+                                                    subject,
                                                     *direction,
                                                     *boundary,
                                                     *parsed,
@@ -2281,12 +2292,12 @@ impl WorldTransaction<'_> {
         };
         if composed_cleared
             && matches!(applied, CommandApplied::Rejected { .. })
-            && let CoreCommand::ToggleFloat { window, .. } = command
+            && let CoreCommand::ToggleFloat {
+                window: WindowSubject::Window(window),
+                ..
+            } = command
         {
-            self.world
-                .runtime
-                .composed_maximized
-                .insert(WindowId(window.clone()));
+            self.world.runtime.composed_maximized.insert(window.clone());
         }
         applied
     }
@@ -2661,13 +2672,32 @@ impl WorldTransaction<'_> {
         let window = match command {
             CoreCommand::Move { window, .. }
             | CoreCommand::Focus { window, .. }
-            | CoreCommand::Resize { window, .. }
             | CoreCommand::PointerResize { window, .. }
-            | CoreCommand::ToggleFloat { window, .. }
-            | CoreCommand::ToggleOrientation { window, .. }
             | CoreCommand::DragDrop { window, .. }
-            | CoreCommand::DragPreview { window, .. } => Some(WindowId(window.clone())),
-            CoreCommand::Reconcile
+            | CoreCommand::DragPreview { window, .. } => Some(window.clone()),
+            CoreCommand::Resize {
+                window: WindowSubject::Window(window),
+                ..
+            }
+            | CoreCommand::ToggleFloat {
+                window: WindowSubject::Window(window),
+                ..
+            }
+            | CoreCommand::ToggleOrientation {
+                window: WindowSubject::Window(window),
+            } => Some(window.clone()),
+            CoreCommand::Resize {
+                window: WindowSubject::CurrentFocus,
+                ..
+            }
+            | CoreCommand::ToggleFloat {
+                window: WindowSubject::CurrentFocus,
+                ..
+            }
+            | CoreCommand::ToggleOrientation {
+                window: WindowSubject::CurrentFocus,
+            }
+            | CoreCommand::Reconcile
             | CoreCommand::UpdateGaps
             | CoreCommand::SendToWorkspace { .. }
             | CoreCommand::SendToOutput { .. }
@@ -2815,35 +2845,132 @@ pub(crate) fn parse_direction_token(direction: &str) -> Option<Direction> {
 /// consuming it.
 pub(crate) fn command_window(command: &WorldCommand) -> Option<WindowId> {
     match command {
-        WorldCommand::Focus { window, .. }
-        | WorldCommand::FocusDirectional { window, .. }
-        | WorldCommand::MoveDirectional { window, .. }
-        | WorldCommand::SendDirectional { window, .. }
-        | WorldCommand::Send { window, .. }
-        | WorldCommand::SendRelative { window, .. }
-        | WorldCommand::SendNumbered { window, .. }
-        | WorldCommand::ToggleMaximize { window }
-        | WorldCommand::SetSticky { window, .. }
-        | WorldCommand::ToggleSticky { window }
-        | WorldCommand::SetFullscreen { window, .. }
-        | WorldCommand::ToggleFullscreen { window } => Some(window.clone()),
+        WorldCommand::Focus {
+            window: WindowSubject::Window(window),
+            ..
+        }
+        | WorldCommand::FocusDirectional {
+            window: FocusDirectionalSubject::Window(window),
+            ..
+        }
+        | WorldCommand::MoveDirectional {
+            window: WindowSubject::Window(window),
+            ..
+        }
+        | WorldCommand::SendDirectional {
+            window: WindowSubject::Window(window),
+            ..
+        }
+        | WorldCommand::Send {
+            window: WindowSubject::Window(window),
+            ..
+        }
+        | WorldCommand::SendRelative {
+            window: WindowSubject::Window(window),
+            ..
+        }
+        | WorldCommand::SendNumbered {
+            window: WindowSubject::Window(window),
+            ..
+        }
+        | WorldCommand::ToggleMaximize {
+            window: WindowSubject::Window(window),
+        }
+        | WorldCommand::SetSticky {
+            window: WindowSubject::Window(window),
+            ..
+        }
+        | WorldCommand::ToggleSticky {
+            window: WindowSubject::Window(window),
+        }
+        | WorldCommand::SetFullscreen {
+            window: WindowSubject::Window(window),
+            ..
+        }
+        | WorldCommand::ToggleFullscreen {
+            window: WindowSubject::Window(window),
+        } => Some(window.clone()),
         WorldCommand::Operation(command) => match command {
             CoreCommand::Move { window, .. }
             | CoreCommand::Focus { window, .. }
-            | CoreCommand::Resize { window, .. }
             | CoreCommand::PointerResize { window, .. }
-            | CoreCommand::ToggleFloat { window, .. }
-            | CoreCommand::ToggleOrientation { window, .. }
             | CoreCommand::DragDrop { window, .. }
-            | CoreCommand::DragPreview { window, .. } => Some(WindowId(window.clone())),
-            CoreCommand::SendToWorkspace { window, .. }
-            | CoreCommand::SendToOutput { window, .. } => Some(WindowId(window.clone())),
-            CoreCommand::Reconcile
+            | CoreCommand::DragPreview { window, .. }
+            | CoreCommand::SendToWorkspace { window, .. }
+            | CoreCommand::SendToOutput { window, .. } => Some(window.clone()),
+            CoreCommand::Resize {
+                window: WindowSubject::Window(window),
+                ..
+            }
+            | CoreCommand::ToggleFloat {
+                window: WindowSubject::Window(window),
+                ..
+            }
+            | CoreCommand::ToggleOrientation {
+                window: WindowSubject::Window(window),
+            } => Some(window.clone()),
+            CoreCommand::Resize {
+                window: WindowSubject::CurrentFocus,
+                ..
+            }
+            | CoreCommand::ToggleFloat {
+                window: WindowSubject::CurrentFocus,
+                ..
+            }
+            | CoreCommand::ToggleOrientation {
+                window: WindowSubject::CurrentFocus,
+            }
+            | CoreCommand::Reconcile
             | CoreCommand::UpdateGaps
             | CoreCommand::ReleaseDomain
             | CoreCommand::MigrateWorkspace { .. } => None,
         },
-        WorldCommand::SwitchView { .. }
+        WorldCommand::Focus {
+            window: WindowSubject::CurrentFocus,
+            ..
+        }
+        | WorldCommand::FocusDirectional {
+            window: FocusDirectionalSubject::CurrentFocus | FocusDirectionalSubject::NoFocus,
+            ..
+        }
+        | WorldCommand::MoveDirectional {
+            window: WindowSubject::CurrentFocus,
+            ..
+        }
+        | WorldCommand::SendDirectional {
+            window: WindowSubject::CurrentFocus,
+            ..
+        }
+        | WorldCommand::Send {
+            window: WindowSubject::CurrentFocus,
+            ..
+        }
+        | WorldCommand::SendRelative {
+            window: WindowSubject::CurrentFocus,
+            ..
+        }
+        | WorldCommand::SendNumbered {
+            window: WindowSubject::CurrentFocus,
+            ..
+        }
+        | WorldCommand::ToggleMaximize {
+            window: WindowSubject::CurrentFocus,
+        }
+        | WorldCommand::SetSticky {
+            window: WindowSubject::CurrentFocus,
+            ..
+        }
+        | WorldCommand::ToggleSticky {
+            window: WindowSubject::CurrentFocus,
+        }
+        | WorldCommand::SetFullscreen {
+            window: WindowSubject::CurrentFocus,
+            ..
+        }
+        | WorldCommand::ToggleFullscreen {
+            window: WindowSubject::CurrentFocus,
+        }
+        | WorldCommand::SwitchView { .. }
         | WorldCommand::SelectWorkspace { .. }
         | WorldCommand::SelectNumbered { .. }
         | WorldCommand::SelectRelative { .. }
@@ -2853,9 +2980,5 @@ pub(crate) fn command_window(command: &WorldCommand) -> Option<WindowId> {
         | WorldCommand::MigrateDirectional { .. }
         | WorldCommand::SetWorkspaceTiling { .. }
         | WorldCommand::ToggleWorkspaceTiling { .. } => None,
-        // Execution-time subjects resolve at dispatch; the placeholder
-        // never names a binding, so no supersession applies here. The
-        // resolved explicit command supersedes through the normal path.
-        WorldCommand::Implicit(_) => None,
     }
 }

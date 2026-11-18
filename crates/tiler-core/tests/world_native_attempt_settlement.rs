@@ -286,7 +286,7 @@ fn migrate_setup() -> (WorldEngine, String, String, String, String, String, Stri
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: migrated.clone(),
+                workspace: tiler_core::directional::WorkspaceId(migrated.clone()),
             }),
             vec![],
             vec![],
@@ -641,9 +641,11 @@ fn ask5_late_send_with_intermediate_readings_settles_transfer() {
                 ],
                 Some(11),
                 Some(WorldCommand::Send {
-                    window: WindowId("win-a".to_owned()),
+                    window: tiler_core::directional::WindowSubject::Window(WindowId(
+                        "win-a".to_owned(),
+                    )),
                     target_output: OutputId("out-a".to_owned()),
-                    target_workspace: target_ws.clone(),
+                    target_workspace: tiler_core::directional::WorkspaceId(target_ws.clone()),
                     follow: false,
                 }),
                 vec![],
@@ -803,9 +805,11 @@ fn host_owned_ignores_conflicting_logical_and_proves_via_native() {
             ],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: target_ws.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(target_ws.clone()),
                 follow: false,
             }),
             vec![],
@@ -906,9 +910,11 @@ fn host_owned_unknown_native_holds_despite_conflicting_logical() {
             ],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: target_ws.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(target_ws.clone()),
                 follow: false,
             }),
             vec![],
@@ -1069,9 +1075,11 @@ fn accepted_target_native_post_with_different_known_staged_homing_holds() {
             ],
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: target_ws.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(target_ws.clone()),
                 follow: false,
             }),
             vec![],
@@ -2054,7 +2062,7 @@ fn empty_migration_target_survives_lifecycle_without_backing() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: shown_a.clone(),
+                workspace: tiler_core::directional::WorkspaceId(shown_a.clone()),
             }),
             vec![],
             vec![],
@@ -2468,7 +2476,7 @@ fn off_output_move_releases_source() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: shown_a.clone(),
+                workspace: tiler_core::directional::WorkspaceId(shown_a.clone()),
             }),
             vec![],
             vec![],
@@ -2586,7 +2594,7 @@ fn deferred_release_completes_after_creation_resolves() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: shown_a.clone(),
+                workspace: tiler_core::directional::WorkspaceId(shown_a.clone()),
             }),
             vec![],
             vec![],
@@ -2617,7 +2625,7 @@ fn deferred_release_completes_after_creation_resolves() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-b".to_owned()),
                 target_output: OutputId("out-a".to_owned()),
-                workspace: shown_b.clone(),
+                workspace: tiler_core::directional::WorkspaceId(shown_b.clone()),
             }),
             vec![],
             vec![],

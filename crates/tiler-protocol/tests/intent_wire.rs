@@ -450,7 +450,7 @@ fn engine_sticky_save_and_rollback_clear_spell_exact_fixture_bytes() {
     sticky_a.observation_seq = 2;
     sticky_a.command_seq = Some(1);
     sticky_a.command = Some(WorldCommand::SetSticky {
-        window: WindowId("win-a".to_owned()),
+        window: tiler_core::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
         value: true,
     });
     let save_reply = match engine.handle_report(&sticky_a, &[]).0 {
@@ -471,7 +471,7 @@ fn engine_sticky_save_and_rollback_clear_spell_exact_fixture_bytes() {
     sticky_b.observation_seq = 3;
     sticky_b.command_seq = Some(2);
     sticky_b.command = Some(WorldCommand::SetSticky {
-        window: WindowId("win-b".to_owned()),
+        window: tiler_core::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
         value: true,
     });
     let second_reply = match engine.handle_report(&sticky_b, &[]).0 {
@@ -839,7 +839,7 @@ fn reply_upper_bound_adds_exactly_one_save_row() {
     with_toggle.command_seq = Some(2);
     with_toggle.command = Some(tiler_core::world_report::WorldCommand::Operation(
         tiler_core::boundary::CoreCommand::ToggleFloat {
-            window: "win-a".to_owned(),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             float_rect: None,
         },
     ));
@@ -878,7 +878,7 @@ fn actual_one_save_reply_fits_protocol_gate_and_upper_bound() {
     input.command_seq = Some(2);
     input.command = Some(tiler_core::world_report::WorldCommand::Operation(
         tiler_core::boundary::CoreCommand::ToggleFloat {
-            window: "win-a".to_owned(),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             float_rect: None,
         },
     ));

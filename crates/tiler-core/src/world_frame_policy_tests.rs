@@ -1152,7 +1152,9 @@ fn engine_withholds_float_token_while_suppressed() {
     );
     floated.command_seq = Some(9);
     floated.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: "w1".to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            "w1".to_owned(),
+        )),
         float_rect: Some(target),
     }));
     floated.request_id = "req-2".to_owned();
@@ -3172,7 +3174,9 @@ fn toggle_float(report: &mut WorldReportV4, window: &str, seq: u64, rect: Option
     use crate::world_report::WorldCommand;
     report.command_seq = Some(seq);
     report.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: window.to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            window.to_owned(),
+        )),
         float_rect: rect,
     }));
 }
@@ -3208,7 +3212,7 @@ fn set_sticky(report: &mut WorldReportV4, window: &str, seq: u64, value: bool) {
     use crate::world_report::WorldCommand;
     report.command_seq = Some(seq);
     report.command = Some(WorldCommand::SetSticky {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
         value,
     });
 }
@@ -4728,7 +4732,9 @@ fn burst_float_attempts_never_acquire_tiled_budget() {
     );
     floated.command_seq = Some(9);
     floated.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: "w1".to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            "w1".to_owned(),
+        )),
         float_rect: Some(target),
     }));
     floated.request_id = "req-2".to_owned();

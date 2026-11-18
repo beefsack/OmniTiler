@@ -158,6 +158,13 @@
    early, exact and future-reserve rollback coverage. No fixture byte changes
    for these decisions.
    [Discriminator](../spec/reference-outcomes.md#staged-reply-size-versus-terminal-headroom).
+6. **Platform scope (user 2026-11-19):** Finish and prove the core and
+   protocol rebuild first. macOS and Windows ports and their checks are
+   deferred to separate rebuilds on their native platforms; do not add
+   compatibility shims or shape core around the deferred callers. KDE is
+   also slated for a rebuild. Migrate the current KWin code here where it
+   provides a direct, straightforward consumer proof of the contract;
+   defer substantial KWin changes to its rebuild.
 
 ## Migration, acceptance and cost
 
@@ -171,12 +178,10 @@
    KWin `world-entry.ts` drains the same evidence, `world-report.ts` writes the
    tagged lane and the service uses the bounded bytes returned by admission.
    `crates/omnitiler/examples/raw_world_eval.rs` remains a checked wire caller.
-   Cut over macOS without codec round trips, then Windows constructors and
-   matching. Preserve T2's single evaluation on a cloned `WorldEngine`
-   and clone isolation; its tracked `float-no-remap` veto is not a general
-   adapter approval right or accepted runtime policy. Tabs need no new fields:
-   report lifetime-bound setter/readbacks, not tab verdicts or a separate
-   hide ledger. Keep future exact group/member clicks distinct from
+   Keep the adapter contract typed without codec round trips; existing macOS
+   and Windows callers are out of scope. Tabs need no new fields: report
+   lifetime-bound setter/readbacks, not tab verdicts or a separate hide
+   ledger. Keep future exact group/member clicks distinct from
    execution-time focus. Enable D2 last, subject to its evidence.
 3. Frozen `world-wire/v4`, `stage5`, `stage5-v4` and `kde-v4` stay
    byte-identical, even if their historical shape is rejected by the active
@@ -202,17 +207,16 @@
    platform apply, all six kinds including malformed/capability cases,
    and unchanged command ordering/refusal. Add focused boundary cases only
    for genuine gaps; no new comparison harness. Run scoped Rust format/build/
-   Clippy/tests and KWin typecheck/tests; require native-target caller checks
-   for native adoption, not Linux portable proxies. Report C2's existing
-   macOS portable failures separately. No live test is required for this design.
+   Clippy/tests and KWin typecheck/tests, scoped to the supported gate
+   packages rather than the deferred native ports. No live test is required.
 5. Keep `scripts/check-report-cost.sh`: 24M/100M Ir ceilings at 50/200
    windows and 6.5 growth; compare against C2's 8.11M/35.58M Ir (4.39).
    Run release `report_scale all 31 3 all`: steady p95 <= 1/4/10 ms
    at 10/50/200 windows, first reports separate. Counts after extraction
    exclude moved wire work. Compare before/after full broker capture through
-   returned bound bytes on an existing workload and macOS codec/core timing
-   legs or equivalent dispatch evidence. Prefer simplicity absent measured
-   need. One report, one publication; no new IPC, timers or acknowledgements.
+   returned bound bytes on an existing workload. Prefer simplicity absent
+   measured need. One report, one publication; no new IPC, timers or
+   acknowledgements.
    Border following stays local to an authorized subject; core selects
    preview targets. Serialization does not change paint scheduling.
 6. Split the touched codec by responsibility, not just move a monolith
@@ -248,5 +252,16 @@ check; writer-only validation stays at final preparation. Focused tests
 confirmed checkpoint order, writer validation deferral and atomic rollback.
 Core no longer owns JSON sizing or transport byte limits. Its direct typed
 entry checks structure; broker, evaluator and platform ingress retain the
-protocol byte gate. The native paths still require their typed cutover and
-native-target verification.
+protocol byte gate. Native caller cutover and verification belong to the
+deferred platform rebuilds.
+
+Command IDs and subjects are typed. The FIFO resolves each execution-time
+focus subject once and uses it for dispatch, diagnostics and bookkeeping.
+The active and frozen wire fixtures are unchanged; the scoped Rust suite
+passed 3,458 tests, with the workspace unsafe-posture test excluded.
+
+For the final broker comparison, the release harness at `b6f097d0` used
+the original active genesis fixture and the workload above. Median series
+p50/p95 was 198.5/205.5 us fresh and 205.6/214.7 us warm; replies were
+2,220-2,234 bytes. This is the comparison baseline; earlier timings above
+are historical context.

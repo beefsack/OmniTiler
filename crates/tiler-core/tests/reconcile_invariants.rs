@@ -249,7 +249,9 @@ fn synchronous_atomic_revision_and_public_reply_contract() {
             2,
             Some(11),
             Some(WorldCommand::Operation(CoreCommand::Resize {
-                window: "win-b".to_owned(),
+                window: tiler_core::directional::WindowSubject::Window(
+                    tiler_core::directional::WindowId("win-b".to_owned()),
+                ),
                 direction: tiler_core::directional::Direction::Left,
                 mode: tiler_core::directional::ResizeSelector::Outwards,
                 press_index: 0,
@@ -290,9 +292,11 @@ fn synchronous_atomic_revision_and_public_reply_contract() {
             3,
             Some(12),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: "ws-SECRET".to_owned(),
+                target_workspace: tiler_core::directional::WorkspaceId("ws-SECRET".to_owned()),
                 follow: false,
             }),
         ),

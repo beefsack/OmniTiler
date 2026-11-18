@@ -315,7 +315,7 @@ fn global_unique_swaps_visible_elsewhere_instead_of_duplicating() {
             Some(11),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_b.clone(),
+                workspace: tiler_core::directional::WorkspaceId(view_b.clone()),
             }),
             vec![],
         ),
@@ -380,7 +380,7 @@ fn local_mode_selects_without_swap_when_target_visible_elsewhere() {
             Some(11),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: view_b,
+                workspace: tiler_core::directional::WorkspaceId(view_b),
             }),
             vec![],
         ),
@@ -506,7 +506,7 @@ fn shared_mode_refuses_whole_workspace_migration() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: shared,
+                workspace: tiler_core::directional::WorkspaceId(shared),
             }),
             vec![],
         ),
@@ -623,7 +623,7 @@ fn equal_count_pads_shorter_rings() {
         "win-a",
         Some(11),
         Some(WorldCommand::SendNumbered {
-            window: WindowId("win-a".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             source: tiler_core::world_report::SendSource::Explicit(OutputId("out-a".to_owned())),
             index: 0,
             follow: false,
@@ -691,9 +691,11 @@ fn same_output_send_stays_pending_then_settles_on_member_attempt() {
             "win-a",
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: target.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(target.clone()),
                 follow: false,
             }),
             vec![],
@@ -797,9 +799,11 @@ fn unknown_membership_never_counts_as_target_receipt() {
             "win-a",
             Some(11),
             Some(WorldCommand::Send {
-                window: WindowId("win-a".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: target.clone(),
+                target_workspace: tiler_core::directional::WorkspaceId(target.clone()),
                 follow: false,
             }),
             vec![],
@@ -878,7 +882,7 @@ fn migration_partial_arrival_holds_narrowly_on_refusal() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: tiler_core::directional::WorkspaceId(view_a.clone()),
             }),
             vec![],
         ),

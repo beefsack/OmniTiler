@@ -176,9 +176,9 @@ fn send_refused_when_target_unrepresentable_source_preserved() {
             "b",
             Some(1),
             Some(WorldCommand::Operation(CoreCommand::SendToWorkspace {
-                window: "b".to_owned(),
-                target_output: "o".to_owned(),
-                target_workspace: "ws-9".to_owned(),
+                window: crate::directional::WindowId("b".to_owned()),
+                target_output: crate::directional::OutputId("o".to_owned()),
+                target_workspace: crate::directional::WorkspaceId("ws-9".to_owned()),
                 follow: true,
             })),
         ),

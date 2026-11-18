@@ -66,7 +66,9 @@ use tiler_core::bounds::{is_opaque_id, valid_carried_rect};
 use tiler_core::connection::RawSettingValue;
 use tiler_core::connection::{HostCapabilities, valid_identity_text, valid_process_identity_text};
 use tiler_core::contract::DragSide;
-use tiler_core::directional::{Direction, NodeId, OutputId, ResizeSelector, WindowId, WorkspaceId};
+use tiler_core::directional::{
+    Direction, NodeId, OutputId, ResizeSelector, WindowId, WindowSubject, WorkspaceId,
+};
 use tiler_core::geometry::Rect;
 use tiler_core::gesture::GestureSettled;
 use tiler_core::ids::{
@@ -81,11 +83,11 @@ use tiler_core::world_presentation::{
 use tiler_core::world_report::{
     ActivationPolicy, AfterShown, AfterShownMember, AfterShownScope, ArrivalBracket,
     ArrivalLocation, AttemptLaneV4, AuthorityScope, BorderHideReasonV4, BorderPresentationV4,
-    CommandRejectKind, DragPreviewV4, EffectKind, FloatOrigin, FocusFeedback, FocusRequest,
-    FocusRequestCause, FrameWitness, FullscreenOwner, HeldAttemptRow, HeldNativeRow,
-    HeldPresentationRow, HeldScreenRow, HeldWindowRow, HoldReason, IntentDesire, IntentRecord,
-    LastWrite, LastWritePath, LastWriteProperty, MAX_FOCUS_DEPARTING, MAX_FOCUS_MEMBERS,
-    MAX_FOCUS_SELECTED, MAX_FOCUS_VIEWS, MAX_INTENT_DESIRED, MAX_INTENT_RECORDS,
+    CommandRejectKind, DragPreviewV4, EffectKind, FloatOrigin, FocusDirectionalSubject,
+    FocusFeedback, FocusRequest, FocusRequestCause, FrameWitness, FullscreenOwner, HeldAttemptRow,
+    HeldNativeRow, HeldPresentationRow, HeldScreenRow, HeldWindowRow, HoldReason, IntentDesire,
+    IntentRecord, LastWrite, LastWritePath, LastWriteProperty, MAX_FOCUS_DEPARTING,
+    MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED, MAX_FOCUS_VIEWS, MAX_INTENT_DESIRED, MAX_INTENT_RECORDS,
     MAX_REPLY_DIAGNOSTICS, MAX_REPLY_EFFECTS, MAX_REPLY_NATIVE_CREATIONS, MAX_REPLY_OPERATIONS,
     MAX_REPLY_OUTPUTS, MAX_REPLY_SCOPES, MAX_REPLY_SWITCH_EVENTS, MAX_REPLY_TRANSFERS,
     MAX_REPLY_WINDOWS, MAX_REPLY_WORKSPACES, MAX_STATE_TARGETS_PER_WINDOW, NativeCreationDesire,
@@ -2251,7 +2253,7 @@ fn decode_core_command(map: &serde_json::Map<String, serde_json::Value>) -> Resu
                 _ => return Err(unknown_value()),
             };
             Ok(CoreCommand::Move {
-                window: req_id(map, "win")?,
+                window: WindowId(req_id(map, "win")?),
                 direction: parse_direction(req_str(map, "direction")?)?,
                 cross_output_transfer: req_bool(map, "crossOutput")?,
                 same_axis_move: same_axis,
@@ -2263,7 +2265,7 @@ fn decode_core_command(map: &serde_json::Map<String, serde_json::Value>) -> Resu
                 &["op", "win", "direction", "crossOutput", "floatSubject"],
             )?;
             Ok(CoreCommand::Focus {
-                window: req_id(map, "win")?,
+                window: WindowId(req_id(map, "win")?),
                 direction: parse_direction(req_str(map, "direction")?)?,
                 cross_output_transfer: req_bool(map, "crossOutput")?,
                 float_subject: req_bool(map, "floatSubject")?,
@@ -2278,7 +2280,7 @@ fn decode_core_command(map: &serde_json::Map<String, serde_json::Value>) -> Resu
                 .and_then(|v| u32::try_from(v).ok())
                 .ok_or_else(malformed)?;
             Ok(CoreCommand::Resize {
-                window: req_id(map, "win")?,
+                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
                 direction: parse_direction(req_str(map, "direction")?)?,
                 mode,
                 press_index: press,
@@ -2316,7 +2318,7 @@ fn decode_core_command(map: &serde_json::Map<String, serde_json::Value>) -> Resu
                 _ => return Err(unknown_value()),
             };
             Ok(CoreCommand::PointerResize {
-                window: req_id(map, "win")?,
+                window: WindowId(req_id(map, "win")?),
                 direction: parse_direction(req_str(map, "direction")?)?,
                 boundary: req_i32(map, "boundary")?,
                 second,
@@ -2325,31 +2327,31 @@ fn decode_core_command(map: &serde_json::Map<String, serde_json::Value>) -> Resu
         "toggle-float" => {
             check_keys(map, &["op", "win", "rect"])?;
             Ok(CoreCommand::ToggleFloat {
-                window: req_id(map, "win")?,
+                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
                 float_rect: opt_rect_or_null(map, "rect")?,
             })
         }
         "toggle-orientation" => {
             check_keys(map, &["op", "win"])?;
             Ok(CoreCommand::ToggleOrientation {
-                window: req_id(map, "win")?,
+                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
             })
         }
         "send-to-workspace" => {
             check_keys(map, &["op", "win", "out", "ws", "follow"])?;
             Ok(CoreCommand::SendToWorkspace {
-                window: req_id(map, "win")?,
-                target_output: req_id(map, "out")?,
-                target_workspace: req_id(map, "ws")?,
+                window: WindowId(req_id(map, "win")?),
+                target_output: OutputId(req_id(map, "out")?),
+                target_workspace: WorkspaceId(req_id(map, "ws")?),
                 follow: req_bool(map, "follow")?,
             })
         }
         "send-to-output" => {
             check_keys(map, &["op", "win", "out", "ws", "follow"])?;
             Ok(CoreCommand::SendToOutput {
-                window: req_id(map, "win")?,
-                target_output: req_id(map, "out")?,
-                target_workspace: req_id(map, "ws")?,
+                window: WindowId(req_id(map, "win")?),
+                target_output: OutputId(req_id(map, "out")?),
+                target_workspace: WorkspaceId(req_id(map, "ws")?),
                 follow: req_bool(map, "follow")?,
             })
         }
@@ -2367,7 +2369,7 @@ fn decode_core_command(map: &serde_json::Map<String, serde_json::Value>) -> Resu
                 Some(value) => decode_hover_prior(value)?,
             };
             let source = decode_drag_source(map.get("source").ok_or_else(malformed)?)?;
-            let window = req_id(map, "win")?;
+            let window = WindowId(req_id(map, "win")?);
             let x = req_i32(map, "x")?;
             let y = req_i32(map, "y")?;
             if op == "drag-drop" {
@@ -2399,16 +2401,16 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
         "focus" => {
             check_keys(map, &["op", "win", "direction"])?;
             Ok(WorldCommand::Focus {
-                window: WindowId(req_id(map, "win")?),
+                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
                 direction: Some(parse_direction(req_str(map, "direction")?)?),
             })
         }
         "send" => {
             check_keys(map, &["op", "win", "out", "ws", "follow"])?;
             Ok(WorldCommand::Send {
-                window: WindowId(req_id(map, "win")?),
+                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
                 target_output: OutputId(req_id(map, "out")?),
-                target_workspace: req_id(map, "ws")?,
+                target_workspace: WorkspaceId(req_id(map, "ws")?),
                 follow: req_bool(map, "follow")?,
             })
         }
@@ -2416,14 +2418,14 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             check_keys(map, &["op", "out", "ws"])?;
             Ok(WorldCommand::SwitchView {
                 output: OutputId(req_id(map, "out")?),
-                workspace: req_id(map, "ws")?,
+                workspace: WorkspaceId(req_id(map, "ws")?),
             })
         }
         "select-workspace" => {
             check_keys(map, &["op", "out", "ws"])?;
             Ok(WorldCommand::SelectWorkspace {
                 output: OutputId(req_id(map, "out")?),
-                workspace: req_id(map, "ws")?,
+                workspace: WorkspaceId(req_id(map, "ws")?),
             })
         }
         "select-numbered" => {
@@ -2479,7 +2481,7 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             // explicit output; only the two named implicit fallbacks exist.
             let source = decode_send_source(map, "source")?;
             Ok(WorldCommand::SendRelative {
-                window: WindowId(req_id(map, "win")?),
+                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
                 source,
                 delta,
                 follow: req_bool(map, "follow")?,
@@ -2498,7 +2500,7 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             }
             let source = decode_send_source(map, "source")?;
             Ok(WorldCommand::SendNumbered {
-                window: WindowId(req_id(map, "win")?),
+                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
                 source,
                 index,
                 follow: req_bool(map, "follow")?,
@@ -2508,7 +2510,7 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             check_keys(map, &["op", "out", "ws", "tiled"])?;
             Ok(WorldCommand::SetWorkspaceTiling {
                 output: OutputId(req_id(map, "out")?),
-                workspace: req_id(map, "ws")?,
+                workspace: WorkspaceId(req_id(map, "ws")?),
                 tiled: req_bool(map, "tiled")?,
             })
         }
@@ -2522,7 +2524,7 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             Ok(WorldCommand::MigrateWorkspace {
                 source_output: OutputId(from),
                 target_output: OutputId(to),
-                workspace: req_id(map, "ws")?,
+                workspace: WorkspaceId(req_id(map, "ws")?),
             })
         }
         "focus-directional" => {
@@ -2531,11 +2533,15 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             // core starts from the current workspace/output); every other
             // form still names an opaque subject window.
             let win = req_str(map, "win")?;
-            if !(win.is_empty() || is_opaque_id(win)) {
+            let window = if win.is_empty() {
+                FocusDirectionalSubject::NoFocus
+            } else if is_opaque_id(win) {
+                FocusDirectionalSubject::Window(WindowId(win.to_owned()))
+            } else {
                 return Err(unknown_value());
-            }
+            };
             Ok(WorldCommand::FocusDirectional {
-                window: WindowId(win.to_owned()),
+                window,
                 direction: parse_direction(req_str(map, "direction")?)?,
             })
         }
@@ -2545,7 +2551,7 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
                 tiler_core::directional::SameAxisMove::parse_wire(req_str(map, "sameAxis")?)
                     .ok_or_else(unknown_value)?;
             Ok(WorldCommand::MoveDirectional {
-                window: WindowId(req_id(map, "win")?),
+                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
                 direction: parse_direction(req_str(map, "direction")?)?,
                 same_axis,
             })
@@ -2553,7 +2559,7 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
         "send-directional" => {
             check_keys(map, &["op", "win", "direction", "follow"])?;
             Ok(WorldCommand::SendDirectional {
-                window: WindowId(req_id(map, "win")?),
+                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
                 direction: parse_direction(req_str(map, "direction")?)?,
                 follow: req_bool(map, "follow")?,
             })
@@ -2571,39 +2577,39 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             check_keys(map, &["op", "out", "ws"])?;
             Ok(WorldCommand::ToggleWorkspaceTiling {
                 output: OutputId(req_id(map, "out")?),
-                workspace: req_id(map, "ws")?,
+                workspace: WorkspaceId(req_id(map, "ws")?),
             })
         }
         "toggle-maximize" => {
             check_keys(map, &["op", "win"])?;
             Ok(WorldCommand::ToggleMaximize {
-                window: WindowId(req_id(map, "win")?),
+                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
             })
         }
         "set-sticky" => {
             check_keys(map, &["op", "win", "value"])?;
             Ok(WorldCommand::SetSticky {
-                window: WindowId(req_id(map, "win")?),
+                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
                 value: req_bool(map, "value")?,
             })
         }
         "toggle-sticky" => {
             check_keys(map, &["op", "win"])?;
             Ok(WorldCommand::ToggleSticky {
-                window: WindowId(req_id(map, "win")?),
+                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
             })
         }
         "set-fullscreen" => {
             check_keys(map, &["op", "win", "value"])?;
             Ok(WorldCommand::SetFullscreen {
-                window: WindowId(req_id(map, "win")?),
+                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
                 value: req_bool(map, "value")?,
             })
         }
         "toggle-fullscreen" => {
             check_keys(map, &["op", "win"])?;
             Ok(WorldCommand::ToggleFullscreen {
-                window: WindowId(req_id(map, "win")?),
+                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
             })
         }
         "operation" => {
@@ -4133,23 +4139,22 @@ fn decode_implicit_command_v4(
     op: &str,
 ) -> Result<WorldCommand> {
     use tiler_core::world_report::WorldCommand as C;
-    let empty = WindowId(String::new());
-    let wrapped = match op {
+    match op {
         "focus" => {
             check_keys(map, &["op", "win"])?;
-            C::Focus {
-                window: empty,
+            Ok(C::Focus {
+                window: WindowSubject::CurrentFocus,
                 direction: None,
-            }
+            })
         }
         "send" => {
             check_keys(map, &["op", "win", "out", "ws", "follow"])?;
-            C::Send {
-                window: empty,
+            Ok(C::Send {
+                window: WindowSubject::CurrentFocus,
                 target_output: OutputId(req_id(map, "out")?),
-                target_workspace: req_id(map, "ws")?,
+                target_workspace: WorkspaceId(req_id(map, "ws")?),
                 follow: req_bool(map, "follow")?,
-            }
+            })
         }
         "send-relative" => {
             check_keys(map, &["op", "win", "source", "delta", "follow"])?;
@@ -4162,12 +4167,12 @@ fn decode_implicit_command_v4(
                 return Err(unknown_value());
             }
             let source = decode_send_source(map, "source")?;
-            C::SendRelative {
-                window: empty,
+            Ok(C::SendRelative {
+                window: WindowSubject::CurrentFocus,
                 source,
                 delta,
                 follow: req_bool(map, "follow")?,
-            }
+            })
         }
         "send-numbered" => {
             check_keys(map, &["op", "win", "source", "index", "follow"])?;
@@ -4180,77 +4185,83 @@ fn decode_implicit_command_v4(
                 return Err(unknown_value());
             }
             let source = decode_send_source(map, "source")?;
-            C::SendNumbered {
-                window: empty,
+            Ok(C::SendNumbered {
+                window: WindowSubject::CurrentFocus,
                 source,
                 index,
                 follow: req_bool(map, "follow")?,
-            }
+            })
         }
         "focus-directional" => {
             check_keys(map, &["op", "win", "direction"])?;
-            C::FocusDirectional {
-                window: empty,
+            Ok(C::FocusDirectional {
+                window: FocusDirectionalSubject::CurrentFocus,
                 direction: parse_direction(req_str(map, "direction")?)?,
-            }
+            })
         }
         "move-directional" => {
             check_keys(map, &["op", "win", "direction", "sameAxis"])?;
             let same_axis =
                 tiler_core::directional::SameAxisMove::parse_wire(req_str(map, "sameAxis")?)
                     .ok_or_else(unknown_value)?;
-            C::MoveDirectional {
-                window: empty,
+            Ok(C::MoveDirectional {
+                window: WindowSubject::CurrentFocus,
                 direction: parse_direction(req_str(map, "direction")?)?,
                 same_axis,
-            }
+            })
         }
         "send-directional" => {
             check_keys(map, &["op", "win", "direction", "follow"])?;
-            C::SendDirectional {
-                window: empty,
+            Ok(C::SendDirectional {
+                window: WindowSubject::CurrentFocus,
                 direction: parse_direction(req_str(map, "direction")?)?,
                 follow: req_bool(map, "follow")?,
-            }
+            })
         }
         "toggle-maximize" => {
             check_keys(map, &["op", "win"])?;
-            C::ToggleMaximize { window: empty }
+            Ok(C::ToggleMaximize {
+                window: WindowSubject::CurrentFocus,
+            })
         }
         "set-sticky" => {
             check_keys(map, &["op", "win", "value"])?;
-            C::SetSticky {
-                window: empty,
+            Ok(C::SetSticky {
+                window: WindowSubject::CurrentFocus,
                 value: req_bool(map, "value")?,
-            }
+            })
         }
         "toggle-sticky" => {
             check_keys(map, &["op", "win"])?;
-            C::ToggleSticky { window: empty }
+            Ok(C::ToggleSticky {
+                window: WindowSubject::CurrentFocus,
+            })
         }
         "set-fullscreen" => {
             check_keys(map, &["op", "win", "value"])?;
-            C::SetFullscreen {
-                window: empty,
+            Ok(C::SetFullscreen {
+                window: WindowSubject::CurrentFocus,
                 value: req_bool(map, "value")?,
-            }
+            })
         }
         "toggle-fullscreen" => {
             check_keys(map, &["op", "win"])?;
-            C::ToggleFullscreen { window: empty }
+            Ok(C::ToggleFullscreen {
+                window: WindowSubject::CurrentFocus,
+            })
         }
         "toggle-float" => {
             check_keys(map, &["op", "win", "rect"])?;
-            C::Operation(CoreCommand::ToggleFloat {
-                window: String::new(),
+            Ok(C::Operation(CoreCommand::ToggleFloat {
+                window: WindowSubject::CurrentFocus,
                 float_rect: opt_rect_or_null(map, "rect")?,
-            })
+            }))
         }
         "toggle-orientation" => {
             check_keys(map, &["op", "win"])?;
-            C::Operation(CoreCommand::ToggleOrientation {
-                window: String::new(),
-            })
+            Ok(C::Operation(CoreCommand::ToggleOrientation {
+                window: WindowSubject::CurrentFocus,
+            }))
         }
         "resize" => {
             check_keys(map, &["op", "win", "direction", "mode", "press"])?;
@@ -4260,19 +4271,15 @@ fn decode_implicit_command_v4(
                 .and_then(serde_json::Value::as_u64)
                 .and_then(|v| u32::try_from(v).ok())
                 .ok_or_else(malformed)?;
-            C::Operation(CoreCommand::Resize {
-                window: String::new(),
+            Ok(C::Operation(CoreCommand::Resize {
+                window: WindowSubject::CurrentFocus,
                 direction: parse_direction(req_str(map, "direction")?)?,
                 mode,
                 press_index: press,
-            })
+            }))
         }
-        _ => return Err(unknown_value()),
-    };
-    if !tiler_core::world_report::valid_implicit_command(&wrapped) {
-        return Err(unknown_value());
+        _ => Err(unknown_value()),
     }
-    Ok(WorldCommand::Implicit(Box::new(wrapped)))
 }
 
 /// Decode one bare v4 command value (queue-lane ingress): the same
@@ -4310,21 +4317,21 @@ fn decode_command_v4(value: &serde_json::Value) -> Result<WorldCommand> {
         "focus" => {
             check_keys(map, &["op", "win"])?;
             Ok(WorldCommand::Focus {
-                window: WindowId(req_id(map, "win")?),
+                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
                 direction: None,
             })
         }
         "toggle-float" => {
             check_keys(map, &["op", "win", "rect"])?;
             Ok(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: req_id(map, "win")?,
+                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
                 float_rect: opt_rect_or_null(map, "rect")?,
             }))
         }
         "toggle-orientation" => {
             check_keys(map, &["op", "win"])?;
             Ok(WorldCommand::Operation(CoreCommand::ToggleOrientation {
-                window: req_id(map, "win")?,
+                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
             }))
         }
         "resize" => {
@@ -4336,7 +4343,7 @@ fn decode_command_v4(value: &serde_json::Value) -> Result<WorldCommand> {
                 .and_then(|v| u32::try_from(v).ok())
                 .ok_or_else(malformed)?;
             Ok(WorldCommand::Operation(CoreCommand::Resize {
-                window: req_id(map, "win")?,
+                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
                 direction: parse_direction(req_str(map, "direction")?)?,
                 mode,
                 press_index: press,
@@ -6813,11 +6820,14 @@ fn encode_command_v4(command: &WorldCommand) -> Result<String> {
     let mut out = String::new();
     // Execution-time subjects encode the identical op shape with the
     // closed `{"currentFocus":true}` subject; every other field rides verbatim.
-    if let WorldCommand::Implicit(inner) = command {
-        return encode_implicit_command_v4(inner);
+    if tiler_core::world_report::is_current_focus_command(command) {
+        return encode_implicit_command_v4(command);
     }
     match command {
-        WorldCommand::Focus { window, direction } => {
+        WorldCommand::Focus {
+            window: WindowSubject::Window(window),
+            direction,
+        } => {
             if direction.is_some() {
                 return Err(snapshot_invalid("command-invalid"));
             }
@@ -6826,7 +6836,7 @@ fn encode_command_v4(command: &WorldCommand) -> Result<String> {
             out.push('}');
         }
         WorldCommand::Send {
-            window,
+            window: WindowSubject::Window(window),
             target_output,
             target_workspace,
             follow,
@@ -6836,7 +6846,7 @@ fn encode_command_v4(command: &WorldCommand) -> Result<String> {
             out.push_str(",\"out\":");
             push_json_string(&mut out, &target_output.0);
             out.push_str(",\"ws\":");
-            push_json_string(&mut out, target_workspace);
+            push_json_string(&mut out, &target_workspace.0);
             out.push_str(",\"follow\":");
             out.push_str(if *follow { "true" } else { "false" });
             out.push('}');
@@ -6846,7 +6856,7 @@ fn encode_command_v4(command: &WorldCommand) -> Result<String> {
             out.push_str("{\"op\":\"select-workspace\",\"out\":");
             push_json_string(&mut out, &output.0);
             out.push_str(",\"ws\":");
-            push_json_string(&mut out, workspace);
+            push_json_string(&mut out, &workspace.0);
             out.push('}');
         }
         WorldCommand::SelectNumbered { output, index } => {
@@ -6874,7 +6884,7 @@ fn encode_command_v4(command: &WorldCommand) -> Result<String> {
             out.push('}');
         }
         WorldCommand::SendRelative {
-            window,
+            window: WindowSubject::Window(window),
             source,
             delta,
             follow,
@@ -6890,7 +6900,7 @@ fn encode_command_v4(command: &WorldCommand) -> Result<String> {
             out.push('}');
         }
         WorldCommand::SendNumbered {
-            window,
+            window: WindowSubject::Window(window),
             source,
             index,
             follow,
@@ -6913,7 +6923,7 @@ fn encode_command_v4(command: &WorldCommand) -> Result<String> {
             out.push_str("{\"op\":\"set-workspace-tiling\",\"out\":");
             push_json_string(&mut out, &output.0);
             out.push_str(",\"ws\":");
-            push_json_string(&mut out, workspace);
+            push_json_string(&mut out, &workspace.0);
             out.push_str(",\"tiled\":");
             out.push_str(if *tiled { "true" } else { "false" });
             out.push('}');
@@ -6922,7 +6932,7 @@ fn encode_command_v4(command: &WorldCommand) -> Result<String> {
             out.push_str("{\"op\":\"toggle-workspace-tiling\",\"out\":");
             push_json_string(&mut out, &output.0);
             out.push_str(",\"ws\":");
-            push_json_string(&mut out, workspace);
+            push_json_string(&mut out, &workspace.0);
             out.push('}');
         }
         WorldCommand::MigrateWorkspace {
@@ -6935,18 +6945,25 @@ fn encode_command_v4(command: &WorldCommand) -> Result<String> {
             out.push_str(",\"to\":");
             push_json_string(&mut out, &target_output.0);
             out.push_str(",\"ws\":");
-            push_json_string(&mut out, workspace);
+            push_json_string(&mut out, &workspace.0);
             out.push('}');
         }
         WorldCommand::FocusDirectional { window, direction } => {
+            let win_str = match window {
+                FocusDirectionalSubject::Window(w) => w.0.as_str(),
+                FocusDirectionalSubject::NoFocus => "",
+                FocusDirectionalSubject::CurrentFocus => {
+                    unreachable!("current-focus commands encode through the current-focus path")
+                }
+            };
             out.push_str("{\"op\":\"focus-directional\",\"win\":");
-            push_json_string(&mut out, &window.0);
+            push_json_string(&mut out, win_str);
             out.push_str(",\"direction\":");
             push_json_string(&mut out, direction.as_wire_str());
             out.push('}');
         }
         WorldCommand::MoveDirectional {
-            window,
+            window: WindowSubject::Window(window),
             direction,
             same_axis,
         } => {
@@ -6959,7 +6976,7 @@ fn encode_command_v4(command: &WorldCommand) -> Result<String> {
             out.push('}');
         }
         WorldCommand::SendDirectional {
-            window,
+            window: WindowSubject::Window(window),
             direction,
             follow,
         } => {
@@ -6976,56 +6993,73 @@ fn encode_command_v4(command: &WorldCommand) -> Result<String> {
             push_json_string(&mut out, direction.as_wire_str());
             out.push('}');
         }
-        WorldCommand::ToggleMaximize { window } => {
+        WorldCommand::ToggleMaximize {
+            window: WindowSubject::Window(window),
+        } => {
             out.push_str("{\"op\":\"toggle-maximize\",\"win\":");
             push_json_string(&mut out, &window.0);
             out.push('}');
         }
-        WorldCommand::SetSticky { window, value } => {
+        WorldCommand::SetSticky {
+            window: WindowSubject::Window(window),
+            value,
+        } => {
             out.push_str("{\"op\":\"set-sticky\",\"win\":");
             push_json_string(&mut out, &window.0);
             out.push_str(",\"value\":");
             out.push_str(if *value { "true" } else { "false" });
             out.push('}');
         }
-        WorldCommand::ToggleSticky { window } => {
+        WorldCommand::ToggleSticky {
+            window: WindowSubject::Window(window),
+        } => {
             out.push_str("{\"op\":\"toggle-sticky\",\"win\":");
             push_json_string(&mut out, &window.0);
             out.push('}');
         }
-        WorldCommand::SetFullscreen { window, value } => {
+        WorldCommand::SetFullscreen {
+            window: WindowSubject::Window(window),
+            value,
+        } => {
             out.push_str("{\"op\":\"set-fullscreen\",\"win\":");
             push_json_string(&mut out, &window.0);
             out.push_str(",\"value\":");
             out.push_str(if *value { "true" } else { "false" });
             out.push('}');
         }
-        WorldCommand::ToggleFullscreen { window } => {
+        WorldCommand::ToggleFullscreen {
+            window: WindowSubject::Window(window),
+        } => {
             out.push_str("{\"op\":\"toggle-fullscreen\",\"win\":");
             push_json_string(&mut out, &window.0);
             out.push('}');
         }
         WorldCommand::Operation(core) => match core {
-            CoreCommand::ToggleFloat { window, float_rect } => {
+            CoreCommand::ToggleFloat {
+                window: WindowSubject::Window(window),
+                float_rect,
+            } => {
                 out.push_str("{\"op\":\"toggle-float\",\"win\":");
-                push_json_string(&mut out, window);
+                push_json_string(&mut out, &window.0);
                 out.push_str(",\"rect\":");
                 push_opt_rect(&mut out, float_rect);
                 out.push('}');
             }
-            CoreCommand::ToggleOrientation { window } => {
+            CoreCommand::ToggleOrientation {
+                window: WindowSubject::Window(window),
+            } => {
                 out.push_str("{\"op\":\"toggle-orientation\",\"win\":");
-                push_json_string(&mut out, window);
+                push_json_string(&mut out, &window.0);
                 out.push('}');
             }
             CoreCommand::Resize {
-                window,
+                window: WindowSubject::Window(window),
                 direction,
                 mode,
                 press_index,
             } => {
                 out.push_str("{\"op\":\"resize\",\"win\":");
-                push_json_string(&mut out, window);
+                push_json_string(&mut out, &window.0);
                 out.push_str(",\"direction\":");
                 push_json_string(&mut out, direction.as_wire_str());
                 out.push_str(",\"mode\":");
@@ -7036,8 +7070,8 @@ fn encode_command_v4(command: &WorldCommand) -> Result<String> {
             }
             _ => return Err(snapshot_invalid("command-invalid")),
         },
-        WorldCommand::Implicit(_) => {
-            unreachable!("implicit subjects encode through the current-focus path")
+        _ => {
+            unreachable!("current-focus commands encode through the current-focus path")
         }
     }
     Ok(out)
@@ -7066,7 +7100,7 @@ fn encode_implicit_command_v4(command: &WorldCommand) -> Result<String> {
             out.push_str(",\"out\":");
             push_json_string(&mut out, &target_output.0);
             out.push_str(",\"ws\":");
-            push_json_string(&mut out, target_workspace);
+            push_json_string(&mut out, &target_workspace.0);
             out.push_str(",\"follow\":");
             out.push_str(if *follow { "true" } else { "false" });
             out.push('}');
@@ -7631,7 +7665,7 @@ mod tests {
             assert_eq!(
                 cmd,
                 CoreCommand::PointerResize {
-                    window: "win-a".to_owned(),
+                    window: WindowId("win-a".to_owned()),
                     direction: Direction::Right,
                     boundary: 200,
                     second: Some((expected_dir2, 250)),
@@ -7798,14 +7832,15 @@ mod tests {
             )
         });
         assert!(
-            matches!(
-                decoded.report.command,
-                Some(tiler_core::world_report::WorldCommand::Implicit(_))
-            ),
-            "op {op} current-focus subject must decode to the implicit wrapper"
+            decoded
+                .report
+                .command
+                .as_ref()
+                .is_some_and(tiler_core::world_report::is_current_focus_command),
+            "op {op} current-focus subject must decode to CurrentFocus"
         );
         // The implicit spelling round-trips through the canonical encode
-        // with the closed marker and decodes back to the wrapper.
+        // with the closed marker and decodes back to CurrentFocus.
         let reencoded = encode_report_v4(&decoded).expect("implicit command encodes");
         assert!(
             reencoded.contains("\"win\":{\"currentFocus\":true}"),
@@ -7819,11 +7854,8 @@ mod tests {
         let round_tripped =
             decode_command_value_v4(command_value).expect("current-focus subject re-decodes");
         assert!(
-            matches!(
-                round_tripped,
-                tiler_core::world_report::WorldCommand::Implicit(_)
-            ),
-            "op {op} round trip must preserve the implicit wrapper"
+            tiler_core::world_report::is_current_focus_command(&round_tripped),
+            "op {op} round trip must preserve CurrentFocus"
         );
     }
 

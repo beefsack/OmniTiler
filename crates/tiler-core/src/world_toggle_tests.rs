@@ -165,7 +165,7 @@ fn bootstrap_workspace() -> (WorldEngine, String) {
 fn toggle(ws: &str) -> WorldCommand {
     WorldCommand::ToggleWorkspaceTiling {
         output: OutputId("out-a".to_owned()),
-        workspace: ws.to_owned(),
+        workspace: crate::directional::WorkspaceId(ws.to_owned()),
     }
 }
 
@@ -196,7 +196,7 @@ fn toggle_flips_floating_back_to_tiled() {
             Some(11),
             Some(WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: ws.clone(),
+                workspace: crate::directional::WorkspaceId(ws.clone()),
                 tiled: false,
             }),
         ),
@@ -242,7 +242,7 @@ fn explicit_set_keeps_genuine_set_semantics() {
     let windows = vec![fact("win-a", "out-a", 0)];
     let set_false = || WorldCommand::SetWorkspaceTiling {
         output: OutputId("out-a".to_owned()),
-        workspace: ws.clone(),
+        workspace: crate::directional::WorkspaceId(ws.clone()),
         tiled: false,
     };
     accepted(

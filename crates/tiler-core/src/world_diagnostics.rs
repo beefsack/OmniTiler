@@ -74,41 +74,83 @@ fn diag_command_op(command: &WorldCommand) -> &'static str {
         WorldCommand::SetFullscreen { .. } => "set-fullscreen",
         WorldCommand::ToggleFullscreen { .. } => "toggle-fullscreen",
         WorldCommand::Operation(core) => core.op(),
-        WorldCommand::Implicit(inner) => diag_command_op(inner),
     }
 }
 
 /// Window subject of a per-command refusal diagnostic, when the command
-/// names one. `Implicit` unwraps to its payload (a resolved bookkeeping
-/// command already carries the explicit subject).
+/// names one. Execution-time-focus and no-focus subjects return `None`.
 fn diag_command_subject(command: &WorldCommand) -> Option<&str> {
+    use crate::boundary::CoreCommand;
+    use crate::directional::WindowSubject;
+    use crate::world_report::FocusDirectionalSubject;
     match command {
-        WorldCommand::Focus { window, .. }
-        | WorldCommand::Send { window, .. }
-        | WorldCommand::SendRelative { window, .. }
-        | WorldCommand::SendNumbered { window, .. }
-        | WorldCommand::FocusDirectional { window, .. }
-        | WorldCommand::MoveDirectional { window, .. }
-        | WorldCommand::SendDirectional { window, .. }
-        | WorldCommand::ToggleMaximize { window }
-        | WorldCommand::SetSticky { window, .. }
-        | WorldCommand::ToggleSticky { window }
-        | WorldCommand::SetFullscreen { window, .. }
-        | WorldCommand::ToggleFullscreen { window } => Some(window.0.as_str()),
+        WorldCommand::Focus {
+            window: WindowSubject::Window(window),
+            ..
+        }
+        | WorldCommand::Send {
+            window: WindowSubject::Window(window),
+            ..
+        }
+        | WorldCommand::SendRelative {
+            window: WindowSubject::Window(window),
+            ..
+        }
+        | WorldCommand::SendNumbered {
+            window: WindowSubject::Window(window),
+            ..
+        }
+        | WorldCommand::FocusDirectional {
+            window: FocusDirectionalSubject::Window(window),
+            ..
+        }
+        | WorldCommand::MoveDirectional {
+            window: WindowSubject::Window(window),
+            ..
+        }
+        | WorldCommand::SendDirectional {
+            window: WindowSubject::Window(window),
+            ..
+        }
+        | WorldCommand::ToggleMaximize {
+            window: WindowSubject::Window(window),
+        }
+        | WorldCommand::SetSticky {
+            window: WindowSubject::Window(window),
+            ..
+        }
+        | WorldCommand::ToggleSticky {
+            window: WindowSubject::Window(window),
+        }
+        | WorldCommand::SetFullscreen {
+            window: WindowSubject::Window(window),
+            ..
+        }
+        | WorldCommand::ToggleFullscreen {
+            window: WindowSubject::Window(window),
+        } => Some(window.0.as_str()),
         WorldCommand::Operation(
-            crate::boundary::CoreCommand::Move { window, .. }
-            | crate::boundary::CoreCommand::Focus { window, .. }
-            | crate::boundary::CoreCommand::Resize { window, .. }
-            | crate::boundary::CoreCommand::PointerResize { window, .. }
-            | crate::boundary::CoreCommand::ToggleFloat { window, .. }
-            | crate::boundary::CoreCommand::ToggleOrientation { window, .. }
-            | crate::boundary::CoreCommand::SendToWorkspace { window, .. }
-            | crate::boundary::CoreCommand::SendToOutput { window, .. }
-            | crate::boundary::CoreCommand::DragDrop { window, .. }
-            | crate::boundary::CoreCommand::DragPreview { window, .. },
-        ) => Some(window.as_str()),
-        WorldCommand::Operation(_) => None,
-        WorldCommand::Implicit(inner) => diag_command_subject(inner),
+            CoreCommand::Move { window, .. }
+            | CoreCommand::Focus { window, .. }
+            | CoreCommand::PointerResize { window, .. }
+            | CoreCommand::SendToWorkspace { window, .. }
+            | CoreCommand::SendToOutput { window, .. }
+            | CoreCommand::DragDrop { window, .. }
+            | CoreCommand::DragPreview { window, .. },
+        ) => Some(window.0.as_str()),
+        WorldCommand::Operation(
+            CoreCommand::Resize {
+                window: WindowSubject::Window(window),
+                ..
+            }
+            | CoreCommand::ToggleFloat {
+                window: WindowSubject::Window(window),
+                ..
+            }
+            | CoreCommand::ToggleOrientation {
+                window: WindowSubject::Window(window),
+            },
+        ) => Some(window.0.as_str()),
         _ => None,
     }
 }
@@ -133,7 +175,6 @@ fn diag_command_dir(command: &WorldCommand) -> Option<&str> {
             | crate::boundary::CoreCommand::MigrateWorkspace { direction },
         ) => Some(direction.as_wire_str()),
         WorldCommand::Operation(_) => None,
-        WorldCommand::Implicit(inner) => diag_command_dir(inner),
         _ => None,
     }
 }
@@ -541,18 +582,19 @@ impl WorldTransaction<'_> {
             direction,
             mode,
             press_index,
-        }) = crate::world_report::unwrap_implicit(command)
+        }) = command
         else {
             return None;
         };
-        let subject = crate::directional::WindowId(window.clone());
-        let homing = self.world.staged.homing.get(&subject).cloned();
+        let subject = match window {
+            crate::directional::WindowSubject::Window(window) => Some(window),
+            crate::directional::WindowSubject::CurrentFocus => None,
+        };
+        let homing = subject.and_then(|window| self.world.staged.homing.get(window));
         let homing_token = homing
-            .as_ref()
             .map(|key| format!("{}/{}", diag_id(&key.output.0), diag_id(&key.workspace.0)))
             .unwrap_or_else(|| "-".to_owned());
         let (focus_leaf, tree_token) = homing
-            .as_ref()
             .map(|key| {
                 let leaf = self.world.layout.focus_leaf(key);
                 let leaf_token = leaf
@@ -567,11 +609,8 @@ impl WorldTransaction<'_> {
                 (leaf_token, tree)
             })
             .unwrap_or_else(|| ("-".to_owned(), "-".to_owned()));
-        let (subj_geom, subj_hints) = self
-            .world
-            .staged
-            .facts
-            .get(&subject)
+        let (subj_geom, subj_hints) = subject
+            .and_then(|window| self.world.staged.facts.get(window))
             .map(|fact| {
                 let geom = fact
                     .rect
@@ -583,7 +622,7 @@ impl WorldTransaction<'_> {
             .unwrap_or_else(|| ("-".to_owned(), "-".to_owned()));
         let mut rows = Vec::new();
         let mut rows_total = 0;
-        if let Some(key) = homing.as_ref()
+        if let Some(key) = homing
             && let Some(domain) = self.world.staged.domains.iter().find(|d| &d.key == key)
         {
             rows_total = domain.windows.len();
@@ -614,7 +653,7 @@ impl WorldTransaction<'_> {
             command_seq
                 .map(|seq| seq.to_string())
                 .unwrap_or_else(|| "-".to_owned()),
-            diag_id(window),
+            subject.map(|window| diag_id(&window.0)).unwrap_or("-"),
             diag_token(direction.as_wire_str(), 16),
             diag_token(mode.as_wire_str(), 16),
             press_index,

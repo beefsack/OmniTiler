@@ -59,21 +59,25 @@ fn observe(seq: u64, windows: Vec<crate::world_report::WindowFact>) -> WorldRepo
 
 fn set_sticky(window: &str, value: bool) -> WorldCommand {
     WorldCommand::SetSticky {
-        window: WindowId(window.to_owned()),
+        window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
         value,
     }
 }
 
 fn toggle_float(window: &str) -> WorldCommand {
     WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: window.to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            window.to_owned(),
+        )),
         float_rect: None,
     })
 }
 
 fn toggle_float_rect(window: &str, rect: Rect) -> WorldCommand {
     WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: window.to_owned(),
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            window.to_owned(),
+        )),
         float_rect: Some(rect),
     })
 }
@@ -446,7 +450,7 @@ fn native_off_prior_float_dest_floating_still_publishes_clear() {
             vec![float_fact("win-a", "out-a", 0, 0)],
             WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: "ws-1".to_owned(),
+                workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
                 tiled: false,
             },
         ),
@@ -1138,7 +1142,7 @@ fn native_off_floating_dest_lands_floated_with_tile_base() {
             vec![fact("win-a", "out-a", 0)],
             WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: "ws-1".to_owned(),
+                workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
                 tiled: false,
             },
         ),
@@ -2824,7 +2828,7 @@ fn native_rollback_cap_blocked_retains_proof_without_fencing_sibling() {
             vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
             WorldCommand::SetWorkspaceTiling {
                 output: OutputId("out-a".to_owned()),
-                workspace: fill_ws.clone(),
+                workspace: crate::directional::WorkspaceId(fill_ws.clone()),
                 tiled: false,
             },
         ),
@@ -4232,9 +4236,9 @@ fn pending_window_transfer_holds_sticky_publication() {
             "win-b",
             Some(3),
             Some(WorldCommand::Send {
-                window: WindowId("win-b".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
                 target_output: OutputId("out-a".to_owned()),
-                target_workspace: ring[1].clone(),
+                target_workspace: crate::directional::WorkspaceId(ring[1].clone()),
                 follow: false,
             }),
         ),

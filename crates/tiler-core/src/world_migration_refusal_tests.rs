@@ -214,7 +214,7 @@ fn settlement_shared_fixture_partial_holds_then_completes() {
                 Some(WorldCommand::MigrateWorkspace {
                     source_output: OutputId("out-a".to_owned()),
                     target_output: OutputId("out-b".to_owned()),
-                    workspace: view_a.clone(),
+                    workspace: crate::directional::WorkspaceId(view_a.clone()),
                 }),
                 vec![],
                 vec![],
@@ -482,7 +482,7 @@ fn wholly_unarrived_refusal_restores_unit_and_focus() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
             vec![],
             vec![],
@@ -655,7 +655,7 @@ fn partial_refusal_holds_persistently_without_retry() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
             vec![],
             vec![],
@@ -782,7 +782,7 @@ fn source_only_migration_keeps_sticky_at_source_refill() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
             vec![],
             vec![],
@@ -968,7 +968,7 @@ fn gap_refusal_holds_then_proven_rollback_preserves_unit() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
             vec![],
             vec![],
@@ -1103,7 +1103,7 @@ fn refusal_close_settles_across_gap() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
             vec![],
             vec![],
@@ -1203,7 +1203,7 @@ fn refusal_without_hostable_source_holds_without_destruction() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
             vec![],
             vec![],
@@ -1362,7 +1362,7 @@ fn acknowledged_refusal_recovers_without_attempt_replay() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
             vec![],
             vec![],
@@ -1566,7 +1566,7 @@ fn rejected_logical_supersession_does_not_replay_migration() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
             vec![],
             vec![],
@@ -1698,7 +1698,7 @@ fn partial_supersession_holds_across_ack_without_replay() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
             vec![],
             vec![],
@@ -1786,7 +1786,7 @@ fn terminal_then_close_settles_without_attempt_replay() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
             vec![],
             vec![],
@@ -1888,7 +1888,7 @@ fn possibly_executed_never_rolls_back() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
             vec![],
             vec![],
@@ -2130,7 +2130,7 @@ fn directional_fences_carry_distinct_fixed_reasons() {
         Some(WorldCommand::MigrateWorkspace {
             source_output: OutputId("out-a".to_owned()),
             target_output: OutputId("out-b".to_owned()),
-            workspace: view_a.clone(),
+            workspace: crate::directional::WorkspaceId(view_a.clone()),
         }),
         vec![],
         vec![],
@@ -2403,7 +2403,7 @@ fn logical_view_attempt_is_rejected_without_losing_migration_membership() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
             vec![],
             vec![],
@@ -2514,7 +2514,7 @@ fn logical_selector_attempt_rejects_while_migration_remains_in_flight() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
             vec![],
             vec![],
@@ -2619,7 +2619,7 @@ fn arrived_members_retire_parent_without_refill_child_across_ack() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
             vec![],
             vec![],
@@ -2718,7 +2718,7 @@ fn logical_refill_selector_attempt_is_rejected_and_migration_already_retired() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: view_a.clone(),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
             vec![],
             vec![],

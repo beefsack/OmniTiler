@@ -444,9 +444,9 @@ fn refusals_fail_closed() {
         &[(
             1,
             WorldCommand::Send {
-                window: win("win-1"),
+                window: crate::directional::WindowSubject::Window(win("win-1")),
                 target_output: OutputId("out-1".to_owned()),
-                target_workspace: "ws-1".to_owned(),
+                target_workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
                 follow: true,
             },
         )],
@@ -469,9 +469,9 @@ fn refusals_fail_closed() {
         &[(
             2,
             WorldCommand::Send {
-                window: win("win-zzz"),
+                window: crate::directional::WindowSubject::Window(win("win-zzz")),
                 target_output: OutputId("out-1".to_owned()),
-                target_workspace: "ws-1".to_owned(),
+                target_workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
                 follow: true,
             },
         )],
@@ -535,9 +535,9 @@ fn refusals_fail_closed() {
         &[(
             1,
             WorldCommand::Send {
-                window: win("win-1"),
+                window: crate::directional::WindowSubject::Window(win("win-1")),
                 target_output: OutputId("out-1".to_owned()),
-                target_workspace: "ws-zzz".to_owned(),
+                target_workspace: crate::directional::WorkspaceId("ws-zzz".to_owned()),
                 follow: true,
             },
         )],
@@ -874,9 +874,9 @@ fn output_send_scope_refusals_keep_ops_distinct() {
         &[(
             1,
             WorldCommand::Send {
-                window: win("win-1"),
+                window: crate::directional::WindowSubject::Window(win("win-1")),
                 target_output: OutputId("out-1".to_owned()),
-                target_workspace: "ws-1".to_owned(),
+                target_workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
                 follow: true,
             },
         )],
@@ -899,7 +899,7 @@ fn output_send_scope_refusals_keep_ops_distinct() {
         &[(
             2,
             WorldCommand::SendDirectional {
-                window: win("win-1"),
+                window: crate::directional::WindowSubject::Window(win("win-1")),
                 direction: crate::directional::Direction::Right,
                 follow: true,
             },
@@ -940,9 +940,9 @@ fn output_send_scope_refusals_keep_ops_distinct() {
         &[(
             3,
             WorldCommand::Send {
-                window: win("win-1"),
+                window: crate::directional::WindowSubject::Window(win("win-1")),
                 target_output: OutputId("out-9".to_owned()),
-                target_workspace: "ws-z".to_owned(),
+                target_workspace: crate::directional::WorkspaceId("ws-z".to_owned()),
                 follow: true,
             },
         )],
@@ -1001,9 +1001,9 @@ fn output_send_refuses_sticky_but_carries_intentional_floats() {
         &[(
             1,
             WorldCommand::Send {
-                window: win("win-s"),
+                window: crate::directional::WindowSubject::Window(win("win-s")),
                 target_output: OutputId("out-1".to_owned()),
-                target_workspace: "ws-2".to_owned(),
+                target_workspace: crate::directional::WorkspaceId("ws-2".to_owned()),
                 follow: true,
             },
         )],

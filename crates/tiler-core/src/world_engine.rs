@@ -1107,19 +1107,23 @@ impl WorldState {
         if let Some(command) = inline
             && is_intent_save_command_v4(command)
         {
-            if matches!(command, crate::world_report::WorldCommand::Implicit(_)) {
+            if crate::world_report::is_current_focus_command(command) {
                 implicit_new = implicit_new.saturating_add(1);
             } else {
-                let key = match crate::world_report::unwrap_implicit(command) {
-                    crate::world_report::WorldCommand::SetSticky { window, .. } => {
-                        Some(window.0.clone())
+                let key = match command {
+                    crate::world_report::WorldCommand::SetSticky {
+                        window: crate::directional::WindowSubject::Window(window),
+                        ..
                     }
-                    crate::world_report::WorldCommand::ToggleSticky { window } => {
-                        Some(window.0.clone())
+                    | crate::world_report::WorldCommand::ToggleSticky {
+                        window: crate::directional::WindowSubject::Window(window),
                     }
-                    crate::world_report::WorldCommand::Operation(
-                        crate::boundary::CoreCommand::ToggleFloat { window, .. },
-                    ) => Some(window.clone()),
+                    | crate::world_report::WorldCommand::Operation(
+                        crate::boundary::CoreCommand::ToggleFloat {
+                            window: crate::directional::WindowSubject::Window(window),
+                            ..
+                        },
+                    ) => Some(window.0.clone()),
                     _ => None,
                 };
                 if let Some(key) = key {
@@ -1132,21 +1136,25 @@ impl WorldState {
             if !is_intent_save_command_v4(command) {
                 continue;
             }
-            if matches!(command, crate::world_report::WorldCommand::Implicit(_)) {
+            if crate::world_report::is_current_focus_command(command) {
                 implicit_new = implicit_new.saturating_add(1);
                 continue;
             }
-            match crate::world_report::unwrap_implicit(command) {
-                crate::world_report::WorldCommand::SetSticky { window, .. } => {
-                    distinct.insert(window.0.clone());
+            match command {
+                crate::world_report::WorldCommand::SetSticky {
+                    window: crate::directional::WindowSubject::Window(window),
+                    ..
                 }
-                crate::world_report::WorldCommand::ToggleSticky { window } => {
-                    distinct.insert(window.0.clone());
+                | crate::world_report::WorldCommand::ToggleSticky {
+                    window: crate::directional::WindowSubject::Window(window),
                 }
-                crate::world_report::WorldCommand::Operation(
-                    crate::boundary::CoreCommand::ToggleFloat { window, .. },
+                | crate::world_report::WorldCommand::Operation(
+                    crate::boundary::CoreCommand::ToggleFloat {
+                        window: crate::directional::WindowSubject::Window(window),
+                        ..
+                    },
                 ) => {
-                    distinct.insert(window.clone());
+                    distinct.insert(window.0.clone());
                 }
                 _ => {}
             }

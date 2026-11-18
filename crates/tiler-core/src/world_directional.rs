@@ -706,7 +706,9 @@ pub(crate) mod tests {
             &mut engine,
             2,
             WorldCommand::FocusDirectional {
-                window: WindowId("win-subject".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-subject".to_owned(),
+                )),
                 direction: crate::directional::Direction::Right,
             },
         );
@@ -745,7 +747,9 @@ pub(crate) mod tests {
             &mut engine,
             2,
             WorldCommand::FocusDirectional {
-                window: WindowId("win-subject".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-subject".to_owned(),
+                )),
                 direction: crate::directional::Direction::Left,
             },
         );
@@ -761,7 +765,9 @@ pub(crate) mod tests {
             &mut engine,
             3,
             WorldCommand::MoveDirectional {
-                window: WindowId("win-subject".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId(
+                    "win-subject".to_owned(),
+                )),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             },
@@ -836,7 +842,9 @@ pub(crate) mod tests {
         let (_reply, result) = report2(
             2,
             WorldCommand::FocusDirectional {
-                window: WindowId("win-auto".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-auto".to_owned(),
+                )),
                 direction: crate::directional::Direction::Right,
             },
         );
@@ -844,7 +852,7 @@ pub(crate) mod tests {
         let (_reply, result) = report2(
             3,
             WorldCommand::MoveDirectional {
-                window: WindowId("win-auto".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-auto".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             },
@@ -856,7 +864,7 @@ pub(crate) mod tests {
         let (_reply, result) = report2(
             4,
             WorldCommand::MoveDirectional {
-                window: WindowId("win-full".to_owned()),
+                window: crate::directional::WindowSubject::Window(WindowId("win-full".to_owned())),
                 direction: crate::directional::Direction::Right,
                 same_axis: crate::directional::SameAxisMove::default(),
             },
@@ -865,7 +873,9 @@ pub(crate) mod tests {
         let (_reply, result) = report2(
             5,
             WorldCommand::FocusDirectional {
-                window: WindowId("win-full".to_owned()),
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-full".to_owned(),
+                )),
                 direction: crate::directional::Direction::Right,
             },
         );
@@ -965,7 +975,9 @@ pub(crate) mod tests {
                 ],
                 Some(11),
                 Some(WorldCommand::MoveDirectional {
-                    window: WindowId("win-sticky".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId(
+                        "win-sticky".to_owned(),
+                    )),
                     direction: crate::directional::Direction::Right,
                     same_axis: crate::directional::SameAxisMove::default(),
                 }),
@@ -1046,7 +1058,7 @@ pub(crate) mod tests {
                 Some(11),
                 Some(WorldCommand::SelectWorkspace {
                     output: OutputId("out-a".to_owned()),
-                    workspace: spare.clone(),
+                    workspace: crate::directional::WorkspaceId(spare.clone()),
                 }),
             ),
         );
@@ -1075,7 +1087,9 @@ pub(crate) mod tests {
                 "",
                 Some(12),
                 Some(WorldCommand::FocusDirectional {
-                    window: WindowId("win-s".to_owned()),
+                    window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                        "win-s".to_owned(),
+                    )),
                     direction: crate::directional::Direction::Right,
                 }),
             ),
@@ -1136,7 +1150,7 @@ pub(crate) mod tests {
                 vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 900)],
                 Some(11),
                 Some(WorldCommand::MoveDirectional {
-                    window: WindowId("win-a".to_owned()),
+                    window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                     direction: crate::directional::Direction::Right,
                     same_axis: crate::directional::SameAxisMove::default(),
                 }),
@@ -1215,7 +1229,9 @@ pub(crate) mod tests {
                 ],
                 Some(11),
                 Some(WorldCommand::FocusDirectional {
-                    window: WindowId("win-sticky".to_owned()),
+                    window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                        "win-sticky".to_owned(),
+                    )),
                     direction: crate::directional::Direction::Right,
                 }),
             ),
@@ -1240,7 +1256,9 @@ pub(crate) mod tests {
                 ],
                 Some(12),
                 Some(WorldCommand::FocusDirectional {
-                    window: WindowId("win-gone".to_owned()),
+                    window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                        "win-gone".to_owned(),
+                    )),
                     direction: crate::directional::Direction::Right,
                 }),
             ),
