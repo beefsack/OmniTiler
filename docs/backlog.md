@@ -21,6 +21,7 @@ Prioritise by return toward these goals
 - 0.1 release with broad functional compatibility with the Tier 1 input tilers (i3, sway, Hyprland, COSMIC) ([detail](backlog-archive.md#current-goals-original-backlog-lines-21-29)).
 - Before 0.1, keep core and its protocol correct and sensible, without related workarounds or hacks; changes get harder after releases ship ([detail](backlog-archive.md#current-goals-original-backlog-lines-21-29)).
 - User 2026-11-15: finish the P0 KDE items and the pre-0.1 core/contract work (C3, C4, C1/C2/C5, C6, protocol correctness review) before full user dogfooding for reliability, performance and jank.
+- User 2026-11-19: sequence is finish the core rebuild, then rebuild the KDE side, proven for functionality, reliability and lack of jank; Windows and macOS are rebuilt afterwards on their own hosts. Correctness and quality are paramount; spend no effort avoiding breakage in platform code that will be rebuilt (Windows/macOS items below wait for that rebuild).
 - User 2026-10-29: tabbed stacks deferred to 0.2 are the only major Tier 1 feature deferred from 0.1; keep post-0.1 protocol bumps few and deliberate ([detail](backlog-archive.md#current-goals-original-backlog-lines-21-29)).
 
 ## Open work
