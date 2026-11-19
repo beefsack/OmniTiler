@@ -2818,7 +2818,7 @@ fn explicit_focus_stays_exempt_from_automatic_guards() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
-                direction: Some(crate::directional::Direction::Left),
+                direction: None,
             }),
         ),
     );
@@ -2867,7 +2867,7 @@ fn explicit_focus_stays_exempt_for_maximized_float_target() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
-                direction: Some(crate::directional::Direction::Left),
+                direction: None,
             }),
         ),
     );

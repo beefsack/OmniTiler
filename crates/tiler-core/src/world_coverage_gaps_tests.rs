@@ -1369,7 +1369,7 @@ fn explicit_focus_command_after_withhold_succeeds_without_admission_token() {
             Some(10),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("wf".to_owned())),
-                direction: Some(crate::directional::Direction::Right),
+                direction: None,
             }),
         ),
     );
@@ -4346,6 +4346,7 @@ fn after_ready_bad_screen_holds_only_affected_output() {
     let good = row_of(&reply, "w0");
     assert_eq!(good.frame_authority, ScopeAuthority::Controlled);
     assert_eq!(good.membership_authority, ScopeAuthority::Controlled);
+    assert!(good.effective_frame.is_some());
     let bad = row_of(&reply, "w1");
     assert!(
         matches!(bad.frame_authority, ScopeAuthority::Hold(_)),
@@ -4354,6 +4355,22 @@ fn after_ready_bad_screen_holds_only_affected_output() {
     assert!(
         matches!(bad.membership_authority, ScopeAuthority::Hold(_)),
         "held window holds membership: {bad:?}"
+    );
+    assert!(
+        bad.effective_frame.is_none() && bad.allocation.is_none(),
+        "unreadable output must not publish writes: {bad:?}"
+    );
+    assert!(
+        bad.frame_operation.is_none() && bad.clear_operation.is_none(),
+        "unreadable output must not emit frame/clear operations: {bad:?}"
+    );
+    assert!(
+        !reply.intent_desired.iter().any(|w| w.win.0 == "w1"),
+        "unreadable output must not enter intent_desired"
+    );
+    assert!(
+        !engine.world.workspace.live_topology.contains_key("out-b"),
+        "unreadable output must not fabricate adjacency in live_topology"
     );
 }
 

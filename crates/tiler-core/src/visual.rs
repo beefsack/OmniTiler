@@ -63,11 +63,7 @@ pub fn active_border_inner_rect(frame: VisualRect, gap: f64) -> VisualRect {
 
 #[must_use]
 pub fn drag_preview_rect_valid(x: i32, y: i32, w: i32, h: i32) -> bool {
-    const BOUND: i32 = 16384;
-    if w < 1 || h < 1 || w > BOUND || h > BOUND {
-        return false;
-    }
-    (-BOUND..=BOUND).contains(&x) && (-BOUND..=BOUND).contains(&y)
+    crate::bounds::valid_carried_rect(x, y, w, h)
 }
 
 /// Underlay extension default: any negative sentinel follows the current
@@ -434,6 +430,10 @@ mod tests {
             (-16384, -16384, 16384, 16384),
             (16384, 16384, 1, 1),
             (-16384, 16384, 1, 1),
+            (16392, 8, 784, 584),
+            (-32768, -32768, 16384, 16384),
+            (16384, 16384, 16384, 16384),
+            (32767, 32767, 1, 1),
         ];
         for (x, y, w, h) in valid {
             assert!(
@@ -446,10 +446,12 @@ mod tests {
             (0, 0, 1, 0),
             (0, 0, 16385, 1),
             (0, 0, 1, 16385),
-            (16385, 0, 10, 10),
-            (-16385, 0, 10, 10),
-            (0, 16385, 10, 10),
-            (0, -16385, 10, 10),
+            (32768, 0, 1, 1),
+            (-32769, 0, 1, 1),
+            (0, 32768, 1, 1),
+            (0, -32769, 1, 1),
+            (16385, 0, 16384, 1),
+            (0, 16385, 1, 16384),
         ];
         for (x, y, w, h) in invalid {
             assert!(

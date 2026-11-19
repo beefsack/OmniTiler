@@ -2619,13 +2619,13 @@ fn native_rollback_reserve_rejects_before_mutation_and_small_retry_rolls_back() 
     let floats = engine.world.intent.restored_floats.clone();
     let highwater = engine.world.command_highwater;
     let gate = LocalRollbackPreflightGate::new(true);
-    let (outcome, settlements) = engine
+    let res = engine
         .handle_report_with_gate_and_prepare(&report, &[], &gate, |_| {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {});
-    assert!(settlements.is_empty());
-    match outcome {
+    assert!(res.dispositions.is_empty());
+    match res.outcome {
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, KIND_REPLY_SIZE),
         other => panic!("expected reply-oversize, got {other:?}"),
     }
@@ -2657,11 +2657,12 @@ fn native_rollback_reserve_rejects_before_mutation_and_small_retry_rolls_back() 
         rev,
         false,
     );
-    let (retry_outcome, _) = engine
+    let retry_outcome = engine
         .handle_report_with_gate_and_prepare(&retry, &[], &gate, |_| {
             Ok::<(), std::convert::Infallible>(())
         })
-        .unwrap_or_else(|e| match e {});
+        .unwrap_or_else(|e| match e {})
+        .outcome;
     let reply = match retry_outcome {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted retry, got {other:?}"),
@@ -4114,6 +4115,7 @@ fn pending_window_transfer_holds_sticky_publication() {
             source_workspace: ring[0].clone(),
             members: Vec::new(),
             migration_refill: None,
+            migration_parent_op: None,
             migration_initial_empty: false,
             migration_source_index: None,
             migration_source_view: None,

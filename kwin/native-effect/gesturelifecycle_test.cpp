@@ -27,6 +27,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace
 {
@@ -237,7 +238,7 @@ void badBeginRefusesWithoutMutation()
     CHECK(store.beginGesture(QString(200, u'a'), QStringLiteral("move"), startRect(), false, QPoint(), false) == 0);
     CHECK(store.beginGesture(QStringLiteral("win-1"), QStringLiteral("drag"), startRect(), false, QPoint(), false) == 0);
     CHECK(store.beginGesture(QStringLiteral("win-1"), QStringLiteral("move"), QRect(0, 0, 0, 0), false, QPoint(), false) == 0);
-    CHECK(store.beginGesture(QStringLiteral("win-1"), QStringLiteral("move"), QRect(20000, 0, 10, 10), false, QPoint(), false) == 0);
+    CHECK(store.beginGesture(QStringLiteral("win-1"), QStringLiteral("move"), QRect(32768, 0, 10, 10), false, QPoint(), false) == 0);
     CHECK(!store.hasOpen());
     CHECK(store.terminalCount() == 0);
     // An empty effect instance fails closed: no gesture can be minted.
@@ -320,10 +321,34 @@ void sourceRevisionFencesStaleSnapshots()
     CHECK(store.currentJson(false, false, true).contains(QStringLiteral("\"revision\":\"4\"")));
 }
 
+void closedHalfOpenEndpointBounds()
+{
+    KWin::GestureLifecycleStore store = makeStore();
+    // Positive x=16392 (screen x=16384, inset 8) and exact endpoints -32768..32768.
+    CHECK(store.beginGesture(QStringLiteral("win-pos"), QStringLiteral("move"), QRect(16392, 8, 784, 584), true, QPoint(16400, 20), false) == 1);
+    CHECK(store.currentJson(false, false, true).contains(QStringLiteral("\"startRect\":[16392,8,784,584]")));
+    CHECK(store.beginGesture(QStringLiteral("win-min"), QStringLiteral("move"), QRect(-32768, -32768, 16384, 16384), false, QPoint(), false) == 2);
+    CHECK(store.beginGesture(QStringLiteral("win-max"), QStringLiteral("move"), QRect(16384, 16384, 16384, 16384), false, QPoint(), false) == 3);
+    // Off-edge invalid rectangles refuse without minting.
+    CHECK(store.beginGesture(QStringLiteral("win-bad-x-hi"), QStringLiteral("move"), QRect(32768, 0, 1, 1), false, QPoint(), false) == 0);
+    CHECK(store.beginGesture(QStringLiteral("win-bad-x-lo"), QStringLiteral("move"), QRect(-32769, 0, 1, 1), false, QPoint(), false) == 0);
+    CHECK(store.beginGesture(QStringLiteral("win-bad-sum"), QStringLiteral("move"), QRect(16385, 0, 16384, 1), false, QPoint(), false) == 0);
+    CHECK(store.beginGesture(QStringLiteral("win-bad-ext"), QStringLiteral("move"), QRect(0, 0, 16385, 1), false, QPoint(), false) == 0);
+}
+
 } // namespace
 
-int main()
+int main(int argc, char **argv)
 {
+    if (argc == 6 && std::strcmp(argv[1], "--probe") == 0) {
+        KWin::GestureLifecycleStore store = makeStore();
+        const QRect rect(std::atoi(argv[2]), std::atoi(argv[3]), std::atoi(argv[4]), std::atoi(argv[5]));
+        if (store.beginGesture(QStringLiteral("win-1"), QStringLiteral("move"), rect, false, QPoint(), false) == 0) {
+            return EXIT_FAILURE;
+        }
+        std::printf("%s\n", store.currentJson(false, false, true).toUtf8().constData());
+        return EXIT_SUCCESS;
+    }
     fastStartEscFinishBeforePullDeliversCancelled();
     finishWithoutArmDeliversReleased();
     consumedSpyEscLeavesLaterNormalFinishReleased();
@@ -338,6 +363,7 @@ int main()
     wireSchemaIsExact();
     openPhasesTrackProgress();
     sourceRevisionFencesStaleSnapshots();
+    closedHalfOpenEndpointBounds();
     if (failures != 0) {
         std::fprintf(stderr, "gesturelifecycle_test: %d failures\n", failures);
         return EXIT_FAILURE;

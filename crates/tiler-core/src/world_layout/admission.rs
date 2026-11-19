@@ -132,9 +132,8 @@ pub(super) fn plan_admission_leg(
     existing_ids: &mut BTreeSet<NodeId>,
     hints: &BTreeMap<WindowId, WindowSizeHints>,
     leaf_links: &BTreeMap<NodeId, WindowId>,
-) -> PlannedLeg {
-    let leaf_id = tree_edit::generate_leaf_id(window, existing_ids);
-    existing_ids.insert(leaf_id.clone());
+) -> Option<PlannedLeg> {
+    let leaf_id = tree_edit::generate_leaf_id(alloc, existing_ids)?;
     let ordinary_tree = tree_edit::insert_tiled(
         policy,
         alloc,
@@ -181,9 +180,9 @@ pub(super) fn plan_admission_leg(
         &leaf_id,
         &mut group_ids,
     );
-    PlannedLeg {
+    Some(PlannedLeg {
         leaf_id,
         ordinary_tree,
         selected,
-    }
+    })
 }

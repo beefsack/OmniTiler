@@ -1141,12 +1141,13 @@ fn move_and_resize_ride_the_snapshot() {
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
         "win-b",
         Some(86),
-        Some(WorldCommand::Operation(CoreCommand::Move {
-            window: crate::directional::WindowId("win-b".to_owned()),
+        Some(WorldCommand::MoveDirectional {
+            window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                "win-b".to_owned(),
+            )),
             direction: crate::directional::Direction::Right,
-            cross_output_transfer: false,
-            same_axis_move: SameAxisMove::GroupWithNeighbor,
-        })),
+            same_axis: SameAxisMove::GroupWithNeighbor,
+        }),
     );
     let (step_outcome, step_settlements) = engine.handle_report(&step, &[]);
     let reply = match step_outcome {
@@ -1196,28 +1197,47 @@ fn drag_drop_pair_resolves_pointer_target() {
         screens,
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
         "win-a",
-        Some(87),
-        Some(WorldCommand::Operation(CoreCommand::DragDrop {
-            window: crate::directional::WindowId("win-a".to_owned()),
-            x: 810,
-            y: 50,
-            hover_prior: None,
-            source: Some(crate::session::DomainKey {
-                output: OutputId("out-a".to_owned()),
-                workspace: WorkspaceId(view_a),
-            }),
-        })),
+        None,
+        None,
     );
-    let (drop_outcome, drop_settlements) = engine.handle_report(&drop, &[]);
+    let (drop_outcome, _) = engine.handle_report(&drop, &[]);
+    assert!(matches!(drop_outcome, WorldOutcome::Accepted(_)));
+    let applied = engine.tx(|tx| {
+        tx.execute_command(
+            &crate::world_engine::EventIssue {
+                owner: crate::ids::OwnerId::parse("adapter-1").expect("owner"),
+                correlation: crate::ids::CorrelationId::parse("req-2").expect("corr"),
+            },
+            87,
+            &WorldCommand::Operation(CoreCommand::DragDrop {
+                window: crate::directional::WindowId("win-a".to_owned()),
+                x: 810,
+                y: 50,
+                hover_prior: None,
+                source: Some(crate::session::DomainKey {
+                    output: OutputId("out-a".to_owned()),
+                    workspace: WorkspaceId(view_a),
+                }),
+            }),
+            &std::collections::BTreeSet::new(),
+            None,
+            None,
+        )
+    });
+    assert!(matches!(
+        applied,
+        crate::world_commands::CommandApplied::NoEffect
+    ));
+    let mut follow = drop.clone();
+    follow.observation_seq = 3;
+    follow.request_seq = 3;
+    follow.request_id = "req-3".to_owned();
+    let (drop_outcome, drop_settlements) = engine.handle_report(&follow, &[]);
     let reply = match drop_outcome {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted drop, got {other:?}"),
     };
-    // Pair transaction committed: the mover arrives in the pointer domain
-    // with a retained window transfer. The drop geometry rides the
-    // snapshot, so no separate result.
-    assert_eq!(drop_settlements.len(), 1);
-    assert!(drop_settlements[0].result.is_none());
+    assert!(drop_settlements.is_empty());
     assert!(
         matches!(
             reply.transfers.as_slice(),
@@ -1250,7 +1270,10 @@ fn operation_send_retains_and_foreign_routes_refuse() {
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
         "win-a",
         Some(31),
-        Some(WorldCommand::Operation(CoreCommand::Reconcile)),
+        Some(WorldCommand::SelectWorkspace {
+            output: OutputId("out-a".to_owned()),
+            workspace: WorkspaceId(view_a.clone()),
+        }),
     );
     let reply = accepted(&mut engine, &read);
     assert!(reply.effects.is_empty());
@@ -1264,12 +1287,14 @@ fn operation_send_retains_and_foreign_routes_refuse() {
         vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
         "win-a",
         Some(32),
-        Some(WorldCommand::Operation(CoreCommand::SendToWorkspace {
-            window: crate::directional::WindowId("win-a".to_owned()),
+        Some(WorldCommand::Send {
+            window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                "win-a".to_owned(),
+            )),
             target_output: crate::directional::OutputId("out-a".to_owned()),
             target_workspace: crate::directional::WorkspaceId(ring[1].clone()),
             follow: true,
-        })),
+        }),
     );
     let reply = accepted(&mut engine, &send);
     assert_eq!(row_of(&reply, "win-a").workspace, ring[1]);
@@ -1336,17 +1361,17 @@ fn operation_send_retains_and_foreign_routes_refuse() {
         vec![fact("win-a", "out", 0)],
         "win-a",
         Some(33),
-        Some(WorldCommand::Operation(CoreCommand::MigrateWorkspace {
+        Some(WorldCommand::MigrateDirectional {
             direction: crate::directional::Direction::Right,
-        })),
+        }),
     );
     match solo.handle_report(&refused, &[]) {
         (WorldOutcome::Accepted(_), settlements) => assert_eq!(
             settlements.first().and_then(|s| s.result.clone()),
             Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused
+                kind: CommandRejectKind::MigrationRefused
             }),
-            "expected operation refusal"
+            "expected migration refusal"
         ),
         (other, _) => panic!("expected operation refusal, got {other:?}"),
     }
@@ -1617,7 +1642,7 @@ fn deterministic_sequence_replay_matches_exactly() {
             Some(7),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
-                direction: Some(crate::directional::Direction::Left),
+                direction: None,
             }),
         ));
         reports
@@ -2022,7 +2047,7 @@ fn unknown_outputs_and_views_hold_fail_closed() {
         Some(91),
         Some(WorldCommand::Focus {
             window: crate::directional::WindowSubject::Window(WindowId("win-ghost".to_owned())),
-            direction: Some(crate::directional::Direction::Left),
+            direction: None,
         }),
     );
     match engine.handle_report(&focus_ghost, &[]) {
@@ -2192,21 +2217,7 @@ fn operation_drag_pair_preserves_configured_outer_across_outputs() {
             assert_pair_gaps(&engine, &key_a, &key_b);
         }
         let drop_seq = if chained { 82 } else { 81 };
-        let mut drop = report(
-            4,
-            4,
-            screens.clone(),
-            facts,
-            "win-a",
-            Some(drop_seq),
-            Some(WorldCommand::Operation(CoreCommand::DragDrop {
-                window: crate::directional::WindowId("win-a".to_owned()),
-                x: 860,
-                y: 120,
-                hover_prior: None,
-                source: source.clone(),
-            })),
-        );
+        let mut drop = report(4, 4, screens.clone(), facts, "win-a", None, None);
         if chained {
             drop.gesture = Some(GestureIngress {
                 id: 1,
@@ -2220,7 +2231,36 @@ fn operation_drag_pair_preserves_configured_outer_across_outputs() {
                 start_frame: rect(10, 40, 40, 90),
             });
         }
-        let reply = accepted(&mut engine, &drop);
+        let _ = accepted(&mut engine, &drop);
+        let applied = engine.tx(|tx| {
+            tx.execute_command(
+                &crate::world_engine::EventIssue {
+                    owner: crate::ids::OwnerId::parse("adapter-1").expect("owner"),
+                    correlation: crate::ids::CorrelationId::parse("req-4").expect("corr"),
+                },
+                drop_seq,
+                &WorldCommand::Operation(CoreCommand::DragDrop {
+                    window: crate::directional::WindowId("win-a".to_owned()),
+                    x: 860,
+                    y: 120,
+                    hover_prior: None,
+                    source: source.clone(),
+                }),
+                &std::collections::BTreeSet::new(),
+                None,
+                None,
+            )
+        });
+        assert!(matches!(
+            applied,
+            crate::world_commands::CommandApplied::NoEffect
+        ));
+        let mut follow = drop.clone();
+        follow.observation_seq = 5;
+        follow.request_seq = 5;
+        follow.request_id = "req-5".to_owned();
+        follow.gesture = None;
+        let reply = accepted(&mut engine, &follow);
         assert!(
             matches!(
                 reply.transfers.as_slice(),
@@ -2273,8 +2313,8 @@ fn operation_drag_pair_preserves_configured_outer_across_outputs() {
         accepted(
             &mut engine,
             &report(
-                5,
-                5,
+                6,
+                6,
                 screens.clone(),
                 local_facts.clone(),
                 "win-a",
@@ -2284,7 +2324,7 @@ fn operation_drag_pair_preserves_configured_outer_across_outputs() {
         );
         let px = neighbor.x + neighbor.w - 2;
         let py = neighbor.y + neighbor.h / 2;
-        let mut local = report(6, 6, screens.clone(), local_facts, "win-a", None, None);
+        let mut local = report(7, 7, screens.clone(), local_facts, "win-a", None, None);
         local.gesture = Some(GestureIngress {
             id: 2,
             window: WindowId("win-a".to_owned()),
@@ -2340,36 +2380,35 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
                 direction: crate::directional::Direction::Right,
                 same_axis: SameAxisMove::GroupWithNeighbor,
             },
-            1 => WorldCommand::Operation(CoreCommand::Move {
-                window: crate::directional::WindowId("win-a".to_owned()),
+            1 => WorldCommand::MoveDirectional {
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: crate::directional::Direction::Right,
-                cross_output_transfer: true,
-                same_axis_move: SameAxisMove::GroupWithNeighbor,
-            }),
+                same_axis: SameAxisMove::GroupWithNeighbor,
+            },
             2 => WorldCommand::FocusDirectional {
                 window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
                     "win-a".to_owned(),
                 )),
                 direction: crate::directional::Direction::Right,
             },
-            3 => WorldCommand::Operation(CoreCommand::Focus {
-                window: crate::directional::WindowId("win-a".to_owned()),
+            3 => WorldCommand::FocusDirectional {
+                window: crate::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "win-a".to_owned(),
+                )),
                 direction: crate::directional::Direction::Right,
-                cross_output_transfer: true,
-                float_subject: false,
-            }),
-            4 => WorldCommand::Operation(CoreCommand::SendToWorkspace {
-                window: crate::directional::WindowId("win-a".to_owned()),
+            },
+            4 => WorldCommand::Send {
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 target_output: crate::directional::OutputId("out-a".to_owned()),
                 target_workspace: crate::directional::WorkspaceId(ring[1].clone()),
                 follow: true,
-            }),
-            5 => WorldCommand::Operation(CoreCommand::SendToWorkspace {
-                window: crate::directional::WindowId("win-a".to_owned()),
+            },
+            5 => WorldCommand::Send {
+                window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 target_output: crate::directional::OutputId("out-a".to_owned()),
                 target_workspace: crate::directional::WorkspaceId(ring[1].clone()),
                 follow: false,
-            }),
+            },
             6 => WorldCommand::SendDirectional {
                 window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
                 direction: crate::directional::Direction::Right,
@@ -2505,6 +2544,92 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn exec_send_to_output_with_effect(
+    engine: &mut WorldEngine,
+    seq: u64,
+    cmd_seq: u64,
+    screens: Vec<ScreenReport>,
+    facts: Vec<WindowFact>,
+    focused: &str,
+    window: &str,
+    target_output: &str,
+    target_workspace: &str,
+    follow: bool,
+) -> std::result::Result<
+    (
+        crate::world_report::WorldReplyV4,
+        Option<crate::world_report::OneShotEffect>,
+    ),
+    CommandRejectKind,
+> {
+    let applied = engine.tx(|tx| {
+        tx.execute_command(
+            &crate::world_engine::EventIssue {
+                owner: crate::ids::OwnerId::parse("adapter-1").expect("owner"),
+                correlation: crate::ids::CorrelationId::parse(&format!("req-{seq}")).expect("corr"),
+            },
+            cmd_seq,
+            &WorldCommand::Operation(CoreCommand::SendToOutput {
+                window: crate::directional::WindowId(window.to_owned()),
+                target_output: crate::directional::OutputId(target_output.to_owned()),
+                target_workspace: crate::directional::WorkspaceId(target_workspace.to_owned()),
+                follow,
+            }),
+            &std::collections::BTreeSet::new(),
+            None,
+            None,
+        )
+    });
+    match applied {
+        crate::world_commands::CommandApplied::Rejected { kind, .. } => {
+            Err(CommandRejectKind::parse(kind).unwrap_or(CommandRejectKind::OperationRefused))
+        }
+        crate::world_commands::CommandApplied::Effect(effect) => Ok((
+            accepted(
+                engine,
+                &report(seq, seq, screens, facts, focused, None, None),
+            ),
+            Some(effect),
+        )),
+        crate::world_commands::CommandApplied::NoEffect => Ok((
+            accepted(
+                engine,
+                &report(seq, seq, screens, facts, focused, None, None),
+            ),
+            None,
+        )),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exec_send_to_output(
+    engine: &mut WorldEngine,
+    seq: u64,
+    cmd_seq: u64,
+    screens: Vec<ScreenReport>,
+    facts: Vec<WindowFact>,
+    focused: &str,
+    window: &str,
+    target_output: &str,
+    target_workspace: &str,
+    follow: bool,
+) -> std::result::Result<crate::world_report::WorldReplyV4, CommandRejectKind> {
+    exec_send_to_output_with_effect(
+        engine,
+        seq,
+        cmd_seq,
+        screens,
+        facts,
+        focused,
+        window,
+        target_output,
+        target_workspace,
+        follow,
+    )
+    .map(|(reply, _)| reply)
+}
+
 #[test]
 fn explicit_output_send_uses_output_route() {
     // Explicit Operation(SendToOutput) cross-output must use the
@@ -2527,32 +2652,26 @@ fn explicit_output_send_uses_output_route() {
             &report(2, 2, screens.clone(), facts.clone(), "win-s", None, None),
         );
         assert_pair_gaps(&engine, &key_a, &key_b);
-        let command = WorldCommand::Operation(CoreCommand::SendToOutput {
-            window: crate::directional::WindowId("win-a".to_owned()),
-            target_output: crate::directional::OutputId("out-b".to_owned()),
-            target_workspace: crate::directional::WorkspaceId(view_b.clone()),
+        let _ = accepted(
+            &mut engine,
+            &report(3, 3, screens.clone(), facts.clone(), "win-a", None, None),
+        );
+        let (reply, effect) = match exec_send_to_output_with_effect(
+            &mut engine,
+            4,
+            11,
+            screens.clone(),
+            facts.clone(),
+            "win-a",
+            "win-a",
+            "out-b",
+            &view_b,
             follow,
-        });
-        let reply = match engine
-            .handle_report(
-                &report(
-                    3,
-                    3,
-                    screens.clone(),
-                    facts.clone(),
-                    "win-a",
-                    Some(11),
-                    Some(command),
-                ),
-                &[],
-            )
-            .0
-        {
-            WorldOutcome::Accepted(reply) => reply,
-            WorldOutcome::Rejected { kind, message } => {
-                panic!("follow={follow}: explicit SendToOutput must accept, got {kind} {message}")
+        ) {
+            Ok(pair) => pair,
+            Err(kind) => {
+                panic!("follow={follow}: explicit SendToOutput must accept, got {kind:?}")
             }
-            other => panic!("follow={follow}: expected accept, got {other:?}"),
         };
         let transfer = reply
             .transfers
@@ -2570,18 +2689,8 @@ fn explicit_output_send_uses_output_route() {
             reply.effects.is_empty(),
             "focus never publishes as wire effects: {reply:?}"
         );
-        let request = reply
-            .focus_request
-            .as_ref()
-            .expect("explicit focus request");
-        assert_eq!(request.id, format!("focus-{}", reply.state_revision));
-        assert_eq!(request.issued_revision, reply.state_revision);
-        assert_eq!(
-            request.cause,
-            crate::world_report::FocusRequestCause::ExplicitCommand
-        );
-        assert_eq!(request.cmd_seq, Some(11));
-        assert_eq!(request.after_shown, None);
+        let request = effect.expect("explicit focus request");
+        assert_eq!(request.command_seq, Some(11));
         if follow {
             assert_eq!(request.target.0, "win-a", "follow names one focus request");
         } else {
@@ -2707,23 +2816,19 @@ fn explicit_output_send_uses_output_route() {
             .find(|id| *id != &view_b)
             .cloned()
             .expect("destination output names a non-current workspace");
-        let reply = accepted(
+        let reply = exec_send_to_output(
             &mut engine,
-            &report(
-                3,
-                3,
-                screens,
-                facts,
-                "win-a",
-                Some(11),
-                Some(WorldCommand::Operation(CoreCommand::SendToOutput {
-                    window: crate::directional::WindowId("win-a".to_owned()),
-                    target_output: crate::directional::OutputId("out-b".to_owned()),
-                    target_workspace: crate::directional::WorkspaceId(target_ws.clone()),
-                    follow: true,
-                })),
-            ),
-        );
+            3,
+            11,
+            screens,
+            facts,
+            "win-a",
+            "win-a",
+            "out-b",
+            &target_ws,
+            true,
+        )
+        .expect("non-current explicit send accepts");
         let transfer = reply
             .transfers
             .iter()
@@ -2757,30 +2862,22 @@ fn explicit_output_send_fences_match_output_route() {
             &mut engine,
             &report(2, 2, screens.clone(), facts.clone(), "win-a", None, None),
         );
-        let refused = report(
-            3,
-            3,
-            screens.clone(),
-            facts,
-            "win-a",
-            Some(11),
-            Some(WorldCommand::Operation(CoreCommand::SendToOutput {
-                window: crate::directional::WindowId("win-a".to_owned()),
-                target_output: crate::directional::OutputId("out-b".to_owned()),
-                target_workspace: crate::directional::WorkspaceId(view_b.clone()),
+        assert_eq!(
+            exec_send_to_output(
+                &mut engine,
+                3,
+                11,
+                screens.clone(),
+                facts,
+                "win-a",
+                "win-a",
+                "out-b",
+                &view_b,
                 follow,
-            })),
-        );
-        match engine.handle_report(&refused, &[]) {
-            (WorldOutcome::Accepted(_), settlements) => assert_eq!(
-                settlements.first().and_then(|s| s.result.clone()),
-                Some(CommandResult::Rejected {
-                    kind: CommandRejectKind::SendRefused
-                }),
-                "follow={follow}: sticky must refuse"
             ),
-            (other, _) => panic!("follow={follow}: sticky must refuse, got {other:?}"),
-        }
+            Err(CommandRejectKind::SendRefused),
+            "follow={follow}: sticky must refuse"
+        );
         let (mut engine, screens, _view_a, view_b, _) = bootstrap_gapped_pair();
         let mut excluded = fact_rect("win-a", "out-a", rect(10, 40, 40, 90));
         excluded.privileged = Some(true);
@@ -2793,30 +2890,22 @@ fn explicit_output_send_fences_match_output_route() {
             &mut engine,
             &report(2, 2, screens.clone(), facts.clone(), "win-a", None, None),
         );
-        let refused = report(
-            3,
-            3,
-            screens.clone(),
-            facts,
-            "win-a",
-            Some(11),
-            Some(WorldCommand::Operation(CoreCommand::SendToOutput {
-                window: crate::directional::WindowId("win-a".to_owned()),
-                target_output: crate::directional::OutputId("out-b".to_owned()),
-                target_workspace: crate::directional::WorkspaceId(view_b.clone()),
+        assert_eq!(
+            exec_send_to_output(
+                &mut engine,
+                3,
+                11,
+                screens.clone(),
+                facts,
+                "win-a",
+                "win-a",
+                "out-b",
+                &view_b,
                 follow,
-            })),
-        );
-        match engine.handle_report(&refused, &[]) {
-            (WorldOutcome::Accepted(_), settlements) => assert_eq!(
-                settlements.first().and_then(|s| s.result.clone()),
-                Some(CommandResult::Rejected {
-                    kind: CommandRejectKind::SendRefused
-                }),
-                "follow={follow}: fit-excluded must refuse"
             ),
-            (other, _) => panic!("follow={follow}: fit-excluded must refuse, got {other:?}"),
-        }
+            Err(CommandRejectKind::SendRefused),
+            "follow={follow}: fit-excluded must refuse"
+        );
     }
     // In-flight fence: a second same-window explicit output send
     // refuses while the first flight is outstanding, under both flags.
@@ -2831,24 +2920,19 @@ fn explicit_output_send_fences_match_output_route() {
             &mut engine,
             &report(2, 2, screens.clone(), facts.clone(), "win-a", None, None),
         );
-        let first = report(
+        let reply = exec_send_to_output(
+            &mut engine,
             3,
-            3,
+            11,
             screens.clone(),
             facts.clone(),
             "win-a",
-            Some(11),
-            Some(WorldCommand::Operation(CoreCommand::SendToOutput {
-                window: crate::directional::WindowId("win-a".to_owned()),
-                target_output: crate::directional::OutputId("out-b".to_owned()),
-                target_workspace: crate::directional::WorkspaceId(view_b.clone()),
-                follow,
-            })),
-        );
-        let reply = match engine.handle_report(&first, &[]).0 {
-            WorldOutcome::Accepted(reply) => reply,
-            other => panic!("follow={follow}: first send must accept, got {other:?}"),
-        };
+            "win-a",
+            "out-b",
+            &view_b,
+            follow,
+        )
+        .unwrap_or_else(|e| panic!("follow={follow}: first send must accept, got {e:?}"));
         assert!(
             reply
                 .transfers
@@ -2856,30 +2940,22 @@ fn explicit_output_send_fences_match_output_route() {
                 .any(|t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-a")),
             "follow={follow}: first send retains the flight"
         );
-        let again = report(
-            4,
-            4,
-            screens,
-            facts,
-            "win-a",
-            Some(12),
-            Some(WorldCommand::Operation(CoreCommand::SendToOutput {
-                window: crate::directional::WindowId("win-a".to_owned()),
-                target_output: crate::directional::OutputId("out-b".to_owned()),
-                target_workspace: crate::directional::WorkspaceId(view_b),
+        assert_eq!(
+            exec_send_to_output(
+                &mut engine,
+                4,
+                12,
+                screens,
+                facts,
+                "win-a",
+                "win-a",
+                "out-b",
+                &view_b,
                 follow,
-            })),
-        );
-        match engine.handle_report(&again, &[]) {
-            (WorldOutcome::Accepted(_), settlements) => assert_eq!(
-                settlements.first().and_then(|s| s.result.clone()),
-                Some(CommandResult::Rejected {
-                    kind: CommandRejectKind::TransferInFlight
-                }),
-                "follow={follow}: second send must fence"
             ),
-            (other, _) => panic!("follow={follow}: second send must fence, got {other:?}"),
-        }
+            Err(CommandRejectKind::TransferInFlight),
+            "follow={follow}: second send must fence"
+        );
     }
     // Migration-destination fence: a retained whole-workspace migration
     // owns its destination cell, so an explicit output send onto that
@@ -2958,38 +3034,26 @@ fn explicit_output_send_fences_match_output_route() {
             .expect("migration retains its destination cell");
         assert_eq!(cell.target_output.0, "out-b");
         assert_eq!(cell.target_workspace, view_a);
-        let probe = report(
-            6,
-            6,
-            screens,
-            facts,
-            "win-x",
-            Some(12),
-            Some(WorldCommand::Operation(CoreCommand::SendToOutput {
-                window: crate::directional::WindowId("win-x".to_owned()),
-                target_output: crate::directional::OutputId("out-b".to_owned()),
-                target_workspace: crate::directional::WorkspaceId(view_a.clone()),
+        // KIND_SEND_TARGET is "send-target-unknown"; the
+        // migration-destination fence runs before the
+        // mapping/staged checks, so with the matching cell
+        // retained this refusal is necessarily that fence.
+        assert_eq!(
+            exec_send_to_output(
+                &mut engine,
+                6,
+                12,
+                screens,
+                facts,
+                "win-x",
+                "win-x",
+                "out-b",
+                &view_a,
                 follow,
-            })),
+            ),
+            Err(CommandRejectKind::SendTargetUnknown),
+            "follow={follow}: migration cell"
         );
-        match engine.handle_report(&probe, &[]) {
-            (WorldOutcome::Accepted(_), settlements) => {
-                // KIND_SEND_TARGET is "send-target-unknown"; the
-                // migration-destination fence runs before the
-                // mapping/staged checks, so with the matching cell
-                // retained this refusal is necessarily that fence.
-                assert_eq!(
-                    settlements.first().and_then(|s| s.result.clone()),
-                    Some(CommandResult::Rejected {
-                        kind: CommandRejectKind::SendTargetUnknown
-                    }),
-                    "follow={follow}: migration cell"
-                )
-            }
-            (other, _) => {
-                panic!("follow={follow}: send onto migration cell must refuse, got {other:?}")
-            }
-        }
         assert!(
             engine
                 .retained_transfers()
@@ -5627,12 +5691,14 @@ fn physical_chain_return_moved_out_member_stays_away() {
                 ],
                 "win-s",
                 Some(11),
-                Some(WorldCommand::Operation(CoreCommand::SendToWorkspace {
-                    window: crate::directional::WindowId("win-s".to_owned()),
+                Some(WorldCommand::Send {
+                    window: crate::directional::WindowSubject::Window(
+                        crate::directional::WindowId("win-s".to_owned()),
+                    ),
                     target_output: crate::directional::OutputId("out-u".to_owned()),
                     target_workspace: crate::directional::WorkspaceId(view_u.clone()),
                     follow: false,
-                })),
+                }),
             ),
             &[],
         )

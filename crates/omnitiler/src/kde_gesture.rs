@@ -41,7 +41,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde_json::{Map, Value};
-use tiler_core::bounds::is_opaque_id;
+use tiler_core::bounds::{COORDINATE_BOUND, is_opaque_id, valid_carried_rect};
 
 /// Bounded canonical decimal `u64` string (mirrors the broker gate: JSON
 /// numbers, signs, leading zeros, and overflow refuse). Local mirror of the
@@ -119,11 +119,9 @@ fn snapshot_invalid(msg: &'static str) -> (&'static str, &'static str) {
 fn is_int_coord(n: &Value) -> Option<i32> {
     match n {
         Value::Number(v) => v.as_i64().and_then(|x| {
-            if (-16384..=16384).contains(&x) {
-                Some(x as i32)
-            } else {
-                None
-            }
+            i32::try_from(x)
+                .ok()
+                .filter(|v| (-COORDINATE_BOUND..=COORDINATE_BOUND).contains(v))
         }),
         _ => None,
     }
@@ -146,24 +144,17 @@ fn read_rect(value: &Value) -> Result<Option<[i32; 4]>, (&'static str, &'static 
     match value {
         Value::Null => Ok(None),
         Value::Array(items) if items.len() == 4 => {
-            let x = is_int_coord(&items[0]).ok_or_else(unknown_value)?;
-            let y = is_int_coord(&items[1]).ok_or_else(unknown_value)?;
-            let w = match &items[2] {
-                Value::Number(v) => v
-                    .as_i64()
-                    .filter(|w| (1..=16384).contains(w))
-                    .map(|w| w as i32),
+            let coord = |v: &Value| match v {
+                Value::Number(n) => n.as_i64().and_then(|x| i32::try_from(x).ok()),
                 _ => None,
+            };
+            let x = coord(&items[0]).ok_or_else(unknown_value)?;
+            let y = coord(&items[1]).ok_or_else(unknown_value)?;
+            let w = coord(&items[2]).ok_or_else(unknown_value)?;
+            let h = coord(&items[3]).ok_or_else(unknown_value)?;
+            if !valid_carried_rect(x, y, w, h) {
+                return Err(unknown_value());
             }
-            .ok_or_else(unknown_value)?;
-            let h = match &items[3] {
-                Value::Number(v) => v
-                    .as_i64()
-                    .filter(|h| (1..=16384).contains(h))
-                    .map(|h| h as i32),
-                _ => None,
-            }
-            .ok_or_else(unknown_value)?;
             Ok(Some([x, y, w, h]))
         }
         Value::Array(_) => Err(unknown_value()),

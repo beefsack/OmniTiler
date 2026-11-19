@@ -72,6 +72,10 @@ fn transport_error(service: &WorldService, error: WorldServiceError) -> String {
         WorldServiceError::Oversized => {
             service.error_body("oversized", "request exceeds size bound")
         }
+        WorldServiceError::ReplyOversize => {
+            service.error_body("reply-oversize", "reply exceeds size bound")
+        }
+        WorldServiceError::InvalidReply(rule) => service.error_body("reply-invalid", rule),
         WorldServiceError::Unavailable(_) => {
             service.error_body("unavailable", "service unavailable")
         }

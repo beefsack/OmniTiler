@@ -479,20 +479,23 @@ fn bootstrap_binding(
     }
     let mut probe = configured_engine(case, mode)?;
     let first = build_report_v4(case, step0, mode, &BTreeMap::new(), &BTreeMap::new())?;
-    let reply = match probe.handle_report(&first, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
-        WorldOutcome::Duplicate(_) => {
-            return Err("bootstrap probe: expected accepted, got duplicate".to_owned());
-        }
-        WorldOutcome::CommandConsumed(_) => {
-            return Err("bootstrap probe: expected accepted, got command-consumed".to_owned());
-        }
-        WorldOutcome::Rejected { kind, message } => {
-            return Err(format!(
-                "bootstrap probe: expected accepted, got {kind} {message}"
-            ));
-        }
-    };
+    let reply =
+        match tiler_protocol::world_admission::handle_report_checked(&mut probe, &first, &[])
+            .outcome
+        {
+            WorldOutcome::Accepted(reply) => reply,
+            WorldOutcome::Duplicate(_) => {
+                return Err("bootstrap probe: expected accepted, got duplicate".to_owned());
+            }
+            WorldOutcome::CommandConsumed(_) => {
+                return Err("bootstrap probe: expected accepted, got command-consumed".to_owned());
+            }
+            WorldOutcome::Rejected { kind, message } => {
+                return Err(format!(
+                    "bootstrap probe: expected accepted, got {kind} {message}"
+                ));
+            }
+        };
     let home = reply
         .outputs
         .iter()
@@ -562,7 +565,9 @@ fn execute(case: &CaseFile) -> Result<Vec<(WorldReportV4, WorldReplyV4)>, String
             }
         }
         let report = build_report_v4(case, step, mode, &binding, &grants)?;
-        match engine.handle_report(&report, &[]).0 {
+        match tiler_protocol::world_admission::handle_report_checked(&mut engine, &report, &[])
+            .outcome
+        {
             WorldOutcome::Accepted(reply) => {
                 if select_changed {
                     grants.clear();
@@ -939,22 +944,72 @@ fn check(case: &CaseFile, pairs: &[(WorldReportV4, WorldReplyV4)]) -> Result<Vec
         } else if !reply.transfers.is_empty() {
             return Err(fail(at, "settled step carries a pending transfer"));
         }
-        // Effects: exact ordered set. Narrow reply classes: all absent.
-        // Source semantics (world_model.rs, world_commands.rs): one-shot
-        // effects mint issued_revision = state_revision + 1, which finish()
-        // publishes as this reply.state_revision.
+        // Focus requests publish on `reply.focus_request` (retained across
+        // latest-only publications until feedback/view-drift/close), while
+        // `reply.effects` strips `EffectKind::Focus` on the v4 wire.
+        // Freshly minted focus requests carry `issued_revision ==
+        // reply.state_revision`; retained carry-overs from earlier steps have
+        // `issued_revision < reply.state_revision`.
         {
             let want: Vec<(String, String, String)> = step
                 .expect
                 .effects
                 .iter()
-                .map(|e| (e.id.clone(), e.kind.clone(), e.target.clone()))
+                .map(|e| {
+                    let expected_id = if e.kind == "focus"
+                        && (e.id.starts_with("af-") || e.id.starts_with("fx-"))
+                    {
+                        format!("focus-{}", reply.state_revision)
+                    } else {
+                        e.id.clone()
+                    };
+                    (expected_id, e.kind.clone(), e.target.clone())
+                })
                 .collect();
-            let got: Vec<(String, String, String)> = reply
+            let mut got: Vec<(String, String, String)> = reply
                 .effects
                 .iter()
                 .map(|e| (e.id.clone(), e.kind.as_str().to_owned(), e.target.0.clone()))
                 .collect();
+            if reply
+                .effects
+                .iter()
+                .any(|effect| effect.kind == tiler_core::world_report::EffectKind::Focus)
+            {
+                return Err(fail(at, "focus must use the retained request lane"));
+            }
+            if let Some(req) = &reply.focus_request {
+                if req.issued_revision > reply.state_revision {
+                    return Err(fail(at, "effect issued_revision != reply revision"));
+                }
+                if let Some(expected) = step.expect.effects.iter().find(|e| e.kind == "focus") {
+                    if req.issued_revision != reply.state_revision {
+                        return Err(fail(at, "effect issued_revision != reply revision"));
+                    }
+                    let expected_cause = if expected.id.starts_with("af-") {
+                        if req.cmd_seq.is_some() {
+                            return Err(fail(at, "automatic focus_request carries cmd_seq"));
+                        }
+                        tiler_core::world_report::FocusRequestCause::AutomaticAdmission
+                    } else if let Some(seq_str) = expected.id.strip_prefix("fx-") {
+                        let seq: u64 = seq_str
+                            .parse()
+                            .map_err(|_| fail(at, "invalid fx- command seq"))?;
+                        if req.cmd_seq != Some(seq) {
+                            return Err(fail(at, "focus_request cmd_seq != expected"));
+                        }
+                        tiler_core::world_report::FocusRequestCause::ExplicitCommand
+                    } else {
+                        return Err(fail(at, "unknown expected focus request identity"));
+                    };
+                    if req.cause != expected_cause {
+                        return Err(fail(at, "focus_request cause != expected"));
+                    }
+                    got.push((req.id.clone(), "focus".to_owned(), req.target.0.clone()));
+                } else if req.issued_revision == reply.state_revision {
+                    got.push((req.id.clone(), "focus".to_owned(), req.target.0.clone()));
+                }
+            }
             if got != want {
                 return Err(fail(
                     at,
@@ -1213,7 +1268,12 @@ mod acceptance_tests {
     #[test]
     fn effect_revision_must_match_reply() {
         let (case, mut pairs) = base_pairs();
-        pairs[1].1.effects[0].issued_revision = 1;
+        pairs[1]
+            .1
+            .focus_request
+            .as_mut()
+            .expect("admit-c focus_request")
+            .issued_revision = 1;
         must_fail(&case, &pairs, "issued_revision");
     }
 
@@ -1266,7 +1326,9 @@ mod acceptance_tests {
             configured_engine(&case, case_mode(&case.mode).expect("mode")).expect("engine");
         let mut replies = Vec::new();
         for report in &reports {
-            match engine.handle_report(report, &[]).0 {
+            match tiler_protocol::world_admission::handle_report_checked(&mut engine, report, &[])
+                .outcome
+            {
                 WorldOutcome::Accepted(reply) => replies.push(reply),
                 WorldOutcome::Duplicate(_) => panic!("duplicate is not fresh acceptance"),
                 WorldOutcome::CommandConsumed(_) => panic!("consumed never re-executes"),
@@ -1288,7 +1350,9 @@ mod acceptance_tests {
             configured_engine(&case, case_mode(&case.mode).expect("mode")).expect("engine");
         let mut replies = Vec::new();
         for report in &reports {
-            match engine.handle_report(report, &[]).0 {
+            match tiler_protocol::world_admission::handle_report_checked(&mut engine, report, &[])
+                .outcome
+            {
                 WorldOutcome::Accepted(reply) => replies.push(reply),
                 WorldOutcome::Duplicate(_) => panic!("duplicate is not fresh acceptance"),
                 WorldOutcome::CommandConsumed(_) => panic!("consumed never re-executes"),
@@ -1299,7 +1363,7 @@ mod acceptance_tests {
         }
         let pairs: Vec<(WorldReportV4, WorldReplyV4)> = reports.into_iter().zip(replies).collect();
         let error = check(&case, &pairs).expect_err("must reject");
-        assert!(error.contains("ring"), "unexpected: {error}");
+        assert!(error.contains("reply not ready"), "unexpected: {error}");
     }
 
     #[test]

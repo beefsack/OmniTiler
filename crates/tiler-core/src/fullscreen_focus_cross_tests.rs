@@ -1075,7 +1075,7 @@ fn world_fullscreen_float_skips_lattice_and_crosses_remembered() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-t".to_owned())),
-                direction: Some(crate::directional::Direction::Right),
+                direction: None,
             }),
         ),
     );
@@ -1093,7 +1093,7 @@ fn world_fullscreen_float_skips_lattice_and_crosses_remembered() {
             Some(12),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-sub".to_owned())),
-                direction: Some(crate::directional::Direction::Right),
+                direction: None,
             }),
         ),
     );
@@ -1270,7 +1270,7 @@ fn world_explicit_focus_by_window_works_under_fullscreen() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
-                direction: Some(crate::directional::Direction::Right),
+                direction: None,
             }),
         ),
     );
@@ -1592,9 +1592,7 @@ fn world_native_maximized_float_skips_lattice_and_crosses_remembered() {
                 Some(11),
                 Some(WorldCommand::Focus {
                     window: crate::directional::WindowSubject::Window(WindowId("win-t".to_owned())),
-                    direction: Some(
-                        crate::directional::Direction::parse_wire(dir).expect("direction"),
-                    ),
+                    direction: None,
                 }),
             ),
         );
@@ -1614,9 +1612,7 @@ fn world_native_maximized_float_skips_lattice_and_crosses_remembered() {
                     window: crate::directional::WindowSubject::Window(WindowId(
                         "win-sub".to_owned(),
                     )),
-                    direction: Some(
-                        crate::directional::Direction::parse_wire(dir).expect("direction"),
-                    ),
+                    direction: None,
                 }),
             ),
         );

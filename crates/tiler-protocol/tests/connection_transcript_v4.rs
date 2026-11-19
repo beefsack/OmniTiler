@@ -100,7 +100,14 @@ impl Driver {
     fn submit_report(&mut self, line: &str) -> ReportOut {
         let decoded = decode_request_with_wire(line).expect("report decodes");
         let live = self.live();
-        match live.handle_report(&decoded.report, &[]).0 {
+        let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::new();
+        match live
+            .handle_report_with_gate_and_prepare(&decoded.report, &[], &gate, |_| {
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .unwrap_or_else(|e| match e {})
+            .outcome
+        {
             WorldOutcome::Accepted(reply)
             | WorldOutcome::Duplicate(reply)
             | WorldOutcome::CommandConsumed(reply) => {

@@ -86,7 +86,7 @@ profile_case() {
     "$binary" "$case_name" 1 1 S1 >"$out.stdout" 2>"$out.stderr"
 }
 
-CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --locked --release -p tiler-core --example report_scale
+CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --locked --release -p tiler-core --features structural-bench --example report_scale
 
 profile_case w50-o1 "$scratch/w50.out"
 profile_case w200-o1 "$scratch/w200.out"

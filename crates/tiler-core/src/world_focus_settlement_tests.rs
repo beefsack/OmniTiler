@@ -182,7 +182,7 @@ fn accepted_with_settlements(
 fn focus_command(window: &str) -> WorldCommand {
     WorldCommand::Focus {
         window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
-        direction: Some(crate::directional::Direction::Left),
+        direction: None,
     }
 }
 

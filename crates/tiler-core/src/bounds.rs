@@ -13,6 +13,8 @@ use crate::geometry::Rect;
 pub const MAX_OPAQUE_ID_LEN: usize = 128;
 /// Bounded carried-geometry extent.
 pub const GEOMETRY_BOUND: i32 = 16384;
+/// Bounded carried-geometry coordinate endpoint (half-open inclusive `-32768..=32768`).
+pub const COORDINATE_BOUND: i32 = 32768;
 /// Bounded gap extent for carried work-area geometry (inner and outer).
 pub const MAX_GAP: i32 = 64;
 
@@ -26,17 +28,33 @@ pub fn is_opaque_id(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
-/// Carried rectangle gate over adapter-normalized integer geometry.
+/// Carried point gate over adapter-normalized integer coordinates.
 #[must_use]
-pub fn valid_carried_rect(x: i32, y: i32, w: i32, h: i32) -> bool {
+pub const fn valid_carried_point(x: i32, y: i32) -> bool {
+    x >= -COORDINATE_BOUND
+        && x <= COORDINATE_BOUND
+        && y >= -COORDINATE_BOUND
+        && y <= COORDINATE_BOUND
+}
+
+/// Carried rectangle gate over adapter-normalized integer geometry.
+/// Half-open rectangles: endpoints inclusive `-32768..=32768`, extents `1..=16384`.
+#[must_use]
+pub const fn valid_carried_rect(x: i32, y: i32, w: i32, h: i32) -> bool {
+    let x = x as i64;
+    let y = y as i64;
+    let w = w as i64;
+    let h = h as i64;
+    let coord = COORDINATE_BOUND as i64;
+    let extent = GEOMETRY_BOUND as i64;
     w > 0
         && h > 0
-        && (-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(&x)
-        && (-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(&y)
-        && w <= GEOMETRY_BOUND
-        && h <= GEOMETRY_BOUND
-        && (i64::from(x) + i64::from(w) <= i64::from(i32::MAX))
-        && (i64::from(y) + i64::from(h) <= i64::from(i32::MAX))
+        && w <= extent
+        && h <= extent
+        && x >= -coord
+        && y >= -coord
+        && x + w <= coord
+        && y + h <= coord
 }
 
 /// Containment gate with checked `i64` edges.
@@ -56,4 +74,55 @@ pub fn rect_contained(inner: Rect, outer: Rect) -> bool {
 #[must_use]
 pub fn is_gap(value: i32) -> bool {
     (0..=MAX_GAP).contains(&value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn carried_rect_closed_half_open_bounds() {
+        let valid = [
+            (-16384, -16384, 16384, 16384),
+            (16384, 16384, 1, 1),
+            (-16384, 16384, 1, 1),
+            (16384, 0, 800, 600),
+            (16392, 8, 784, 584),
+            (-32768, -32768, 16384, 16384),
+            (16384, 16384, 16384, 16384),
+            (32767, 32767, 1, 1),
+        ];
+        for (x, y, w, h) in valid {
+            assert!(valid_carried_rect(x, y, w, h), "want valid {x} {y} {w} {h}");
+        }
+        let invalid = [
+            (0, 0, 0, 1),
+            (0, 0, 1, 0),
+            (0, 0, 16385, 1),
+            (0, 0, 1, 16385),
+            (-32769, 0, 1, 1),
+            (0, -32769, 1, 1),
+            (32768, 0, 1, 1),
+            (0, 32768, 1, 1),
+            (16385, 0, 16384, 1),
+            (0, 16385, 1, 16384),
+            (i32::MAX, 0, 1, 1),
+            (i32::MIN, 0, 1, 1),
+        ];
+        for (x, y, w, h) in invalid {
+            assert!(
+                !valid_carried_rect(x, y, w, h),
+                "want invalid {x} {y} {w} {h}"
+            );
+        }
+    }
+
+    #[test]
+    fn carried_point_shares_axis_bound() {
+        assert!(valid_carried_point(-32768, 32768));
+        assert!(valid_carried_point(32768, -32768));
+        assert!(valid_carried_point(-16384, 16384));
+        assert!(!valid_carried_point(32769, 0));
+        assert!(!valid_carried_point(0, -32769));
+    }
 }

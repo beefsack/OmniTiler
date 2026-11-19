@@ -146,6 +146,7 @@ async fn emit_world_wake_if_ready(connection: &zbus::Connection, reply: &str, ki
 pub enum PlannerError {
     Unauthorized,
     Unavailable(String),
+    InvalidReply(String),
 }
 
 #[derive(Clone, Debug)]
@@ -388,6 +389,14 @@ impl PlannerEndpoint {
                     "request exceeds size bound".to_owned(),
                 ));
             }
+            Err(crate::world_service::WorldServiceError::ReplyOversize) => {
+                return Err(PlannerError::Unavailable(
+                    "reply exceeds size bound".to_owned(),
+                ));
+            }
+            Err(crate::world_service::WorldServiceError::InvalidReply(_)) => {
+                return Err(PlannerError::InvalidReply("reply-invalid".to_owned()));
+            }
             Err(crate::world_service::WorldServiceError::Unavailable(message)) => {
                 return Err(PlannerError::Unavailable(message));
             }
@@ -471,11 +480,7 @@ impl PlannerEndpoint {
                     "request exceeds size bound".to_owned(),
                 ));
             }
-            Err(WorldServiceError::Unavailable(message)) => {
-                // Evaluation produced an oversize reply: emit a bounded
-                // world-vocabulary terminal line (never payload bytes), then
-                // fail closed. The in-band body below is log-only and never
-                // sent; only the outcome/kind shape reaches the journal.
+            Err(WorldServiceError::ReplyOversize) => {
                 drop(_guard);
                 eprintln!(
                     "{}",
@@ -486,6 +491,21 @@ impl PlannerEndpoint {
                             .error_body("reply-oversize", "reply exceeds size bound")
                     )
                 );
+                return Err(PlannerError::Unavailable(
+                    "reply exceeds size bound".to_owned(),
+                ));
+            }
+            Err(WorldServiceError::InvalidReply(rule)) => {
+                drop(_guard);
+                eprintln!("omnitiler:world-fault kind=reply-invalid rule={rule}");
+                eprintln!(
+                    "{}",
+                    world_egress_summary(&request, &self.world.error_body("reply-invalid", rule))
+                );
+                return Err(PlannerError::InvalidReply("reply-invalid".to_owned()));
+            }
+            Err(WorldServiceError::Unavailable(message)) => {
+                drop(_guard);
                 return Err(PlannerError::Unavailable(message));
             }
         };
@@ -550,6 +570,14 @@ impl PlannerEndpoint {
                     "request exceeds size bound".to_owned(),
                 ));
             }
+            Err(WorldServiceError::ReplyOversize) => {
+                return Err(PlannerError::Unavailable(
+                    "reply exceeds size bound".to_owned(),
+                ));
+            }
+            Err(WorldServiceError::InvalidReply(_)) => {
+                return Err(PlannerError::InvalidReply("reply-invalid".to_owned()));
+            }
             Err(WorldServiceError::Unavailable(message)) => {
                 return Err(PlannerError::Unavailable(message));
             }
@@ -612,6 +640,14 @@ impl PlannerEndpoint {
                     "request exceeds size bound".to_owned(),
                 ));
             }
+            Err(WorldServiceError::ReplyOversize) => {
+                return Err(PlannerError::Unavailable(
+                    "reply exceeds size bound".to_owned(),
+                ));
+            }
+            Err(WorldServiceError::InvalidReply(_)) => {
+                return Err(PlannerError::InvalidReply("reply-invalid".to_owned()));
+            }
             Err(WorldServiceError::Unavailable(message)) => {
                 return Err(PlannerError::Unavailable(message));
             }
@@ -667,6 +703,14 @@ impl PlannerEndpoint {
                 return Err(PlannerError::Unavailable(
                     "request exceeds size bound".to_owned(),
                 ));
+            }
+            Err(WorldServiceError::ReplyOversize) => {
+                return Err(PlannerError::Unavailable(
+                    "reply exceeds size bound".to_owned(),
+                ));
+            }
+            Err(WorldServiceError::InvalidReply(_)) => {
+                return Err(PlannerError::InvalidReply("reply-invalid".to_owned()));
             }
             Err(WorldServiceError::Unavailable(message)) => {
                 return Err(PlannerError::Unavailable(message));

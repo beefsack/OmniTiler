@@ -1607,3 +1607,192 @@ fn retained_preview_stays_proven_across_omitted_ingress_newcomers_and_resets_on_
     assert_eq!(reset_read["outcome"], "rejected");
     assert_eq!(reset_read["kind"], "not-ready");
 }
+
+#[test]
+fn unit_i_broker_gesture_transfer_128_byte_window_and_underlay_agreement() {
+    let service = WorldService::new();
+    let generation = discover(&service);
+    let w128 = "w".repeat(128);
+    let w128_json = v4_win(&w128, "[0,0,960,1040]");
+    let wpeer_json = v4_win("win-peer", "[960,0,960,1040]");
+    let w2_json =
+        v4_win("win-2", "[1920,0,1920,1040]").replace("\"out\":\"DP-1\"", "\"out\":\"DP-2\"");
+
+    let two_screen_report = |windows: &[String], native: &str| -> String {
+        format!(
+            "{{\"v\":4,\
+              \"screens\":[\
+                {{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}},\
+                {{\"out\":\"DP-2\",\"full\":[1920,0,1920,1080],\"work\":[1920,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}\
+              ],\
+              \"windows\":[{}],\"closed\":[],\"native\":[],\
+              \"focused\":\"{w128}\",\"foregroundKnown\":true,\"complete\":true,\"gesture\":false,\
+              \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+              \"actionOutputs\":[\"DP-1\",\"DP-2\"],\
+              \"presentation\":{{\"foreground\":\"{w128}\",\"minimized\":false,\"maximized\":false,\
+              \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\
+              \"frame\":null,\"chordHeld\":true,\"moveWindow\":\"\",\
+              \"pagerOrder\":[\"{w128}\",\"win-peer\",\"win-2\"],\
+              \"pagerFrames\":[{{\"win\":\"{w128}\",\"live\":[0,0,960,1040]}},\
+              {{\"win\":\"win-peer\",\"live\":[960,0,960,1040]}},\
+              {{\"win\":\"win-2\",\"live\":[1920,0,1920,1040]}}],\
+              \"witness\":null,\"foregroundOut\":null}},\
+              \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
+              \"rendererInput\":null,\
+              \"gestureIngress\":null,\"nativeGesture\":{native},\
+              \"cursorWindow\":null,\"nativeInvalidWitness\":null}}",
+            windows.join(","),
+        )
+    };
+
+    let seed = capture(
+        &service,
+        &generation,
+        1,
+        &two_screen_report(
+            &[w128_json.clone(), wpeer_json.clone(), w2_json.clone()],
+            "null",
+        ),
+    );
+    assert_eq!(seed["outcome"], serde_json::Value::Null);
+    let seed_underlay = &seed["presentation"]["underlay"];
+    assert_eq!(seed_underlay["status"], "found");
+    assert_eq!(seed_underlay["win"], w128);
+    let seed_leaf = seed_underlay["leaf"].as_str().expect("seed underlay leaf");
+    assert_eq!(seed_leaf, "leaf-1");
+    assert!(seed_leaf.len() <= 128);
+    let members = seed_underlay["members"]
+        .as_array()
+        .expect("underlay members");
+    assert_eq!(members.len(), 2);
+    for m in members {
+        let leaf = m["leaf"].as_str().expect("member leaf");
+        assert!(leaf.starts_with("leaf-"));
+        assert!(leaf.len() <= 128);
+    }
+
+    let open = capture(
+        &service,
+        &generation,
+        2,
+        &two_screen_report(
+            &[w128_json.clone(), wpeer_json.clone(), w2_json.clone()],
+            &raw_native_full(
+                "gesture-1",
+                "1",
+                "1",
+                "updated",
+                &w128,
+                "move",
+                "[0,0,960,1040]",
+                "[100,100]",
+                "[2100,200]",
+                1,
+                1,
+                0,
+                1,
+            ),
+        ),
+    );
+    assert_eq!(open["outcome"], serde_json::Value::Null);
+    assert_eq!(open["dragPreview"]["hover"]["win"], w128);
+    assert_eq!(open["dragPreview"]["hover"]["leaf"], seed_leaf);
+    let proj = preview_of(&service, "read-unit-i");
+    assert!(!proj["preview"].is_null(), "preview present: {proj}");
+
+    let w128_moved = v4_win(&w128, "[200,100,960,1040]");
+    let released = capture(
+        &service,
+        &generation,
+        3,
+        &two_screen_report(
+            &[w128_moved, wpeer_json.clone(), w2_json.clone()],
+            &raw_native_full(
+                "gesture-1",
+                "1",
+                "2",
+                "released",
+                &w128,
+                "move",
+                "[0,0,960,1040]",
+                "[100,100]",
+                "[2100,200]",
+                1,
+                1,
+                0,
+                1,
+            ),
+        ),
+    );
+    assert_eq!(released["outcome"], serde_json::Value::Null);
+    assert_eq!(
+        released["gestureSettledAssoc"],
+        serde_json::json!({"coreId": "1", "instance": "gesture-1", "serial": "1"})
+    );
+    let transfers = released["transfers"].as_array().expect("transfers array");
+    let transfer = transfers
+        .iter()
+        .find(|t| t["win"] == w128)
+        .expect("cross-output transfer for 128-byte window");
+    let op_id = transfer["op"].as_str().expect("op id");
+    assert!(op_id.starts_with("gesture-"));
+    assert!(!op_id.starts_with("op-"));
+    assert!(op_id.len() <= 128);
+
+    // Wrong operation attempt does not advance or retire the gesture transfer.
+    let w128_arrived =
+        v4_win(&w128, "[1920,0,960,1040]").replace("\"out\":\"DP-1\"", "\"out\":\"DP-2\"");
+    let wrong_ack = two_screen_report(
+        &[w128_json, wpeer_json.clone(), w2_json.clone()],
+        "null",
+    )
+    .replacen(
+        "\"propertyAttempts\":[]",
+        &format!(
+            "\"propertyAttempts\":[{{\"kind\":\"member\",\"op\":\"op-wrong\",\"win\":\"{w128}\",\"out\":\"DP-2\",\"ws\":\"ws-1\",\"setter\":\"accepted\",\"attemptMs\":0}}]"
+        ),
+        1,
+    );
+    let wrong_reply = capture(&service, &generation, 4, &wrong_ack);
+    assert_eq!(wrong_reply["outcome"], serde_json::Value::Null);
+    assert!(
+        wrong_reply["transfers"]
+            .as_array()
+            .expect("transfers")
+            .iter()
+            .any(|t| t["op"] == op_id),
+        "wrong operation attempt must not retire transfer"
+    );
+
+    // Exact timely attempt correlation + fresh proof retires the gesture transfer.
+    let ack_inner = two_screen_report(&[w128_arrived, wpeer_json, w2_json], "null").replacen(
+        "\"propertyAttempts\":[]",
+        &format!(
+            "\"propertyAttempts\":[{{\"kind\":\"member\",\"op\":\"{op_id}\",\"win\":\"{w128}\",\"out\":\"DP-2\",\"ws\":\"ws-1\",\"setter\":\"accepted\",\"attemptMs\":0}}]"
+        ),
+        1,
+    );
+    let settled = capture(&service, &generation, 5, &ack_inner);
+    assert_eq!(settled["outcome"], serde_json::Value::Null);
+    let remaining = settled["transfers"].as_array().expect("transfers");
+    assert!(remaining.iter().all(|t| t["op"] != op_id));
+    assert_eq!(
+        settled["gestureSettledAssoc"],
+        serde_json::json!({"coreId": "1", "instance": "gesture-1", "serial": "1"})
+    );
+    let settled_underlay = &settled["presentation"]["underlay"];
+    assert_eq!(settled_underlay["status"], "found");
+    assert_eq!(settled_underlay["win"], w128);
+    let settled_leaf = settled_underlay["leaf"]
+        .as_str()
+        .expect("settled underlay leaf");
+    assert!(settled_leaf.starts_with("leaf-"));
+    assert!(settled_leaf.len() <= 128);
+
+    // Spent real generation (rotated by a fresh discovery) rejects old evidence.
+    let new_generation = discover(&service);
+    assert_ne!(new_generation, generation);
+    let stale = capture(&service, &generation, 6, &ack_inner);
+    assert_eq!(stale["outcome"], "rejected");
+    assert_eq!(stale["kind"], "generation-mismatch");
+}

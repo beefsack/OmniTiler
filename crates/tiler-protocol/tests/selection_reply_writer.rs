@@ -72,7 +72,14 @@ fn report(
 }
 
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
-    match engine.handle_report(report, &[]).0 {
+    let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::new();
+    match engine
+        .handle_report_with_gate_and_prepare(report, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .outcome
+    {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }

@@ -518,11 +518,7 @@ fn opt_point_or_null(
                     .and_then(|v| i32::try_from(v).ok())
                     .ok_or_else(malformed)?;
             }
-            if !(-tiler_core::bounds::GEOMETRY_BOUND..=tiler_core::bounds::GEOMETRY_BOUND)
-                .contains(&nums[0])
-                || !(-tiler_core::bounds::GEOMETRY_BOUND..=tiler_core::bounds::GEOMETRY_BOUND)
-                    .contains(&nums[1])
-            {
+            if !tiler_core::bounds::valid_carried_point(nums[0], nums[1]) {
                 return Err(unknown_value());
             }
             Ok(Some((nums[0], nums[1])))

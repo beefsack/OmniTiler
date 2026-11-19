@@ -180,8 +180,22 @@ fn domain_with_tree(tree: Node, leaves: &[(&str, &str)], focused: &str) -> World
 fn root_horizontal_flips_to_vertical() {
     let mut layout = pair_layout();
     let k = key();
+    let leaf_a = layout
+        .leaves(&k)
+        .unwrap()
+        .get(&win("win-a"))
+        .unwrap()
+        .0
+        .clone();
+    let leaf_b = layout
+        .leaves(&k)
+        .unwrap()
+        .get(&win("win-b"))
+        .unwrap()
+        .0
+        .clone();
     let focus_leaf = layout.focus_leaf(&k).cloned();
-    assert_eq!(focus_leaf.as_ref().expect("focus").0, "leaf-win-b");
+    assert_eq!(focus_leaf.as_ref().expect("focus").0, leaf_b);
 
     let outcome = toggle_in(&mut layout, "win-b");
     assert_eq!(root_axis(&layout), Axis::Vertical);
@@ -190,7 +204,7 @@ fn root_horizontal_flips_to_vertical() {
     assert_eq!(axis, Axis::Vertical);
     assert_eq!(
         children.iter().map(|id| id.0.as_str()).collect::<Vec<_>>(),
-        vec!["leaf-win-a", "leaf-win-b"]
+        vec![leaf_a.as_str(), leaf_b.as_str()]
     );
     assert_eq!(shares, vec![1, 1]);
     assert_eq!(layout.focus_leaf(&k).cloned(), focus_leaf);
@@ -460,11 +474,25 @@ fn lone_root_leaf_is_an_unchanged_noop() {
         Axis::Horizontal,
         "long-edge admission, no toggle hint"
     );
+    let leaf_a = layout
+        .leaves(&k)
+        .unwrap()
+        .get(&win("win-a"))
+        .unwrap()
+        .0
+        .clone();
+    let leaf_b = layout
+        .leaves(&k)
+        .unwrap()
+        .get(&win("win-b"))
+        .unwrap()
+        .0
+        .clone();
     assert_eq!(
         children.iter().map(|id| id.0.as_str()).collect::<Vec<_>>(),
-        vec!["leaf-win-a", "leaf-win-b"]
+        vec![leaf_a.as_str(), leaf_b.as_str()]
     );
-    assert_eq!(layout.focus_leaf(&k).expect("focus").0, "leaf-win-b");
+    assert_eq!(layout.focus_leaf(&k).expect("focus").0, leaf_b);
 }
 
 #[test]
@@ -485,7 +513,14 @@ fn floating_subject_and_focus_mismatch_refuse() {
             &obs,
         )
         .expect("float win-b");
-    assert_eq!(layout.focus_leaf(&k).expect("focus").0, "leaf-win-a");
+    let leaf_a = layout
+        .leaves(&k)
+        .unwrap()
+        .get(&win("win-a"))
+        .unwrap()
+        .0
+        .clone();
+    assert_eq!(layout.focus_leaf(&k).expect("focus").0, leaf_a);
     let obs = complete_observed(&layout, Vec::new());
     let err = layout
         .toggle_orientation(&k, &win("win-b"), &win("win-a"), &obs)
@@ -574,6 +609,20 @@ fn subsequent_admission_keeps_the_long_edge_rule() {
         Node::Group { children, .. } => children[1].clone(),
         Node::Leaf { .. } => panic!("expected a root group"),
     };
+    let leaf_b = layout
+        .leaves(&k)
+        .unwrap()
+        .get(&win("win-b"))
+        .unwrap()
+        .0
+        .clone();
+    let leaf_c = layout
+        .leaves(&k)
+        .unwrap()
+        .get(&win("win-c"))
+        .unwrap()
+        .0
+        .clone();
     match nested {
         Node::Group { axis, children, .. } => {
             assert_eq!(axis, Axis::Horizontal, "long-edge admission wraps wide");
@@ -582,10 +631,10 @@ fn subsequent_admission_keeps_the_long_edge_rule() {
                     .iter()
                     .map(|child| child.id().0.as_str())
                     .collect::<Vec<_>>(),
-                vec!["leaf-win-b", "leaf-win-c"]
+                vec![leaf_b.as_str(), leaf_c.as_str()]
             );
         }
         Node::Leaf { .. } => panic!("expected an admission group"),
     }
-    assert_eq!(layout.focus_leaf(&k).expect("focus").0, "leaf-win-c");
+    assert_eq!(layout.focus_leaf(&k).expect("focus").0, leaf_c);
 }

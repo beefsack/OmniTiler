@@ -465,7 +465,7 @@ fn warp_off_by_default_publishes_no_point() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
-                direction: Some(crate::directional::Direction::Right),
+                direction: None,
             }),
         ),
     );
@@ -507,7 +507,7 @@ fn warp_publishes_cross_output_centre() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
-                direction: Some(crate::directional::Direction::Right),
+                direction: None,
             }),
         ),
     );
@@ -565,7 +565,7 @@ fn warp_skips_same_output_focus() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
-                direction: Some(crate::directional::Direction::Right),
+                direction: None,
             }),
         ),
     );
@@ -612,7 +612,7 @@ fn warp_paused_under_focused_fullscreen_game() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
-                direction: Some(crate::directional::Direction::Right),
+                direction: None,
             }),
         ),
     );
@@ -639,7 +639,7 @@ fn warp_needs_a_known_cursor_output() {
                 Some(11),
                 Some(WorldCommand::Focus {
                     window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
-                    direction: Some(crate::directional::Direction::Right),
+                    direction: None,
                 }),
             ),
         );
@@ -890,7 +890,7 @@ fn focus_follows_ignores_noncurrent_view() {
             true,
             false,
             Some(11),
-            Some(WorldCommand::SwitchView {
+            Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-b".to_owned()),
                 workspace: crate::directional::WorkspaceId(other),
             }),
@@ -991,7 +991,7 @@ fn focus_follows_static_cursor_never_resteals() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
-                direction: Some(crate::directional::Direction::Left),
+                direction: None,
             }),
         ),
     );
@@ -1097,7 +1097,7 @@ fn focus_follows_yields_to_explicit_command_focus() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
-                direction: Some(crate::directional::Direction::Right),
+                direction: None,
             }),
         ),
     );
@@ -1150,7 +1150,7 @@ fn warp_follows_single_explicit_grant_not_superseded_admission() {
             Some(11),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
-                direction: Some(crate::directional::Direction::Left),
+                direction: None,
             }),
         ),
     );

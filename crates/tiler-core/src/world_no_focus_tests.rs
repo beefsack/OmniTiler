@@ -597,12 +597,22 @@ fn no_focus_seeded_target_prefers_newer_seeded_leaf() {
         .world
         .layout
         .cross_output_history_newest_first(&target_key);
+    let target_leaves = engine
+        .world
+        .layout
+        .leaves(&target_key)
+        .expect("target leaves");
+    let leaf_b1 = target_leaves
+        .get(&WindowId("win-b1".to_owned()))
+        .expect("win-b1 leaf")
+        .clone();
+    let leaf_b2 = target_leaves
+        .get(&WindowId("win-b2".to_owned()))
+        .expect("win-b2 leaf")
+        .clone();
     assert_eq!(
         seeded,
-        vec![
-            crate::directional::NodeId("leaf-win-b1".to_owned()),
-            crate::directional::NodeId("leaf-win-b2".to_owned())
-        ],
+        vec![leaf_b1, leaf_b2],
         "fresh sessions seed per-domain history"
     );
     let reply = accepted(

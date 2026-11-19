@@ -1264,7 +1264,7 @@ fn offroute_diagnostics_survive_command_restage() {
             Some(1),
             Some(crate::world_report::WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
-                direction: Some(crate::directional::Direction::Left),
+                direction: None,
             }),
         ),
         rows.clone(),
@@ -1778,7 +1778,7 @@ fn reply_bound_state_term_rejected_without_mutation() {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {})
-        .0
+        .outcome
     {
         crate::world_engine::WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
@@ -1807,7 +1807,7 @@ fn reply_bound_state_term_rejected_without_mutation() {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {})
-        .0
+        .outcome
     {
         crate::world_engine::WorldOutcome::Accepted(_)
         | crate::world_engine::WorldOutcome::CommandConsumed(_) => {}

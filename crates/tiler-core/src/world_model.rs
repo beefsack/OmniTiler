@@ -1350,6 +1350,7 @@ impl WorldTransaction<'_> {
                 source_workspace: source.workspace.0,
                 members: Vec::new(),
                 migration_refill: None,
+                migration_parent_op: None,
                 migration_initial_empty: false,
                 migration_source_index: None,
                 migration_source_view: None,
@@ -1410,21 +1411,132 @@ impl WorldTransaction<'_> {
         });
     }
 
-    /// Mint one trailing logical workspace on `output`: stable `ws-<n>` id,
-    /// ring push, tiling seed from `default_tiled`. `None` on counter
-    /// exhaustion (the counter never wraps; a saturated backend
-    /// re-bootstraps under a new generation).
+    /// Return true if `candidate` is already present anywhere in the world
+    /// across all outputs, rings, displaced origins, tiling/focus/layout keys,
+    /// or retained settlement/selection state.
+    fn workspace_id_in_use(&self, candidate: &str) -> bool {
+        if self
+            .world
+            .workspace
+            .mapping
+            .values()
+            .any(|ring| ring.iter().any(|id| id == candidate))
+            || self
+                .world
+                .workspace
+                .views
+                .values()
+                .any(|id| id == candidate)
+            || self.world.workspace.displaced.values().any(|entry| {
+                entry.workspaces.iter().any(|id| id == candidate)
+                    || entry.owned.iter().any(|id| id == candidate)
+            })
+            || self
+                .world
+                .workspace
+                .tiling
+                .keys()
+                .any(|key| key.workspace.0 == candidate)
+            || self
+                .world
+                .workspace
+                .members
+                .values()
+                .any(|member| member.home.workspace.0 == candidate)
+            || self.world.layout.has_workspace(candidate)
+            || self
+                .world
+                .focus
+                .last_active_window
+                .keys()
+                .any(|key| key.workspace.0 == candidate)
+            || self
+                .world
+                .focus
+                .batch_base_focus
+                .keys()
+                .any(|key| key.workspace.0 == candidate)
+            || self
+                .world
+                .floating_scopes
+                .iter()
+                .any(|key| key.workspace.0 == candidate)
+            || self
+                .world
+                .hold_reasons
+                .keys()
+                .any(|key| key.workspace.0 == candidate)
+        {
+            return true;
+        }
+        let s = &self.world.settlement;
+        s.retained.iter().any(|r| {
+            r.target.target_workspace == candidate
+                || r.source_workspace == candidate
+                || r.migration_refill.as_deref() == Some(candidate)
+        }) || s
+            .retained_clears
+            .iter()
+            .any(|c| c.home.workspace.0 == candidate || c.view.as_deref() == Some(candidate))
+            || s.retained_born
+                .iter()
+                .any(|b| b.home.workspace.0 == candidate)
+            || s.retained_creations
+                .iter()
+                .any(|c| c.logical_workspace == candidate)
+            || s.pending_source_releases
+                .iter()
+                .any(|(_, ws)| ws == candidate)
+            || s.migration_anchors
+                .iter()
+                .any(|((_, ws), anchor)| ws == candidate || anchor == candidate)
+            || s.last_views.values().any(|ws| ws == candidate)
+            || s.native_map.values().any(|ws| ws == candidate)
+            || s.retired_natives.values().any(|ws| ws == candidate)
+            || s.pending_forget
+                .iter()
+                .any(|(key, _)| key.workspace.0 == candidate)
+            || s.pending_selection
+                .as_ref()
+                .is_some_and(|pending| pending.uses_workspace(candidate))
+            || s.pending_policy_selections
+                .iter()
+                .any(|pending| pending.uses_workspace(candidate))
+            || s.selection_targets
+                .values()
+                .any(|target| target.uses_workspace(candidate))
+            || s.retained_selection
+                .values()
+                .any(|retained| retained.uses_workspace(candidate))
+            || s.selection_scopes
+                .values()
+                .any(|scope| scope.uses_workspace(candidate))
+    }
+
+    /// Mint one fresh trailing logical workspace on `output`: stable `ws-<n>`
+    /// id, ring push, and tiling seed from `default_tiled`. Uses the monotonic
+    /// `creation_counter`, skipping any id already in use anywhere across the
+    /// world (all outputs, rings, displaced origins, tiling/layout/focus keys,
+    /// and retained settlement/selection state). Explicit/command-created ids are
+    /// never renamed; only the newly minted trailing id advances past
+    /// collisions. `None` on counter exhaustion (`u64::MAX`, never wraps or
+    /// reuses).
     pub(crate) fn create_trailing_workspace(
         &mut self,
         output: &OutputId,
         default_tiled: bool,
     ) -> Option<String> {
-        if self.world.workspace.creation_counter == u64::MAX {
-            return None;
-        }
-        let next = self.world.workspace.creation_counter.saturating_add(1);
-        self.world.workspace.creation_counter = next;
-        let id = format!("ws-{next}");
+        let id = loop {
+            if self.world.workspace.creation_counter == u64::MAX {
+                return None;
+            }
+            let next = self.world.workspace.creation_counter.saturating_add(1);
+            self.world.workspace.creation_counter = next;
+            let candidate = format!("ws-{next}");
+            if !self.workspace_id_in_use(&candidate) {
+                break candidate;
+            }
+        };
         self.world
             .workspace
             .mapping
@@ -2368,7 +2480,7 @@ mod prior_empty_scope_tests {
         let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
         let refused_focus = WorldCommand::Focus {
             window: crate::directional::WindowSubject::Window(WindowId("win-zzz".to_owned())),
-            direction: Some(crate::directional::Direction::Left),
+            direction: None,
         };
         // Empty observation plus a refusing command: the refusal reply
         // still publishes the controlled-empty workspace and consumes the
@@ -2405,7 +2517,7 @@ mod prior_empty_scope_tests {
             Some(1),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-zzz".to_owned())),
-                direction: Some(crate::directional::Direction::Left),
+                direction: None,
             }),
         );
         match engine.handle_report(&redelivery, &[]).0 {

@@ -499,10 +499,15 @@ fn pointer_resize_committed(
         .unwrap_or_else(|e| panic!("pointer resize {window:?}: {e:?}"));
 }
 
-/// Immediate parent group axis/shares of a leaf in the one-domain tree.
-fn parent_group_of(layout: &WorldLayout, leaf: &str) -> (Axis, Vec<u64>) {
-    let tree = layout.tree(&domain().key()).expect("tree");
-    find_parent_test(tree, &NodeId(leaf.to_owned())).expect("parent group")
+/// Immediate parent group axis/shares of a window's leaf in the one-domain tree.
+fn parent_group_of(layout: &WorldLayout, win: &str) -> (Axis, Vec<u64>) {
+    let key = domain().key();
+    let leaf = layout
+        .leaves(&key)
+        .and_then(|leaves| leaves.get(&WindowId(win.to_owned())))
+        .expect("leaf for window");
+    let tree = layout.tree(&key).expect("tree");
+    find_parent_test(tree, leaf).expect("parent group")
 }
 
 fn find_parent_test(node: &Node, leaf: &NodeId) -> Option<(Axis, Vec<u64>)> {
@@ -628,7 +633,7 @@ fn mnz_best_effort_resize_rejoins_beside_former_neighbor() {
         "regroup keeps the survivor slot shares"
     );
     assert_eq!(
-        parent_group_of(&layout, "leaf-win-b"),
+        parent_group_of(&layout, "win-b"),
         (Axis::Vertical, vec![1, 1]),
         "B regroups with former sibling C carrying the stored old shares"
     );
@@ -659,7 +664,7 @@ fn mnz_best_effort_new_window_rejoins_former_neighborhood() {
         "B rejoins beside former neighbor C, not fresh beside newcomer D"
     );
     assert_eq!(
-        parent_group_of(&layout, "leaf-win-b"),
+        parent_group_of(&layout, "win-b"),
         (Axis::Vertical, vec![1, 1]),
         "B regroups with former sibling C carrying the stored old shares"
     );
@@ -695,7 +700,7 @@ fn mnz_best_effort_sibling_close_rejoins_by_survivor() {
         "B rejoins before surviving neighbor C (old side)"
     );
     assert_eq!(
-        parent_group_of(&layout, "leaf-win-b"),
+        parent_group_of(&layout, "win-b"),
         (Axis::Vertical, vec![1, 1]),
         "sole-survivor wrap keeps the stored axis with the stored old shares"
     );
@@ -726,7 +731,7 @@ fn mnz_best_effort_swap_rejoins_neighborhood() {
         "B rejoins beside former neighbor C on its old side"
     );
     assert_eq!(
-        parent_group_of(&layout, "leaf-win-b"),
+        parent_group_of(&layout, "win-b"),
         (Axis::Vertical, vec![1, 1]),
         "B regroups with former sibling C carrying the stored old shares"
     );
@@ -789,7 +794,7 @@ fn mnz_best_effort_skewed_share_regroups_stored_fraction() {
         "regroup keeps the resized survivor slot shares"
     );
     assert_eq!(
-        parent_group_of(&layout, "leaf-win-b"),
+        parent_group_of(&layout, "win-b"),
         (Axis::Vertical, old_shares),
         "regroup carries the stored old shares verbatim, never an average"
     );
@@ -827,7 +832,7 @@ fn mnz_best_effort_skewed_wrap_preserves_old_ratio() {
         "B rejoins before surviving neighbor C (old side)"
     );
     assert_eq!(
-        parent_group_of(&layout, "leaf-win-b"),
+        parent_group_of(&layout, "win-b"),
         (Axis::Vertical, old_shares),
         "wrap preserves the stored old ratio, never equal halves"
     );
@@ -908,9 +913,13 @@ fn mnz_best_effort_surviving_group_inserts_at_old_index() {
         expected,
         "surviving-group insert keeps the stored old share with live survivors"
     );
+    let leaf_b = layout
+        .leaves(&key)
+        .and_then(|leaves| leaves.get(&WindowId("win-b".to_owned())))
+        .expect("win-b leaf");
     match layout.tree(&key).expect("tree") {
         Node::Group { children, .. } => assert!(
-            matches!(&children[0], Node::Leaf { id } if id.0 == "leaf-win-b"),
+            children[0].id() == leaf_b,
             "B is a direct child at the old index, not nested"
         ),
         Node::Leaf { .. } => panic!("root group expected"),

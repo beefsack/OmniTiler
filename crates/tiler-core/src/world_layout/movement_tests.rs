@@ -278,11 +278,29 @@ impl MovementRig {
             .unwrap_or_else(|e| panic!("pair move {direction:?}: {e:?}"))
     }
 
+    fn leaf(&self, output: &str, workspace: &str, window: &str) -> NodeId {
+        self.layout
+            .leaves(&key(output, workspace))
+            .and_then(|leaves| leaves.get(&win(window)))
+            .expect("leaf for window")
+            .clone()
+    }
+
     fn leaves(&self, output: &str, workspace: &str) -> Vec<String> {
         let k = key(output, workspace);
+        let by_leaf: BTreeMap<NodeId, String> = self
+            .layout
+            .leaves(&k)
+            .map(|leaves| {
+                leaves
+                    .iter()
+                    .map(|(w, l)| (l.clone(), w.0.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut out = Vec::new();
         if let Some(tree) = self.layout.domain(&k).and_then(|d| d.tree.as_ref()) {
-            collect_leaves(tree, &mut out);
+            collect_leaves(tree, &by_leaf, &mut out);
         }
         out
     }
@@ -331,12 +349,12 @@ impl MovementRig {
     }
 }
 
-fn collect_leaves(node: &Node, out: &mut Vec<String>) {
+fn collect_leaves(node: &Node, by_leaf: &BTreeMap<NodeId, String>, out: &mut Vec<String>) {
     match node {
-        Node::Leaf { id } => out.push(id.0.clone()),
+        Node::Leaf { id } => out.push(by_leaf.get(id).cloned().unwrap_or_else(|| id.0.clone())),
         Node::Group { children, .. } => {
             for c in children {
-                collect_leaves(c, out);
+                collect_leaves(c, by_leaf, out);
             }
         }
     }
@@ -410,9 +428,9 @@ fn r1_perpendicular_wrap() {
     let k = key("out-1", "ws-1");
     let outcome = s.move_local_focused(&k, Direction::Down);
     assert_eq!(outcome.rule, Rule::R1);
-    assert_eq!(outcome.focus_leaf.0, "leaf-win-2");
+    assert_eq!(outcome.focus_leaf, s.leaf("out-1", "ws-1", "win-2"));
     s.assert_geometry_complete(&k, &outcome.geometry);
-    assert_eq!(s.leaves("out-1", "ws-1"), vec!["leaf-win-1", "leaf-win-2"]);
+    assert_eq!(s.leaves("out-1", "ws-1"), vec!["win-1", "win-2"]);
 }
 
 #[test]
@@ -425,7 +443,7 @@ fn r2a_swap_neighbor() {
     let k = key("out-1", "ws-1");
     let outcome = s.move_local_focused(&k, Direction::Left);
     assert_eq!(outcome.rule, Rule::R2a);
-    assert_eq!(outcome.focus_leaf.0, "leaf-win-4");
+    assert_eq!(outcome.focus_leaf, s.leaf("out-1", "ws-1", "win-4"));
     s.assert_geometry_complete(&k, &outcome.geometry);
 }
 
@@ -468,8 +486,8 @@ fn r2a_uneven_outer_preserved_and_window_share_binding() {
                     children, shares, ..
                 } => {
                     assert_eq!(*shares, vec![1, 1]);
-                    assert_eq!(children[0].id().0, "leaf-win-2");
-                    assert_eq!(children[1].id().0, "leaf-win-1");
+                    assert_eq!(children[0].id(), &s.leaf("out-1", "ws-1", "win-2"));
+                    assert_eq!(children[1].id(), &s.leaf("out-1", "ws-1", "win-1"));
                 }
                 other => panic!("wrapper {other:?}"),
             }
@@ -494,9 +512,12 @@ fn r2b_insert_midpoint_after_r1() {
     let r2b = s.move_local_focused(&k, Direction::Right);
     assert_eq!(r2b.rule, Rule::R2b);
     assert_eq!(r2b.capability, Capability::InsertChild);
-    assert_eq!(r2b.focus_leaf.0, "leaf-win-1");
-    let (children, _) = parent_children_shares(&s.tree_of("out-1", "ws-1").unwrap(), "leaf-win-1");
-    assert_eq!(children, vec!["leaf-win-2", "leaf-win-1", "leaf-win-3"]);
+    let leaf1 = s.leaf("out-1", "ws-1", "win-1");
+    let leaf2 = s.leaf("out-1", "ws-1", "win-2");
+    let leaf3 = s.leaf("out-1", "ws-1", "win-3");
+    assert_eq!(r2b.focus_leaf, leaf1);
+    let (children, _) = parent_children_shares(&s.tree_of("out-1", "ws-1").unwrap(), &leaf1.0);
+    assert_eq!(children, vec![leaf2.0, leaf1.0, leaf3.0]);
     s.assert_geometry_complete(&k, &r2b.geometry);
 }
 
@@ -519,9 +540,10 @@ fn r2b_split_odd_target() {
     let r2b = s.move_local_focused(&k, Direction::Right);
     assert_eq!(r2b.rule, Rule::R2b);
     assert_eq!(r2b.capability, Capability::SplitGroupChild);
-    let (children, _) = parent_children_shares(&s.tree_of("out-1", "ws-1").unwrap(), "leaf-win-1");
+    let leaf1 = s.leaf("out-1", "ws-1", "win-1");
+    let (children, _) = parent_children_shares(&s.tree_of("out-1", "ws-1").unwrap(), &leaf1.0);
     assert_eq!(children.len(), 2);
-    assert_eq!(children[1], "leaf-win-1", "Right splits Second (far side)");
+    assert_eq!(children[1], leaf1.0, "Right splits Second (far side)");
     s.assert_geometry_complete(&k, &r2b.geometry);
 }
 
@@ -539,8 +561,9 @@ fn r2b_near_edge_parallel_target() {
     let outcome = s.move_local_focused(&k, Direction::Right);
     assert_eq!(outcome.rule, Rule::R2b);
     assert_eq!(outcome.capability, Capability::InsertChild);
-    let (children, _) = parent_children_shares(&s.tree_of("out-1", "ws-1").unwrap(), "leaf-win-1");
-    assert_eq!(children[0], "leaf-win-1", "NearEdge inserts at 0");
+    let leaf1 = s.leaf("out-1", "ws-1", "win-1");
+    let (children, _) = parent_children_shares(&s.tree_of("out-1", "ws-1").unwrap(), &leaf1.0);
+    assert_eq!(children[0], leaf1.0, "NearEdge inserts at 0");
     s.assert_geometry_complete(&k, &outcome.geometry);
 }
 
@@ -559,7 +582,9 @@ fn r2c_wrap_neighbor_nary() {
     assert_eq!(s.focused_window(&k).0, "win-1");
     let outcome = s.move_local_focused(&k, Direction::Right);
     assert_eq!(outcome.rule, Rule::R2c);
-    assert_eq!(outcome.focus_leaf.0, "leaf-win-1");
+    let leaf1 = s.leaf("out-1", "ws-1", "win-1");
+    let leaf2 = s.leaf("out-1", "ws-1", "win-2");
+    assert_eq!(outcome.focus_leaf, leaf1);
     s.assert_geometry_complete(&k, &outcome.geometry);
     let tree = s.tree_of("out-1", "ws-1").expect("tree");
     match tree {
@@ -575,8 +600,8 @@ fn r2c_wrap_neighbor_nary() {
                 } => {
                     assert_eq!(children.len(), 2);
                     assert_eq!(*shares, vec![1, 1]);
-                    assert_eq!(children[0].id().0, "leaf-win-1");
-                    assert_eq!(children[1].id().0, "leaf-win-2");
+                    assert_eq!(children[0].id(), &leaf1);
+                    assert_eq!(children[1].id(), &leaf2);
                 }
                 other => panic!("expected wrapper, got {other:?}"),
             }
@@ -599,7 +624,8 @@ fn flat_swap_nary_end_to_end_with_traveling_shares() {
     s.move_local_focused(&k, Direction::Right);
     assert_eq!(s.focused_window(&k).0, "win-1");
 
-    let focus_leaf = "leaf-win-1";
+    let focus_leaf_id = s.leaf("out-1", "ws-1", "win-1");
+    let focus_leaf = focus_leaf_id.0.as_str();
     let pre_tree = s.tree_of("out-1", "ws-1").expect("tree");
     let (pre_children, pre_shares) = parent_children_shares(&pre_tree, focus_leaf);
     let pos = pre_children
@@ -716,12 +742,10 @@ fn r4_occupied_target() {
     assert_eq!(rule, Rule::R4);
     assert_eq!(cross.target_output.0, "out-2");
     assert_eq!(cross.target_workspace.0, "ws-1");
-    assert_eq!(focus_leaf.0, "leaf-win-3");
-    assert_eq!(
-        s.layout.domain(&k2).unwrap().focused_leaf,
-        Some(NodeId("leaf-win-3".into()))
-    );
-    assert_eq!(s.leaves("out-1", "ws-1"), vec!["leaf-win-1".to_string()]);
+    let leaf3 = s.leaf("out-2", "ws-1", "win-3");
+    assert_eq!(focus_leaf, leaf3);
+    assert_eq!(s.layout.domain(&k2).unwrap().focused_leaf, Some(leaf3));
+    assert_eq!(s.leaves("out-1", "ws-1"), vec!["win-1".to_string()]);
     assert_eq!(s.leaves("out-2", "ws-1").len(), 2);
     s.assert_pair_geometry_complete(&[&k1, &k2], &geometry);
 }
@@ -746,7 +770,7 @@ fn r4_empty_target() {
     assert_eq!(rule, Rule::R4);
     assert_eq!(cross.target_output.0, "out-2");
     assert_eq!(cross.target_workspace.0, "ws-1");
-    assert_eq!(s.leaves("out-2", "ws-1"), vec!["leaf-win-2".to_string()]);
+    assert_eq!(s.leaves("out-2", "ws-1"), vec!["win-2".to_string()]);
     s.assert_pair_geometry_complete(&[&k1, &k2], &geometry);
 }
 
@@ -864,11 +888,9 @@ fn focus_commit_and_refusals() {
     let k = key("out-1", "ws-1");
     let before_tree = s.tree_of("out-1", "ws-1");
     let outcome = s.focus_commit_focused(&k, Direction::Left);
-    assert_eq!(outcome.to_leaf.0, "leaf-win-2");
-    assert_eq!(
-        s.layout.domain(&k).unwrap().focused_leaf,
-        Some(NodeId("leaf-win-2".into()))
-    );
+    let leaf2 = s.leaf("out-1", "ws-1", "win-2");
+    assert_eq!(outcome.to_leaf, leaf2);
+    assert_eq!(s.layout.domain(&k).unwrap().focused_leaf, Some(leaf2));
     assert_eq!(s.tree_of("out-1", "ws-1"), before_tree);
     s.assert_geometry_complete(&k, &outcome.geometry);
 
@@ -974,18 +996,19 @@ fn deep_nary_route_preserves_order_and_shares() {
 
 #[test]
 fn navigation_deterministic_focus_commit() {
-    fn run() -> LocalFocusOutcome {
+    fn run() -> (LocalFocusOutcome, NodeId) {
         let mut s = MovementRig::single();
         s.admit("win-1", "out-1", "ws-1", true);
         s.admit("win-2", "out-1", "ws-1", true);
         s.admit("win-3", "out-1", "ws-1", true);
         let k = key("out-1", "ws-1");
-        s.focus_commit_focused(&k, Direction::Left)
+        let outcome = s.focus_commit_focused(&k, Direction::Left);
+        (outcome, s.leaf("out-1", "ws-1", "win-2"))
     }
     let a = run();
     let b = run();
-    assert_eq!(a, b);
-    assert_eq!(a.to_leaf.0, "leaf-win-2");
+    assert_eq!(a.0, b.0);
+    assert_eq!(a.0.to_leaf, a.1);
 }
 
 #[test]
@@ -1372,14 +1395,16 @@ fn r4_vertical_cross_occupied_landing_nearest_source() {
     assert_eq!(rule, Rule::R4);
     assert_eq!(cross.target_output.0, "out-bottom");
     assert_eq!(cross.target_workspace.0, "ws-1");
-    assert_eq!(focus_leaf.0, "leaf-win-2");
+    let leaf2 = s.leaf("out-bottom", "ws-1", "win-2");
+    let leaft = s.leaf("out-bottom", "ws-1", "win-t");
+    assert_eq!(focus_leaf, leaf2);
     let target = s.tree_of("out-bottom", "ws-1").expect("target tree");
     let (axis, children) = root_children(&target);
     assert_eq!(axis, Axis::Vertical);
     assert_eq!(children.len(), 2);
-    assert_eq!(children[0], "leaf-win-2", "mover nearest the source above");
-    assert_eq!(children[1], "leaf-win-t");
-    assert_eq!(s.leaves("out-top", "ws-1"), vec!["leaf-win-1".to_string()]);
+    assert_eq!(children[0], leaf2.0, "mover nearest the source above");
+    assert_eq!(children[1], leaft.0);
+    assert_eq!(s.leaves("out-top", "ws-1"), vec!["win-1".to_string()]);
     s.assert_pair_geometry_complete(&[&k_top, &k_bot], &geometry);
 }
 
@@ -1412,12 +1437,13 @@ fn r4_vertical_cross_up_landing_nearest_source() {
     let (axis, children) = root_children(&target);
     assert_eq!(axis, Axis::Vertical);
     assert_eq!(children.len(), 2);
-    assert_eq!(children[0], "leaf-win-t");
-    assert_eq!(children[1], "leaf-win-1", "mover nearest the source below");
+    assert_eq!(children[0], s.leaf("out-top", "ws-1", "win-t").0);
     assert_eq!(
-        s.leaves("out-bottom", "ws-1"),
-        vec!["leaf-win-2".to_string()]
+        children[1],
+        s.leaf("out-top", "ws-1", "win-1").0,
+        "mover nearest the source below"
     );
+    assert_eq!(s.leaves("out-bottom", "ws-1"), vec!["win-2".to_string()]);
     s.assert_pair_geometry_complete(&[&k_bot, &k_top], &geometry);
 }
 
@@ -1456,11 +1482,11 @@ fn r4_sole_leaf_cross_empties_source_all_directions() {
         assert_eq!(rule, Rule::R4, "{direction:?}");
         assert_eq!(cross.target_output.0, target_output);
         assert_eq!(cross.target_workspace.0, "ws-1");
-        assert_eq!(focus_leaf.0, "leaf-solo");
+        assert_eq!(focus_leaf, s.leaf(target_output, "ws-1", "solo"));
         assert_eq!(s.tree_of("out-c", "ws-1"), None, "{direction:?}");
         assert_eq!(
             s.leaves(target_output, "ws-1"),
-            vec!["leaf-solo".to_string()],
+            vec!["solo".to_string()],
             "{direction:?}"
         );
         s.assert_pair_geometry_complete(&[&kc, &kt], &geometry);
@@ -1565,13 +1591,15 @@ fn r4_sole_leaf_cross_occupied_landing_nearest_source_all_directions() {
         let (axis, children) = root_children(&tree);
         assert_eq!(axis, Axis::for_direction(direction), "{direction:?}");
         assert_eq!(children.len(), 2, "{direction:?}");
+        let leaf_solo = s.leaf(target_output, "ws-1", "solo");
+        let leaf_stay = s.leaf(target_output, "ws-1", "stay");
         let expected = if mover_first {
-            vec!["leaf-solo".to_string(), "leaf-stay".to_string()]
+            vec![leaf_solo.0.clone(), leaf_stay.0]
         } else {
-            vec!["leaf-stay".to_string(), "leaf-solo".to_string()]
+            vec![leaf_stay.0, leaf_solo.0.clone()]
         };
         assert_eq!(children, expected, "mover nearest source {direction:?}");
-        assert_eq!(focus_leaf.0, "leaf-solo");
+        assert_eq!(focus_leaf, leaf_solo);
         assert_eq!(s.tree_of("out-c", "ws-1"), None, "{direction:?}");
         s.assert_pair_geometry_complete(&[&kc, &kt], &geometry);
     }

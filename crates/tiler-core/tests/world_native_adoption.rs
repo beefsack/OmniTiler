@@ -11,7 +11,7 @@ use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
     HoldReason, NativeObservation, NativeOccupancy, PresentationIngressV4, PresentationRowV4,
     ScopeAuthority, ScreenReport, TransferKind, WORLD_CONTRACT_VERSION_V4, WindowFact,
@@ -277,12 +277,61 @@ fn rebind(engine: &mut WorldEngine, adapter: &str, mode: WorkspaceMode, equal_co
     );
 }
 
+struct TestGate;
+
+impl tiler_core::world_engine::CoreAdmissionGate for TestGate {
+    fn check_request_size(
+        &self,
+        _report: &WorldReportV4,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+
+    fn check_preflight(
+        &self,
+        _report: &WorldReportV4,
+        _facts: &tiler_core::world_engine::PreflightGateFacts<'_>,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+
+    fn check_exact_inner(
+        &self,
+        _reply: &tiler_core::world_report::WorldReplyV4,
+    ) -> tiler_core::world_engine::ExactInnerDecision {
+        tiler_core::world_engine::ExactInnerDecision::Allow(
+            tiler_core::world_engine::ExactInnerCheck::new(0),
+        )
+    }
+
+    fn check_future_reserve(
+        &self,
+        _reply: &tiler_core::world_report::WorldReplyV4,
+        _facts: &tiler_core::world_engine::FutureReserveGateFacts,
+        _exact: tiler_core::world_engine::ExactInnerCheck,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+}
+
+fn eval_report(
+    engine: &mut WorldEngine,
+    report: &WorldReportV4,
+) -> tiler_core::world_engine::WorldOutcome {
+    engine
+        .handle_report_with_gate_and_prepare(report, &[], &TestGate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .outcome
+}
+
 fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReportV4,
 ) -> tiler_core::world_report::WorldReplyV4 {
-    match engine.handle_report(report, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
+    match eval_report(engine, report) {
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -816,16 +865,20 @@ fn unknown_partial_missing_hold_and_duplicates_refuse() {
         None,
         true,
     );
-    match engine.handle_report(&dup, &[]).0 {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
+    match eval_report(&mut engine, &dup) {
+        tiler_core::world_engine::WorldOutcome::Rejected { kind, .. } => {
+            assert_eq!(kind, "snapshot-invalid")
+        }
         other => panic!("within-output duplicate must refuse, got {other:?}"),
     }
     dup.native = vec![
         native_obs("out-a", &[N1], N1),
         native_obs("out-a", &[N2], N2),
     ];
-    match engine.handle_report(&dup, &[]).0 {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
+    match eval_report(&mut engine, &dup) {
+        tiler_core::world_engine::WorldOutcome::Rejected { kind, .. } => {
+            assert_eq!(kind, "snapshot-invalid")
+        }
         other => panic!("contradictory duplicate rows must refuse, got {other:?}"),
     }
 }

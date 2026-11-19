@@ -811,12 +811,25 @@ fn v4_must_keys_wrong_types_counters_rects_and_caps() {
             "obs {bad} refuses"
         );
     }
-    // Rects: zero/negative extents and out-of-bound coords refuse as
+    // Rects: zero/negative extents and out-of-bound coords/endpoints refuse as
     // unknown-value; wrong arity and non-integer types refuse as malformed.
+    for ok_frame in [
+        serde_json::json!([32760, 0, 8, 8]),
+        serde_json::json!([0, 0, 16384, 8]),
+    ] {
+        let witness = serde_json::json!({
+            "win": "win-a", "obs": "1",
+            "frame": ok_frame, "foreground": "win-a",
+        });
+        assert!(
+            decode_frame_witness_str(&witness.to_string()).is_ok(),
+            "frame {ok_frame} accepts"
+        );
+    }
     for bad_frame in [
         serde_json::json!([0, 0, 0, 8]),
         serde_json::json!([0, 0, -1, 8]),
-        serde_json::json!([16385, 0, 8, 8]),
+        serde_json::json!([32761, 0, 8, 8]),
         serde_json::json!([0, 0, 16385, 8]),
     ] {
         let witness = serde_json::json!({

@@ -9,7 +9,7 @@ use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
     FrameSetter, MemberAttempt, PresentationIngressV4, PresentationRowV4, ScreenReport,
     TransferKind, WindowFact, WorkspaceRef, WorldCommand, WorldReportV4,
@@ -190,12 +190,83 @@ fn engine_for_mode_with_capabilities(
     .expect("generation")
 }
 
+struct TestGate;
+
+impl tiler_core::world_engine::CoreAdmissionGate for TestGate {
+    fn check_request_size(
+        &self,
+        _report: &WorldReportV4,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+
+    fn check_preflight(
+        &self,
+        _report: &WorldReportV4,
+        _facts: &tiler_core::world_engine::PreflightGateFacts<'_>,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+
+    fn check_exact_inner(
+        &self,
+        _reply: &tiler_core::world_report::WorldReplyV4,
+    ) -> tiler_core::world_engine::ExactInnerDecision {
+        tiler_core::world_engine::ExactInnerDecision::Allow(
+            tiler_core::world_engine::ExactInnerCheck::new(0),
+        )
+    }
+
+    fn check_future_reserve(
+        &self,
+        _reply: &tiler_core::world_report::WorldReplyV4,
+        _facts: &tiler_core::world_engine::FutureReserveGateFacts,
+        _exact: tiler_core::world_engine::ExactInnerCheck,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+}
+
+fn eval_report(
+    engine: &mut WorldEngine,
+    report: &WorldReportV4,
+) -> (
+    tiler_core::world_engine::WorldOutcome,
+    Vec<tiler_core::world_report::BatchSettlement>,
+) {
+    let run = engine
+        .handle_report_with_gate_and_prepare(report, &[], &TestGate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    let settlements = run
+        .dispositions
+        .into_iter()
+        .filter_map(|d| match d.disposition {
+            tiler_core::world_report::CommandDisposition::Executed(result) => {
+                Some(tiler_core::world_report::BatchSettlement { seq: d.seq, result })
+            }
+            tiler_core::world_report::CommandDisposition::Refused(result) => {
+                Some(tiler_core::world_report::BatchSettlement {
+                    seq: d.seq,
+                    result: Some(tiler_core::world_report::CommandResult::Rejected {
+                        kind: result,
+                    }),
+                })
+            }
+            tiler_core::world_report::CommandDisposition::AlreadyConsumed
+            | tiler_core::world_report::CommandDisposition::NotRun => None,
+        })
+        .collect();
+    (run.outcome, settlements)
+}
+
 fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReportV4,
 ) -> tiler_core::world_report::WorldReplyV4 {
-    match engine.handle_report(report, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
+    match eval_report(engine, report).0 {
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -368,7 +439,8 @@ fn local_mode_selects_without_swap_when_target_visible_elsewhere() {
     );
     let view_b = view_of(&first, "out-b").expect("view b");
     // Local mode refuses a foreign id: no cross-output duplication.
-    match engine.handle_report(
+    match eval_report(
+        &mut engine,
         &report(
             2,
             2,
@@ -384,9 +456,8 @@ fn local_mode_selects_without_swap_when_target_visible_elsewhere() {
             }),
             vec![],
         ),
-        &[],
     ) {
-        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+        (tiler_core::world_engine::WorldOutcome::Accepted(_), settlements) => assert_eq!(
             settlements.first().and_then(|s| s.result.clone()),
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::ViewTargetUnknown
@@ -493,7 +564,8 @@ fn shared_mode_refuses_whole_workspace_migration() {
         ),
     );
     let shared = view_of(&first, "out-a").expect("shared view");
-    match engine.handle_report(
+    match eval_report(
+        &mut engine,
         &report(
             2,
             2,
@@ -510,9 +582,8 @@ fn shared_mode_refuses_whole_workspace_migration() {
             }),
             vec![],
         ),
-        &[],
     ) {
-        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+        (tiler_core::world_engine::WorldOutcome::Accepted(_), settlements) => assert_eq!(
             settlements.first().and_then(|s| s.result.clone()),
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::MigrationRefused

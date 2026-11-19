@@ -1144,3 +1144,173 @@ fn cross_output_sticky_scope_survives_same_dest_and_clears_on_dest_change() {
             .is_none()
     );
 }
+
+#[test]
+fn unit_i_gesture_transfer_128_byte_window_and_max_counter_typed_route() {
+    let w128 = "w".repeat(crate::bounds::MAX_OPAQUE_ID_LEN);
+    let r1 = rect(0, 40, 2048, 1072);
+    let r2 = rect(2072, 72, 1896, 1016);
+    let seed_facts = vec![fact(&w128, "out-a", r1), fact("win-2", "out-b", r2)];
+    let mut engine = seed_mixed(seed_facts.clone());
+
+    // 1) Cancelled (rolled-back) gesture on 128-byte window leaves no transfer.
+    let cancel_reply = accepted(
+        &mut engine,
+        &mixed_report(
+            2,
+            2,
+            seed_facts.clone(),
+            &w128,
+            Some(ingress_id(
+                &w128,
+                GestureKind::Move,
+                Some((r2.x + 10, r2.y + 10)),
+                GesturePhase::Cancelled,
+                r1,
+                1,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert_eq!(
+        cancel_reply.gesture_settled.map(|t| (t.id, t.committed)),
+        Some((1, false))
+    );
+    assert!(cancel_reply.transfers.is_empty());
+
+    // 2) Cross-output gesture with 128-byte window and u64::MAX typed counter.
+    let updated = accepted(
+        &mut engine,
+        &mixed_report(
+            3,
+            3,
+            seed_facts.clone(),
+            &w128,
+            Some(ingress_id(
+                &w128,
+                GestureKind::Move,
+                Some((r2.x + 10, r2.y + 10)),
+                GesturePhase::Updated,
+                r1,
+                u64::MAX,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    let preview = updated.drag_preview.as_ref().expect("drag preview");
+    assert_eq!(preview.domain.output.0, "out-b");
+    let leaf_b = engine
+        .world
+        .layout
+        .leaves(&preview.domain)
+        .and_then(|leaves| leaves.get(&WindowId("win-2".to_owned())))
+        .expect("leaf for win-2");
+    assert!(leaf_b.0.starts_with("leaf-"));
+    assert!(leaf_b.0.len() <= crate::bounds::MAX_OPAQUE_ID_LEN);
+
+    let mut release_facts = seed_facts.clone();
+    release_facts[0] = fact(&w128, "out-a", rect(r1.x + 200, r1.y + 100, r1.w, r1.h));
+    let released = accepted(
+        &mut engine,
+        &mixed_report(
+            4,
+            4,
+            release_facts,
+            &w128,
+            Some(ingress_id(
+                &w128,
+                GestureKind::Move,
+                Some((r2.x + 10, r2.y + 10)),
+                GesturePhase::Released,
+                r1,
+                u64::MAX,
+            )),
+            vec![],
+            true,
+        ),
+    );
+    assert_eq!(
+        released.gesture_settled.map(|t| (t.id, t.committed)),
+        Some((u64::MAX, true))
+    );
+    let transfer = released
+        .transfers
+        .iter()
+        .find(|t| matches!(&t.kind, TransferKind::Window(w) if w.0 == w128))
+        .expect("cross-output transfer for 128-byte window");
+    assert_eq!(transfer.operation_id, format!("gesture-{}", u64::MAX));
+    assert!(transfer.operation_id.starts_with("gesture-"));
+    assert!(!transfer.operation_id.starts_with("op-"));
+    assert!(transfer.operation_id.len() <= crate::bounds::MAX_OPAQUE_ID_LEN);
+
+    // 3) Wrong operation attempt on source capture does not retire the transfer,
+    //    while exact timely attempt with identical pre-source/post-target does.
+    let source_ws = engine
+        .tx_ro(|tx| tx.effective_view(&OutputId("out-a".to_owned())))
+        .expect("active view on out-a");
+    let pre_ref = Some(crate::world_report::WorkspaceRef::Logical {
+        output: OutputId("out-a".to_owned()),
+        workspace: crate::directional::WorkspaceId(source_ws),
+    });
+    let post_ref = Some(crate::world_report::WorkspaceRef::Logical {
+        output: transfer.target_output.clone(),
+        workspace: crate::directional::WorkspaceId(transfer.target_workspace.clone()),
+    });
+    let mut wrong_report = mixed_report(5, 5, seed_facts.clone(), &w128, None, vec![], true);
+    wrong_report.monotonic_ms = 5;
+    wrong_report
+        .member_attempts
+        .push(crate::world_report::MemberAttempt {
+            operation_id: "op-wrong".to_owned(),
+            window: WindowId(w128.clone()),
+            target_output: transfer.target_output.clone(),
+            target_workspace: transfer.target_workspace.clone(),
+            setter: crate::world_report::MemberDisposition::Accepted,
+            pre: pre_ref.clone(),
+            post: post_ref.clone(),
+            attempt_ms: 5,
+        });
+    let wrong_reply = accepted(&mut engine, &wrong_report);
+    assert!(
+        wrong_reply
+            .transfers
+            .iter()
+            .any(|t| t.operation_id == transfer.operation_id),
+        "wrong operation attempt must not retire gesture transfer"
+    );
+
+    let mut ack_report = mixed_report(6, 6, seed_facts, &w128, None, vec![], true);
+    ack_report.monotonic_ms = 6;
+    ack_report
+        .member_attempts
+        .push(crate::world_report::MemberAttempt {
+            operation_id: transfer.operation_id.clone(),
+            window: WindowId(w128.clone()),
+            target_output: transfer.target_output.clone(),
+            target_workspace: transfer.target_workspace.clone(),
+            setter: crate::world_report::MemberDisposition::Accepted,
+            pre: pre_ref,
+            post: post_ref,
+            attempt_ms: 6,
+        });
+    let settled = accepted(&mut engine, &ack_report);
+    assert!(
+        settled
+            .transfers
+            .iter()
+            .all(|t| t.operation_id != transfer.operation_id),
+        "exact timely attempt retires gesture transfer"
+    );
+
+    // 4) Old generation report is fenced.
+    let mut stale = ack_report;
+    stale.core_generation = "gen-old".to_owned();
+    match engine.handle_report(&stale, &[]).0 {
+        WorldOutcome::Rejected { kind, .. } => {
+            assert_eq!(kind, "generation-mismatch");
+        }
+        other => panic!("expected rejected stale generation, got {other:?}"),
+    }
+}

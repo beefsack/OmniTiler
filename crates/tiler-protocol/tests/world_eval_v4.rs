@@ -26,7 +26,14 @@ fn submit_report(engine: &mut WorldEngine, body: &str) -> String {
         Ok(report) => report,
         Err(error) => return encode_error(error.kind, error.message, &generation),
     };
-    match engine.handle_report(&report, &[]).0 {
+    let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::new();
+    match engine
+        .handle_report_with_gate_and_prepare(&report, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .outcome
+    {
         WorldOutcome::Accepted(reply)
         | WorldOutcome::Duplicate(reply)
         | WorldOutcome::CommandConsumed(reply) => {

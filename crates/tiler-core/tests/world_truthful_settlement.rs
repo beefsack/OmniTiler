@@ -6,7 +6,7 @@
 use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
     FrameSetter, MemberAttempt, PresentationIngressV4, PresentationRowV4, ScopeAuthority,
     ScreenReport, SwitchFocus, SwitchOutcome, TransferKind, WORLD_CONTRACT_VERSION_V4, WindowFact,
@@ -149,9 +149,80 @@ fn report(
     }
 }
 
+struct TestGate;
+
+impl tiler_core::world_engine::CoreAdmissionGate for TestGate {
+    fn check_request_size(
+        &self,
+        _report: &WorldReportV4,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+
+    fn check_preflight(
+        &self,
+        _report: &WorldReportV4,
+        _facts: &tiler_core::world_engine::PreflightGateFacts<'_>,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+
+    fn check_exact_inner(
+        &self,
+        _reply: &WorldReplyV4,
+    ) -> tiler_core::world_engine::ExactInnerDecision {
+        tiler_core::world_engine::ExactInnerDecision::Allow(
+            tiler_core::world_engine::ExactInnerCheck::new(0),
+        )
+    }
+
+    fn check_future_reserve(
+        &self,
+        _reply: &WorldReplyV4,
+        _facts: &tiler_core::world_engine::FutureReserveGateFacts,
+        _exact: tiler_core::world_engine::ExactInnerCheck,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+}
+
+fn eval_report(
+    engine: &mut WorldEngine,
+    report: &WorldReportV4,
+) -> (
+    tiler_core::world_engine::WorldOutcome,
+    Vec<tiler_core::world_report::BatchSettlement>,
+) {
+    let run = engine
+        .handle_report_with_gate_and_prepare(report, &[], &TestGate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    let settlements = run
+        .dispositions
+        .into_iter()
+        .filter_map(|d| match d.disposition {
+            tiler_core::world_report::CommandDisposition::Executed(result) => {
+                Some(tiler_core::world_report::BatchSettlement { seq: d.seq, result })
+            }
+            tiler_core::world_report::CommandDisposition::Refused(result) => {
+                Some(tiler_core::world_report::BatchSettlement {
+                    seq: d.seq,
+                    result: Some(tiler_core::world_report::CommandResult::Rejected {
+                        kind: result,
+                    }),
+                })
+            }
+            tiler_core::world_report::CommandDisposition::AlreadyConsumed
+            | tiler_core::world_report::CommandDisposition::NotRun => None,
+        })
+        .collect();
+    (run.outcome, settlements)
+}
+
 fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
-    match engine.handle_report(report, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
+    match eval_report(engine, report).0 {
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -1028,9 +1099,9 @@ fn retained_settlements_grant_no_extra_writes_or_spend_pending_obligations() {
         true,
     );
     send_report.focused_global = "w2".to_owned();
-    let (send_outcome, send_settlements) = engine.handle_report(&send_report, &[]);
+    let (send_outcome, send_settlements) = eval_report(&mut engine, &send_report);
     let send = match send_outcome {
-        WorldOutcome::Accepted(reply) => reply,
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted send, got {other:?}"),
     };
     assert!(!send.command_consumed);
@@ -1152,9 +1223,9 @@ fn retained_settlements_grant_no_extra_writes_or_spend_pending_obligations() {
         true,
     );
     f1_report.focused_global = "w2".to_owned();
-    let (f1_outcome, f1_settlements) = engine.handle_report(&f1_report, &[]);
+    let (f1_outcome, f1_settlements) = eval_report(&mut engine, &f1_report);
     let f1_cmd = match f1_outcome {
-        WorldOutcome::Accepted(reply) => reply,
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted f1, got {other:?}"),
     };
     assert!(!f1_cmd.command_consumed);

@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 
 use super::group_alloc::GroupAllocator;
-use crate::directional::{Axis, Node, NodeId, WindowId};
+use crate::directional::{Axis, Node, NodeId};
 use crate::geometry::Rect;
 use crate::policy::LayoutPolicy;
 
@@ -23,20 +23,16 @@ pub(super) fn generate_group_id(
     Some(minted)
 }
 
-/// Fresh leaf id for `window`, suffixing on collision with `existing`.
-pub(super) fn generate_leaf_id(window: &WindowId, existing: &mut BTreeSet<NodeId>) -> NodeId {
-    let base = format!("leaf-{}", window.0);
-    if !existing.contains(&NodeId(base.clone())) {
-        return NodeId(base);
-    }
-    let mut n = 1u32;
-    loop {
-        let candidate = NodeId(format!("{base}-{n}"));
-        if !existing.contains(&candidate) {
-            return candidate;
-        }
-        n += 1;
-    }
+/// Mint one fresh leaf id from the generation-shared allocator's independent
+/// leaf counter, reserving it in `existing`. Fails closed (`None`) on
+/// exhaustion without spending group serials.
+pub(super) fn generate_leaf_id(
+    alloc: &GroupAllocator,
+    existing: &mut BTreeSet<NodeId>,
+) -> Option<NodeId> {
+    let minted = alloc.mint_leaf(existing)?;
+    existing.insert(minted.clone());
+    Some(minted)
 }
 
 /// Whether any node in `node`'s subtree carries `leaf` as its id.

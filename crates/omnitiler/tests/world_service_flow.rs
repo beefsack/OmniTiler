@@ -4527,3 +4527,696 @@ fn service_capture_bound_and_projection_match_legacy_serde_bytes() {
     assert_eq!(proj_bytes, proj_oracle);
     let _ = bound_val.take();
 }
+
+#[test]
+fn checked_broker_publishes_x16392_and_recaptures_closed_half_open_bounds() {
+    let (service, generation) = discovered_service();
+    let make_report = |screen_rect: &str, win_rect: &str| -> String {
+        let native = format!(
+            "{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\"],\"current\":\"{UUID_A}\",\
+              \"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}}]}}"
+        );
+        format!(
+            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":{screen_rect},\"work\":{screen_rect},\
+              \"complete\":true,\"scale\":1,\"identity\":{{\"manufacturer\":null,\"model\":null,\
+              \"serial\":null,\"connector\":null}}}}],\
+              \"windows\":[{}],\"closed\":[],\"native\":[{native}],\"focused\":\"win-a\",\"foregroundKnown\":true,\
+              \"complete\":true,\"gesture\":false,\"cursor\":[16400,20],\"actionForeground\":\"DP-1\",\
+              \"actionCached\":\"DP-1\",\"actionOutputs\":[\"DP-1\"],\"presentation\":{},\
+              \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null}}",
+            window_json("win-a", win_rect, Some(UUID_A)),
+            disabled_presentation()
+        )
+    };
+
+    // Screen at x=16384 with outer inset 8 publishes x=16392.
+    let first = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                1,
+                1,
+                &make_report("[16384,0,800,600]", "[16384,0,400,300]"),
+            ))
+            .expect("x=16384 screen accepted"),
+    );
+    assert_eq!(first["ready"], true);
+    assert_eq!(
+        first["windows"][0]["frame"],
+        serde_json::json!([16392, 8, 784, 584])
+    );
+
+    // Recapturing the published non-clamped frame x=16392 converges cleanly.
+    let second = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                2,
+                2,
+                &make_report("[16384,0,800,600]", "[16392,8,784,584]"),
+            ))
+            .expect("x=16392 recapture accepted"),
+    );
+    assert_eq!(second["ready"], true);
+    assert_eq!(
+        second["windows"][0]["frame"],
+        serde_json::json!([16392, 8, 784, 584])
+    );
+
+    // Negative control (-16384) and exact edges (-32768..=32768) accept; off-edge refuses.
+    let neg_ctrl = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                3,
+                3,
+                &make_report("[-16384,0,800,600]", "[-16376,8,784,584]"),
+            ))
+            .expect("-16384 control accepted"),
+    );
+    assert_eq!(
+        neg_ctrl["windows"][0]["frame"],
+        serde_json::json!([-16376, 8, 784, 584])
+    );
+    let exact_edge = service.evaluate_capture(&capture(
+        ADAPTER,
+        &generation,
+        4,
+        4,
+        &make_report("[-32768,-32768,16384,16384]", "[-32760,-32760,16368,16368]"),
+    ));
+    assert!(
+        exact_edge.is_ok(),
+        "exact -32768 edge accepted: {exact_edge:?}"
+    );
+
+    let off_edge = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                5,
+                5,
+                &make_report("[32768,0,1,1]", "[32768,0,1,1]"),
+            ))
+            .expect("in-band refusal"),
+    );
+    assert_eq!(
+        off_edge["outcome"], "rejected",
+        "off-edge x+w=32769 must refuse: {off_edge}"
+    );
+    assert_eq!(off_edge["kind"], "unknown-value");
+}
+
+#[test]
+fn typed_and_checked_broker_match_unreadable_output_hold_beside_healthy_neighbor() {
+    let (service, generation) = discovered_service();
+    let native_1 = format!(
+        "{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\"],\"current\":\"{UUID_A}\",\
+          \"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}}]}}"
+    );
+    let native_2 = format!(
+        "{{\"out\":\"DP-2\",\"order\":[\"{UUID_B}\"],\"current\":\"{UUID_B}\",\
+          \"occupancy\":[{{\"native\":\"{UUID_B}\",\"count\":null}}]}}"
+    );
+    let ready_report = format!(
+        "{{\"v\":4,\"screens\":[\
+          {{\"out\":\"DP-1\",\"full\":[0,0,800,600],\"work\":[0,0,800,600],\"complete\":true,\"scale\":1,\
+            \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}},\
+          {{\"out\":\"DP-2\",\"full\":[800,0,800,600],\"work\":[800,0,800,600],\"complete\":true,\"scale\":1,\
+            \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}\
+          ],\"windows\":[{},{}],\"closed\":[],\"native\":[{native_1},{native_2}],\"focused\":\"win-a\",\"foregroundKnown\":true,\
+          \"complete\":true,\"gesture\":false,\"cursor\":[100,100],\"actionForeground\":\"DP-1\",\
+          \"actionCached\":\"DP-1\",\"actionOutputs\":[\"DP-1\",\"DP-2\"],\"presentation\":{},\
+          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null}}",
+        window_json("win-a", "[0,0,400,300]", Some(UUID_A)),
+        window_json("win-b", "[800,0,400,300]", Some(UUID_B))
+            .replace("\"out\":\"DP-1\"", "\"out\":\"DP-2\""),
+        disabled_presentation()
+    );
+    let ready_reply = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &ready_report))
+            .expect("ready two-output"),
+    );
+    assert_eq!(ready_reply["ready"], true);
+
+    // Next capture: DP-2 has unreadable scale (-1.0) -> graded to HeldScreenRow; DP-1 stays healthy.
+    let bad_report = ready_report.replace(
+        "\"out\":\"DP-2\",\"full\":[800,0,800,600],\"work\":[800,0,800,600],\"complete\":true,\"scale\":1",
+        "\"out\":\"DP-2\",\"full\":[800,0,800,600],\"work\":[800,0,800,600],\"complete\":true,\"scale\":-1",
+    );
+    let broker_reply = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &bad_report))
+            .expect("held bad screen beside healthy neighbor"),
+    );
+    assert_eq!(broker_reply["ready"], true);
+
+    // Compare against typed WorldEngine on the same decoded report.
+    let wrap_flat = |inner: &str, seq: u64| -> String {
+        inner.replacen(
+            "{\"v\":4,",
+            &format!(
+                "{{\"v\":4,\"adapter\":\"{ADAPTER}\",\"gen\":\"gen-1\",\
+                  \"obs\":\"{seq}\",\"reqSeq\":\"{seq}\",\"req\":\"req-{seq}\",\
+                  \"cmdSeq\":null,\"command\":null,"
+            ),
+            1,
+        )
+    };
+    let decoded_ready =
+        tiler_protocol::world_protocol::decode_report_v4(&wrap_flat(&ready_report, 1))
+            .expect("decode ready");
+    let decoded_bad = tiler_protocol::world_protocol::decode_report_v4(&wrap_flat(&bad_report, 2))
+        .expect("decode bad");
+    let mut engine = tiler_core::world_engine::WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        ADAPTER,
+        tiler_core::connection::HostCapabilities {
+            host_owned: true,
+            maximize: true,
+            fullscreen: true,
+            native_sticky: true,
+            ..Default::default()
+        },
+    )
+    .expect("engine");
+    engine
+        .apply_test_settings(
+            1,
+            vec![
+                (
+                    "mode".to_owned(),
+                    tiler_core::connection::RawSettingValue::String("per-output-local".to_owned()),
+                ),
+                (
+                    "gap".to_owned(),
+                    tiler_core::connection::RawSettingValue::Number(8.0),
+                ),
+                (
+                    "outer".to_owned(),
+                    tiler_core::connection::RawSettingValue::Number(8.0),
+                ),
+            ],
+        )
+        .expect("settings applied");
+    let _ = match tiler_protocol::world_admission::handle_report_decoded_checked(
+        &mut engine,
+        &decoded_ready,
+        &[],
+    )
+    .outcome
+    {
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
+        other => panic!("typed ready: {other:?}"),
+    };
+    let typed_reply = match tiler_protocol::world_admission::handle_report_decoded_checked(
+        &mut engine,
+        &decoded_bad,
+        &[],
+    )
+    .outcome
+    {
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
+        other => panic!("typed accepted: {other:?}"),
+    };
+
+    let broker_scopes = broker_reply["scopes"].as_array().expect("scopes");
+    let dp1_scope = broker_scopes
+        .iter()
+        .find(|s| s["scope"]["kind"] == "output" && s["scope"]["out"] == "DP-1")
+        .expect("DP-1 scope");
+    let dp2_scope = broker_scopes
+        .iter()
+        .find(|s| s["scope"]["kind"] == "output" && s["scope"]["out"] == "DP-2")
+        .expect("DP-2 scope");
+    assert_eq!(dp1_scope["auth"], "controlled");
+    assert_eq!(dp2_scope["auth"], "hold");
+    assert_eq!(dp2_scope["reason"], "unreadable");
+
+    let broker_wins = broker_reply["windows"].as_array().expect("windows");
+    let b_win_a = broker_wins
+        .iter()
+        .find(|w| w["win"] == "win-a")
+        .expect("win-a");
+    let b_win_b = broker_wins
+        .iter()
+        .find(|w| w["win"] == "win-b")
+        .expect("win-b");
+    assert!(
+        typed_reply.ready,
+        "typed_reply not ready: scopes={:?}",
+        typed_reply.scopes
+    );
+    let t_win_a = typed_reply
+        .windows
+        .iter()
+        .find(|w| w.output.0 == "DP-1")
+        .unwrap_or_else(|| panic!("typed DP-1 window in {:?}", typed_reply.windows));
+    let t_win_b = typed_reply
+        .windows
+        .iter()
+        .find(|w| w.output.0 == "DP-2")
+        .unwrap_or_else(|| panic!("typed DP-2 window in {:?}", typed_reply.windows));
+
+    assert_eq!(b_win_a["frame_auth"], "controlled");
+    assert!(b_win_a["frame"].is_array());
+    assert_eq!(
+        b_win_a["frame"],
+        serde_json::json!([
+            t_win_a.effective_frame.unwrap().x,
+            t_win_a.effective_frame.unwrap().y,
+            t_win_a.effective_frame.unwrap().w,
+            t_win_a.effective_frame.unwrap().h,
+        ])
+    );
+    assert_eq!(b_win_b["frame_auth"], "hold");
+    assert!(b_win_b["frame"].is_null());
+    assert!(b_win_b["alloc"].is_null());
+    assert!(t_win_b.effective_frame.is_none());
+    assert!(t_win_b.allocation.is_none());
+    let desired = broker_reply["intentDesired"]
+        .as_array()
+        .expect("intentDesired");
+    assert_eq!(desired.len(), typed_reply.intent_desired.len());
+    assert!(!desired.iter().any(|d| d["win"] == "win-b"));
+}
+
+#[test]
+fn projected_tiled_windows_order_matches_bytewise_lifetime_across_12_leaves_over_broker() {
+    let (service, generation) = discovered_service();
+    let native_1 = format!(
+        "{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\"],\"current\":\"{UUID_A}\",\
+          \"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}}]}}"
+    );
+    let admission_order = [
+        "win-11", "win-02", "win-10", "win-01", "win-09", "win-03", "win-08", "win-04", "win-07",
+        "win-05", "win-06", "win-00",
+    ];
+    let mut windows_json = Vec::new();
+    let mut last_reply = serde_json::Value::Null;
+    for (idx, id) in admission_order.iter().enumerate() {
+        let seq = u64::try_from(idx + 1).expect("seq");
+        windows_json.push(window_json(id, "[0,0,400,300]", Some(UUID_A)));
+        let inner = format!(
+            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1600,1200],\
+              \"work\":[0,0,1600,1200],\"complete\":true,\"scale\":1,\
+              \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
+              \"windows\":[{}],\"closed\":[],\"native\":[{native_1}],\"focused\":\"{id}\",\
+              \"foregroundKnown\":true,\"complete\":true,\"gesture\":false,\"cursor\":[100,100],\
+              \"actionForeground\":\"DP-1\",\"actionCached\":\"DP-1\",\"actionOutputs\":[\"DP-1\"],\
+              \"presentation\":{},\"intentRecords\":[],\"propertyAttempts\":[],\
+              \"focusFeedback\":[],\"rendererInput\":null}}",
+            windows_json.join(","),
+            disabled_presentation(),
+        );
+        last_reply = parse(
+            &service
+                .evaluate_capture(&capture(ADAPTER, &generation, seq, seq, &inner))
+                .expect("evaluate_capture"),
+        );
+    }
+    assert_eq!(last_reply["ready"], true, "reply: {last_reply}");
+    let win_ids: Vec<&str> = last_reply["windows"]
+        .as_array()
+        .expect("windows array")
+        .iter()
+        .map(|w| w["win"].as_str().expect("win string"))
+        .collect();
+    assert_eq!(
+        win_ids,
+        vec![
+            "win-00", "win-01", "win-02", "win-03", "win-04", "win-05", "win-06", "win-07",
+            "win-08", "win-09", "win-10", "win-11",
+        ]
+    );
+}
+
+#[test]
+fn projected_tiled_windows_preserve_nonlexical_workspace_ring_order_ws2_before_ws10_over_broker() {
+    let (service, generation) = discovered_service();
+    let order: Vec<String> = (1..=10).map(|i| format!("n-{i}")).collect();
+    let order_json = order
+        .iter()
+        .map(|n| format!("\"{n}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    let occupancy_json = order
+        .iter()
+        .map(|n| format!("{{\"native\":\"{n}\",\"count\":null}}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let native = format!(
+        "{{\"out\":\"DP-1\",\"order\":[{order_json}],\"current\":\"n-2\",\"occupancy\":[{occupancy_json}]}}"
+    );
+    let inner = inner_report(
+        &[
+            window_json("win-b2", "[0,0,400,300]", Some("n-2")),
+            window_json("win-a2", "[0,0,400,300]", Some("n-2")),
+            window_json("win-b10", "[0,0,400,300]", Some("n-10")),
+            window_json("win-a10", "[0,0,400,300]", Some("n-10")),
+        ],
+        true,
+        true,
+        &native,
+    );
+
+    let final_reply = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &inner))
+            .expect("final"),
+    );
+    assert_eq!(final_reply["ready"], true);
+    let pairs: Vec<(&str, &str)> = final_reply["windows"]
+        .as_array()
+        .expect("windows array")
+        .iter()
+        .map(|w| {
+            (
+                w["ws"].as_str().expect("ws"),
+                w["win"].as_str().expect("win"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        pairs,
+        vec![
+            ("ws-2", "win-a2"),
+            ("ws-2", "win-b2"),
+            ("ws-10", "win-a10"),
+            ("ws-10", "win-b10"),
+        ]
+    );
+}
+
+#[test]
+fn unit_p_service_and_dbus_error_classification_and_recovery() {
+    use omnitiler::planner_service::PlannerError;
+    use omnitiler::world_service::{WORLD_SERVICE_MAX_REQUEST, WorldServiceError};
+    use zbus::DBusError;
+
+    // 1. D-Bus error name separation: InvalidReply ("reply-invalid") vs Unavailable.
+    let invalid_err = PlannerError::InvalidReply("reply-invalid".to_owned());
+    assert_eq!(invalid_err.name(), "com.omnitiler.Planner1.InvalidReply");
+    assert_eq!(invalid_err.description(), Some("reply-invalid"));
+    let unavail_err = PlannerError::Unavailable("reply exceeds size bound".to_owned());
+    assert_eq!(unavail_err.name(), "com.omnitiler.Planner1.Unavailable");
+
+    // 2. Real service: inbound oversize stays WorldServiceError::Oversized separate from snapshot-invalid.
+    let (service, generation) = discovered_service();
+    let inner = inner_report(
+        &[window_json("win-a", "[0,0,400,300]", None)],
+        true,
+        true,
+        "",
+    );
+    let cap1 = capture(ADAPTER, &generation, 1, 1, &inner);
+    let r1 = parse(&service.evaluate_capture(&cap1).expect("cap1"));
+    assert_eq!(r1["rev"], "1");
+
+    let huge = " ".repeat(WORLD_SERVICE_MAX_REQUEST + 1);
+    assert_eq!(
+        service
+            .evaluate_capture(&huge)
+            .expect_err("inbound oversize"),
+        WorldServiceError::Oversized
+    );
+}
+
+#[test]
+fn global_unique_swap_minimized_incoming_and_outgoing_over_checked_broker() {
+    let make_inner = |windows: &[String], focused: &str| -> String {
+        let windows_json = windows.join(",");
+        format!(
+            "{{\"v\":4,\
+              \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+              \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+              \"identity\":{{\"manufacturer\":null,\"model\":null,\
+              \"serial\":null,\"connector\":null}}}},\
+              {{\"out\":\"DP-2\",\"full\":[1920,0,1920,1080],\
+              \"work\":[1920,0,1920,1040],\"complete\":true,\"scale\":1,\
+              \"identity\":{{\"manufacturer\":null,\"model\":null,\
+              \"serial\":null,\"connector\":null}}}}],\
+              \"windows\":[{windows_json}],\"closed\":[],\
+              \"native\":[{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\",\"{UUID_B}\",\"{UUID_C}\",\"{UUID_D}\"],\
+              \"current\":\"{UUID_A}\",\"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}},{{\"native\":\"{UUID_B}\",\"count\":null}},{{\"native\":\"{UUID_C}\",\"count\":null}},{{\"native\":\"{UUID_D}\",\"count\":null}}]}},\
+              {{\"out\":\"DP-2\",\"order\":[\"{UUID_A}\",\"{UUID_B}\",\"{UUID_C}\",\"{UUID_D}\"],\
+              \"current\":\"{UUID_B}\",\"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}},{{\"native\":\"{UUID_B}\",\"count\":null}},{{\"native\":\"{UUID_C}\",\"count\":null}},{{\"native\":\"{UUID_D}\",\"count\":null}}]}}],\
+              \"focused\":\"{focused}\",\"foregroundKnown\":true,\
+              \"complete\":true,\"gesture\":false,\
+              \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+              \"actionOutputs\":[\"DP-1\",\"DP-2\"],\
+              \"presentation\":{},\
+              \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
+              \"rendererInput\":null}}",
+            disabled_presentation()
+        )
+    };
+    let tiled = |win: &str, out: &str, rect: &str, native: &str| -> String {
+        window_json(win, rect, Some(native))
+            .replace("\"out\":\"DP-1\"", &format!("\"out\":\"{out}\""))
+    };
+    let minimized = |win: &str, out: &str, native: &str| -> String {
+        window_json(win, "[0,0,400,300]", Some(native))
+            .replace("\"out\":\"DP-1\"", &format!("\"out\":\"{out}\""))
+            .replace("\"rect\":[0,0,400,300]", "\"rect\":null")
+            .replace("\"minimized\":false", "\"minimized\":true")
+    };
+    fn find_row<'a>(reply: &'a serde_json::Value, win: &str) -> &'a serde_json::Value {
+        reply["windows"]
+            .as_array()
+            .expect("windows array")
+            .iter()
+            .find(|r| r["win"] == win)
+            .unwrap_or_else(|| panic!("missing window {win}: {reply}"))
+    }
+
+    // 1. Incoming minimized: DP-1 has A1/A2 tiled; DP-2 has B1 minimized + B2 focused tiled.
+    let (service, generation) = discovered_equal_count_service_with_mode("global-unique");
+    let incoming_inner = make_inner(
+        &[
+            tiled("win-a1", "DP-1", "[0,0,960,1040]", UUID_A),
+            tiled("win-a2", "DP-1", "[960,0,960,1040]", UUID_A),
+            minimized("win-b1", "DP-2", UUID_B),
+            tiled("win-b2", "DP-2", "[1920,0,1920,1040]", UUID_B),
+        ],
+        "win-b2",
+    );
+    let r1 = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &incoming_inner))
+            .expect("cap1"),
+    );
+    let view_a = r1["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["out"] == "DP-1")
+        .unwrap()["view"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let view_b = r1["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["out"] == "DP-2")
+        .unwrap()["view"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    service
+        .queue_command(
+            SENDER_A,
+            &queue_req(
+                &generation,
+                "panel-1",
+                "1",
+                &format!("{{\"op\":\"select-workspace\",\"out\":\"DP-1\",\"ws\":\"{view_b}\"}}"),
+            ),
+        )
+        .expect("queue swap");
+    let swapped = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &incoming_inner))
+            .expect("swap"),
+    );
+    assert_eq!(swapped["windows"].as_array().unwrap().len(), 4, "{swapped}");
+    for win in ["win-a1", "win-a2"] {
+        let row = find_row(&swapped, win);
+        assert_eq!(row["out"], "DP-2", "{win}: {row}");
+        assert_eq!(row["ws"], view_a, "{win}: {row}");
+        assert_eq!(row["member_auth"], "controlled", "{win}: {row}");
+        assert_eq!(row["frame_auth"], "controlled", "{win}: {row}");
+        assert!(!row["alloc"].is_null(), "{win}: {row}");
+    }
+    let b1 = find_row(&swapped, "win-b1");
+    assert_eq!(b1["out"], "DP-1", "{b1}");
+    assert_eq!(b1["ws"], view_b, "{b1}");
+    assert_eq!(b1["member_auth"], "controlled", "{b1}");
+    assert_eq!(b1["frame_auth"], "hold", "{b1}");
+    assert_eq!(b1["frame_hold"], "minimized", "{b1}");
+    assert!(b1["alloc"].is_null(), "{b1}");
+    let b2 = find_row(&swapped, "win-b2");
+    assert_eq!(b2["out"], "DP-1", "{b2}");
+    assert_eq!(b2["ws"], view_b, "{b2}");
+    assert_eq!(b2["member_auth"], "controlled", "{b2}");
+    assert_eq!(b2["frame_auth"], "controlled", "{b2}");
+    assert!(!b2["alloc"].is_null(), "{b2}");
+    assert_eq!(swapped["focusRequest"]["target"], "win-b2", "{swapped}");
+
+    // 2. Outgoing minimized: DP-1 has A1 minimized + A2 focused tiled; DP-2 has B1/B2 tiled.
+    let (service2, gen2) = discovered_equal_count_service_with_mode("global-unique");
+    let outgoing_inner = make_inner(
+        &[
+            minimized("win-a1", "DP-1", UUID_A),
+            tiled("win-a2", "DP-1", "[0,0,1920,1040]", UUID_A),
+            tiled("win-b1", "DP-2", "[1920,0,960,1040]", UUID_B),
+            tiled("win-b2", "DP-2", "[2880,0,960,1040]", UUID_B),
+        ],
+        "win-a2",
+    );
+    let r2 = parse(
+        &service2
+            .evaluate_capture(&capture(ADAPTER, &gen2, 1, 1, &outgoing_inner))
+            .expect("cap1"),
+    );
+    let ov_a = r2["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["out"] == "DP-1")
+        .unwrap()["view"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let ov_b = r2["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["out"] == "DP-2")
+        .unwrap()["view"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    service2
+        .queue_command(
+            SENDER_A,
+            &queue_req(
+                &gen2,
+                "panel-1",
+                "1",
+                &format!("{{\"op\":\"select-workspace\",\"out\":\"DP-1\",\"ws\":\"{ov_b}\"}}"),
+            ),
+        )
+        .expect("queue swap");
+    let swapped2 = parse(
+        &service2
+            .evaluate_capture(&capture(ADAPTER, &gen2, 2, 2, &outgoing_inner))
+            .expect("swap"),
+    );
+    assert_eq!(
+        swapped2["windows"].as_array().unwrap().len(),
+        4,
+        "{swapped2}"
+    );
+    let oa1 = find_row(&swapped2, "win-a1");
+    assert_eq!(oa1["out"], "DP-2", "{oa1}");
+    assert_eq!(oa1["ws"], ov_a, "{oa1}");
+    assert_eq!(oa1["member_auth"], "controlled", "{oa1}");
+    assert_eq!(oa1["frame_auth"], "hold", "{oa1}");
+    assert_eq!(oa1["frame_hold"], "minimized", "{oa1}");
+    assert!(oa1["alloc"].is_null(), "{oa1}");
+    let oa2 = find_row(&swapped2, "win-a2");
+    assert_eq!(oa2["out"], "DP-2", "{oa2}");
+    assert_eq!(oa2["ws"], ov_a, "{oa2}");
+    assert_eq!(oa2["member_auth"], "controlled", "{oa2}");
+    assert_eq!(oa2["frame_auth"], "controlled", "{oa2}");
+    assert!(!oa2["alloc"].is_null(), "{oa2}");
+    for win in ["win-b1", "win-b2"] {
+        let row = find_row(&swapped2, win);
+        assert_eq!(row["out"], "DP-1", "{win}: {row}");
+        assert_eq!(row["ws"], ov_b, "{win}: {row}");
+        assert_eq!(row["member_auth"], "controlled", "{win}: {row}");
+        assert_eq!(row["frame_auth"], "controlled", "{win}: {row}");
+        assert!(!row["alloc"].is_null(), "{win}: {row}");
+    }
+}
+
+#[test]
+fn ac3_cross_client_fifo_and_issuer_specific_settlements() {
+    let (service, generation) = discovered_service();
+    let native = "{\"out\":\"DP-1\",\"order\":[\"n-1\"],\"current\":\"n-1\",\"occupancy\":[{\"native\":\"n-1\",\"count\":null}]}";
+    let inner = inner_report(
+        &[
+            window_json("win-a", "[0,0,960,1040]", Some("n-1")),
+            window_json("win-b", "[960,0,960,1040]", Some("n-1")),
+        ],
+        true,
+        true,
+        native,
+    );
+    let seed = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &inner))
+            .expect("seed"),
+    );
+    assert_eq!(seed["ready"], true);
+
+    // Single authenticated sender SENDER_A, separate issuer namespaces:
+    // file client-a local 9 (focus unknown) BEFORE client-b local 1 (focus known).
+    service
+        .queue_command(
+            SENDER_A,
+            &queue_req(
+                &generation,
+                "client-a",
+                "9",
+                "{\"op\":\"focus\",\"win\":\"win-missing\"}",
+            ),
+        )
+        .expect("queue a");
+    service
+        .queue_command(
+            SENDER_A,
+            &queue_req(
+                &generation,
+                "client-b",
+                "1",
+                "{\"op\":\"focus\",\"win\":\"win-b\"}",
+            ),
+        )
+        .expect("queue b");
+
+    let reply = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &inner))
+            .expect("drain"),
+    );
+
+    let res_a = parse(
+        &service
+            .take_result(SENDER_A, &take_req(&generation, "client-a", "9"))
+            .expect("take a"),
+    );
+    assert_eq!(res_a["outcome"], "failed", "{res_a}");
+    assert_eq!(res_a["kind"], "focus-unknown", "{res_a}");
+
+    let res_b = parse(
+        &service
+            .take_result(SENDER_A, &take_req(&generation, "client-b", "1"))
+            .expect("take b"),
+    );
+    assert_eq!(res_b["outcome"], "ready", "{res_b}");
+    assert_eq!(reply["focusRequest"]["target"], "win-b", "{reply}");
+    let g_a: u64 = res_a["globalCmd"].as_str().unwrap().parse().unwrap();
+    let g_b: u64 = res_b["globalCmd"].as_str().unwrap().parse().unwrap();
+    assert!(
+        g_a < g_b,
+        "client-a local 9 executed before client-b local 1: {g_a} vs {g_b}"
+    );
+}

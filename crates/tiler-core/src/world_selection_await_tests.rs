@@ -639,7 +639,7 @@ fn ordinary_direct_focus_grants_no_arrival() {
             Some(2),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("w1".to_owned())),
-                direction: Some(crate::directional::Direction::Left),
+                direction: None,
             }),
             vec![],
             "",
@@ -5573,7 +5573,7 @@ fn switch_pre_mutation_reserve_rejects_before_mutation_with_retry() {
     match engine
         .handle_report_with_gate_and_prepare(&big, &[], &gate, |_| Ok::<(), ()>(()))
         .expect("prepare")
-        .0
+        .outcome
     {
         WorldOutcome::Rejected { kind, message } => {
             assert_eq!(
@@ -5608,7 +5608,7 @@ fn switch_pre_mutation_reserve_rejects_before_mutation_with_retry() {
     match engine
         .handle_report_with_gate_and_prepare(&small, &[], &gate, |_| Ok::<(), ()>(()))
         .expect("prepare")
-        .0
+        .outcome
     {
         WorldOutcome::Accepted(_) | WorldOutcome::CommandConsumed(_) => {}
         other => panic!("same-seq smaller retry must commit, got {other:?}"),
@@ -10433,7 +10433,7 @@ fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
         vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
         vec![],
         Some(4),
-        Some(WorldCommand::SwitchView {
+        Some(WorldCommand::SelectWorkspace {
             output: OutputId("out-a".to_owned()),
             workspace: crate::directional::WorkspaceId(away.clone()),
         }),
@@ -10487,7 +10487,7 @@ fn switch_issuing_reserve_covers_zero_event_beside_settling_binding() {
         Some(4),
         Some(WorldCommand::Focus {
             window: crate::directional::WindowSubject::Window(WindowId("w1".to_owned())),
-            direction: Some(crate::directional::Direction::Left),
+            direction: None,
         }),
         vec![],
         "",

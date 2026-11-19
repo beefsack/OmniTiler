@@ -3128,9 +3128,7 @@ fn composed_float_focus_crosses_to_remembered_target() {
                 Some(3),
                 Some(WorldCommand::Focus {
                     window: crate::directional::WindowSubject::Window(WindowId("win-t".to_owned())),
-                    direction: Some(
-                        crate::directional::Direction::parse_wire(dir).expect("direction"),
-                    ),
+                    direction: None,
                 }),
             ),
         );
@@ -3146,9 +3144,7 @@ fn composed_float_focus_crosses_to_remembered_target() {
                 Some(4),
                 Some(WorldCommand::Focus {
                     window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
-                    direction: Some(
-                        crate::directional::Direction::parse_wire(dir).expect("direction"),
-                    ),
+                    direction: None,
                 }),
             ),
         );
@@ -3239,9 +3235,7 @@ fn composed_float_cross_preserves_destination_bit() {
                 Some(2),
                 Some(WorldCommand::Focus {
                     window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
-                    direction: Some(
-                        crate::directional::Direction::parse_wire(dir).expect("direction"),
-                    ),
+                    direction: None,
                 }),
             ),
         );
@@ -3386,9 +3380,7 @@ fn composed_tiled_cross_preserves_destination_bit() {
                 Some(2),
                 Some(WorldCommand::Focus {
                     window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
-                    direction: Some(
-                        crate::directional::Direction::parse_wire(dir).expect("direction"),
-                    ),
+                    direction: None,
                 }),
             ),
         );

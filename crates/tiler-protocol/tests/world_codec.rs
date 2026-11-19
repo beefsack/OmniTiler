@@ -11,15 +11,31 @@
 use tiler_core::connection::{
     ApplicationIdentity, HandshakeRequest, HostCapabilities, SettingsRequest,
 };
-use tiler_core::world_engine::WorldEngine;
-use tiler_core::world_report::{WORLD_CONTRACT_VERSION_V4, WorldReplyV4, WorldReportV4};
+use tiler_core::world_engine::{TransitionResult, WorldEngine};
+use tiler_core::world_report::{
+    CommandDisposition, WORLD_CONTRACT_VERSION_V4, WorldReplyV4, WorldReportV4,
+};
 use tiler_core::world_report_v4_checks::{report_digest_v4, validate_report_v4_reason};
+use tiler_protocol::world_admission::ProtocolAdmissionGate;
 use tiler_protocol::world_admission_sizing::report_estimate_v4;
 use tiler_protocol::world_protocol::{
     DecodedReplyV4, ReplyWireOptionals, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES,
     WorldOutcome, decode_reply_v4, decode_report_v4, decode_request, encode_reply_v4,
 };
 use tiler_protocol::world_reply_write::count_reply_v4;
+
+fn eval_transition(engine: &mut WorldEngine, report: &WorldReportV4) -> TransitionResult {
+    let gate = ProtocolAdmissionGate::new();
+    engine
+        .handle_report_with_gate_and_prepare(report, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+}
+
+fn eval_report(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldOutcome {
+    eval_transition(engine, report).outcome
+}
 
 /// Minimal observation-only v4 report envelope: screens plus facts only,
 /// no native workspace concept. The v4 contract carries `rendererInput`
@@ -668,8 +684,8 @@ fn cursor_fact_decodes_independently_of_removed_policy_fields() {
         serde_json::json!([1, 2, 3]),
         serde_json::json!("here"),
         serde_json::json!([1.5, 2]),
-        serde_json::json!([20000, 0]),
-        serde_json::json!([0, -20000]),
+        serde_json::json!([32769, 0]),
+        serde_json::json!([0, -32769]),
     ] {
         let mut value: serde_json::Value =
             serde_json::from_str(&one_window_request()).expect("valid");
@@ -1314,7 +1330,7 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
             ..Default::default()
         },
     );
-    let reply = match engine.handle_report(&report, &[]).0 {
+    let reply = match eval_report(&mut engine, &report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -1421,7 +1437,7 @@ fn reply_encode_matches_core_canonical_writer() {
     // a decoder roundtrip to the identical typed reply.
     let report = decode_request(&one_window_request()).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let reply = match engine.handle_report(&report, &[]).0 {
+    let reply = match eval_report(&mut engine, &report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -1453,7 +1469,7 @@ fn focus_effects_refuse_through_v4_writer() {
     use tiler_core::world_report::{EffectCause, EffectKind, OneShotEffect};
     let report = decode_request(&one_window_request()).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let reply = match engine.handle_report(&report, &[]).0 {
+    let reply = match eval_report(&mut engine, &report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -1502,7 +1518,7 @@ fn reply_presentation_rev_encodes_quoted_exact_order() {
     // label stays independent of the outer reply revision.
     let report = decode_request(&one_window_request()).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let mut reply = match engine.handle_report(&report, &[]).0 {
+    let mut reply = match eval_report(&mut engine, &report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -1537,7 +1553,7 @@ fn reply_gesture_settled_matches_core_sizing() {
     // v4 writer with exact size accounting.
     let report = decode_request(&one_window_request()).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let mut reply = match engine.handle_report(&report, &[]).0 {
+    let mut reply = match eval_report(&mut engine, &report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -1556,7 +1572,7 @@ fn reply_warp_cursor_matches_core_sizing() {
     // canonical v4 writer with exact size accounting.
     let report = decode_request(&one_window_request()).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let mut reply = match engine.handle_report(&report, &[]).0 {
+    let mut reply = match eval_report(&mut engine, &report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -1634,7 +1650,7 @@ fn native_current_null_strict_and_creation_attempts_decode() {
     let report = decode_request(&value.to_string()).expect("creation fact decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
     assert!(
-        matches!(engine.handle_report(&report, &[]).0, WorldOutcome::Rejected { message, .. } if message == "native-without-capability")
+        matches!(eval_report(&mut engine, &report), WorldOutcome::Rejected { message, .. } if message == "native-without-capability")
     );
 }
 
@@ -1656,7 +1672,7 @@ fn golden_bootstrap_reply_bytes_lock_wire_shape() {
     // Pre-settings report decodes yet bootstraps: correlated, not ready,
     // no desired state, no effects.
     let pre_settings = decode_request(&one_window_request()).expect("decodes");
-    let reply = match engine.handle_report(&pre_settings, &[]).0 {
+    let reply = match eval_report(&mut engine, &pre_settings) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected bootstrap, got {other:?}"),
     };
@@ -1691,7 +1707,7 @@ fn reply_operation_settled_matches_core_sizing() {
     use tiler_core::world_report::{OperationEvent, OperationKind, OperationOutcome};
     let report = decode_request(&one_window_request()).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let mut reply = match engine.handle_report(&report, &[]).0 {
+    let mut reply = match eval_report(&mut engine, &report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -1983,7 +1999,7 @@ fn native_ws_field_decodes_and_gates() {
         },
     );
     assert!(
-        matches!(engine.handle_report(&report, &[]).0, WorldOutcome::Rejected { message, .. } if message == "native-without-capability")
+        matches!(eval_report(&mut engine, &report), WorldOutcome::Rejected { message, .. } if message == "native-without-capability")
     );
 }
 
@@ -2200,7 +2216,7 @@ fn focus_directional_no_focus_decodes_and_crosses_end_to_end() {
         },
     );
     let seed = decode_request(&two_output_envelope("1", "req-1", None)).expect("seed decodes");
-    match engine.handle_report(&seed, &[]).0 {
+    match eval_report(&mut engine, &seed) {
         WorldOutcome::Accepted(_) => {}
         other => panic!("expected accepted seed, got {other:?}"),
     }
@@ -2210,7 +2226,7 @@ fn focus_directional_no_focus_decodes_and_crosses_end_to_end() {
         Some(serde_json::json!({"op": "focus-directional", "win": "", "direction": "right"})),
     ))
     .expect("no-focus command decodes");
-    let reply = match engine.handle_report(&report, &[]).0 {
+    let reply = match eval_report(&mut engine, &report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -2288,7 +2304,7 @@ fn explicit_focus_effect_wire_carries_cause_metadata() {
         },
     );
     let seed = decode_request(&two_output_envelope("1", "req-1", None)).expect("seed decodes");
-    match engine.handle_report(&seed, &[]).0 {
+    match eval_report(&mut engine, &seed) {
         WorldOutcome::Accepted(_) => {}
         other => panic!("expected accepted seed, got {other:?}"),
     }
@@ -2298,7 +2314,7 @@ fn explicit_focus_effect_wire_carries_cause_metadata() {
         Some(serde_json::json!({"op": "focus-directional", "win": "", "direction": "right"})),
     ))
     .expect("no-focus command decodes");
-    let reply = match engine.handle_report(&report, &[]).0 {
+    let reply = match eval_report(&mut engine, &report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -2372,14 +2388,22 @@ fn toggle_maximize_decodes_and_result_encodes() {
             ..Default::default()
         },
     );
-    let (outcome, settlements) = engine.handle_report(&report, &[]);
-    let reply = match outcome {
+    let transition = eval_transition(&mut engine, &report);
+    let reply = match transition.outcome {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     assert!(reply.drag_preview.is_none());
-    assert_eq!(settlements.len(), 1, "issuing report settles command");
-    match &settlements[0].result {
+    assert_eq!(
+        transition.dispositions.len(),
+        1,
+        "issuing report settles command"
+    );
+    let result = match &transition.dispositions[0].disposition {
+        CommandDisposition::Executed(res) => res,
+        other => panic!("expected executed disposition, got {other:?}"),
+    };
+    match result {
         Some(R::Maximize {
             window,
             maximized,
@@ -2400,10 +2424,7 @@ fn toggle_maximize_decodes_and_result_encodes() {
         "wire carries dragPreview:null, got {wire}"
     );
     let mut encoded = String::new();
-    tiler_protocol::world_command_result::encode_command_result(
-        &mut encoded,
-        &settlements[0].result,
-    );
+    tiler_protocol::world_command_result::encode_command_result(&mut encoded, result);
     assert_eq!(
         encoded,
         r#"{"op":"maximize","win":"win-a","maximized":true,"clearFullscreen":false,"wasMaximized":false}"#,
@@ -2513,7 +2534,7 @@ fn drag_preview_v4_exact_sizing_bounds() {
 
     let staged = decode_request(&one_window_request()).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let base_reply = match engine.handle_report(&staged, &[]).0 {
+    let base_reply = match eval_report(&mut engine, &staged) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -2567,7 +2588,7 @@ fn reply_trailing_marker_encodes_on_v4_writer() {
     use tiler_core::world_report::{AuthorityScope, TilingMode};
     let report = decode_request(&one_window_request()).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let mut reply = match engine.handle_report(&report, &[]).0 {
+    let mut reply = match eval_report(&mut engine, &report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -2748,7 +2769,7 @@ fn typed_scopes_match_v4_fixture_rows_and_reject_malformed_unions() {
             "\"actionOutputs\":[\"out-a\"]",
         );
     let report = decode_request(&request).expect("real report decode");
-    let outcome = engine.handle_report(&report, &[]).0;
+    let outcome = eval_report(&mut engine, &report);
     let WorldOutcome::Accepted(published) = outcome else {
         panic!("real report was not applied: {outcome:?}");
     };
@@ -2804,7 +2825,7 @@ fn startup_ordering_end_to_end_decode_engine_encode() {
     // Pre-settings report decodes yet bootstraps: correlated, not ready,
     // no desired state, no effects.
     let pre_settings = decode_request(&wire_request).expect("decodes");
-    let bootstrap = match engine.handle_report(&pre_settings, &[]).0 {
+    let bootstrap = match eval_report(&mut engine, &pre_settings) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected bootstrap, got {other:?}"),
     };
@@ -2832,7 +2853,7 @@ fn startup_ordering_end_to_end_decode_engine_encode() {
         .expect("settings accepted");
     assert!(!engine.is_ready());
     let ready_report = decode_request(&wire_request).expect("decodes");
-    let ready = match engine.handle_report(&ready_report, &[]).0 {
+    let ready = match eval_report(&mut engine, &ready_report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected ready reply, got {other:?}"),
     };
@@ -3596,16 +3617,16 @@ fn direct_typed_invalid_rows_match_decoded_hold_replies() {
         let mut engine_direct = connected_engine("gen-1", HostCapabilities::default());
         let seed: WorldReportV4 = decode_request(&two_healthy_wire()).expect("seed decodes");
         for engine in [&mut engine_held, &mut engine_direct] {
-            match engine.handle_report(&seed, &[]).0 {
+            match eval_report(engine, &seed) {
                 WorldOutcome::Accepted(reply) => assert!(reply.ready, "{name}: seed latches"),
                 other => panic!("{name}: seed must latch readiness, got {other:?}"),
             }
         }
-        let held_reply = match engine_held.handle_report(&decoded, &[]).0 {
+        let held_reply = match eval_report(&mut engine_held, &decoded) {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("{name}: decoded hold must be accepted, got {other:?}"),
         };
-        let direct_reply = match engine_direct.handle_report(&direct, &[]).0 {
+        let direct_reply = match eval_report(&mut engine_direct, &direct) {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("{name}: direct invalid row must grade to hold, got {other:?}"),
         };
@@ -4495,7 +4516,7 @@ fn immutable_effect_rows_match_fixture_bytes() {
     // A focus carrier refuses on the wire in both directions.
     let report = decode_request(&one_window_request()).expect("decodes");
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let mut reply = match engine.handle_report(&report, &[]).0 {
+    let mut reply = match eval_report(&mut engine, &report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -4565,12 +4586,12 @@ fn admission_focus_effect_carries_causal_metadata() {
         "req-1",
     ))
     .expect("seed decodes");
-    match engine.handle_report(&seed, &[]).0 {
+    match eval_report(&mut engine, &seed) {
         WorldOutcome::Accepted(_) => {}
         other => panic!("expected accepted seed, got {other:?}"),
     }
     let report = decode_request(&envelope_with_newcomer("2", "req-2")).expect("decodes");
-    let reply = match engine.handle_report(&report, &[]).0 {
+    let reply = match eval_report(&mut engine, &report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -4625,7 +4646,7 @@ fn consumed_command_replays_no_explicit_effect_with_metadata() {
         },
     );
     let seed = decode_request(&one_window_request()).expect("seed decodes");
-    match engine.handle_report(&seed, &[]).0 {
+    match eval_report(&mut engine, &seed) {
         WorldOutcome::Accepted(_) => {}
         other => panic!("expected accepted seed, got {other:?}"),
     }
@@ -4641,7 +4662,7 @@ fn consumed_command_replays_no_explicit_effect_with_metadata() {
         value
     };
     let first = decode_request(&first_value.to_string()).expect("decodes");
-    let before = match engine.handle_report(&first, &[]).0 {
+    let before = match eval_report(&mut engine, &first) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -4671,15 +4692,22 @@ fn consumed_command_replays_no_explicit_effect_with_metadata() {
         value
     };
     let retry = decode_request(&retry_value.to_string()).expect("decodes");
-    let (outcome, settlements) = engine.handle_report(&retry, &[]);
-    let reply = match outcome {
+    let transition = eval_transition(&mut engine, &retry);
+    let reply = match transition.outcome {
         WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     assert!(reply.command_consumed, "repeat consumes: {reply:?}");
     assert!(
-        settlements.is_empty(),
-        "consumed command emits no new settlement: {settlements:?}"
+        matches!(
+            transition.dispositions.as_slice(),
+            [tiler_core::world_report::BatchDisposition {
+                disposition: CommandDisposition::AlreadyConsumed,
+                ..
+            }]
+        ),
+        "consumed command emits AlreadyConsumed disposition: {:?}",
+        transition.dispositions
     );
     assert!(
         reply
@@ -4813,11 +4841,12 @@ fn held_native_and_attempt_replay_residual_and_order_len_cap() {
     }]);
     let first = decode_report_v4(&first_val.to_string()).expect("first decodes");
     let first_gate = ProtocolAdmissionGate::with_residual(first.residual.as_ref());
-    let (first_out, _) = engine
+    let first_out = engine
         .handle_report_with_gate_and_prepare(&first.report, &[], &first_gate, |_| {
             Ok::<(), std::convert::Infallible>(())
         })
-        .expect("first admits");
+        .expect("first admits")
+        .outcome;
     let first_reply = match first_out {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
@@ -4827,11 +4856,12 @@ fn held_native_and_attempt_replay_residual_and_order_len_cap() {
     let pretty = serde_json::to_string_pretty(&first_val).expect("pretty");
     let replay_decoded = decode_report_v4(&pretty).expect("pretty decodes");
     let replay_gate = ProtocolAdmissionGate::with_residual(replay_decoded.residual.as_ref());
-    let (replay_out, _) = engine
+    let replay_out = engine
         .handle_report_with_gate_and_prepare(&replay_decoded.report, &[], &replay_gate, |_| {
             Ok::<(), std::convert::Infallible>(())
         })
-        .expect("replay admits");
+        .expect("replay admits")
+        .outcome;
     match replay_out {
         WorldOutcome::Duplicate(reply) => {
             assert_eq!(reply, first_reply);
@@ -4855,7 +4885,7 @@ fn held_native_and_attempt_replay_residual_and_order_len_cap() {
             |_| Ok::<(), std::convert::Infallible>(()),
         )
         .expect("evaluates")
-        .0
+        .outcome
     {
         WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, "request-reused");
@@ -4879,7 +4909,7 @@ fn held_native_and_attempt_replay_residual_and_order_len_cap() {
             |_| Ok::<(), std::convert::Infallible>(()),
         )
         .expect("evaluates")
-        .0
+        .outcome
     {
         WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, "request-reused");

@@ -2160,13 +2160,17 @@ fn sticky_reply_bound_rejects_before_mutation_and_small_retry_wins() {
     let sticky = engine.world.intent.restored_sticky.clone();
     let saved = engine.world.intent.intent_desired.clone();
     let gate = LocalStickyPreflightGate::new(true);
-    let (outcome, settlements) = engine
+    let res = engine
         .handle_report_with_gate_and_prepare(&report, &[], &gate, |_| {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {});
-    assert!(settlements.is_empty());
-    match outcome {
+    assert!(
+        res.dispositions
+            .iter()
+            .all(|d| d.disposition == crate::world_report::CommandDisposition::NotRun)
+    );
+    match res.outcome {
         WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, KIND_REPLY_SIZE);
         }
@@ -2208,11 +2212,12 @@ fn sticky_reply_bound_rejects_before_mutation_and_small_retry_wins() {
         vec![sup_fact("win-a", "out-a", 0)],
         set_sticky("win-a", true),
     );
-    let (retry_outcome, _) = engine
+    let retry_outcome = engine
         .handle_report_with_gate_and_prepare(&retry, &[], &gate, |_| {
             Ok::<(), std::convert::Infallible>(())
         })
-        .unwrap_or_else(|e| match e {});
+        .unwrap_or_else(|e| match e {})
+        .outcome;
     let reply = match retry_outcome {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted retry, got {other:?}"),

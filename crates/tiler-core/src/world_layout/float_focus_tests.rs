@@ -269,7 +269,13 @@ fn float_cross_subject_eligibility_refuses_fail_closed() {
             RefusalKind::FocusMismatch
         )))
     );
-    assert_eq!(layout.focus_leaf(&k1), Some(&nid("leaf-win-f")));
+    let leaf_f = layout
+        .domain(&k1)
+        .unwrap()
+        .leaves
+        .get(&win("win-f"))
+        .expect("win-f leaf");
+    assert_eq!(layout.focus_leaf(&k1), Some(leaf_f));
     assert!(
         layout
             .domain(&k1)

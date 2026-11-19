@@ -39,6 +39,14 @@ fn domain_key(output: &str, workspace: &str) -> DomainKey {
     }
 }
 
+fn leaf_of(layout: &WorldLayout, key: &DomainKey, win: &str) -> NodeId {
+    layout
+        .leaves(key)
+        .and_then(|leaves| leaves.get(&WindowId(win.to_owned())))
+        .expect("leaf for window")
+        .clone()
+}
+
 fn tiled_observed(window: &str, output: &str, workspace: &str) -> ObservedWindow {
     ObservedWindow {
         window: WindowId(window.to_owned()),
@@ -190,7 +198,7 @@ fn float_focus_convergence_admits_newcomer_at_prior_tiled_focus() {
     // Prior valid tiled focus B is retained: a float never takes leaf focus.
     assert_eq!(
         layout.focus_leaf(&key),
-        Some(&NodeId("leaf-win-b".to_owned()))
+        Some(&leaf_of(&layout, &key, "win-b"))
     );
 
     // Newcomer C opens while F holds native focus.
@@ -222,7 +230,7 @@ fn float_focus_convergence_admits_newcomer_at_prior_tiled_focus() {
             );
             assert_eq!(*shares, vec![1, 1]);
             assert_eq!(children.len(), 2);
-            assert_eq!(children[0].id().0, "leaf-win-a");
+            assert_eq!(children[0].id(), &leaf_of(&layout, &key, "win-a"));
             match &children[1] {
                 Node::Group {
                     axis,
@@ -237,8 +245,8 @@ fn float_focus_convergence_admits_newcomer_at_prior_tiled_focus() {
                     );
                     assert_eq!(*shares, vec![1, 1]);
                     assert_eq!(children.len(), 2);
-                    assert_eq!(children[0].id().0, "leaf-win-b");
-                    assert_eq!(children[1].id().0, "leaf-win-c");
+                    assert_eq!(children[0].id(), &leaf_of(&layout, &key, "win-b"));
+                    assert_eq!(children[1].id(), &leaf_of(&layout, &key, "win-c"));
                 }
                 other => panic!("expected nested V[B,C] beside A, got {other:?}"),
             }
@@ -291,7 +299,7 @@ fn float_focus_convergence_admits_newcomer_at_prior_tiled_focus() {
     assert!(layout.is_exception(&key, &WindowId("win-f".to_owned())));
     assert_eq!(
         layout.focus_leaf(&key),
-        Some(&NodeId("leaf-win-b".to_owned())),
+        Some(&leaf_of(&layout, &key, "win-b")),
         "float focus never displaces the retained tiled focus"
     );
 
@@ -311,7 +319,7 @@ fn float_focus_convergence_admits_newcomer_at_prior_tiled_focus() {
     );
     assert_eq!(
         layout.focus_leaf(&key),
-        Some(&NodeId("leaf-win-c".to_owned()))
+        Some(&leaf_of(&layout, &key, "win-c"))
     );
 }
 
@@ -364,12 +372,12 @@ fn seeded_mru_admission_anchors_without_focus() {
             assert_eq!(*axis, Axis::Horizontal);
             assert_eq!(*shares, vec![1, 1]);
             assert_eq!(children.len(), 2);
-            assert_eq!(children[0].id().0, "leaf-win-a");
+            assert_eq!(children[0].id(), &leaf_of(&layout, &key, "win-a"));
             match &children[1] {
                 Node::Group { children, .. } => {
                     assert_eq!(children.len(), 2);
-                    assert_eq!(children[0].id().0, "leaf-win-b");
-                    assert_eq!(children[1].id().0, "leaf-win-c");
+                    assert_eq!(children[0].id(), &leaf_of(&layout, &key, "win-b"));
+                    assert_eq!(children[1].id(), &leaf_of(&layout, &key, "win-c"));
                 }
                 other => panic!("expected wrapped H[B,C] second, got {other:?}"),
             }
@@ -403,7 +411,7 @@ fn close_then_reopen_is_fresh_admission_at_refocus_not_old_slot() {
     assert!(layout.sync_focus_from_window(&key, &WindowId("win-b".to_owned())));
     assert_eq!(
         layout.focus_leaf(&key),
-        Some(&NodeId("leaf-win-b".to_owned()))
+        Some(&leaf_of(&layout, &key, "win-b"))
     );
 
     // Close focused B: survivors keep order.
@@ -414,14 +422,17 @@ fn close_then_reopen_is_fresh_admission_at_refocus_not_old_slot() {
     };
     assert_eq!(
         leaves,
-        vec!["leaf-win-a".to_string(), "leaf-win-c".to_string()]
+        vec![
+            leaf_of(&layout, &key, "win-a").0,
+            leaf_of(&layout, &key, "win-c").0
+        ]
     );
 
     // Explicitly refocus the different tile C (the row's "focus C" step).
     assert!(layout.sync_focus_from_window(&key, &WindowId("win-c".to_owned())));
     assert_eq!(
         layout.focus_leaf(&key),
-        Some(&NodeId("leaf-win-c".to_owned()))
+        Some(&leaf_of(&layout, &key, "win-c"))
     );
 
     // Reopen a same-app window under a new id: fresh admission at C.
@@ -441,15 +452,15 @@ fn close_then_reopen_is_fresh_admission_at_refocus_not_old_slot() {
         Some(Node::Group { axis, children, .. }) => {
             assert_eq!(*axis, Axis::Horizontal);
             assert_eq!(children.len(), 2);
-            assert_eq!(children[0].id().0, "leaf-win-a");
+            assert_eq!(children[0].id(), &leaf_of(&layout, &key, "win-a"));
             match &children[1] {
                 Node::Group { axis, children, .. } => {
                     assert_eq!(*axis, Axis::Vertical);
                     assert_eq!(children.len(), 2);
                     // Fresh at focused C: C first, newcomer after. An old-slot
                     // restore would order the reopened window before C.
-                    assert_eq!(children[0].id().0, "leaf-win-c");
-                    assert_eq!(children[1].id().0, "leaf-win-b2");
+                    assert_eq!(children[0].id(), &leaf_of(&layout, &key, "win-c"));
+                    assert_eq!(children[1].id(), &leaf_of(&layout, &key, "win-b2"));
                 }
                 other => panic!("expected fresh V[C,D] beside A, got {other:?}"),
             }
@@ -458,7 +469,7 @@ fn close_then_reopen_is_fresh_admission_at_refocus_not_old_slot() {
     }
     assert_eq!(
         layout.focus_leaf(&key),
-        Some(&NodeId("leaf-win-b2".to_owned()))
+        Some(&leaf_of(&layout, &key, "win-b2"))
     );
     assert_eq!(outcome.geometry.len(), 3);
 }
@@ -511,7 +522,7 @@ fn view_return_candidates_prefers_remembered_then_mru_then_first() {
     );
     assert_eq!(
         first_candidate(&layout, &key),
-        Some(NodeId("leaf-win-b".to_owned())),
+        Some(leaf_of(&layout, &key, "win-b")),
         "MRU top wins with no remembered leaf"
     );
     // Ordinary activation advances the MRU stack only; the remembered
@@ -521,7 +532,7 @@ fn view_return_candidates_prefers_remembered_then_mru_then_first() {
     assert!(layout.sync_focus_from_window(&key, &WindowId("win-b".to_owned())));
     assert_eq!(
         first_candidate(&layout, &key),
-        Some(NodeId("leaf-win-a".to_owned())),
+        Some(leaf_of(&layout, &key, "win-a")),
         "remembered leaf beats the newer MRU top"
     );
     // Candidate order documents the fall-through: remembered first, then
@@ -529,8 +540,8 @@ fn view_return_candidates_prefers_remembered_then_mru_then_first() {
     assert_eq!(
         layout.view_return_candidates(&key),
         vec![
-            NodeId("leaf-win-a".to_owned()),
-            NodeId("leaf-win-b".to_owned())
+            leaf_of(&layout, &key, "win-a"),
+            leaf_of(&layout, &key, "win-b")
         ]
     );
     // Empty domain: no candidate, never invented focus.

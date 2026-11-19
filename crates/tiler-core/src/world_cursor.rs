@@ -334,9 +334,7 @@ impl WorldTransaction<'_> {
             .and_then(|screen| screen.work_area)
             .map(|area| clamp_point_into_area(centre, area))
             .unwrap_or(centre);
-        if (-crate::bounds::GEOMETRY_BOUND..=crate::bounds::GEOMETRY_BOUND).contains(&clamped.0)
-            && (-crate::bounds::GEOMETRY_BOUND..=crate::bounds::GEOMETRY_BOUND).contains(&clamped.1)
-        {
+        if crate::bounds::valid_carried_point(clamped.0, clamped.1) {
             Some(clamped)
         } else {
             None

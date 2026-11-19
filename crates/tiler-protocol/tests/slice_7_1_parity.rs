@@ -108,12 +108,22 @@ fn slice_7_1_bootstrap_typed_matches_decoded() {
     assert_eq!(decoded_invalid.report.held_screens.len(), 1);
     let mut typed_engine = bound_engine();
     let mut decoded_engine = bound_engine();
-    let typed_reply = typed_engine
-        .handle_report_v4_for_test(&typed_invalid)
-        .expect("typed bootstraps");
-    let decoded_reply = decoded_engine
-        .handle_report_v4_for_test(&decoded_invalid.report)
-        .expect("decoded bootstraps");
+    let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::new();
+    let eval = |eng: &mut WorldEngine, rep: &tiler_core::world_report::WorldReportV4| match eng
+        .handle_report_with_gate_and_prepare(rep, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .outcome
+    {
+        tiler_core::world_engine::WorldOutcome::Accepted(r)
+        | tiler_core::world_engine::WorldOutcome::Duplicate(r)
+        | tiler_core::world_engine::WorldOutcome::CommandConsumed(r) => Ok(r),
+        tiler_core::world_engine::WorldOutcome::Rejected { kind, message } => Err((kind, message)),
+    };
+    let typed_reply = eval(&mut typed_engine, &typed_invalid).expect("typed bootstraps");
+    let decoded_reply =
+        eval(&mut decoded_engine, &decoded_invalid.report).expect("decoded bootstraps");
     assert!(
         !typed_reply.ready && !decoded_reply.ready,
         "invalid-only first observation stays bootstrap"
@@ -130,12 +140,8 @@ fn slice_7_1_bootstrap_typed_matches_decoded() {
     valid_value["reqSeq"] = serde_json::json!("2");
     valid_value["req"] = serde_json::json!("request-b");
     let decoded_valid = decode_report_v4(&valid_value.to_string()).expect("bumped valid decodes");
-    let typed_ready = typed_engine
-        .handle_report_v4_for_test(&typed_valid)
-        .expect("typed readies");
-    let decoded_ready = decoded_engine
-        .handle_report_v4_for_test(&decoded_valid.report)
-        .expect("decoded readies");
+    let typed_ready = eval(&mut typed_engine, &typed_valid).expect("typed readies");
+    let decoded_ready = eval(&mut decoded_engine, &decoded_valid.report).expect("decoded readies");
     assert!(typed_ready.ready && decoded_ready.ready);
     assert_eq!(typed_ready, decoded_ready, "ready replies match");
 }
@@ -149,12 +155,21 @@ fn slice_7_1_ready_hold_typed_matches_decoded() {
     let valid = decode_report_v4(&valid_text).expect("valid decodes");
     let mut typed_engine = bound_engine();
     let mut decoded_engine = bound_engine();
-    typed_engine
-        .handle_report_v4_for_test(&valid.report)
-        .expect("typed baseline readies");
-    decoded_engine
-        .handle_report_v4_for_test(&valid.report)
-        .expect("decoded baseline readies");
+    let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::new();
+    let eval = |eng: &mut WorldEngine, rep: &tiler_core::world_report::WorldReportV4| match eng
+        .handle_report_with_gate_and_prepare(rep, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .outcome
+    {
+        tiler_core::world_engine::WorldOutcome::Accepted(r)
+        | tiler_core::world_engine::WorldOutcome::Duplicate(r)
+        | tiler_core::world_engine::WorldOutcome::CommandConsumed(r) => Ok(r),
+        tiler_core::world_engine::WorldOutcome::Rejected { kind, message } => Err((kind, message)),
+    };
+    eval(&mut typed_engine, &valid.report).expect("typed baseline readies");
+    eval(&mut decoded_engine, &valid.report).expect("decoded baseline readies");
     let mut typed_invalid = valid.report.clone();
     typed_invalid.screens[0].scale = 0.0;
     typed_invalid.observation_seq += 1;
@@ -168,12 +183,8 @@ fn slice_7_1_ready_hold_typed_matches_decoded() {
     invalid_value["req"] = serde_json::json!("request-b");
     let decoded_invalid =
         decode_report_v4(&invalid_value.to_string()).expect("decoded holds invalid");
-    let typed_reply = typed_engine
-        .handle_report_v4_for_test(&typed_invalid)
-        .expect("typed holds");
-    let decoded_reply = decoded_engine
-        .handle_report_v4_for_test(&decoded_invalid.report)
-        .expect("decoded holds");
+    let typed_reply = eval(&mut typed_engine, &typed_invalid).expect("typed holds");
+    let decoded_reply = eval(&mut decoded_engine, &decoded_invalid.report).expect("decoded holds");
     assert!(typed_reply.ready && decoded_reply.ready);
     assert_eq!(typed_reply, decoded_reply, "ready hold replies match");
 
@@ -189,23 +200,20 @@ fn slice_7_1_ready_hold_typed_matches_decoded() {
     window_value["reqSeq"] = serde_json::json!("3");
     window_value["req"] = serde_json::json!("request-c");
     let decoded_window = decode_report_v4(&window_value.to_string()).expect("decoded holds window");
-    let typed_reply = typed_engine
-        .handle_report_v4_for_test(&typed_window)
-        .expect("typed window holds");
-    let decoded_reply = decoded_engine
-        .handle_report_v4_for_test(&decoded_window.report)
-        .expect("decoded window holds");
+    let typed_reply = eval(&mut typed_engine, &typed_window).expect("typed window holds");
+    let decoded_reply =
+        eval(&mut decoded_engine, &decoded_window.report).expect("decoded window holds");
     assert_eq!(
         typed_reply, decoded_reply,
         "ready window hold replies match"
     );
     assert_eq!(
-        typed_engine.handle_report_v4_for_test(&typed_window),
+        eval(&mut typed_engine, &typed_window),
         Ok(typed_reply),
         "raw typed invalid report replays its own cached reply"
     );
     assert_eq!(
-        decoded_engine.handle_report_v4_for_test(&decoded_window.report),
+        eval(&mut decoded_engine, &decoded_window.report),
         Ok(decoded_reply),
         "decoded invalid report replays its own cached reply"
     );
@@ -273,9 +281,17 @@ fn slice_7_1_invalid_lanes_typed_match_decoded() {
         "typed hit on gradable row grades nothing"
     );
     let mut hit_engine = bound_engine();
-    let typed_hit_err = hit_engine
-        .handle_report_v4_for_test(&typed_hit)
-        .expect_err("typed refuses held hit");
+    let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::new();
+    let typed_hit_err = match hit_engine
+        .handle_report_with_gate_and_prepare(&typed_hit, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .outcome
+    {
+        tiler_core::world_engine::WorldOutcome::Rejected { kind, message } => (kind, message),
+        other => panic!("expected refusal, got {other:?}"),
+    };
     let mut hit_value: serde_json::Value =
         serde_json::from_str(&valid_text).expect("fixture parses");
     hit_value["windows"][0]["processId"] = serde_json::json!("bad pid");

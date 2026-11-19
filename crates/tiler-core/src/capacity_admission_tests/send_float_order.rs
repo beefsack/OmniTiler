@@ -502,7 +502,6 @@ fn send_to_float_cross_output_stages_no_source_coordinate_claim() {
 
 #[test]
 fn send_to_output_refused_when_target_unknown_source_preserved() {
-    use crate::boundary::CoreCommand;
     use crate::size_hints::WindowSizeHints;
     use crate::world_engine::{WorldEngine, WorldOutcome};
     use crate::world_report::{
@@ -686,12 +685,14 @@ fn send_to_output_refused_when_target_unknown_source_preserved() {
             windows,
             "b",
             Some(1),
-            Some(WorldCommand::Operation(CoreCommand::SendToOutput {
-                window: crate::directional::WindowId("b".to_owned()),
+            Some(WorldCommand::Send {
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "b".to_owned(),
+                )),
                 target_output: crate::directional::OutputId("o9".to_owned()),
                 target_workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
                 follow: true,
-            })),
+            }),
         ),
         &[],
     );

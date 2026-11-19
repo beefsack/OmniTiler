@@ -53,6 +53,14 @@ impl WorldLayout {
         })
     }
 
+    /// Whether any retained domain links a window as a tiled leaf or exception.
+    #[must_use]
+    pub(crate) fn is_tiled_or_exception_any(&self, window: &WindowId) -> bool {
+        self.domains.values().any(|domain| {
+            domain.leaves.contains_key(window) || domain.exceptions.contains_key(window)
+        })
+    }
+
     /// Whether any retained domain links a window as a tiled leaf.
     #[must_use]
     pub(crate) fn is_tiled_window_any(&self, window: &WindowId) -> bool {

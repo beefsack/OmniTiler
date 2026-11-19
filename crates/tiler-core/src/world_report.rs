@@ -18,7 +18,7 @@
 use std::collections::BTreeSet;
 
 use crate::boundary::CoreCommand;
-use crate::bounds::{GEOMETRY_BOUND, is_opaque_id, valid_carried_rect};
+use crate::bounds::{COORDINATE_BOUND, is_opaque_id, valid_carried_point, valid_carried_rect};
 use crate::directional::{Direction, NodeId, OutputId, WindowId, WindowSubject, WorkspaceId};
 use crate::geometry::Rect;
 use crate::gesture::{GestureIngress, GestureSettled};
@@ -2572,6 +2572,35 @@ pub struct BatchSettlement {
     pub result: Option<CommandResult>,
 }
 
+/// Maximum total commands (optional inline command plus caller-owned queue)
+/// admitted in one ordered transition.
+pub const MAX_BATCH_COMMANDS: usize = 128;
+
+/// World incorporation verdict for one transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportIncorporation {
+    Incorporated,
+    BootstrapIntentOnly,
+    Replay,
+    Rejected,
+}
+
+/// Per-sequence command disposition for one transition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandDisposition {
+    Executed(Option<CommandResult>),
+    Refused(CommandRejectKind),
+    AlreadyConsumed,
+    NotRun,
+}
+
+/// Sequence-keyed command disposition for one supplied batch entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchDisposition {
+    pub seq: u64,
+    pub disposition: CommandDisposition,
+}
+
 /// Staged v4 reply section caps: worst-case row bounds for the whole-reply
 /// decoder, mirroring the report-side analogues. Outputs mirror screens;
 /// window-keyed lanes mirror facts; retained-operation lanes mirror the
@@ -3353,8 +3382,8 @@ pub fn valid_operation(command: &CoreCommand) -> bool {
             ..
         } => {
             is_opaque_id(&window.0)
-                && (-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(boundary)
-                && second.is_none_or(|(_, b)| (-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(&b))
+                && (-COORDINATE_BOUND..=COORDINATE_BOUND).contains(boundary)
+                && second.is_none_or(|(_, b)| (-COORDINATE_BOUND..=COORDINATE_BOUND).contains(&b))
         }
         CoreCommand::ToggleFloat { window, float_rect } => {
             valid_window_subject(window)
@@ -3393,8 +3422,7 @@ pub fn valid_operation(command: &CoreCommand) -> bool {
             ..
         } => {
             is_opaque_id(&window.0)
-                && (-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(x)
-                && (-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(y)
+                && valid_carried_point(*x, *y)
                 && source
                     .as_ref()
                     .is_none_or(|key| is_opaque_id(&key.output.0) && is_opaque_id(&key.workspace.0))

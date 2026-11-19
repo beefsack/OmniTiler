@@ -23,7 +23,7 @@
 
 use std::io::{BufRead, Write};
 
-use tiler_core::world_report::{BatchSettlement, CommandResult};
+use tiler_core::world_report::{BatchDisposition, CommandDisposition, CommandResult};
 use tiler_protocol::connection_protocol::route_connection_request;
 use tiler_protocol::world_admission::ProtocolAdmissionGate;
 use tiler_protocol::world_command_result::encode_command_result;
@@ -53,7 +53,7 @@ fn submit_report_with_settlements(
     engine: &mut WorldEngine,
     body: &str,
     generation: &str,
-) -> (String, Vec<BatchSettlement>) {
+) -> (String, Vec<BatchDisposition>) {
     let decoded = match decode_request_with_wire(body) {
         Ok(decoded) => decoded,
         Err(error) => {
@@ -64,12 +64,12 @@ fn submit_report_with_settlements(
         }
     };
     let gate = ProtocolAdmissionGate::with_residual(decoded.residual.as_ref());
-    let (outcome, settlements) = engine
+    let transition = engine
         .handle_report_with_gate_and_prepare(&decoded.report, &[], &gate, |_| {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {});
-    match outcome {
+    match transition.outcome {
         WorldOutcome::Accepted(reply)
         | WorldOutcome::Duplicate(reply)
         | WorldOutcome::CommandConsumed(reply) => {
@@ -80,7 +80,7 @@ fn submit_report_with_settlements(
                 },
                 reply,
             }) {
-                Ok(bytes) => (bytes, settlements),
+                Ok(bytes) => (bytes, transition.dispositions),
                 Err(error) => (
                     encode_error(error.kind, error.message, generation),
                     Vec::new(),
@@ -103,14 +103,19 @@ fn encode_settlement_result(result: &Option<CommandResult>) -> serde_json::Value
     serde_json::from_str(&encoded).unwrap_or(serde_json::Value::Null)
 }
 
-fn encode_report_with_settlements(reply: String, settlements: Vec<BatchSettlement>) -> String {
-    let encoded_settlements: Vec<serde_json::Value> = settlements
+fn encode_report_with_settlements(reply: String, dispositions: Vec<BatchDisposition>) -> String {
+    let encoded_settlements: Vec<serde_json::Value> = dispositions
         .into_iter()
-        .map(|s| {
-            serde_json::json!({
-                "seq": s.seq.to_string(),
-                "result": encode_settlement_result(&s.result),
-            })
+        .filter_map(|d| {
+            let result = match d.disposition {
+                CommandDisposition::Executed(r) => r,
+                CommandDisposition::Refused(kind) => Some(CommandResult::Rejected { kind }),
+                CommandDisposition::AlreadyConsumed | CommandDisposition::NotRun => return None,
+            };
+            Some(serde_json::json!({
+                "seq": d.seq.to_string(),
+                "result": encode_settlement_result(&result),
+            }))
         })
         .collect();
     serde_json::json!({

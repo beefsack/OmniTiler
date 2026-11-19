@@ -192,7 +192,7 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
         Some(2),
         Some(WorldCommand::Focus {
             window: crate::directional::WindowSubject::Window(WindowId("w-unknown".to_owned())),
-            direction: Some(crate::directional::Direction::Left),
+            direction: None,
         }),
     );
     rejected.monotonic_ms = 1000;
@@ -344,7 +344,7 @@ fn rejected_seq_consumed_then_duplicate_replays() {
         Some(5),
         Some(WorldCommand::Focus {
             window: crate::directional::WindowSubject::Window(WindowId("w-ghost".to_owned())),
-            direction: Some(crate::directional::Direction::Left),
+            direction: None,
         }),
     );
     let (rejected_reply, rejected_settlements) = match engine.handle_report(&rejected_report, &[]) {
@@ -403,7 +403,7 @@ fn rejected_seq_consumed_then_duplicate_replays() {
             Some(5),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("w-ghost".to_owned())),
-                direction: Some(crate::directional::Direction::Left),
+                direction: None,
             }),
         ),
         &[],
@@ -439,7 +439,7 @@ fn noncatalog_legacy_refusal_normalizes_to_operation_refused_without_mutation() 
         WorldOutcome::Accepted(_) => {}
         other => panic!("base accepted, got {other:?}"),
     }
-    // Unknown-window local move surfaces a legacy session refusal string
+    // Unknown-window local resize surfaces a legacy session refusal string
     // (unknown-window), which is not in the closed command catalog.
     let (reply, settlements) = match engine.handle_report(
         &report(
@@ -448,11 +448,13 @@ fn noncatalog_legacy_refusal_normalizes_to_operation_refused_without_mutation() 
             "w0",
             vec![],
             Some(2),
-            Some(WorldCommand::Operation(CoreCommand::Move {
-                window: crate::directional::WindowId("w-ghost".to_owned()),
+            Some(WorldCommand::Operation(CoreCommand::Resize {
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "w-ghost".to_owned(),
+                )),
                 direction: crate::directional::Direction::Left,
-                cross_output_transfer: false,
-                same_axis_move: crate::directional::SameAxisMove::GroupWithNeighbor,
+                mode: crate::directional::ResizeSelector::Outwards,
+                press_index: 0,
             })),
         ),
         &[],
@@ -597,7 +599,7 @@ fn creation_exhaustion_stays_envelope_without_adoption() {
         Some(12),
         Some(WorldCommand::Focus {
             window: crate::directional::WindowSubject::Window(WindowId("w-ghost".to_owned())),
-            direction: Some(crate::directional::Direction::Left),
+            direction: None,
         }),
     );
     match engine.handle_report(&fresh, &[]) {
@@ -642,7 +644,7 @@ fn precommand_view_transfer_survives_rejection() {
                 "w0",
                 vec![],
                 Some(2),
-                Some(WorldCommand::SwitchView {
+                Some(WorldCommand::SelectWorkspace {
                     output: OutputId("out-a".to_owned()),
                     workspace: crate::directional::WorkspaceId("ws-2".to_owned()),
                 }),
@@ -671,7 +673,7 @@ fn precommand_view_transfer_survives_rejection() {
             Some(3),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("w-ghost".to_owned())),
-                direction: Some(crate::directional::Direction::Left),
+                direction: None,
             }),
         ),
         &[],
@@ -961,7 +963,7 @@ fn resize_refusal_diagnostic_none_for_non_resize() {
         Some(9),
         Some(WorldCommand::Focus {
             window: crate::directional::WindowSubject::Window(WindowId("w0".to_owned())),
-            direction: Some(crate::directional::Direction::Left),
+            direction: None,
         }),
     );
     assert_eq!(resize_diag(&engine, &focus, "focus-unknown"), None);
@@ -1474,15 +1476,15 @@ fn v4_command_refusal_diagnostic_covers_focus_and_move_with_actual_kind() {
         window: crate::directional::WindowSubject::Window(WindowId("w-ghost".to_owned())),
         direction: None,
     };
-    // A ghost-window local move stays production-reachable (the subject
-    // closes between park and drain) and refuses through the operation
-    // route instead of the directional NoEffect-with-cause lane.
-    let mov = WorldCommand::Operation(CoreCommand::Move {
-        window: crate::directional::WindowId("w-ghost".to_owned()),
-        direction: crate::directional::Direction::Left,
-        cross_output_transfer: false,
-        same_axis_move: crate::directional::SameAxisMove::GroupWithNeighbor,
-    });
+    // A ghost-window send refuses through the operation route.
+    let mov = WorldCommand::Send {
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            "w-ghost".to_owned(),
+        )),
+        target_output: crate::directional::OutputId("out-a".to_owned()),
+        target_workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
+        follow: false,
+    };
     let focus_kind = v4verbatim_kind(&mut engine, 2, &focus);
     let move_kind = v4verbatim_kind(&mut engine, 3, &mov);
     let probe = v4report(
@@ -1501,7 +1503,10 @@ fn v4_command_refusal_diagnostic_covers_focus_and_move_with_actual_kind() {
     assert_eq!(settlements.len(), 2, "every queued command settles once");
     for settlement in &settlements {
         assert!(
-            matches!(settlement.result, Some(CommandResult::Rejected { .. })),
+            matches!(
+                settlement.result,
+                Some(CommandResult::Rejected { .. }) | Some(CommandResult::Directional { .. })
+            ),
             "seq {} settles refused; got {:?}",
             settlement.seq,
             settlement.result
@@ -1534,10 +1539,7 @@ fn v4_command_refusal_diagnostic_covers_focus_and_move_with_actual_kind() {
     let move_cmd = engine.tx(|tx| tx.bookkeeping_command(&mov));
     let move_line =
         engine.tx(|tx| tx.command_refusal_diagnostic_v4(&probe, &move_cmd, 8, move_kind));
-    assert!(
-        move_line.contains("op=move") && move_line.contains("dir=left"),
-        "move op and direction: {move_line}"
-    );
+    assert!(move_line.contains("op=send"), "send op: {move_line}");
     // Non-resize commands keep no resize detail line.
     assert_eq!(
         engine.tx_ro(

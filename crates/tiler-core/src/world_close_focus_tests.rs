@@ -617,7 +617,7 @@ fn inline_command_supersedes_pending_request() {
             Some(4),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-c".to_owned())),
-                direction: Some(crate::directional::Direction::Left),
+                direction: None,
             }),
         ),
     );
@@ -644,7 +644,7 @@ fn consumed_sequence_report_supersedes_pending_request() {
             Some(1),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
-                direction: Some(crate::directional::Direction::Left),
+                direction: None,
             }),
         ),
     );
@@ -671,7 +671,7 @@ fn consumed_sequence_report_supersedes_pending_request() {
                 Some(1),
                 Some(WorldCommand::Focus {
                     window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
-                    direction: Some(crate::directional::Direction::Left),
+                    direction: None,
                 }),
             ),
             &[],
@@ -1337,7 +1337,7 @@ fn same_report_explicit_beats_admission_and_close() {
             Some(4),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
-                direction: Some(crate::directional::Direction::Left),
+                direction: None,
             }),
         ),
     );

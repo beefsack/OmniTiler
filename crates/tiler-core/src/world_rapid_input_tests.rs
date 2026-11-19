@@ -1798,7 +1798,7 @@ fn rapid_input_batched_preflight_sees_effective_queued_and_refuses_before_mutati
         refuse_preflight: Cell::new(true),
         observed_queued: RefCell::new(Vec::new()),
     };
-    match eng
+    let res = eng
         .handle_report_v4_batched_with_gate_and_prepare(
             &capture,
             &issue_for(&capture),
@@ -1806,16 +1806,18 @@ fn rapid_input_batched_preflight_sees_effective_queued_and_refuses_before_mutati
             &gate,
             |_| Ok::<(), std::convert::Infallible>(()),
         )
-        .unwrap_or_else(|e| match e {})
-    {
-        (V4RunOutcome::Rejected { kind, .. }, settlements) => {
+        .unwrap_or_else(|e| match e {});
+    match res.outcome {
+        V4RunOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
             assert!(
-                settlements.is_empty(),
-                "preflight refusal settles nothing; batch stays unsettled"
+                res.dispositions
+                    .iter()
+                    .all(|d| d.disposition == crate::world_report::CommandDisposition::NotRun),
+                "preflight refusal settles nothing; batch stays NotRun"
             );
         }
-        (other, _) => panic!("expected reply-oversize refusal, got {other:?}"),
+        other => panic!("expected reply-oversize refusal, got {other:?}"),
     }
     assert_eq!(*gate.observed_queued.borrow(), queued);
     assert_eq!(eng.state_revision(), revision_before);
@@ -1824,7 +1826,7 @@ fn rapid_input_batched_preflight_sees_effective_queued_and_refuses_before_mutati
     assert!(eng.world.intent.intent_desired.is_empty());
 
     gate.refuse_preflight.set(false);
-    let (reply, settlements) = match eng
+    let retry_res = eng
         .handle_report_v4_batched_with_gate_and_prepare(
             &capture,
             &issue_for(&capture),
@@ -1832,14 +1834,20 @@ fn rapid_input_batched_preflight_sees_effective_queued_and_refuses_before_mutati
             &gate,
             |_| Ok::<(), std::convert::Infallible>(()),
         )
-        .unwrap_or_else(|e| match e {})
-    {
-        (V4RunOutcome::Accepted(reply), settlements) => (reply, settlements),
-        (other, _) => panic!("expected accepted retry, got {other:?}"),
+        .unwrap_or_else(|e| match e {});
+    let reply = match retry_res.outcome {
+        V4RunOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted retry, got {other:?}"),
     };
-    assert_eq!(settlements.len(), 2);
-    assert_ready_settlement(&settlements[0]);
-    assert_ready_settlement(&settlements[1]);
+    assert_eq!(retry_res.dispositions.len(), 2);
+    assert!(matches!(
+        retry_res.dispositions[0].disposition,
+        crate::world_report::CommandDisposition::Executed(_)
+    ));
+    assert!(matches!(
+        retry_res.dispositions[1].disposition,
+        crate::world_report::CommandDisposition::Executed(_)
+    ));
     let mut pairs: Vec<(String, IntentData)> =
         reply.intent_desired.iter().map(float_write_pair).collect();
     pairs.sort_by(|a, b| a.0.cmp(&b.0));

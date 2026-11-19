@@ -98,7 +98,14 @@ fn reply_wire(reply: &WorldReplyV4) -> String {
 fn drive(engine: &mut WorldEngine, report_wire: &str, step: &str) -> (WorldReplyV4, String) {
     let report =
         decode_request(report_wire).unwrap_or_else(|error| panic!("{step} decodes: {error:?}"));
-    let reply = match engine.handle_report(&report, &[]).0 {
+    let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::new();
+    let reply = match engine
+        .handle_report_with_gate_and_prepare(&report, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .outcome
+    {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted {step}, got {other:?}"),
     };

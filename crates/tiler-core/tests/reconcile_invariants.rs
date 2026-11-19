@@ -106,7 +106,7 @@ fn synchronous_atomic_revision_and_public_reply_contract() {
     use tiler_core::directional::{OutputId, WindowId};
     use tiler_core::geometry::Rect;
     use tiler_core::size_hints::WindowSizeHints;
-    use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+    use tiler_core::world_engine::WorldEngine;
     use tiler_core::world_report::{
         BatchSettlement, CommandRejectKind, CommandResult, NativeWorkspaceFact, OutputIdentity,
         PresentationIngressV4, PresentationRowV4, ScreenReport, VisibilityFact,
@@ -227,11 +227,76 @@ fn synchronous_atomic_revision_and_public_reply_contract() {
         }
     }
 
+    struct TestGate;
+
+    impl tiler_core::world_engine::CoreAdmissionGate for TestGate {
+        fn check_request_size(
+            &self,
+            _report: &WorldReportV4,
+        ) -> tiler_core::world_engine::AdmissionGateDecision {
+            tiler_core::world_engine::AdmissionGateDecision::Allow
+        }
+
+        fn check_preflight(
+            &self,
+            _report: &WorldReportV4,
+            _facts: &tiler_core::world_engine::PreflightGateFacts<'_>,
+        ) -> tiler_core::world_engine::AdmissionGateDecision {
+            tiler_core::world_engine::AdmissionGateDecision::Allow
+        }
+
+        fn check_exact_inner(
+            &self,
+            _reply: &tiler_core::world_report::WorldReplyV4,
+        ) -> tiler_core::world_engine::ExactInnerDecision {
+            tiler_core::world_engine::ExactInnerDecision::Allow(
+                tiler_core::world_engine::ExactInnerCheck::new(0),
+            )
+        }
+
+        fn check_future_reserve(
+            &self,
+            _reply: &tiler_core::world_report::WorldReplyV4,
+            _facts: &tiler_core::world_engine::FutureReserveGateFacts,
+            _exact: tiler_core::world_engine::ExactInnerCheck,
+        ) -> tiler_core::world_engine::AdmissionGateDecision {
+            tiler_core::world_engine::AdmissionGateDecision::Allow
+        }
+    }
+
+    let eval_report = |engine: &mut WorldEngine, report: &WorldReportV4| {
+        let run = engine
+            .handle_report_with_gate_and_prepare(report, &[], &TestGate, |_| {
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .unwrap_or_else(|e| match e {});
+        let settlements = run
+            .dispositions
+            .into_iter()
+            .filter_map(|d| match d.disposition {
+                tiler_core::world_report::CommandDisposition::Executed(result) => {
+                    Some(tiler_core::world_report::BatchSettlement { seq: d.seq, result })
+                }
+                tiler_core::world_report::CommandDisposition::Refused(result) => {
+                    Some(tiler_core::world_report::BatchSettlement {
+                        seq: d.seq,
+                        result: Some(tiler_core::world_report::CommandResult::Rejected {
+                            kind: result,
+                        }),
+                    })
+                }
+                tiler_core::world_report::CommandDisposition::AlreadyConsumed
+                | tiler_core::world_report::CommandDisposition::NotRun => None,
+            })
+            .collect::<Vec<_>>();
+        (run.outcome, settlements)
+    };
+
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("engine");
 
     // 1. Initial observation commits synchronously at revision 1.
-    let first = match engine.handle_report(&make_report(1, None, None), &[]) {
-        (WorldOutcome::Accepted(reply), settlements) => {
+    let first = match eval_report(&mut engine, &make_report(1, None, None)) {
+        (tiler_core::world_engine::WorldOutcome::Accepted(reply), settlements) => {
             assert!(settlements.is_empty());
             reply
         }
@@ -244,7 +309,8 @@ fn synchronous_atomic_revision_and_public_reply_contract() {
     assert_eq!(first.windows.len(), 2);
 
     // 2. Synchronous command advances revision by exactly 1 and mutates public rects.
-    let second = match engine.handle_report(
+    let second = match eval_report(
+        &mut engine,
         &make_report(
             2,
             Some(11),
@@ -257,9 +323,8 @@ fn synchronous_atomic_revision_and_public_reply_contract() {
                 press_index: 0,
             })),
         ),
-        &[],
     ) {
-        (WorldOutcome::Accepted(reply), settlements) => {
+        (tiler_core::world_engine::WorldOutcome::Accepted(reply), settlements) => {
             assert_eq!(
                 settlements,
                 vec![BatchSettlement {
@@ -287,7 +352,8 @@ fn synchronous_atomic_revision_and_public_reply_contract() {
     assert_ne!(win_b_after, win_b_before);
 
     // 3. Rejected command with secret token leaves layout rects unchanged and redacts secret.
-    let (outcome, settlements) = engine.handle_report(
+    let (outcome, settlements) = eval_report(
+        &mut engine,
         &make_report(
             3,
             Some(12),
@@ -300,10 +366,9 @@ fn synchronous_atomic_revision_and_public_reply_contract() {
                 follow: false,
             }),
         ),
-        &[],
     );
     let third = match outcome {
-        WorldOutcome::Accepted(reply) => reply,
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted reply with rejected settlement, got {other:?}"),
     };
     assert_eq!(third.state_revision, 3);

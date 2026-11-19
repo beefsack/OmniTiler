@@ -2388,9 +2388,11 @@ impl WorldTransaction<'_> {
             if exists {
                 continue;
             }
-            self.world.settlement.native_creation_seq =
-                self.world.settlement.native_creation_seq.saturating_add(1);
-            let operation_id = format!("op-native-{}", self.world.settlement.native_creation_seq);
+            let Some(next_seq) = self.world.settlement.native_creation_seq.checked_add(1) else {
+                continue;
+            };
+            self.world.settlement.native_creation_seq = next_seq;
+            let operation_id = format!("op-native-{next_seq}");
             self.world.settlement.retained_creations.push(
                 crate::world_engine::RetainedNativeCreation {
                     operation_id,
@@ -3077,9 +3079,11 @@ impl WorldTransaction<'_> {
                 .find(|entry| entry.output.0 == *first)
                 .map(|entry| entry.native_order.clone())
                 .unwrap_or_default();
-            self.world.settlement.native_creation_seq =
-                self.world.settlement.native_creation_seq.saturating_add(1);
-            let operation_id = format!("op-native-{}", self.world.settlement.native_creation_seq);
+            let Some(next_seq) = self.world.settlement.native_creation_seq.checked_add(1) else {
+                continue;
+            };
+            self.world.settlement.native_creation_seq = next_seq;
+            let operation_id = format!("op-native-{next_seq}");
             self.world.settlement.retained_creations.push(
                 crate::world_engine::RetainedNativeCreation {
                     operation_id,

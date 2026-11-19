@@ -5113,7 +5113,7 @@ fn standalone_view_hold_completes_through_member_verdict_not_echo() {
             vec![],
             "",
             Some(11),
-            Some(WorldCommand::SwitchView {
+            Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
                 workspace: crate::directional::WorkspaceId(target.clone()),
             }),
@@ -5249,7 +5249,7 @@ fn standalone_view_refusal_holds_on_current_incomplete_screen() {
                 vec![],
                 "",
                 Some(11),
-                Some(WorldCommand::SwitchView {
+                Some(WorldCommand::SelectWorkspace {
                     output: OutputId("out-a".to_owned()),
                     workspace: crate::directional::WorkspaceId(target.clone()),
                 }),

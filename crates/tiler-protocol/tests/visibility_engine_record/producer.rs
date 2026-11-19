@@ -79,9 +79,21 @@ impl Rec {
         report.command_seq = cseq;
         report.command = cmd;
         report.focused_global = focused.to_owned();
-        let reply = match self.engine.handle_report_v4_for_test(&report) {
-            Ok(reply) => reply,
-            Err((kind, message)) => panic!("{req} refused {kind}/{message}"),
+        let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::new();
+        let reply = match self
+            .engine
+            .handle_report_with_gate_and_prepare(&report, &[], &gate, |_| {
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .unwrap_or_else(|e| match e {})
+            .outcome
+        {
+            tiler_core::world_engine::WorldOutcome::Accepted(reply)
+            | tiler_core::world_engine::WorldOutcome::Duplicate(reply)
+            | tiler_core::world_engine::WorldOutcome::CommandConsumed(reply) => reply,
+            tiler_core::world_engine::WorldOutcome::Rejected { kind, message } => {
+                panic!("{req} refused {kind}/{message}")
+            }
         };
         if record {
             let wire_flags = ReplyWireOptionals {

@@ -48,7 +48,7 @@
 //   spelling is unobservable here): outsets/width/radius are finite,
 //   integral, in i32 range (width/radius additionally >= 0 when non-null;
 //   no uniform, non-negative-outset, or 1024 clamp). Witness frame uses
-//   the carried-geometry bound (x/y in -16384..16384, w/h in 1..16384).
+//   the carried-geometry bound (endpoints in -32768..32768, w/h in 1..16384).
 //   Reason is the closed v4 set; visible=>reason=="". Nullable
 //   subject/outsets/width/radius/witness pass unchanged even when null,
 //   dangling, or unjoined: native border narrowly hides while
@@ -124,9 +124,9 @@
 namespace KWin
 {
 
-// Carried-geometry bound (core GEOMETRY_BOUND, retired group/preview gate).
-inline constexpr int PRESENTATION_COORD_MIN = -16384;
-inline constexpr int PRESENTATION_COORD_MAX = 16384;
+// Carried-geometry bound (endpoints -32768..32768, extent 1..16384).
+inline constexpr int PRESENTATION_COORD_MIN = -32768;
+inline constexpr int PRESENTATION_COORD_MAX = 32768;
 inline constexpr int PRESENTATION_SIZE_MAX = 16384;
 
 // Causal coverage witness (Stage 5): the native-invalidation source
@@ -590,8 +590,13 @@ inline bool parseRect(const QJsonValue &value, QRect *out)
     if (!isJsonIntValue(a.at(0), &x) || !isJsonIntValue(a.at(1), &y) || !isJsonIntValue(a.at(2), &w) || !isJsonIntValue(a.at(3), &h)) {
         return false;
     }
-    if (x < PRESENTATION_COORD_MIN || x > PRESENTATION_COORD_MAX || y < PRESENTATION_COORD_MIN || y > PRESENTATION_COORD_MAX
-        || w <= 0 || w > PRESENTATION_SIZE_MAX || h <= 0 || h > PRESENTATION_SIZE_MAX) {
+    const qint64 x64 = x;
+    const qint64 y64 = y;
+    const qint64 w64 = w;
+    const qint64 h64 = h;
+    if (x64 < PRESENTATION_COORD_MIN || y64 < PRESENTATION_COORD_MIN
+        || w64 <= 0 || w64 > PRESENTATION_SIZE_MAX || h64 <= 0 || h64 > PRESENTATION_SIZE_MAX
+        || x64 + w64 > PRESENTATION_COORD_MAX || y64 + h64 > PRESENTATION_COORD_MAX) {
         return false;
     }
     if (out != nullptr) {

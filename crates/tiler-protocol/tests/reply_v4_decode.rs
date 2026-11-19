@@ -1149,7 +1149,7 @@ fn v4_reply_writer_refuses_unspellable() {
             data: None,
         });
     let mut warp_overbound = writer_base();
-    warp_overbound.reply.cursor_warp = Some((16385, 0));
+    warp_overbound.reply.cursor_warp = Some((32769, 0));
     let mut bad_rect = writer_base();
     bad_rect.reply.windows[0].allocation = Some(tiler_core::geometry::Rect {
         x: 0,

@@ -190,12 +190,48 @@ pub use crate::world_admit_v4::{
     FutureReserveGateFacts, PreflightGateFacts, ReplayResidualToken, RetainedResidual,
 };
 
-/// Borrowed format-neutral candidate view passed to the caller's final
-/// prepare callback immediately before candidate adoption.
-pub struct PreparedCandidate<'a> {
+/// Unforgeable borrowed proof that `reply` passed mandatory core semantic and
+/// host-capability validation at final prepare. Constructible only inside
+/// `tiler-core` after `validate_prepared_reply_v4` succeeds.
+#[derive(Debug, Clone, Copy)]
+pub struct ValidatedReply<'a>(&'a WorldReplyV4);
+
+impl<'a> ValidatedReply<'a> {
+    pub(crate) fn new_validated(reply: &'a WorldReplyV4) -> Self {
+        Self(reply)
+    }
+
+    #[must_use]
+    pub fn reply(&self) -> &'a WorldReplyV4 {
+        self.0
+    }
+}
+
+/// Borrowed pre-validation candidate view passed to
+/// [`CoreAdmissionGate::check_wake_precheck`].
+pub struct WakePrecheckCandidate<'a> {
     pub reply: &'a WorldReplyV4,
     pub active_gesture_id: Option<u64>,
-    pub settlements: &'a [crate::world_report::BatchSettlement],
+    pub dispositions: &'a [crate::world_report::BatchDisposition],
+}
+
+/// Borrowed format-neutral candidate view passed to the caller's final
+/// prepare callback immediately before candidate adoption, carrying an
+/// unforgeable [`ValidatedReply`] proof.
+pub struct PreparedCandidate<'a> {
+    pub reply: ValidatedReply<'a>,
+    pub active_gesture_id: Option<u64>,
+    pub dispositions: &'a [crate::world_report::BatchDisposition],
+}
+
+/// Single-transition return contract: deliverable publication outcome,
+/// world incorporation verdict, and sequence-keyed dispositions for supplied
+/// batch identities.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransitionResult {
+    pub outcome: V4RunOutcome,
+    pub incorporation: crate::world_report::ReportIncorporation,
+    pub dispositions: Vec<crate::world_report::BatchDisposition>,
 }
 
 /// Retained prior-accepted observation/publication facts for shared lanes.
@@ -534,7 +570,20 @@ impl WorldEngine {
         let generation = if next_number == 0 {
             self.connection.generation_seed.clone()
         } else {
-            format!("{}-{next_number}", self.connection.generation_seed)
+            let suffixed = format!("{}-{next_number}", self.connection.generation_seed);
+            if suffixed.len() <= crate::ids::MAX_GENERATION_LEN {
+                suffixed
+            } else {
+                // Bounded within-engine rebind mint when appending to a long
+                // seed would exceed MAX_GENERATION_LEN (64): not a global
+                // cross-engine identity. Uniqueness fence: hitting this branch
+                // means `generation_seed` was too long to fit `-{next_number}`,
+                // whereas `rebind-{next_number}` is at most 27 bytes, so it
+                // cannot collide with the initial seed, and strictly monotonic
+                // `next_number` prevents collision with prior rebinds inside
+                // this engine.
+                format!("rebind-{next_number}")
+            }
         };
         if GenerationId::parse(&generation).is_none() {
             return reply(
@@ -869,9 +918,9 @@ impl WorldEngine {
     /// bound owner refuses as owner-invalid; an invalid request correlation
     /// refuses as correlation-invalid.
     ///
-    /// Structural admission only (no wire/reply size gating); platform and
-    /// native ingress must use [`WorldEngine::handle_report_with_gate_and_prepare`]
-    /// with a checked [`CoreAdmissionGate`].
+    /// Structural admission only (no wire/reply size gating); available only
+    /// in tests or explicit `structural-bench` builds.
+    #[cfg(any(test, feature = "structural-bench"))]
     pub fn handle_report(
         &mut self,
         report: &WorldReportV4,
@@ -882,29 +931,28 @@ impl WorldEngine {
     }
 
     /// Same as [`WorldEngine::handle_report`], except `prepare` runs once on
-    /// the borrowed candidate immediately before candidate adoption (including
-    /// the bootstrap pending-intent path; duplicates have no state
-    /// transition). If `prepare` returns `Err(e)`, the candidate is discarded
-    /// and `self` (world, replay, watermarks, intent) stays unchanged.
-    ///
-    /// Structural admission only (no wire/reply size gating); platform and
-    /// native ingress must use [`WorldEngine::handle_report_with_gate_and_prepare`]
-    /// with a checked [`CoreAdmissionGate`].
+    /// the borrowed candidate immediately before candidate adoption.
+    /// Available only in tests or explicit `structural-bench` builds.
+    #[cfg(any(test, feature = "structural-bench"))]
     pub fn handle_report_with_prepare<E>(
         &mut self,
         report: &WorldReportV4,
         queued: &[(u64, WorldCommand)],
         prepare: impl FnOnce(PreparedCandidate<'_>) -> Result<(), E>,
     ) -> Result<(V4RunOutcome, Vec<crate::world_report::BatchSettlement>), E> {
-        self.handle_report_with_gate_and_prepare(
+        let result = self.handle_report_with_gate_and_prepare(
             report,
             queued,
             &crate::world_admit_v4::StructuralCoreAdmissionGate,
             prepare,
-        )
+        )?;
+        Ok((
+            result.outcome,
+            crate::world_admit_v4::dispositions_to_legacy_settlements(&result.dispositions, queued),
+        ))
     }
 
-    /// Scoped format-neutral admission entry taking an explicit
+    /// Sole production report transition taking an explicit
     /// [`CoreAdmissionGate`] alongside the final `prepare` callback.
     pub fn handle_report_with_gate_and_prepare<E, G: CoreAdmissionGate + ?Sized>(
         &mut self,
@@ -912,26 +960,28 @@ impl WorldEngine {
         queued: &[(u64, WorldCommand)],
         gate: &G,
         prepare: impl FnOnce(PreparedCandidate<'_>) -> Result<(), E>,
-    ) -> Result<(V4RunOutcome, Vec<crate::world_report::BatchSettlement>), E> {
+    ) -> Result<TransitionResult, E> {
         let Some(owner) = self.connection.connection_owner.clone() else {
-            return Ok((
-                V4RunOutcome::Rejected {
+            return Ok(TransitionResult {
+                outcome: V4RunOutcome::Rejected {
                     kind: KIND_OWNER,
                     message: MSG_OWNER,
                 },
-                Vec::new(),
-            ));
+                incorporation: crate::world_report::ReportIncorporation::Rejected,
+                dispositions: Vec::new(),
+            });
         };
         let correlation = match CorrelationId::parse(&report.request_id) {
             Some(correlation) => correlation,
             None => {
-                return Ok((
-                    V4RunOutcome::Rejected {
+                return Ok(TransitionResult {
+                    outcome: V4RunOutcome::Rejected {
                         kind: KIND_CORRELATION,
                         message: MSG_CORRELATION,
                     },
-                    Vec::new(),
-                ));
+                    incorporation: crate::world_report::ReportIncorporation::Rejected,
+                    dispositions: Vec::new(),
+                });
             }
         };
         self.handle_report_v4_batched_with_gate_and_prepare(

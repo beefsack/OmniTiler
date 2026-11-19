@@ -229,8 +229,29 @@ fn flat(t: Option<&Node>) -> Vec<String> {
     v
 }
 
+fn leaf_of(layout: &WorldLayout, o: &str, ws: &str, w: &str) -> NodeId {
+    layout
+        .leaves(&dk(o, ws))
+        .and_then(|leaves| leaves.get(&win(w)))
+        .expect("leaf for window")
+        .clone()
+}
+
 fn leaves_of(layout: &WorldLayout, o: &str, ws: &str) -> Vec<String> {
-    flat(layout.tree(&dk(o, ws)))
+    let domain_key = dk(o, ws);
+    let by_leaf: BTreeMap<NodeId, String> = layout
+        .leaves(&domain_key)
+        .map(|leaves| {
+            leaves
+                .iter()
+                .map(|(w, l)| (l.clone(), w.0.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    flat(layout.tree(&domain_key))
+        .into_iter()
+        .map(|id| by_leaf.get(&NodeId(id.clone())).cloned().unwrap_or(id))
+        .collect()
 }
 
 fn parent_of(tree: &Node, leaf: &str) -> Option<NodeId> {
@@ -320,14 +341,11 @@ fn send_follows_moved_window_into_target() {
     assert_eq!(outcome.window, win("win-3"));
     assert_eq!(outcome.source_workspace.0, "ws-a");
     assert_eq!(outcome.target_workspace.0, "ws-b");
-    assert_eq!(
-        leaves_of(&layout, "out-1", "ws-a"),
-        vec!["leaf-win-1", "leaf-win-2"]
-    );
-    assert_eq!(leaves_of(&layout, "out-1", "ws-b"), vec!["leaf-win-3"]);
+    assert_eq!(leaves_of(&layout, "out-1", "ws-a"), vec!["win-1", "win-2"]);
+    assert_eq!(leaves_of(&layout, "out-1", "ws-b"), vec!["win-3"]);
     assert_eq!(
         layout.focus_leaf(&dk("out-1", "ws-b")),
-        Some(&NodeId("leaf-win-3".to_owned()))
+        Some(&leaf_of(&layout, "out-1", "ws-b", "win-3"))
     );
     assert_eq!(outcome.geometry.len(), 3);
 
@@ -345,12 +363,12 @@ fn send_follows_moved_window_into_target() {
     .expect("return plans");
     assert_eq!(
         leaves_of(&layout, "out-1", "ws-a"),
-        vec!["leaf-win-1", "leaf-win-2", "leaf-win-3"]
+        vec!["win-1", "win-2", "win-3"]
     );
     assert!(leaves_of(&layout, "out-1", "ws-b").is_empty());
     assert_eq!(
         layout.focus_leaf(&dk("out-1", "ws-a")),
-        Some(&NodeId("leaf-win-3".to_owned()))
+        Some(&leaf_of(&layout, "out-1", "ws-a", "win-3"))
     );
     assert_eq!(back.geometry.len(), 3);
 }
@@ -375,7 +393,7 @@ fn occupied_target_splits_remembered_leaf() {
     .expect("move plans");
     assert_eq!(
         leaves_of(&layout, "out-1", "ws-b"),
-        vec!["leaf-win-t1", "leaf-win-t2", "leaf-win-2"]
+        vec!["win-t1", "win-t2", "win-2"]
     );
     match layout.tree(&dk("out-1", "ws-b")) {
         Some(Node::Group {
@@ -386,7 +404,9 @@ fn occupied_target_splits_remembered_leaf() {
         }) => {
             assert_eq!(*axis, Axis::Horizontal);
             assert_eq!(*shares, vec![1, 1]);
-            assert!(matches!(&children[0], Node::Leaf { id } if id.0 == "leaf-win-t1"));
+            assert!(
+                matches!(&children[0], Node::Leaf { id } if *id == leaf_of(&layout, "out-1", "ws-b", "win-t1"))
+            );
             match &children[1] {
                 Node::Group {
                     axis,
@@ -396,18 +416,22 @@ fn occupied_target_splits_remembered_leaf() {
                 } => {
                     assert_eq!(*axis, Axis::Vertical);
                     assert_eq!(*shares, vec![1, 1]);
-                    assert!(matches!(&inner[0], Node::Leaf { id } if id.0 == "leaf-win-t2"));
-                    assert!(matches!(&inner[1], Node::Leaf { id } if id.0 == "leaf-win-2"));
+                    assert!(
+                        matches!(&inner[0], Node::Leaf { id } if *id == leaf_of(&layout, "out-1", "ws-b", "win-t2"))
+                    );
+                    assert!(
+                        matches!(&inner[1], Node::Leaf { id } if *id == leaf_of(&layout, "out-1", "ws-b", "win-2"))
+                    );
                 }
                 other => panic!("expected nested split, got {other:?}"),
             }
         }
         other => panic!("expected root group, got {other:?}"),
     }
-    assert_eq!(leaves_of(&layout, "out-1", "ws-a"), vec!["leaf-win-1"]);
+    assert_eq!(leaves_of(&layout, "out-1", "ws-a"), vec!["win-1"]);
     assert_eq!(
         layout.focus_leaf(&dk("out-1", "ws-b")),
-        Some(&NodeId("leaf-win-2".to_owned()))
+        Some(&leaf_of(&layout, "out-1", "ws-b", "win-2"))
     );
     assert_eq!(outcome.geometry.len(), 4);
 }
@@ -589,15 +613,12 @@ fn stay_keeps_source_selected_with_mru_focus() {
     .expect("stay plans");
     assert_eq!(outcome.kind, PairSendKind::Tiled);
     assert!(!outcome.follow);
-    assert_eq!(leaves_of(&layout, "out-1", "ws-b"), vec!["leaf-win-3"]);
-    assert_eq!(
-        leaves_of(&layout, "out-1", "ws-a"),
-        vec!["leaf-win-1", "leaf-win-2"]
-    );
+    assert_eq!(leaves_of(&layout, "out-1", "ws-b"), vec!["win-3"]);
+    assert_eq!(leaves_of(&layout, "out-1", "ws-a"), vec!["win-1", "win-2"]);
     assert_eq!(outcome.stay_focus_window, Some(win("win-2")));
     assert_eq!(
         layout.focus_leaf(&dk("out-1", "ws-a")),
-        Some(&NodeId("leaf-win-2".to_owned()))
+        Some(&leaf_of(&layout, "out-1", "ws-a", "win-2"))
     );
     assert_eq!(outcome.geometry.len(), 3);
 }
@@ -616,7 +637,7 @@ fn stay_of_sole_source_window_leaves_no_focus() {
         false,
     )
     .expect("stay plans");
-    assert_eq!(leaves_of(&layout, "out-1", "ws-b"), vec!["leaf-win-solo"]);
+    assert_eq!(leaves_of(&layout, "out-1", "ws-b"), vec!["win-solo"]);
     assert!(leaves_of(&layout, "out-1", "ws-a").is_empty());
     assert_eq!(outcome.stay_focus_window, None);
     assert_eq!(outcome.focus_leaf, None);
@@ -672,7 +693,7 @@ fn follow_and_stay_share_transfer_with_focus_only_difference() {
     assert!(!stay.follow);
     assert_eq!(
         l_follow.focus_leaf(&dk("out-1", "ws-b")),
-        Some(&NodeId("leaf-win-3".to_owned()))
+        Some(&leaf_of(&l_follow, "out-1", "ws-b", "win-3"))
     );
     assert_eq!(
         l_stay.focus_leaf(&dk("out-1", "ws-a")),
@@ -680,7 +701,7 @@ fn follow_and_stay_share_transfer_with_focus_only_difference() {
     );
     assert_eq!(
         l_stay.focus_leaf(&dk("out-1", "ws-a")),
-        Some(&NodeId("leaf-win-2".to_owned()))
+        Some(&leaf_of(&l_stay, "out-1", "ws-a", "win-2"))
     );
 }
 
@@ -702,7 +723,7 @@ fn post_stay_observation_keeps_native_focus_over_mru() {
     .expect("stay");
     assert_eq!(
         layout.focus_leaf(&dk("out-1", "ws-a")),
-        Some(&NodeId("leaf-win-2".to_owned()))
+        Some(&leaf_of(&layout, "out-1", "ws-a", "win-2"))
     );
 
     let obs = domain_observed(&layout, &dk("out-1", "ws-a"));
@@ -719,7 +740,7 @@ fn post_stay_observation_keeps_native_focus_over_mru() {
     assert_eq!(counts.flags_adopted, 0);
     assert_eq!(
         layout.focus_leaf(&dk("out-1", "ws-a")),
-        Some(&NodeId("leaf-win-1".to_owned()))
+        Some(&leaf_of(&layout, "out-1", "ws-a", "win-1"))
     );
 }
 
@@ -759,12 +780,12 @@ fn output_send_follow_moves_to_destination_current_workspace() {
     assert_eq!(outcome.target_output.0, "out-2");
     assert_eq!(
         leaves_of(&layout, "out-1", "ws-a"),
-        vec!["leaf-win-1".to_string()]
+        vec!["win-1".to_string()]
     );
-    assert!(leaves_of(&layout, "out-2", "ws-a").contains(&"leaf-win-2".to_string()));
+    assert!(leaves_of(&layout, "out-2", "ws-a").contains(&"win-2".to_string()));
     assert_eq!(
         layout.focus_leaf(&dk("out-2", "ws-a")),
-        Some(&NodeId("leaf-win-2".to_owned()))
+        Some(&leaf_of(&layout, "out-2", "ws-a", "win-2"))
     );
 }
 
@@ -810,9 +831,9 @@ fn output_send_stay_keeps_source_mru_without_selecting_target() {
     assert_eq!(stay_outcome.stay_focus_window, Some(win("win-2")));
     assert_eq!(
         l_stay.focus_leaf(&dk("out-1", "ws-a")),
-        Some(&NodeId("leaf-win-2".to_owned()))
+        Some(&leaf_of(&l_stay, "out-1", "ws-a", "win-2"))
     );
-    assert!(leaves_of(&l_stay, "out-2", "ws-a").contains(&"leaf-win-3".to_string()));
+    assert!(leaves_of(&l_stay, "out-2", "ws-a").contains(&"win-3".to_string()));
 }
 
 #[test]
@@ -835,9 +856,10 @@ fn output_send_admits_at_remembered_leaf() {
     .expect("output send plans");
     let target = layout.tree(&dk("out-2", "ws-a")).expect("target");
     assert_eq!(flat(Some(target)).len(), 3);
-    let mover_parent = parent_of(target, "leaf-win-2").expect("mover parent");
+    let mover_parent =
+        parent_of(target, &leaf_of(&layout, "out-2", "ws-a", "win-2").0).expect("mover parent");
     assert_eq!(
-        parent_of(target, "leaf-win-t2"),
+        parent_of(target, &leaf_of(&layout, "out-2", "ws-a", "win-t2").0),
         Some(mover_parent),
         "mover splits beside the remembered leaf"
     );
@@ -1079,26 +1101,24 @@ fn output_send_uses_focus_history_when_remembered_stale() {
 
     let target = layout.tree(&dk("out-2", "ws-a")).expect("target");
     assert_eq!(flat(Some(target)).len(), 3);
-    let mover_parent = parent_of(target, "leaf-win-c2").expect("mover parent");
+    let mover_parent =
+        parent_of(target, &leaf_of(&layout, "out-2", "ws-a", "win-c2").0).expect("mover parent");
     assert_eq!(
-        parent_of(target, "leaf-win-a2"),
+        parent_of(target, &leaf_of(&layout, "out-2", "ws-a", "win-a2").0),
         Some(mover_parent),
         "mover splits beside the focus-history leaf, not a root wrap"
     );
     assert_eq!(
         layout.focus_leaf(&dk("out-2", "ws-a")),
-        Some(&NodeId("leaf-win-c2".to_owned()))
+        Some(&leaf_of(&layout, "out-2", "ws-a", "win-c2"))
     );
     assert_eq!(
         leaves_of(&layout, "out-1", "ws-a"),
-        vec!["leaf-win-c1".to_string()]
+        vec!["win-c1".to_string()]
     );
     let mut ws_b = leaves_of(&layout, "out-1", "ws-b");
     ws_b.sort();
-    assert_eq!(
-        ws_b,
-        vec!["leaf-win-a3".to_string(), "leaf-win-b1".to_string()]
-    );
+    assert_eq!(ws_b, vec!["win-a3".to_string(), "win-b1".to_string()]);
 }
 
 #[test]
@@ -1118,15 +1138,15 @@ fn output_send_empty_destination_admits_lone_root_follow_and_stay() {
     .expect("follow");
     assert_eq!(
         leaves_of(&l_follow, "out-2", "ws-a"),
-        vec!["leaf-win-2".to_string()]
+        vec!["win-2".to_string()]
     );
     assert_eq!(
         l_follow.focus_leaf(&dk("out-2", "ws-a")),
-        Some(&NodeId("leaf-win-2".to_owned()))
+        Some(&leaf_of(&l_follow, "out-2", "ws-a", "win-2"))
     );
     assert_eq!(
         leaves_of(&l_follow, "out-1", "ws-a"),
-        vec!["leaf-win-1".to_string()]
+        vec!["win-1".to_string()]
     );
     assert!(leaves_of(&l_follow, "out-1", "ws-b").is_empty());
 
@@ -1144,7 +1164,7 @@ fn output_send_empty_destination_admits_lone_root_follow_and_stay() {
     .expect("stay");
     assert_eq!(
         leaves_of(&l_stay, "out-2", "ws-a"),
-        vec!["leaf-solo".to_string()]
+        vec!["solo".to_string()]
     );
     assert_eq!(stay_outcome.focus_leaf, None);
     assert_eq!(stay_outcome.stay_focus_window, None);

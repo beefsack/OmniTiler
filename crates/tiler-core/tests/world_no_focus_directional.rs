@@ -10,7 +10,7 @@
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
     PresentationIngressV4, PresentationRowV4, ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact,
     WorldCommand, WorldReportV4,
@@ -128,12 +128,83 @@ fn report(
     }
 }
 
+struct TestGate;
+
+impl tiler_core::world_engine::CoreAdmissionGate for TestGate {
+    fn check_request_size(
+        &self,
+        _report: &WorldReportV4,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+
+    fn check_preflight(
+        &self,
+        _report: &WorldReportV4,
+        _facts: &tiler_core::world_engine::PreflightGateFacts<'_>,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+
+    fn check_exact_inner(
+        &self,
+        _reply: &tiler_core::world_report::WorldReplyV4,
+    ) -> tiler_core::world_engine::ExactInnerDecision {
+        tiler_core::world_engine::ExactInnerDecision::Allow(
+            tiler_core::world_engine::ExactInnerCheck::new(0),
+        )
+    }
+
+    fn check_future_reserve(
+        &self,
+        _reply: &tiler_core::world_report::WorldReplyV4,
+        _facts: &tiler_core::world_engine::FutureReserveGateFacts,
+        _exact: tiler_core::world_engine::ExactInnerCheck,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+}
+
+fn eval_report(
+    engine: &mut WorldEngine,
+    report: &WorldReportV4,
+) -> (
+    tiler_core::world_engine::WorldOutcome,
+    Vec<tiler_core::world_report::BatchSettlement>,
+) {
+    let run = engine
+        .handle_report_with_gate_and_prepare(report, &[], &TestGate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    let settlements = run
+        .dispositions
+        .into_iter()
+        .filter_map(|d| match d.disposition {
+            tiler_core::world_report::CommandDisposition::Executed(result) => {
+                Some(tiler_core::world_report::BatchSettlement { seq: d.seq, result })
+            }
+            tiler_core::world_report::CommandDisposition::Refused(result) => {
+                Some(tiler_core::world_report::BatchSettlement {
+                    seq: d.seq,
+                    result: Some(tiler_core::world_report::CommandResult::Rejected {
+                        kind: result,
+                    }),
+                })
+            }
+            tiler_core::world_report::CommandDisposition::AlreadyConsumed
+            | tiler_core::world_report::CommandDisposition::NotRun => None,
+        })
+        .collect();
+    (run.outcome, settlements)
+}
+
 fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReportV4,
 ) -> tiler_core::world_report::WorldReplyV4 {
-    match engine.handle_report(report, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
+    match eval_report(engine, report).0 {
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -281,12 +352,12 @@ fn no_focus_journey_focuses_remembered_then_converges() {
         "retained scope follows routing: {:?}",
         crossed.focus_request
     );
-    let (arrival_outcome, arrival_settlements) = engine.handle_report(
+    let (arrival_outcome, arrival_settlements) = eval_report(
+        &mut engine,
         &report(6, screens, four_windows(), "win-b2", None, None, None),
-        &[],
     );
     let arrival = match arrival_outcome {
-        WorldOutcome::Accepted(reply) => reply,
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted arrival, got {other:?}"),
     };
     // Observing the retained target satisfies it: the lane clears instead
@@ -315,7 +386,8 @@ fn no_focus_noop_journey_stays_quiet() {
     );
     // Observation-only loss mints nothing: the retained lane stays absent.
     assert_quiet_no_request(&loss);
-    let (noop_outcome, noop_settlements) = engine.handle_report(
+    let (noop_outcome, noop_settlements) = eval_report(
+        &mut engine,
         &report(
             3,
             screens.clone(),
@@ -328,10 +400,9 @@ fn no_focus_noop_journey_stays_quiet() {
             }),
             Some("out-a"),
         ),
-        &[],
     );
     let noop = match noop_outcome {
-        WorldOutcome::Accepted(reply) => reply,
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted noop, got {other:?}"),
     };
     assert!(

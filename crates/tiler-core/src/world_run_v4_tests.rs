@@ -201,9 +201,13 @@ fn run_with_settlements(
         .state_revision()
         .checked_add(1)
         .expect("test issuing");
-    engine.tx(|tx| {
+    let (outcome, dispositions) = engine.tx(|tx| {
         tx.run_accepted_v4_batched(report, &issue(report.request_seq), consumed, issuing, &[])
-    })
+    });
+    (
+        outcome,
+        crate::world_admit_v4::dispositions_to_legacy_settlements(&dispositions, &[]),
+    )
 }
 
 fn accepted_reply(report_seq: u64, outcome: V4RunOutcome) -> crate::world_report::WorldReplyV4 {
@@ -641,8 +645,12 @@ fn consumed_rerun_with_new_observation_reconciles_without_revalidation() {
                 "consumed reruns never re-execute: {:?}",
                 reply.effects
             );
-            assert!(
-                settlements.is_empty(),
+            assert_eq!(
+                settlements,
+                vec![crate::world_report::BatchDisposition {
+                    seq: 1,
+                    disposition: crate::world_report::CommandDisposition::AlreadyConsumed,
+                }],
                 "consumed reruns never re-validate the stale renderer: {:?}",
                 settlements
             );
@@ -2740,7 +2748,7 @@ fn restage_classification_preserves_native_echo_across_same_batch_command() {
         "win-a",
         native_n1(),
         1,
-        WorldCommand::SwitchView {
+        WorldCommand::SelectWorkspace {
             output: out_a.clone(),
             workspace: crate::directional::WorkspaceId(l2.clone()),
         },
@@ -2788,4 +2796,556 @@ fn restage_classification_preserves_native_echo_across_same_batch_command() {
         Some(l1),
         "effective_view must keep native echo over retained view"
     );
+}
+
+#[test]
+fn ac1_ordered_inline_plus_queue_cap_128_and_whole_batch_refusal() {
+    use crate::directional::WindowSubject;
+    use crate::world_admit_v4::StructuralCoreAdmissionGate;
+    use crate::world_report::{BatchDisposition, CommandDisposition, ReportIncorporation};
+
+    let gate = StructuralCoreAdmissionGate;
+    let focus_a = || WorldCommand::Focus {
+        window: WindowSubject::Window(WindowId("win-a".to_owned())),
+        direction: None,
+    };
+
+    // 1. Cap 128 including inline: 1 inline + 127 queued succeeds;
+    //    1 inline + 128 queued (= 129) refuses whole batch with NotRun.
+    let mut eng = engine();
+    let seed = report(
+        1,
+        vec![fact("win-a", "out-a", 0)],
+        "win-a",
+        ingress("win-a"),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    let seed_res = eng
+        .handle_report_with_gate_and_prepare(&seed, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    assert_eq!(seed_res.incorporation, ReportIncorporation::Incorporated);
+
+    let mut r128 = report(
+        2,
+        vec![fact("win-a", "out-a", 0)],
+        "win-a",
+        ingress("win-a"),
+        Some(1),
+        Some(focus_a()),
+        None,
+        Vec::new(),
+    );
+    let q127: Vec<(u64, WorldCommand)> = (2..=128).map(|s| (s, focus_a())).collect();
+    let res128 = eng
+        .handle_report_with_gate_and_prepare(&r128, &q127, &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    assert!(matches!(res128.outcome, V4RunOutcome::Accepted(_)));
+    assert_eq!(res128.incorporation, ReportIncorporation::Incorporated);
+    assert_eq!(res128.dispositions.len(), 128);
+    assert!(
+        res128
+            .dispositions
+            .iter()
+            .all(|d| matches!(d.disposition, CommandDisposition::Executed(_)))
+    );
+
+    r128.observation_seq = 3;
+    r128.request_seq = 3;
+    r128.request_id = "req-3".to_owned();
+    r128.command_seq = Some(129);
+    let q128: Vec<(u64, WorldCommand)> = (130..=257).map(|s| (s, focus_a())).collect();
+    let res129 = eng
+        .handle_report_with_gate_and_prepare(&r128, &q128, &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    assert!(
+        matches!(
+            res129.outcome,
+            V4RunOutcome::Rejected {
+                kind: "snapshot-invalid",
+                message: "section-over-cap",
+            }
+        ),
+        "129 total commands must refuse whole batch with section-over-cap: {:?}",
+        res129.outcome
+    );
+    assert_eq!(res129.incorporation, ReportIncorporation::Rejected);
+    assert!(res129.dispositions.is_empty());
+
+    // 2. Whole-batch command-order-invalid / command-invalid refusals:
+    //    [7, 6], [7, 7], queued-only SwitchView alongside a valid queued command,
+    //    and invalid queued command.
+    let rev_before = eng.state_revision();
+    type BadBatch = (
+        Option<u64>,
+        Option<WorldCommand>,
+        Vec<(u64, WorldCommand)>,
+        &'static str,
+    );
+    let bad_batches: Vec<BadBatch> = vec![
+        (
+            Some(200),
+            Some(focus_a()),
+            vec![(199, focus_a())],
+            "command-order-invalid",
+        ),
+        (
+            Some(200),
+            Some(focus_a()),
+            vec![(200, focus_a())],
+            "command-order-invalid",
+        ),
+        (
+            None,
+            None,
+            vec![
+                (201, focus_a()),
+                (
+                    202,
+                    WorldCommand::SwitchView {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: crate::directional::WorkspaceId("ws-2".to_owned()),
+                    },
+                ),
+            ],
+            "command-invalid",
+        ),
+        (
+            Some(200),
+            Some(focus_a()),
+            vec![(
+                201,
+                WorldCommand::Focus {
+                    window: WindowSubject::Window(WindowId("win-a".to_owned())),
+                    direction: Some(crate::directional::Direction::Right),
+                },
+            )],
+            "command-invalid",
+        ),
+    ];
+    for (idx, (inline_seq, inline_cmd, queued, expected_msg)) in bad_batches.into_iter().enumerate()
+    {
+        let r = report(
+            4 + idx as u64,
+            vec![fact("win-a", "out-a", 0)],
+            "win-a",
+            ingress("win-a"),
+            inline_seq,
+            inline_cmd.clone(),
+            None,
+            Vec::new(),
+        );
+        let res = eng
+            .handle_report_with_gate_and_prepare(&r, &queued, &gate, |_| {
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .unwrap_or_else(|e| match e {});
+        assert!(
+            matches!(
+                res.outcome,
+                V4RunOutcome::Rejected {
+                    kind: "snapshot-invalid",
+                    message,
+                } if message == expected_msg
+            ),
+            "case {idx} must refuse whole batch with {expected_msg}: {:?}",
+            res.outcome
+        );
+        assert_eq!(res.incorporation, ReportIncorporation::Rejected);
+        assert!(res.dispositions.is_empty());
+        assert_eq!(eng.state_revision(), rev_before);
+    }
+
+    // 3. Stale inline followed by fresh queue + renderer_input proof with FIFO:
+    //    inline gets AlreadyConsumed, queued executes normally.
+    let stale_inline = report(
+        10,
+        vec![fact("win-a", "out-a", 0)],
+        "win-a",
+        ingress("win-a"),
+        Some(128),
+        Some(focus_a()),
+        Some(RendererInput {
+            rev: rev_before,
+            target: RenderTarget::Window {
+                out: OutputId("out-a".to_owned()),
+                ws: crate::directional::WorkspaceId("ws-1".to_owned()),
+                win: WindowId("win-a".to_owned()),
+            },
+        }),
+        Vec::new(),
+    );
+    let stale_res = eng
+        .handle_report_with_gate_and_prepare(&stale_inline, &[(129, focus_a())], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    assert!(
+        matches!(stale_res.outcome, V4RunOutcome::CommandConsumed(_)),
+        "stale inline surfaces CommandConsumed while still executing fresh queue: {:?}",
+        stale_res.outcome
+    );
+    assert_eq!(stale_res.incorporation, ReportIncorporation::Incorporated);
+    assert_eq!(
+        stale_res.dispositions,
+        vec![
+            BatchDisposition {
+                seq: 128,
+                disposition: CommandDisposition::AlreadyConsumed,
+            },
+            BatchDisposition {
+                seq: 129,
+                disposition: CommandDisposition::Executed(None),
+            },
+        ]
+    );
+
+    // 4. Fresh inline + renderer_input proof + queued command execute in FIFO order.
+    let rev_before_fifo = eng.state_revision();
+    let inline_fifo = report(
+        11,
+        vec![fact("win-a", "out-a", 0)],
+        "win-a",
+        ingress("win-a"),
+        Some(130),
+        Some(focus_a()),
+        Some(RendererInput {
+            rev: rev_before_fifo,
+            target: RenderTarget::Window {
+                out: OutputId("out-a".to_owned()),
+                ws: crate::directional::WorkspaceId("ws-1".to_owned()),
+                win: WindowId("win-a".to_owned()),
+            },
+        }),
+        Vec::new(),
+    );
+    let fifo_res = eng
+        .handle_report_with_gate_and_prepare(&inline_fifo, &[(131, focus_a())], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    assert!(matches!(fifo_res.outcome, V4RunOutcome::Accepted(_)));
+    assert_eq!(fifo_res.incorporation, ReportIncorporation::Incorporated);
+    assert_eq!(
+        fifo_res.dispositions,
+        vec![
+            BatchDisposition {
+                seq: 130,
+                disposition: CommandDisposition::Executed(None),
+            },
+            BatchDisposition {
+                seq: 131,
+                disposition: CommandDisposition::Executed(None),
+            },
+        ]
+    );
+}
+
+#[test]
+fn ac1_first_entry_queued_frozen_migration_source_vintage() {
+    use crate::directional::WindowSubject;
+    use crate::world_admit_v4::StructuralCoreAdmissionGate;
+    use crate::world_report::{CommandDisposition, CommandRejectKind};
+
+    let gate = StructuralCoreAdmissionGate;
+    // Two adjacent outputs (out-a at x=0, out-b at x=800) so Right has a real
+    // neighbor. Contrast MigrateDirectional(Right) on unbootstrapped r1
+    // (empty pre-observation views -> MigrationRefused) vs bootstrapped r2
+    // both as first entry and after a stale/refused first entry (Executed).
+    let mut r1 = report(
+        1,
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+        "win-a",
+        ingress("win-a"),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    r1.screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    r1.action_foreground = Some(OutputId("out-a".to_owned()));
+    r1.action_outputs = vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
+
+    let migrate_right = WorldCommand::MigrateDirectional {
+        direction: crate::directional::Direction::Right,
+    };
+
+    let mut eng_unbootstrapped = engine();
+    let res_unbootstrapped = eng_unbootstrapped
+        .handle_report_with_gate_and_prepare(&r1, &[(1, migrate_right.clone())], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    assert!(matches!(
+        res_unbootstrapped.outcome,
+        V4RunOutcome::Accepted(_)
+    ));
+    assert_eq!(res_unbootstrapped.dispositions.len(), 1);
+    assert!(
+        matches!(
+            res_unbootstrapped.dispositions[0].disposition,
+            CommandDisposition::Refused(CommandRejectKind::MigrationRefused)
+        ),
+        "unbootstrapped pre-observation views on first queued entry must refuse Right: {:?}",
+        res_unbootstrapped.dispositions
+    );
+
+    let mut r2 = report(
+        2,
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+        "win-a",
+        ingress("win-a"),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    r2.screens = vec![screen("out-a", 0), screen("out-b", 800)];
+    r2.action_foreground = Some(OutputId("out-a".to_owned()));
+    r2.action_outputs = vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())];
+
+    let mut eng_first = eng_unbootstrapped.clone();
+    let res_first = eng_first
+        .handle_report_with_gate_and_prepare(&r2, &[(2, migrate_right.clone())], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    assert!(matches!(res_first.outcome, V4RunOutcome::Accepted(_)));
+    assert_eq!(res_first.dispositions.len(), 1);
+    assert!(
+        matches!(
+            res_first.dispositions[0].disposition,
+            CommandDisposition::Executed(_)
+        ),
+        "bootstrapped r2 as first queued entry must execute Right: {:?}",
+        res_first.dispositions
+    );
+
+    let mut eng_after_stale_and_refused = eng_unbootstrapped;
+    let res_after = eng_after_stale_and_refused
+        .handle_report_with_gate_and_prepare(
+            &r2,
+            &[
+                (
+                    1,
+                    WorldCommand::Focus {
+                        window: WindowSubject::Window(WindowId("win-missing".to_owned())),
+                        direction: None,
+                    },
+                ),
+                (
+                    2,
+                    WorldCommand::Focus {
+                        window: WindowSubject::Window(WindowId("win-missing".to_owned())),
+                        direction: None,
+                    },
+                ),
+                (3, migrate_right),
+            ],
+            &gate,
+            |_| Ok::<(), std::convert::Infallible>(()),
+        )
+        .unwrap_or_else(|e| match e {});
+    assert!(matches!(res_after.outcome, V4RunOutcome::Accepted(_)));
+    assert_eq!(res_after.dispositions.len(), 3);
+    assert!(matches!(
+        res_after.dispositions[0].disposition,
+        CommandDisposition::AlreadyConsumed
+    ));
+    assert!(matches!(
+        res_after.dispositions[1].disposition,
+        CommandDisposition::Refused(_)
+    ));
+    assert!(
+        matches!(
+            res_after.dispositions[2].disposition,
+            CommandDisposition::Executed(_)
+        ),
+        "after stale and refused first entries, MigrateDirectional(Right) must execute: {:?}",
+        res_after.dispositions
+    );
+}
+
+#[test]
+fn ac2_incorporation_variants_dispositions_and_rollback() {
+    use crate::directional::WindowSubject;
+    use crate::world_admit_v4::StructuralCoreAdmissionGate;
+    use crate::world_report::{
+        BatchDisposition, CommandDisposition, CommandRejectKind, ReportIncorporation,
+    };
+
+    let gate = StructuralCoreAdmissionGate;
+    let focus_a = WorldCommand::Focus {
+        window: WindowSubject::Window(WindowId("win-a".to_owned())),
+        direction: None,
+    };
+    let toggle_a = WorldCommand::Operation(CoreCommand::ToggleFloat {
+        window: WindowSubject::Window(WindowId("win-a".to_owned())),
+        float_rect: None,
+    });
+    let toggle_missing = WorldCommand::Operation(CoreCommand::ToggleFloat {
+        window: WindowSubject::Window(WindowId("win-missing".to_owned())),
+        float_rect: None,
+    });
+
+    // 1. Pre-settings (BootstrapIntentOnly) leaves queued commands NotRun.
+    let mut pre = WorldEngine::new("gen-1").expect("gen");
+    let hs = pre.handshake(&crate::connection::HandshakeRequest {
+        adapter: "adapter-1".to_owned(),
+        request: "hs-1".to_owned(),
+        application_identity: crate::connection::ApplicationIdentity {
+            app_id: None,
+            executable: Some("fixture".to_owned()),
+            process_id: Some("pid-1".to_owned()),
+        },
+        capabilities: HostCapabilities::default(),
+    });
+    assert_eq!(hs.generation.as_deref(), Some("gen-1"));
+    let pre_rep = report(
+        1,
+        vec![fact("win-a", "out-a", 0)],
+        "win-a",
+        ingress("win-a"),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    let pre_res = pre
+        .handle_report_with_gate_and_prepare(&pre_rep, &[(1, focus_a.clone())], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    assert_eq!(
+        pre_res.incorporation,
+        ReportIncorporation::BootstrapIntentOnly
+    );
+    assert_eq!(
+        pre_res.dispositions,
+        vec![BatchDisposition {
+            seq: 1,
+            disposition: CommandDisposition::NotRun,
+        }]
+    );
+
+    // 2. Incorporated with Executed(Some) and Executed(None), plus Replay
+    //    ignoring a changed/invalid queue -> NotRun.
+    let mut eng = engine();
+    let r1 = report(
+        1,
+        vec![fact("win-a", "out-a", 0)],
+        "win-a",
+        ingress("win-a"),
+        Some(1),
+        Some(toggle_a.clone()),
+        None,
+        Vec::new(),
+    );
+    let res1 = eng
+        .handle_report_with_gate_and_prepare(&r1, &[(2, focus_a.clone())], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    assert_eq!(res1.incorporation, ReportIncorporation::Incorporated);
+    assert!(matches!(
+        res1.dispositions.as_slice(),
+        [
+            BatchDisposition {
+                seq: 1,
+                disposition: CommandDisposition::Executed(Some(_)),
+            },
+            BatchDisposition {
+                seq: 2,
+                disposition: CommandDisposition::Executed(None),
+            },
+        ]
+    ));
+
+    // Exact report replay with a different/invalid queued command must return
+    // Replay + Duplicate and mark the supplied queue NotRun without executing.
+    let invalid_queued = WorldCommand::Focus {
+        window: WindowSubject::Window(WindowId("win-a".to_owned())),
+        direction: Some(crate::directional::Direction::Right),
+    };
+    let replay_res = eng
+        .handle_report_with_gate_and_prepare(&r1, &[(3, invalid_queued)], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    assert!(matches!(replay_res.outcome, V4RunOutcome::Duplicate(_)));
+    assert_eq!(replay_res.incorporation, ReportIncorporation::Replay);
+    assert_eq!(
+        replay_res.dispositions,
+        vec![
+            BatchDisposition {
+                seq: 1,
+                disposition: CommandDisposition::NotRun,
+            },
+            BatchDisposition {
+                seq: 3,
+                disposition: CommandDisposition::NotRun,
+            },
+        ]
+    );
+
+    // 3. Per-command refusal consumes sequence and rolls back only that
+    //    command's effects while subsequent commands in the batch execute.
+    let r2 = report(
+        2,
+        vec![fact("win-a", "out-a", 0)],
+        "win-a",
+        ingress("win-a"),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    let res2 = eng
+        .handle_report_with_gate_and_prepare(
+            &r2,
+            &[(3, toggle_missing), (4, toggle_a)],
+            &gate,
+            |_| Ok::<(), std::convert::Infallible>(()),
+        )
+        .unwrap_or_else(|e| match e {});
+    assert_eq!(res2.incorporation, ReportIncorporation::Incorporated);
+    assert!(matches!(
+        res2.dispositions.as_slice(),
+        [
+            BatchDisposition {
+                seq: 3,
+                disposition: CommandDisposition::Refused(CommandRejectKind::OperationRefused),
+            },
+            BatchDisposition {
+                seq: 4,
+                disposition: CommandDisposition::Executed(Some(_)),
+            },
+        ]
+    ));
+
+    // 4. Late prepare failure rolls back engine state completely.
+    let rev_before = eng.state_revision();
+    let r3 = report(
+        3,
+        vec![fact("win-a", "out-a", 0)],
+        "win-a",
+        ingress("win-a"),
+        None,
+        None,
+        None,
+        Vec::new(),
+    );
+    let err = eng.handle_report_with_gate_and_prepare(&r3, &[(5, focus_a)], &gate, |_| {
+        Err("late-prepare-abort")
+    });
+    assert_eq!(err, Err("late-prepare-abort"));
+    assert_eq!(eng.state_revision(), rev_before);
 }

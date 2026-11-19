@@ -8,7 +8,7 @@
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
     HoldReason, NativeCreationAttempt, NativeObservation, NativeOccupancy, ScopeAuthority,
     ScreenReport, TransferKind, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReportV4,
@@ -162,12 +162,55 @@ fn report(
     }
 }
 
+struct TestGate;
+
+impl tiler_core::world_engine::CoreAdmissionGate for TestGate {
+    fn check_request_size(
+        &self,
+        _report: &WorldReportV4,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+
+    fn check_preflight(
+        &self,
+        _report: &WorldReportV4,
+        _facts: &tiler_core::world_engine::PreflightGateFacts<'_>,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+
+    fn check_exact_inner(
+        &self,
+        _reply: &tiler_core::world_report::WorldReplyV4,
+    ) -> tiler_core::world_engine::ExactInnerDecision {
+        tiler_core::world_engine::ExactInnerDecision::Allow(
+            tiler_core::world_engine::ExactInnerCheck::new(0),
+        )
+    }
+
+    fn check_future_reserve(
+        &self,
+        _reply: &tiler_core::world_report::WorldReplyV4,
+        _facts: &tiler_core::world_engine::FutureReserveGateFacts,
+        _exact: tiler_core::world_engine::ExactInnerCheck,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+}
+
 fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReportV4,
 ) -> tiler_core::world_report::WorldReplyV4 {
-    match engine.handle_report(report, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
+    match engine
+        .handle_report_with_gate_and_prepare(report, &[], &TestGate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .outcome
+    {
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -295,7 +338,7 @@ fn inventory_gap_withholds_native_echo_and_holds_domain() {
             vec![native_obs("out-a", &[D1, D2], Some(D1))],
             vec![],
             Some(11),
-            Some(WorldCommand::SwitchView {
+            Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
                 workspace: tiler_core::directional::WorkspaceId(bound[D2].clone()),
             }),
@@ -403,7 +446,7 @@ fn per_screen_gap_withholds_echo_on_gapped_output_only() {
             ],
             vec![],
             Some(11),
-            Some(WorldCommand::SwitchView {
+            Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-b".to_owned()),
                 workspace: tiler_core::directional::WorkspaceId(bound_b[D2].clone()),
             }),
@@ -819,7 +862,7 @@ fn shared_first_incomplete_reports_empty_then_complete_mints_and_latches() {
             native.clone(),
             vec![],
             Some(11),
-            Some(WorldCommand::SwitchView {
+            Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
                 workspace: tiler_core::directional::WorkspaceId(spare.clone()),
             }),
@@ -988,7 +1031,7 @@ fn inventory_gap_recovery_restores_echo_without_duplication() {
             vec![native_obs("out-a", &[D1, D2], Some(D1))],
             vec![],
             Some(11),
-            Some(WorldCommand::SwitchView {
+            Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
                 workspace: tiler_core::directional::WorkspaceId(bound[D2].clone()),
             }),

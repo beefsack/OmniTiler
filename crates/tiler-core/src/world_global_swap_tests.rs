@@ -1337,3 +1337,209 @@ fn global_unique_swap_to_empty_stays_quiet() {
         swapped.effects
     );
 }
+
+#[test]
+fn global_unique_swap_minimized_incoming_and_outgoing_rows_stay_unique() {
+    // Incoming minimized on out-b (b1 minimized, b2 focused tiled) swapped
+    // onto out-a (a1, a2 tiled): B2 keeps controlled focus at A/ws-2, B1
+    // stays genuinely Minimized at A/ws-2, and A1/A2 move to controlled B/ws-1
+    // with allocations, with exactly one row per window.
+    let mut engine = global_unique_engine();
+    let base = accepted(
+        &mut engine,
+        &report(1, 1, two_screens(), vec![], vec![], "", None, None),
+    );
+    let view_a = view_of(&base, "out-a").expect("out-a view");
+    let view_b = view_of(&base, "out-b").expect("out-b view");
+    assert_ne!(view_a, view_b);
+
+    let windows = vec![
+        fact("win-a1", "out-a", 0),
+        fact("win-a2", "out-a", 400),
+        minimized_fact("win-b1", "out-b"),
+        fact("win-b2", "out-b", 800),
+    ];
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            two_screens(),
+            windows.clone(),
+            vec![],
+            "win-b2",
+            None,
+            None,
+        ),
+    );
+
+    let swapped = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            two_screens(),
+            windows,
+            vec![],
+            "win-b2",
+            Some(11),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: crate::directional::WorkspaceId(view_b.clone()),
+            }),
+        ),
+    );
+    assert_eq!(view_of(&swapped, "out-a").as_deref(), Some(view_b.as_str()));
+    assert_eq!(view_of(&swapped, "out-b").as_deref(), Some(view_a.as_str()));
+    assert_eq!(
+        swapped.windows.len(),
+        4,
+        "exactly one row per window: {:?}",
+        swapped.windows
+    );
+    for name in ["win-a1", "win-a2"] {
+        let row = window_row(&swapped, name);
+        assert_eq!(
+            row.membership_authority,
+            ScopeAuthority::Controlled,
+            "{name}: {row:?}"
+        );
+        assert_eq!(row.output.0, "out-b", "{name}: {row:?}");
+        assert_eq!(row.workspace, view_a, "{name}: {row:?}");
+        assert!(
+            row.allocation.is_some(),
+            "{name} must have allocation: {row:?}"
+        );
+    }
+    let b1 = window_row(&swapped, "win-b1");
+    assert_eq!(
+        b1.membership_authority,
+        ScopeAuthority::Controlled,
+        "win-b1: {b1:?}"
+    );
+    assert_eq!(
+        b1.frame_authority,
+        ScopeAuthority::Hold(crate::world_report::HoldReason::Minimized),
+        "win-b1: {b1:?}"
+    );
+    assert_eq!(b1.output.0, "out-a", "win-b1: {b1:?}");
+    assert_eq!(b1.workspace, view_b, "win-b1: {b1:?}");
+    assert!(
+        b1.allocation.is_none(),
+        "win-b1 minimized has no allocation: {b1:?}"
+    );
+    let b2 = window_row(&swapped, "win-b2");
+    assert_eq!(
+        b2.membership_authority,
+        ScopeAuthority::Controlled,
+        "win-b2: {b2:?}"
+    );
+    assert_eq!(
+        b2.frame_authority,
+        ScopeAuthority::Controlled,
+        "win-b2: {b2:?}"
+    );
+    assert_eq!(b2.output.0, "out-a", "win-b2: {b2:?}");
+    assert_eq!(b2.workspace, view_b, "win-b2: {b2:?}");
+    assert!(
+        b2.allocation.is_some(),
+        "win-b2 must have allocation: {b2:?}"
+    );
+    assert_eq!(
+        swapped.focus_request.as_ref().map(|r| r.target.0.as_str()),
+        Some("win-b2"),
+        "B2 keeps controlled focus at A/ws-2: {:?}",
+        swapped.focus_request
+    );
+
+    // Outgoing minimized on out-a (a1 minimized, a2 tiled) swapped onto
+    // out-b (b1, b2 tiled): A1 stays genuinely Minimized at B/ws-1, A2
+    // stays Controlled at B/ws-1 with allocation, B1/B2 move to A/ws-2.
+    let mut out_engine = global_unique_engine();
+    let out_base = accepted(
+        &mut out_engine,
+        &report(1, 1, two_screens(), vec![], vec![], "", None, None),
+    );
+    let ov_a = view_of(&out_base, "out-a").expect("out-a view");
+    let ov_b = view_of(&out_base, "out-b").expect("out-b view");
+    let out_windows = vec![
+        minimized_fact("win-a1", "out-a"),
+        fact("win-a2", "out-a", 0),
+        fact("win-b1", "out-b", 800),
+        fact("win-b2", "out-b", 1200),
+    ];
+    accepted(
+        &mut out_engine,
+        &report(
+            2,
+            2,
+            two_screens(),
+            out_windows.clone(),
+            vec![],
+            "win-a2",
+            None,
+            None,
+        ),
+    );
+    let out_swapped = accepted(
+        &mut out_engine,
+        &report(
+            3,
+            3,
+            two_screens(),
+            out_windows,
+            vec![],
+            "win-a2",
+            Some(11),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: crate::directional::WorkspaceId(ov_b.clone()),
+            }),
+        ),
+    );
+    assert_eq!(
+        out_swapped.windows.len(),
+        4,
+        "exactly one row per window: {:?}",
+        out_swapped.windows
+    );
+    let oa1 = window_row(&out_swapped, "win-a1");
+    assert_eq!(
+        oa1.membership_authority,
+        ScopeAuthority::Controlled,
+        "oa1: {oa1:?}"
+    );
+    assert_eq!(
+        oa1.frame_authority,
+        ScopeAuthority::Hold(crate::world_report::HoldReason::Minimized),
+        "oa1: {oa1:?}"
+    );
+    assert_eq!(oa1.output.0, "out-b", "oa1: {oa1:?}");
+    assert_eq!(oa1.workspace, ov_a, "oa1: {oa1:?}");
+    assert!(oa1.allocation.is_none(), "oa1: {oa1:?}");
+    let oa2 = window_row(&out_swapped, "win-a2");
+    assert_eq!(
+        oa2.membership_authority,
+        ScopeAuthority::Controlled,
+        "oa2: {oa2:?}"
+    );
+    assert_eq!(
+        oa2.frame_authority,
+        ScopeAuthority::Controlled,
+        "oa2: {oa2:?}"
+    );
+    assert_eq!(oa2.output.0, "out-b", "oa2: {oa2:?}");
+    assert_eq!(oa2.workspace, ov_a, "oa2: {oa2:?}");
+    assert!(oa2.allocation.is_some(), "oa2: {oa2:?}");
+    for name in ["win-b1", "win-b2"] {
+        let row = window_row(&out_swapped, name);
+        assert_eq!(
+            row.membership_authority,
+            ScopeAuthority::Controlled,
+            "{name}: {row:?}"
+        );
+        assert_eq!(row.output.0, "out-a", "{name}: {row:?}");
+        assert_eq!(row.workspace, ov_b, "{name}: {row:?}");
+        assert!(row.allocation.is_some(), "{name}: {row:?}");
+    }
+}

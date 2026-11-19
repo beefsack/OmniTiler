@@ -505,7 +505,7 @@ fn window_actions_and_shortcuts_during_suspension() {
             Some(7),
             Some(WorldCommand::Focus {
                 window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
-                direction: Some(crate::directional::Direction::Left),
+                direction: None,
             }),
             ingress_fullscreen("win-a"),
         ),
@@ -548,7 +548,7 @@ fn window_actions_and_shortcuts_during_suspension() {
             fullscreen_members("win-a"),
             "win-a",
             Some(9),
-            Some(WorldCommand::SwitchView {
+            Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
                 workspace: crate::directional::WorkspaceId(target_a.clone()),
             }),

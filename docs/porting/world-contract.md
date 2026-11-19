@@ -951,6 +951,12 @@ acceptance or adopt the separate close-focus amendment.
 | `switchSettled` | SwitchEvent[] | no | Complete retained latest transfer/view parent outcomes keyed by `out`. |
 | `diagnostics` | RowDiagnostic[] | no | Narrow held-row errors. |
 
+- Within each projected tiled `(out, ws)` domain, rows are in bytewise `win`
+  order. Domain traversal and the interleaving of other lanes are unchanged.
+  Consumers must match rows by `win`, never by index; deterministic ordering
+  keeps the KWin application prefix the same across routes when freshness
+  changes stop application.
+
 - Only controlled property authority authorizes that property's writes. Held,
   untouched, missing rows and retained geometry authorize nothing. Floating
   rows never imply frame writes: ordinary floats retain native frames; explicit

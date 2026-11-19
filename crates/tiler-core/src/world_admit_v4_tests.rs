@@ -825,14 +825,14 @@ fn prebound_reply_refusal_is_atomic_then_same_seq_fits() {
     let mut engine = engine();
     let req = observe(1, facts_pair(), "win-a");
     let gate = PreflightRefusalGate::new(true);
-    let (outcome, settlements) = engine
+    let res = engine
         .handle_report_v4_batched_with_gate_and_prepare(&req, &issue(&req), &[], &gate, |_| {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {});
-    assert!(settlements.is_empty());
+    assert!(res.dispositions.is_empty());
     assert_eq!(
-        outcome,
+        res.outcome,
         V4RunOutcome::Rejected {
             kind: KIND_REPLY_SIZE,
             message: MSG_REPLY_SIZE,
@@ -869,11 +869,12 @@ fn prebound_reply_refusal_is_atomic_then_same_seq_fits() {
 
     // The same sequence works once preflight allows: refusal cached nothing.
     gate.refuse_preflight.set(false);
-    let (retry_outcome, _) = engine
+    let retry_outcome = engine
         .handle_report_v4_batched_with_gate_and_prepare(&req, &issue(&req), &[], &gate, |_| {
             Ok::<(), std::convert::Infallible>(())
         })
-        .unwrap_or_else(|e| match e {});
+        .unwrap_or_else(|e| match e {})
+        .outcome;
     accepted_reply(1, retry_outcome);
     assert_eq!(engine.state_revision(), 1);
     assert_eq!(engine.world.intent.ingest_calls, 1);
@@ -2663,8 +2664,8 @@ fn prepare_callback_refusal_discards_ready_and_bootstrap_candidates() {
     let mut boot_prepare_calls = 0usize;
     let boot_err = boot.handle_report_with_prepare(&pre_ready, &[], |candidate| {
         boot_prepare_calls += 1;
-        assert!(!candidate.reply.ready);
-        assert!(candidate.settlements.is_empty());
+        assert!(!candidate.reply.reply().ready);
+        assert!(candidate.dispositions.is_empty());
         Err("late-boot-refusal")
     });
     assert!(matches!(boot_err, Err("late-boot-refusal")));
@@ -2702,8 +2703,8 @@ fn prepare_callback_refusal_discards_ready_and_bootstrap_candidates() {
     let mut ready_prepare_calls = 0usize;
     let ready_err = ready.handle_report_with_prepare(&r2, &[], |candidate| {
         ready_prepare_calls += 1;
-        assert!(candidate.reply.ready);
-        assert_eq!(candidate.reply.state_revision, 2);
+        assert!(candidate.reply.reply().ready);
+        assert_eq!(candidate.reply.reply().state_revision, 2);
         Err("late-ready-refusal")
     });
     assert!(matches!(ready_err, Err("late-ready-refusal")));
@@ -2813,12 +2814,13 @@ fn admission_gate_checkpoint_order_and_refusal_mapping() {
     pre_ready.screens.clear();
     pre_ready.inventory_complete = false;
     let boot_gate = RecordingGate::new(RefuseAt::None);
-    let (boot_outcome, _) = boot
+    let boot_outcome = boot
         .handle_report_with_gate_and_prepare(&pre_ready, &[], &boot_gate, |_| {
             boot_gate.log.borrow_mut().push("prepare");
             Ok::<(), std::convert::Infallible>(())
         })
-        .unwrap_or_else(|e| match e {});
+        .unwrap_or_else(|e| match e {})
+        .outcome;
     assert!(matches!(boot_outcome, V4RunOutcome::Accepted(ref r) if !r.ready));
     assert_eq!(
         *boot_gate.log.borrow(),
@@ -2830,12 +2832,13 @@ fn admission_gate_checkpoint_order_and_refusal_mapping() {
     let mut ready = engine();
     let r1 = observe(1, facts_pair(), "win-a");
     let ready_gate = RecordingGate::new(RefuseAt::None);
-    let (ready_outcome, _) = ready
+    let ready_outcome = ready
         .handle_report_with_gate_and_prepare(&r1, &[], &ready_gate, |_| {
             ready_gate.log.borrow_mut().push("prepare");
             Ok::<(), std::convert::Infallible>(())
         })
-        .unwrap_or_else(|e| match e {});
+        .unwrap_or_else(|e| match e {})
+        .outcome;
     assert!(matches!(ready_outcome, V4RunOutcome::Accepted(ref r) if r.ready));
     assert_eq!(
         *ready_gate.log.borrow(),
@@ -2881,15 +2884,15 @@ fn admission_gate_checkpoint_order_and_refusal_mapping() {
     ];
     for (refuse_at, expected_kind, expected_msg, expected_log) in cases {
         let gate = RecordingGate::new(refuse_at);
-        let (outcome, settlements) = ready
+        let res = ready
             .handle_report_with_gate_and_prepare(&r2, &[], &gate, |_| {
                 gate.log.borrow_mut().push("prepare");
                 Ok::<(), std::convert::Infallible>(())
             })
             .unwrap_or_else(|e| match e {});
-        assert!(settlements.is_empty());
+        assert!(res.dispositions.is_empty());
         assert_eq!(
-            outcome,
+            res.outcome,
             V4RunOutcome::Rejected {
                 kind: expected_kind,
                 message: expected_msg,
@@ -2999,21 +3002,24 @@ fn residual_gate_discriminates_duplicate_reused_and_prepare_refusal() {
     assert!(!engine.has_last_v4());
 
     // Successful install retains residual "alpha".
-    let (accepted, _) = engine
+    let accepted = engine
         .handle_report_with_gate_and_prepare(&r1, &[], &TagGate("alpha"), |_| Ok::<(), ()>(()))
-        .expect("ok");
+        .expect("ok")
+        .outcome;
     assert!(matches!(accepted, V4RunOutcome::Accepted(_)));
 
     // Matching residual -> Duplicate.
-    let (dup, _) = engine
+    let dup = engine
         .handle_report_with_gate_and_prepare(&r1, &[], &TagGate("alpha"), |_| Ok::<(), ()>(()))
-        .expect("ok");
+        .expect("ok")
+        .outcome;
     assert!(matches!(dup, V4RunOutcome::Duplicate(_)));
 
     // Changed residual with identical typed report -> RequestReused.
-    let (reused, _) = engine
+    let reused = engine
         .handle_report_with_gate_and_prepare(&r1, &[], &TagGate("beta"), |_| Ok::<(), ()>(()))
-        .expect("ok");
+        .expect("ok")
+        .outcome;
     assert_eq!(
         reused,
         V4RunOutcome::Rejected {
@@ -3021,4 +3027,434 @@ fn residual_gate_discriminates_duplicate_reused_and_prepare_refusal() {
             message: MSG_REUSED,
         }
     );
+}
+
+#[test]
+fn unit_p_intrinsic_reply_validation_enforces_semantics_and_host_capabilities() {
+    use crate::connection::HostCapabilities;
+    use crate::geometry::Rect;
+    use crate::world_admit_v4::StructuralCoreAdmissionGate;
+    use crate::world_reply_validation::validate_reply_v4;
+    use crate::world_report::{StateProperty, StateTarget, VisibilityTarget};
+
+    let mut template_engine = self::engine();
+    let r1 = observe(1, facts_pair(), "win-a");
+    let valid_reply = accepted_reply(1, admit(&mut template_engine, &r1));
+    assert!(!valid_reply.windows.is_empty());
+
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            above: false,
+            warp: false,
+            native_sticky: false,
+            ..HostCapabilities::default()
+        },
+        Vec::new(),
+    )
+    .expect("bound engine");
+    accepted_reply(1, admit(&mut engine, &r1));
+    assert!(validate_reply_v4(&valid_reply, engine.capabilities()).is_ok());
+
+    // 1. Small invalid rect (w=0) and fixed semantic token (visibility-show-fallback)
+    //    must fail before prepare and leave state/replay unchanged, even with a no-op prepare hook.
+    let rev_before = engine.state_revision();
+    let mut bad_rect_reply = valid_reply.clone();
+    bad_rect_reply.windows[0].allocation = Some(Rect {
+        x: 0,
+        y: 0,
+        w: 0,
+        h: 10,
+    });
+    let mut prepare_called = false;
+    let r2 = observe(2, facts_pair(), "win-a");
+    let outcome = engine
+        .finalize_v4_candidate_with_gate_and_prepare(
+            engine.world.clone(),
+            &r2,
+            report_digest_v4(&r2),
+            bad_rect_reply,
+            &[],
+            &StructuralCoreAdmissionGate,
+            |_| {
+                prepare_called = true;
+                Ok::<(), ()>(())
+            },
+        )
+        .expect("ok");
+    assert!(!prepare_called, "invalid rect must refuse before prepare");
+    assert_eq!(
+        outcome,
+        V4RunOutcome::Rejected {
+            kind: "unknown-value",
+            message: "request contains an unknown value",
+        }
+    );
+    assert_eq!(engine.state_revision(), rev_before);
+    assert!(matches!(
+        admit(&mut engine, &r1),
+        V4RunOutcome::Duplicate(_)
+    ));
+
+    let mut show_fallback_reply = valid_reply.clone();
+    show_fallback_reply.windows[0].visibility = Some(VisibilityTarget {
+        shown: true,
+        revision: 1,
+        fallback: true,
+    });
+    let outcome = engine
+        .finalize_v4_candidate_with_gate_and_prepare(
+            engine.world.clone(),
+            &r2,
+            report_digest_v4(&r2),
+            show_fallback_reply,
+            &[],
+            &StructuralCoreAdmissionGate,
+            |_| Ok::<(), ()>(()),
+        )
+        .expect("ok");
+    assert_eq!(
+        outcome,
+        V4RunOutcome::Rejected {
+            kind: KIND_SNAPSHOT,
+            message: "visibility-show-fallback",
+        }
+    );
+
+    // 2. Host capability gates: above, warp, sticky.
+    let mut above_reply = valid_reply.clone();
+    above_reply.windows[0].state.push(StateTarget {
+        property: StateProperty::Above,
+        value: true,
+        authority: crate::world_report::ScopeAuthority::Controlled,
+        command_seq: None,
+    });
+    assert_eq!(
+        validate_reply_v4(&above_reply, engine.capabilities())
+            .expect_err("above capability false")
+            .message,
+        "above-capability-false"
+    );
+    let outcome = engine
+        .finalize_v4_candidate_with_gate_and_prepare(
+            engine.world.clone(),
+            &r2,
+            report_digest_v4(&r2),
+            above_reply,
+            &[],
+            &StructuralCoreAdmissionGate,
+            |_| Ok::<(), ()>(()),
+        )
+        .expect("ok");
+    assert_eq!(
+        outcome,
+        V4RunOutcome::Rejected {
+            kind: KIND_SNAPSHOT,
+            message: "above-capability-false",
+        }
+    );
+
+    let mut warp_reply = valid_reply.clone();
+    warp_reply.cursor_warp = Some((10, 20));
+    assert_eq!(
+        validate_reply_v4(&warp_reply, engine.capabilities())
+            .expect_err("warp capability false")
+            .message,
+        "warp-capability-false"
+    );
+
+    let mut sticky_reply = valid_reply.clone();
+    sticky_reply.windows[0].state.push(StateTarget {
+        property: StateProperty::Sticky,
+        value: true,
+        authority: crate::world_report::ScopeAuthority::Controlled,
+        command_seq: None,
+    });
+    assert_eq!(
+        validate_reply_v4(&sticky_reply, engine.capabilities())
+            .expect_err("sticky capability false")
+            .message,
+        "sticky-capability-false"
+    );
+
+    // 3. Bootstrap reply validates cleanly.
+    let mut pre_ready = self::engine();
+    let mut bootstrap = observe(1, Vec::new(), "");
+    bootstrap.screens.clear();
+    let boot_reply = accepted_reply(1, admit(&mut pre_ready, &bootstrap));
+    assert!(!boot_reply.ready);
+    assert!(validate_reply_v4(&boot_reply, pre_ready.capabilities()).is_ok());
+}
+
+#[test]
+fn unit_p_c5_size_and_wake_fences_beat_invalid_candidate() {
+    use crate::world_admit_v4::{
+        AdmissionGateDecision, CoreAdmissionGate, ExactInnerCheck, ExactInnerDecision,
+        FutureReserveGateFacts, PreflightGateFacts,
+    };
+    use crate::world_report::WorldReplyV4;
+
+    struct SizeAndWakeGate {
+        refuse_exact: bool,
+        refuse_reserve: bool,
+        refuse_wake: bool,
+    }
+
+    impl CoreAdmissionGate for SizeAndWakeGate {
+        fn check_request_size(&self, _report: &WorldReportV4) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+        fn check_preflight(
+            &self,
+            _report: &WorldReportV4,
+            _facts: &PreflightGateFacts<'_>,
+        ) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+        fn check_exact_inner(&self, _reply: &WorldReplyV4) -> ExactInnerDecision {
+            if self.refuse_exact {
+                ExactInnerDecision::Refuse
+            } else {
+                ExactInnerDecision::Allow(ExactInnerCheck::new(0))
+            }
+        }
+        fn check_future_reserve(
+            &self,
+            _reply: &WorldReplyV4,
+            _facts: &FutureReserveGateFacts,
+            _exact: ExactInnerCheck,
+        ) -> AdmissionGateDecision {
+            if self.refuse_reserve {
+                AdmissionGateDecision::Refuse
+            } else {
+                AdmissionGateDecision::Allow
+            }
+        }
+        fn check_wake_precheck(
+            &self,
+            _candidate: &crate::world_engine::WakePrecheckCandidate<'_>,
+        ) -> AdmissionGateDecision {
+            if self.refuse_wake {
+                AdmissionGateDecision::Reject {
+                    kind: "sequence-exhausted",
+                    message: "wake epoch exhausted",
+                }
+            } else {
+                AdmissionGateDecision::Allow
+            }
+        }
+    }
+
+    let mut engine = self::engine();
+    let r1 = observe(1, facts_pair(), "win-a");
+    let valid_reply = accepted_reply(1, admit(&mut engine, &r1));
+    let mut invalid_reply = valid_reply;
+    invalid_reply.cursor_warp = Some((32769, 0));
+
+    let r2 = observe(2, facts_pair(), "win-a");
+    let digest = report_digest_v4(&r2);
+
+    // 1. Exact inner oversize beats invalid candidate.
+    let outcome = engine
+        .finalize_v4_candidate_with_gate_and_prepare(
+            engine.world.clone(),
+            &r2,
+            digest,
+            invalid_reply.clone(),
+            &[],
+            &SizeAndWakeGate {
+                refuse_exact: true,
+                refuse_reserve: true,
+                refuse_wake: true,
+            },
+            |_| Ok::<(), ()>(()),
+        )
+        .expect("ok");
+    assert_eq!(
+        outcome,
+        V4RunOutcome::Rejected {
+            kind: KIND_REPLY_SIZE,
+            message: MSG_REPLY_SIZE,
+        }
+    );
+
+    // 2. Future reserve beats wake precheck and invalid candidate.
+    let outcome = engine
+        .finalize_v4_candidate_with_gate_and_prepare(
+            engine.world.clone(),
+            &r2,
+            digest,
+            invalid_reply.clone(),
+            &[],
+            &SizeAndWakeGate {
+                refuse_exact: false,
+                refuse_reserve: true,
+                refuse_wake: true,
+            },
+            |_| Ok::<(), ()>(()),
+        )
+        .expect("ok");
+    assert_eq!(
+        outcome,
+        V4RunOutcome::Rejected {
+            kind: KIND_REPLY_SIZE,
+            message: MSG_REPLY_SIZE,
+        }
+    );
+
+    // 3. Wake precheck beats invalid candidate.
+    let outcome = engine
+        .finalize_v4_candidate_with_gate_and_prepare(
+            engine.world.clone(),
+            &r2,
+            digest,
+            invalid_reply,
+            &[],
+            &SizeAndWakeGate {
+                refuse_exact: false,
+                refuse_reserve: false,
+                refuse_wake: true,
+            },
+            |_| Ok::<(), ()>(()),
+        )
+        .expect("ok");
+    assert_eq!(
+        outcome,
+        V4RunOutcome::Rejected {
+            kind: "sequence-exhausted",
+            message: "wake epoch exhausted",
+        }
+    );
+}
+
+#[test]
+fn unit_p_trailing_workspace_minting_skips_global_collisions_and_rolls_back() {
+    use crate::directional::OutputId;
+    use crate::world_admit_v4::StructuralCoreAdmissionGate;
+    use crate::world_transaction::WorldTransaction;
+
+    let single = || vec![fact("win-a", "out-a", 0)];
+    let mut engine = self::engine();
+    let r1 = observe(1, single(), "win-a");
+    let reply1 = accepted_reply(1, admit(&mut engine, &r1));
+    assert_eq!(
+        reply1
+            .workspaces
+            .iter()
+            .map(|w| (w.output.0.as_str(), w.id.as_str(), w.trailing))
+            .collect::<Vec<_>>(),
+        vec![("out-a", "ws-1", false), ("out-a", "ws-2", true)]
+    );
+
+    // Explicit Send to ws-2 (which already exists as trailing) leaves ws-1 empty
+    // and mints ws-3 cleanly without duplicating ws-2.
+    let r2 = report(
+        2,
+        single(),
+        "win-a",
+        PresentationRowV4::Valid(ingress("win-a")),
+        Some(1),
+        Some(WorldCommand::Send {
+            window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
+            target_output: OutputId("out-a".to_owned()),
+            target_workspace: crate::directional::WorkspaceId("ws-2".to_owned()),
+            follow: false,
+        }),
+        Vec::new(),
+    );
+    let reply2 = accepted_reply(2, admit(&mut engine, &r2));
+    assert_eq!(
+        reply2
+            .workspaces
+            .iter()
+            .map(|w| (w.output.0.as_str(), w.id.as_str(), w.trailing))
+            .collect::<Vec<_>>(),
+        vec![("out-a", "ws-1", false), ("out-a", "ws-2", false)]
+    );
+
+    let r3_select = report(
+        3,
+        single(),
+        "win-a",
+        PresentationRowV4::Valid(ingress("win-a")),
+        Some(2),
+        Some(WorldCommand::SelectTrailing {
+            output: Some(OutputId("out-a".to_owned())),
+        }),
+        Vec::new(),
+    );
+    let reply3 = accepted_reply(3, admit(&mut engine, &r3_select));
+    assert_eq!(
+        reply3
+            .workspaces
+            .iter()
+            .map(|w| (w.output.0.as_str(), w.id.as_str(), w.trailing))
+            .collect::<Vec<_>>(),
+        vec![
+            ("out-a", "ws-1", false),
+            ("out-a", "ws-2", false),
+            ("out-a", "ws-3", true),
+        ]
+    );
+
+    // Cross-output collision: seed ws-4 on out-b, then mint on out-a -> must skip ws-4 and mint ws-5.
+    engine
+        .world
+        .workspace
+        .mapping
+        .entry("out-b".to_owned())
+        .or_default()
+        .push("ws-4".to_owned());
+    let counter_before = engine.world.workspace.creation_counter;
+    let ring_before = engine.world.workspace.mapping.clone();
+
+    // Refused candidate rollback: a failed prepare must leave creation_counter and mapping unchanged.
+    let mut staged = engine.world.clone();
+    let minted = WorldTransaction::new(&engine.connection, &[], &mut staged)
+        .create_trailing_workspace(&OutputId("out-a".to_owned()), true)
+        .expect("mint");
+    assert_eq!(minted, "ws-5");
+    let r3 = observe(4, single(), "win-a");
+    let err = engine
+        .finalize_v4_candidate_with_gate_and_prepare(
+            staged,
+            &r3,
+            report_digest_v4(&r3),
+            reply2,
+            &[],
+            &StructuralCoreAdmissionGate,
+            |_| Err("prepare-fail"),
+        )
+        .expect_err("prepare refusal propagates");
+    assert_eq!(err, "prepare-fail");
+    assert_eq!(engine.world.workspace.creation_counter, counter_before);
+    assert_eq!(engine.world.workspace.mapping, ring_before);
+
+    // Adopted mint advances creation_counter past ws-4 to 5 and appends ws-5.
+    let mut staged = engine.world.clone();
+    let minted = WorldTransaction::new(&engine.connection, &[], &mut staged)
+        .create_trailing_workspace(&OutputId("out-a".to_owned()), true)
+        .expect("mint");
+    assert_eq!(minted, "ws-5");
+    assert_eq!(staged.workspace.creation_counter, 5);
+
+    // In-use-only retained switch witness: ws-6 is absent from all rings but
+    // retained in selection_targets, so minting must skip ws-6 and mint ws-7.
+    staged.settlement.selection_targets.insert(
+        WindowId("win-switch".to_owned()),
+        crate::world_selection::SelectionTarget {
+            home: crate::session::DomainKey {
+                output: OutputId("out-a".to_owned()),
+                workspace: crate::directional::WorkspaceId("ws-6".to_owned()),
+            },
+            shown: true,
+            rev: 1,
+        },
+    );
+    let minted_after_switch = WorldTransaction::new(&engine.connection, &[], &mut staged)
+        .create_trailing_workspace(&OutputId("out-a".to_owned()), true)
+        .expect("mint after switch witness");
+    assert_eq!(minted_after_switch, "ws-7");
+    assert_eq!(staged.workspace.creation_counter, 7);
 }

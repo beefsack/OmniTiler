@@ -1,4 +1,3 @@
-use crate::boundary::CoreCommand;
 use crate::connection::*;
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
@@ -291,7 +290,10 @@ fn pre_settings_command_sequence_is_not_consumed_or_retained() {
     let generation = engine.handshake(&bound).generation.unwrap();
     let mut commanded = report(1, true);
     commanded.command_seq = Some(7);
-    commanded.command = Some(WorldCommand::Operation(CoreCommand::Reconcile));
+    commanded.command = Some(WorldCommand::Focus {
+        window: crate::directional::WindowSubject::CurrentFocus,
+        direction: None,
+    });
     let WorldOutcome::Accepted(bootstrap) = engine.handle_report(&commanded, &[]).0 else {
         panic!("valid pre-settings commanded report should receive a bootstrap reply");
     };
@@ -320,7 +322,10 @@ fn pre_settings_command_sequence_is_not_consumed_or_retained() {
     // A fresh report reusing the now-consumed sequence reconciles only.
     let mut replay = report(2, true);
     replay.command_seq = Some(7);
-    replay.command = Some(WorldCommand::Operation(CoreCommand::Reconcile));
+    replay.command = Some(WorldCommand::Focus {
+        window: crate::directional::WindowSubject::CurrentFocus,
+        direction: None,
+    });
     let WorldOutcome::CommandConsumed(consumed) = engine.handle_report(&replay, &[]).0 else {
         panic!("reused command sequence must report consumed");
     };
@@ -1474,4 +1479,61 @@ fn generation_group_allocator_burns_across_trials_and_resets_only_on_rehandshake
         engine_groups(&engine),
         BTreeSet::from([NodeId("grp-0".into())])
     );
+}
+
+#[test]
+fn rebind_from_max_64_byte_seed_mints_bounded_fresh_generation_and_rejects_spent() {
+    let max_seed = "g".repeat(crate::ids::MAX_GENERATION_LEN);
+    let mut engine = WorldEngine::new(&max_seed).expect("64-byte seed accepted");
+    let hs1 = handshake("adapter-1");
+    let r_hs1 = engine.handshake(&hs1);
+    assert_eq!(r_hs1.kind, None);
+    let gen1 = r_hs1.generation.expect("initial generation");
+    assert_eq!(gen1, max_seed);
+
+    let hs2 = handshake("adapter-2");
+    let r_hs2 = engine.handshake(&hs2);
+    assert_eq!(r_hs2.kind, None);
+    let gen2 = r_hs2.generation.expect("bounded rebind 1");
+    assert!(gen2.len() <= crate::ids::MAX_GENERATION_LEN);
+    assert!(gen2.starts_with("rebind-"));
+    assert_ne!(gen2, gen1);
+
+    let hs3 = handshake("adapter-3");
+    let r_hs3 = engine.handshake(&hs3);
+    assert_eq!(r_hs3.kind, None);
+    let gen3 = r_hs3.generation.expect("bounded rebind 2");
+    assert!(gen3.len() <= crate::ids::MAX_GENERATION_LEN);
+    assert!(gen3.starts_with("rebind-"));
+    assert_ne!(gen3, gen2);
+    assert_ne!(gen3, gen1);
+
+    // Spent generations (initial 64-byte seed and prior rebind) are rejected.
+    engine
+        .handle_settings(&SettingsRequest {
+            adapter: "adapter-3".into(),
+            generation: gen3.clone(),
+            request: "settings-gen3".into(),
+            revision: 1,
+            values: Vec::new(),
+        })
+        .expect("gen3 settings accepted");
+    for spent in [&gen1, &gen2] {
+        let mut stale = report(1, true);
+        stale.adapter_incarnation = hs3.adapter.clone();
+        stale.core_generation = spent.clone();
+        stale.windows = vec![identity_fact(
+            "win-a",
+            None,
+            Some("example"),
+            Some("foreign-1"),
+            "Synthetic",
+        )];
+        match engine.handle_report(&stale, &[]).0 {
+            WorldOutcome::Rejected { kind, .. } => {
+                assert_eq!(kind, "generation-mismatch");
+            }
+            other => panic!("expected rejected stale generation, got {other:?}"),
+        }
+    }
 }

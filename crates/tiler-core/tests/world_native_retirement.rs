@@ -10,7 +10,7 @@ use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
     FrameSetter, NativeCreationAttempt, NativeObservation, NativeOccupancy, ScreenReport,
     WindowFact, WorldCommand, WorldReportV4,
@@ -176,12 +176,83 @@ fn report(
     }
 }
 
+struct TestGate;
+
+impl tiler_core::world_engine::CoreAdmissionGate for TestGate {
+    fn check_request_size(
+        &self,
+        _report: &WorldReportV4,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+
+    fn check_preflight(
+        &self,
+        _report: &WorldReportV4,
+        _facts: &tiler_core::world_engine::PreflightGateFacts<'_>,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+
+    fn check_exact_inner(
+        &self,
+        _reply: &tiler_core::world_report::WorldReplyV4,
+    ) -> tiler_core::world_engine::ExactInnerDecision {
+        tiler_core::world_engine::ExactInnerDecision::Allow(
+            tiler_core::world_engine::ExactInnerCheck::new(0),
+        )
+    }
+
+    fn check_future_reserve(
+        &self,
+        _reply: &tiler_core::world_report::WorldReplyV4,
+        _facts: &tiler_core::world_engine::FutureReserveGateFacts,
+        _exact: tiler_core::world_engine::ExactInnerCheck,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+}
+
+fn eval_report(
+    engine: &mut WorldEngine,
+    report: &WorldReportV4,
+) -> (
+    tiler_core::world_engine::WorldOutcome,
+    Vec<tiler_core::world_report::BatchSettlement>,
+) {
+    let run = engine
+        .handle_report_with_gate_and_prepare(report, &[], &TestGate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    let settlements = run
+        .dispositions
+        .into_iter()
+        .filter_map(|d| match d.disposition {
+            tiler_core::world_report::CommandDisposition::Executed(result) => {
+                Some(tiler_core::world_report::BatchSettlement { seq: d.seq, result })
+            }
+            tiler_core::world_report::CommandDisposition::Refused(result) => {
+                Some(tiler_core::world_report::BatchSettlement {
+                    seq: d.seq,
+                    result: Some(tiler_core::world_report::CommandResult::Rejected {
+                        kind: result,
+                    }),
+                })
+            }
+            tiler_core::world_report::CommandDisposition::AlreadyConsumed
+            | tiler_core::world_report::CommandDisposition::NotRun => None,
+        })
+        .collect();
+    (run.outcome, settlements)
+}
+
 fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReportV4,
 ) -> tiler_core::world_report::WorldReplyV4 {
-    match engine.handle_report(report, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
+    match eval_report(engine, report).0 {
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -765,7 +836,8 @@ fn known_raw_current_vetoes_despite_command_moved_view() {
     let d3 = logical_for(&first, "out-a", "d3").expect("d3 bound");
     // The command moves the desired view to d3, but the raw native
     // current still names d2: adapter truth wins, d2 stays.
-    let (outcome, settlements) = engine.handle_report(
+    let (outcome, settlements) = eval_report(
+        &mut engine,
         &report(
             2,
             2,
@@ -773,16 +845,15 @@ fn known_raw_current_vetoes_despite_command_moved_view() {
             vec![],
             vec![empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d2")],
             Some(1),
-            Some(WorldCommand::SwitchView {
+            Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
                 workspace: tiler_core::directional::WorkspaceId(d3.clone()),
             }),
             true,
         ),
-        &[],
     );
     let reply = match outcome {
-        WorldOutcome::Accepted(reply) => reply,
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted reply, got {other:?}"),
     };
     assert_eq!(
@@ -931,7 +1002,7 @@ fn shared_mirror_flight_vetoes_observing_projection() {
                 empty_obs("out-b", &["v", "t"], "v"),
             ],
             Some(1),
-            Some(WorldCommand::SwitchView {
+            Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-b".to_owned()),
                 workspace: tiler_core::directional::WorkspaceId(ln.clone()),
             }),
@@ -1263,12 +1334,11 @@ fn missing_native_row_fences_retirement_intents() {
     setup_four(&mut engine);
     // No observation row for the live output: tombstones persist fenced;
     // nothing new authorizes deletion.
-    if let WorldOutcome::Accepted(reply) = engine
-        .handle_report(
-            &report(2, 2, single_screen(), vec![], vec![], None, None, true),
-            &[],
-        )
-        .0
+    if let tiler_core::world_engine::WorldOutcome::Accepted(reply) = eval_report(
+        &mut engine,
+        &report(2, 2, single_screen(), vec![], vec![], None, None, true),
+    )
+    .0
     {
         for native_id in ["d2", "d3"] {
             let tomb = tombstone_id(&reply, "out-a", native_id).expect("tombstone persists");
@@ -1288,14 +1358,13 @@ fn occupancy_coverage_gap_refuses_report() {
     setup_four(&mut engine);
     let mut obs = empty_obs("out-a", &["d1", "d2", "d3", "d4"], "d1");
     obs.occupancy.pop();
-    let outcome = engine
-        .handle_report(
-            &report(2, 2, single_screen(), vec![], vec![obs], None, None, true),
-            &[],
-        )
-        .0;
+    let outcome = eval_report(
+        &mut engine,
+        &report(2, 2, single_screen(), vec![], vec![obs], None, None, true),
+    )
+    .0;
     assert!(
-        !matches!(outcome, WorldOutcome::Accepted(_)),
+        !matches!(outcome, tiler_core::world_engine::WorldOutcome::Accepted(_)),
         "coverage gap must not accept: {outcome:?}"
     );
 }
@@ -5014,7 +5083,7 @@ fn idle_stale_echo_never_overrides_pending_view_transfer() {
                 &[Some(1), Some(1), Some(0), Some(0)],
             )],
             Some(1),
-            Some(WorldCommand::SwitchView {
+            Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
                 workspace: tiler_core::directional::WorkspaceId(d2.clone()),
             }),
@@ -5163,7 +5232,7 @@ fn idle_prune_fallback_prefers_known_echo_over_ring_head() {
                 &[Some(1), Some(1), Some(0), Some(0)],
             )],
             Some(1),
-            Some(WorldCommand::SwitchView {
+            Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
                 workspace: tiler_core::directional::WorkspaceId(d2.clone()),
             }),

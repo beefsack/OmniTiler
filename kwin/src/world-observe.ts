@@ -54,7 +54,7 @@ import {
     resolveEffectiveWorkspaceMode,
     type WorkspaceMode,
 } from "./workspace-native";
-import { isOpaqueId, utf8ByteLength } from "./world-seq";
+import { isCarriedPoint, isCarriedRect, isOpaqueId, utf8ByteLength } from "./world-seq";
 import { mapNativePid } from "./world-connection";
 
 // Documented core bounds (tiler-core world_report): outputs 16, total
@@ -355,10 +355,7 @@ function readRect(ref: object): { x: number; y: number; w: number; h: number } |
     const y = toInt(r["y"]);
     const w = toInt(r["width"] !== undefined ? r["width"] : r["w"]);
     const h = toInt(r["height"] !== undefined ? r["height"] : r["h"]);
-    if (x === null || y === null || w === null || h === null || w <= 0 || h <= 0) {
-        return null;
-    }
-    if (x < -16384 || x > 16384 || y < -16384 || y > 16384 || w > 16384 || h > 16384) {
+    if (x === null || y === null || w === null || h === null || !isCarriedRect(x, y, w, h)) {
         return null;
     }
     return { x, y, w, h };
@@ -380,10 +377,7 @@ function readClientRect(ref: object): { x: number; y: number; w: number; h: numb
     const y = toInt(r["y"]);
     const w = toInt(r["width"] !== undefined ? r["width"] : r["w"]);
     const h = toInt(r["height"] !== undefined ? r["height"] : r["h"]);
-    if (x === null || y === null || w === null || h === null || w <= 0 || h <= 0) {
-        return null;
-    }
-    if (x < -16384 || x > 16384 || y < -16384 || y > 16384 || w > 16384 || h > 16384) {
+    if (x === null || y === null || w === null || h === null || !isCarriedRect(x, y, w, h)) {
         return null;
     }
     return { x, y, w, h };
@@ -456,7 +450,7 @@ function readRawRect(ref: object): { x: number; y: number; width: number; height
     const y: number = yn;
     const w: number = wn;
     const h: number = hn;
-    if (!(x >= -16384 && x <= 16384 && y >= -16384 && y <= 16384 && w > 0 && w <= 16384 && h > 0 && h <= 16384)) {
+    if (!isCarriedRect(x, y, w, h)) {
         return null;
     }
     return { x, y, width: w, height: h };
@@ -1640,7 +1634,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             if (typeof pos === "object" && pos !== null) {
                 const cx = toInt((pos as Record<string, unknown>)["x"]);
                 const cy = toInt((pos as Record<string, unknown>)["y"]);
-                if (cx !== null && cy !== null && Math.abs(cx) <= 16384 && Math.abs(cy) <= 16384) {
+                if (cx !== null && cy !== null && isCarriedPoint(cx, cy)) {
                     return { x: cx, y: cy };
                 }
             }

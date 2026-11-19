@@ -2818,17 +2818,26 @@ fn v4_visibility_attempt_discriminators() {
         assert!(a_vis.pre.is_some() && a_vis.post.is_some());
 
         let mut engine = make_engine();
-        let r1 = engine
-            .handle_report_v4_for_test(&baseline_decoded.report)
-            .expect("baseline accepts");
+        let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::new();
+        let eval = |eng: &mut WorldEngine, rep: &tiler_core::world_report::WorldReportV4| match eng
+            .handle_report_with_gate_and_prepare(rep, &[], &gate, |_| {
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .unwrap_or_else(|e| match e {})
+            .outcome
+        {
+            tiler_core::world_engine::WorldOutcome::Accepted(r)
+            | tiler_core::world_engine::WorldOutcome::Duplicate(r)
+            | tiler_core::world_engine::WorldOutcome::CommandConsumed(r) => Ok(r),
+            tiler_core::world_engine::WorldOutcome::Rejected { kind, message } => {
+                Err((kind, message))
+            }
+        };
+        let r1 = eval(&mut engine, &baseline_decoded.report).expect("baseline accepts");
         assert!(r1.ready, "baseline readies");
-        let r2 = engine
-            .handle_report_v4_for_test(&send_decoded.report)
-            .expect("send accepts");
+        let r2 = eval(&mut engine, &send_decoded.report).expect("send accepts");
         assert!(r2.ready, "send readies");
-        let reply = engine
-            .handle_report_v4_for_test(&decoded.report)
-            .expect("engine accepts mixed report");
+        let reply = eval(&mut engine, &decoded.report).expect("engine accepts mixed report");
         assert!(reply.ready, "engine readies");
 
         // Diagnostics: A (Window) and B (Attempt) present; C, win-absent, win-closed absent.
@@ -2947,14 +2956,25 @@ fn v4_visibility_attempt_discriminators() {
                 "{label}: {target_win} must not decode into graded visibility_attempts"
             );
             let mut engine = make_engine();
-            engine
-                .handle_report_v4_for_test(&baseline_decoded.report)
-                .expect("baseline accepts");
-            engine
-                .handle_report_v4_for_test(&send_decoded.report)
-                .expect("send accepts");
-            let reply = engine
-                .handle_report_v4_for_test(&decoded.report)
+            let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::new();
+            let eval =
+                |eng: &mut WorldEngine, rep: &tiler_core::world_report::WorldReportV4| match eng
+                    .handle_report_with_gate_and_prepare(rep, &[], &gate, |_| {
+                        Ok::<(), std::convert::Infallible>(())
+                    })
+                    .unwrap_or_else(|e| match e {})
+                    .outcome
+                {
+                    tiler_core::world_engine::WorldOutcome::Accepted(r)
+                    | tiler_core::world_engine::WorldOutcome::Duplicate(r)
+                    | tiler_core::world_engine::WorldOutcome::CommandConsumed(r) => Ok(r),
+                    tiler_core::world_engine::WorldOutcome::Rejected { kind, message } => {
+                        Err((kind, message))
+                    }
+                };
+            eval(&mut engine, &baseline_decoded.report).expect("baseline accepts");
+            eval(&mut engine, &send_decoded.report).expect("send accepts");
+            let reply = eval(&mut engine, &decoded.report)
                 .unwrap_or_else(|e| panic!("{label}: engine refused report: {e:?}"));
             assert!(reply.ready, "{label}: engine readies");
             assert!(

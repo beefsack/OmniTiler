@@ -148,7 +148,7 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {})
-        .0
+        .outcome
     {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
@@ -170,14 +170,14 @@ fn oversized_request_refuses_before_any_mutation() {
     let big = report(2, windows);
     assert!(report_estimate_v4(&big) > WORLD_MAX_REQUEST_BYTES);
     let gate = ProtocolAdmissionGate::new();
-    let (outcome, settlements) = engine
+    let transition = engine
         .handle_report_with_gate_and_prepare(&big, &[], &gate, |_| {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {});
-    assert!(settlements.is_empty());
+    assert!(transition.dispositions.is_empty());
     assert!(
-        matches!(outcome, WorldOutcome::Rejected { kind, .. } if kind == "oversized"),
+        matches!(transition.outcome, WorldOutcome::Rejected { kind, .. } if kind == "oversized"),
         "oversize gate refuses before mutation"
     );
     assert_eq!(engine.state_revision(), revision);
@@ -224,15 +224,16 @@ fn oversized_toggle_report_refuses_before_mutation_and_retry_saves() {
     big.command = Some(toggle("win-a"));
     assert!(report_estimate_v4(&big) > WORLD_MAX_REQUEST_BYTES);
     let gate = ProtocolAdmissionGate::new();
-    let (outcome, settlements) = engine
+    let transition = engine
         .handle_report_with_gate_and_prepare(&big, &[], &gate, |_| {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {});
-    assert!(settlements.is_empty());
+    assert!(transition.dispositions.is_empty());
     assert!(
-        matches!(outcome, WorldOutcome::Rejected { kind, .. } if kind == "oversized"),
-        "oversize gate refuses before mutation: {outcome:?}"
+        matches!(transition.outcome, WorldOutcome::Rejected { kind, .. } if kind == "oversized"),
+        "oversize gate refuses before mutation: {:?}",
+        transition.outcome
     );
     assert_eq!(engine.state_revision(), revision);
 
@@ -315,15 +316,26 @@ fn preflight_toggle_save_bound_crossing_refuses_and_retry_saves() {
     );
 
     let revision = engine.state_revision();
-    let (outcome, settlements) = engine
+    let transition = engine
         .handle_report_with_gate_and_prepare(&r, &[], &gate, |_| {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {});
-    assert!(settlements.is_empty());
     assert!(
-        matches!(outcome, WorldOutcome::Rejected { kind, .. } if kind == "reply-oversize"),
-        "expected reply-oversize, got {outcome:?}"
+        matches!(
+            transition.dispositions.as_slice(),
+            [tiler_core::world_report::BatchDisposition {
+                seq: 2,
+                disposition: tiler_core::world_report::CommandDisposition::NotRun,
+            }]
+        ),
+        "expected NotRun disposition, got {:?}",
+        transition.dispositions
+    );
+    assert!(
+        matches!(transition.outcome, WorldOutcome::Rejected { kind, .. } if kind == "reply-oversize"),
+        "expected reply-oversize, got {:?}",
+        transition.outcome
     );
     assert_eq!(engine.state_revision(), revision);
 
@@ -374,15 +386,16 @@ fn preflight_target_lanes_bound_crossing_refuses_and_retry_accepts() {
 
     let revision = engine.state_revision();
     let gate = ProtocolAdmissionGate::new();
-    let (outcome, settlements) = engine
+    let transition = engine
         .handle_report_with_gate_and_prepare(&r, &[], &gate, |_| {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {});
-    assert!(settlements.is_empty());
+    assert!(transition.dispositions.is_empty());
     assert!(
-        matches!(outcome, WorldOutcome::Rejected { kind, .. } if kind == "reply-oversize"),
-        "expected reply-oversize, got {outcome:?}"
+        matches!(transition.outcome, WorldOutcome::Rejected { kind, .. } if kind == "reply-oversize"),
+        "expected reply-oversize, got {:?}",
+        transition.outcome
     );
     assert_eq!(engine.state_revision(), revision);
 
@@ -461,15 +474,16 @@ fn preflight_state_attempt_diagnostic_bound_crossing_refuses_and_retry_accepts()
     );
 
     let revision = engine.state_revision();
-    let (outcome, settlements) = engine
+    let transition = engine
         .handle_report_with_gate_and_prepare(&r, &[], &gate, |_| {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {});
-    assert!(settlements.is_empty());
+    assert!(transition.dispositions.is_empty());
     assert!(
-        matches!(outcome, WorldOutcome::Rejected { kind, .. } if kind == "reply-oversize"),
-        "expected reply-oversize, got {outcome:?}"
+        matches!(transition.outcome, WorldOutcome::Rejected { kind, .. } if kind == "reply-oversize"),
+        "expected reply-oversize, got {:?}",
+        transition.outcome
     );
     assert_eq!(engine.state_revision(), revision);
 
@@ -552,15 +566,16 @@ fn preflight_intent_desired_reserve_crossing_refuses_and_retry_accepts() {
     );
 
     let revision = engine.state_revision();
-    let (outcome, settlements) = engine
+    let transition = engine
         .handle_report_with_gate_and_prepare(&r, &[], &gate, |_| {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {});
-    assert!(settlements.is_empty());
+    assert!(transition.dispositions.is_empty());
     assert!(
-        matches!(outcome, WorldOutcome::Rejected { kind, .. } if kind == "reply-oversize"),
-        "expected reply-oversize, got {outcome:?}"
+        matches!(transition.outcome, WorldOutcome::Rejected { kind, .. } if kind == "reply-oversize"),
+        "expected reply-oversize, got {:?}",
+        transition.outcome
     );
     assert_eq!(engine.state_revision(), revision);
 
@@ -587,7 +602,7 @@ fn preflight_effect_reserve_boundary_refuses_before_mutation_and_retry_accepts()
     );
     let focus = || WorldCommand::Focus {
         window: tiler_core::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
-        direction: Some(tiler_core::directional::Direction::Right),
+        direction: None,
     };
     let bound_of = |windows: &[WindowFact]| {
         let mut r = report(2, windows.to_vec());
@@ -626,15 +641,26 @@ fn preflight_effect_reserve_boundary_refuses_before_mutation_and_retry_accepts()
 
     let revision = engine.state_revision();
     let gate = ProtocolAdmissionGate::new();
-    let (outcome, settlements) = engine
+    let transition = engine
         .handle_report_with_gate_and_prepare(&r, &[], &gate, |_| {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {});
-    assert!(settlements.is_empty());
     assert!(
-        matches!(outcome, WorldOutcome::Rejected { kind, .. } if kind == "reply-oversize"),
-        "expected reply-oversize, got {outcome:?}"
+        matches!(
+            transition.dispositions.as_slice(),
+            [tiler_core::world_report::BatchDisposition {
+                seq: 2,
+                disposition: tiler_core::world_report::CommandDisposition::NotRun,
+            }]
+        ),
+        "expected NotRun disposition, got {:?}",
+        transition.dispositions
+    );
+    assert!(
+        matches!(transition.outcome, WorldOutcome::Rejected { kind, .. } if kind == "reply-oversize"),
+        "expected reply-oversize, got {:?}",
+        transition.outcome
     );
     assert_eq!(engine.state_revision(), revision, "refusal mutates nothing");
 
@@ -668,7 +694,7 @@ fn explicit_focus_with_newcomer_fits_preflight_reserve_and_canonical_count() {
     input.command_seq = Some(2);
     input.command = Some(WorldCommand::Focus {
         window: tiler_core::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
-        direction: Some(tiler_core::directional::Direction::Right),
+        direction: None,
     });
     let pre_bound = reply_upper_bound_v4(&input, 0, 1, 2, 0, 1);
     let reply = accepted(&mut engine, &input);

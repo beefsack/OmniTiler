@@ -1568,7 +1568,6 @@ fn clear_same_report_core_command_supersedes_before_continuation() {
     // Same ordering boundary through the CoreCommand route
     // (`WorldCommand::Operation`): an old proof plus a fresh
     // same-window CoreCommand move supersedes before continuation.
-    use crate::boundary::CoreCommand;
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let maximized = || WindowFact {
         maximized: Some(true),
@@ -1614,12 +1613,13 @@ fn clear_same_report_core_command_supersedes_before_continuation() {
         Vec::new(),
         "win-max",
         Some(14),
-        Some(WorldCommand::Operation(CoreCommand::Move {
-            window: crate::directional::WindowId("win-max".to_owned()),
+        Some(WorldCommand::MoveDirectional {
+            window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                "win-max".to_owned(),
+            )),
             direction: crate::directional::Direction::Right,
-            cross_output_transfer: true,
-            same_axis_move: crate::directional::SameAxisMove::default(),
-        })),
+            same_axis: crate::directional::SameAxisMove::default(),
+        }),
     );
     both.clear_attempts = vec![clear_attempt(
         "op-13",

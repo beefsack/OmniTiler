@@ -450,7 +450,8 @@ describe("presentation native static contract", () => {
         assert.match(consumer, /clearPaintPreview/);
         assert.match(consumer, /StaleIgnored/);
         assert.match(consumer, /Malformed/);
-        assert.match(consumer, /-16384/);
+        assert.match(consumer, /-32768/);
+        assert.match(consumer, /32768/);
         assert.match(consumer, /16384/);
         assert.match(consumer, /members/);
         assert.match(consumer, /preview/);

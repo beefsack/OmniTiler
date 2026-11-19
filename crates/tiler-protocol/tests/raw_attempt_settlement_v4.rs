@@ -1848,8 +1848,23 @@ fn run_loaded_scenario(
                                     "{sid} report generation"
                                 );
                                 let live = engine.as_mut().expect("{sid} no live connection");
-                                match live.handle_report_v4_for_test(&decoded.report) {
-                                    Ok(reply) => {
+                                let gate =
+                                    tiler_protocol::world_admission::ProtocolAdmissionGate::new();
+                                match live
+                                    .handle_report_with_gate_and_prepare(
+                                        &decoded.report,
+                                        &[],
+                                        &gate,
+                                        |_| Ok::<(), std::convert::Infallible>(()),
+                                    )
+                                    .unwrap_or_else(|e| match e {})
+                                    .outcome
+                                {
+                                    tiler_core::world_engine::WorldOutcome::Accepted(reply)
+                                    | tiler_core::world_engine::WorldOutcome::Duplicate(reply)
+                                    | tiler_core::world_engine::WorldOutcome::CommandConsumed(
+                                        reply,
+                                    ) => {
                                         run.reports += 1;
                                         let wire_flags = ReplyWireOptionals {
                                             suspended_output_present: reply
@@ -1868,7 +1883,10 @@ fn run_loaded_scenario(
                                             serde_json::from_str(&text).expect("reply parses");
                                         (value, text)
                                     }
-                                    Err((kind, message)) => {
+                                    tiler_core::world_engine::WorldOutcome::Rejected {
+                                        kind,
+                                        message,
+                                    } => {
                                         panic!("{sid} refused: {kind}/{message}")
                                     }
                                 }
@@ -2162,12 +2180,27 @@ fn window_state_preserves_exact_issuing_settlement_rejections() {
                                 (None, None) => Vec::new(),
                                 other => panic!("{sid}: unexpected command/seq pair {other:?}"),
                             };
-                        let (_outcome, settlements) = engine
+                        let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::new();
+                        let run = engine
                             .as_mut()
                             .expect("live engine")
-                            .handle_report(&decoded.report, &batch);
-                        if let Some(settled) = settlements.into_iter().next() {
-                            observed.insert(sid.to_owned(), settled.result);
+                            .handle_report_with_gate_and_prepare(
+                                &decoded.report,
+                                &batch,
+                                &gate,
+                                |_| Ok::<(), std::convert::Infallible>(()),
+                            )
+                            .unwrap_or_else(|e| match e {});
+                        if let Some(settled) = run.dispositions.into_iter().next() {
+                            let res = match settled.disposition {
+                                tiler_core::world_report::CommandDisposition::Executed(r) => r,
+                                tiler_core::world_report::CommandDisposition::Refused(kind) => {
+                                    Some(tiler_core::world_report::CommandResult::Rejected { kind })
+                                }
+                                tiler_core::world_report::CommandDisposition::AlreadyConsumed
+                                | tiler_core::world_report::CommandDisposition::NotRun => None,
+                            };
+                            observed.insert(sid.to_owned(), res);
                         }
                     }
                     Some(other) => panic!("{sid}: unexpected message type {other}"),
@@ -2529,8 +2562,17 @@ fn test_bridge_refuses_unbound_engine() {
     .expect("report decodes")
     .report;
     let mut engine = WorldEngine::new("generation-a").expect("fresh engine seeds");
+    let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::new();
     assert!(
-        engine.handle_report_v4_for_test(&report).is_err(),
+        matches!(
+            engine
+                .handle_report_with_gate_and_prepare(&report, &[], &gate, |_| {
+                    Ok::<(), std::convert::Infallible>(())
+                })
+                .unwrap_or_else(|e| match e {})
+                .outcome,
+            tiler_core::world_engine::WorldOutcome::Rejected { .. }
+        ),
         "unbound engine refuses"
     );
     let handshake = message_of("handshake");

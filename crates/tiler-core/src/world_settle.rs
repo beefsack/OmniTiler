@@ -536,8 +536,10 @@ impl WorldTransaction<'_> {
                 keep.push(retained);
                 continue;
             }
-            if let Some(prefix) = retained.target.operation_id.strip_suffix("-refill")
-                && parent_ops.contains(prefix)
+            if retained
+                .migration_parent_op
+                .as_ref()
+                .is_some_and(|parent| parent_ops.contains(parent))
             {
                 keep.push(retained);
                 continue;
@@ -1207,13 +1209,13 @@ impl WorldTransaction<'_> {
             .pending_members
             .retain(|member, _| retained.members.contains(member));
         // Settle the paired refill child here: settle_views_pre skips
-        // `{parent}-refill` children with a live parent so the two phases
-        // reconcile together. An orphan child (no live parent) is never
-        // passed here.
-        let refill_child_op = format!("{op}-refill");
+        // refill children with a live parent so the two phases reconcile
+        // together. An orphan child (no live parent) is never passed here.
         if let Some(pos) = keep.iter().position(|r| {
-            matches!(&r.target.kind, TransferKind::View) && r.target.operation_id == refill_child_op
+            matches!(&r.target.kind, TransferKind::View)
+                && r.migration_parent_op.as_deref() == Some(op.as_str())
         }) {
+            let refill_child_op = keep[pos].target.operation_id.clone();
             let child_out = keep[pos].target.target_output.clone();
             let child_ws = keep[pos].target.target_workspace.clone();
             let mut child_slot = keep[pos].pending_view.take();
@@ -1375,7 +1377,8 @@ impl WorldTransaction<'_> {
         // that is neither proof nor proven refusal holds without
         // re-actuation.
         let refill_child_held = keep.iter().any(|r| {
-            matches!(&r.target.kind, TransferKind::View) && r.target.operation_id == refill_child_op
+            matches!(&r.target.kind, TransferKind::View)
+                && r.migration_parent_op.as_deref() == Some(op.as_str())
         });
         let ambiguous = !retained.pending_members.is_empty() || retained.pending_view.is_some();
         let mut hold = |mut held: RetainedTransfer| {
@@ -1414,7 +1417,7 @@ impl WorldTransaction<'_> {
             {
                 keep.retain(|r| {
                     !(matches!(&r.target.kind, TransferKind::View)
-                        && r.target.operation_id == refill_child_op)
+                        && r.migration_parent_op.as_deref() == Some(op.as_str()))
                 });
                 return;
             }
@@ -1687,7 +1690,7 @@ impl WorldTransaction<'_> {
             // (rolled back above for the wholly-unarrived case).
             keep.retain(|r| {
                 !(matches!(&r.target.kind, TransferKind::View)
-                    && r.target.operation_id == refill_child_op)
+                    && r.migration_parent_op.as_deref() == Some(op.as_str()))
             });
             return;
         }
@@ -1701,7 +1704,7 @@ impl WorldTransaction<'_> {
         if retained.migration_initial_empty && !self.connection.host_owned_workspace_domains() {
             keep.retain(|r| {
                 !(matches!(&r.target.kind, TransferKind::View)
-                    && r.target.operation_id == refill_child_op)
+                    && r.migration_parent_op.as_deref() == Some(op.as_str()))
             });
             return;
         }
@@ -1727,7 +1730,7 @@ impl WorldTransaction<'_> {
             );
             keep.retain(|r| {
                 !(matches!(&r.target.kind, TransferKind::View)
-                    && r.target.operation_id == refill_child_op)
+                    && r.migration_parent_op.as_deref() == Some(op.as_str()))
             });
             return;
         }
@@ -1825,7 +1828,7 @@ impl WorldTransaction<'_> {
             );
             keep.retain(|r| {
                 !(matches!(&r.target.kind, TransferKind::View)
-                    && r.target.operation_id == refill_child_op)
+                    && r.migration_parent_op.as_deref() == Some(op.as_str()))
             });
             return;
         }
@@ -1856,7 +1859,7 @@ impl WorldTransaction<'_> {
         if !self.connection.host_owned_workspace_domains() {
             keep.retain(|r| {
                 !(matches!(&r.target.kind, TransferKind::View)
-                    && r.target.operation_id == refill_child_op)
+                    && r.migration_parent_op.as_deref() == Some(op.as_str()))
             });
             return;
         }
@@ -1942,7 +1945,7 @@ impl WorldTransaction<'_> {
                 }
                 keep.retain(|r| {
                     !(matches!(&r.target.kind, TransferKind::View)
-                        && r.target.operation_id == refill_child_op)
+                        && r.migration_parent_op.as_deref() == Some(op.as_str()))
                 });
                 return;
             }
@@ -2025,7 +2028,7 @@ impl WorldTransaction<'_> {
                 }
                 keep.retain(|r| {
                     !(matches!(&r.target.kind, TransferKind::View)
-                        && r.target.operation_id == refill_child_op)
+                        && r.migration_parent_op.as_deref() == Some(op.as_str()))
                 });
                 return;
             }
@@ -2076,7 +2079,7 @@ impl WorldTransaction<'_> {
         }
         keep.retain(|r| {
             !(matches!(&r.target.kind, TransferKind::View)
-                && r.target.operation_id == refill_child_op)
+                && r.migration_parent_op.as_deref() == Some(op.as_str()))
         });
     }
 

@@ -85,12 +85,11 @@ pub(crate) enum GestureOutcome {
 }
 
 impl WorldTransaction<'_> {
-    /// Stable gesture operation identity: the window plus its starting
-    /// observation sequence. Retained transfers settle on arrival proof;
-    /// the identity stays unique across reports without consuming command
-    /// sequences.
+    /// Stable gesture operation identity: reserved generation-local token
+    /// derived from the correlated core gesture identity. Disjoint from
+    /// command/policy `op-*` tokens and bounded regardless of window id length.
     fn gesture_operation_id(retained: &RetainedGesture) -> String {
-        format!("gesture-{}-{}", retained.window.0, retained.start_seq)
+        format!("gesture-{}", retained.id)
     }
 
     /// Bind one report's normalized gesture ingress to a retained session
@@ -1495,6 +1494,7 @@ impl WorldTransaction<'_> {
                     source_workspace: retained.home.workspace.0.clone(),
                     members: Vec::new(),
                     migration_refill: None,
+                    migration_parent_op: None,
                     migration_initial_empty: false,
                     migration_source_index: None,
                     migration_source_view: None,

@@ -1578,4 +1578,24 @@ describe("native gesture broker cutover", () => {
             h.stop();
         }
     });
+
+    it("parseNativeGesture enforces closed half-open endpoint/extent bounds", () => {
+        const make = (rect: [number, number, number, number], cursor: [number, number] | null = [16400, 20]): string =>
+            JSON.stringify({
+                v: 1, instance: "inst-1", serial: "1", revision: "1", phase: "started",
+                win: "win-1", kind: "move", startRect: rect, startCursor: cursor, cursor,
+                modalMove: 0, changed: 1, superseded: 0, available: 1,
+            });
+        const pos = parseNativeGesture(make([16392, 8, 784, 584], [32768, -32768]));
+        assert.ok(pos !== null);
+        assert.deepEqual(pos.startRect, [16392, 8, 784, 584]);
+        assert.deepEqual(pos.cursor, [32768, -32768]);
+        assert.ok(parseNativeGesture(make([-32768, -32768, 16384, 16384])) !== null);
+        assert.ok(parseNativeGesture(make([16384, 16384, 16384, 16384])) !== null);
+        assert.equal(parseNativeGesture(make([32768, 0, 1, 1])), null);
+        assert.equal(parseNativeGesture(make([-32769, 0, 1, 1])), null);
+        assert.equal(parseNativeGesture(make([16385, 0, 16384, 1])), null);
+        assert.equal(parseNativeGesture(make([0, 0, 16385, 1])), null);
+        assert.equal(parseNativeGesture(make([0, 0, 100, 100], [32769, 0])), null);
+    });
 });

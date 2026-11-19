@@ -259,4 +259,45 @@ describe("world observation per-output binding replication", () => {
         // current (same natives here), so the spy sees bindings + views.
         assert.deepEqual(seen.slice(0, 2), ["ws-0", "ws-1"]);
     });
+
+    it("captures x=16392 frame on x=16384 screen and holds off-edge frame", () => {
+        const ws0 = { id: "ws-0" };
+        const winGood = {
+            internalId: "win-pos", managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
+            normalWindow: true,
+            frameGeometry: { x: 16392, y: 8, width: 784, height: 584 },
+            clientGeometry: { x: 16392, y: 8, width: 784, height: 584 },
+            output: { name: "out-0" }, desktops: [ws0],
+            minimized: false, hidden: false, fullscreen: false, maximized: false, sticky: false, minSize: null, maxSize: null,
+        };
+        const screen = { name: "out-0", geometry: { x: 16384, y: 0, width: 800, height: 600 } };
+        const surface = {
+            windowList: () => [winGood],
+            screens: [screen],
+            desktops: [ws0],
+            activeScreen: { name: "out-0" },
+            activeWindow: winGood,
+            cursorPos: { x: 32768, y: -32768 },
+            clientArea: () => ({ x: 16384, y: 0, width: 800, height: 600 }),
+            currentDesktopForScreen: () => ws0,
+        };
+        const obs = observe(surface);
+        assert.ok(obs !== null);
+        assert.deepEqual(obs.cursor, { x: 32768, y: -32768 });
+        const dom = obs.domains[0];
+        assert.ok(dom !== undefined);
+        assert.equal(dom.readable, true);
+        const good = dom.windows.find((w) => w.win === "win-pos");
+        assert.deepEqual(good?.rect, { x: 16392, y: 8, w: 784, h: 584 });
+
+        const winOffEdge = {
+            ...winGood,
+            internalId: "win-off",
+            frameGeometry: { x: 32768, y: 0, width: 1, height: 1 },
+            clientGeometry: { x: 32768, y: 0, width: 1, height: 1 },
+        };
+        const offObs = observe({ ...surface, windowList: () => [winOffEdge], activeWindow: winOffEdge });
+        assert.ok(offObs !== null);
+        assert.equal(offObs.domains[0]?.readable, false);
+    });
 });

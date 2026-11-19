@@ -7,9 +7,7 @@
 //! count from `check_exact_inner` to `check_future_reserve` without retained
 //! state and preserving the final-prepare writer validation checkpoint.
 
-#[cfg(test)]
 use std::cell::Cell;
-
 use std::sync::Arc;
 
 use crate::world_admission_sizing::{
@@ -26,20 +24,35 @@ use crate::world_reply_write::{
 use crate::world_report_residual::WorldReportResidual;
 use tiler_core::world_engine::{
     AdmissionGateDecision, CoreAdmissionGate, ExactInnerCheck, ExactInnerDecision,
-    FutureReserveGateFacts, PreflightGateFacts, ReplayResidualToken, RetainedResidual, WorldEngine,
-    WorldOutcome,
+    FutureReserveGateFacts, PreflightGateFacts, ReplayResidualToken, RetainedResidual,
+    TransitionResult, WakePrecheckCandidate, WorldEngine,
 };
-use tiler_core::world_report::{BatchSettlement, WorldCommand, WorldReplyV4, WorldReportV4};
+use tiler_core::world_report::{WorldCommand, WorldReplyV4, WorldReportV4};
 
 /// Scoped checked protocol admission gate over borrowed typed reports and
 /// replies.
-#[derive(Debug)]
 pub struct ProtocolAdmissionGate<'a> {
     max_request_bytes: usize,
     max_reply_bytes: usize,
     residual: Option<&'a Arc<WorldReportResidual>>,
+    wake_precheck: Option<&'a dyn Fn(&WakePrecheckCandidate<'_>) -> bool>,
+    wake_exhausted: Cell<bool>,
+    last_invalid_reply: Cell<Option<&'static str>>,
     #[cfg(test)]
     count_calls: Cell<usize>,
+}
+
+impl std::fmt::Debug for ProtocolAdmissionGate<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProtocolAdmissionGate")
+            .field("max_request_bytes", &self.max_request_bytes)
+            .field("max_reply_bytes", &self.max_reply_bytes)
+            .field("has_residual", &self.residual.is_some())
+            .field("has_wake_precheck", &self.wake_precheck.is_some())
+            .field("wake_exhausted", &self.wake_exhausted.get())
+            .field("last_invalid_reply", &self.last_invalid_reply.get())
+            .finish()
+    }
 }
 
 impl Default for ProtocolAdmissionGate<'_> {
@@ -55,6 +68,9 @@ impl<'a> ProtocolAdmissionGate<'a> {
             max_request_bytes: WORLD_MAX_REQUEST_BYTES,
             max_reply_bytes: WORLD_MAX_REPLY_BYTES,
             residual: None,
+            wake_precheck: None,
+            wake_exhausted: Cell::new(false),
+            last_invalid_reply: Cell::new(None),
             #[cfg(test)]
             count_calls: Cell::new(0),
         }
@@ -69,9 +85,36 @@ impl<'a> ProtocolAdmissionGate<'a> {
             max_request_bytes: WORLD_MAX_REQUEST_BYTES,
             max_reply_bytes: WORLD_MAX_REPLY_BYTES,
             residual: residual.filter(|r| !r.is_empty()),
+            wake_precheck: None,
+            wake_exhausted: Cell::new(false),
+            last_invalid_reply: Cell::new(None),
             #[cfg(test)]
             count_calls: Cell::new(0),
         }
+    }
+
+    /// Attach a pre-validation wake-epoch precheck callback to run after
+    /// exact/future reserve and before mandatory semantic/host validation.
+    #[must_use]
+    pub fn with_wake_precheck(
+        mut self,
+        wake_precheck: &'a dyn Fn(&WakePrecheckCandidate<'_>) -> bool,
+    ) -> Self {
+        self.wake_precheck = Some(wake_precheck);
+        self
+    }
+
+    /// Take whether the wake-epoch precheck refused the candidate.
+    #[must_use]
+    pub fn take_wake_exhausted(&self) -> bool {
+        self.wake_exhausted.replace(false)
+    }
+
+    /// Take any fixed semantic or host-capability reply-validation rule
+    /// recorded by the engine's outbound gate.
+    #[must_use]
+    pub fn take_invalid_reply(&self) -> Option<&'static str> {
+        self.last_invalid_reply.take()
     }
 
     #[cfg(test)]
@@ -97,7 +140,7 @@ pub fn handle_report_checked(
     engine: &mut WorldEngine,
     report: &WorldReportV4,
     queued: &[(u64, WorldCommand)],
-) -> (WorldOutcome, Vec<BatchSettlement>) {
+) -> TransitionResult {
     let gate = ProtocolAdmissionGate::new();
     engine
         .handle_report_with_gate_and_prepare(report, queued, &gate, |_| {
@@ -113,7 +156,7 @@ pub fn handle_report_decoded_checked(
     engine: &mut WorldEngine,
     decoded: &DecodedReportV4,
     queued: &[(u64, WorldCommand)],
-) -> (WorldOutcome, Vec<BatchSettlement>) {
+) -> TransitionResult {
     let gate = ProtocolAdmissionGate::with_residual(decoded.residual.as_ref());
     engine
         .handle_report_with_gate_and_prepare(&decoded.report, queued, &gate, |_| {
@@ -207,6 +250,23 @@ impl CoreAdmissionGate for ProtocolAdmissionGate<'_> {
         } else {
             AdmissionGateDecision::Allow
         }
+    }
+
+    fn check_wake_precheck(&self, candidate: &WakePrecheckCandidate<'_>) -> AdmissionGateDecision {
+        if let Some(wake_precheck) = self.wake_precheck
+            && !wake_precheck(candidate)
+        {
+            self.wake_exhausted.set(true);
+            return AdmissionGateDecision::Reject {
+                kind: "sequence-exhausted",
+                message: "wake epoch exhausted",
+            };
+        }
+        AdmissionGateDecision::Allow
+    }
+
+    fn on_invalid_reply(&self, rule: &'static str) {
+        self.last_invalid_reply.set(Some(rule));
     }
 }
 
@@ -1201,6 +1261,7 @@ mod tests {
             })
             .expect("settings");
 
+        use tiler_core::world_engine::WorldOutcome;
         let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
             "../../test-fixtures/world-wire/v4-active/messages/invalid-witness-constant-string.json",
         );
@@ -1230,7 +1291,7 @@ mod tests {
         assert_eq!(engine.state_revision(), 0);
 
         // Successful install retains residual.
-        let (outcome, _) = handle_report_decoded_checked(&mut engine, &decoded_a, &[]);
+        let outcome = handle_report_decoded_checked(&mut engine, &decoded_a, &[]).outcome;
         assert!(matches!(outcome, WorldOutcome::Accepted(_)));
         let rev_after_accept = engine.state_revision();
         assert_eq!(rev_after_accept, 1);
@@ -1239,7 +1300,7 @@ mod tests {
         let spaced_json = serde_json::to_string_pretty(&doc).expect("pretty json");
         let decoded_a_ws = decode_report_v4(&spaced_json).expect("spaced decodes");
         assert_eq!(decoded_a.residual, decoded_a_ws.residual);
-        let (ws_outcome, _) = handle_report_decoded_checked(&mut engine, &decoded_a_ws, &[]);
+        let ws_outcome = handle_report_decoded_checked(&mut engine, &decoded_a_ws, &[]).outcome;
         assert!(matches!(ws_outcome, WorldOutcome::Duplicate(_)));
         assert_eq!(engine.state_revision(), rev_after_accept);
 
@@ -1250,7 +1311,7 @@ mod tests {
             decode_report_v4(&changed_doc.to_string()).expect("changed residual decodes");
         assert_eq!(decoded_a.report, decoded_b.report);
         assert_ne!(decoded_a.residual, decoded_b.residual);
-        let (reused_outcome, _) = handle_report_decoded_checked(&mut engine, &decoded_b, &[]);
+        let reused_outcome = handle_report_decoded_checked(&mut engine, &decoded_b, &[]).outcome;
         assert_eq!(
             reused_outcome,
             WorldOutcome::Rejected {
@@ -1290,6 +1351,7 @@ mod tests {
             })
             .expect("settings");
 
+        use tiler_core::world_engine::WorldOutcome;
         let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
             "../../test-fixtures/world-wire/v4-active/messages/invalid-screen-string-scale.json",
         );
@@ -1328,7 +1390,7 @@ mod tests {
         assert_eq!(Arc::strong_count(residual), 1);
 
         // Successful install retains residual.
-        let (outcome, _) = handle_report_decoded_checked(&mut engine, &decoded_a, &[]);
+        let outcome = handle_report_decoded_checked(&mut engine, &decoded_a, &[]).outcome;
         assert!(matches!(outcome, WorldOutcome::Accepted(_)));
         let rev_after_accept = engine.state_revision();
         assert_eq!(Arc::strong_count(residual), 2);
@@ -1337,7 +1399,7 @@ mod tests {
         let spaced_json = serde_json::to_string_pretty(&doc).expect("pretty json");
         let decoded_a_ws = decode_report_v4(&spaced_json).expect("spaced decodes");
         assert_eq!(decoded_a.residual, decoded_a_ws.residual);
-        let (ws_outcome, _) = handle_report_decoded_checked(&mut engine, &decoded_a_ws, &[]);
+        let ws_outcome = handle_report_decoded_checked(&mut engine, &decoded_a_ws, &[]).outcome;
         assert!(matches!(ws_outcome, WorldOutcome::Duplicate(_)));
         assert_eq!(engine.state_revision(), rev_after_accept);
 
@@ -1348,7 +1410,7 @@ mod tests {
             decode_report_v4(&changed_doc.to_string()).expect("changed residual decodes");
         assert_eq!(decoded_a.report, decoded_b.report);
         assert_ne!(decoded_a.residual, decoded_b.residual);
-        let (reused_outcome, _) = handle_report_decoded_checked(&mut engine, &decoded_b, &[]);
+        let reused_outcome = handle_report_decoded_checked(&mut engine, &decoded_b, &[]).outcome;
         assert_eq!(
             reused_outcome,
             WorldOutcome::Rejected {
@@ -1375,7 +1437,7 @@ mod tests {
         let win_residual = win_a.residual.as_ref().expect("window residual");
         assert!(win_residual.window_fields(0).is_some());
 
-        let (win_outcome, _) = handle_report_decoded_checked(&mut engine, &win_a, &[]);
+        let win_outcome = handle_report_decoded_checked(&mut engine, &win_a, &[]).outcome;
         assert!(matches!(win_outcome, WorldOutcome::Accepted(_)));
         let rev_after_win = engine.state_revision();
         assert_eq!(Arc::strong_count(win_residual), 2);
@@ -1383,7 +1445,7 @@ mod tests {
         let win_a_ws = decode_report_v4(&serde_json::to_string_pretty(&win_doc).expect("pretty"))
             .expect("spaced window decodes");
         assert_eq!(win_a.residual, win_a_ws.residual);
-        let (win_ws_outcome, _) = handle_report_decoded_checked(&mut engine, &win_a_ws, &[]);
+        let win_ws_outcome = handle_report_decoded_checked(&mut engine, &win_a_ws, &[]).outcome;
         assert!(matches!(win_ws_outcome, WorldOutcome::Duplicate(_)));
         assert_eq!(engine.state_revision(), rev_after_win);
 
@@ -1392,7 +1454,7 @@ mod tests {
         let win_b = decode_report_v4(&win_changed_doc.to_string()).expect("changed window decodes");
         assert_eq!(win_a.report, win_b.report);
         assert_ne!(win_a.residual, win_b.residual);
-        let (win_reused_outcome, _) = handle_report_decoded_checked(&mut engine, &win_b, &[]);
+        let win_reused_outcome = handle_report_decoded_checked(&mut engine, &win_b, &[]).outcome;
         assert_eq!(
             win_reused_outcome,
             WorldOutcome::Rejected {

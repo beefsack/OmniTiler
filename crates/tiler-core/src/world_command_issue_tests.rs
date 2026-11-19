@@ -225,7 +225,7 @@ fn contra_v4(seq: u64) -> WorldReportV4 {
 fn focus_command(window: &str) -> WorldCommand {
     WorldCommand::Focus {
         window: crate::directional::WindowSubject::Window(WindowId(window.to_owned())),
-        direction: Some(crate::directional::Direction::Left),
+        direction: None,
     }
 }
 

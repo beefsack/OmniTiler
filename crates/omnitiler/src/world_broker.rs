@@ -208,8 +208,11 @@ use tiler_protocol::world_protocol::{
     decode_command_value_v4, decode_request_with_wire, encode_error, is_valid_adapter_id,
     is_valid_request_id,
 };
+#[cfg(test)]
+use tiler_protocol::world_reply_write::write_projection_reply_v4;
 use tiler_protocol::world_reply_write::{
-    BrokerGestureAssoc, BrokerReplyBind, write_bound_reply_v4, write_projection_reply_v4,
+    BrokerGestureAssoc, BrokerReplyBind, write_bound_reply_v4, write_bound_reply_v4_prevalidated,
+    write_projection_reply_v4_prevalidated,
 };
 
 /// Broker wire contract version (equals the core/world protocol version).
@@ -240,6 +243,7 @@ const BROKER_KEYS: [&str; 8] = [
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrokerError {
     Oversized,
+    InvalidReply(&'static str),
     Rotate,
 }
 
@@ -442,6 +446,8 @@ pub struct WorldBroker {
     /// sequence past the floor dispatches; older or evicted (forgotten)
     /// sources refuse as stale and never re-dispatch.
     source_floor: u64,
+    #[cfg(test)]
+    test_reply_fault: Option<fn(&mut tiler_core::world_report::WorldReplyV4)>,
     /// Per-sender native invalidation high-water. Regressions refuse.
     watermarks: HashMap<String, u64>,
     /// Broker-owned gesture identity map (one broker generation): raw
@@ -554,6 +560,8 @@ impl WorldBroker {
             presentation_covered: None,
             capture_lifetime: None,
             source_floor: 0,
+            #[cfg(test)]
+            test_reply_fault: None,
             watermarks: HashMap::new(),
             gesture_map: crate::kde_gesture::KdeGestureMap::new(),
             responses: HashMap::new(),
@@ -567,8 +575,62 @@ impl WorldBroker {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_reply_fault_for_test(
+        &mut self,
+        fault: fn(&mut tiler_core::world_report::WorldReplyV4),
+    ) {
+        self.test_reply_fault = Some(fault);
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_max_reply_bytes_for_test(&mut self, limit: usize) {
         self.max_reply_bytes_override = Some(limit);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reverse_pending_for_test(&mut self) {
+        let mut reversed = std::collections::VecDeque::with_capacity(self.pending.len());
+        while let Some(item) = self.pending.pop_back() {
+            reversed.push_back(item);
+        }
+        self.pending = reversed;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn requeue_consumed_for_test(
+        &mut self,
+        sender: &str,
+        client: &str,
+        client_cmd: &str,
+        global_seq: u64,
+        command: tiler_core::world_report::WorldCommand,
+    ) {
+        self.pending.push_back(QueuedCommand {
+            sender: sender.to_owned(),
+            client: client.to_owned(),
+            client_cmd: client_cmd.to_owned(),
+            global_seq,
+            command,
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn push_inadmissible_for_test(
+        &mut self,
+        sender: &str,
+        client: &str,
+        client_cmd: &str,
+        command: tiler_core::world_report::WorldCommand,
+    ) {
+        let global_seq = self.next_command_seq;
+        self.next_command_seq = self.next_command_seq.saturating_add(1);
+        self.pending.push_back(QueuedCommand {
+            sender: sender.to_owned(),
+            client: client.to_owned(),
+            client_cmd: client_cmd.to_owned(),
+            global_seq,
+            command,
+        });
     }
 
     #[cfg(test)]
@@ -911,30 +973,76 @@ impl WorldBroker {
         let wake_epoch = self.wake_epoch;
         let max_reply_bytes = self.final_reply_max_bytes();
         let mut prepared: Option<PreparedCapture> = None;
+        #[cfg(test)]
+        let test_reply_fault = self.test_reply_fault.take();
+        #[cfg(test)]
+        let engine_caps = self.engine.capabilities().cloned();
+        let wake_precheck =
+            |candidate: &tiler_core::world_engine::WakePrecheckCandidate<'_>| -> bool {
+                let issued_count: u64 = if candidate.reply.ready {
+                    drained
+                        .iter()
+                        .filter(|queued| {
+                            candidate.dispositions.iter().any(|disp| {
+                                disp.seq == queued.global_seq
+                                    && matches!(
+                                        disp.disposition,
+                                        tiler_core::world_report::CommandDisposition::Executed(_)
+                                            | tiler_core::world_report::CommandDisposition::Refused(
+                                                _
+                                            )
+                                            | tiler_core::world_report::CommandDisposition::AlreadyConsumed
+                                    )
+                            })
+                        })
+                        .count() as u64
+                } else {
+                    0
+                };
+                wake_epoch.checked_add(issued_count).is_some()
+            };
         let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::with_residual(
             plain_decoded.residual.as_ref(),
-        );
-        let (outcome, settlements) = match self.engine.handle_report_with_gate_and_prepare(
+        )
+        .with_wake_precheck(&wake_precheck);
+        let settled = &self.settled;
+        let retired = &self.retired;
+        let transition = match self.engine.handle_report_with_gate_and_prepare(
             &plain_decoded.report,
             &batch,
             &gate,
             |candidate| {
-                let issued_count: u64 =
-                    if candidate.reply.ready && !candidate.reply.command_consumed {
-                        drained
-                            .iter()
-                            .filter(|queued| {
-                                candidate
-                                    .settlements
-                                    .iter()
-                                    .any(|settlement| settlement.seq == queued.global_seq)
-                            })
-                            .count() as u64
-                    } else {
-                        0
-                    };
-                if wake_epoch.checked_add(issued_count).is_none() {
-                    return Err(BrokerError::Rotate);
+                for disp in candidate.dispositions {
+                    if matches!(
+                        disp.disposition,
+                        tiler_core::world_report::CommandDisposition::AlreadyConsumed
+                    ) && let Some(queued) = drained.iter().find(|q| q.global_seq == disp.seq)
+                    {
+                        let key = queued.key();
+                        if !settled.contains_key(&key) && !retired.contains_key(&key) {
+                            eprintln!(
+                                "omnitiler:world-fault missing-prior-result seq={} client={}",
+                                disp.seq, queued.client
+                            );
+                            return Err(BrokerError::Rotate);
+                        }
+                    }
+                }
+                #[cfg(test)]
+                if let Some(fault) = test_reply_fault {
+                    let mut mutated = candidate.reply.reply().clone();
+                    fault(&mut mutated);
+                    if let Err(err) = tiler_core::world_reply_validation::validate_reply_v4(
+                        &mutated,
+                        engine_caps.as_ref(),
+                    ) {
+                        let rule = if err.message == "request contains an unknown value" {
+                            err.kind
+                        } else {
+                            err.message
+                        };
+                        return Err(BrokerError::InvalidReply(rule));
+                    }
                 }
                 prepared = Some(prepare_capture_reply(
                     candidate.reply,
@@ -949,7 +1057,17 @@ impl WorldBroker {
                 Ok(())
             },
         ) {
-            Ok(result) => result,
+            Ok(result) => {
+                if gate.take_wake_exhausted() {
+                    self.repark_batch(drained);
+                    return Err(BrokerError::Rotate);
+                }
+                if let Some(rule) = gate.take_invalid_reply() {
+                    self.repark_batch(drained);
+                    return Err(BrokerError::InvalidReply(rule));
+                }
+                result
+            }
             Err(err) => {
                 self.repark_batch(drained);
                 return Err(err);
@@ -962,8 +1080,8 @@ impl WorldBroker {
             covered,
             staged_gesture_map,
             drained,
-            outcome,
-            settlements,
+            transition.outcome,
+            transition.dispositions,
             prepared,
         )
     }
@@ -980,11 +1098,11 @@ impl WorldBroker {
         gesture_assoc: Option<crate::kde_gesture::GestureAssoc>,
         drained: VecDeque<QueuedCommand>,
         outcome: WorldOutcome,
-        settlements: Vec<tiler_core::world_report::BatchSettlement>,
+        dispositions: Vec<tiler_core::world_report::BatchDisposition>,
     ) -> Result<String, BrokerError> {
         let prepared = match &outcome {
             WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => {
-                Some(prepare_capture_reply(
+                Some(prepare_capture_reply_checked(
                     reply,
                     self.engine.active_gesture_id(),
                     true,
@@ -1005,7 +1123,7 @@ impl WorldBroker {
             staged_gesture_map,
             drained,
             outcome,
-            settlements,
+            dispositions,
             prepared,
         )
     }
@@ -1020,23 +1138,19 @@ impl WorldBroker {
         staged_gesture_map: crate::kde_gesture::KdeGestureMap,
         drained: VecDeque<QueuedCommand>,
         outcome: WorldOutcome,
-        settlements: Vec<tiler_core::world_report::BatchSettlement>,
+        dispositions: Vec<tiler_core::world_report::BatchDisposition>,
         prepared: Option<PreparedCapture>,
     ) -> Result<String, BrokerError> {
         let prepared = match outcome {
-            WorldOutcome::Accepted(reply) => {
+            WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => {
                 if reply.ready {
-                    self.settle_batch_infallible(&drained, &settlements);
+                    self.settle_batch_infallible(&drained, &dispositions);
                 } else {
                     // Pre-ready bootstrap can install pending intent without
                     // advancing replay, and never executes the drained batch.
                     self.repark_batch(drained);
                 }
-                prepared.expect("prepare callback runs before Accepted adoption")
-            }
-            WorldOutcome::CommandConsumed(_) => {
-                self.repark_batch(drained);
-                prepared.expect("prepare callback runs before CommandConsumed adoption")
+                prepared.expect("prepare callback runs before Accepted/CommandConsumed adoption")
             }
             WorldOutcome::Duplicate(reply) => {
                 // Defensive core duplicate returns cached publication with no
@@ -1044,20 +1158,31 @@ impl WorldBroker {
                 // installing gesture_map, projection, coverage, watermark,
                 // or source replay.
                 self.repark_batch(drained);
-                let mut committed_gesture_map = self.gesture_map.clone();
-                let prepared = prepare_capture_reply(
-                    &reply,
-                    None,
-                    false,
-                    self.final_reply_max_bytes(),
-                    parsed,
+                let wire = ReplyWireOptionals {
+                    suspended_output_present: reply.presentation.suspended_output.is_some(),
+                };
+                let bind = BrokerReplyBind {
+                    source: &parsed.source,
+                    native_invalid: parsed.native_invalid,
                     clock,
-                    &mut committed_gesture_map,
-                    None,
-                )?;
-                return Ok(prepared.bound);
+                    gesture_assoc: None,
+                    gesture_settled_assoc: None,
+                };
+                let bound =
+                    write_bound_reply_v4(&reply, &wire, &bind).map_err(map_protocol_reply_error)?;
+                if bound.len() > self.final_reply_max_bytes() {
+                    return Err(BrokerError::Oversized);
+                }
+                return Ok(bound);
             }
             WorldOutcome::Rejected { kind, message } => {
+                if !drained.is_empty()
+                    && kind == "snapshot-invalid"
+                    && (message == "command-invalid" || message == "command-order-invalid")
+                {
+                    eprintln!("omnitiler:world-fault internal-drain kind={kind} message={message}");
+                    return Err(BrokerError::Rotate);
+                }
                 self.repark_batch(drained);
                 return self.remember_rejection(parsed, envelope, kind, message, clock);
             }
@@ -1190,36 +1315,69 @@ impl WorldBroker {
     fn settle_batch(
         &mut self,
         drained: &VecDeque<QueuedCommand>,
-        settlements: &[tiler_core::world_report::BatchSettlement],
+        dispositions: &[tiler_core::world_report::BatchDisposition],
     ) -> Result<(), BrokerError> {
         let issued_count = drained
             .iter()
-            .filter(|q| settlements.iter().any(|s| s.seq == q.global_seq))
+            .filter(|q| {
+                dispositions.iter().any(|d| {
+                    d.seq == q.global_seq
+                        && matches!(
+                            d.disposition,
+                            tiler_core::world_report::CommandDisposition::Executed(_)
+                                | tiler_core::world_report::CommandDisposition::Refused(_)
+                                | tiler_core::world_report::CommandDisposition::AlreadyConsumed
+                        )
+                })
+            })
             .count() as u64;
         if self.wake_epoch.checked_add(issued_count).is_none() {
             return Err(BrokerError::Rotate);
         }
-        self.settle_batch_infallible(drained, settlements);
+        self.settle_batch_infallible(drained, dispositions);
         Ok(())
     }
 
     fn settle_batch_infallible(
         &mut self,
         drained: &VecDeque<QueuedCommand>,
-        settlements: &[tiler_core::world_report::BatchSettlement],
+        dispositions: &[tiler_core::world_report::BatchDisposition],
     ) {
-        let mut by_seq: HashMap<u64, &tiler_core::world_report::BatchSettlement> = HashMap::new();
-        for settlement in settlements {
-            by_seq.insert(settlement.seq, settlement);
+        let mut by_seq: HashMap<u64, &tiler_core::world_report::CommandDisposition> =
+            HashMap::new();
+        for item in dispositions {
+            by_seq.insert(item.seq, &item.disposition);
         }
         let mut repark: Vec<QueuedCommand> = Vec::new();
         for queued in drained {
-            let Some(settlement) = by_seq.get(&queued.global_seq) else {
+            let Some(disposition) = by_seq.get(&queued.global_seq) else {
                 repark.push(queued.clone());
                 continue;
             };
-            match &settlement.result {
-                Some(tiler_core::world_report::CommandResult::Rejected { kind }) => {
+            match disposition {
+                tiler_core::world_report::CommandDisposition::Executed(result) => match result {
+                    Some(tiler_core::world_report::CommandResult::Rejected { kind }) => {
+                        let kind_str = kind.as_str();
+                        self.settle_drained_infallible(
+                            queued,
+                            Settlement::Failed {
+                                global_seq: queued.global_seq,
+                                kind: kind_str.to_owned(),
+                                message: kind_str.to_owned(),
+                            },
+                        );
+                    }
+                    other => {
+                        self.settle_drained_infallible(
+                            queued,
+                            Settlement::Ready {
+                                global_seq: queued.global_seq,
+                                result: encode_result_value(other),
+                            },
+                        );
+                    }
+                },
+                tiler_core::world_report::CommandDisposition::Refused(kind) => {
                     let kind_str = kind.as_str();
                     self.settle_drained_infallible(
                         queued,
@@ -1230,14 +1388,18 @@ impl WorldBroker {
                         },
                     );
                 }
-                result => {
-                    self.settle_drained_infallible(
-                        queued,
-                        Settlement::Ready {
-                            global_seq: queued.global_seq,
-                            result: encode_result_value(result),
-                        },
-                    );
+                tiler_core::world_report::CommandDisposition::AlreadyConsumed => {
+                    let key = queued.key();
+                    let prior = self
+                        .settled
+                        .get(&key)
+                        .cloned()
+                        .or_else(|| self.retired.get(&key).cloned())
+                        .expect("AlreadyConsumed prior result prechecked before adoption");
+                    self.settle_drained_infallible(queued, prior);
+                }
+                tiler_core::world_report::CommandDisposition::NotRun => {
+                    repark.push(queued.clone());
                 }
             }
         }
@@ -1999,6 +2161,72 @@ fn to_broker_assoc(assoc: &crate::kde_gesture::GestureAssoc) -> BrokerGestureAss
 /// oversize (the caller never serves a partial reply).
 #[allow(clippy::too_many_arguments)]
 fn prepare_capture_reply(
+    validated: tiler_core::world_engine::ValidatedReply<'_>,
+    active_gesture_id: Option<u64>,
+    reconcile_pins: bool,
+    max_reply_bytes: usize,
+    parsed: &ParsedCapture,
+    clock: u64,
+    staged_gesture_map: &mut crate::kde_gesture::KdeGestureMap,
+    gesture_assoc: Option<&crate::kde_gesture::GestureAssoc>,
+) -> Result<PreparedCapture, BrokerError> {
+    let reply = validated.reply();
+    let trace_meta = BrokerPreviewTraceMeta::from_reply(reply);
+    let preview_id = reply.drag_preview.as_ref().map(|preview| preview.id);
+    if reconcile_pins {
+        staged_gesture_map.reconcile_pins(
+            active_gesture_id,
+            reply.gesture_settled.map(|settled| settled.id),
+            gesture_assoc,
+        );
+    }
+    let settled_assoc = staged_gesture_map
+        .terminal_assoc_for(reply.gesture_settled.map(|settled| settled.id))
+        .cloned();
+    let wire = ReplyWireOptionals {
+        suspended_output_present: reply.presentation.suspended_output.is_some(),
+    };
+    let bind = BrokerReplyBind {
+        source: &parsed.source,
+        native_invalid: parsed.native_invalid,
+        clock,
+        gesture_assoc: gesture_assoc.map(to_broker_assoc),
+        gesture_settled_assoc: settled_assoc.as_ref().map(to_broker_assoc),
+    };
+    let bound = write_bound_reply_v4_prevalidated(validated, &wire, &bind)
+        .map_err(map_protocol_reply_error)?;
+    if bound.len() > max_reply_bytes {
+        return Err(BrokerError::Oversized);
+    }
+    let suspended = reply.drag_preview.as_ref().is_some_and(|preview| {
+        reply
+            .presentation
+            .suspended_output
+            .as_ref()
+            .is_some_and(|suspended| preview.domain.output == *suspended)
+    });
+    let has_preview_geometry = !suspended && reply.drag_preview.is_some();
+    let preview_assoc = staged_gesture_map.active_assoc_for(preview_id);
+    let producer = if has_preview_geometry {
+        preview_assoc.map(|assoc| (assoc.instance.as_str(), assoc.serial.as_str()))
+    } else {
+        None
+    };
+    let projection = write_projection_reply_v4_prevalidated(validated, &wire, producer)
+        .map_err(map_protocol_reply_error)?;
+    Ok(PreparedCapture {
+        bound,
+        projection,
+        preview_assoc_is_some: preview_assoc.is_some(),
+        has_preview_geometry,
+        suspended,
+        trace_meta,
+    })
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn prepare_capture_reply_checked(
     reply: &tiler_core::world_report::WorldReplyV4,
     active_gesture_id: Option<u64>,
     reconcile_pins: bool,
@@ -2030,7 +2258,7 @@ fn prepare_capture_reply(
         gesture_assoc: gesture_assoc.map(to_broker_assoc),
         gesture_settled_assoc: settled_assoc.as_ref().map(to_broker_assoc),
     };
-    let bound = write_bound_reply_v4(reply, &wire, &bind).map_err(|_| BrokerError::Oversized)?;
+    let bound = write_bound_reply_v4(reply, &wire, &bind).map_err(map_protocol_reply_error)?;
     if bound.len() > max_reply_bytes {
         return Err(BrokerError::Oversized);
     }
@@ -2049,7 +2277,7 @@ fn prepare_capture_reply(
         None
     };
     let projection =
-        write_projection_reply_v4(reply, &wire, producer).map_err(|_| BrokerError::Oversized)?;
+        write_projection_reply_v4(reply, &wire, producer).map_err(map_protocol_reply_error)?;
     Ok(PreparedCapture {
         bound,
         projection,
@@ -2058,6 +2286,17 @@ fn prepare_capture_reply(
         suspended,
         trace_meta,
     })
+}
+
+fn map_protocol_reply_error(
+    err: tiler_protocol::world_protocol::WorldProtocolError,
+) -> BrokerError {
+    let rule = if err.message == "request contains an unknown value" {
+        err.kind
+    } else {
+        err.message
+    };
+    BrokerError::InvalidReply(rule)
 }
 
 /// Extend a core reply or in-band error object with the source watermark
@@ -3038,7 +3277,9 @@ mod tests {
         use tiler_core::geometry::Rect;
         use tiler_core::session::DomainKey;
         use tiler_core::world_directional::DirectionalOutcome;
-        use tiler_core::world_report::{BatchSettlement, CommandRejectKind, CommandResult};
+        use tiler_core::world_report::{
+            BatchDisposition, CommandDisposition, CommandRejectKind, CommandResult,
+        };
 
         let mut broker = WorldBroker::new();
         let generation = broker.generation().to_owned();
@@ -3059,8 +3300,12 @@ mod tests {
             let drained = std::mem::take(&mut broker.pending);
             assert_eq!(drained.len(), 1);
             let seq = drained[0].global_seq;
+            let disposition = match result {
+                Some(CommandResult::Rejected { kind }) => CommandDisposition::Refused(kind),
+                other => CommandDisposition::Executed(other),
+            };
             broker
-                .settle_batch(&drained, &[BatchSettlement { seq, result }])
+                .settle_batch(&drained, &[BatchDisposition { seq, disposition }])
                 .expect("settle");
             let take_req = format!(
                 "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"vocab\",\"clientCmd\":\"{client_cmd}\"}}"
@@ -3451,7 +3696,7 @@ mod tests {
             "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
-            \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\
+            \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
             \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
             \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
             \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
@@ -3473,7 +3718,7 @@ mod tests {
             "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
-            \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\
+            \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
             \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
             \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
             \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
@@ -3524,7 +3769,16 @@ mod tests {
         cmd_inner.insert("monotonicMs".to_owned(), json_string("3"));
         let cmd_report = decode_request(&serde_json::Value::Object(cmd_inner.clone()).to_string())
             .expect("valid command report");
-        let (cmd_outcome, _) = broker.engine.handle_report(&cmd_report, &[]);
+        let cmd_outcome = broker
+            .engine
+            .handle_report_with_gate_and_prepare(
+                &cmd_report,
+                &[],
+                &tiler_protocol::world_admission::ProtocolAdmissionGate::default(),
+                |_| Ok::<(), BrokerError>(()),
+            )
+            .expect("cmd report")
+            .outcome;
         assert!(matches!(cmd_outcome, WorldOutcome::Accepted(_)));
 
         // Queue a pending command that must be reparked on CommandConsumed.
@@ -3552,8 +3806,17 @@ mod tests {
         cmd_inner.insert("closed".to_owned(), serde_json::json!(["win-a"]));
         let consumed_report = decode_request(&serde_json::Value::Object(cmd_inner).to_string())
             .expect("valid consumed close report");
-        let (consumed_outcome, consumed_settlements) =
-            broker.engine.handle_report(&consumed_report, &[]);
+        let transition = broker
+            .engine
+            .handle_report_with_gate_and_prepare(
+                &consumed_report,
+                &[],
+                &tiler_protocol::world_admission::ProtocolAdmissionGate::default(),
+                |_| Ok::<(), BrokerError>(()),
+            )
+            .expect("consumed report");
+        let consumed_outcome = transition.outcome;
+        let consumed_dispositions = transition.dispositions;
         assert!(matches!(consumed_outcome, WorldOutcome::CommandConsumed(_)));
 
         let parsed = ParsedCapture {
@@ -3575,7 +3838,7 @@ mod tests {
                 None,
                 drained,
                 consumed_outcome,
-                consumed_settlements,
+                consumed_dispositions,
             )
             .expect("consumed outcome finishes");
         let reply: serde_json::Value = serde_json::from_str(&reply_str).expect("JSON");
@@ -3766,7 +4029,16 @@ mod tests {
         unproven_inner.insert("gestureIngress".to_owned(), serde_json::Value::Null);
         let report4 =
             decode_request(&serde_json::Value::Object(unproven_inner).to_string()).expect("r4");
-        let (outcome4, _) = broker.engine.handle_report(&report4, &[]);
+        let outcome4 = broker
+            .engine
+            .handle_report_with_gate_and_prepare(
+                &report4,
+                &[],
+                &tiler_protocol::world_admission::ProtocolAdmissionGate::default(),
+                |_| Ok::<(), BrokerError>(()),
+            )
+            .expect("report4")
+            .outcome;
         let WorldOutcome::Accepted(base_reply) = outcome4 else {
             panic!("expected accepted reply");
         };
@@ -3860,12 +4132,13 @@ mod tests {
         let settings = format!(
             "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
               \"req\":\"set-1\",\"rev\":\"1\",\
-              \"values\":{{\"mode\":\"tiling\",\"gap\":8,\"outer\":8,\"bornMaximized\":\"tile-on-launch\"}}}}"
+              \"values\":{{\"mode\":\"per-output-local\",\"gap\":8,\"outer\":8,\"bornMaximized\":\"tile-on-launch\"}}}}"
         );
         broker.discover_connection(&settings).expect("settings");
 
         let win_a = "{\"win\":\"win-a\",\"out\":\"DP-1\",\"rect\":[0,0,200,200],\
-            \"floating\":false,\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\
+            \"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"sticky\":false,\
+            \"hints\":{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null},\
             \"hostHidden\":false,\"privileged\":false,\"managed\":true,\"acceptsInput\":true,\
             \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\
             \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\"owner\":null,\
@@ -3878,7 +4151,7 @@ mod tests {
             "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
-            \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\
+            \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
             \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
             \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
             \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
@@ -3949,12 +4222,13 @@ mod tests {
         let settings = format!(
             "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
               \"req\":\"set-1\",\"rev\":\"1\",\
-              \"values\":{{\"mode\":\"tiling\",\"gap\":8,\"outer\":8,\"bornMaximized\":\"tile-on-launch\"}}}}"
+              \"values\":{{\"mode\":\"per-output-local\",\"gap\":8,\"outer\":8,\"bornMaximized\":\"tile-on-launch\"}}}}"
         );
         broker.discover_connection(&settings).expect("settings");
 
         let win_a = "{\"win\":\"win-a\",\"out\":\"DP-1\",\"rect\":[0,0,200,200],\
-            \"floating\":false,\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\
+            \"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"sticky\":false,\
+            \"hints\":{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null},\
             \"hostHidden\":false,\"privileged\":false,\"managed\":true,\"acceptsInput\":true,\
             \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\
             \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\"owner\":null,\
@@ -3967,7 +4241,7 @@ mod tests {
             "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
-            \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\
+            \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
             \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
             \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
             \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
@@ -4071,12 +4345,13 @@ mod tests {
         let settings = format!(
             "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
               \"req\":\"set-1\",\"rev\":\"1\",\
-              \"values\":{{\"mode\":\"tiling\",\"gap\":8,\"outer\":8,\"bornMaximized\":\"tile-on-launch\"}}}}"
+              \"values\":{{\"mode\":\"per-output-local\",\"gap\":8,\"outer\":8,\"bornMaximized\":\"tile-on-launch\"}}}}"
         );
         broker.discover_connection(&settings).expect("settings");
 
         let win_a = "{\"win\":\"win-a\",\"out\":\"DP-1\",\"rect\":[0,0,200,200],\
-            \"floating\":false,\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\
+            \"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"sticky\":false,\
+            \"hints\":{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null},\
             \"hostHidden\":false,\"privileged\":false,\"managed\":true,\"acceptsInput\":true,\
             \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\
             \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\"owner\":null,\
@@ -4089,7 +4364,7 @@ mod tests {
             "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
-            \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\
+            \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
             \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
             \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
             \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
@@ -4197,5 +4472,210 @@ mod tests {
         assert_eq!(broker.presentation_covered, covered_before);
         assert_eq!(broker.watermarks, watermarks_before);
         assert_eq!(broker.responses, responses_before);
+    }
+
+    #[test]
+    fn unit_p_bound_and_projection_error_classification_vs_oversize() {
+        let mut broker = WorldBroker::new();
+        let adapter = "kwin-actuator-1";
+        let hs = format!(
+            "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"hs-1\",\
+              \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\
+              \"processId\":\"pid-own-1\"}},\
+              \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
+              \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
+              \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+        );
+        broker.discover_connection(&hs).expect("handshake");
+        let generation = broker.generation().to_owned();
+        let settings = format!(
+            "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+              \"req\":\"set-1\",\"rev\":\"1\",\
+              \"values\":{{\"mode\":\"per-output-local\",\"gap\":8,\"outer\":8,\"bornMaximized\":\"tile-on-launch\"}}}}"
+        );
+        broker.discover_connection(&settings).expect("settings");
+
+        let win_a = "{\"win\":\"win-a\",\"out\":\"DP-1\",\"rect\":[0,0,200,200],\
+            \"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"sticky\":false,\
+            \"hints\":{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null},\
+            \"hostHidden\":false,\"privileged\":false,\"managed\":true,\"acceptsInput\":true,\
+            \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\
+            \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\"owner\":null,\
+            \"parent\":null,\"role\":null,\"appId\":null,\"executable\":null,\
+            \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
+            \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
+            \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
+        let inner = format!(
+            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+            \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
+            \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
+            \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
+            \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
+            \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
+            \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
+            \"witness\":null,\"foregroundOut\":null}},\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}"
+        );
+        let cap1 = format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+            \"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\"report\":{inner}}}"
+        );
+        let reply_json = broker.dispatch_capture(&cap1).expect("initial capture");
+        let mut reply_val: serde_json::Value =
+            serde_json::from_str(&reply_json).expect("reply json");
+        assert_eq!(reply_val["ready"], true, "cap1 must be ready: {reply_json}");
+        if let Some(obj) = reply_val.as_object_mut() {
+            for key in [
+                "source",
+                "nativeInvalid",
+                "clock",
+                "gestureAssoc",
+                "gestureSettledAssoc",
+            ] {
+                obj.remove(key);
+            }
+        }
+        let valid_reply = tiler_protocol::world_protocol::decode_reply_v4(
+            &serde_json::to_string(&reply_val).expect("serialize unbound"),
+        )
+        .expect("decode reply")
+        .reply;
+        let parsed = ParsedCapture {
+            adapter: adapter.to_owned(),
+            generation: generation.clone(),
+            source: "src-2".to_owned(),
+            source_seq: 2,
+            native_invalid: 2,
+            inner: serde_json::Map::new(),
+        };
+
+        // 1. Standalone bound writer: small invalid warp -> InvalidReply("unknown-value"), never Oversized.
+        let mut bad_rect = valid_reply.clone();
+        bad_rect.cursor_warp = Some((32769, 0));
+        let wire = ReplyWireOptionals {
+            suspended_output_present: false,
+        };
+        let bind = BrokerReplyBind {
+            source: &parsed.source,
+            native_invalid: parsed.native_invalid,
+            clock: 2,
+            gesture_assoc: None,
+            gesture_settled_assoc: None,
+        };
+        let err = map_protocol_reply_error(
+            tiler_protocol::world_reply_write::write_bound_reply_v4(&bad_rect, &wire, &bind)
+                .expect_err("bad warp must fail"),
+        );
+        assert_eq!(err, BrokerError::InvalidReply("unknown-value"));
+
+        // 2. Standalone bound writer: fixed semantic structural token -> InvalidReply("effect-focus-removed").
+        let mut bad_semantic = valid_reply.clone();
+        bad_semantic
+            .effects
+            .push(tiler_core::world_report::OneShotEffect {
+                id: "eff-1".to_owned(),
+                target: tiler_core::directional::WindowId("win-a".to_owned()),
+                kind: tiler_core::world_report::EffectKind::Focus,
+                issued_revision: 1,
+                cause: tiler_core::world_report::EffectCause::ExplicitCommand,
+                command_seq: Some(1),
+                await_shown: false,
+            });
+        let err = map_protocol_reply_error(
+            tiler_protocol::world_reply_write::write_bound_reply_v4(&bad_semantic, &wire, &bind)
+                .expect_err("effect-focus-removed must fail"),
+        );
+        assert_eq!(err, BrokerError::InvalidReply("effect-focus-removed"));
+
+        // 3. Projection writer error translation -> InvalidReply, never Oversized.
+        let mut bad_proj = valid_reply.clone();
+        bad_proj.presentation.foreground = "bad id with spaces".to_owned();
+        let proj_err =
+            tiler_protocol::world_reply_write::write_projection_reply_v4(&bad_proj, &wire, None)
+                .expect_err("projection must fail");
+        assert_eq!(
+            map_protocol_reply_error(proj_err),
+            BrokerError::InvalidReply("unknown-value")
+        );
+
+        // 4. Broker prevalidated prepare: envelope-only bind.source check -> InvalidReply, bound overrun -> Oversized.
+        let bad_bind_parsed = ParsedCapture {
+            adapter: parsed.adapter.clone(),
+            generation: parsed.generation.clone(),
+            source: "bad source".to_owned(),
+            source_seq: parsed.source_seq,
+            native_invalid: parsed.native_invalid,
+            inner: serde_json::Map::new(),
+        };
+        let mut map = broker.gesture_map.clone();
+        let err = prepare_capture_reply_checked(
+            &valid_reply,
+            None,
+            true,
+            WORLD_MAX_REPLY_BYTES,
+            &bad_bind_parsed,
+            2,
+            &mut map,
+            None,
+        )
+        .err()
+        .expect("bad bind source must fail as InvalidReply");
+        assert_eq!(err, BrokerError::InvalidReply("unknown-value"));
+
+        let mut map = broker.gesture_map.clone();
+        let err =
+            prepare_capture_reply_checked(&valid_reply, None, true, 64, &parsed, 2, &mut map, None)
+                .err()
+                .expect("bound overrun must fail as Oversized");
+        assert_eq!(err, BrokerError::Oversized);
+
+        // 5. Explicit Send to ws-2 then select-trailing over real broker produces distinct ws-3 without duplicate-workspace.
+        let send_ws2_cmd = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"1\",\
+            \"command\":{{\"op\":\"send\",\"win\":\"win-a\",\"out\":\"DP-1\",\"ws\":\"ws-2\",\"follow\":false}}}}"
+        );
+        broker
+            .queue_command(":1.55", &send_ws2_cmd)
+            .expect("queue send ws-2");
+        let cap2 = format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+            \"source\":\"src-2\",\"sourceSeq\":\"2\",\"nativeInvalid\":\"2\",\"report\":{inner}}}"
+        );
+        let cap2_reply = broker.dispatch_capture(&cap2).expect("cap2 succeeds");
+        let cap2_json: serde_json::Value = serde_json::from_str(&cap2_reply).expect("json");
+        let ws_ids: Vec<&str> = cap2_json["workspaces"]
+            .as_array()
+            .expect("workspaces")
+            .iter()
+            .map(|w| w["id"].as_str().expect("id"))
+            .collect();
+        assert_eq!(ws_ids, vec!["ws-1", "ws-2"]);
+
+        let select_cmd = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"2\",\
+            \"command\":{{\"op\":\"select-trailing\",\"out\":\"DP-1\"}}}}"
+        );
+        broker
+            .queue_command(":1.55", &select_cmd)
+            .expect("queue select");
+        let cap3 = format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+            \"source\":\"src-3\",\"sourceSeq\":\"3\",\"nativeInvalid\":\"3\",\"report\":{inner}}}"
+        );
+        let cap3_reply = broker.dispatch_capture(&cap3).expect("cap3 succeeds");
+        let cap3_json: serde_json::Value = serde_json::from_str(&cap3_reply).expect("json");
+        let ws_ids3: Vec<&str> = cap3_json["workspaces"]
+            .as_array()
+            .expect("workspaces")
+            .iter()
+            .map(|w| w["id"].as_str().expect("id"))
+            .collect();
+        assert_eq!(ws_ids3, vec!["ws-1", "ws-2", "ws-3"]);
     }
 }

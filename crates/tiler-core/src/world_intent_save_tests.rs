@@ -2091,7 +2091,7 @@ fn oversized_toggle_report_rejected_without_mutation() {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {})
-        .0
+        .outcome
     {
         WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_OVERSIZED);
@@ -2113,7 +2113,7 @@ fn oversized_toggle_report_rejected_without_mutation() {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {})
-        .0
+        .outcome
     {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted retry, got {other:?}"),
@@ -2160,7 +2160,7 @@ fn reply_bound_toggle_report_rejected_without_mutation() {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {})
-        .0
+        .outcome
     {
         WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
@@ -2194,7 +2194,7 @@ fn reply_bound_toggle_report_rejected_without_mutation() {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {})
-        .0
+        .outcome
     {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted retry, got {other:?}"),
@@ -2246,7 +2246,7 @@ fn reply_bound_target_lanes_rejected_without_mutation() {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {})
-        .0
+        .outcome
     {
         WorldOutcome::Rejected { kind, .. } => {
             assert_eq!(kind, crate::world_engine::KIND_REPLY_SIZE);
@@ -2284,7 +2284,7 @@ fn reply_bound_target_lanes_rejected_without_mutation() {
             Ok::<(), std::convert::Infallible>(())
         })
         .unwrap_or_else(|e| match e {})
-        .0
+        .outcome
     {
         WorldOutcome::Accepted(_) | WorldOutcome::CommandConsumed(_) => {}
         other => panic!("expected accepted retry, got {other:?}"),

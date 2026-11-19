@@ -275,7 +275,7 @@ impl WorldLayout {
                     .iter()
                     .map(|(bound_window, leaf)| (leaf.clone(), bound_window.clone()))
                     .collect();
-                let leg = plan_admission_leg(
+                let Some(leg) = plan_admission_leg(
                     policy,
                     &self.group_alloc,
                     candidate.tree.clone(),
@@ -287,7 +287,9 @@ impl WorldLayout {
                     &mut node_ids,
                     &hints,
                     &leaf_links,
-                );
+                ) else {
+                    return Err(refuse(RefusalKind::MalformedTopology));
+                };
                 // A missing ordinary tree with a failed selection is allocator
                 // exhaustion or anchor mismatch, never an empty-domain mint.
                 if leg.ordinary_tree.is_none() && leg.selected.is_err() {

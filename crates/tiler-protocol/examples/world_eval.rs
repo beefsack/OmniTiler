@@ -44,7 +44,7 @@ fn submit_report(engine: &mut WorldEngine, body: &str, generation: &str) -> Stri
         Ok(report) => report,
         Err(error) => return encode_error(error.kind, error.message, generation),
     };
-    match engine.handle_report(&report, &[]).0 {
+    match tiler_protocol::world_admission::handle_report_checked(engine, &report, &[]).outcome {
         WorldOutcome::Accepted(reply)
         | WorldOutcome::Duplicate(reply)
         | WorldOutcome::CommandConsumed(reply) => {

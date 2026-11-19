@@ -109,6 +109,8 @@ pub fn mint_core_generation() -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorldServiceError {
     Oversized,
+    ReplyOversize,
+    InvalidReply(&'static str),
     Unavailable(String),
 }
 
@@ -343,15 +345,12 @@ impl WorldService {
         match outcome {
             Ok(reply) => {
                 if reply.len() > WORLD_SERVICE_MAX_REPLY {
-                    return Err(WorldServiceError::Unavailable(
-                        "reply exceeds size bound".to_owned(),
-                    ));
+                    return Err(WorldServiceError::ReplyOversize);
                 }
                 Ok(reply)
             }
-            Err(BrokerError::Oversized) => Err(WorldServiceError::Unavailable(
-                "reply exceeds size bound".to_owned(),
-            )),
+            Err(BrokerError::Oversized) => Err(WorldServiceError::ReplyOversize),
+            Err(BrokerError::InvalidReply(rule)) => Err(WorldServiceError::InvalidReply(rule)),
             Err(BrokerError::Rotate) => {
                 backend.broker.rotate();
                 eprintln!(
@@ -1828,10 +1827,7 @@ mod tests {
         let err = service
             .evaluate_capture(&over_env)
             .expect_err("late bound oversize must refuse");
-        assert_eq!(
-            err,
-            WorldServiceError::Unavailable("reply exceeds size bound".to_owned())
-        );
+        assert_eq!(err, WorldServiceError::ReplyOversize);
 
         let retry_same =
             parse(&service.evaluate_capture(&over_env).expect(
@@ -1927,5 +1923,464 @@ mod tests {
         assert_eq!(take_b_after["outcome"], "ready");
         assert_eq!(take_a_after["globalCmd"], take_a["globalCmd"]);
         assert_eq!(take_b_after["globalCmd"], take_b["globalCmd"]);
+    }
+
+    #[test]
+    fn unit_p_coerce_separates_invalid_reply_oversized_and_rotation() {
+        let mut backend = WorldBackend {
+            broker: WorldBroker::new(),
+        };
+        let gen_before = backend.broker.generation().to_owned();
+        assert_eq!(
+            WorldService::coerce(
+                Err(BrokerError::InvalidReply("visibility-show-fallback")),
+                &mut backend
+            ),
+            Err(WorldServiceError::InvalidReply("visibility-show-fallback"))
+        );
+        assert_eq!(
+            backend.broker.generation(),
+            gen_before,
+            "InvalidReply must not rotate generation"
+        );
+        assert_eq!(
+            WorldService::coerce(Err(BrokerError::Oversized), &mut backend),
+            Err(WorldServiceError::ReplyOversize)
+        );
+        assert_eq!(
+            WorldService::coerce(Err(BrokerError::Rotate), &mut backend),
+            Err(WorldServiceError::Unavailable(
+                "sequencing exhausted".to_owned()
+            ))
+        );
+        assert_ne!(
+            backend.broker.generation(),
+            gen_before,
+            "Rotate must advance generation"
+        );
+    }
+
+    #[test]
+    fn unit_p_injected_invalid_reply_through_service_and_fresh_recovery() {
+        let parse = |s: &str| -> serde_json::Value { serde_json::from_str(s).expect("json") };
+        let adapter = "kwin-actuator-1";
+        let service = WorldService::new();
+        let hs = format!(
+            "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"hs-1\",\
+              \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\
+              \"processId\":\"pid-own-1\"}},\
+              \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
+              \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
+              \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+        );
+        let hs_reply = parse(&service.discover(&hs).expect("handshake"));
+        let generation = hs_reply["gen"].as_str().expect("gen").to_owned();
+        let settings = format!(
+            "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+              \"req\":\"set-1\",\"rev\":\"1\",\
+              \"values\":{{\"mode\":\"per-output-local\",\"gap\":8,\"outer\":8,\"bornMaximized\":\"tile-on-launch\"}}}}"
+        );
+        service.discover(&settings).expect("settings");
+
+        let make_cap = |source: &str, seq: u64, inner: &str| {
+            format!(
+                "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+                 \"source\":\"{source}\",\"sourceSeq\":\"{seq}\",\"nativeInvalid\":\"{seq}\",\
+                 \"report\":{inner}}}"
+            )
+        };
+        let win_a = "{\"win\":\"win-a\",\"out\":\"DP-1\",\"rect\":[0,0,200,200],\
+            \"floating\":false,\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"sticky\":false,\
+            \"hints\":{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null},\
+            \"hostHidden\":false,\"privileged\":false,\"managed\":true,\"acceptsInput\":true,\
+            \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\
+            \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\"owner\":null,\
+            \"parent\":null,\"role\":null,\"appId\":null,\"executable\":null,\
+            \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
+            \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
+            \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
+        let plain_inner = format!(
+            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+            \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
+            \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
+            \"presentation\":{{\"foreground\":\"win-a\",\"minimized\":false,\"maximized\":false,\
+            \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
+            \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
+            \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
+            \"witness\":null,\"foregroundOut\":null}},\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}"
+        );
+
+        let cap1 = make_cap("src-1", 1, &plain_inner);
+        let r1 = parse(&service.evaluate_capture(&cap1).expect("cap1"));
+        assert_eq!(r1["rev"], "1");
+
+        let cmd1 = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"1\",\
+            \"command\":{{\"op\":\"select-trailing\",\"out\":\"DP-1\"}}}}"
+        );
+        let cmd2 = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"2\",\
+            \"command\":{{\"op\":\"select-trailing\",\"out\":\"DP-1\"}}}}"
+        );
+        assert_eq!(
+            parse(&service.queue_command(":1.88", &cmd1).expect("q1"))["outcome"],
+            "queued"
+        );
+        assert_eq!(
+            parse(&service.queue_command(":1.88", &cmd2).expect("q2"))["outcome"],
+            "queued"
+        );
+
+        let pres_before = parse(
+            &service
+                .read_presentation("{\"v\":4,\"req\":\"read-before\"}")
+                .expect("pres before"),
+        );
+        let pins_before = service
+            .backend
+            .lock()
+            .expect("lock")
+            .broker
+            .gesture_map_debug();
+
+        // Inject invalid semantic reply through the actual service/broker/engine path.
+        service
+            .backend
+            .lock()
+            .expect("lock")
+            .broker
+            .set_reply_fault_for_test(|reply| {
+                reply.cursor_warp = Some((32769, 0));
+            });
+        let cap2 = make_cap("src-2", 2, &plain_inner);
+        let err = service
+            .evaluate_capture(&cap2)
+            .expect_err("injected invalid reply must fail");
+        assert_eq!(err, WorldServiceError::InvalidReply("unknown-value"));
+
+        // Spent-source check: retrying cap2 refuses as stale-source (unremembered).
+        let retry_cap2 = parse(&service.evaluate_capture(&cap2).expect("stale source"));
+        assert_eq!(retry_cap2["outcome"], "rejected");
+        assert_eq!(retry_cap2["kind"], "stale-source");
+
+        // Prior exact replay (cap1) still returns rev 1; projection and pins unchanged.
+        let replay_cap1 = parse(&service.evaluate_capture(&cap1).expect("replay cap1"));
+        assert_eq!(replay_cap1["rev"], "1");
+        let pres_after = parse(
+            &service
+                .read_presentation("{\"v\":4,\"req\":\"read-after\"}")
+                .expect("pres after"),
+        );
+        assert_eq!(pres_after["presentation"], pres_before["presentation"]);
+        assert_eq!(
+            service
+                .backend
+                .lock()
+                .expect("lock")
+                .broker
+                .gesture_map_debug(),
+            pins_before
+        );
+
+        // Distinct actual late bound failure on cap3.
+        service.set_max_reply_bytes_for_test(64);
+        let cap3 = make_cap("src-3", 3, &plain_inner);
+        assert_eq!(
+            service.evaluate_capture(&cap3).expect_err("bound overrun"),
+            WorldServiceError::ReplyOversize
+        );
+
+        // Fresh fitting capture cap4 recovers exactly-once, draining [cmd1, cmd2] in order.
+        service.set_max_reply_bytes_for_test(tiler_protocol::world_protocol::WORLD_MAX_REPLY_BYTES);
+        let cap4 = make_cap("src-4", 4, &plain_inner);
+        let r4 = parse(&service.evaluate_capture(&cap4).expect("cap4"));
+        assert_eq!(r4["rev"], "2");
+
+        let t1 = parse(
+            &service
+                .take_result(
+                    ":1.88",
+                    &format!(
+                        "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"1\"}}"
+                    ),
+                )
+                .expect("take 1"),
+        );
+        let t2 = parse(
+            &service
+                .take_result(
+                    ":1.88",
+                    &format!(
+                        "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"2\"}}"
+                    ),
+                )
+                .expect("take 2"),
+        );
+        assert_eq!(t1["outcome"], "ready");
+        assert_eq!(t2["outcome"], "ready");
+        let s1: u64 = t1["globalCmd"].as_str().expect("s1").parse().expect("u64");
+        let s2: u64 = t2["globalCmd"].as_str().expect("s2").parse().expect("u64");
+        assert!(s1 < s2, "parked FIFO must drain in order");
+    }
+
+    #[test]
+    fn ac2_disordered_internal_drain_logs_fault_fails_closed_and_rotates() {
+        let parse = |s: &str| serde_json::from_str::<serde_json::Value>(s).expect("json");
+        let service = WorldService::new();
+        let hs = parse(
+            &service
+                .discover(
+                    "{\"type\":\"handshake\",\"v\":4,\"adapter\":\"kwin-test\",\"req\":\"hs-1\",\
+                      \"applicationIdentity\":{\"appId\":null,\"executable\":\"kwin_wayland\",\"processId\":\"pid-1\"},\
+                      \"capabilities\":{\"hostOwned\":true,\"equalCount\":false,\"sharedNativeRoster\":false,\
+                      \"birthClear\":false,\"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
+                      \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
+                      \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}",
+                )
+                .expect("handshake"),
+        );
+        let generation = hs["gen"].as_str().expect("gen").to_owned();
+        service
+            .discover(&format!(
+                "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"kwin-test\",\"gen\":\"{generation}\",\"req\":\"set-1\",\"rev\":\"1\",\"values\":{{\"mode\":\"per-output-local\",\"gap\":8,\"outer\":8}}}}"
+            ))
+            .expect("settings");
+
+        let plain_inner = "{\"v\":4,\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
+        let cap1 = format!(
+            "{{\"v\":4,\"adapter\":\"kwin-test\",\"gen\":\"{generation}\",\"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\"report\":{plain_inner}}}"
+        );
+        let r1 = parse(&service.evaluate_capture(&cap1).expect("cap1"));
+        assert_eq!(r1["rev"], "1");
+
+        // Queue two commands and reverse pending order to inject a disordered
+        // internal drain ([2, 1]).
+        for id in ["1", "2"] {
+            service
+                .queue_command(
+                    ":1.88",
+                    &format!(
+                        "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"{id}\",\"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
+                    ),
+                )
+                .expect("queue");
+        }
+        service
+            .backend
+            .lock()
+            .expect("lock")
+            .broker
+            .reverse_pending_for_test();
+
+        let cap2 = format!(
+            "{{\"v\":4,\"adapter\":\"kwin-test\",\"gen\":\"{generation}\",\"source\":\"src-2\",\"sourceSeq\":\"2\",\"nativeInvalid\":\"2\",\"report\":{plain_inner}}}"
+        );
+        assert_eq!(
+            service
+                .evaluate_capture(&cap2)
+                .expect_err("must fail closed and rotate"),
+            WorldServiceError::Unavailable("sequencing exhausted".to_owned())
+        );
+        let new_gen = service.generation();
+        assert_ne!(new_gen, generation, "generation must rotate");
+        let take_old = parse(
+            &service
+                .take_result(
+                    ":1.88",
+                    &format!(
+                        "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"1\"}}"
+                    ),
+                )
+                .expect("take_old"),
+        );
+        assert_eq!(take_old["outcome"], "rejected");
+        assert_eq!(take_old["kind"], "generation-mismatch");
+    }
+
+    #[test]
+    fn ac2_inadmissible_internal_drain_logs_fault_fails_closed_and_rotates() {
+        let parse = |s: &str| serde_json::from_str::<serde_json::Value>(s).expect("json");
+        let service = WorldService::new();
+        let hs = parse(
+            &service
+                .discover(
+                    "{\"type\":\"handshake\",\"v\":4,\"adapter\":\"kwin-test\",\"req\":\"hs-1\",\
+                      \"applicationIdentity\":{\"appId\":null,\"executable\":\"kwin_wayland\",\"processId\":\"pid-1\"},\
+                      \"capabilities\":{\"hostOwned\":true,\"equalCount\":false,\"sharedNativeRoster\":false,\
+                      \"birthClear\":false,\"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
+                      \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
+                      \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}",
+                )
+                .expect("handshake"),
+        );
+        let generation = hs["gen"].as_str().expect("gen").to_owned();
+        service
+            .discover(&format!(
+                "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"kwin-test\",\"gen\":\"{generation}\",\"req\":\"set-1\",\"rev\":\"1\",\"values\":{{\"mode\":\"per-output-local\",\"gap\":8,\"outer\":8}}}}"
+            ))
+            .expect("settings");
+
+        let plain_inner = "{\"v\":4,\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
+        let cap1 = format!(
+            "{{\"v\":4,\"adapter\":\"kwin-test\",\"gen\":\"{generation}\",\"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\"report\":{plain_inner}}}"
+        );
+        let r1 = parse(&service.evaluate_capture(&cap1).expect("cap1"));
+        assert_eq!(r1["rev"], "1");
+
+        // Inject an inadmissible queued SwitchView directly into pending drain.
+        service
+            .backend
+            .lock()
+            .expect("lock")
+            .broker
+            .push_inadmissible_for_test(
+                ":1.88",
+                "c1",
+                "1",
+                tiler_core::world_report::WorldCommand::SwitchView {
+                    output: tiler_core::directional::OutputId("DP-1".to_owned()),
+                    workspace: tiler_core::directional::WorkspaceId("ws-2".to_owned()),
+                },
+            );
+
+        let cap2 = format!(
+            "{{\"v\":4,\"adapter\":\"kwin-test\",\"gen\":\"{generation}\",\"source\":\"src-2\",\"sourceSeq\":\"2\",\"nativeInvalid\":\"2\",\"report\":{plain_inner}}}"
+        );
+        assert_eq!(
+            service
+                .evaluate_capture(&cap2)
+                .expect_err("must fail closed and rotate"),
+            WorldServiceError::Unavailable("sequencing exhausted".to_owned())
+        );
+        let new_gen = service.generation();
+        assert_ne!(
+            new_gen, generation,
+            "generation must rotate for rediscovery"
+        );
+        let take_old = parse(
+            &service
+                .take_result(
+                    ":1.88",
+                    &format!(
+                        "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"1\"}}"
+                    ),
+                )
+                .expect("take_old"),
+        );
+        assert_eq!(take_old["outcome"], "rejected");
+        assert_eq!(take_old["kind"], "generation-mismatch");
+    }
+
+    #[test]
+    fn ac2_already_consumed_drain_preserves_prior_result_or_fault() {
+        let parse = |s: &str| serde_json::from_str::<serde_json::Value>(s).expect("json");
+        let service = WorldService::new();
+        let hs = parse(
+            &service
+                .discover(
+                    "{\"type\":\"handshake\",\"v\":4,\"adapter\":\"kwin-test\",\"req\":\"hs-1\",\
+                      \"applicationIdentity\":{\"appId\":null,\"executable\":\"kwin_wayland\",\"processId\":\"pid-1\"},\
+                      \"capabilities\":{\"hostOwned\":true,\"equalCount\":false,\"sharedNativeRoster\":false,\
+                      \"birthClear\":false,\"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
+                      \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
+                      \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}",
+                )
+                .expect("handshake"),
+        );
+        let generation = hs["gen"].as_str().expect("gen").to_owned();
+        service
+            .discover(&format!(
+                "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"kwin-test\",\"gen\":\"{generation}\",\"req\":\"set-1\",\"rev\":\"1\",\"values\":{{\"mode\":\"per-output-local\",\"gap\":8,\"outer\":8}}}}"
+            ))
+            .expect("settings");
+
+        let plain_inner = "{\"v\":4,\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
+
+        // Queue a failing command (focus unknown window) -> settles as Failed("focus-unknown").
+        service
+            .queue_command(
+                ":1.88",
+                &format!(
+                    "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"1\",\"command\":{{\"op\":\"focus\",\"win\":\"win-missing\",\"direction\":null}}}}"
+                ),
+            )
+            .expect("queue");
+        let cap1 = format!(
+            "{{\"v\":4,\"adapter\":\"kwin-test\",\"gen\":\"{generation}\",\"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\"report\":{plain_inner}}}"
+        );
+        let r1 = parse(&service.evaluate_capture(&cap1).expect("cap1"));
+        assert_eq!(r1["rev"], "1");
+
+        // Re-inject the already-consumed global_seq=1 entry; draining it must
+        // preserve its prior Failed("focus-unknown") settlement, never ready/null.
+        service
+            .backend
+            .lock()
+            .expect("lock")
+            .broker
+            .requeue_consumed_for_test(
+                ":1.88",
+                "c1",
+                "1",
+                1,
+                tiler_core::world_report::WorldCommand::Focus {
+                    window: tiler_core::directional::WindowSubject::Window(
+                        tiler_core::directional::WindowId("win-missing".to_owned()),
+                    ),
+                    direction: None,
+                },
+            );
+        let cap2 = format!(
+            "{{\"v\":4,\"adapter\":\"kwin-test\",\"gen\":\"{generation}\",\"source\":\"src-2\",\"sourceSeq\":\"2\",\"nativeInvalid\":\"2\",\"report\":{plain_inner}}}"
+        );
+        service.evaluate_capture(&cap2).expect("cap2");
+        let taken = parse(
+            &service
+                .take_result(
+                    ":1.88",
+                    &format!(
+                        "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"1\"}}"
+                    ),
+                )
+                .expect("take 1"),
+        );
+        assert_eq!(taken["outcome"], "failed");
+        assert_eq!(taken["kind"], "focus-unknown");
+
+        // Missing prior result on AlreadyConsumed must fail closed and rotate.
+        service
+            .backend
+            .lock()
+            .expect("lock")
+            .broker
+            .requeue_consumed_for_test(
+                ":1.88",
+                "c1",
+                "unseen-99",
+                1,
+                tiler_core::world_report::WorldCommand::Focus {
+                    window: tiler_core::directional::WindowSubject::Window(
+                        tiler_core::directional::WindowId("win-missing".to_owned()),
+                    ),
+                    direction: None,
+                },
+            );
+        let cap3 = format!(
+            "{{\"v\":4,\"adapter\":\"kwin-test\",\"gen\":\"{generation}\",\"source\":\"src-3\",\"sourceSeq\":\"3\",\"nativeInvalid\":\"3\",\"report\":{plain_inner}}}"
+        );
+        assert_eq!(
+            service
+                .evaluate_capture(&cap3)
+                .expect_err("missing prior result rotates"),
+            WorldServiceError::Unavailable("sequencing exhausted".to_owned())
+        );
+        assert_ne!(service.generation(), generation);
     }
 }

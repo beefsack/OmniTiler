@@ -111,8 +111,8 @@ inline const char *gestureKindName(const QString &kind)
 
 // Carried-geometry bound (mirrors the presentation consumer and the drag
 // oracle verdict): KWin logical pixels, fail closed outside.
-inline constexpr int GESTURE_COORD_MIN = -16384;
-inline constexpr int GESTURE_COORD_MAX = 16384;
+inline constexpr int GESTURE_COORD_MIN = -32768;
+inline constexpr int GESTURE_COORD_MAX = 32768;
 inline constexpr int GESTURE_SIZE_MAX = 16384;
 
 // Bounded FIFO of unacked terminals: a newer start never erases an older
@@ -162,9 +162,14 @@ inline bool isOpaqueId(const QString &value)
 
 inline bool isValidRect(const QRect &rect)
 {
-    return rect.x() >= GESTURE_COORD_MIN && rect.x() <= GESTURE_COORD_MAX && rect.y() >= GESTURE_COORD_MIN
-        && rect.y() <= GESTURE_COORD_MAX && rect.width() >= 1 && rect.width() <= GESTURE_SIZE_MAX
-        && rect.height() >= 1 && rect.height() <= GESTURE_SIZE_MAX;
+    const qint64 x = rect.x();
+    const qint64 y = rect.y();
+    const qint64 w = rect.width();
+    const qint64 h = rect.height();
+    return x >= GESTURE_COORD_MIN && y >= GESTURE_COORD_MIN
+        && w >= 1 && w <= GESTURE_SIZE_MAX
+        && h >= 1 && h <= GESTURE_SIZE_MAX
+        && x + w <= GESTURE_COORD_MAX && y + h <= GESTURE_COORD_MAX;
 }
 
 inline QString pointJson(bool has, const QPoint &point)

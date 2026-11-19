@@ -94,6 +94,15 @@ pub(crate) struct PendingSelection {
     pub follow_mover: bool,
 }
 
+impl PendingSelection {
+    #[must_use]
+    pub(crate) fn uses_workspace(&self, workspace: &str) -> bool {
+        self.focus_home.workspace.0 == workspace
+            || self.selected.iter().any(|k| k.workspace.0 == workspace)
+            || self.departing.iter().any(|k| k.workspace.0 == workspace)
+    }
+}
+
 /// One retained per-window selection visibility authorization: the logical
 /// home at grant, the desired shown state, and the issuing selection world
 /// revision. Stable across observations, holds, and disagreeing facts.
@@ -102,6 +111,13 @@ pub(crate) struct SelectionTarget {
     pub home: DomainKey,
     pub shown: bool,
     pub rev: u64,
+}
+
+impl SelectionTarget {
+    #[must_use]
+    pub(crate) fn uses_workspace(&self, workspace: &str) -> bool {
+        self.home.workspace.0 == workspace
+    }
 }
 
 /// One frozen switch member: every command-granted visibility target
@@ -142,6 +158,14 @@ pub(crate) struct SelectionScope {
     pub selected: Vec<DomainKey>,
     pub departing: Vec<DomainKey>,
     pub rev: u64,
+}
+
+impl SelectionScope {
+    #[must_use]
+    pub(crate) fn uses_workspace(&self, workspace: &str) -> bool {
+        self.selected.iter().any(|k| k.workspace.0 == workspace)
+            || self.departing.iter().any(|k| k.workspace.0 == workspace)
+    }
 }
 
 /// One latched per-member switch verdict: the first target-and-revision
@@ -201,6 +225,23 @@ pub(crate) struct RetainedSelection {
     /// effect beyond which binding survives.
     pub selected: Vec<DomainKey>,
     pub affected: Vec<OutputId>,
+}
+
+impl RetainedSelection {
+    #[must_use]
+    pub(crate) fn uses_workspace(&self, workspace: &str) -> bool {
+        self.home.workspace.0 == workspace
+            || self.members.iter().any(|m| m.home.workspace.0 == workspace)
+            || self
+                .switch_members
+                .iter()
+                .any(|m| m.home.workspace.0 == workspace)
+            || self
+                .view_targets
+                .values()
+                .any(|k| k.workspace.0 == workspace)
+            || self.selected.iter().any(|k| k.workspace.0 == workspace)
+    }
 }
 
 impl RetainedSelection {

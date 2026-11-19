@@ -2498,6 +2498,7 @@ fn empty_native_free_migration_retires_echoless_born_clear_proceeds() {
         source_workspace: "ws-1".to_owned(),
         members: Vec::new(),
         migration_refill: None,
+        migration_parent_op: None,
         migration_initial_empty: true,
         migration_source_index: None,
         migration_source_view: None,
@@ -3198,4 +3199,24 @@ fn startup_float_fixed_sticky_and_fullscreen_unchanged() {
     for id in ["win-float", "win-fixed", "win-sticky"] {
         assert_eq!(desire_op(&after_fs_exit, id), None);
     }
+}
+
+#[test]
+fn born_seq_exhaustion_refuses_without_adoption_or_wrap() {
+    let mut engine = born_clear_engine();
+    engine.world.settlement.born_seq = u64::MAX;
+    let reply = accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![born_maximized("win-born", "out-a", 100)],
+            None,
+            None,
+        ),
+    );
+    assert_eq!(engine.world.settlement.born_seq, u64::MAX);
+    assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
+    assert_eq!(desire_op(&reply, "win-born"), None);
 }

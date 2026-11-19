@@ -189,7 +189,7 @@ impl WorldLayout {
                 .iter()
                 .map(|(window, leaf)| (leaf.clone(), window.clone()))
                 .collect();
-            let leg = plan_admission_leg(
+            let Some(leg) = plan_admission_leg(
                 policy,
                 &self.group_alloc,
                 candidate.tree.clone(),
@@ -201,7 +201,9 @@ impl WorldLayout {
                 &mut node_ids,
                 &hints,
                 &leaf_links,
-            );
+            ) else {
+                return Err(refuse(RefusalKind::MalformedTopology));
+            };
             if leg.ordinary_tree.is_none() && leg.selected.is_err() {
                 return Err(refuse(RefusalKind::MalformedTopology));
             }

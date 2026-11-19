@@ -7,7 +7,7 @@
 // policy route: every selection/send/migration shortcut builds one of
 // these, never a synchronous TS desktop decision.
 
-import { isCanonicalU64, isCorrelationId, isGenerationId, isOpaqueId, incrementU64, utf8ByteLength, WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES } from "./world-seq";
+import { isCanonicalU64, isCarriedPoint, isCarriedRect as isCarriedRectBounds, isCorrelationId, isGenerationId, isOpaqueId, incrementU64, utf8ByteLength, WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES } from "./world-seq";
 import type { RawWindowFact, WorldObservation } from "./world-observe";
 import { rawNativeGestureJson, type NativeGestureSnapshot } from "./world-gesture";
 
@@ -693,8 +693,6 @@ function isI32(value: unknown): value is number {
         value >= -2147483648 && value <= 2147483647;
 }
 
-const GEOMETRY_BOUND = 16384;
-
 // Carried-rectangle gate over adapter-normalized integer geometry (mirrors
 // tiler-core bounds::valid_carried_rect): every reply/presentation/result
 // rect must satisfy this, never a bare integer-quad check.
@@ -703,11 +701,7 @@ function isCarriedRect(value: unknown): value is [number, number, number, number
         return false;
     }
     const [x, y, w, h] = value;
-    return w > 0 && h > 0 &&
-        x >= -GEOMETRY_BOUND && x <= GEOMETRY_BOUND &&
-        y >= -GEOMETRY_BOUND && y <= GEOMETRY_BOUND &&
-        w <= GEOMETRY_BOUND && h <= GEOMETRY_BOUND &&
-        x + w <= 2147483647 && y + h <= 2147483647;
+    return isCarriedRectBounds(x, y, w, h);
 }
 
 // Closed hold-reason vocabulary plus the empty non-hold marker.
@@ -1964,8 +1958,7 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
             if (
                 typeof pair[0] !== "number" || !Number.isInteger(pair[0] as number) ||
                 typeof pair[1] !== "number" || !Number.isInteger(pair[1] as number) ||
-                (pair[0] as number) < -GEOMETRY_BOUND || (pair[0] as number) > GEOMETRY_BOUND ||
-                (pair[1] as number) < -GEOMETRY_BOUND || (pair[1] as number) > GEOMETRY_BOUND
+                !isCarriedPoint(pair[0] as number, pair[1] as number)
             ) {
                 throw new Error("warp");
             }

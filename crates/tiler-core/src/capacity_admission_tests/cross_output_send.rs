@@ -9,7 +9,6 @@ use crate::world_layout::{PairMoveOutcome, PairOperationContext, PairOperationFa
 
 #[test]
 fn send_refused_when_target_unrepresentable_source_preserved() {
-    use crate::boundary::CoreCommand;
     use crate::size_hints::WindowSizeHints;
     use crate::world_engine::{WorldEngine, WorldOutcome};
     use crate::world_report::{
@@ -175,12 +174,14 @@ fn send_refused_when_target_unrepresentable_source_preserved() {
             windows,
             "b",
             Some(1),
-            Some(WorldCommand::Operation(CoreCommand::SendToWorkspace {
-                window: crate::directional::WindowId("b".to_owned()),
+            Some(WorldCommand::Send {
+                window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+                    "b".to_owned(),
+                )),
                 target_output: crate::directional::OutputId("o".to_owned()),
                 target_workspace: crate::directional::WorkspaceId("ws-9".to_owned()),
                 follow: true,
-            })),
+            }),
         ),
         &[],
     );

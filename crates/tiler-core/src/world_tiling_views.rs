@@ -182,6 +182,7 @@ impl WorldTransaction<'_> {
             source_workspace: String::new(),
             members: Vec::new(),
             migration_refill: None,
+            migration_parent_op: None,
             migration_initial_empty: false,
             migration_source_index: None,
             migration_source_view: None,

@@ -169,6 +169,12 @@ impl WorldLayout {
         self.domains.keys().cloned().collect()
     }
 
+    /// Borrowed check whether any retained domain key matches `workspace`.
+    #[must_use]
+    pub(crate) fn has_workspace(&self, workspace: &str) -> bool {
+        self.domains.keys().any(|key| key.workspace.0 == workspace)
+    }
+
     /// Logical focus leaf retained for a domain.
     #[must_use]
     pub(crate) fn focus_leaf(&self, key: &DomainKey) -> Option<&NodeId> {
@@ -180,6 +186,13 @@ impl WorldLayout {
     #[must_use]
     pub(crate) fn tree(&self, key: &DomainKey) -> Option<&Node> {
         self.domain(key).and_then(|domain| domain.tree.as_ref())
+    }
+
+    /// Retained window-to-leaf bindings for a domain.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn leaves(&self, key: &DomainKey) -> Option<&BTreeMap<WindowId, NodeId>> {
+        self.domain(key).map(|domain| &domain.leaves)
     }
 
     /// Public exception snapshot. Output and workspace come from the owning

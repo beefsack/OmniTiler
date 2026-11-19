@@ -9,7 +9,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::directional::{Direction, Node, OutputId, Rule, SameAxisMove, WindowId, WorkspaceId};
+use crate::directional::{
+    Direction, Node, NodeId, OutputId, Rule, SameAxisMove, WindowId, WorkspaceId,
+};
 use crate::geometry::Rect;
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, RefusalKind};
@@ -113,18 +115,35 @@ fn admit_to(layout: &mut WorldLayout, d: &OutputDomain, window: &str) {
         )
         .unwrap_or_else(|e| panic!("seed admit {window}: {e:?}"));
 }
+fn leaf_of(layout: &WorldLayout, o: &str, ws: &str, w: &str) -> NodeId {
+    layout
+        .leaves(&key(o, ws))
+        .and_then(|leaves| leaves.get(&WindowId(w.to_owned())))
+        .expect("leaf for window")
+        .clone()
+}
 fn leaves_of(layout: &WorldLayout, o: &str, ws: &str) -> Vec<String> {
-    fn go(n: &Node, out: &mut Vec<String>) {
+    fn go(n: &Node, by_leaf: &BTreeMap<NodeId, String>, out: &mut Vec<String>) {
         match n {
-            Node::Leaf { id } => out.push(id.0.clone()),
-            Node::Group { children, .. } => children.iter().for_each(|c| go(c, out)),
+            Node::Leaf { id } => out.push(by_leaf.get(id).cloned().unwrap_or_else(|| id.0.clone())),
+            Node::Group { children, .. } => children.iter().for_each(|c| go(c, by_leaf, out)),
         }
     }
-    match layout.tree(&key(o, ws)) {
+    let dk = key(o, ws);
+    let by_leaf: BTreeMap<NodeId, String> = layout
+        .leaves(&dk)
+        .map(|leaves| {
+            leaves
+                .iter()
+                .map(|(w, l)| (l.clone(), w.0.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    match layout.tree(&dk) {
         None => vec![],
         Some(t) => {
             let mut v = vec![];
-            go(t, &mut v);
+            go(t, &by_leaf, &mut v);
             v
         }
     }
@@ -204,11 +223,11 @@ fn send_commits_immediately_with_retained_topology_and_stays() {
     // Retained survivor order preserved (not spatial-reseeded), mover moved.
     assert_eq!(
         leaves_of(&layout, "out-1", "ws-a"),
-        vec!["leaf-win-s1", "leaf-win-s2"]
+        vec!["win-s1", "win-s2"]
     );
     assert_eq!(
         leaves_of(&layout, "out-1", "ws-b"),
-        vec!["leaf-win-t1", "leaf-win-t2", "leaf-win-m"]
+        vec!["win-t1", "win-t2", "win-m"]
     );
     assert!(!homed_in(&layout, "out-1", "ws-a", "win-m"));
     assert!(homed_in(&layout, "out-1", "ws-b", "win-m"));
@@ -237,11 +256,11 @@ fn send_commits_immediately_with_retained_topology_and_stays() {
     reconcile_domain(&mut layout, &target_domain, 0, tgt_obs, "win-m");
     assert_eq!(
         leaves_of(&layout, "out-1", "ws-a"),
-        vec!["leaf-win-s1", "leaf-win-s2"]
+        vec!["win-s1", "win-s2"]
     );
     assert_eq!(
         leaves_of(&layout, "out-1", "ws-b"),
-        vec!["leaf-win-t1", "leaf-win-t2", "leaf-win-m"]
+        vec!["win-t1", "win-t2", "win-m"]
     );
 }
 
@@ -270,16 +289,16 @@ fn send_stay_keeps_source_selected_with_mru_focus() {
     );
     assert_eq!(
         outcome.focus_leaf.as_ref().map(|leaf| leaf.0.as_str()),
-        Some("leaf-win-s2")
+        Some(leaf_of(&layout, "out-1", "ws-a", "win-s2").0.as_str())
     );
     // Destination admission is unchanged from the follow path.
     assert_eq!(
         leaves_of(&layout, "out-1", "ws-a"),
-        vec!["leaf-win-s1", "leaf-win-s2"]
+        vec!["win-s1", "win-s2"]
     );
     assert_eq!(
         leaves_of(&layout, "out-1", "ws-b"),
-        vec!["leaf-win-t1", "leaf-win-t2", "leaf-win-m"]
+        vec!["win-t1", "win-t2", "win-m"]
     );
     assert!(homed_in(&layout, "out-1", "ws-b", "win-m"));
     assert_eq!(
@@ -287,7 +306,7 @@ fn send_stay_keeps_source_selected_with_mru_focus() {
             .focus_leaf(&key("out-1", "ws-a"))
             .as_ref()
             .map(|l| l.0.as_str()),
-        Some("leaf-win-s2")
+        Some(leaf_of(&layout, "out-1", "ws-a", "win-s2").0.as_str())
     );
     // Both-domain geometry with the native assignment on the target.
     let mut ids: Vec<String> = outcome
@@ -343,10 +362,10 @@ fn failed_native_send_converges_to_source_without_phantom() {
     assert!(!homed_in(&layout, "out-1", "ws-b", "win-m"));
     assert_eq!(
         leaves_of(&layout, "out-1", "ws-a"),
-        vec!["leaf-win-s1", "leaf-win-s2", "leaf-win-m"]
+        vec!["win-s1", "win-s2", "win-m"]
     );
     assert!(
-        !leaves_of(&layout, "out-1", "ws-b").contains(&"leaf-win-m".to_owned()),
+        !leaves_of(&layout, "out-1", "ws-b").contains(&"win-m".to_owned()),
         "no retained phantom on target"
     );
     for window in ["win-s1", "win-s2", "win-m", "win-t1", "win-t2"] {
@@ -395,8 +414,8 @@ fn r4_cross_output_commits_immediately_with_empty_target() {
         }
         other => panic!("R4 must plan cross-output, got {other:?}"),
     };
-    assert_eq!(leaves_of(&layout, "out-1", "ws-a"), vec!["leaf-win-a"]);
-    assert_eq!(leaves_of(&layout, "out-2", "ws-b"), vec!["leaf-win-m"]);
+    assert_eq!(leaves_of(&layout, "out-1", "ws-a"), vec!["win-a"]);
+    assert_eq!(leaves_of(&layout, "out-2", "ws-b"), vec!["win-m"]);
     assert!(homed_in(&layout, "out-2", "ws-b", "win-m"));
     let mut ids: Vec<String> = geometry.iter().map(|g| g.window.0.clone()).collect();
     ids.sort();
@@ -492,8 +511,8 @@ fn r4_exhausted_target_floats_mover_as_send_output() {
         vec!["win-a", "win-t"],
         "survivors project, mover slotless"
     );
-    assert_eq!(leaves_of(&layout, "out-1", "ws-a"), vec!["leaf-win-a"]);
-    assert_eq!(leaves_of(&layout, "out-2", "ws-b"), vec!["leaf-win-t"]);
+    assert_eq!(leaves_of(&layout, "out-1", "ws-a"), vec!["win-a"]);
+    assert_eq!(leaves_of(&layout, "out-2", "ws-b"), vec!["win-t"]);
     assert!(layout.is_capacity_float(&target_key, &WindowId("win-m".to_owned())));
     assert!(
         !homed_in(&layout, "out-1", "ws-a", "win-m"),
@@ -759,7 +778,7 @@ fn send_return_after_send_away_splits_mru_tall_target() {
         .expect("send-away must commit");
     assert_eq!(
         leaves_of(&layout, "mon-a", "ws-1"),
-        vec!["leaf-notepad", "leaf-paint"],
+        vec!["notepad", "paint"],
         "send-away leaves two tall survivors on ws-1"
     );
     // Return with NO ws-1 reconcile in between: stale remembered terminal
@@ -799,7 +818,7 @@ fn send_return_after_send_away_splits_mru_tall_target() {
             assert_eq!(*axis, Axis::Horizontal, "ws-1 root stays width-split");
             assert_eq!(children.len(), 2);
             assert!(
-                matches!(&children[0], Node::Leaf { id } if id.0 == "leaf-notepad"),
+                matches!(&children[0], Node::Leaf { id } if *id == leaf_of(&layout, "mon-a", "ws-1", "notepad")),
                 "left leaf stays notepad, got {:?}",
                 children[0]
             );
@@ -812,11 +831,11 @@ fn send_return_after_send_away_splits_mru_tall_target() {
                     assert_eq!(*axis, Axis::Vertical, "tall paint target stacks arrival");
                     assert_eq!(inner.len(), 2);
                     assert!(
-                        matches!(&inner[0], Node::Leaf { id } if id.0 == "leaf-paint"),
+                        matches!(&inner[0], Node::Leaf { id } if *id == leaf_of(&layout, "mon-a", "ws-1", "paint")),
                         "split target is MRU paint, got {inner:?}"
                     );
                     assert!(
-                        matches!(&inner[1], Node::Leaf { id } if id.0 == "leaf-terminal"),
+                        matches!(&inner[1], Node::Leaf { id } if *id == leaf_of(&layout, "mon-a", "ws-1", "terminal")),
                         "arrival follows paint, got {inner:?}"
                     );
                 }
@@ -878,7 +897,7 @@ fn send_return_after_send_away_splits_mru_tall_target() {
     assert_eq!(layout.tree(&key("mon-a", "ws-1")).cloned(), committed_tree);
     assert_eq!(
         leaves_of(&layout, "mon-a", "ws-1"),
-        vec!["leaf-notepad", "leaf-paint", "leaf-terminal"]
+        vec!["notepad", "paint", "terminal"]
     );
 }
 
@@ -962,8 +981,8 @@ fn output_send_uses_focus_history_when_remembered_stale() {
     assert_eq!(outcome.target_output.0, "out-2");
     assert_eq!(outcome.target_workspace.0, "ws-a");
     assert_eq!(
-        outcome.focus_leaf.as_ref().map(|leaf| leaf.0.as_str()),
-        Some("leaf-s2")
+        outcome.focus_leaf.as_ref(),
+        Some(&leaf_of(&layout, "out-2", "ws-a", "s2"))
     );
     let tree = layout
         .tree(&key("out-2", "ws-a"))
@@ -971,8 +990,8 @@ fn output_send_uses_focus_history_when_remembered_stale() {
         .clone();
     assert_eq!(leaves_of(&layout, "out-2", "ws-a").len(), 3);
     assert_eq!(
-        parent_of(&tree, "leaf-s2"),
-        parent_of(&tree, "leaf-t1b"),
+        parent_of(&tree, &leaf_of(&layout, "out-2", "ws-a", "s2").0),
+        parent_of(&tree, &leaf_of(&layout, "out-2", "ws-a", "t1b").0),
         "mover splits beside the focus-history leaf"
     );
     assert!(homed_in(&layout, "out-2", "ws-a", "s2"));
@@ -994,7 +1013,7 @@ fn output_send_uses_focus_history_when_remembered_stale() {
     );
     let mut ws_b = leaves_of(&layout, "out-1", "ws-b");
     ws_b.sort();
-    assert_eq!(ws_b, vec!["leaf-b1".to_string(), "leaf-t2".to_string()]);
+    assert_eq!(ws_b, vec!["b1".to_string(), "t2".to_string()]);
 }
 
 #[test]
@@ -1026,15 +1045,12 @@ fn output_send_empty_destination_admits_lone_root_follow_and_stay() {
         .run_pair_send(&follow_ctx, &follow_focus, true, true)
         .expect("follow must commit");
     assert!(layout.contains_domain(&key("out-2", "ws-1")));
-    assert_eq!(
-        leaves_of(&layout, "out-2", "ws-1"),
-        vec!["leaf-m".to_string()]
-    );
+    assert_eq!(leaves_of(&layout, "out-2", "ws-1"), vec!["m".to_string()]);
     assert_eq!(outcome.target_output.0, "out-2");
     assert_eq!(outcome.target_workspace.0, "ws-1");
     assert_eq!(
-        outcome.focus_leaf.as_ref().map(|l| l.0.as_str()),
-        Some("leaf-m")
+        outcome.focus_leaf.as_ref(),
+        Some(&leaf_of(&layout, "out-2", "ws-1", "m"))
     );
     let mut ids: Vec<(String, String)> = outcome
         .geometry
@@ -1074,7 +1090,7 @@ fn output_send_empty_destination_admits_lone_root_follow_and_stay() {
     assert!(solo_layout.contains_domain(&key("out-2", "ws-1")));
     assert_eq!(
         leaves_of(&solo_layout, "out-2", "ws-1"),
-        vec!["leaf-solo".to_string()]
+        vec!["solo".to_string()]
     );
     assert_eq!(stay_outcome.geometry.len(), 1);
     assert_eq!(stay_outcome.geometry[0].window.0, "solo");

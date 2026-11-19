@@ -1217,7 +1217,14 @@ fn engine_duplicate_and_reused_on_optional_spellings() {
     let mut engine = connected_engine("gen-1", HostCapabilities::default());
 
     let first_report = decode_request(&one_window_request()).expect("decodes");
-    let accepted = match engine.handle_report(&first_report, &[]).0 {
+    let gate = tiler_protocol::world_admission::ProtocolAdmissionGate::new();
+    let accepted = match engine
+        .handle_report_with_gate_and_prepare(&first_report, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .outcome
+    {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
@@ -1248,7 +1255,13 @@ fn engine_duplicate_and_reused_on_optional_spellings() {
         wired.wire,
         "metadata still differs"
     );
-    match engine.handle_report(&plain, &[]).0 {
+    match engine
+        .handle_report_with_gate_and_prepare(&plain, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .outcome
+    {
         WorldOutcome::Duplicate(cached) => {
             assert_eq!(
                 reply_wire(&cached),
@@ -1268,7 +1281,13 @@ fn engine_duplicate_and_reused_on_optional_spellings() {
         report_digest(&clocked_report),
         report_digest(&decode_request(&one_window_request()).expect("decodes")),
     );
-    match engine.handle_report(&clocked_report, &[]).0 {
+    match engine
+        .handle_report_with_gate_and_prepare(&clocked_report, &[], &gate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .outcome
+    {
         WorldOutcome::Rejected { kind, message } => {
             assert_eq!(kind, "request-reused");
             assert_eq!(message, "request sequence reused with different input");

@@ -381,7 +381,7 @@ pub(super) fn admit_observed_window_leg(
         .iter()
         .map(|(window, leaf)| (leaf.clone(), window.clone()))
         .collect();
-    let leg = plan_admission_leg(
+    let Some(leg) = plan_admission_leg(
         policy,
         group_alloc,
         current,
@@ -393,7 +393,9 @@ pub(super) fn admit_observed_window_leg(
         existing_ids,
         hints_all,
         &leaf_links,
-    );
+    ) else {
+        return Err(LayoutFailure::Semantics(RefusalKind::MalformedTopology));
+    };
     let leaf_id = leg.leaf_id;
     let ordinary = leg.ordinary_tree;
     // Exhaustion fail-closed: empty domains never mint.

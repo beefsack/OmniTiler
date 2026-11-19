@@ -11,7 +11,7 @@
 use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
     AuthorityScope, HoldReason, NativeObservation, NativeOccupancy, PresentationIngressV4,
     PresentationRowV4, ScopeAuthority, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand,
@@ -181,12 +181,83 @@ fn report(
     }
 }
 
+struct TestGate;
+
+impl tiler_core::world_engine::CoreAdmissionGate for TestGate {
+    fn check_request_size(
+        &self,
+        _report: &WorldReportV4,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+
+    fn check_preflight(
+        &self,
+        _report: &WorldReportV4,
+        _facts: &tiler_core::world_engine::PreflightGateFacts<'_>,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+
+    fn check_exact_inner(
+        &self,
+        _reply: &tiler_core::world_report::WorldReplyV4,
+    ) -> tiler_core::world_engine::ExactInnerDecision {
+        tiler_core::world_engine::ExactInnerDecision::Allow(
+            tiler_core::world_engine::ExactInnerCheck::new(0),
+        )
+    }
+
+    fn check_future_reserve(
+        &self,
+        _reply: &tiler_core::world_report::WorldReplyV4,
+        _facts: &tiler_core::world_engine::FutureReserveGateFacts,
+        _exact: tiler_core::world_engine::ExactInnerCheck,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+}
+
+fn eval_report(
+    engine: &mut WorldEngine,
+    report: &WorldReportV4,
+) -> (
+    tiler_core::world_engine::WorldOutcome,
+    Vec<tiler_core::world_report::BatchSettlement>,
+) {
+    let run = engine
+        .handle_report_with_gate_and_prepare(report, &[], &TestGate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {});
+    let settlements = run
+        .dispositions
+        .into_iter()
+        .filter_map(|d| match d.disposition {
+            tiler_core::world_report::CommandDisposition::Executed(result) => {
+                Some(tiler_core::world_report::BatchSettlement { seq: d.seq, result })
+            }
+            tiler_core::world_report::CommandDisposition::Refused(result) => {
+                Some(tiler_core::world_report::BatchSettlement {
+                    seq: d.seq,
+                    result: Some(tiler_core::world_report::CommandResult::Rejected {
+                        kind: result,
+                    }),
+                })
+            }
+            tiler_core::world_report::CommandDisposition::AlreadyConsumed
+            | tiler_core::world_report::CommandDisposition::NotRun => None,
+        })
+        .collect();
+    (run.outcome, settlements)
+}
+
 fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReportV4,
 ) -> tiler_core::world_report::WorldReplyV4 {
-    match engine.handle_report(report, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
+    match eval_report(engine, report).0 {
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -542,8 +613,8 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
     );
     send_report.focused_global = "win-a".to_owned();
     send_report.foreground_known = true;
-    match engine.handle_report(&send_report, &[]) {
-        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+    match eval_report(&mut engine, &send_report) {
+        (tiler_core::world_engine::WorldOutcome::Accepted(_), settlements) => assert_eq!(
             settlements.first().and_then(|s| s.result.clone()),
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::SendWindowUnknown
@@ -565,13 +636,13 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
         Some(12),
         Some(WorldCommand::Focus {
             window: tiler_core::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
-            direction: Some(tiler_core::directional::Direction::Left),
+            direction: None,
         }),
     );
     focus_report.focused_global = "win-a".to_owned();
     focus_report.foreground_known = true;
-    match engine.handle_report(&focus_report, &[]) {
-        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+    match eval_report(&mut engine, &focus_report) {
+        (tiler_core::world_engine::WorldOutcome::Accepted(_), settlements) => assert_eq!(
             settlements.first().and_then(|s| s.result.clone()),
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::FocusUnknown
@@ -581,7 +652,8 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
         (other, _) => panic!("minimized focus must refuse, got {other:?}"),
     }
     // Directional focus naming the minimized lifetime reports stale.
-    let (outcome, settlements) = engine.handle_report(
+    let (outcome, settlements) = eval_report(
+        &mut engine,
         &report(
             5,
             5,
@@ -599,10 +671,9 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
                 direction: tiler_core::directional::Direction::Left,
             }),
         ),
-        &[],
     );
     let reply = match outcome {
-        WorldOutcome::Accepted(reply) => reply,
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted reply, got {other:?}"),
     };
     let outcome = match settlements.first().and_then(|s| s.result.as_ref()) {
@@ -1128,13 +1199,13 @@ fn pager_click_minimized_refuses_while_tiled_focus_succeeds() {
         Some(11),
         Some(WorldCommand::Focus {
             window: tiler_core::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
-            direction: Some(tiler_core::directional::Direction::Left),
+            direction: None,
         }),
     );
     click_minimized.focused_global = "win-a".to_owned();
     click_minimized.foreground_known = true;
-    match engine.handle_report(&click_minimized, &[]) {
-        (WorldOutcome::Accepted(_), settlements) => assert_eq!(
+    match eval_report(&mut engine, &click_minimized) {
+        (tiler_core::world_engine::WorldOutcome::Accepted(_), settlements) => assert_eq!(
             settlements.first().and_then(|s| s.result.clone()),
             Some(tiler_core::world_report::CommandResult::Rejected {
                 kind: tiler_core::world_report::CommandRejectKind::FocusUnknown
@@ -1155,7 +1226,7 @@ fn pager_click_minimized_refuses_while_tiled_focus_succeeds() {
         Some(12),
         Some(WorldCommand::Focus {
             window: tiler_core::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
-            direction: Some(tiler_core::directional::Direction::Left),
+            direction: None,
         }),
     );
     click_tiled.focused_global = "win-a".to_owned();

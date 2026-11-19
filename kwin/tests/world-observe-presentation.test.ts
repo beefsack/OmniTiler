@@ -684,7 +684,8 @@ describe("world observation cursor and windowAt producer-shaped capture", () => 
             ["absent", undefined],
             ["non-object", 42],
             ["non-numeric", { x: "left", y: 0 }],
-            ["out-of-range", { x: 20000, y: 0 }],
+            ["out-of-range", { x: 32769, y: 0 }],
+            ["out-of-range-neg", { x: -32769, y: 0 }],
         ] as const) {
             const base = cursorSurface({ cursorPos: { x: 1, y: 2 }, windowAt: () => [{ internalId: "win-a" }] });
             if (cursorPos === undefined) {
@@ -696,6 +697,18 @@ describe("world observation cursor and windowAt producer-shaped capture", () => 
             assert.ok(obs !== null, name);
             assert.equal(obs.cursor, null, name);
             assert.equal(obs.cursorWindow, null, name);
+        }
+        for (const [name, pos] of [
+            ["valid-20000", { x: 20000, y: 0 }],
+            ["valid-max", { x: 32768, y: 0 }],
+            ["valid-min", { x: -32768, y: 0 }],
+        ] as const) {
+            const valid = observeCursor(
+                cursorSurface({ cursorPos: pos, windowAt: () => [{ internalId: "win-a" }] }),
+            );
+            assert.ok(valid !== null, name);
+            assert.deepEqual(valid.cursor, pos, name);
+            assert.equal(valid.cursorWindow, "win-a", name);
         }
     });
 

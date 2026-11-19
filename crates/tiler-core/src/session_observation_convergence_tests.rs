@@ -113,30 +113,42 @@ fn seed_layout() -> (WorldLayout, DomainKey, OutputDomain, u64) {
     admit_to(&mut layout, &d, "win-b");
     admit_to(&mut layout, &d, "win-c");
     let base = layout.accepted_revision(&k);
+    let leaf_c = layout
+        .leaves(&k)
+        .and_then(|leaves| leaves.get(&WindowId("win-c".to_owned())))
+        .expect("win-c leaf");
     assert_eq!(
-        layout.focus_leaf(&k).map(|l| l.0.as_str()),
-        Some("leaf-win-c"),
+        layout.focus_leaf(&k),
+        Some(leaf_c),
         "seed focuses the last admission"
     );
     (layout, k, d, base)
 }
 
 fn leaves(layout: &WorldLayout, k: &DomainKey) -> Vec<String> {
-    fn collect(node: &Node, out: &mut Vec<String>) {
+    fn collect(
+        node: &Node,
+        by_leaf: &BTreeMap<crate::directional::NodeId, String>,
+        out: &mut Vec<String>,
+    ) {
         match node {
-            Node::Leaf { id } => out.push(id.0.clone()),
+            Node::Leaf { id } => out.push(by_leaf.get(id).cloned().unwrap_or_else(|| id.0.clone())),
             Node::Group { children, .. } => {
                 for c in children {
-                    collect(c, out);
+                    collect(c, by_leaf, out);
                 }
             }
         }
     }
+    let by_leaf: BTreeMap<crate::directional::NodeId, String> = layout
+        .leaves(k)
+        .map(|l| l.iter().map(|(w, id)| (id.clone(), w.0.clone())).collect())
+        .unwrap_or_default();
     match layout.tree(k) {
         None => vec![],
         Some(tree) => {
             let mut out = vec![];
-            collect(tree, &mut out);
+            collect(tree, &by_leaf, &mut out);
             out
         }
     }
@@ -190,7 +202,7 @@ fn engine_focus_with_floating_skew_converges_before_op() {
         "win-a retained as floating exception"
     );
     assert!(
-        leaves(&layout, &k).iter().all(|l| l != "leaf-win-a"),
+        leaves(&layout, &k).iter().all(|l| l != "win-a"),
         "survivor topology preserved without reseeding"
     );
 }
@@ -246,7 +258,7 @@ fn engine_move_with_floating_skew_converges_before_op() {
         "win-a retained as floating exception"
     );
     assert!(
-        leaves(&layout, &k).iter().all(|l| l != "leaf-win-a"),
+        leaves(&layout, &k).iter().all(|l| l != "win-a"),
         "survivor topology preserved without reseeding"
     );
 }
@@ -277,10 +289,11 @@ fn engine_resize_with_floating_skew_converges_before_op() {
         base + 1,
         "ordinary op runs at the converged revision"
     );
-    assert_eq!(
-        plan.focus_leaf.0, "leaf-win-c",
-        "focus retained on survivor"
-    );
+    let leaf_c = layout
+        .leaves(&k)
+        .and_then(|leaves| leaves.get(&WindowId("win-c".to_owned())))
+        .expect("win-c leaf");
+    assert_eq!(&plan.focus_leaf, leaf_c, "focus retained on survivor");
     let ids: Vec<String> = plan.geometry.iter().map(|g| g.window.0.clone()).collect();
     assert!(
         ids.contains(&"win-b".to_string()) && ids.contains(&"win-c".to_string()),
@@ -300,7 +313,7 @@ fn engine_resize_with_floating_skew_converges_before_op() {
         "win-a retained as floating exception"
     );
     assert!(
-        leaves(&layout, &k).iter().all(|l| l != "leaf-win-a"),
+        leaves(&layout, &k).iter().all(|l| l != "win-a"),
         "survivor topology preserved without reseeding"
     );
 }
@@ -343,7 +356,7 @@ fn engine_reconcile_with_missing_member_converges() {
         "removed member absent from geometry"
     );
     assert!(plan.focus_leaf.is_some());
-    assert_eq!(leaves(&layout, &k), vec!["leaf-win-a", "leaf-win-c"]);
+    assert_eq!(leaves(&layout, &k), vec!["win-a", "win-c"]);
 }
 
 #[test]
@@ -481,10 +494,7 @@ fn engine_converge_error_returns_typed_rejection_without_reset() {
         "primitive error maps to its typed rejection"
     );
     assert_eq!(layout.accepted_revision(&k), base, "error advances nothing");
-    assert_eq!(
-        leaves(&layout, &k),
-        vec!["leaf-win-a", "leaf-win-b", "leaf-win-c"]
-    );
+    assert_eq!(leaves(&layout, &k), vec!["win-a", "win-b", "win-c"]);
     // Follow-up exact observation still runs the ordinary op (no reseed).
     let exact_obs = focus_windows(false);
     let exact_ctx = LocalOperationContext {
@@ -545,7 +555,7 @@ fn engine_reconcile_with_floating_skew_converges() {
         "win-a retained as floating exception"
     );
     assert!(
-        leaves(&layout, &k).iter().all(|l| l != "leaf-win-a"),
+        leaves(&layout, &k).iter().all(|l| l != "win-a"),
         "survivor topology preserved without reseeding"
     );
 }
@@ -584,7 +594,7 @@ fn engine_fresh_mixed_float_and_tiled_reconciles() {
         layout.is_tiled_window(&k, &WindowId("win-n".to_owned())),
         "normal admitted"
     );
-    assert_eq!(leaves(&layout, &k), vec!["leaf-win-n"]);
+    assert_eq!(leaves(&layout, &k), vec!["win-n"]);
 }
 
 fn carried_in(window: &str, output: &str, workspace: &str, x: i32, floating: bool) -> EngineWindow {
@@ -725,8 +735,8 @@ fn engine_paired_focus_with_source_skew_converges() {
     );
     let source_leaves = leaves(&layout, &source_key);
     assert!(
-        source_leaves.contains(&"leaf-win-a".to_string())
-            && source_leaves.contains(&"leaf-win-b".to_string()),
+        source_leaves.contains(&"win-a".to_string())
+            && source_leaves.contains(&"win-b".to_string()),
         "survivor topology persists without reseed {source_leaves:?}"
     );
     assert!(

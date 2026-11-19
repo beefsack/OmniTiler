@@ -334,14 +334,7 @@ pub fn float_half_snap_rect(bounds: Rect, inner_gap: i32, direction: &str) -> Op
 /// Native target-rectangle validity (KDE `isTargetRect` parity).
 #[must_use]
 pub const fn target_rect_valid(rect: Rect) -> bool {
-    rect.x >= -16384
-        && rect.x <= 16384
-        && rect.y >= -16384
-        && rect.y <= 16384
-        && rect.w >= 1
-        && rect.h >= 1
-        && rect.w <= 16384
-        && rect.h <= 16384
+    crate::bounds::valid_carried_rect(rect.x, rect.y, rect.w, rect.h)
 }
 
 fn bounded_i32(value: i64) -> Option<i32> {

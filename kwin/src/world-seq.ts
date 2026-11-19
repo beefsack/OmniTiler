@@ -13,6 +13,22 @@ export const WORLD_MAX_ID_LEN = 128;
 export const WORLD_MAX_GENERATION_LEN = 64;
 export const WORLD_MAX_CORRELATION_LEN = 128;
 export const WORLD_U64_MAX = "18446744073709551615";
+export const COORDINATE_BOUND = 32768;
+export const EXTENT_BOUND = 16384;
+
+export function isCarriedCoord(n: unknown): n is number {
+    return typeof n === "number" && Number.isInteger(n) && n >= -COORDINATE_BOUND && n <= COORDINATE_BOUND;
+}
+
+export function isCarriedPoint(x: number, y: number): boolean {
+    return x >= -COORDINATE_BOUND && x <= COORDINATE_BOUND && y >= -COORDINATE_BOUND && y <= COORDINATE_BOUND;
+}
+
+export function isCarriedRect(x: number, y: number, w: number, h: number): boolean {
+    return w > 0 && h > 0 && w <= EXTENT_BOUND && h <= EXTENT_BOUND &&
+        x >= -COORDINATE_BOUND && y >= -COORDINATE_BOUND &&
+        x + w <= COORDINATE_BOUND && y + h <= COORDINATE_BOUND;
+}
 
 export function isCanonicalU64(text: unknown): text is string {
     if (typeof text !== "string" || text.length === 0 || text.length > 20) {

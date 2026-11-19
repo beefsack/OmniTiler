@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 namespace
@@ -1241,6 +1242,29 @@ void routerGestureBoundaryAlwaysCounts()
     CHECK(KWin::previewProducerMatchesLive(&router.paint, QStringLiteral("gesture-1"), QStringLiteral("1")) == false);
 }
 
+void closedHalfOpenEndpointBounds()
+{
+    auto payloadWithRect = [](const char *rev, const char *rectJson) -> std::string {
+        std::string payload = foundPayload("gen-1", rev, rev);
+        const std::string needle = "[10,10,300,300]";
+        const std::size_t pos = payload.find(needle);
+        if (pos != std::string::npos) {
+            payload.replace(pos, needle.size(), rectJson);
+        }
+        return payload;
+    };
+
+    KWin::PresentationPaint state;
+    seedLive(&state, "effect-1", 5);
+    CHECK(applyStr(&state, payloadWithRect("6", "[16392,8,784,584]")) == KWin::PresentationApply::Accepted);
+    CHECK(state.witnessFrame == QRect(16392, 8, 784, 584));
+    CHECK(applyStr(&state, payloadWithRect("7", "[-32768,-32768,16384,16384]")) == KWin::PresentationApply::Accepted);
+    CHECK(applyStr(&state, payloadWithRect("8", "[16384,16384,16384,16384]")) == KWin::PresentationApply::Accepted);
+    CHECK(applyStr(&state, payloadWithRect("9", "[32768,0,1,1]")) == KWin::PresentationApply::Malformed);
+    CHECK(applyStr(&state, payloadWithRect("10", "[-32769,0,1,1]")) == KWin::PresentationApply::Malformed);
+    CHECK(applyStr(&state, payloadWithRect("11", "[16385,0,16384,1]")) == KWin::PresentationApply::Malformed);
+}
+
 
 } // namespace
 
@@ -1250,6 +1274,17 @@ int main(int argc, char **argv)
     // D-Bus initialization.
     qputenv("DBUS_SESSION_BUS_ADDRESS", QByteArray("unix:path=/dev/null/omnitiler-presentation-test-isolated-bus"));
     QCoreApplication app(argc, argv);
+
+    if (argc == 3 && std::strcmp(argv[1], "--probe") == 0) {
+        KWin::PresentationPaint state;
+        seedLive(&state, "effect-1", 5);
+        if (applyStr(&state, argv[2]) != KWin::PresentationApply::Accepted) {
+            return EXIT_FAILURE;
+        }
+        std::printf("[%d,%d,%d,%d]\n", state.witnessFrame.x(), state.witnessFrame.y(),
+            state.witnessFrame.width(), state.witnessFrame.height());
+        return EXIT_SUCCESS;
+    }
 
     validFoundAppliesCompleteShapes();
     previewPublishesTrimmedGeometryOnly();
@@ -1283,6 +1318,7 @@ int main(int argc, char **argv)
     routerDrawGatesRequireCoveredCurrent();
     routerExhaustionFailsClosedUntilFreshSource();
     routerGestureBoundaryAlwaysCounts();
+    closedHalfOpenEndpointBounds();
 
     if (failures != 0) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);

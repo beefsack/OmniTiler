@@ -261,6 +261,7 @@ fn retained_window(
         source_workspace: "ws-src".to_owned(),
         members: Vec::new(),
         migration_refill: None,
+        migration_parent_op: None,
         migration_initial_empty: false,
         migration_source_index: None,
         migration_source_view: None,
@@ -369,7 +370,7 @@ fn transfer_seq_survives_commandless_and_unrelated() {
     // An unrelated command alongside never rewrites the retained sequence.
     let unrelated = WorldCommand::Focus {
         window: crate::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
-        direction: Some(crate::directional::Direction::Left),
+        direction: None,
     };
     let second =
         engine.tx(|tx| tx.publish_v4(envelope(8), Some(&unrelated), Vec::new(), &BTreeSet::new()));
@@ -3909,4 +3910,153 @@ fn drag_preview_trace_emits_correlated_branch_reasons_and_is_gated() {
         });
     });
     assert!(disabled_lines.is_empty());
+}
+
+#[test]
+fn projected_tiled_windows_order_uses_window_lifetime_not_leaf_mint_order_across_12_leaves() {
+    let mut engine = engine_with(Vec::new());
+    let screens = vec![screen("out-a", 0)];
+    // Deliberate admission order where neither mint order (`leaf-0`..`leaf-11`,
+    // where `"leaf-10"` < `"leaf-2"`) nor admission order matches bytewise
+    // window lifetime order.
+    let admission_order = [
+        "win-11", "win-02", "win-10", "win-01", "win-09", "win-03", "win-08", "win-04", "win-07",
+        "win-05", "win-06", "win-00",
+    ];
+    let mut admitted = Vec::new();
+    let mut reply = None;
+    for (idx, id) in admission_order.iter().enumerate() {
+        admitted.push(fact(id, "out-a", 0));
+        let report = report_v4(
+            u64::try_from(idx + 1).expect("seq"),
+            screens.clone(),
+            admitted.clone(),
+            id,
+            ingress_v4(id),
+        );
+        reply = Some(accepted_v4(&mut engine, &report));
+    }
+    let reply = reply.expect("final reply");
+    let window_order: Vec<&str> = reply
+        .windows
+        .iter()
+        .map(|w| w.lifetime.0.as_str())
+        .collect();
+    assert_eq!(
+        window_order,
+        vec![
+            "win-00", "win-01", "win-02", "win-03", "win-04", "win-05", "win-06", "win-07",
+            "win-08", "win-09", "win-10", "win-11",
+        ]
+    );
+
+    // Guard that leaf mint order in the layout stayed in admission order
+    // (`leaf-0`..`leaf-11`) and did not follow window lifetime order.
+    let domain_key = crate::session::DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
+    };
+    let leaves = engine
+        .world
+        .layout()
+        .leaves(&domain_key)
+        .expect("domain leaves");
+    assert_eq!(leaves.len(), 12);
+    assert_eq!(
+        leaves
+            .get(&WindowId("win-11".to_owned()))
+            .map(|n| n.0.as_str()),
+        Some("leaf-0")
+    );
+    assert_eq!(
+        leaves
+            .get(&WindowId("win-00".to_owned()))
+            .map(|n| n.0.as_str()),
+        Some("leaf-11")
+    );
+}
+
+#[test]
+fn native_creation_seq_exhaustion_fails_closed_without_wrap() {
+    use crate::world_report::{NativeObservation, NativeOccupancy};
+
+    let caps = crate::connection::HostCapabilities {
+        host_owned: true,
+        ..Default::default()
+    };
+    let mut engine = WorldEngine::new_test_bound_with_capabilities("gen-1", "adapter-1", caps)
+        .expect("generation");
+    engine.world.settlement.native_creation_seq = u64::MAX;
+    engine.world.workspace.mapping.insert(
+        "out-a".to_owned(),
+        vec!["ws-1".to_owned(), "ws-2".to_owned()],
+    );
+    engine
+        .world
+        .workspace
+        .views
+        .insert("out-a".to_owned(), "ws-1".to_owned());
+    let obs = std::sync::Arc::make_mut(&mut engine.world.staged.observation);
+    obs.inventory_complete = true;
+    obs.native.push(NativeObservation {
+        output: OutputId("out-a".to_owned()),
+        native_order: vec!["native-1".to_owned()],
+        current_native: Some("native-1".to_owned()),
+        occupancy: vec![NativeOccupancy {
+            native: "native-1".to_owned(),
+            count: Some(0),
+        }],
+    });
+
+    engine.tx(|tx| tx.ensure_native_creations("out-a"));
+    assert_eq!(engine.world.settlement.native_creation_seq, u64::MAX);
+    assert!(engine.world.settlement.retained_creations.is_empty());
+}
+
+#[test]
+fn projected_tiled_windows_preserve_nonlexical_workspace_ring_order_ws2_before_ws10() {
+    let mut engine = engine_host();
+    let screens = vec![screen("out-a", 0)];
+    let native_order: Vec<String> = (1..=10).map(|i| format!("n-{i}")).collect();
+    let occupancy: Vec<NativeOccupancy> = native_order
+        .iter()
+        .map(|n| NativeOccupancy {
+            native: n.clone(),
+            count: None,
+        })
+        .collect();
+    let native_fact = |id: &str, native: &str| {
+        let mut f = fact(id, "out-a", 0);
+        f.native_workspace = crate::world_report::NativeWorkspaceFact::Value(native.to_owned());
+        f
+    };
+    let windows = vec![
+        native_fact("win-b2", "n-2"),
+        native_fact("win-a2", "n-2"),
+        native_fact("win-b10", "n-10"),
+        native_fact("win-a10", "n-10"),
+    ];
+    let mut report = report_v4(1, screens, windows, "win-b2", ingress_v4("win-b2"));
+    report.native.push(NativeObservation {
+        output: OutputId("out-a".to_owned()),
+        native_order,
+        current_native: Some("n-2".to_owned()),
+        occupancy,
+    });
+
+    let reply = accepted_v4(&mut engine, &report);
+    let pairs: Vec<(&str, &str)> = reply
+        .windows
+        .iter()
+        .map(|w| (w.workspace.as_str(), w.lifetime.0.as_str()))
+        .collect();
+    assert_eq!(
+        pairs,
+        vec![
+            ("ws-2", "win-a2"),
+            ("ws-2", "win-b2"),
+            ("ws-10", "win-a10"),
+            ("ws-10", "win-b10"),
+        ]
+    );
 }

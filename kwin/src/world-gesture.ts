@@ -6,7 +6,7 @@
 // plus raw same-capture script cursor/windowAt facts; the broker normalizes
 // them into the core GestureIngress lane before stamping.
 
-import { isCanonicalU64, isOpaqueId } from "./world-seq";
+import { isCarriedCoord, isCarriedRect, isCanonicalU64, isOpaqueId } from "./world-seq";
 
 export const GESTURE_SERVICE = "com.omnitiler.Gesture";
 export const GESTURE_OBJECT = "/com/omnitiler/Gesture";
@@ -34,10 +34,6 @@ export interface NativeGestureSnapshot {
     readonly available: boolean;
 }
 
-function isIntCoord(n: unknown): n is number {
-    return typeof n === "number" && Number.isInteger(n) && n >= -16384 && n <= 16384;
-}
-
 function parsePoint(value: unknown): readonly [number, number] | null | undefined {
     if (value === null) {
         return null;
@@ -46,7 +42,7 @@ function parsePoint(value: unknown): readonly [number, number] | null | undefine
         return undefined;
     }
     const [x, y] = value as ReadonlyArray<unknown>;
-    if (!isIntCoord(x) || !isIntCoord(y)) {
+    if (!isCarriedCoord(x) || !isCarriedCoord(y)) {
         return undefined;
     }
     return [x, y];
@@ -60,13 +56,13 @@ function parseRect(value: unknown): readonly [number, number, number, number] | 
         return undefined;
     }
     const [x, y, w, h] = value as ReadonlyArray<unknown>;
-    if (!isIntCoord(x) || !isIntCoord(y)) {
+    if (
+        typeof x !== "number" || typeof y !== "number" || typeof w !== "number" || typeof h !== "number" ||
+        !Number.isInteger(x) || !Number.isInteger(y) || !Number.isInteger(w) || !Number.isInteger(h)
+    ) {
         return undefined;
     }
-    if (typeof w !== "number" || typeof h !== "number" || !Number.isInteger(w) || !Number.isInteger(h)) {
-        return undefined;
-    }
-    if (w < 1 || h < 1 || w > 16384 || h > 16384) {
+    if (!isCarriedRect(x, y, w, h)) {
         return undefined;
     }
     return [x, y, w, h];

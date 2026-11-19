@@ -7,7 +7,6 @@
 //! erase it. Implicit subjects resolve from the cursor before a newer
 //! focus decision retires the older authority.
 
-use crate::boundary::CoreCommand;
 use crate::connection::{HostCapabilities, RawSettingValue};
 use crate::directional::{OutputId, SameAxisMove, WindowId};
 use crate::ids::{CorrelationId, OwnerId};
@@ -272,12 +271,13 @@ fn cursor_refused_nonfocus_never_cancels_pending() {
     );
     // The CoreCommand operation seam stays non-focus vocabulary: an
     // operation refusal is equally powerless over pending focus.
-    let refused_op = WorldCommand::Operation(CoreCommand::Move {
-        window: crate::directional::WindowId("win-zzz".to_owned()),
+    let refused_op = WorldCommand::MoveDirectional {
+        window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
+            "win-zzz".to_owned(),
+        )),
         direction: crate::directional::Direction::Left,
-        cross_output_transfer: false,
-        same_axis_move: crate::directional::SameAxisMove::GroupWithNeighbor,
-    });
+        same_axis: crate::directional::SameAxisMove::GroupWithNeighbor,
+    };
     let (later, _) = run_batched(
         &mut engine,
         &observe(3, windows(), "win-a"),
@@ -2298,7 +2298,13 @@ fn admit_h_vab_c(engine: &mut WorldEngine) -> u64 {
                 ) => {
                     assert_eq!(*inner_axis, crate::directional::Axis::Vertical);
                     assert_eq!(inner_children.len(), 2);
-                    assert_eq!(c_id.0, "leaf-win-c");
+                    let leaf_c = engine
+                        .world
+                        .layout
+                        .leaves(&key)
+                        .and_then(|leaves| leaves.get(&WindowId("win-c".to_owned())))
+                        .expect("win-c leaf");
+                    assert_eq!(c_id, leaf_c);
                 }
                 other => panic!("expected H[V[A,B],C], got {other:?}"),
             }

@@ -62,10 +62,12 @@ impl WorldTransaction<'_> {
     /// Next born operation identity. Monotonic within the generation, never
     /// reset on adapter-incarnation rotation (like `native_creation_seq`):
     /// the adapter's at-most-once spent map is generation-scoped, so a
-    /// reused id could read as already dispatched.
-    pub(crate) fn mint_born_operation_id(&mut self) -> String {
-        self.world.settlement.born_seq += 1;
-        format!("op-born-{}", self.world.settlement.born_seq)
+    /// reused id could read as already dispatched. Fails closed (`None`) on
+    /// exhaustion without wrapping or reissuing.
+    pub(crate) fn mint_born_operation_id(&mut self) -> Option<String> {
+        let next = self.world.settlement.born_seq.checked_add(1)?;
+        self.world.settlement.born_seq = next;
+        Some(format!("op-born-{next}"))
     }
 
     /// Whether the window's own birth facts authorize a maximize-clear
@@ -468,7 +470,9 @@ impl WorldTransaction<'_> {
                 if !self.born_clear_authorized(presentation_paused, &window, &home) {
                     continue;
                 }
-                let operation_id = self.mint_born_operation_id();
+                let Some(operation_id) = self.mint_born_operation_id() else {
+                    continue;
+                };
                 self.world.settlement.retained_born.push(RetainedBornClear {
                     operation_id,
                     window,
@@ -530,7 +534,9 @@ impl WorldTransaction<'_> {
                 true,
                 self.connection.born_maximized_setting(),
             ) {
-                let operation_id = self.mint_born_operation_id();
+                let Some(operation_id) = self.mint_born_operation_id() else {
+                    continue;
+                };
                 self.world.settlement.retained_born.push(RetainedBornClear {
                     operation_id,
                     window,

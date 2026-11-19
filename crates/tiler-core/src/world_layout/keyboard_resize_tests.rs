@@ -257,7 +257,13 @@ fn horizontal_both_directions() {
     let outcome = r.resize_commit(&k, &w2, Direction::Left);
     assert_eq!(outcome.operation.old_shares, vec![1, 1]);
     assert_eq!(outcome.operation.new_shares, vec![387, 411]);
-    assert_eq!(outcome.focus_leaf.0, "leaf-win-2");
+    let leaf_2 = r
+        .layout
+        .leaves(&k)
+        .and_then(|leaves| leaves.get(&win("win-2")))
+        .expect("win-2 leaf")
+        .clone();
+    assert_eq!(outcome.focus_leaf, leaf_2);
     r.assert_resize_geometry(&k, &outcome);
 
     r.focus_commit(&k, &win("win-2"), Direction::Left);
@@ -301,7 +307,13 @@ fn nested_ancestor_resolution_outward() {
     let outcome = r.resize_commit(&k, &w, Direction::Left);
     assert_eq!(outcome.operation.old_shares, vec![1, 1]);
     assert_eq!(outcome.operation.new_shares, vec![387, 411]);
-    assert_eq!(outcome.focus_leaf.0, "leaf-win-2");
+    let leaf_2 = r
+        .layout
+        .leaves(&k)
+        .and_then(|leaves| leaves.get(&win("win-2")))
+        .expect("win-2 leaf")
+        .clone();
+    assert_eq!(outcome.focus_leaf, leaf_2);
     let root = r.layout.tree(&k).cloned().expect("tree");
     match &root {
         Node::Group {

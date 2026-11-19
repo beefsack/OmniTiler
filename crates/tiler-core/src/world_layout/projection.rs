@@ -133,6 +133,15 @@ pub(super) fn project_borrowed_fit(
     project_with_index(key, tree, bounds, gap, hints, &index).is_ok()
 }
 
+/// Sort order for projected geometry rows.
+#[derive(Clone, Copy)]
+enum GeometryOrder {
+    /// Internal layout order: `(output, workspace, leaf)`.
+    Leaf,
+    /// Projected tiled reply `windows` order: `(output, workspace, window)`.
+    Window,
+}
+
 /// Order affected-domain geometry by `(output, workspace, leaf)`, matching
 /// the affected projector so single-domain orientation stays byte-identical.
 pub(super) fn sort_geometry(geometry: &mut [DesiredGeometry]) {
@@ -145,20 +154,33 @@ pub(super) fn sort_geometry(geometry: &mut [DesiredGeometry]) {
     });
 }
 
+/// Order projected tiled geometry by `(output, workspace, window)` using
+/// bytewise `String` `Ord`.
+fn sort_geometry_by_window(geometry: &mut [DesiredGeometry]) {
+    geometry.sort_by(|a, b| {
+        a.output
+            .0
+            .cmp(&b.output.0)
+            .then(a.workspace.0.cmp(&b.workspace.0))
+            .then(a.window.0.cmp(&b.window.0))
+    });
+}
+
 /// Hinted projection of one retained candidate domain at caller-supplied
 /// bounds/gap, reusing the advisory `project_borrowed` implementation for all
 /// hint/positive/unbound/overconstraint geometry. Observed client-clamp flags
 /// are layered on (shared by gap updates and reconcile), then the geometry is
-/// ordered by `(output, workspace, leaf)` and gated on complete window-binding
-/// coverage. No `Session` is read and no world is cloned. `None` means no tree,
-/// a failed borrowed projection, or incomplete coverage.
-pub(super) fn project_retained_candidate(
+/// ordered by `order` and gated on complete window-binding coverage. No
+/// `Session` is read and no world is cloned. `None` means no tree, a failed
+/// borrowed projection, or incomplete coverage.
+fn project_retained_candidate_with_order(
     key: &DomainKey,
     domain: &DomainLayout,
     bounds: Rect,
     gap: i32,
     hints: &BTreeMap<WindowId, WindowSizeHints>,
     observed: &[EngineWindow],
+    order: GeometryOrder,
 ) -> Option<Vec<DesiredGeometry>> {
     let tree = domain.tree.as_ref()?;
     let mut geometry = project_borrowed(key, tree, &domain.leaves, bounds, gap, hints).ok()?;
@@ -187,11 +209,35 @@ pub(super) fn project_retained_candidate(
                 });
         entry.client_clamped = client_clamped;
     }
-    sort_geometry(&mut geometry);
+    match order {
+        GeometryOrder::Leaf => sort_geometry(&mut geometry),
+        GeometryOrder::Window => sort_geometry_by_window(&mut geometry),
+    }
     if geometry.len() != domain.leaves.len() {
         return None;
     }
     Some(geometry)
+}
+
+/// Hinted projection of one retained candidate domain ordered by
+/// `(output, workspace, leaf)`.
+pub(super) fn project_retained_candidate(
+    key: &DomainKey,
+    domain: &DomainLayout,
+    bounds: Rect,
+    gap: i32,
+    hints: &BTreeMap<WindowId, WindowSizeHints>,
+    observed: &[EngineWindow],
+) -> Option<Vec<DesiredGeometry>> {
+    project_retained_candidate_with_order(
+        key,
+        domain,
+        bounds,
+        gap,
+        hints,
+        observed,
+        GeometryOrder::Leaf,
+    )
 }
 
 impl WorldLayout {
@@ -212,7 +258,7 @@ impl WorldLayout {
 
     /// Reconcile-projection geometry for one retained domain at already-inset
     /// bounds/gap: hinted geometry with client-clamp assessment, ordered by
-    /// `(output, workspace, leaf)` and gated on complete window-binding coverage.
+    /// `(output, workspace, window)` and gated on complete window-binding coverage.
     /// `None` means no domain/tree, a failed projection, or incomplete coverage.
     pub(crate) fn project_retained_tiled_geometry(
         &self,
@@ -223,7 +269,15 @@ impl WorldLayout {
         observed: &[EngineWindow],
     ) -> Option<Vec<DesiredGeometry>> {
         let domain = self.domain(key)?;
-        project_retained_candidate(key, domain, bounds, gap, hints, observed)
+        project_retained_candidate_with_order(
+            key,
+            domain,
+            bounds,
+            gap,
+            hints,
+            observed,
+            GeometryOrder::Window,
+        )
     }
 
     /// Per-domain accepted layout revision (zero for an unknown domain).

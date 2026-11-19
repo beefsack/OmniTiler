@@ -14,7 +14,7 @@ use tiler_core::cursor_targeting::{FreshPlacement, SwitchTarget};
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::size_hints::WindowSizeHints;
-use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
     FocusRequestCause, ScreenReport, SendSource, WindowFact, WorldCommand, WorldReplyV4,
     WorldReportV4,
@@ -249,12 +249,61 @@ fn report(
     }
 }
 
+struct TestGate;
+
+impl tiler_core::world_engine::CoreAdmissionGate for TestGate {
+    fn check_request_size(
+        &self,
+        _report: &WorldReportV4,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+
+    fn check_preflight(
+        &self,
+        _report: &WorldReportV4,
+        _facts: &tiler_core::world_engine::PreflightGateFacts<'_>,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+
+    fn check_exact_inner(
+        &self,
+        _reply: &tiler_core::world_report::WorldReplyV4,
+    ) -> tiler_core::world_engine::ExactInnerDecision {
+        tiler_core::world_engine::ExactInnerDecision::Allow(
+            tiler_core::world_engine::ExactInnerCheck::new(0),
+        )
+    }
+
+    fn check_future_reserve(
+        &self,
+        _reply: &tiler_core::world_report::WorldReplyV4,
+        _facts: &tiler_core::world_engine::FutureReserveGateFacts,
+        _exact: tiler_core::world_engine::ExactInnerCheck,
+    ) -> tiler_core::world_engine::AdmissionGateDecision {
+        tiler_core::world_engine::AdmissionGateDecision::Allow
+    }
+}
+
+fn eval_report(
+    engine: &mut WorldEngine,
+    report: &WorldReportV4,
+) -> tiler_core::world_engine::WorldOutcome {
+    engine
+        .handle_report_with_gate_and_prepare(report, &[], &TestGate, |_| {
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|e| match e {})
+        .outcome
+}
+
 fn accepted(
     engine: &mut WorldEngine,
     report: &WorldReportV4,
 ) -> tiler_core::world_report::WorldReplyV4 {
-    match engine.handle_report(report, &[]).0 {
-        WorldOutcome::Accepted(reply) => reply,
+    match eval_report(engine, report) {
+        tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
@@ -1195,14 +1244,16 @@ fn out_of_bounds_cursor_refuses_at_validation() {
         1,
         vec![fact("win-a", "out-a", 0)],
         "",
-        Some((20_000, 0)),
+        Some((40_000, 0)),
         None,
         None,
     );
     assert!(validate_report_v4_reason(&bad).is_some());
     assert_eq!(validate_report_v4_reason(&bad), Some("cursor-invalid"));
-    match engine.handle_report(&bad, &[]).0 {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "snapshot-invalid"),
+    match eval_report(&mut engine, &bad) {
+        tiler_core::world_engine::WorldOutcome::Rejected { kind, .. } => {
+            assert_eq!(kind, "snapshot-invalid")
+        }
         other => panic!("expected snapshot-invalid, got {other:?}"),
     }
     // The digest seats the cursor: a carried cursor never aliases the

@@ -7,12 +7,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::bounds::{GEOMETRY_BOUND, is_opaque_id, valid_carried_rect};
+use crate::boundary::CoreCommand;
+use crate::bounds::{is_opaque_id, valid_carried_point, valid_carried_rect};
 use crate::connection::FactName;
+use crate::directional::WindowSubject;
 use crate::geometry::Rect;
 use crate::world_report::{
     ArrivalLocation, AuthorityScope, HeldAttemptRow, MAX_ARRIVAL_BRACKETS_TOTAL,
-    MAX_IDENTITY_TEXT_BYTES, MAX_INTENT_RECORDS, MAX_METADATA_TEXT_BYTES,
+    MAX_BATCH_COMMANDS, MAX_IDENTITY_TEXT_BYTES, MAX_INTENT_RECORDS, MAX_METADATA_TEXT_BYTES,
     MAX_NATIVE_OCCUPANTS_PER_DESKTOP, MAX_NATIVE_PER_OUTPUT, MAX_PRESENTATION_ORDER,
     MAX_WORLD_CLEAR_ATTEMPTS, MAX_WORLD_CLOSED, MAX_WORLD_CREATION_ATTEMPTS, MAX_WORLD_FACTS,
     MAX_WORLD_FOCUS_FEEDBACK, MAX_WORLD_FRAMES, MAX_WORLD_MEMBER_ATTEMPTS, MAX_WORLD_NATIVE,
@@ -23,6 +25,60 @@ use crate::world_report::{
     conflicting_window, gradable_screen, gradable_window, graded_held_row, graded_held_window_row,
     hidden_window_id_violation, valid_command,
 };
+
+/// V4 command admissibility: rejects removed `SwitchView`, non-empty `Focus`
+/// direction, and unpromoted `CoreCommand` variants alongside `valid_command`
+/// ID, range, and carried-rect bounds.
+#[must_use]
+pub fn valid_command_v4(command: &WorldCommand) -> bool {
+    match command {
+        WorldCommand::SwitchView { .. } => false,
+        WorldCommand::Focus { window, direction } => {
+            if direction.is_some() {
+                return false;
+            }
+            match window {
+                WindowSubject::Window(id) => is_opaque_id(&id.0),
+                WindowSubject::CurrentFocus => true,
+            }
+        }
+        WorldCommand::Operation(core) => {
+            matches!(
+                core,
+                CoreCommand::ToggleFloat { .. }
+                    | CoreCommand::ToggleOrientation { .. }
+                    | CoreCommand::Resize { .. }
+            ) && valid_command(command)
+        }
+        _ => valid_command(command),
+    }
+}
+
+/// Whole-batch v4 admissibility over the optional inline entry plus caller
+/// queue: enforces the 128-entry cap (including inline), uniform v4 command
+/// rules, and strict ascending sequence order without sorting.
+#[must_use]
+pub fn validate_batch_v4_reason(
+    inline_seq: Option<u64>,
+    has_inline: bool,
+    queued: &[(u64, WorldCommand)],
+) -> Option<&'static str> {
+    let total = usize::from(has_inline).saturating_add(queued.len());
+    if total > MAX_BATCH_COMMANDS {
+        return Some("section-over-cap");
+    }
+    let mut prev_seq = inline_seq;
+    for (seq, command) in queued {
+        if !valid_command_v4(command) {
+            return Some("command-invalid");
+        }
+        if prev_seq.is_some_and(|prev| *seq <= prev) {
+            return Some("command-order-invalid");
+        }
+        prev_seq = Some(*seq);
+    }
+    None
+}
 
 fn held_in_lane(report: &WorldReportV4, lane: crate::world_report::AttemptLaneV4) -> usize {
     report
@@ -124,8 +180,7 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
         return Some("section-over-cap");
     }
     if let Some((x, y)) = report.cursor
-        && (!(-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(&x)
-            || !(-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(&y))
+        && !valid_carried_point(x, y)
     {
         return Some("cursor-invalid");
     }
@@ -174,14 +229,12 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
             return Some("gesture-id-invalid");
         }
         if let Some((x, y)) = gesture.cursor
-            && (!(-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(&x)
-                || !(-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(&y))
+            && !valid_carried_point(x, y)
         {
             return Some("gesture-cursor-invalid");
         }
         if let Some((x, y)) = gesture.start_cursor
-            && (!(-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(&x)
-                || !(-GEOMETRY_BOUND..=GEOMETRY_BOUND).contains(&y))
+            && !valid_carried_point(x, y)
         {
             return Some("gesture-cursor-invalid");
         }
@@ -197,19 +250,10 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
     if report.command_seq.is_none() != report.command.is_none() {
         return Some("command-pair-invalid");
     }
-    if let Some(command) = report.command.as_ref() {
-        // V4 by-id focus spells the removed direction as `None`;
-        // the legacy direction vocabulary would misread it as invalid.
-        let bare_focus = matches!(
-            command,
-            WorldCommand::Focus {
-                direction: None,
-                ..
-            }
-        );
-        if !bare_focus && !valid_command(command) {
-            return Some("command-invalid");
-        }
+    if let Some(command) = report.command.as_ref()
+        && !valid_command_v4(command)
+    {
+        return Some("command-invalid");
     }
     if report.renderer_input.is_some() && report.command.is_none() {
         return Some("command-pair-invalid");

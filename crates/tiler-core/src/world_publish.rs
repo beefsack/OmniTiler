@@ -332,6 +332,9 @@ impl WorldTransaction<'_> {
             for window in &domain.windows {
                 live.insert(window.window.0.clone());
             }
+            for window in self.world.layout().tiled_windows(&domain.key) {
+                live.insert(window.0.clone());
+            }
             for window in self.world.layout().exception_windows(&domain.key) {
                 live.insert(window.0.clone());
             }
@@ -543,6 +546,7 @@ impl WorldTransaction<'_> {
                     };
                     for window in &domain.windows {
                         if live.contains(&window.window.0)
+                            || redirect.contains_key(&window.window.0)
                             || !emitted.insert(window.window.0.clone())
                         {
                             continue;
@@ -577,7 +581,10 @@ impl WorldTransaction<'_> {
                         });
                     }
                     for window in &domain.minimized {
-                        if live.contains(&window.0) || !emitted.insert(window.0.clone()) {
+                        if live.contains(&window.0)
+                            || redirect.contains_key(&window.0)
+                            || !emitted.insert(window.0.clone())
+                        {
                             continue;
                         }
                         windows.push(WindowDesire {
@@ -599,7 +606,10 @@ impl WorldTransaction<'_> {
                         });
                     }
                     for window in &domain.unreadable {
-                        if !emitted.insert(window.0.clone()) {
+                        if live.contains(&window.0)
+                            || redirect.contains_key(&window.0)
+                            || !emitted.insert(window.0.clone())
+                        {
                             continue;
                         }
                         windows.push(WindowDesire {
@@ -700,6 +710,12 @@ impl WorldTransaction<'_> {
                     for window in &domain.windows {
                         live.remove(&window.window.0);
                     }
+                    for window in self.world.layout().tiled_windows(&key) {
+                        live.remove(&window.0);
+                    }
+                    for window in self.world.layout().exception_windows(&key) {
+                        live.remove(&window.0);
+                    }
                     self.push_held_lifetimes(
                         born_paused,
                         &key,
@@ -726,6 +742,12 @@ impl WorldTransaction<'_> {
                     // constraint-clamp hold rows instead of vanishing.
                     for window in &domain.windows {
                         live.remove(&window.window.0);
+                    }
+                    for window in self.world.layout().tiled_windows(&key) {
+                        live.remove(&window.0);
+                    }
+                    for window in self.world.layout().exception_windows(&key) {
+                        live.remove(&window.0);
                     }
                     self.push_held_lifetimes(
                         born_paused,
@@ -1208,6 +1230,8 @@ impl WorldTransaction<'_> {
             // geometry, never silent absence and never an inferred close.
             // The slot stays homed until restore, explicit close, or the
             // retained transfer settles it.
+            // One row per window, from post-command home and its own native state;
+            // hold reason never from another window/domain flag.
             let minimized: Vec<WindowId> = self
                 .world
                 .layout()
@@ -1215,7 +1239,8 @@ impl WorldTransaction<'_> {
                 .cloned()
                 .collect();
             for window in minimized {
-                if live.contains(&window.0) || !emitted.insert(window.0.clone()) {
+                let live_in_layout = self.world.layout().is_tiled_or_exception_any(&window);
+                if live.contains(&window.0) || live_in_layout || !emitted.insert(window.0.clone()) {
                     continue;
                 }
                 // A minimized lifetime under an outstanding membership

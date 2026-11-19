@@ -19,7 +19,7 @@
 //!   tampered-plan check in `lifecycle_policy_version_bound_and_rejected_when_tampered`
 //!   (the `POLICY_VERSION`/`LIFECYCLE_POLICY_VERSION` constant check is retained).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::contract::{LIFECYCLE_POLICY_VERSION, POLICY_VERSION};
 
@@ -142,23 +142,40 @@ fn close_window(layout: &mut WorldLayout, domain: &DomainKey, window: &str) {
         .unwrap_or_else(|e| panic!("close {window} failed: {e:?}"));
 }
 
+fn leaf_of(layout: &WorldLayout, domain: &DomainKey, win: &str) -> NodeId {
+    layout
+        .leaves(domain)
+        .and_then(|leaves| leaves.get(&WindowId(win.to_owned())))
+        .expect("leaf for window")
+        .clone()
+}
+
 fn leaves_of(layout: &WorldLayout, domain: &DomainKey) -> Vec<String> {
+    let by_leaf: BTreeMap<NodeId, String> = layout
+        .leaves(domain)
+        .map(|leaves| {
+            leaves
+                .iter()
+                .map(|(w, l)| (l.clone(), w.0.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
     match layout.tree(domain) {
         None => Vec::new(),
         Some(tree) => {
             let mut ids = Vec::new();
-            collect(tree, &mut ids);
+            collect(tree, &by_leaf, &mut ids);
             ids
         }
     }
 }
 
-fn collect(node: &Node, out: &mut Vec<String>) {
+fn collect(node: &Node, by_leaf: &BTreeMap<NodeId, String>, out: &mut Vec<String>) {
     match node {
-        Node::Leaf { id } => out.push(id.0.clone()),
+        Node::Leaf { id } => out.push(by_leaf.get(id).cloned().unwrap_or_else(|| id.0.clone())),
         Node::Group { children, .. } => {
             for child in children {
-                collect(child, out);
+                collect(child, by_leaf, out);
             }
         }
     }
@@ -173,11 +190,8 @@ fn initial_admit_makes_root_leaf_focuses_and_projects() {
     let mut layout = WorldLayout::new();
     let k = key("out-1", "ws-1");
     let outcome = admit(&mut layout, "win-1", "out-1", "ws-1", placement(120, 80));
-    assert_eq!(leaves_of(&layout, &k), vec!["leaf-win-1".to_string()]);
-    assert_eq!(
-        layout.focus_leaf(&k),
-        Some(&NodeId("leaf-win-1".to_owned()))
-    );
+    assert_eq!(leaves_of(&layout, &k), vec!["win-1".to_string()]);
+    assert_eq!(layout.focus_leaf(&k), Some(&leaf_of(&layout, &k, "win-1")));
     assert_eq!(outcome.geometry.len(), 1);
     let rect = outcome.geometry[0].rect;
     assert!(rect.w > 0 && rect.h > 0);
@@ -201,8 +215,8 @@ fn sibling_insert_after_focus_when_axes_match() {
             assert_eq!(*axis, Axis::Horizontal);
             assert_eq!(*shares, vec![1, 1]);
             assert_eq!(children.len(), 2);
-            assert_eq!(children[0].id().0, "leaf-win-1");
-            assert_eq!(children[1].id().0, "leaf-win-2");
+            assert_eq!(children[0].id(), &leaf_of(&layout, &k, "win-1"));
+            assert_eq!(children[1].id(), &leaf_of(&layout, &k, "win-2"));
         }
         other => panic!("expected focused-root binary wrapper, got {other:?}"),
     }
@@ -211,9 +225,9 @@ fn sibling_insert_after_focus_when_axes_match() {
     assert_eq!(
         leaves_of(&layout, &k),
         vec![
-            "leaf-win-1".to_string(),
-            "leaf-win-2".to_string(),
-            "leaf-win-3".to_string(),
+            "win-1".to_string(),
+            "win-2".to_string(),
+            "win-3".to_string(),
         ]
     );
     match layout.tree(&k) {
@@ -226,7 +240,7 @@ fn sibling_insert_after_focus_when_axes_match() {
             assert_eq!(*axis, Axis::Horizontal);
             assert_eq!(*shares, vec![1, 1]);
             assert_eq!(children.len(), 2);
-            assert_eq!(children[0].id().0, "leaf-win-1");
+            assert_eq!(children[0].id(), &leaf_of(&layout, &k, "win-1"));
             match &children[1] {
                 Node::Group {
                     axis,
@@ -237,18 +251,15 @@ fn sibling_insert_after_focus_when_axes_match() {
                     assert_eq!(*axis, Axis::Horizontal);
                     assert_eq!(*shares, vec![1, 1]);
                     assert_eq!(children.len(), 2);
-                    assert_eq!(children[0].id().0, "leaf-win-2");
-                    assert_eq!(children[1].id().0, "leaf-win-3");
+                    assert_eq!(children[0].id(), &leaf_of(&layout, &k, "win-2"));
+                    assert_eq!(children[1].id(), &leaf_of(&layout, &k, "win-3"));
                 }
                 other => panic!("expected focused binary wrapper old/new, got {other:?}"),
             }
         }
         other => panic!("expected binary root wrapper, got {other:?}"),
     }
-    assert_eq!(
-        layout.focus_leaf(&k),
-        Some(&NodeId("leaf-win-3".to_owned()))
-    );
+    assert_eq!(layout.focus_leaf(&k), Some(&leaf_of(&layout, &k, "win-3")));
     assert_eq!(outcome.geometry.len(), 3);
     for i in 0..outcome.geometry.len() {
         let outer = placement(120, 80);
@@ -275,7 +286,7 @@ fn no_focus_root_wraps_entire_root() {
     admit(&mut layout, "win-3", "out-1", "ws-1", placement(120, 80));
     assert_eq!(
         leaves_of(&layout, &k1),
-        vec!["leaf-win-1".to_string(), "leaf-win-3".to_string()]
+        vec!["win-1".to_string(), "win-3".to_string()]
     );
     match layout.tree(&k1) {
         Some(Node::Group {
@@ -287,15 +298,15 @@ fn no_focus_root_wraps_entire_root() {
             assert_eq!(*axis, Axis::Horizontal);
             assert_eq!(*shares, vec![1, 1]);
             assert_eq!(children.len(), 2);
-            assert_eq!(children[0].id().0, "leaf-win-1");
-            assert_eq!(children[1].id().0, "leaf-win-3");
+            assert_eq!(children[0].id(), &leaf_of(&layout, &k1, "win-1"));
+            assert_eq!(children[1].id(), &leaf_of(&layout, &k1, "win-3"));
         }
         other => panic!("expected no-focus root binary wrapper old/new, got {other:?}"),
     }
-    assert_eq!(leaves_of(&layout, &k2), vec!["leaf-win-2".to_string()]);
+    assert_eq!(leaves_of(&layout, &k2), vec!["win-2".to_string()]);
     assert_eq!(
         layout.focus_leaf(&k1),
-        Some(&NodeId("leaf-win-3".to_owned()))
+        Some(&leaf_of(&layout, &k1, "win-3"))
     );
 }
 
@@ -316,7 +327,7 @@ fn nesting_when_axes_differ_uses_input_orientation() {
             assert_eq!(*axis, Axis::Horizontal);
             assert_eq!(*shares, vec![1, 1]);
             assert_eq!(children.len(), 2);
-            assert_eq!(children[0].id().0, "leaf-win-1");
+            assert_eq!(children[0].id(), &leaf_of(&layout, &k, "win-1"));
             match &children[1] {
                 Node::Group {
                     axis,
@@ -326,18 +337,15 @@ fn nesting_when_axes_differ_uses_input_orientation() {
                 } => {
                     assert_eq!(*axis, Axis::Vertical);
                     assert_eq!(*shares, vec![1, 1]);
-                    assert_eq!(children[0].id().0, "leaf-win-2");
-                    assert_eq!(children[1].id().0, "leaf-win-3");
+                    assert_eq!(children[0].id(), &leaf_of(&layout, &k, "win-2"));
+                    assert_eq!(children[1].id(), &leaf_of(&layout, &k, "win-3"));
                 }
                 other => panic!("expected nested vertical group, got {other:?}"),
             }
         }
         other => panic!("expected root group, got {other:?}"),
     }
-    assert_eq!(
-        layout.focus_leaf(&k),
-        Some(&NodeId("leaf-win-3".to_owned()))
-    );
+    assert_eq!(layout.focus_leaf(&k), Some(&leaf_of(&layout, &k, "win-3")));
 }
 
 #[test]
@@ -365,19 +373,13 @@ fn focused_removal_uses_source_focus_recency_not_tree_sibling() {
     close_window(&mut layout, &k, "win-2");
     assert_eq!(
         leaves_of(&layout, &k),
-        vec!["leaf-win-1".to_string(), "leaf-win-3".to_string()]
+        vec!["win-1".to_string(), "win-3".to_string()]
     );
-    assert_eq!(
-        layout.focus_leaf(&k),
-        Some(&NodeId("leaf-win-1".to_owned()))
-    );
+    assert_eq!(layout.focus_leaf(&k), Some(&leaf_of(&layout, &k, "win-1")));
 
     close_window(&mut layout, &k, "win-3");
-    assert_eq!(leaves_of(&layout, &k), vec!["leaf-win-1".to_string()]);
-    assert_eq!(
-        layout.focus_leaf(&k),
-        Some(&NodeId("leaf-win-1".to_owned()))
-    );
+    assert_eq!(leaves_of(&layout, &k), vec!["win-1".to_string()]);
+    assert_eq!(layout.focus_leaf(&k), Some(&leaf_of(&layout, &k, "win-1")));
 }
 
 #[test]
@@ -388,15 +390,9 @@ fn removal_prunes_unfocused_leaves_from_focus_recency() {
     admit(&mut layout, "win-2", "out-1", "ws-1", placement(120, 80));
     admit(&mut layout, "win-3", "out-1", "ws-1", placement(120, 80));
     close_window(&mut layout, &k, "win-1");
-    assert_eq!(
-        layout.focus_leaf(&k),
-        Some(&NodeId("leaf-win-3".to_owned()))
-    );
+    assert_eq!(layout.focus_leaf(&k), Some(&leaf_of(&layout, &k, "win-3")));
     close_window(&mut layout, &k, "win-3");
-    assert_eq!(
-        layout.focus_leaf(&k),
-        Some(&NodeId("leaf-win-2".to_owned()))
-    );
+    assert_eq!(layout.focus_leaf(&k), Some(&leaf_of(&layout, &k, "win-2")));
 }
 
 #[test]
@@ -420,7 +416,7 @@ fn removal_retains_empty_domains() {
     assert_eq!(layout.tiled_count(&k2), 1);
 
     admit(&mut layout, "win-2", "out-1", "ws-1", placement(120, 80));
-    assert_eq!(leaves_of(&layout, &k1), vec!["leaf-win-2".to_string()]);
+    assert_eq!(leaves_of(&layout, &k1), vec!["win-2".to_string()]);
 }
 
 #[test]
@@ -433,7 +429,7 @@ fn nested_collapse_is_recursive() {
     close_window(&mut layout, &k, "win-3");
     assert_eq!(
         leaves_of(&layout, &k),
-        vec!["leaf-win-1".to_string(), "leaf-win-2".to_string()]
+        vec!["win-1".to_string(), "win-2".to_string()]
     );
     match layout.tree(&k) {
         Some(Node::Group { children, .. }) => assert_eq!(children.len(), 2),
@@ -448,11 +444,11 @@ fn output_workspace_isolation() {
     let k2 = key("out-2", "ws-2");
     admit(&mut layout, "win-1", "out-1", "ws-1", placement(120, 80));
     admit(&mut layout, "win-2", "out-2", "ws-2", placement(120, 80));
-    assert_eq!(leaves_of(&layout, &k1), vec!["leaf-win-1".to_string()]);
-    assert_eq!(leaves_of(&layout, &k2), vec!["leaf-win-2".to_string()]);
+    assert_eq!(leaves_of(&layout, &k1), vec!["win-1".to_string()]);
+    assert_eq!(leaves_of(&layout, &k2), vec!["win-2".to_string()]);
     close_window(&mut layout, &k1, "win-1");
     assert!(leaves_of(&layout, &k1).is_empty());
-    assert_eq!(leaves_of(&layout, &k2), vec!["leaf-win-2".to_string()]);
+    assert_eq!(leaves_of(&layout, &k2), vec!["win-2".to_string()]);
     assert!(layout.contains_domain(&k1));
     assert!(layout.contains_domain(&k2));
 }
@@ -559,7 +555,7 @@ fn duplicate_unknown_crossdomain_partial_malformed_refused_without_corruption() 
     admit(&mut layout, "win-2", "out-1", "ws-1", placement(120, 80));
     assert_eq!(
         leaves_of(&layout, &k),
-        vec!["leaf-win-1".to_string(), "leaf-win-2".to_string()]
+        vec!["win-1".to_string(), "win-2".to_string()]
     );
 }
 
@@ -646,7 +642,7 @@ fn intentional_float_is_transactional_non_tree_state_and_unfloats_by_fresh_admis
         .toggle_float(&k, &win("win-1"), None, &obs)
         .expect("floating window is freshly admitted");
     assert_eq!(tiled.geometry.len(), 1);
-    assert_eq!(leaves_of(&layout, &k), vec!["leaf-win-1"]);
+    assert_eq!(leaves_of(&layout, &k), vec!["win-1"]);
     assert_eq!(layout.exception_count(&k), 0);
     assert_eq!(
         layout.retained_float_geometry(&k, &win("win-1")),
@@ -708,7 +704,7 @@ fn intentional_float_retains_moved_geometry_across_float_unfloat_float() {
         .toggle_float(&k, &win("win-1"), Some(moved), &obs)
         .expect("unfloat 2");
     assert_eq!(unfloated.geometry.len(), 1);
-    assert_eq!(leaves_of(&layout, &k), vec!["leaf-win-1"]);
+    assert_eq!(leaves_of(&layout, &k), vec!["win-1"]);
     assert_eq!(layout.exception_count(&k), 0);
 }
 
@@ -736,22 +732,22 @@ fn assert_nested_h_v(layout: &WorldLayout, k: &DomainKey) {
     assert_eq!(
         leaves_of(layout, k),
         vec![
-            "leaf-win-1".to_string(),
-            "leaf-win-2".to_string(),
-            "leaf-win-3".to_string(),
+            "win-1".to_string(),
+            "win-2".to_string(),
+            "win-3".to_string(),
         ]
     );
     match layout.tree(k) {
         Some(Node::Group { axis, children, .. }) => {
             assert_eq!(*axis, Axis::Horizontal);
             assert_eq!(children.len(), 2);
-            assert_eq!(children[0].id().0, "leaf-win-1");
+            assert_eq!(children[0].id(), &leaf_of(layout, k, "win-1"));
             match &children[1] {
                 Node::Group { axis, children, .. } => {
                     assert_eq!(*axis, Axis::Vertical);
                     assert_eq!(children.len(), 2);
-                    assert_eq!(children[0].id().0, "leaf-win-2");
-                    assert_eq!(children[1].id().0, "leaf-win-3");
+                    assert_eq!(children[0].id(), &leaf_of(layout, k, "win-2"));
+                    assert_eq!(children[1].id(), &leaf_of(layout, k, "win-3"));
                 }
                 other => panic!("expected inner V[win-2 win-3], got {other:?}"),
             }
@@ -776,7 +772,7 @@ fn unfloat_reuses_admission_axis_not_domain_bounds() {
     assert_eq!(layout.exception_count(&k), 1);
     assert_eq!(
         leaves_of(&layout, &k),
-        vec!["leaf-win-1".to_string(), "leaf-win-2".to_string()]
+        vec!["win-1".to_string(), "win-2".to_string()]
     );
     let retained = layout
         .retained_float_geometry(&k, &win("win-3"))
@@ -792,10 +788,7 @@ fn unfloat_reuses_admission_axis_not_domain_bounds() {
         layout.retained_float_geometry(&k, &win("win-3")),
         Some(retained)
     );
-    assert_eq!(
-        layout.focus_leaf(&k),
-        Some(&NodeId("leaf-win-3".to_owned()))
-    );
+    assert_eq!(layout.focus_leaf(&k), Some(&leaf_of(&layout, &k, "win-3")));
 }
 
 #[test]
@@ -858,11 +851,11 @@ fn two_workspaces_on_same_output_are_isolated() {
 
     admit(&mut layout, "win-a", "out-1", "ws-a", placement(120, 80));
     let outcome_b = admit(&mut layout, "win-b", "out-1", "ws-b", placement(120, 80));
-    assert_eq!(leaves_of(&layout, &ka), vec!["leaf-win-a".to_string()]);
-    assert_eq!(leaves_of(&layout, &kb), vec!["leaf-win-b".to_string()]);
+    assert_eq!(leaves_of(&layout, &ka), vec!["win-a".to_string()]);
+    assert_eq!(leaves_of(&layout, &kb), vec!["win-b".to_string()]);
     assert_eq!(
         layout.focus_leaf(&kb),
-        Some(&NodeId("leaf-win-b".to_owned()))
+        Some(&leaf_of(&layout, &kb, "win-b"))
     );
     assert_eq!(outcome_b.geometry.len(), 1);
     assert_eq!(outcome_b.geometry[0].workspace.0, "ws-b");
@@ -870,10 +863,10 @@ fn two_workspaces_on_same_output_are_isolated() {
 
     close_window(&mut layout, &ka, "win-a");
     assert!(leaves_of(&layout, &ka).is_empty());
-    assert_eq!(leaves_of(&layout, &kb), vec!["leaf-win-b".to_string()]);
+    assert_eq!(leaves_of(&layout, &kb), vec!["win-b".to_string()]);
     assert_eq!(
         layout.focus_leaf(&kb),
-        Some(&NodeId("leaf-win-b".to_owned()))
+        Some(&leaf_of(&layout, &kb, "win-b"))
     );
 
     close_window(&mut layout, &kb, "win-b");
@@ -908,13 +901,13 @@ fn deferred_removal_commits_without_topology_effect() {
         .expect("deferred admits");
     assert!(layout.is_exception(&k, &win("win-9")));
     admit(&mut layout, "win-1", "out-1", "ws-1", placement(120, 80));
-    assert_eq!(leaves_of(&layout, &k), vec!["leaf-win-1".to_string()]);
+    assert_eq!(leaves_of(&layout, &k), vec!["win-1".to_string()]);
     let focus_before = layout.focus_leaf(&k).cloned();
 
     close_window(&mut layout, &k, "win-9");
     assert!(!layout.is_exception(&k, &win("win-9")));
     assert_eq!(layout.exception_count(&k), 0);
-    assert_eq!(leaves_of(&layout, &k), vec!["leaf-win-1".to_string()]);
+    assert_eq!(leaves_of(&layout, &k), vec!["win-1".to_string()]);
     assert_eq!(layout.focus_leaf(&k).cloned(), focus_before);
 }
 
@@ -938,7 +931,7 @@ fn inconsistent_exception_behavior_is_malformed() {
         Err(LayoutFailure::Semantics(RefusalKind::MalformedInput))
     );
     admit(&mut layout, "win-1", "out-1", "ws-1", placement(120, 80));
-    assert_eq!(leaves_of(&layout, &k), vec!["leaf-win-1".to_string()]);
+    assert_eq!(leaves_of(&layout, &k), vec!["win-1".to_string()]);
 }
 
 #[test]
@@ -1013,7 +1006,7 @@ fn uneven_proportional_insertion_and_removal_preserve_ratios() {
             assert_eq!(axis, Axis::Horizontal);
             assert_eq!(shares, vec![1, 1]);
             assert_eq!(children.len(), 2);
-            assert_eq!(children[0].id().0, "leaf-win-1");
+            assert_eq!(children[0].id(), &leaf_of(&layout, &k, "win-1"));
             match &children[1] {
                 Node::Group {
                     axis,
@@ -1024,8 +1017,8 @@ fn uneven_proportional_insertion_and_removal_preserve_ratios() {
                     assert_eq!(*axis, Axis::Horizontal);
                     assert_eq!(*shares, vec![1, 1]);
                     assert_eq!(children.len(), 2);
-                    assert_eq!(children[0].id().0, "leaf-win-2");
-                    assert_eq!(children[1].id().0, "leaf-win-3");
+                    assert_eq!(children[0].id(), &leaf_of(&layout, &k, "win-2"));
+                    assert_eq!(children[1].id(), &leaf_of(&layout, &k, "win-3"));
                 }
                 other => panic!("expected focused binary wrapper, got {other:?}"),
             }

@@ -49,6 +49,9 @@ pub(crate) struct RetainedTransfer {
     /// Expected source-refill logical view for a Migration, stored at commit
     /// so settlement survives early refill-child settlement.
     pub(crate) migration_refill: Option<String>,
+    /// Explicit parent operation id for a migration refill child (`View`
+    /// transfer), correlated in core without parsing token spelling.
+    pub(crate) migration_parent_op: Option<String>,
     /// True when a Migration committed with zero members (originally empty).
     pub(crate) migration_initial_empty: bool,
     /// Source ring index of the migrated id at commit, for refusal

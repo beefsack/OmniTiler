@@ -268,7 +268,8 @@ fn bootstrap_binding_v4(
         pairs: Vec::new(),
     };
     let first = build_report_v4(case, mode, &sim, None, None, vec![])?;
-    let reply = match crate::world_admission::handle_report_checked(&mut probe, &first, &[]).0 {
+    let reply = match crate::world_admission::handle_report_checked(&mut probe, &first, &[]).outcome
+    {
         WorldOutcome::Accepted(reply) => reply,
         WorldOutcome::Duplicate(_) => {
             return Err("bootstrap probe: expected accepted, got duplicate".to_owned());
@@ -754,7 +755,7 @@ fn submit_v4(
     // Every in-flow submit is fresh, so only `Accepted` counts: duplicates
     // and consumed commands fail loudly (no relabel), refusals keep their
     // kind/message.
-    match crate::world_admission::handle_report_checked(engine, &report, &[]).0 {
+    match crate::world_admission::handle_report_checked(engine, &report, &[]).outcome {
         WorldOutcome::Accepted(reply) => {
             let revision = sim.pairs.len() as u64 + 1;
             check_pairing_v4(case, &report, &reply, at, revision)?;
@@ -1400,7 +1401,7 @@ fn probe_completions_v4(
     let (last_report, last_reply) = sim.pairs.last().expect("final").clone();
     // Exact redelivery is a duplicate: the cached reply returns with no new
     // revision, never a fresh acceptance.
-    match crate::world_admission::handle_report_checked(engine, &last_report, &[]).0 {
+    match crate::world_admission::handle_report_checked(engine, &last_report, &[]).outcome {
         WorldOutcome::Duplicate(cached) => {
             if cached != last_reply {
                 return Err("probe duplicate: cached reply moved".to_owned());
@@ -1429,7 +1430,7 @@ fn probe_completions_v4(
         stale.request_seq = sim.req + 1;
         stale.request_id = format!("req-{}", sim.req + 1);
         stale.observation_seq = sim.obs.saturating_sub(1).max(1);
-        match crate::world_admission::handle_report_checked(engine, &stale, &[]).0 {
+        match crate::world_admission::handle_report_checked(engine, &stale, &[]).outcome {
             WorldOutcome::Rejected {
                 kind: "observation-stale",
                 ..
@@ -1451,7 +1452,7 @@ fn probe_completions_v4(
         let mut reused = last_report.clone();
         reused.focused_global = "nobody".to_owned();
         reused.foreground_known = true;
-        match crate::world_admission::handle_report_checked(engine, &reused, &[]).0 {
+        match crate::world_admission::handle_report_checked(engine, &reused, &[]).outcome {
             WorldOutcome::Rejected {
                 kind: "request-reused",
                 ..
@@ -1515,7 +1516,7 @@ fn probe_completions_v4(
             Some(first_seq),
             vec![],
         )?;
-        match crate::world_admission::handle_report_checked(engine, &report, &[]).0 {
+        match crate::world_admission::handle_report_checked(engine, &report, &[]).outcome {
             WorldOutcome::CommandConsumed(reply) => {
                 if !reply.command_consumed {
                     return Err(

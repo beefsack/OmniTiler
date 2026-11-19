@@ -35,16 +35,20 @@ use crate::world_engine::{
     KIND_OVERSIZED, KIND_OWNER, KIND_REPLY_SIZE, KIND_REUSED, KIND_REVISION_EXHAUSTED,
     KIND_SNAPSHOT, KIND_SUPERSEDED, MSG_CORRELATION, MSG_GENERATION, MSG_OBS_STALE, MSG_OVERSIZED,
     MSG_OWNER, MSG_REPLY_SIZE, MSG_REUSED, MSG_REVISION_EXHAUSTED, MSG_SUPERSEDED,
-    PreparedCandidate, WorldEngine, WorldState,
+    PreparedCandidate, TransitionResult, ValidatedReply, WakePrecheckCandidate, WorldEngine,
+    WorldState,
 };
 use crate::world_presentation::{GroupHideReason, PresentationUnderlay};
+use crate::world_reply_validation::validate_reply_v4;
 use crate::world_report::{
-    AttemptLaneV4, BatchSettlement, BorderPresentationV4, WORLD_CONTRACT_VERSION_V4, WorldCommand,
-    WorldPresentationV4, WorldReplyV4, WorldReportV4, validate_focus_request_reason,
-    validate_intent_desired_reason,
+    AttemptLaneV4, BatchDisposition, BorderPresentationV4, CommandDisposition, ReportIncorporation,
+    WORLD_CONTRACT_VERSION_V4, WorldCommand, WorldPresentationV4, WorldReplyV4, WorldReportV4,
+    validate_focus_request_reason, validate_intent_desired_reason,
 };
+#[cfg(any(test, feature = "structural-bench"))]
+use crate::world_report::{BatchSettlement, CommandResult};
 use crate::world_report_v4_checks::{
-    graded_effective_v4, report_digest_v4, validate_report_v4_reason,
+    graded_effective_v4, report_digest_v4, validate_batch_v4_reason, validate_report_v4_reason,
 };
 use crate::world_run_v4::V4RunOutcome;
 use crate::world_transaction::WorldTransaction;
@@ -171,14 +175,22 @@ pub trait CoreAdmissionGate {
     fn capture_residual(&self) -> Option<RetainedResidual> {
         None
     }
+    /// Pre-validation wake-epoch / sequence precheck run after exact/future
+    /// reserve and before mandatory semantic + host-capability validation.
+    fn check_wake_precheck(&self, _candidate: &WakePrecheckCandidate<'_>) -> AdmissionGateDecision {
+        AdmissionGateDecision::Allow
+    }
+    /// Record the fixed rule token when late semantic or host-capability reply
+    /// validation refuses a staged reply before `prepare`.
+    fn on_invalid_reply(&self, _rule: &'static str) {}
 }
 
-/// Structural no-op admission gate used by direct typed core entries
-/// (`handle_report`, `handle_report_with_prepare`, and core test helpers).
-/// Structural admission only; platform/native ingress must supply a checked
-/// [`CoreAdmissionGate`] (such as `tiler_protocol::world_admission::ProtocolAdmissionGate`).
+/// Structural no-op admission gate used by direct typed core tests and
+/// `structural-bench` builds. Unavailable in ordinary production builds.
+#[cfg(any(test, feature = "structural-bench"))]
 pub(crate) struct StructuralCoreAdmissionGate;
 
+#[cfg(any(test, feature = "structural-bench"))]
 impl CoreAdmissionGate for StructuralCoreAdmissionGate {
     fn check_request_size(&self, _report: &WorldReportV4) -> AdmissionGateDecision {
         AdmissionGateDecision::Allow
@@ -204,6 +216,27 @@ impl CoreAdmissionGate for StructuralCoreAdmissionGate {
     ) -> AdmissionGateDecision {
         AdmissionGateDecision::Allow
     }
+}
+
+#[cfg(any(test, feature = "structural-bench"))]
+pub(crate) fn dispositions_to_legacy_settlements(
+    dispositions: &[BatchDisposition],
+    _queued: &[(u64, WorldCommand)],
+) -> Vec<BatchSettlement> {
+    dispositions
+        .iter()
+        .filter_map(|entry| match &entry.disposition {
+            CommandDisposition::Executed(result) => Some(BatchSettlement {
+                seq: entry.seq,
+                result: result.clone(),
+            }),
+            CommandDisposition::Refused(kind) => Some(BatchSettlement {
+                seq: entry.seq,
+                result: Some(CommandResult::Rejected { kind: *kind }),
+            }),
+            CommandDisposition::AlreadyConsumed | CommandDisposition::NotRun => None,
+        })
+        .collect()
 }
 
 /// Pure v4 replay verdict over request identity: the digest is only a fast
@@ -262,21 +295,42 @@ fn usable_initial_observation_v4(report: &WorldReportV4) -> bool {
         })
 }
 
+fn not_run_dispositions(
+    report: &WorldReportV4,
+    queued: &[(u64, WorldCommand)],
+) -> Vec<BatchDisposition> {
+    let mut out = Vec::with_capacity(usize::from(report.command.is_some()) + queued.len());
+    if report.command.is_some()
+        && let Some(seq) = report.command_seq
+    {
+        out.push(BatchDisposition {
+            seq,
+            disposition: CommandDisposition::NotRun,
+        });
+    }
+    for (seq, _) in queued {
+        out.push(BatchDisposition {
+            seq: *seq,
+            disposition: CommandDisposition::NotRun,
+        });
+    }
+    out
+}
+
+fn rejected_transition(
+    kind: &'static str,
+    message: &'static str,
+    dispositions: Vec<BatchDisposition>,
+) -> TransitionResult {
+    TransitionResult {
+        outcome: V4RunOutcome::Rejected { kind, message },
+        incorporation: ReportIncorporation::Rejected,
+        dispositions,
+    }
+}
+
 impl WorldEngine {
-    /// Accept one already-admitted v4 report and publish one globally
-    /// ordered v4 reply. Internal only: the caller supplies the admitted
-    /// [`EventIssue`]; this entry defends the already-admitted envelope
-    /// (bound adapter/generation plus issue owner/correlation) before any
-    /// mutation and never touches the public ingress, adapters, brokers,
-    /// or services.
-    ///
-    /// Transactional: every cheap gate runs before any mutation. Refused
-    /// reports leave the engine (including intent ledgers, revision, and
-    /// command consumption) exactly unchanged. Ready reports run on a
-    /// staged clone adopted only after the outbound intent-lane gate and
-    /// the exact reply-size gate pass; pre-ready reports stage intent
-    /// retention on a candidate and return an empty bootstrap reply with no
-    /// authority and no revision advance.
+    #[cfg(test)]
     pub(crate) fn handle_report_v4(
         &mut self,
         report: &WorldReportV4,
@@ -286,28 +340,26 @@ impl WorldEngine {
         outcome
     }
 
-    /// Accept one already-admitted v4 report plus a parked FIFO command
-    /// batch drained inside the same capture/run/publication. The report
-    /// carries the fresh native observations; `queued` holds the parked
-    /// `(command sequence, command)` pairs in drain order. Returns the
-    /// single admission outcome plus one per-command settlement
-    /// index-aligned with `queued`. Any refusal adopts nothing, settles
-    /// nothing, and returns empty settlements so the caller reparks the
-    /// whole batch.
+    #[cfg(test)]
     pub(crate) fn handle_report_v4_batched(
         &mut self,
         report: &WorldReportV4,
         issue: &EventIssue,
         queued: &[(u64, WorldCommand)],
     ) -> (V4RunOutcome, Vec<BatchSettlement>) {
-        self.handle_report_v4_batched_with_gate_and_prepare(
-            report,
-            issue,
-            queued,
-            &StructuralCoreAdmissionGate,
-            |_| Ok::<(), std::convert::Infallible>(()),
+        let result = self
+            .handle_report_v4_batched_with_gate_and_prepare(
+                report,
+                issue,
+                queued,
+                &StructuralCoreAdmissionGate,
+                |_| Ok::<(), std::convert::Infallible>(()),
+            )
+            .unwrap_or_else(|e| match e {});
+        (
+            result.outcome,
+            dispositions_to_legacy_settlements(&result.dispositions, queued),
         )
-        .unwrap_or_else(|e| match e {})
     }
 
     pub(crate) fn handle_report_v4_batched_with_gate_and_prepare<
@@ -320,54 +372,32 @@ impl WorldEngine {
         queued: &[(u64, WorldCommand)],
         gate: &G,
         prepare: impl FnOnce(PreparedCandidate<'_>) -> Result<(), E>,
-    ) -> Result<(V4RunOutcome, Vec<BatchSettlement>), E> {
+    ) -> Result<TransitionResult, E> {
         // Internal admitted-envelope defense: the bound adapter, generation,
         // owner, and request correlation must match before any estimate,
         // grading, validation, or mutation. The caller owns public
         // admission; this internal boundary re-checks the already-admitted
         // context so a stale or foreign envelope never reaches the run.
         if self.connection.adapter.as_deref() != Some(report.adapter_incarnation.as_str()) {
-            return Ok((
-                V4RunOutcome::Rejected {
-                    kind: KIND_OWNER,
-                    message: MSG_OWNER,
-                },
-                Vec::new(),
-            ));
+            return Ok(rejected_transition(KIND_OWNER, MSG_OWNER, Vec::new()));
         }
         if report.core_generation != self.connection.core_generation_str {
-            return Ok((
-                V4RunOutcome::Rejected {
-                    kind: KIND_GENERATION,
-                    message: MSG_GENERATION,
-                },
+            return Ok(rejected_transition(
+                KIND_GENERATION,
+                MSG_GENERATION,
                 Vec::new(),
             ));
         }
         let Some(bound_owner) = self.connection.connection_owner.clone() else {
-            return Ok((
-                V4RunOutcome::Rejected {
-                    kind: KIND_OWNER,
-                    message: MSG_OWNER,
-                },
-                Vec::new(),
-            ));
+            return Ok(rejected_transition(KIND_OWNER, MSG_OWNER, Vec::new()));
         };
         if issue.owner != bound_owner {
-            return Ok((
-                V4RunOutcome::Rejected {
-                    kind: KIND_OWNER,
-                    message: MSG_OWNER,
-                },
-                Vec::new(),
-            ));
+            return Ok(rejected_transition(KIND_OWNER, MSG_OWNER, Vec::new()));
         }
         if issue.correlation.as_str() != report.request_id {
-            return Ok((
-                V4RunOutcome::Rejected {
-                    kind: KIND_CORRELATION,
-                    message: MSG_CORRELATION,
-                },
+            return Ok(rejected_transition(
+                KIND_CORRELATION,
+                MSG_CORRELATION,
                 Vec::new(),
             ));
         }
@@ -436,11 +466,9 @@ impl WorldEngine {
             || !report.creation_attempts.is_empty()
             || held_native_evidence;
         if native_evidence && !self.connection.host_owned_workspace_domains() {
-            return Ok((
-                V4RunOutcome::Rejected {
-                    kind: KIND_SNAPSHOT,
-                    message: "native-without-capability",
-                },
+            return Ok(rejected_transition(
+                KIND_SNAPSHOT,
+                "native-without-capability",
                 Vec::new(),
             ));
         }
@@ -451,38 +479,27 @@ impl WorldEngine {
                 .any(|bracket| bracket.location.is_native() != host_owned)
         });
         if arrival_host_mismatch {
-            return Ok((
-                V4RunOutcome::Rejected {
-                    kind: KIND_SNAPSHOT,
-                    message: "arrival-host-mismatch",
-                },
+            return Ok(rejected_transition(
+                KIND_SNAPSHOT,
+                "arrival-host-mismatch",
                 Vec::new(),
             ));
         }
         match gate.check_request_size(report) {
             AdmissionGateDecision::Allow => {}
             AdmissionGateDecision::Refuse => {
-                return Ok((
-                    V4RunOutcome::Rejected {
-                        kind: KIND_OVERSIZED,
-                        message: MSG_OVERSIZED,
-                    },
+                return Ok(rejected_transition(
+                    KIND_OVERSIZED,
+                    MSG_OVERSIZED,
                     Vec::new(),
                 ));
             }
             AdmissionGateDecision::Reject { kind, message } => {
-                return Ok((V4RunOutcome::Rejected { kind, message }, Vec::new()));
+                return Ok(rejected_transition(kind, message, Vec::new()));
             }
         }
         if let Some(reason) = validate_report_v4_reason(effective) {
-            return Ok((
-                V4RunOutcome::Rejected {
-                    kind: KIND_SNAPSHOT,
-                    // Fixed check vocabulary, never payload bytes.
-                    message: reason,
-                },
-                Vec::new(),
-            ));
+            return Ok(rejected_transition(KIND_SNAPSHOT, reason, Vec::new()));
         }
         let digest = report_digest_v4(report);
         if let Some(replay) = &self.replay {
@@ -499,21 +516,17 @@ impl WorldEngine {
             ) {
                 V4Replay::Fresh => {}
                 V4Replay::Stale => {
-                    return Ok((
-                        V4RunOutcome::Rejected {
-                            kind: KIND_SUPERSEDED,
-                            message: MSG_SUPERSEDED,
-                        },
-                        Vec::new(),
+                    return Ok(rejected_transition(
+                        KIND_SUPERSEDED,
+                        MSG_SUPERSEDED,
+                        not_run_dispositions(report, queued),
                     ));
                 }
                 V4Replay::Reused => {
-                    return Ok((
-                        V4RunOutcome::Rejected {
-                            kind: KIND_REUSED,
-                            message: MSG_REUSED,
-                        },
-                        Vec::new(),
+                    return Ok(rejected_transition(
+                        KIND_REUSED,
+                        MSG_REUSED,
+                        not_run_dispositions(report, queued),
                     ));
                 }
                 V4Replay::Duplicate => {
@@ -521,37 +534,39 @@ impl WorldEngine {
                     self.world
                         .emit_published_settlement_trace(None, &cached, true);
                     self.world.emit_published_drag_preview_trace(&cached, true);
-                    return Ok((V4RunOutcome::Duplicate(cached), Vec::new()));
+                    return Ok(TransitionResult {
+                        outcome: V4RunOutcome::Duplicate(cached),
+                        incorporation: ReportIncorporation::Replay,
+                        dispositions: not_run_dispositions(report, queued),
+                    });
                 }
             }
+        }
+        if let Some(reason) =
+            validate_batch_v4_reason(report.command_seq, report.command.is_some(), queued)
+        {
+            return Ok(rejected_transition(KIND_SNAPSHOT, reason, Vec::new()));
         }
         if self
             .replay
             .as_ref()
             .is_some_and(|replay| report.observation_seq < replay.observation_seq)
         {
-            return Ok((
-                V4RunOutcome::Rejected {
-                    kind: KIND_OBS_STALE,
-                    message: MSG_OBS_STALE,
-                },
-                Vec::new(),
+            return Ok(rejected_transition(
+                KIND_OBS_STALE,
+                MSG_OBS_STALE,
+                not_run_dispositions(report, queued),
             ));
         }
         // Fresh reports carrying an already-consumed command sequence
-        // reconcile observation but never re-execute the command. The
-        // command-pair shape already passed the structural gate above, so
-        // the mismatch arm stays defensive. Compute this before the byte/row
-        // gates so an already-consumed inline command never reserves new
-        // operation or intent slots.
+        // reconcile observation but never re-execute the command. Stale
+        // inline never suppresses fresh queued work.
         let consumed = match (report.command_seq, report.command.as_ref()) {
             (Some(seq), Some(_)) => self.world.command_highwater.is_some_and(|mark| seq <= mark),
             (Some(_), None) | (None, Some(_)) => {
-                return Ok((
-                    V4RunOutcome::Rejected {
-                        kind: KIND_SNAPSHOT,
-                        message: "command-pair-invalid",
-                    },
+                return Ok(rejected_transition(
+                    KIND_SNAPSHOT,
+                    "command-pair-invalid",
                     Vec::new(),
                 ));
             }
@@ -562,8 +577,17 @@ impl WorldEngine {
         } else {
             report.command.as_ref()
         };
-        let effective_queued: &[(u64, crate::world_report::WorldCommand)] =
-            if consumed { &[] } else { queued };
+        let fresh_queued: Vec<(u64, WorldCommand)> = queued
+            .iter()
+            .filter(|(seq, _)| {
+                !self
+                    .world
+                    .command_highwater
+                    .is_some_and(|mark| *seq <= mark)
+            })
+            .cloned()
+            .collect();
+        let effective_queued: &[(u64, WorldCommand)] = &fresh_queued;
         // Conservative pre-mutation reply bound: no observation convergence,
         // slot cleanup, or command mutation runs when the worst-case reply
         // cannot fit. All v4 bounds ride here, including the retained
@@ -601,16 +625,18 @@ impl WorldEngine {
         match gate.check_preflight(report, &preflight_facts) {
             AdmissionGateDecision::Allow => {}
             AdmissionGateDecision::Refuse => {
-                return Ok((
-                    V4RunOutcome::Rejected {
-                        kind: KIND_REPLY_SIZE,
-                        message: MSG_REPLY_SIZE,
-                    },
-                    Vec::new(),
+                return Ok(rejected_transition(
+                    KIND_REPLY_SIZE,
+                    MSG_REPLY_SIZE,
+                    not_run_dispositions(report, queued),
                 ));
             }
             AdmissionGateDecision::Reject { kind, message } => {
-                return Ok((V4RunOutcome::Rejected { kind, message }, Vec::new()));
+                return Ok(rejected_transition(
+                    kind,
+                    message,
+                    not_run_dispositions(report, queued),
+                ));
             }
         }
         // Fixed rowcap: the whole physical retained map plus genuinely new
@@ -647,33 +673,27 @@ impl WorldEngine {
                         .intent_desired_new_rows(effective_command, effective_queued),
                 );
             if total_rows > crate::world_report::MAX_INTENT_DESIRED {
-                return Ok((
-                    V4RunOutcome::Rejected {
-                        kind: KIND_SNAPSHOT,
-                        message: "section-over-cap",
-                    },
-                    Vec::new(),
+                return Ok(rejected_transition(
+                    KIND_SNAPSHOT,
+                    "section-over-cap",
+                    not_run_dispositions(report, queued),
                 ));
             }
         }
         if operation_slot_count > crate::world_report::MAX_REPLY_OPERATIONS {
-            return Ok((
-                V4RunOutcome::Rejected {
-                    kind: KIND_SNAPSHOT,
-                    message: "section-over-cap",
-                },
-                Vec::new(),
+            return Ok(rejected_transition(
+                KIND_SNAPSHOT,
+                "section-over-cap",
+                not_run_dispositions(report, queued),
             ));
         }
         // Counter exhaustion refuses and re-bootstraps under a new
         // generation; it never wraps in place.
         if self.world.state_revision == u64::MAX {
-            return Ok((
-                V4RunOutcome::Rejected {
-                    kind: KIND_REVISION_EXHAUSTED,
-                    message: MSG_REVISION_EXHAUSTED,
-                },
-                Vec::new(),
+            return Ok(rejected_transition(
+                KIND_REVISION_EXHAUSTED,
+                MSG_REVISION_EXHAUSTED,
+                not_run_dispositions(report, queued),
             ));
         }
         // Readiness keys on the effective graded report, never the raw
@@ -719,14 +739,40 @@ impl WorldEngine {
             }
             let reply =
                 Self::bootstrap_reply_v4(self.world.state_revision, report, &issue.correlation);
+            let bootstrap_dispositions = not_run_dispositions(report, queued);
             if let Err((kind, message)) = Self::refuse_outbound_v4(&reply, gate) {
-                return Ok((V4RunOutcome::Rejected { kind, message }, Vec::new()));
+                return Ok(rejected_transition(kind, message, bootstrap_dispositions));
             }
-            prepare(PreparedCandidate {
+            let active_gesture_id = self.world.gesture.retained.as_ref().map(|r| r.id);
+            let wake_candidate = WakePrecheckCandidate {
                 reply: &reply,
-                active_gesture_id: self.world.gesture.retained.as_ref().map(|r| r.id),
-                settlements: &[],
-            })?;
+                active_gesture_id,
+                dispositions: &bootstrap_dispositions,
+            };
+            match gate.check_wake_precheck(&wake_candidate) {
+                AdmissionGateDecision::Allow => {}
+                AdmissionGateDecision::Refuse => {
+                    return Ok(rejected_transition(
+                        KIND_REPLY_SIZE,
+                        MSG_REPLY_SIZE,
+                        bootstrap_dispositions,
+                    ));
+                }
+                AdmissionGateDecision::Reject { kind, message } => {
+                    return Ok(rejected_transition(kind, message, bootstrap_dispositions));
+                }
+            }
+            if let Err((kind, message)) =
+                Self::validate_prepared_reply_v4(&reply, self.connection.capabilities(), gate)
+            {
+                return Ok(rejected_transition(kind, message, bootstrap_dispositions));
+            }
+            let candidate = PreparedCandidate {
+                reply: ValidatedReply::new_validated(&reply),
+                active_gesture_id,
+                dispositions: &bootstrap_dispositions,
+            };
+            prepare(candidate)?;
             self.world.emit_published_settlement_trace(
                 self.replay.as_ref().map(|replay| &replay.reply),
                 &reply,
@@ -734,7 +780,11 @@ impl WorldEngine {
             );
             self.world.emit_published_drag_preview_trace(&reply, false);
             self.world.intent = staged_intent;
-            return Ok((V4RunOutcome::Accepted(reply), Vec::new()));
+            return Ok(TransitionResult {
+                outcome: V4RunOutcome::Accepted(reply),
+                incorporation: ReportIncorporation::BootstrapIntentOnly,
+                dispositions: bootstrap_dispositions,
+            });
         }
         // Stage everything past this point on a clone. Exact-encoding
         // overflow (or any late failure) drops the candidate; `self` is
@@ -750,7 +800,7 @@ impl WorldEngine {
             .as_ref()
             .map(|replay| replay.reply.transfers.as_slice())
             .unwrap_or(&[]);
-        let (outcome, settlements) =
+        let (outcome, dispositions) =
             WorldTransaction::new(&self.connection, prev_transfers, &mut staged)
                 .run_accepted_v4_batched(report, issue, consumed, next_revision, queued);
         match outcome {
@@ -761,42 +811,59 @@ impl WorldEngine {
                     report,
                     digest,
                     reply,
-                    &settlements,
+                    &dispositions,
                     gate,
                     prepare,
                 )? {
                     V4RunOutcome::Accepted(reply) => {
                         debug_assert!(!consumed_reply);
-                        Ok((V4RunOutcome::Accepted(reply), settlements))
+                        Ok(TransitionResult {
+                            outcome: V4RunOutcome::Accepted(reply),
+                            incorporation: ReportIncorporation::Incorporated,
+                            dispositions,
+                        })
                     }
                     V4RunOutcome::CommandConsumed(reply) => {
                         debug_assert!(consumed_reply);
-                        Ok((V4RunOutcome::CommandConsumed(reply), settlements))
+                        Ok(TransitionResult {
+                            outcome: V4RunOutcome::CommandConsumed(reply),
+                            incorporation: ReportIncorporation::Incorporated,
+                            dispositions,
+                        })
                     }
-                    V4RunOutcome::Duplicate(reply) => {
-                        Ok((V4RunOutcome::Duplicate(reply), Vec::new()))
-                    }
-                    rejected => Ok((rejected, Vec::new())),
+                    V4RunOutcome::Duplicate(reply) => Ok(TransitionResult {
+                        outcome: V4RunOutcome::Duplicate(reply),
+                        incorporation: ReportIncorporation::Replay,
+                        dispositions: not_run_dispositions(report, queued),
+                    }),
+                    V4RunOutcome::Rejected { kind, message } => Ok(rejected_transition(
+                        kind,
+                        message,
+                        not_run_dispositions(report, queued),
+                    )),
                 }
             }
             V4RunOutcome::Duplicate(_) => {
                 // Staged runs never duplicate: the latest duplicate returns
                 // above, before staging.
-                Ok((
-                    V4RunOutcome::Rejected {
-                        kind: KIND_SUPERSEDED,
-                        message: MSG_SUPERSEDED,
-                    },
-                    Vec::new(),
+                Ok(rejected_transition(
+                    KIND_SUPERSEDED,
+                    MSG_SUPERSEDED,
+                    not_run_dispositions(report, queued),
                 ))
             }
-            rejected => Ok((rejected, Vec::new())),
+            V4RunOutcome::Rejected { kind, message } => Ok(rejected_transition(
+                kind,
+                message,
+                not_run_dispositions(report, queued),
+            )),
         }
     }
 
-    /// Outbound gates over one staged v4 reply: intent-lane validity and
-    /// the exact canonical size bound. Returns `Err((kind, message))` when the
-    /// reply must not publish or cache, `Ok(ExactInnerCheck)` when it may proceed.
+    /// Outbound pre-count guards and exact canonical size check over one
+    /// staged v4 reply. Runs before future-reserve, wake precheck, and
+    /// mandatory semantic/host-capability validation so C5 size/cap precedence
+    /// is preserved.
     fn refuse_outbound_v4<G: CoreAdmissionGate + ?Sized>(
         reply: &WorldReplyV4,
         gate: &G,
@@ -805,10 +872,6 @@ impl WorldEngine {
         if let Some(reason) = validate_intent_desired_reason(&reply.intent_desired) {
             return Err((KIND_SNAPSHOT, reason));
         }
-        // Frozen `afterShown` section caps mirror the protocol encoder:
-        // an over-cap projection refuses before adoption so a typed
-        // rejection leaves the engine exactly unchanged instead of
-        // poisoning the retained slot past the byte gate.
         if let Some(reason) = validate_focus_request_reason(&reply.focus_request) {
             return Err((KIND_SNAPSHOT, reason));
         }
@@ -822,6 +885,25 @@ impl WorldEngine {
             ExactInnerDecision::Refuse => Err((KIND_REPLY_SIZE, MSG_REPLY_SIZE)),
             ExactInnerDecision::Reject { kind, message } => Err((kind, message)),
         }
+    }
+
+    /// Mandatory semantic and actual-host-capability validation run after C5
+    /// size/reserve/wake fences and immediately before final `prepare`.
+    fn validate_prepared_reply_v4<G: CoreAdmissionGate + ?Sized>(
+        reply: &WorldReplyV4,
+        capabilities: Option<&crate::connection::HostCapabilities>,
+        gate: &G,
+    ) -> Result<(), (&'static str, &'static str)> {
+        if let Err(err) = validate_reply_v4(reply, capabilities) {
+            let rule = if err.message == "request contains an unknown value" {
+                err.kind
+            } else {
+                err.message
+            };
+            gate.on_invalid_reply(rule);
+            return Err((err.kind, err.message));
+        }
+        Ok(())
     }
 
     /// Adopt one staged v4 candidate after the outbound gates pass:
@@ -855,7 +937,7 @@ impl WorldEngine {
         report: &WorldReportV4,
         digest: u64,
         reply: WorldReplyV4,
-        settlements: &[BatchSettlement],
+        dispositions: &[BatchDisposition],
         gate: &G,
         prepare: impl FnOnce(PreparedCandidate<'_>) -> Result<(), E>,
     ) -> Result<V4RunOutcome, E> {
@@ -893,11 +975,34 @@ impl WorldEngine {
             }
         }
         let active_gesture_id = staged.gesture.retained.as_ref().map(|retained| retained.id);
-        prepare(PreparedCandidate {
+        let wake_candidate = WakePrecheckCandidate {
             reply: &reply,
             active_gesture_id,
-            settlements,
-        })?;
+            dispositions,
+        };
+        match gate.check_wake_precheck(&wake_candidate) {
+            AdmissionGateDecision::Allow => {}
+            AdmissionGateDecision::Refuse => {
+                return Ok(V4RunOutcome::Rejected {
+                    kind: KIND_REPLY_SIZE,
+                    message: MSG_REPLY_SIZE,
+                });
+            }
+            AdmissionGateDecision::Reject { kind, message } => {
+                return Ok(V4RunOutcome::Rejected { kind, message });
+            }
+        }
+        if let Err((kind, message)) =
+            Self::validate_prepared_reply_v4(&reply, self.connection.capabilities(), gate)
+        {
+            return Ok(V4RunOutcome::Rejected { kind, message });
+        }
+        let candidate = PreparedCandidate {
+            reply: ValidatedReply::new_validated(&reply),
+            active_gesture_id,
+            dispositions,
+        };
+        prepare(candidate)?;
         staged
             .settlement
             .emit_staged_dropped_settlement_trace(&reply);
@@ -992,23 +1097,9 @@ impl WorldEngine {
     }
 }
 
+#[cfg(test)]
 impl WorldEngine {
-    /// Test-support entry over already-admitted connection context: reuse
-    /// the bound owner and the report's decoder-validated correlation to
-    /// build the admitted issue, then run the internal
-    /// [`WorldEngine::handle_report_v4`] boundary. Bypasses public ingress
-    /// only: the caller must establish adapter/generation binding, and the
-    /// internal boundary still defends the bound adapter, generation,
-    /// owner, and correlation before any mutation. Missing bound owner or
-    /// invalid correlation refuses before execution.
-    /// Not a second public ingress: no
-    /// broker, service, adapter, or version wiring. Accepted, duplicate, and
-    /// command-consumed outcomes all return the typed reply for faithful
-    /// canonical encoding; refusals return their kind/message without
-    /// manufacturing output. Ordered protocol scenario tests use this to
-    /// execute immutable fixtures end to end.
-    #[doc(hidden)]
-    pub fn handle_report_v4_for_test(
+    pub(crate) fn handle_report_v4_for_test(
         &mut self,
         report: &WorldReportV4,
     ) -> Result<WorldReplyV4, (&'static str, &'static str)> {
