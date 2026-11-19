@@ -5220,3 +5220,52 @@ fn ac3_cross_client_fifo_and_issuer_specific_settlements() {
         "client-a local 9 executed before client-b local 1: {g_a} vs {g_b}"
     );
 }
+
+#[test]
+fn a5_supported_routes_refuse_v3_and_frozen_v4_missing_property_attempts() {
+    let (service, generation) = discovered_service();
+
+    // v3 message refuses across supported discover/capture/queue/take routes.
+    let v3_handshake = handshake_req("a", "r-0").replacen("\"v\":4", "\"v\":3", 1);
+    let d_reply = parse(&service.discover(&v3_handshake).expect("in-band"));
+    assert_eq!(d_reply["outcome"], "rejected", "{d_reply}");
+    assert_eq!(d_reply["kind"], "malformed", "{d_reply}");
+
+    let v3_capture = "{\"v\":3,\"adapter\":\"a\",\"gen\":\"g\",\"source\":\"s-1\",\
+        \"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\"report\":{\"v\":4}}";
+    let c_reply = parse(&service.evaluate_capture(v3_capture).expect("in-band"));
+    assert_eq!(c_reply["outcome"], "rejected", "{c_reply}");
+    assert_eq!(c_reply["kind"], "unsupported-version", "{c_reply}");
+
+    let v3_queue = format!(
+        "{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"c-1\",\"clientCmd\":\"1\",\
+          \"command\":{{\"op\":\"focus\",\"win\":\"win-a\"}}}}"
+    );
+    let q_reply = parse(&service.queue_command(SENDER_A, &v3_queue).expect("in-band"));
+    assert_eq!(q_reply["outcome"], "rejected", "{q_reply}");
+    assert_eq!(q_reply["kind"], "unsupported-version", "{q_reply}");
+
+    let v3_take =
+        format!("{{\"v\":3,\"gen\":\"{generation}\",\"client\":\"c-1\",\"clientCmd\":\"1\"}}");
+    let t_reply = parse(&service.take_result(SENDER_A, &v3_take).expect("in-band"));
+    assert_eq!(t_reply["outcome"], "rejected", "{t_reply}");
+    assert_eq!(t_reply["kind"], "unsupported-version", "{t_reply}");
+
+    // Frozen v4 report missing the required `propertyAttempts` lane refuses.
+    let valid_inner = inner_report(
+        &[window_json("win-a", "[0,0,400,300]", None)],
+        true,
+        false,
+        "win-a",
+    );
+    let missing_attempts_inner = valid_inner.replace("\"propertyAttempts\":[],", "");
+    assert_ne!(valid_inner, missing_attempts_inner);
+    let frozen_v4_capture = capture(ADAPTER, &generation, 1, 1, &missing_attempts_inner);
+    let frozen_reply = parse(
+        &service
+            .evaluate_capture(&frozen_v4_capture)
+            .expect("in-band"),
+    );
+    assert_eq!(frozen_reply["outcome"], "rejected", "{frozen_reply}");
+    assert_eq!(frozen_reply["kind"], "malformed", "{frozen_reply}");
+}

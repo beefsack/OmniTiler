@@ -1,10 +1,16 @@
-# KDE port notes (world contract v2)
+# KDE port notes (world contract v4)
 
-How the KDE adapter moves to the strict v2 contract in
-[world-contract-v3](world-contract-v3.md). Status below is
-implemented vs approved-not-implemented vs open. The v1 inventory below
-describes the delivered baseline, not an accepted v2 KDE runtime.
-The staged implementation and parked boundaries are tracked in
+How the KDE adapter aligns with the current supported v4 contract in
+[world-contract.md](world-contract.md). The v1/v2 stage inventory below
+records the delivered historical offline baseline, not an accepted live KDE
+runtime; current offline-supported v4 cuts (unified `propertyAttempts`,
+closed `-32768..32768` endpoint / `1..16384` extent coordinate bounds, bounded
+derived identities, mandatory prepared reply validation, and one ordered
+transition) are verified offline only, with KDE rebuild items (settings
+atomicity, retained membership bounds, broker replay budget, remaining endpoint
+duplicate-key strictness, and live visibility-attempt production) deferred to
+the KDE rebuild.
+The earlier staged implementation and parked boundaries are tracked in
 [KDE world-v2 port](../changes/kde-world-v2-port.md). Stages 0/1/1b/2/3 are
 complete offline, including command wake, source-view rewind settlement,
 raw attempts and native presentation ingress. Stage 4 is partial: required raw
@@ -24,12 +30,13 @@ Mechanical API checks use `git show <pin>:<path>` and `git grep <pattern>
 
 ## V4 native coordinate normalization
 
-- Target, not delivered by this note: native topology, ordinary window,
-  gesture and drag-start captures use the existing ordinary-fact `Math.round`
-  rule, nearest with exact halves toward positive infinity. Examples:
-  -0.5 -> 0 and -1.5 -> -1. Native integers are not scaled again.
+- Native topology, ordinary window, gesture and drag-start captures use the
+  existing ordinary-fact `Math.round` rule, nearest with exact halves toward
+  positive infinity (examples: `-0.5 -> 0` and `-1.5 -> -1`), in one shared
+  half-open coordinate space with inclusive endpoint bounds `-32768..32768`
+  and positive extent cap `1..16384`. Native integers are not scaled again.
   Current ordinary capture: [world-observe.ts](../../kwin/src/world-observe.ts#L302-L326).
-  Gesture normalization must match it under the
+  Gesture normalization matches it under the
   [approved quantization change](../changes/core-interface-review.md#original-backlog-lines-187-193).
   Core logical-size scaling is separately defined in the
   [v4 contract](world-contract.md#scale-and-rounding).

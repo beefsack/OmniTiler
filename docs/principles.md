@@ -15,10 +15,11 @@ this model):
 - [Functional spec](spec/functional-spec.md) and
   [reference outcomes](spec/reference-outcomes.md): all user-observable
   behavior, as rows.
-- [World contract](porting/world-contract.md): the normative interface target
-  (ownership, messages, apply and ordering rules, capabilities, version,
-  conformance fixtures); [world-contract-v3.md](porting/world-contract-v3.md)
-  is authoritative for current code until the coordinated v4 cutover.
+- [World contract](porting/world-contract.md): the normative interface for current
+  supported report/command v4 code (ownership, messages, apply and ordering
+  rules, capabilities, version, conformance fixtures); frozen v3 and historical
+  v4 fixture families are historical only, with no dual parser or compatibility
+  shim.
 - [docs/decisions.md](decisions.md): the current choice per topic between
   viable alternatives with lasting cost (product, architecture, contract),
   with why, alternatives rejected, key assumption and when to revisit.

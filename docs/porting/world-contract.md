@@ -1,18 +1,24 @@
-# World contract (v4 target)
+# World contract (v4)
 
-Status: normative v4 target approved at phase 0c, 2026-11-02; implemented in core and KDE, with remaining adapter ports and release acceptance tracked by the [migration decision](../decisions/contract.md#contract-authority-and-v4-migration).
+Status: normative supported report/command v4 contract (amended in place across `tiler-core`, `tiler-protocol`, `omnitiler`, and KDE offline); deferred macOS/Windows ports and remaining KDE rebuild items are tracked in the [migration decision](../decisions/contract.md#contract-authority-and-v4-migration).
 v4 is the implemented v3 wire plus the approved deltas below, nothing else.
-Inline OPEN points carry [port evidence gates](../changes/v4-migration.md#b-reconciliations-and-open-points), not outstanding shape approval.
 
 ## Contract authority rule
 
-The v3 contract as implemented is authoritative now. Each approved change
-becomes authoritative only at one coordinated implementation cutover across
-core and all adapters. There are no dual message shapes: until that cutover,
-the v3 shape governs; at cutover, the coordinated v4 shape replaces it.
-The [approved v4 pointers](#approved-not-yet-implemented-v4) record target
-mismatches, not interim authority.
+Current amended v4 is authoritative now for supported consumers (`tiler-core`, `tiler-protocol`, `omnitiler`, and KDE offline). There are no dual message shapes, compatibility shims, or old-v4 fallbacks: unsupported `v:3` messages and frozen `v:4` reports missing required fields such as `propertyAttempts` refuse on supported routes. Frozen `test-fixtures/world-wire/v4`, `test-fixtures/stage5`, `test-fixtures/stage5-v4`, and `test-fixtures/kde-v4` (and [world-contract-v3.md](world-contract-v3.md)) are historical only.
 See the [authority decision](../decisions/contract.md#contract-authority-and-v4-migration).
+
+## Per-host applicability
+
+Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), [results](#commands-and-results), and [apply/recovery](#freshness-and-recovery).
+
+| Route / host | Producer | Actuator | Results and retry | Capability and evidence |
+| --- | --- | --- | --- | --- |
+| Shared v4 baseline | Bound handshake with capabilities (`sharedNativeRoster` required on wire), revisioned settings, fresh correlated observations; screen/window inventory and completeness, `closed` as positive evidence, `foregroundKnown`, unified `propertyAttempts` (empty when none), separate focus feedback and creation proof | Apply only latest eligible desired state within authority, subject/lifetime, generation and freshness fences; report exact attempts or real no-calls and independent readbacks; never choose substitute targets | Queue ACK is filing only; disposition is separate from world. Retry by the route's identity; capture incorporation does not imply native apply or command execution | Capabilities, not port names, choose selector/roster, above, native sticky, warp and unavailable-fact behavior; no unsupported setters |
+| KDE / broker | V4 envelope `v,adapter,gen,source,sourceSeq,nativeInvalid,report`; broker stamps inner correlation, clock and sequences; reports carry unified properties, not inline commands | Apply only eligible bound capture; renderer projection confers no setter authority; prove visibility feedback production in rebuild | Exact remembered source bytes replay before drain; requester-only Take, Wait is wakeup; retry unremembered rejection with a fresh source | Implemented offline; earlier native state-target slice only (`../decisions/contract.md`), not proof of this interface. Shared native roster, capability-gated selector; no KDE warp |
+| Typed shared route | Same facts and bound connection using typed values; caller-owned ordered commands; no wire stamps manufactured for JSON | Prepared typed publication and explicit incorporation; same outbound semantics, independent latest-only apply fence | Typed report-only replay with no new command execution; returned per-sequence outcomes, caller owns issuer delivery | Shared implementation proved offline; not a native port |
+| macOS | Deferred; build the typed route and prove native observations/receipts on port entry | Same obligations; prove setters and recovery locally | Preserve per-issuer outcomes and in-flight evidence | Deferred; no shim or build accommodation |
+| Windows | Deferred; build the typed route and prove capability declarations on port entry | Same obligations; retained warp before advertising it | Preserve per-issuer outcomes and in-flight evidence | Deferred; no shim or build accommodation |
 
 <a id="approved-not-yet-implemented-v4"></a>
 
@@ -35,12 +41,11 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 
 - The pre-release v4 close-focus amendment is an in-place breaking change:
   `foregroundKnown` and required nullable `focusRequest` are present, with
-  no version bump or dual-shape fallback. Core, codecs, fixtures and macOS
-  implement the amended shape with offline verification in progress; KDE's
-  strict reply reader rejects it until updated, and Windows adopts it during
-  its v4 port. The amended shape carries no `closeFocus` and no `Focus`
-  effects. A matching component set is required for execution; offline
-  conformance is not native acceptance.
+  no version bump or dual-shape fallback. Core, codecs, fixtures, and KDE's
+  strict reply reader implement the amended shape offline; deferred macOS and
+  Windows ports adopt it on their native rebuilds. The amended shape carries no
+  `closeFocus` and no `Focus` effects. A matching component set is required for
+  execution; offline conformance is not native acceptance.
 - The pre-release shared-roster amendment also keeps version 4 and requires
   `sharedNativeRoster` on every handshake, without a missing-key default or
   dual-shape fallback. Current connection conformance uses
@@ -54,8 +59,9 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   also keeps version 4 with no alias or dual shape: `WorldReplyV4` carries the
   required nullable retained identity-bound `dragPreview` (`DragPreviewV4`)
   lane and removes `result` (and `CommandResult::DragPreview` is removed from
-  `CommandResult`). Per-command outcomes ride only the issuing `handle_report`
-  `Vec<BatchSettlement>` (including inline `report.command`) and the
+  `CommandResult`). Per-command outcomes ride only the issuing
+  `TransitionResult.dispositions` (`Vec<BatchDisposition>`, covering the
+  normalized inline entry and queued commands in order) and the
   broker's requester-only `TakeCommandResult` lane (`MAX_SETTLED_RESULTS = 1024`).
   Offline conformance is not native acceptance.
 
@@ -95,7 +101,9 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 
 - Objects are closed: unknown keys/enum values and wrong JSON types refuse,
   except the per-field settings and identifiable fact-row validation specified
-  below. Duplicate keys refuse. Required means present; nullable does not mean optional.
+  below. Duplicate keys refuse on capture and discovery; queue, take, wait,
+  and presentation-read endpoints still resolve duplicate object keys
+  last-wins until replaced in the KDE rebuild. Required means present; nullable does not mean optional.
   Tables use `no`, `yes`, `omit`, or `empty` in the Null/absence column; `empty`
   means the existing empty-string sentinel, not JSON null. Keys grouped in one
   row each have that row's type. Message field order is table order; a grouped
@@ -121,7 +129,11 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   `OutputId`, logical `WorkspaceId`, `NativeWorkspaceId`, operation/effect ids
   and node ids remain distinct types despite identical string encoding. A
   native id may be adapter-minted but must survive host reindexing in that
-  lifetime. `gen` is 1..64 lowercase ASCII letters/digits/hyphens.
+  lifetime. `gen` is 1..64 lowercase ASCII letters/digits/hyphens. Core-derived
+  tokens (generation-local gesture IDs, independent leaf mints, bounded rebind
+  generations) stay within their `Id`/`gen` bounds without truncating or
+  narrowing valid 128-byte window IDs or 64-byte generations; correlations stay
+  in typed fields rather than parsed token spellings.
   [Baseline bounds](../../crates/tiler-core/src/bounds.rs), [identity](../../crates/tiler-core/src/ids.rs),
   [R6](../changes/core-interface-review.md#original-backlog-lines-159-186).
 - Adapters mint `win` only while exact native-subject continuity is proved.
@@ -132,13 +144,15 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   subject replacement retires the old token through `closed`, then a fresh subject
   receives a fresh token. AXWindows omission/off-Space absence is not positive
   close evidence. Reconnect already discards the old connection's identities.
-- `Rect` is `[x,y,w,h]` with integer coordinates, x/y in -16384..16384 and
-  positive w/h <=16384, checked edges; `Point` is `[x,y]` under the existing
-  point bound (-16384..16384 on each axis). Screens, work areas, frames, cursor
-  and absolute presentation
-  share one coherent adapter coordinate space. Native/client/frame conversions
-  stay adapter-side; size hints are normalized with actual decoration extents,
-  never another host's compensation. Exact arrival remains exact.
+- `Rect` is `[x,y,w,h]` with integer coordinates in one shared half-open
+  coordinate space: inclusive endpoint bounds `-32768..32768` (`x >= -32768`,
+  `y >= -32768`, `x + w <= 32768`, `y + h <= 32768`) and positive extents
+  `1..16384`, checked without clamping; `Point` is `[x,y]` under the same
+  `-32768..32768` axis bounds. Screens, work areas, frames, cursor
+  and absolute presentation share one coherent adapter coordinate space.
+  Native/client/frame conversions stay adapter-side; size hints are normalized
+  with actual decoration extents, never another host's compensation. Exact
+  arrival remains exact.
   [Baseline geometry](../../crates/tiler-core/src/bounds.rs),
   [coordinates](world-contract-v3.md#coordinates-and-safety).
 - Requests and replies are independently <=4 MiB, validated before candidate
@@ -725,11 +739,36 @@ acceptance or adopt the separate close-focus amendment.
 
 ### Ordered command ingress
 
-- Every platform uses one core report ingress, taking a fresh report plus an
-  ordered list of `(command sequence, command)` pairs, empty when there are no
-  queued commands. The single admission outcome includes settlements aligned
-  with that list; a refused report adopts nothing and settles no queued
-  commands. Existing inline report-command encoding is unchanged.
+- Every platform uses one mandatory prepared core transition
+  (`WorldEngine::handle_report_with_gate_and_prepare`), taking a fresh report
+  plus an ordered list of `(command sequence, command)` pairs, empty when there
+  are no queued commands. Wire inline `command` + `cmdSeq` normalizes to a
+  proof-bearing first entry followed by the caller FIFO (128-entry total cap
+  including inline).
+- Structural invalidity on any batch entry (v4 vocabulary, subject/ID, or
+  renderer-proof rules) refuses the whole batch before incorporation as
+  `snapshot-invalid` / `command-invalid`. Duplicate or descending sequence
+  numbers in a fresh ready batch refuse before incorporation as
+  `snapshot-invalid` / `command-order-invalid` without sorting. Both
+  whole-batch refusals emit no per-sequence dispositions and advance no
+  high-water mark.
+- Only the first submitted entry (normalized inline entry when present,
+  otherwise the first queued command) may use the frozen pre-observation
+  send/migration source; any later command resolves against post-incorporation
+  state after prior commands, even if the first entry is consumed or refused.
+- Report incorporation is reported explicitly via `ReportIncorporation`:
+  `Incorporated` (fresh ready report adopted), `BootstrapIntentOnly` (valid
+  report before readiness with no ready world authority), `Replay` (exact
+  report retry returning cached publication and `NotRun` for any resubmitted
+  batch), and `Rejected` (whole-report refusal with no adoption or execution).
+  A stale inline entry reports `AlreadyConsumed` without suppressing fresh
+  queued commands; a per-command refusal returns `Refused(kind)`, consumes its
+  sequence, and rolls back only that command's partial changes.
+- Mandatory outbound semantic and host-capability validation runs at final
+  prepare on both ready and bootstrap paths before candidate adoption. Late
+  semantic failures return unremembered `InvalidReply` (`reply-invalid`), and
+  actual bound overruns return unremembered `Unavailable`; both leave authority,
+  watermark, and parked FIFO untouched.
 - User commands do not wait for batching. A ready command preempts any armed
   native-event debounce; the 120 ms debounce applies only to native-event
   bursts. An outstanding capture or filing acknowledgement still fences the
@@ -754,9 +793,9 @@ acceptance or adopt the separate close-focus amendment.
   `true`; extra keys, false and other types refuse. Implicit maximize uses core-resolved focus instead of
   a settled-native-focus equality check; explicit maximize keeps its gate.
 - The capture returns one final full actuator publication for the batch, while
-  `handle_report` returns `Vec<BatchSettlement>` for every executed command
-  (including any inline `report.command` first, then queued commands in FIFO
-  order) and the broker retains per-command results on the requester-only
+  `handle_report_with_gate_and_prepare` returns `TransitionResult` (incorporation,
+  deliverable `WorldReplyV4`, and sequence-keyed `Vec<BatchDisposition>`), and
+  the broker retains per-command results on the requester-only
   `TakeCommandResult` lane (`MAX_SETTLED_RESULTS = 1024`). Native
   application keeps only the newest pending publication and follows the
   [normative apply rule](#normative-apply-rule).
@@ -888,8 +927,8 @@ acceptance or adopt the separate close-focus amendment.
 
 - An accepted report always incorporates its trustworthy observations, even if
   its command is rejected. `WorldReplyV4` carries no `result` field;
-  per-command outcomes are returned only on the issuing `handle_report`
-  `Vec<BatchSettlement>` (including inline `report.command`) and retained per
+  per-command outcomes are returned only on the issuing
+  `TransitionResult.dispositions` (`Vec<BatchDisposition>`) and retained per
   requester on the broker `TakeCommandResult` lane (`MAX_SETTLED_RESULTS = 1024`).
   `CommandResult` keeps `Float`, `Migration`, `Directional`, `Maximize`, and
   `Rejected {kind}` (`CommandResult::DragPreview` is removed; no Applied/NoOp
@@ -1627,8 +1666,9 @@ acceptance or adopt the separate close-focus amendment.
   permission to mint a new duplicate command. [Sequencing](world-contract-v3.md#3-identity-sequencing-and-dedup).
 - `effects` is required empty; retained transfers remain until observed,
   externally superseded or proven refused. `WorldReplyV4` carries no `result`
-  field (command outcomes ride only the issuing `handle_report`
-  `Vec<BatchSettlement>` and the broker's requester-only `TakeCommandResult`
+  field (command outcomes ride only the issuing
+  `TransitionResult.dispositions` (`Vec<BatchDisposition>`) and the broker's
+  requester-only `TakeCommandResult`
   lane within `MAX_SETTLED_RESULTS = 1024`);
   [settlement outcomes](#retained-settlement-outcomes) are latest-completed state,
   not issuing-only delivery or native-write authority.
@@ -1804,21 +1844,79 @@ acceptance or adopt the separate close-focus amendment.
 | `BorderHideReason` except HostHidden spelling | [visual.rs](../../crates/tiler-core/src/visual.rs) |
 | `DomainKey`, `OutputId`, `WorkspaceId`, `NativeWorkspaceId` string representation, `WindowId`, `NodeId`, `Rect` | [Baseline codec](../../crates/tiler-protocol/src/world_protocol.rs), [session/world.rs](../../crates/tiler-core/src/session/world.rs) |
 
+## Equivalent typed and bound-broker examples
+
+Both routes evaluate the same noncommuting sequence (`focus win-b`, then
+`toggle-maximize currentFocus`, then refusal control `focus win-missing`) from
+an identical initial world (`win-a` focused on `DP-1`) and keep host evidence,
+logical world state, native actuation, and per-command settlement separate.
+
+### Typed prepared route
+
+```rust
+// 1. Bind lifetime and settings, then incorporate initial host evidence:
+let mut engine = WorldEngine::new("gen-seq-1").expect("valid gen");
+engine.handshake(&handshake_req);
+engine.handle_settings(&settings_req);
+handle_report_checked(&mut engine, &initial_report_focused_on_a, &[]);
+
+// 2. Evaluate ordered batch through the checked prepared transition:
+//    report carries host evidence only (WorldReportV4), no wire JSON stamps.
+let batch = [
+    (1, WorldCommand::Focus { window: WindowSubject::Window(WindowId("win-b".into())), direction: None }),
+    (2, WorldCommand::ToggleMaximize { window: WindowSubject::CurrentFocus }),
+    (3, WorldCommand::Focus { window: WindowSubject::Window(WindowId("win-missing".into())), direction: None }),
+];
+let result = handle_report_checked(&mut engine, &followup_report, &batch);
+
+// 3. Separate outputs:
+//    - result.incorporation == ReportIncorporation::Incorporated
+//    - result.outcome == WorldOutcome::Accepted(reply): logical world + native actuation
+//      (`reply.focus_request` targets "win-b"; "win-b" has Maximized=true, "win-a" unchanged)
+//    - result.dispositions: caller-owned per-sequence settlement
+//      [
+//        1 => Executed(None),
+//        2 => Executed(Some(CommandResult::Maximize { window: WindowId("win-b".into()), maximized: true, clear_fullscreen: false, was_maximized: false })),
+//        3 => Refused(CommandRejectKind::FocusUnknown),
+//      ]
+```
+
+### Bound-broker route
+
+```jsonc
+// Abbreviated wire snippets ({...} stands for full required fields; "gen-seq-1" is an illustrative bound generation).
+// 1. Handshake + settings on DiscoverWorld, then initial capture on EvaluateCapture:
+{"type":"handshake","v":4,"adapter":"kwin-actuator-1","req":"req-0","applicationIdentity":{...},"capabilities":{...}}
+{"type":"settings","v":4,"adapter":"kwin-actuator-1","gen":"gen-seq-1","req":"settings-0","rev":"1","values":{...}}
+
+// 2. Park ordered commands on QueueWorldCommand (ACK is filing only, outcome: "queued"):
+{"v":4,"gen":"gen-seq-1","client":"seq-client","clientCmd":"1","command":{"op":"focus","win":"win-b"}}
+{"v":4,"gen":"gen-seq-1","client":"seq-client","clientCmd":"2","command":{"op":"toggle-maximize","win":{"currentFocus":true}}}
+{"v":4,"gen":"gen-seq-1","client":"seq-client","clientCmd":"3","command":{"op":"focus","win":"win-missing"}}
+
+// 3. EvaluateCapture carries host evidence only (null inline command/cmdSeq, required propertyAttempts):
+{"v":4,"adapter":"kwin-actuator-1","gen":"gen-seq-1","source":"src-2","sourceSeq":"2","nativeInvalid":"2","report":{"v":4,...,"propertyAttempts":[],"command":null,"cmdSeq":null}}
+// Reply authorizes native actuation (focusRequest -> "win-b", win-b state maximized=true, win-a unchanged);
+// exact source redelivery returns the remembered reply without re-executing commands.
+
+// 4. Separate requester-only settlement via TakeCommandResult:
+//    clientCmd "1" -> {"outcome":"ready","result":null,...}
+//    clientCmd "2" -> {"outcome":"ready","result":{"op":"maximize","win":"win-b","maximized":true,"clearFullscreen":false,"wasMaximized":false},...}
+//    clientCmd "3" -> {"outcome":"failed","kind":"focus-unknown",...}
+```
+
 ## Conformance
 
-- Exact v4 per-message fixtures are in the
-  [manifest](../../test-fixtures/world-wire/v4/manifest.json), including ordered
-  [scenario containers](../../test-fixtures/world-wire/v4/scenarios/) with fresh
-  initialization and explicit OPEN/TBD gates. Fixture ids/assertions/metadata are not wire fields.
-  Cover every retained/promoted/new command, message, changed record and closed
-  enum arm; preserve empty/null/omission distinctions and unchanged result
-  payloads. Cover causal races, rejection with observation incorporation,
-  scaling boundaries, row holds, native backing, visibility failures, opaque
-  restart intent and renderer target-row freshness.
-  [Fixture layout and scenario plan](../changes/v4-migration.md#fixture-layout-and-ordered-scenario-plan).
-- Literal bytes and catalog coverage are established for the target draft, not
-  v4 decoder conformance. JSON parsing alone is not the oracle; later exact encoder/generator
-  comparison, generated types, parser arm coverage and shared adapter acceptance
-  must agree before merge. Native settlement/recovery/paint evidence is separate
-  from codec acceptance. [Testing](../principles.md#testing),
+- Active connection, protocol, and production-route conformance uses
+  `test-fixtures/world-wire/v4-active`, `test-fixtures/stage5-v4-active`, and
+  `test-fixtures/kde-v4-active`. Frozen `test-fixtures/world-wire/v4`,
+  `test-fixtures/stage5`, `test-fixtures/stage5-v4`, and `test-fixtures/kde-v4`
+  are historical only and are explicitly refused by the active codec and broker.
+  Fixture ids/assertions/metadata are not wire fields.
+- Offline conformance covers both typed prepared (`handle_report_checked`) and
+  real checked broker (`WorldService`) routes, including sequence equivalence
+  across combined/split/skipped-apply deliveries and legacy `v3` / missing-`propertyAttempts`
+  refusals. Native desktop settlement, visibility-attempt emission, and live
+  paint evidence remain separate from offline conformance.
+  [Testing](../principles.md#testing),
   [migration gates](../decisions/contract.md#contract-authority-and-v4-migration).
