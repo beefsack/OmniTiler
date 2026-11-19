@@ -225,3 +225,30 @@ The existing v3 and frozen-v4 capture refusals still pass. Scoped Rust format,
 strict all-target Clippy and all-target tests passed: 3,550 tests, none failed
 or skipped. No fixture bytes changed; native valid-route evidence belongs to
 the integrated recovery unit.
+
+## Unit 5: exact close delivery
+
+Two native runs provided partial evidence. The first held a bound reply until
+the second fixture closed, skipped its native apply, then reflowed the
+remaining fixture. It recorded retirement counts but not the serialized
+close IDs or a requester result. The second recovered an identical retained
+Take result from the same requester connection, but the queued command
+triggered a capture before the first close; the next capture retired both
+closes together. Neither run establishes the full close-delivery sequence.
+
+The close ledger now freezes only tracked IDs in the successfully encoded
+`report.closed`. Ready incorporation for the bound generation and source
+retires that token before requester result collection or native apply.
+Rejected, stale and lost replies do not retire it, and same-envelope
+redelivery keeps the original token. There are no wire or fixture-byte changes.
+
+In the combined fixture run, `src-9-1f5k7sa` (seq 9) serialized only
+`4c2ce73b-6460-48a0-8478-c5234e30476a`. While its ACK was held, native
+readback proved the second fixture absent. Releasing rev 9 retired one
+close and skipped all setters. `src-a-pcjmw2` (seq 10) serialized only
+`86bf98f8-3a14-436d-8e75-ddf07bf536d9`, retired it, and reflowed the
+remaining fixture from 1012×542 to 2032×1092. It was already active;
+the retained focus operation did not write. The external probe's two
+checked Takes returned the same ready result for global command 2, joined
+to `cmdSeq=2` in the held capture without re-execution. The independent
+seq 14 capture retired one close and consumed the one-shot apply skip.

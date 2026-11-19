@@ -36,6 +36,7 @@ import {
     parseWorldReply,
 } from "../src/world-report";
 import { WorldAdapterState } from "../src/world-state";
+import { createWorldCloseTracker } from "../src/world-close-tracker";
 
 const DISABLED_PRESENTATION = {
     foreground: "",
@@ -246,18 +247,24 @@ describe("world adapter lifetime state", () => {
         assert.equal(state.lastClock, "48");
     });
 
-    it("retains closes until an accepted reply acks them", () => {
+    it("retains close evidence in frozen token until a bound accepted reply retires it", () => {
         const state = bound();
-        state.noteClosed("gone-1");
-        assert.equal(state.pendingClosed.length, 1);
-        const flight = state.beginCapture("src-1", null);
+        const tracker = createWorldCloseTracker();
+        tracker.syncLive({ windowList: () => [{ internalId: "gone-1" }] });
+        tracker.noteRemovedEvent();
+        tracker.syncLive({ windowList: () => [] });
+        assert.deepEqual(tracker.snapshotClosed(), ["gone-1"]);
+        const token = tracker.freezeToken("gen-1", "src-1", tracker.snapshotClosed());
+        const flight = state.beginCapture("src-1", null, token);
         assert.ok(flight !== null);
         const reply = parseWorldReply(ACCEPTED({ req: "src-1", source: "src-1", rev: "1" }));
         assert.ok(reply !== null && isCoreWorldReply(reply));
         if (isCoreWorldReply(reply)) {
-            state.acceptReply(reply, "src-1", flight.watermark);
+            const verdict = state.acceptReply(reply, "src-1", flight.watermark);
+            assert.equal(verdict.applied, true);
+            assert.equal(tracker.retireToken(flight.closedToken!, state.boundGen, reply.source), 1);
         }
-        assert.equal(state.pendingClosed.length, 0);
+        assert.deepEqual(tracker.snapshotClosed(), []);
     });
 
     it("defers execution evidence without fabricating and completes it once, uncorrelated", () => {
@@ -345,11 +352,15 @@ describe("world adapter lifetime state", () => {
 
     it("rejects delayed arbitrary replies by adapter and exact source without setters or ack", () => {
         const state = bound();
+        const tracker = createWorldCloseTracker();
+        tracker.syncLive({ windowList: () => [{ internalId: "gone-9" }] });
+        tracker.noteRemovedEvent();
+        tracker.syncLive({ windowList: () => [] });
         state.invalidate();
-        const flight = state.beginCapture("src-7", null);
+        const token = tracker.freezeToken("gen-1", "src-7", tracker.snapshotClosed());
+        const flight = state.beginCapture("src-7", null, token);
         assert.ok(flight !== null);
         const watermark = flight.watermark;
-        state.noteClosed("gone-9");
         // Same gen/newer rev but a different adapter: no
         // setters, no ack, catchup only.
         const foreign = parseWorldReply(ACCEPTED({ adapter: "broker-x", req: "src-7", source: "src-7", rev: "5" }));
@@ -359,7 +370,7 @@ describe("world adapter lifetime state", () => {
             // holds the discovered one: adapter-mismatch.
             assert.deepEqual(state.acceptReply(foreign, "src-7", watermark), { applied: false, reason: "adapter-mismatch" });
         }
-        assert.equal(state.pendingClosed.length, 1);
+        assert.deepEqual(tracker.snapshotClosed(), ["gone-9"]);
         assert.equal(state.hasAccepted, false);
         assert.ok(state.inFlight !== null);
         // Same gen/newer rev but the wrong source: no setters, no ack.
@@ -367,16 +378,18 @@ describe("world adapter lifetime state", () => {
         assert.ok(wrongReq !== null && isCoreWorldReply(wrongReq));
         if (isCoreWorldReply(wrongReq)) {
             assert.deepEqual(state.acceptReply(wrongReq, "src-7", watermark), { applied: false, reason: "stale-req" });
+            assert.equal(tracker.retireToken(token, state.boundGen, wrongReq.source), 0);
         }
-        assert.equal(state.pendingClosed.length, 1);
+        assert.deepEqual(tracker.snapshotClosed(), ["gone-9"]);
         assert.equal(state.hasAccepted, false);
         // The exact flight still applies and acks.
         const good = parseWorldReply(ACCEPTED({ req: "src-7", source: "src-7", rev: "7" }));
         assert.ok(good !== null && isCoreWorldReply(good));
         if (isCoreWorldReply(good)) {
             assert.deepEqual(state.acceptReply(good, "src-7", watermark), { applied: true, reason: "accepted" });
+            assert.equal(tracker.retireToken(token, state.boundGen, good.source), 1);
         }
-        assert.equal(state.pendingClosed.length, 0);
+        assert.deepEqual(tracker.snapshotClosed(), []);
     });
 
     it("binds discovery only for the exact adapter and req", () => {

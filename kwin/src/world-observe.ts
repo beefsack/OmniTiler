@@ -1475,7 +1475,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     // removal) plus native lifecycle closes observed on enumerated-but-
     // gone objects, deduped above. Either lane alone retires the roster
     // member; a duplicated id rides once, never a duplicate refusal.
-    const closed: string[] = [...closedTop];
+    const closed: string[] = closedTop.slice(0, MAX_CLOSED);
     const nativeOrderFull = hostOwned
         ? (orderTruncated ? nativeOrder.slice(0, MAX_NATIVE_PER_OUTPUT) : nativeOrder)
         : [];

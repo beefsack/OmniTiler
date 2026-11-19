@@ -65,20 +65,27 @@ function readFullInventory(surface: object): { complete: boolean; ids: string[] 
     }
 }
 
+export interface ClosedEvidenceToken {
+    readonly lifetime: object;
+    readonly gen: string;
+    readonly source: string;
+    readonly closed: ReadonlyArray<string>;
+}
+
 export interface WorldCloseTracker {
-    readonly closed: string[];
     readonly noteRemovedEvent: () => void;
     readonly syncLive: (surface: object) => void;
     readonly snapshotClosed: () => string[];
-    readonly ack: () => void;
+    readonly freezeToken: (gen: string, source: string, closed: ReadonlyArray<string>) => ClosedEvidenceToken;
+    readonly retireToken: (token: ClosedEvidenceToken, expectedGen: string | null, expectedSource: string) => number;
 }
 
 export function createWorldCloseTracker(): WorldCloseTracker {
+    const lifetime = {};
     const live = new Set<string>();
     const closed: string[] = [];
     let pending = false;
     return {
-        closed,
         noteRemovedEvent: (): void => {
             pending = true;
         },
@@ -102,8 +109,44 @@ export function createWorldCloseTracker(): WorldCloseTracker {
             }
         },
         snapshotClosed: (): string[] => [...closed],
-        ack: (): void => {
-            closed.length = 0;
+        freezeToken: (gen: string, source: string, deliveredClosed: ReadonlyArray<string>): ClosedEvidenceToken => {
+            const tracked = new Set(closed);
+            const seen = new Set<string>();
+            const exact: string[] = [];
+            for (const id of deliveredClosed) {
+                if (tracked.has(id) && !seen.has(id)) {
+                    seen.add(id);
+                    exact.push(id);
+                }
+            }
+            return Object.freeze({
+                lifetime,
+                gen,
+                source,
+                closed: Object.freeze(exact),
+            });
+        },
+        retireToken: (token: ClosedEvidenceToken, expectedGen: string | null, expectedSource: string): number => {
+            if (token.lifetime !== lifetime || expectedGen === null || token.gen !== expectedGen || token.source !== expectedSource) {
+                return 0;
+            }
+            if (token.closed.length === 0 || closed.length === 0) {
+                return 0;
+            }
+            const delivered = new Set(token.closed);
+            let retired = 0;
+            let writeIdx = 0;
+            for (let readIdx = 0; readIdx < closed.length; readIdx += 1) {
+                const id = closed[readIdx] as string;
+                if (delivered.has(id)) {
+                    retired += 1;
+                } else {
+                    closed[writeIdx] = id;
+                    writeIdx += 1;
+                }
+            }
+            closed.length = writeIdx;
+            return retired;
         },
     };
 }

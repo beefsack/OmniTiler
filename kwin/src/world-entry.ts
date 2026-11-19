@@ -81,6 +81,7 @@ interface WorldTraceProbe {
     ): (ref: object, rect: { x: number; y: number; w: number; h: number }) => boolean;
     noteSettlementReceipt(parsed: WorldReply): void;
     noteFixtureDescribeReceipt(parsed: WorldReply): void;
+    noteFixtureClosedSent(sourceToken: string, gen: string, seq: string, observation: WorldObservation): void;
     noteSettlementApplied(parsed: WorldReply): void;
     noteGestureSettlementDecision(
         path: "discharge" | "in-apply",
@@ -205,7 +206,7 @@ import { WorldAdapterState, type CaptureFlight, type QueuedIntent } from "./worl
 import { applyWorldReply } from "./world-apply";
 import { decodeList } from "./qml-list";
 import { normalizeNativeId } from "./native-id";
-import { createWorldCloseTracker } from "./world-close-tracker";
+import { createWorldCloseTracker, type ClosedEvidenceToken } from "./world-close-tracker";
 import { isSeparateWorkspaceMode, readPerOutputVirtualDesktopsFlag, supportsPerOutputDesktops } from "./workspace-native";
 import { createWorldCommandContext } from "./world-command-context";
 import {
@@ -601,6 +602,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         // bases) so every distinct row emits exactly once and is never
         // relabeled under a stale source.
         let traceAttemptSnap: string[] = [];
+        // Exact-fixture close provenance (trace only): bounded membership
+        // of native ids previously admitted as live in-scope windowFacts
+        // on earlier sent captures. The close tracker inventories the
+        // whole native world, so a closed id is emitted only when it was
+        // positively proven fixture before this capture; unknown ids
+        // fail closed (never emitted). FIFO eviction bounds the set.
+        const traceFixtureProven = new Set<string>();
+        const TRACE_FIXTURE_PROVEN_MAX = 256;
         // Trace value validators mirror the production wire contract
         // (isOpaqueId length and charset for identifiers), never a
         // narrower guess, so dotted, underscored and long source/window
@@ -1716,6 +1725,43 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             noteFixtureDescribeReceipt: (parsed) => {
                 traceEmitFixtureDescribeReceipt(parsed);
             },
+            noteFixtureClosedSent: (sourceToken, gen, seq, observation) => {
+                try {
+                    // Intersection BEFORE admitting this capture's live
+                    // facts: only previously proven fixture ids emit.
+                    // observation.closed is the final serialized lane
+                    // (the call site runs only after serialization
+                    // succeeded); no titles or other payload ride here.
+                    const proven: string[] = [];
+                    const seen = new Set<string>();
+                    for (const id of observation.closed) {
+                        if (typeof id === "string" && isOpaqueId(id) && traceFixtureProven.has(id) && !seen.has(id)) {
+                            seen.add(id);
+                            proven.push(traceDiagId(id));
+                        }
+                    }
+                    traceLogSafe(
+                        `omnitiler:world:trace ev=fixture-closed-sent gen=${traceDiagId(gen)} src=${traceDiagId(sourceToken)} seq=${traceDiagStamp(seq)} closed=${proven.length > 0 ? proven.join("|") : "-"}`,
+                    );
+                    for (const fact of observation.windowFacts) {
+                        const win = fact.win;
+                        if (typeof win === "string" && isOpaqueId(win)) {
+                            if (!traceFixtureProven.has(win)) {
+                                while (traceFixtureProven.size >= TRACE_FIXTURE_PROVEN_MAX) {
+                                    const oldest = traceFixtureProven.values().next();
+                                    if (oldest.done) {
+                                        break;
+                                    }
+                                    traceFixtureProven.delete(oldest.value as string);
+                                }
+                                traceFixtureProven.add(win);
+                            }
+                        }
+                    }
+                } catch (error) {
+                    void error;
+                }
+            },
             noteSettlementApplied: (parsed) => {
                 traceEmitSettlementSnapshot("apply", parsed);
             },
@@ -1873,6 +1919,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 traceLastRetiredGesture = null;
                 traceAckByPending.clear();
                 traceAckCorrelations.clear();
+                // Fixture provenance never crosses a generation rotation:
+                // a new broker lifetime re-proves membership from scratch,
+                // so a reused native identity from a dead lifetime can
+                // never inherit fixture standing.
+                traceFixtureProven.clear();
             },
             noteReplySkipped: (stage, gen, req, rev, obs, reason) => {
                 traceLogSafe(
@@ -2170,6 +2221,13 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     let devOmitNextGestureIngress = false;
     let devSkipNextPreviewReply = false;
     let devSkipNextWorldReply = false;
+    let devHoldNextCaptureAck = false;
+    let devHeldCaptureAck: {
+        gen: string | null;
+        source: string;
+        flight: CaptureFlight;
+        resume: () => void;
+    } | null = null;
     const diagOpaqueId = (value: unknown): string => (
         isOpaqueId(value) ? value as string : "-"
     );
@@ -2186,6 +2244,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             if (devSkipNextWorldReply) {
                 devSkipNextWorldReply = false;
                 log(`omnitiler:world:trace ev=dev-skip-world-reply state=cleared reason=${reason}`);
+            }
+            if (devHoldNextCaptureAck) {
+                devHoldNextCaptureAck = false;
+                log(`omnitiler:world:trace ev=dev-hold-capture-ack state=cleared reason=${reason}`);
+            }
+            if (devHeldCaptureAck !== null) {
+                devHeldCaptureAck = null;
+                log(`omnitiler:world:trace ev=dev-hold-capture-ack state=cleared reason=${reason}`);
             }
         }
     };
@@ -5595,18 +5661,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         takeResults: Array<WorldReplyResult | null>,
         takePairs: Array<{ clientCmd: string; result: WorldReplyResult | null }>,
     ): void => {
-                    // Close/attempt ACK is independent of native apply: ack
-                    // the closes that rode the accepted dispatch BEFORE the
-                    // post-accept fresh capture or any persist gate, so
-                    // delivered closes never replay even when the publication
-                    // is superseded or its setters never run. The
-                    // superseded-during-flight path never reaches here, so
-                    // its NEW facts are still retained.
-                    try {
-                        closeTracker.ack();
-                    } catch (error) {
-                        void error;
-                    }
                     // Single publication take for the apply lane: the first
                     // migrate-workspace result, else the first non-null, else
                     // null. Every requester settlement was already collected
@@ -6265,7 +6319,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // at most one retry timer lives at a time.
     let terminalCaptureRetry: {
         envelope: string; source: string; watermark: string;
-        gesture: { instance: string; serial: string; win: string }; attempts: number;
+        gesture: { instance: string; serial: string; win: string };
+        closedToken: ClosedEvidenceToken | null;
+        attempts: number;
         timerCancel: (() => void) | null;
     } | null = null;
     const TERMINAL_CAPTURE_MAX_RETRIES = 2;
@@ -6366,13 +6422,21 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return false;
         }
         const clientCmd = clientCmds.length > 0 ? (clientCmds[0] as string) : null;
-        const flight = state.beginCapture(source, clientCmd);
+        const closedToken = closeTracker.freezeToken(boundGen, source, observation.closed);
+        const flight = state.beginCapture(source, clientCmd, closedToken);
         if (flight === null) {
             return false;
         }
         flightBatches.set(source, [...clientCmds]);
         if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
             worldTraceProbes.get(state)?.noteTraceSent(source, clientCmds);
+        }
+        if (
+            typeof __OMNITILER_TRACE__ === "string" &&
+            __OMNITILER_TRACE__ === "1" &&
+            devFixtureControlsEnabled
+        ) {
+            worldTraceProbes.get(state)?.noteFixtureClosedSent(source, boundGen, seq, observation);
         }
         // Stamp the exact raw terminal identity this capture carries (if
         // any) for unresolved same-envelope recovery. Settlement discharge
@@ -6420,7 +6484,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // (timerCancel null) so the redelivery's own failure increments
     // instead of restarting at 1.
     const fireTerminalRetry = (
-        saved: { envelope: string; source: string; watermark: string; gesture: { instance: string; serial: string; win: string }; attempts: number },
+        saved: {
+            envelope: string; source: string; watermark: string;
+            gesture: { instance: string; serial: string; win: string };
+            closedToken: ClosedEvidenceToken | null;
+            attempts: number;
+        },
         cadenceMs: number,
     ): void => {
         if (stopped) {
@@ -6449,7 +6518,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             clearTerminalCaptureRetry();
             terminalCaptureRetry = {
                 envelope: saved.envelope, source: saved.source, watermark: saved.watermark,
-                gesture: saved.gesture, attempts: saved.attempts,
+                gesture: saved.gesture, closedToken: saved.closedToken, attempts: saved.attempts,
                 timerCancel: scheduleOnce(cadenceMs, () => {
                     const pending = terminalCaptureRetry;
                     if (pending === null || stopped) {
@@ -6459,7 +6528,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         {
                             envelope: pending.envelope, source: pending.source,
                             watermark: pending.watermark, gesture: pending.gesture,
-                            attempts: pending.attempts,
+                            closedToken: pending.closedToken, attempts: pending.attempts,
                         },
                         cadenceMs,
                     );
@@ -6471,12 +6540,13 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         // preserves it so the redelivery's own failure increments.
         terminalCaptureRetry = {
             envelope: saved.envelope, source: saved.source, watermark: saved.watermark,
-            gesture: saved.gesture, attempts: saved.attempts, timerCancel: null,
+            gesture: saved.gesture, closedToken: saved.closedToken, attempts: saved.attempts, timerCancel: null,
         };
         // The replay flight rebinds the ORIGINAL envelope watermark (the
-        // bytes carry the old fence): beginCapture would stamp the current
-        // fence instead, which would weaken the source/gen binding proof.
-        const retryFlight = state.beginReplayCapture(saved.source, saved.watermark, null);
+        // bytes carry the old fence) and the ORIGINAL frozen close token:
+        // beginCapture would stamp the current fence and fresh evidence instead,
+        // which would weaken the source/gen/token binding proof.
+        const retryFlight = state.beginReplayCapture(saved.source, saved.watermark, null, saved.closedToken);
         if (retryFlight === null) {
             // Wire raced busy after the guard: re-arm the same cadence so
             // the exact envelope is not silently dropped. The count is
@@ -6490,7 +6560,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     {
                         envelope: pending.envelope, source: pending.source,
                         watermark: pending.watermark, gesture: pending.gesture,
-                        attempts: pending.attempts,
+                        closedToken: pending.closedToken, attempts: pending.attempts,
                     },
                     cadenceMs,
                 );
@@ -6548,25 +6618,31 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             // re-arms exactly one host timer below via the same path.
             clearTerminalCaptureRetry();
             log(`omnitiler:world:terminal-retry attempt=${attempts} recovery=host-deadline`);
-            const saved = { envelope, source: flight.source, watermark: flight.watermark, gesture, attempts };
+            const saved = {
+                envelope, source: flight.source, watermark: flight.watermark,
+                gesture, closedToken: flight.closedToken, attempts,
+            };
             const timerCancel = scheduleOnce(WAIT_HOST_DEADLINE_MS, () => {
                 fireTerminalRetry(saved, WAIT_HOST_DEADLINE_MS);
             });
             terminalCaptureRetry = {
                 envelope, source: flight.source, watermark: flight.watermark,
-                gesture, attempts, timerCancel,
+                gesture, closedToken: flight.closedToken, attempts, timerCancel,
             };
             return;
         }
         clearTerminalCaptureRetry();
         log(`omnitiler:world:terminal-retry attempt=${attempts} recovery=same-envelope`);
-        const saved = { envelope, source: flight.source, watermark: flight.watermark, gesture, attempts };
+        const saved = {
+            envelope, source: flight.source, watermark: flight.watermark,
+            gesture, closedToken: flight.closedToken, attempts,
+        };
         const timerCancel = scheduleOnce(WORLD_TIMEOUT_MS, () => {
             fireTerminalRetry(saved, WORLD_TIMEOUT_MS);
         });
         terminalCaptureRetry = {
             envelope, source: flight.source, watermark: flight.watermark,
-            gesture, attempts, timerCancel,
+            gesture, closedToken: flight.closedToken, attempts, timerCancel,
         };
     };
 
@@ -6736,6 +6812,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // Previous accepted snapshot is the accepted-reply cache
                     // in adapter state; the core owns admitted-lifetime
                     // tracking across generation rebinds.
+                    const processCoreReply = (): void => {
                     const verdict = state.acceptReply(parsed, flight.source, flight.watermark);
                     if (!verdict.applied) {
                         if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
@@ -6763,6 +6840,29 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         }
                         wakeFollowup();
                         return;
+                    }
+                    // Retire ONLY the exact frozen close token bound to this
+                    // lifetime, generation, and source at validated bound ready
+                    // incorporation, BEFORE requester Take, intent persistence,
+                    // or native apply, including when watermark skips apply.
+                    if (flight.closedToken !== null) {
+                        const retiredClosed = closeTracker.retireToken(
+                            flight.closedToken,
+                            state.boundGen,
+                            parsed.source,
+                        );
+                        if (
+                            typeof __OMNITILER_TRACE__ === "string" &&
+                            __OMNITILER_TRACE__ === "1" &&
+                            (retiredClosed > 0 || flight.closedToken.closed.length > 0)
+                        ) {
+                            log(
+                                `omnitiler:world:trace ev=close-ack ` +
+                                `gen=${diagOpaqueId(parsed.gen)} req=${diagOpaqueId(parsed.req)} ` +
+                                `rev=${diagOpaqueId(parsed.rev)} obs=${diagOpaqueId(parsed.obs)} ` +
+                                `sent=${flight.closedToken.closed.length} retired=${retiredClosed}`,
+                            );
+                        }
                     }
                     // Ack-only settlement discharge before the freshness
                     // split: a bound reply carrying the exact settlement for
@@ -6901,6 +7001,32 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         }
                         postAcceptCapture(parsed, flight, takeResults, flightPairs);
                     });
+                    };
+                    if (
+                        typeof __OMNITILER_TRACE__ === "string" &&
+                        __OMNITILER_TRACE__ === "1" &&
+                        devFixtureControlsEnabled &&
+                        devHoldNextCaptureAck &&
+                        parsed.gen === state.boundGen &&
+                        parsed.req === flight.source &&
+                        parsed.source === flight.source &&
+                        parsed.ready
+                    ) {
+                        devHoldNextCaptureAck = false;
+                        devHeldCaptureAck = {
+                            gen: state.boundGen,
+                            source: flight.source,
+                            flight,
+                            resume: processCoreReply,
+                        };
+                        log(
+                            `omnitiler:world:trace ev=dev-hold-capture-ack state=held ` +
+                            `gen=${diagOpaqueId(parsed.gen)} req=${diagOpaqueId(parsed.req)} ` +
+                            `rev=${diagOpaqueId(parsed.rev)} obs=${diagOpaqueId(parsed.obs)}`,
+                        );
+                        return;
+                    }
+                    processCoreReply();
                 },
             );
         } catch (error) {
@@ -7770,9 +7896,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // Explicit close retention (D5): windowRemoved only arms the close
     // tracker; the payload is never read (its QObject may be dead). The
     // next provably complete full inventory promotes cached ids absent
-    // there to the explicit closed list until an accepted reply acks them
-    // (core treats bare absence as minimize, never close). Unreadable
-    // inventories still invalidate; they never fabricate ids.
+    // there to the explicit closed list until the exact frozen close token
+    // retires at bound ready incorporation for that generation and source
+    // (never a blanket accepted reply; core treats bare absence as minimize,
+    // never close). Unreadable inventories still invalidate; they never fabricate ids.
     try {
         const detach = connectSignal(readSignal(surface, "windowRemoved"), (removed) => {
             // Detach by object identity only; never read the payload's
@@ -8053,6 +8180,30 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 }
                 devSkipNextWorldReply = true;
                 log(`omnitiler:world:trace ev=dev-skip-world-reply state=armed gen=${diagOpaqueId(state.boundGen)}`);
+            });
+            tryRegisterDev("omnitiler-dev-hold-next-capture-ack", "Dev: Hold next capture ACK", () => {
+                if (stopped) {
+                    return;
+                }
+                devHoldNextCaptureAck = true;
+                log(`omnitiler:world:trace ev=dev-hold-capture-ack state=armed gen=${diagOpaqueId(state.boundGen)}`);
+            });
+            tryRegisterDev("omnitiler-dev-release-held-capture-ack", "Dev: Release held capture ACK", () => {
+                if (stopped) {
+                    return;
+                }
+                const held = devHeldCaptureAck;
+                if (held === null) {
+                    log(`omnitiler:world:trace ev=dev-hold-capture-ack state=release-empty gen=${diagOpaqueId(state.boundGen)}`);
+                    return;
+                }
+                devHeldCaptureAck = null;
+                if (state.inFlight !== held.flight || state.inFlight.source !== held.source) {
+                    log(`omnitiler:world:trace ev=dev-hold-capture-ack state=release-stale gen=${diagOpaqueId(held.gen)} req=${diagOpaqueId(held.source)}`);
+                    return;
+                }
+                log(`omnitiler:world:trace ev=dev-hold-capture-ack state=released gen=${diagOpaqueId(held.gen)} req=${diagOpaqueId(held.source)}`);
+                held.resume();
             });
         }
     }

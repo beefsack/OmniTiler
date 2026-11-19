@@ -6,6 +6,7 @@
 // counter. No KWin or D-Bus imports: the entry drives this with captured
 // observations and transport results.
 
+import { type ClosedEvidenceToken } from "./world-close-tracker";
 import { compareU64, incrementU64, isCanonicalU64, isOpaqueId } from "./world-seq";
 import {
     encodeV4FocusFeedback,
@@ -106,6 +107,10 @@ export interface CaptureFlight {
     // stamps while a newer update for the same key survives its
     // predecessor's ack. Never a verdict: the core owns every outcome.
     delivered: AttemptFlight;
+    // Immutable serialized close evidence bound to tracker lifetime,
+    // generation, and source; retired only on validated bound ready
+    // incorporation.
+    closedToken: ClosedEvidenceToken | null;
 }
 
 // Mechanical write/readback facts delivered by one capture flight (see
@@ -174,10 +179,6 @@ export class WorldAdapterState {
     lastAcceptedRev = "0";
     dirty = false;
     observationOnlyCatchup = false;
-    // Dirty ack retention: explicit closes survive until an accepted reply
-    // acknowledges them. (Old verdict `feedback` transport is deleted: no
-    // verdicts ride the wire, so only closes retain.)
-    pendingClosed: string[] = [];
     // Transfer/view attempts dispatched this generation (armed BEFORE the
     // first native setter). Dispatch-phase duplicate suppression only:
     // while an op is recorded here the apply loop never re-dispatches it,
@@ -280,13 +281,6 @@ export class WorldAdapterState {
         this.currentInvalid = next;
         this.dirty = true;
         return this.currentInvalid;
-    }
-
-    noteClosed(id: string): void {
-        if (!this.pendingClosed.includes(id)) {
-            this.pendingClosed.push(id);
-        }
-        this.dirty = true;
     }
 
     // Arm the dispatch record BEFORE any native setter for an operation.
@@ -953,7 +947,12 @@ export class WorldAdapterState {
             this.dirty = true;
             return { applied: false, reason: "adapter-mismatch" };
         }
-        if (this.inFlight === null || reply.req !== dispatchSource || reply.source !== dispatchSource) {
+        if (
+            this.inFlight === null ||
+            this.inFlight.source !== dispatchSource ||
+            reply.req !== dispatchSource ||
+            reply.source !== dispatchSource
+        ) {
             this.observationOnlyCatchup = true;
             this.dirty = true;
             return { applied: false, reason: "stale-req" };
@@ -982,8 +981,6 @@ export class WorldAdapterState {
         this.recordClock(reply.clock);
         this.inFlight = null;
         this.observationOnlyCatchup = false;
-        // Ack: the accepted reply observed this report's closes.
-        this.pendingClosed = [];
         if (this.currentInvalid !== dispatchWatermark) {
             // Native input landed during flight: the setters below run
             // against the dispatched observation, then follow-up observes
@@ -1015,7 +1012,11 @@ export class WorldAdapterState {
         return false;
     }
 
-    beginCapture(source: string, clientCmd: string | null): CaptureFlight | null {
+    beginCapture(
+        source: string,
+        clientCmd: string | null,
+        closedToken: ClosedEvidenceToken | null = null,
+    ): CaptureFlight | null {
         if (this.inFlight !== null) {
             return null;
         }
@@ -1033,6 +1034,7 @@ export class WorldAdapterState {
                 states: this.statesForReport(),
                 focus: this.focusFeedbacksForReport(),
             },
+            closedToken,
         };
         this.inFlight = flight;
         this.dirty = false;
@@ -1044,8 +1046,13 @@ export class WorldAdapterState {
     // bytes name the ORIGINAL watermark, so the flight binding must stamp
     // it too (beginCapture would stamp the current fence instead). Source
     // and generation bindings are unchanged: only the watermark rides back.
-    beginReplayCapture(source: string, watermark: string, clientCmd: string | null): CaptureFlight | null {
-        const flight = this.beginCapture(source, clientCmd);
+    beginReplayCapture(
+        source: string,
+        watermark: string,
+        clientCmd: string | null,
+        closedToken: ClosedEvidenceToken | null = null,
+    ): CaptureFlight | null {
+        const flight = this.beginCapture(source, clientCmd, closedToken);
         if (flight !== null) {
             flight.watermark = watermark;
         }

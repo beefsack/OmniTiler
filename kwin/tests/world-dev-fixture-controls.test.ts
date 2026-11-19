@@ -360,13 +360,18 @@ describe("dev fixture-only deterministic omission and preview-reply skip", () =>
                 assert.doesNotMatch(bundle, /omnitiler-dev-omit-next-gesture-ingress/);
                 assert.doesNotMatch(bundle, /omnitiler-dev-skip-next-preview-reply/);
                 assert.doesNotMatch(bundle, /omnitiler-dev-skip-next-world-reply/);
+                assert.doesNotMatch(bundle, /omnitiler-dev-hold-next-capture-ack/);
+                assert.doesNotMatch(bundle, /omnitiler-dev-release-held-capture-ack/);
                 assert.doesNotMatch(bundle, /dev-omit-gesture-ingress/);
                 assert.doesNotMatch(bundle, /dev-skip-preview-reply/);
                 assert.doesNotMatch(bundle, /dev-skip-world-reply/);
+                assert.doesNotMatch(bundle, /dev-hold-capture-ack/);
                 assert.doesNotMatch(bundle, /describe-receipt/);
                 assert.doesNotMatch(bundle, /describe-window/);
                 assert.doesNotMatch(bundle, /describe-op/);
                 assert.doesNotMatch(bundle, /noteFixtureDescribeReceipt/);
+                assert.doesNotMatch(bundle, /fixture-closed-sent/);
+                assert.doesNotMatch(bundle, /close-ack/);
             }
         } finally {
             rmSync(outDir, { recursive: true, force: true });
@@ -390,6 +395,8 @@ describe("dev fixture-only deterministic omission and preview-reply skip", () =>
                 assert.equal(h.shortcuts.has("omnitiler-dev-omit-next-gesture-ingress"), false, `rejected for ${String(badScope)}`);
                 assert.equal(h.shortcuts.has("omnitiler-dev-skip-next-preview-reply"), false, `rejected for ${String(badScope)}`);
                 assert.equal(h.shortcuts.has("omnitiler-dev-skip-next-world-reply"), false, `rejected for ${String(badScope)}`);
+                assert.equal(h.shortcuts.has("omnitiler-dev-hold-next-capture-ack"), false, `rejected for ${String(badScope)}`);
+                assert.equal(h.shortcuts.has("omnitiler-dev-release-held-capture-ack"), false, `rejected for ${String(badScope)}`);
             } finally {
                 h.handle?.stop();
             }
@@ -401,9 +408,13 @@ describe("dev fixture-only deterministic omission and preview-reply skip", () =>
             const omitAction = good.shortcuts.get("omnitiler-dev-omit-next-gesture-ingress");
             const skipAction = good.shortcuts.get("omnitiler-dev-skip-next-preview-reply");
             const skipWorldAction = good.shortcuts.get("omnitiler-dev-skip-next-world-reply");
+            const holdAckAction = good.shortcuts.get("omnitiler-dev-hold-next-capture-ack");
+            const releaseAckAction = good.shortcuts.get("omnitiler-dev-release-held-capture-ack");
             assert.ok(omitAction !== undefined && omitAction.sequence === "");
             assert.ok(skipAction !== undefined && skipAction.sequence === "");
             assert.ok(skipWorldAction !== undefined && skipWorldAction.sequence === "");
+            assert.ok(holdAckAction !== undefined && holdAckAction.sequence === "");
+            assert.ok(releaseAckAction !== undefined && releaseAckAction.sequence === "");
         } finally {
             good.handle?.stop();
         }
@@ -977,6 +988,121 @@ describe("dev fixture-only deterministic omission and preview-reply skip", () =>
             const take = h.calls.find((c) => c.method === "TakeCommandResult");
             take?.callback(JSON.stringify({ v: 4, outcome: "pending", gen: "gen-1" }));
             assert.deepEqual(h.geometryWrites, ["77,88,210,220"], "setters still execute when diagnostic throws");
+        } finally {
+            h.handle?.stop();
+        }
+    });
+
+    it("holds one bound ready capture ACK until explicitly released, auto-disarms, and cleans up on stop", () => {
+        const h = makeHarness("OmniTilerTestWindow");
+        try {
+            h.settleHandshake("gen-1");
+            const cap0 = h.calls.find((c) => c.method === "DescribeWorld");
+            assert.ok(cap0 !== undefined);
+            cap0.callback(h.nextReply(cap0.payload, { winRect: [10, 20, 200, 200] }));
+            const take0 = h.calls.find((c) => c.method === "TakeCommandResult");
+            take0?.callback(JSON.stringify({ v: 4, outcome: "pending", gen: "gen-1" }));
+            h.calls.length = 0;
+            h.geometryWrites.length = 0;
+
+            const holdAction = h.shortcuts.get("omnitiler-dev-hold-next-capture-ack");
+            const releaseAction = h.shortcuts.get("omnitiler-dev-release-held-capture-ack");
+            assert.ok(holdAction !== undefined && releaseAction !== undefined);
+            holdAction.cb();
+            assert.ok(h.logs.includes("omnitiler:world:trace ev=dev-hold-capture-ack state=armed gen=gen-1"));
+
+            // Trigger a fresh capture via windowActivated.
+            h.windowActivatedHandlers[0]?.({ internalId: "win-a" });
+            h.runTimers();
+            const cap1 = h.calls.find((c) => c.method === "DescribeWorld");
+            assert.ok(cap1 !== undefined);
+            const req1 = (JSON.parse(cap1.payload) as { source: string }).source;
+            h.calls.length = 0;
+
+            // Bound ready reply arrives; handling is held.
+            cap1.callback(h.nextReply(cap1.payload, { winRect: [30, 40, 220, 240] }));
+            assert.ok(h.logs.includes(`omnitiler:world:trace ev=dev-hold-capture-ack state=held gen=gen-1 req=${req1} rev=2 obs=2`));
+            assert.equal(h.geometryWrites.length, 0, "no setters run while ACK is held");
+            assert.equal(h.calls.some((c) => c.method === "TakeCommandResult"), false, "no Take runs while ACK is held");
+
+            // Release the held ACK; reply processing completes.
+            releaseAction.cb();
+            assert.ok(h.logs.includes(`omnitiler:world:trace ev=dev-hold-capture-ack state=released gen=gen-1 req=${req1}`));
+            assert.deepEqual(h.geometryWrites, ["30,40,220,240"]);
+
+            // One-shot auto-disarm: re-arm and verify stop cleans up.
+            holdAction.cb();
+            h.handle?.stop();
+            assert.ok(h.logs.includes("omnitiler:world:trace ev=dev-hold-capture-ack state=cleared reason=stop"));
+        } finally {
+            h.handle?.stop();
+        }
+    });
+
+    it("clears a held capture ACK on generation reset without resuming it", () => {
+        const h = makeHarness("OmniTilerTestWindow");
+        try {
+            h.settleHandshake("gen-1");
+            const cap0 = h.calls.find((c) => c.method === "DescribeWorld");
+            assert.ok(cap0 !== undefined);
+            cap0.callback(h.nextReply(cap0.payload, { winRect: [10, 20, 200, 200] }));
+            const take0 = h.calls.find((c) => c.method === "TakeCommandResult");
+            take0?.callback(JSON.stringify({ v: 4, outcome: "pending", gen: "gen-1" }));
+            h.calls.length = 0;
+            h.geometryWrites.length = 0;
+            h.logs.length = 0;
+
+            const holdAction = h.shortcuts.get("omnitiler-dev-hold-next-capture-ack");
+            const releaseAction = h.shortcuts.get("omnitiler-dev-release-held-capture-ack");
+            assert.ok(holdAction !== undefined && releaseAction !== undefined);
+            holdAction.cb();
+            h.windowActivatedHandlers[0]?.({ internalId: "win-a" });
+            h.runTimers();
+            const cap1 = h.calls.find((c) => c.method === "DescribeWorld");
+            assert.ok(cap1 !== undefined);
+            const req1 = (JSON.parse(cap1.payload) as { source: string }).source;
+            h.calls.length = 0;
+            cap1.callback(h.nextReply(cap1.payload, { winRect: [30, 40, 220, 240] }));
+            assert.ok(h.logs.includes(`omnitiler:world:trace ev=dev-hold-capture-ack state=held gen=gen-1 req=${req1} rev=2 obs=2`));
+            assert.equal(h.geometryWrites.length, 0, "no setters run while ACK is held");
+
+            // Generation reset arrives on the independent Wait lane while
+            // the held flight still owns Describe: held must clear, never resume.
+            const wait = h.getWaitWorld();
+            assert.ok(wait !== null, "held harness keeps a Wait waiter for the reset");
+            wait.callback(JSON.stringify({
+                v: 4, outcome: "rejected", kind: "generation-mismatch", message: "stale",
+                gen: "gen-1", source: "", nativeInvalid: "1",
+                clock: "0", gestureAssoc: null, gestureSettledAssoc: null,
+            }));
+            h.settleHandshake("gen-2");
+            assert.equal(h.geometryWrites.length, 0, "generation reset never runs held setters");
+            // settleHandshake already dispatched the gen-2 bootstrap capture
+            // (post-discovery dispatch); settle it like cap0 so the later
+            // activation capture is the flight under test, not the bootstrap
+            // superseded by the activation invalidation.
+            const boot2 = h.calls.find((c) => c.method === "DescribeWorld");
+            assert.ok(boot2 !== undefined, "gen-2 bootstrap capture dispatched by settleHandshake");
+            assert.equal((JSON.parse(boot2.payload) as { gen: string }).gen, "gen-2");
+            boot2.callback(h.nextReply(boot2.payload, { winRect: [10, 20, 200, 200] }));
+            const takeBoot2 = h.calls.find((c) => c.method === "TakeCommandResult");
+            takeBoot2?.callback(JSON.stringify({ v: 4, outcome: "pending", gen: "gen-2" }));
+            h.calls.length = 0;
+            h.geometryWrites.length = 0;
+            assert.ok(h.logs.includes("omnitiler:world:trace ev=dev-hold-capture-ack state=cleared reason=generation-reset"), "generation reset clears held ACK");
+            releaseAction.cb();
+            assert.ok(h.logs.includes("omnitiler:world:trace ev=dev-hold-capture-ack state=release-empty gen=gen-2"), "cleared held ACK cannot resume");
+            assert.equal(h.geometryWrites.length, 0, "held setters never run after reset");
+            assert.equal(h.logs.some((l) => l.includes("state=released")), false, "held ACK never releases after reset");
+
+            // New generation still dispatches and settles normally.
+            h.windowActivatedHandlers[0]?.({ internalId: "win-a" });
+            h.runTimers();
+            const cap2 = h.calls.find((c) => c.method === "DescribeWorld");
+            assert.ok(cap2 !== undefined, "new generation dispatches a fresh capture");
+            assert.equal((JSON.parse(cap2.payload) as { gen: string }).gen, "gen-2");
+            cap2.callback(h.nextReply(cap2.payload, { winRect: [50, 60, 220, 240] }));
+            assert.deepEqual(h.geometryWrites, ["50,60,220,240"], "gen-2 capture settles after reset");
         } finally {
             h.handle?.stop();
         }
