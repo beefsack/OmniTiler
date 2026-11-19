@@ -809,6 +809,15 @@ acceptance or adopt the separate close-focus amendment.
   capture park for the next batch. No old observation evidence is restamped
   or replayed between actions, and no queue-time execution or new transport
   is required.
+- KDE keys issuer command high-water marks and results by the authenticated
+  unique D-Bus sender and client in the serving generation. At most 1,024
+  live sender/client namespaces are retained; result eviction does not
+  lower a live issuer's sequence floor. Only proved loss of that exact
+  unique name on the serving bus retires its namespaces and results.
+  Already-filed commands stay in FIFO order and execute without publishing
+  results to the departed issuer. Authorization in flight for a departing
+  sender cannot recreate its retired namespace; unrelated issuers are
+  unaffected.
 - For every window-targeting command below, `win:{"currentFocus":true}` selects
   core's current focus at execution, after preceding actions. An explicit id
   keeps its existing subject meaning. Empty `win` is allowed only on
@@ -1761,6 +1770,12 @@ acceptance or adopt the separate close-focus amendment.
   `reply exceeds size bound` before installing candidate state, publishing
   coverage or settling queued commands. The next fitting capture requires
   a fresh broker source.
+- KDE retains at most 1,024 exact capture request/reply pairs and at most
+  32 MiB of their combined payload bytes per generation. Eviction is oldest
+  first, not refreshed on replay. Exact remembered bytes replay before any
+  drain and changed bytes for a remembered source refuse as `source-reused`.
+  Eviction does not lower the sequence floor: a previously dispatched
+  sequence that has fallen out of retention refuses as `stale-source`.
 
 ## Presentation and renderer input
 

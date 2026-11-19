@@ -149,6 +149,14 @@ pub enum PlannerError {
     InvalidReply(String),
 }
 
+#[cfg(test)]
+#[derive(Debug)]
+struct TestQueueAuthGate {
+    entered_tx: std::sync::mpsc::Sender<()>,
+    release_lock: Arc<async_lock::Mutex<()>>,
+    result_tx: Option<std::sync::mpsc::Sender<String>>,
+}
+
 #[derive(Clone, Debug)]
 pub struct PlannerEndpoint {
     /// World boundary: retained [`WorldService`] backend (fresh core
@@ -170,6 +178,10 @@ pub struct PlannerEndpoint {
     /// exclusion; back-to-back seed reads (intent plus preimage) admit
     /// together instead of the second surfacing busy.
     preimage_lock: Arc<async_lock::Mutex<()>>,
+    #[cfg(test)]
+    queue_auth_gate: Arc<std::sync::Mutex<Option<Arc<TestQueueAuthGate>>>>,
+    #[cfg(test)]
+    queue_auth_calls: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl PlannerEndpoint {
@@ -181,6 +193,10 @@ impl PlannerEndpoint {
             preimage_store: NativePreimageStore::from_runtime_dir(),
             intent_lock: Arc::new(async_lock::Mutex::new(())),
             preimage_lock: Arc::new(async_lock::Mutex::new(())),
+            #[cfg(test)]
+            queue_auth_gate: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(test)]
+            queue_auth_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -194,6 +210,10 @@ impl PlannerEndpoint {
             preimage_store: Some(NativePreimageStore::with_root(root)),
             intent_lock: Arc::new(async_lock::Mutex::new(())),
             preimage_lock: Arc::new(async_lock::Mutex::new(())),
+            #[cfg(test)]
+            queue_auth_gate: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(test)]
+            queue_auth_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -208,6 +228,10 @@ impl PlannerEndpoint {
             preimage_store: None,
             intent_lock: Arc::new(async_lock::Mutex::new(())),
             preimage_lock: Arc::new(async_lock::Mutex::new(())),
+            #[cfg(test)]
+            queue_auth_gate: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(test)]
+            queue_auth_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 }
@@ -558,12 +582,41 @@ impl PlannerEndpoint {
             emit_plan_early_exit(PlanEarlyExit::Unauthorized);
             return Ok(self.world.error_body("unauthorized", "unauthorized"));
         };
+        let in_flight = self.world.begin_in_flight_queue(caller);
+        #[cfg(test)]
+        self.queue_auth_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if !verify_planner_caller(emitter.connection(), caller).await {
+            drop(in_flight);
             emit_plan_early_exit(PlanEarlyExit::Unauthorized);
             return Ok(self.world.error_body("unauthorized", "unauthorized"));
         }
-        let reply = match self.world.queue_command(caller, &request) {
-            Ok(reply) => reply,
+        #[cfg(test)]
+        let test_result_tx = {
+            let gate = self
+                .queue_auth_gate
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .take();
+            if let Some(gate) = gate {
+                let _ = gate.entered_tx.send(());
+                let _release = gate.release_lock.lock().await;
+                gate.result_tx.clone()
+            } else {
+                None
+            }
+        };
+        let reply = match self.world.commit_in_flight_queue(in_flight, &request) {
+            Ok(Some(reply)) => reply,
+            Ok(None) => {
+                emit_plan_early_exit(PlanEarlyExit::Unauthorized);
+                let body = self.world.error_body("unauthorized", "unauthorized");
+                #[cfg(test)]
+                if let Some(tx) = test_result_tx {
+                    let _ = tx.send(body.clone());
+                }
+                return Ok(body);
+            }
             Err(WorldServiceError::Oversized) => {
                 emit_plan_early_exit(PlanEarlyExit::Oversize);
                 return Err(PlannerError::Unavailable(
@@ -582,6 +635,10 @@ impl PlannerEndpoint {
                 return Err(PlannerError::Unavailable(message));
             }
         };
+        #[cfg(test)]
+        if let Some(tx) = test_result_tx {
+            let _ = tx.send(reply.clone());
+        }
         if reply.len() > WORLD_SERVICE_MAX_REPLY {
             return Err(PlannerError::Unavailable(
                 "reply exceeds size bound".to_owned(),
@@ -1359,11 +1416,28 @@ enum OwnerSignalDecision {
     Handled,
 }
 
+#[cfg(test)]
 fn decide_owner_signal(
     message: zbus::message::Message,
     registered_unique: &mut Option<String>,
     our_unique: Option<&str>,
 ) -> zbus::Result<OwnerSignalDecision> {
+    decide_owner_signal_with_world(message, registered_unique, our_unique, None)
+}
+
+fn decide_owner_signal_with_world(
+    message: zbus::message::Message,
+    registered_unique: &mut Option<String>,
+    our_unique: Option<&str>,
+    world: Option<&WorldService>,
+) -> zbus::Result<OwnerSignalDecision> {
+    if !message
+        .header()
+        .sender()
+        .is_some_and(|sender| sender == "org.freedesktop.DBus")
+    {
+        return Ok(OwnerSignalDecision::SkippedMalformed);
+    }
     let Some(signal) = NameOwnerChanged::from_message(message) else {
         return Ok(OwnerSignalDecision::SkippedMalformed);
     };
@@ -1372,8 +1446,23 @@ fn decide_owner_signal(
         Err(_) => return Ok(OwnerSignalDecision::SkippedInvalidArgs),
     };
     let name = args.name().to_string();
+    let old_owner = args.old_owner().as_ref().map(ToString::to_string);
     let new_owner = args.new_owner().as_ref().map(ToString::to_string);
-    handle_name_owner_changed(registered_unique, &name, new_owner, our_unique)?;
+    handle_name_owner_changed(registered_unique, &name, new_owner.clone(), our_unique)?;
+    if name.starts_with(':')
+        && old_owner.as_deref() == Some(name.as_str())
+        && new_owner.is_none()
+        && let Some(world) = world
+    {
+        world.retire_bus_sender(&name);
+    }
+    #[cfg(test)]
+    if !name.starts_with(':')
+        && new_owner.is_none()
+        && let Some(world) = world
+    {
+        world.record_alias_loss_for_test(&name);
+    }
     Ok(OwnerSignalDecision::Handled)
 }
 
@@ -1443,15 +1532,14 @@ pub fn run() -> zbus::Result<()> {
     serve(PlannerEndpoint::new())
 }
 
-fn serve(endpoint: PlannerEndpoint) -> zbus::Result<()> {
-    let connection = Connection::session()?;
-    connection.object_server().at(OBJECT, endpoint)?;
-    request_planner_name(&connection)?;
-    let our_unique = connection.unique_name().map(|name| name.to_string());
-
-    let monitor = Connection::session()?;
-    let owner_changes = monitor_owner_changes(&monitor)?;
-    let mut registered_unique = our_unique.clone();
+fn run_owner_monitor(
+    connection: &Connection,
+    monitor: &Connection,
+    owner_changes: MessageIterator,
+    world: &WorldService,
+    our_unique: Option<&str>,
+) -> zbus::Result<()> {
+    let mut registered_unique = our_unique.map(ToOwned::to_owned);
     for message in owner_changes {
         if connection.is_closed() {
             return Err(serving_connection_lost_error());
@@ -1460,7 +1548,12 @@ fn serve(endpoint: PlannerEndpoint) -> zbus::Result<()> {
             return Err(owner_monitor_ended_error());
         }
         let message = message?;
-        match decide_owner_signal(message, &mut registered_unique, our_unique.as_deref())? {
+        match decide_owner_signal_with_world(
+            message,
+            &mut registered_unique,
+            our_unique,
+            Some(world),
+        )? {
             OwnerSignalDecision::SkippedMalformed => {
                 let _ = writeln!(std::io::stderr(), "{}", owner_signal_malformed_line());
                 continue;
@@ -1473,6 +1566,28 @@ fn serve(endpoint: PlannerEndpoint) -> zbus::Result<()> {
         };
     }
     Err(owner_monitor_ended_error())
+}
+
+fn serve(endpoint: PlannerEndpoint) -> zbus::Result<()> {
+    // Arm the authenticated NameOwnerChanged monitor before publishing the
+    // object or acquiring the planner name so no QueueWorldCommand issuer
+    // can disconnect unobserved.
+    let monitor = Connection::session()?;
+    let owner_changes = monitor_owner_changes(&monitor)?;
+
+    let connection = Connection::session()?;
+    let world = endpoint.world.clone();
+    connection.object_server().at(OBJECT, endpoint)?;
+    request_planner_name(&connection)?;
+    let our_unique = connection.unique_name().map(|name| name.to_string());
+
+    run_owner_monitor(
+        &connection,
+        &monitor,
+        owner_changes,
+        &world,
+        our_unique.as_deref(),
+    )
 }
 
 #[cfg(test)]
@@ -3083,5 +3198,464 @@ mod tests {
         );
         assert!(loss.is_err(), "real name loss stays terminal");
         assert_eq!(registered, None);
+    }
+
+    fn wait_until_retired_sender(world: &WorldService, sender: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !world.has_retired_sender(sender) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for retired sender {sender}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn wait_until_alias_loss(world: &WorldService, alias: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !world.has_observed_alias_loss(alias) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for alias loss {alias}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn two_window_capture_envelope(
+        adapter: &str,
+        generation: &str,
+        source: &str,
+        seq: u64,
+        focused: &str,
+    ) -> String {
+        let win_row = |win: &str, x: i32| {
+            format!(
+                "{{\"win\":\"{win}\",\"out\":\"DP-1\",\"rect\":[{x},0,960,1040],\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"sticky\":false,\
+                \"hints\":{{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null}},\"hostHidden\":false,\"privileged\":false,\"managed\":true,\"acceptsInput\":true,\
+                \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\
+                \"owner\":null,\"parent\":null,\"role\":null,\"appId\":null,\"executable\":null,\"processId\":\"pid-foreign-1\",\
+                \"class\":\"Synthetic\",\"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\"fullscreenOwner\":null,\
+                \"fullscreenExitable\":null,\"suppressionAvailable\":false,\"visibility\":{{\"visible\":true,\"suppressionOwned\":false}}}}"
+            )
+        };
+        format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\"source\":\"{source}\",\"sourceSeq\":\"{seq}\",\"nativeInvalid\":\"{seq}\",\
+            \"report\":{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+            \"identity\":{{\"manufacturer\":\"Synthetic\",\"model\":\"Panel\",\"serial\":\"s-1\",\"connector\":\"DP-1\"}}}}],\
+            \"windows\":[{},{}],\"closed\":[],\"native\":[],\"focused\":\"{focused}\",\"foregroundKnown\":true,\"complete\":true,\"gesture\":false,\"cursor\":null,\
+            \"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\
+            \"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\
+            \"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null}},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}}}",
+            win_row("win-a", 0),
+            win_row("win-b", 960),
+        )
+    }
+
+    fn serve_world_with_owner_monitor(
+        bus: &PrivateBus,
+        endpoint: PlannerEndpoint,
+    ) -> (Connection, std::thread::JoinHandle<()>) {
+        let monitor = bus.session().expect("private bus monitor connection");
+        let owner_changes = super::monitor_owner_changes(&monitor).expect("arm owner monitor");
+        let server = bus.session().expect("private bus server connection");
+        let world = endpoint.world.clone();
+        server
+            .object_server()
+            .at(OBJECT, endpoint)
+            .expect("register planner object");
+        super::request_planner_name(&server).expect("request planner name");
+        let our_unique = server.unique_name().map(|n| n.to_string());
+        let server_handle = server.clone();
+        let handle = std::thread::spawn(move || {
+            let _ = super::run_owner_monitor(
+                &server_handle,
+                &monitor,
+                owner_changes,
+                &world,
+                our_unique.as_deref(),
+            );
+        });
+        (server, handle)
+    }
+
+    #[test]
+    fn private_bus_issuer_loss_retires_namespace_preserves_fifo_and_closes_auth_race() {
+        use crate::world_broker::{MAX_COMMAND_CLIENTS, MAX_SETTLED_RESULTS};
+        use crate::world_service::{QUEUE_METHOD, TAKE_METHOD, WORLD_METHOD};
+
+        let bus = PrivateBus::start().expect("private dbus-daemon required (must not skip)");
+        let endpoint = PlannerEndpoint::without_intent_store();
+        let world = endpoint.world.clone();
+        let auth_gate_slot = endpoint.queue_auth_gate.clone();
+        let auth_calls_counter = endpoint.queue_auth_calls.clone();
+        let (server, monitor_thread) = serve_world_with_owner_monitor(&bus, endpoint);
+
+        let actuator = bus.session().expect("actuator connection");
+        actuator
+            .request_name(KWIN_SERVICE)
+            .expect("claim KWin name on private bus");
+        let actuator_proxy = intent_proxy(&actuator);
+        let hs_req = handshake_request("b5-adapter", "hs-1")
+            .replacen("\"maximize\":false", "\"maximize\":true", 1)
+            .replacen("\"fullscreen\":false", "\"fullscreen\":true", 1)
+            .replacen("\"nativeSticky\":false", "\"nativeSticky\":true", 1);
+        let discovery: serde_json::Value = serde_json::from_str(&call_intent(
+            &actuator_proxy,
+            crate::world_service::DISCOVERY_METHOD,
+            &hs_req,
+        ))
+        .expect("discovery JSON");
+        let generation = discovery["gen"].as_str().expect("gen").to_owned();
+        let settings: serde_json::Value = serde_json::from_str(&call_intent(
+            &actuator_proxy,
+            crate::world_service::DISCOVERY_METHOD,
+            &settings_request("b5-adapter", &generation, "settings-1"),
+        ))
+        .expect("settings JSON");
+        assert_eq!(settings["status"], "accepted");
+        let mut capture_seq = 1_u64;
+
+        let queue_op = |proxy: &zbus::blocking::Proxy<'_>,
+                        client: &str,
+                        cmd_id: u64,
+                        op_json: &str| {
+            let req = format!(
+                "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"{client}\",\"clientCmd\":\"{cmd_id}\",\
+                    \"command\":{op_json}}}"
+            );
+            serde_json::from_str::<serde_json::Value>(&call_intent(proxy, QUEUE_METHOD, &req))
+                .expect("queue JSON")
+        };
+        let queue_cmd = |proxy: &zbus::blocking::Proxy<'_>, client: &str, cmd_id: u64| {
+            queue_op(
+                proxy,
+                client,
+                cmd_id,
+                "{\"op\":\"select-numbered\",\"out\":null,\"index\":1}",
+            )
+        };
+        let take_cmd = |proxy: &zbus::blocking::Proxy<'_>, client: &str, cmd_id: u64| {
+            let req = format!(
+                "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"{client}\",\"clientCmd\":\"{cmd_id}\"}}"
+            );
+            serde_json::from_str::<serde_json::Value>(&call_intent(proxy, TAKE_METHOD, &req))
+                .expect("take JSON")
+        };
+        let drain_capture = |seq: &mut u64| {
+            let env = capture_envelope("b5-adapter", &generation, &format!("src-{seq}"), *seq);
+            *seq += 1;
+            let rep: serde_json::Value =
+                serde_json::from_str(&call_intent(&actuator_proxy, WORLD_METHOD, &env))
+                    .expect("capture JSON");
+            assert_eq!(rep["ready"], true, "{rep}");
+        };
+
+        // 1. Live dedup after result eviction: live sender settles > MAX_SETTLED_RESULTS
+        //    commands so cmd_id=1 evicts from settled, yet Queue and Take still dedup.
+        let s_live = bus.session().expect("s_live connection");
+        let s_live_proxy = intent_proxy(&s_live);
+        assert_eq!(queue_cmd(&s_live_proxy, "live-c", 1)["outcome"], "queued");
+        drain_capture(&mut capture_seq);
+        for batch_start in (2..=(MAX_SETTLED_RESULTS as u64 + 10)).step_by(100) {
+            let batch_end = (batch_start + 99).min(MAX_SETTLED_RESULTS as u64 + 10);
+            for id in batch_start..=batch_end {
+                assert_eq!(queue_cmd(&s_live_proxy, "live-c", id)["outcome"], "queued");
+            }
+            drain_capture(&mut capture_seq);
+        }
+        assert_eq!(
+            queue_cmd(&s_live_proxy, "live-c", 1)["outcome"],
+            "duplicate"
+        );
+        assert_eq!(take_cmd(&s_live_proxy, "live-c", 1)["outcome"], "duplicate");
+
+        // 2. Well-known alias loss does NOT retire unique-name namespace;
+        //    synchronize with monitor delivery before asserting.
+        let alias = "org.omnitiler.TestAlias";
+        s_live.request_name(alias).expect("acquire alias");
+        s_live.release_name(alias).expect("release alias");
+        wait_until_alias_loss(&world, alias);
+        assert_eq!(
+            queue_cmd(&s_live_proxy, "live-c", 1)["outcome"],
+            "duplicate"
+        );
+
+        // 3. Loss frees bounded namespace space (MAX_COMMAND_CLIENTS).
+        let s_filler = bus.session().expect("s_filler connection");
+        let s_filler_unique = s_filler.unique_name().expect("filler unique").to_string();
+        let s_filler_proxy = intent_proxy(&s_filler);
+        for idx in 0..(MAX_COMMAND_CLIENTS - 1) {
+            let client = format!("fill-{idx}");
+            assert_eq!(queue_cmd(&s_filler_proxy, &client, 1)["outcome"], "queued");
+            if idx % 100 == 99 {
+                drain_capture(&mut capture_seq);
+            }
+        }
+        drain_capture(&mut capture_seq);
+
+        let s_other = bus.session().expect("s_other connection");
+        let s_other_proxy = intent_proxy(&s_other);
+        let full_rep = queue_cmd(&s_other_proxy, "other-c", 1);
+        assert_eq!(full_rep["kind"], "queue-full", "{full_rep}");
+
+        drop(s_filler_proxy);
+        s_filler.close().expect("close s_filler");
+        wait_until_retired_sender(&world, &s_filler_unique);
+        assert_eq!(queue_cmd(&s_other_proxy, "other-c", 1)["outcome"], "queued");
+        drain_capture(&mut capture_seq);
+        assert_eq!(take_cmd(&s_other_proxy, "other-c", 1)["outcome"], "ready");
+
+        // 4. Loss removes existing settled/retired victim results, preserves
+        //    already-filed noncommuting FIFO work (focus win-b, then
+        //    toggle-maximize currentFocus) with checked actuator state oracle,
+        //    suppresses post-loss orphan result, leaves other live sender with
+        //    same (client, cmd) unaffected, and prevents new unique sender from
+        //    inheriting/replaying retired scope.
+        let seed_two_env = two_window_capture_envelope(
+            "b5-adapter",
+            &generation,
+            &format!("src-{capture_seq}"),
+            capture_seq,
+            "win-a",
+        );
+        capture_seq += 1;
+        let seed_two: serde_json::Value =
+            serde_json::from_str(&call_intent(&actuator_proxy, WORLD_METHOD, &seed_two_env))
+                .expect("seed two windows");
+        assert_eq!(seed_two["ready"], true, "{seed_two}");
+
+        let s_victim = bus.session().expect("s_victim connection");
+        let s_victim_unique = s_victim.unique_name().expect("victim unique").to_string();
+        let s_victim_proxy = intent_proxy(&s_victim);
+        assert_eq!(
+            queue_cmd(&s_victim_proxy, "victim-hist", 1)["outcome"],
+            "queued"
+        );
+        assert_eq!(
+            queue_cmd(&s_victim_proxy, "victim-hist", 2)["outcome"],
+            "queued"
+        );
+        let hist_env = two_window_capture_envelope(
+            "b5-adapter",
+            &generation,
+            &format!("src-{capture_seq}"),
+            capture_seq,
+            "win-a",
+        );
+        capture_seq += 1;
+        let hist_rep: serde_json::Value =
+            serde_json::from_str(&call_intent(&actuator_proxy, WORLD_METHOD, &hist_env))
+                .expect("hist capture JSON");
+        assert_eq!(hist_rep["ready"], true, "{hist_rep}");
+        assert_eq!(
+            take_cmd(&s_victim_proxy, "victim-hist", 1)["outcome"],
+            "ready"
+        );
+        assert_eq!(
+            world.settled_and_retired_counts_for_sender(&s_victim_unique),
+            (1, 1),
+            "victim must have 1 settled and 1 retired result before loss"
+        );
+
+        assert_eq!(
+            queue_op(
+                &s_victim_proxy,
+                "shared-client",
+                1,
+                "{\"op\":\"focus\",\"win\":\"win-b\"}",
+            )["outcome"],
+            "queued"
+        );
+        assert_eq!(
+            queue_op(
+                &s_other_proxy,
+                "shared-client",
+                1,
+                "{\"op\":\"toggle-maximize\",\"win\":{\"currentFocus\":true}}",
+            )["outcome"],
+            "queued"
+        );
+
+        drop(s_victim_proxy);
+        s_victim.close().expect("close s_victim");
+        wait_until_retired_sender(&world, &s_victim_unique);
+        assert_eq!(
+            world.settled_and_retired_counts_for_sender(&s_victim_unique),
+            (0, 0),
+            "settled and retired victim results must be removed on loss"
+        );
+
+        let fifo_env = two_window_capture_envelope(
+            "b5-adapter",
+            &generation,
+            &format!("src-{capture_seq}"),
+            capture_seq,
+            "win-a",
+        );
+        capture_seq += 1;
+        let fifo_rep: serde_json::Value =
+            serde_json::from_str(&call_intent(&actuator_proxy, WORLD_METHOD, &fifo_env))
+                .expect("fifo capture JSON");
+        assert_eq!(fifo_rep["ready"], true, "{fifo_rep}");
+        assert_eq!(fifo_rep["focusRequest"]["target"], "win-b", "{fifo_rep}");
+        let windows = fifo_rep["windows"].as_array().expect("windows array");
+        let win_a = windows.iter().find(|w| w["win"] == "win-a").expect("win-a");
+        let win_b = windows.iter().find(|w| w["win"] == "win-b").expect("win-b");
+        assert_eq!(
+            win_a["state"],
+            serde_json::json!([]),
+            "win-a must remain unmaximized: {win_a}"
+        );
+        assert_eq!(
+            win_b["state"][0]["property"], "maximized",
+            "focus win-b then toggle-maximize currentFocus must maximize win-b: {win_b}"
+        );
+        assert_eq!(
+            win_b["state"][0]["value"], true,
+            "focus win-b then toggle-maximize currentFocus must maximize win-b: {win_b}"
+        );
+        assert_eq!(
+            world.settled_and_retired_counts_for_sender(&s_victim_unique),
+            (0, 0),
+            "post-loss orphan result must be suppressed"
+        );
+        let other_take = take_cmd(&s_other_proxy, "shared-client", 1);
+        assert_eq!(other_take["outcome"], "ready", "{other_take}");
+        assert_eq!(other_take["result"]["win"], "win-b", "{other_take}");
+
+        let s_fresh = bus.session().expect("s_fresh connection");
+        let s_fresh_proxy = intent_proxy(&s_fresh);
+        assert_eq!(
+            take_cmd(&s_fresh_proxy, "shared-client", 1)["kind"],
+            "unknown-command"
+        );
+        assert_eq!(
+            queue_cmd(&s_fresh_proxy, "shared-client", 1)["outcome"],
+            "queued"
+        );
+        drain_capture(&mut capture_seq);
+        assert_eq!(
+            take_cmd(&s_fresh_proxy, "shared-client", 1)["outcome"],
+            "ready"
+        );
+
+        // 5. Positive-auth barrier: unrelated unique-sender loss does NOT
+        //    reauthorize or refuse a live caller, while exact-sender loss
+        //    invalidates only that sender's in-flight commit.
+        let s_unrelated = bus.session().expect("s_unrelated connection");
+        let s_unrelated_unique = s_unrelated
+            .unique_name()
+            .expect("unrelated unique")
+            .to_string();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let release_lock = Arc::new(async_lock::Mutex::new(()));
+        let held_release = release_lock.lock_blocking();
+        auth_calls_counter.store(0, std::sync::atomic::Ordering::SeqCst);
+        *auth_gate_slot
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) =
+            Some(Arc::new(super::TestQueueAuthGate {
+                entered_tx,
+                release_lock: release_lock.clone(),
+                result_tx: None,
+            }));
+
+        let s_other_for_thread = s_other.clone();
+        let live_barrier_req = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"other-c\",\"clientCmd\":\"2\",\
+            \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
+        );
+        let live_thread = std::thread::spawn(move || {
+            let p = intent_proxy(&s_other_for_thread);
+            serde_json::from_str::<serde_json::Value>(&call_intent(
+                &p,
+                QUEUE_METHOD,
+                &live_barrier_req,
+            ))
+            .expect("live barrier JSON")
+        });
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .expect("live QueueWorldCommand reached post-auth barrier");
+        s_unrelated.close().expect("close s_unrelated connection");
+        wait_until_retired_sender(&world, &s_unrelated_unique);
+        drop(held_release);
+        let live_rep = live_thread.join().expect("join live barrier thread");
+        assert_eq!(live_rep["outcome"], "queued", "{live_rep}");
+        assert_eq!(
+            auth_calls_counter.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "unrelated peer loss must not cause reauthorization"
+        );
+        drain_capture(&mut capture_seq);
+        assert_eq!(take_cmd(&s_other_proxy, "other-c", 2)["outcome"], "ready");
+
+        // Exact-sender loss at the positive-auth barrier refuses unauthorized
+        // without recreating the retired scope.
+        let s_race = bus.session().expect("s_race connection");
+        let s_race_unique = s_race.unique_name().expect("race unique").to_string();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let release_lock = Arc::new(async_lock::Mutex::new(()));
+        let held_release = release_lock.lock_blocking();
+        *auth_gate_slot
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) =
+            Some(Arc::new(super::TestQueueAuthGate {
+                entered_tx,
+                release_lock: release_lock.clone(),
+                result_tx: Some(result_tx),
+            }));
+
+        let s_race_for_thread = s_race.clone();
+        let race_req = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"race-client\",\"clientCmd\":\"1\",\
+            \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
+        );
+        let race_thread = std::thread::spawn(move || {
+            let p = intent_proxy(&s_race_for_thread);
+            let _ = p.call_method(QUEUE_METHOD, &(&race_req,));
+        });
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .expect("QueueWorldCommand reached post-auth barrier");
+        s_race.close().expect("close s_race connection");
+        wait_until_retired_sender(&world, &s_race_unique);
+        drop(held_release);
+        let race_reply: serde_json::Value = serde_json::from_str(
+            &result_rx
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .expect("handler must complete and report exact-sender refusal"),
+        )
+        .expect("race reply JSON");
+        assert_eq!(race_reply["outcome"], "rejected", "{race_reply}");
+        assert_eq!(race_reply["kind"], "unauthorized", "{race_reply}");
+        race_thread.join().expect("join race thread");
+        assert!(
+            !world.has_highwater_for_sender(&s_race_unique),
+            "post-loss QueueWorldCommand must not recreate highwater namespace"
+        );
+        drain_capture(&mut capture_seq);
+        assert_eq!(
+            world.settled_and_retired_counts_for_sender(&s_race_unique),
+            (0, 0),
+            "post-loss QueueWorldCommand must not recreate retired scope"
+        );
+
+        drop(s_live_proxy);
+        drop(s_live);
+        drop(s_other_proxy);
+        drop(s_other);
+        drop(s_fresh_proxy);
+        drop(s_fresh);
+        drop(actuator_proxy);
+        drop(actuator);
+        server.close().expect("close server connection");
+        drop(bus);
+        monitor_thread
+            .join()
+            .expect("owned monitor thread must exit cleanly");
     }
 }

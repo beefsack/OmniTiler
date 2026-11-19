@@ -343,6 +343,9 @@ impl BrokerPreviewTraceMeta {
 /// and in-band rejections alike). Oldest-first eviction: evicted sources
 /// lose replay and refuse as stale through the sequence floor.
 pub const MAX_REMEMBERED_SOURCES: usize = 1024;
+/// Combined byte cap for exact retained request + bound reply payloads in
+/// `responses`, enforced alongside `MAX_REMEMBERED_SOURCES`.
+pub const MAX_REMEMBERED_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
 /// One queued external command awaiting the next fresh capture.
 /// Commands park here in FIFO order until one capture drains the whole
@@ -355,6 +358,7 @@ struct QueuedCommand {
     client_cmd: String,
     global_seq: u64,
     command: tiler_core::world_report::WorldCommand,
+    suppress_orphan_result: bool,
 }
 
 impl QueuedCommand {
@@ -462,6 +466,7 @@ pub struct WorldBroker {
     /// as reused.
     responses: HashMap<String, (Vec<u8>, String)>,
     response_order: VecDeque<String>,
+    response_bytes: usize,
     /// Broker-owned wake event epoch (the server wake cursor): advances on
     /// a newly queued command and on an actual head drain only, never on
     /// exact-capture replay or on rejected/no-drain captures. Scoped to the
@@ -566,6 +571,7 @@ impl WorldBroker {
             gesture_map: crate::kde_gesture::KdeGestureMap::new(),
             responses: HashMap::new(),
             response_order: VecDeque::new(),
+            response_bytes: 0,
             wake_epoch: 0,
             waiter: None,
             wait_ready: None,
@@ -611,6 +617,7 @@ impl WorldBroker {
             client_cmd: client_cmd.to_owned(),
             global_seq,
             command,
+            suppress_orphan_result: false,
         });
     }
 
@@ -630,6 +637,7 @@ impl WorldBroker {
             client_cmd: client_cmd.to_owned(),
             global_seq,
             command,
+            suppress_orphan_result: false,
         });
     }
 
@@ -726,6 +734,7 @@ impl WorldBroker {
             self.gesture_map = crate::kde_gesture::KdeGestureMap::new();
             self.responses.clear();
             self.response_order.clear();
+            self.response_bytes = 0;
             self.wake_epoch = 0;
             self.wait_ready = None;
             self.next_observation_seq = 1;
@@ -1021,7 +1030,10 @@ impl WorldBroker {
                     ) && let Some(queued) = drained.iter().find(|q| q.global_seq == disp.seq)
                     {
                         let key = queued.key();
-                        if !settled.contains_key(&key) && !retired.contains_key(&key) {
+                        if !queued.suppress_orphan_result
+                            && !settled.contains_key(&key)
+                            && !retired.contains_key(&key)
+                        {
                             eprintln!(
                                 "omnitiler:world-fault missing-prior-result seq={} client={}",
                                 disp.seq, queued.client
@@ -1314,13 +1326,19 @@ impl WorldBroker {
     /// result, failed carries the explicit rejection kind/message. Each
     /// settlement advances the wake epoch and completes a parked waiter
     /// while work remains.
-    fn settle_drained_infallible(&mut self, queued: &QueuedCommand, settlement: Settlement) {
-        self.insert_settlement(queued.key(), settlement);
+    fn advance_wake_after_drain(&mut self) {
         self.wake_epoch = self
             .wake_epoch
             .checked_add(1)
             .expect("wake_epoch prechecked before adoption");
         self.complete_waiter_if_work();
+    }
+
+    fn settle_drained_infallible(&mut self, queued: &QueuedCommand, settlement: Settlement) {
+        if !queued.suppress_orphan_result {
+            self.insert_settlement(queued.key(), settlement);
+        }
+        self.advance_wake_after_drain();
     }
 
     /// Settle one drained FIFO batch from the core per-command settlements.
@@ -1373,6 +1391,12 @@ impl WorldBroker {
                 continue;
             };
             match disposition {
+                tiler_core::world_report::CommandDisposition::NotRun => {
+                    repark.push(queued.clone());
+                }
+                _ if queued.suppress_orphan_result => {
+                    self.advance_wake_after_drain();
+                }
                 tiler_core::world_report::CommandDisposition::Executed(result) => match result {
                     Some(tiler_core::world_report::CommandResult::Rejected { kind }) => {
                         let kind_str = kind.as_str();
@@ -1415,9 +1439,6 @@ impl WorldBroker {
                         .or_else(|| self.retired.get(&key).cloned())
                         .expect("AlreadyConsumed prior result prechecked before adoption");
                     self.settle_drained_infallible(queued, prior);
-                }
-                tiler_core::world_report::CommandDisposition::NotRun => {
-                    repark.push(queued.clone());
                 }
             }
         }
@@ -1500,6 +1521,7 @@ impl WorldBroker {
             client_cmd: client_cmd_text.clone(),
             global_seq,
             command,
+            suppress_orphan_result: false,
         });
         // Queue-only: the command parks here. The wire outcome stays
         // `queued`; the take lane serves the terminal result after the next
@@ -1808,24 +1830,94 @@ impl WorldBroker {
         }
     }
 
-    /// Remember one per-source bound capture outcome (accepted bound reply
-    /// or bound in-band rejection) keyed by exact envelope bytes. Bounded
-    /// oldest-first eviction: evicted sources lose replay and refuse as
-    /// stale through the sequence floor, never re-dispatching forgotten
-    /// facts.
-    fn remember_response(&mut self, source: &str, bytes: &[u8], bound: &str) {
-        if !self.responses.contains_key(source) {
-            self.response_order.push_back(source.to_owned());
+    /// Retire all per-client high-water marks and settled/retired results
+    /// belonging to a proved-lost D-Bus unique sender. Already-filed pending
+    /// commands remain in FIFO order so committed work still executes, while
+    /// post-loss settlements are suppressed rather than published as orphans.
+    pub fn retire_sender(&mut self, sender: &str) {
+        let before = self.highwater.len();
+        self.highwater.retain(|(s, _), _| s != sender);
+        if self.highwater.len() == before {
+            return;
         }
-        self.responses
-            .insert(source.to_owned(), (bytes.to_vec(), bound.to_owned()));
-        while self.responses.len() > MAX_REMEMBERED_SOURCES {
-            if let Some(oldest) = self.response_order.pop_front() {
-                self.responses.remove(&oldest);
-            } else {
-                break;
+        self.settled.retain(|(s, _, _), _| s != sender);
+        self.settled_order.retain(|(s, _, _)| s != sender);
+        self.retired.retain(|(s, _, _), _| s != sender);
+        self.retired_order.retain(|(s, _, _)| s != sender);
+        for queued in &mut self.pending {
+            if queued.sender == sender {
+                queued.suppress_orphan_result = true;
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn settled_and_retired_counts_for_sender(&self, sender: &str) -> (usize, usize) {
+        let settled = self.settled.keys().filter(|(s, _, _)| s == sender).count();
+        let retired = self.retired.keys().filter(|(s, _, _)| s == sender).count();
+        (settled, retired)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_highwater_for_sender(&self, sender: &str) -> bool {
+        self.highwater.keys().any(|(s, _)| s == sender)
+    }
+
+    /// Remember one per-source bound capture outcome (accepted bound reply
+    /// or bound in-band rejection) keyed by exact envelope bytes. Bounded
+    /// oldest-first eviction by both `MAX_REMEMBERED_SOURCES` and
+    /// `MAX_REMEMBERED_RESPONSE_BYTES`: evicted sources lose replay and refuse
+    /// as stale through the sequence floor, never re-dispatching forgotten
+    /// facts. A pair exceeding `MAX_REMEMBERED_RESPONSE_BYTES` is never
+    /// copied or retained.
+    fn remember_response(&mut self, source: &str, bytes: &[u8], bound: &str) {
+        let Some(pair_bytes) = bytes.len().checked_add(bound.len()) else {
+            return;
+        };
+        if pair_bytes > MAX_REMEMBERED_RESPONSE_BYTES {
+            return;
+        }
+        if let Some((prior_req, prior_rep)) = self.responses.remove(source) {
+            let prior_bytes = prior_req
+                .len()
+                .checked_add(prior_rep.len())
+                .expect("retained pair_bytes fits usize");
+            self.response_bytes = self
+                .response_bytes
+                .checked_sub(prior_bytes)
+                .expect("response_bytes covers retained entry");
+            self.response_order.retain(|item| item != source);
+        }
+        while self.responses.len() >= MAX_REMEMBERED_SOURCES
+            || self
+                .response_bytes
+                .checked_add(pair_bytes)
+                .is_none_or(|total| total > MAX_REMEMBERED_RESPONSE_BYTES)
+        {
+            let oldest = self
+                .response_order
+                .pop_front()
+                .expect("response_order non-empty while responses exceeds cap");
+            let (evicted_req, evicted_rep) = self
+                .responses
+                .remove(&oldest)
+                .expect("response_order key present in responses");
+            let evicted_bytes = evicted_req
+                .len()
+                .checked_add(evicted_rep.len())
+                .expect("retained pair_bytes fits usize");
+            self.response_bytes = self
+                .response_bytes
+                .checked_sub(evicted_bytes)
+                .expect("response_bytes covers retained entry");
+        }
+        self.response_order.push_back(source.to_owned());
+        self.responses
+            .insert(source.to_owned(), (bytes.to_vec(), bound.to_owned()));
+        self.response_bytes = self
+            .response_bytes
+            .checked_add(pair_bytes)
+            .expect("response_bytes prechecked against MAX_REMEMBERED_RESPONSE_BYTES");
     }
 }
 
@@ -3809,6 +3901,7 @@ mod tests {
                 &serde_json::json!({"op":"select-numbered","out":null,"index":1}),
             )
             .expect("valid command"),
+            suppress_orphan_result: false,
         };
         let mut drained = VecDeque::new();
         drained.push_back(parked);
@@ -4915,5 +5008,212 @@ mod tests {
         )
         .expect("json");
         assert_eq!(stale0["status"], "stale");
+    }
+
+    #[test]
+    fn remember_response_byte_cap_evicts_oldest_preserves_replay_and_resets_with_generation() {
+        let mut broker = WorldBroker::new();
+        let adapter = "byte-cap-adapter";
+        let hs: serde_json::Value = serde_json::from_str(
+            &broker
+                .discover_connection(&handshake_message(adapter, "hs-1"))
+                .expect("handshake"),
+        )
+        .expect("json");
+        let generation = hs["gen"].as_str().expect("gen").to_owned();
+        let settings: serde_json::Value = serde_json::from_str(
+            &broker
+                .discover_connection(&settings_message(adapter, &generation, "set-1"))
+                .expect("settings"),
+        )
+        .expect("json");
+        assert_eq!(settings["status"], "accepted");
+
+        // Near-request-limit valid capture pairs so combined request + bound
+        // reply payloads trigger MAX_REMEMBERED_RESPONSE_BYTES (32 MiB) well
+        // below MAX_REMEMBERED_SOURCES (1024).
+        let title_pad = "p".repeat(3500);
+        let build_large_envelope = |source: &str, seq: u64, title_tag: &str| -> String {
+            let mut windows = String::with_capacity(2_600_000);
+            for i in 0..600 {
+                if i > 0 {
+                    windows.push(',');
+                }
+                let win = format!("w-{seq}-{i}");
+                let x = (i % 10) * 100;
+                let y = (i / 10) * 10;
+                windows.push_str(&format!(
+                    "{{\"win\":\"{win}\",\"out\":\"DP-1\",\"rect\":[{x},{y},100,100],\"minimized\":false,\"maximized\":null,\"fullscreen\":null,\"sticky\":null,\
+                    \"hints\":{{\"minW\":10,\"minH\":10,\"maxW\":1920,\"maxH\":1080}},\"hostHidden\":false,\"privileged\":false,\"managed\":true,\"acceptsInput\":true,\
+                    \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\"modal\":false,\"resizable\":true,\"above\":null,\"below\":null,\
+                    \"owner\":null,\"parent\":null,\"role\":\"normal\",\"appId\":\"org.example.cap\",\"executable\":\"/usr/bin/cap\",\"processId\":\"pid-cap-1\",\
+                    \"class\":\"Synthetic\",\"title\":\"{title_tag}-{i:04}-{title_pad}\",\"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\"fullscreenOwner\":null,\
+                    \"fullscreenExitable\":null,\"suppressionAvailable\":false,\"visibility\":{{\"visible\":true,\"suppressionOwned\":false}}}}"
+                ));
+            }
+            format!(
+                "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\"source\":\"{source}\",\"sourceSeq\":\"{seq}\",\"nativeInvalid\":\"1\",\
+                \"report\":{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+                \"identity\":{{\"manufacturer\":\"Synthetic\",\"model\":\"Panel\",\"serial\":\"s-1\",\"connector\":\"DP-1\"}}}}],\
+                \"windows\":[{windows}],\"closed\":[],\"native\":[],\"focused\":\"w-{seq}-0\",\"foregroundKnown\":true,\"complete\":true,\"gesture\":false,\"cursor\":[100,100],\
+                \"actionForeground\":\"DP-1\",\"actionCached\":\"DP-1\",\"actionOutputs\":[\"DP-1\"],\"presentation\":{{\"foreground\":\"w-{seq}-0\",\"minimized\":false,\
+                \"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":[0,0,100,100],\"chordHeld\":false,\"moveWindow\":\"\",\
+                \"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":\"DP-1\"}},\
+                \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\
+                \"cursorWindow\":null,\"nativeInvalidWitness\":null}}}}"
+            )
+        };
+
+        let env_1 = build_large_envelope("src-1", 1, "t1");
+        assert!(
+            env_1.len() > WORLD_MAX_REQUEST_BYTES / 2 && env_1.len() <= WORLD_MAX_REQUEST_BYTES,
+            "expected near-limit request, got {} bytes",
+            env_1.len()
+        );
+        let rep_1 = broker.dispatch_capture(&env_1).expect("dispatch src-1");
+        assert!(rep_1.len() <= WORLD_MAX_REPLY_BYTES);
+        let rep_1_json: serde_json::Value = serde_json::from_str(&rep_1).expect("json");
+        assert_eq!(rep_1_json["ready"], true, "{rep_1_json}");
+        assert_eq!(
+            rep_1_json["diagnostics"].as_array().map(Vec::len),
+            Some(0),
+            "expected non-held admitted windows: {rep_1_json}"
+        );
+        assert_eq!(
+            rep_1_json["scopes"][0]["auth"], "controlled",
+            "expected controlled scope: {rep_1_json}"
+        );
+        assert_eq!(
+            rep_1_json["outputs"][0]["hold"], "",
+            "expected non-held output: {rep_1_json}"
+        );
+        assert_eq!(
+            rep_1_json["presentation"]["pager"][0]["workspaces"][0]["occupied"], true,
+            "expected admitted windows occupying workspace: {rep_1_json}"
+        );
+
+        // Exact replay returns identical bytes.
+        assert_eq!(
+            broker.dispatch_capture(&env_1).expect("replay src-1"),
+            rep_1
+        );
+        // Changed bytes for remembered source refuse as source-reused.
+        let env_1_changed = env_1.replacen("\"t1-0000-", "\"t1-diff-", 1);
+        let reused_json: serde_json::Value =
+            serde_json::from_str(&broker.dispatch_capture(&env_1_changed).expect("reused"))
+                .expect("json");
+        assert_eq!(reused_json["kind"], "source-reused");
+
+        // Pre-sequencing malformed gesture rejection with queued work:
+        // remembers bound rejection without advancing source_floor or draining.
+        let q_pre = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c-pre\",\"clientCmd\":\"1\",\
+            \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
+        );
+        let q_pre_rep: serde_json::Value =
+            serde_json::from_str(&broker.queue_command(":1.41", &q_pre).expect("queue pre"))
+                .expect("json");
+        assert_eq!(q_pre_rep["outcome"], "queued");
+        assert_eq!(broker.pending.len(), 1);
+
+        let mut bad_gesture_env = build_large_envelope("src-bad", 2, "tbad");
+        bad_gesture_env =
+            bad_gesture_env.replacen("\"nativeGesture\":null", "\"nativeGesture\":{\"bad\":1}", 1);
+        let bad_rep = broker
+            .dispatch_capture(&bad_gesture_env)
+            .expect("bad gesture rejection");
+        let bad_json: serde_json::Value = serde_json::from_str(&bad_rep).expect("json");
+        assert_eq!(bad_json["outcome"], "rejected");
+        assert_eq!(broker.pending.len(), 1);
+        assert_eq!(
+            broker
+                .dispatch_capture(&bad_gesture_env)
+                .expect("bad gesture replay"),
+            bad_rep
+        );
+        assert_eq!(broker.pending.len(), 1);
+        assert_eq!(broker.source_floor, 1);
+
+        // Fill past 32 MiB using actual accepted bound captures (count << 1024).
+        let mut last_seq = 2;
+        let mut last_env = String::new();
+        let mut last_rep = String::new();
+        while broker.responses.contains_key("src-1") {
+            last_seq += 1;
+            assert!(
+                last_seq <= 40,
+                "expected byte-induced eviction within 40 captures, len={}, bytes={}",
+                broker.responses.len(),
+                broker.response_bytes
+            );
+            let src = format!("src-{last_seq}");
+            let env = build_large_envelope(&src, last_seq, "fill");
+            let rep = broker.dispatch_capture(&env).expect("fill dispatch");
+            let rep_json: serde_json::Value = serde_json::from_str(&rep).expect("fill json");
+            assert_eq!(rep_json["ready"], true, "fill must be accepted: {rep_json}");
+            last_env = env;
+            last_rep = rep;
+        }
+        assert!(broker.pending.is_empty());
+        assert!(broker.responses.len() < MAX_REMEMBERED_SOURCES);
+        assert!(broker.response_bytes <= MAX_REMEMBERED_RESPONSE_BYTES);
+        let exact_sum: usize = broker
+            .responses
+            .values()
+            .map(|(req, rep)| req.len() + rep.len())
+            .sum();
+        assert_eq!(broker.response_bytes, exact_sum);
+
+        // Queue one command: evicted src-1 refuses as stale-source and does not
+        // drain; retained last source replays identically and does not drain;
+        // fresh source drains the command once only.
+        let q_req = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"c1\",\"clientCmd\":\"1\",\
+            \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
+        );
+        let q_rep: serde_json::Value =
+            serde_json::from_str(&broker.queue_command(":1.42", &q_req).expect("queue"))
+                .expect("json");
+        assert_eq!(q_rep["outcome"], "queued");
+        assert_eq!(broker.pending.len(), 1);
+
+        let stale_evicted: serde_json::Value =
+            serde_json::from_str(&broker.dispatch_capture(&env_1).expect("evicted stale"))
+                .expect("json");
+        assert_eq!(stale_evicted["kind"], "stale-source");
+        assert_eq!(broker.pending.len(), 1);
+
+        assert_eq!(
+            broker.dispatch_capture(&last_env).expect("retained replay"),
+            last_rep
+        );
+        assert_eq!(broker.pending.len(), 1);
+
+        let fresh_seq = last_seq + 1;
+        let fresh_env = build_large_envelope(&format!("src-{fresh_seq}"), fresh_seq, "fresh");
+        let fresh_rep: serde_json::Value =
+            serde_json::from_str(&broker.dispatch_capture(&fresh_env).expect("fresh drain"))
+                .expect("json");
+        assert_eq!(fresh_rep["ready"], true, "{fresh_rep}");
+        assert!(broker.pending.is_empty());
+
+        // Non-retainable pair (> MAX_REMEMBERED_RESPONSE_BYTES) is never copied
+        // or retained and does not evict existing entries.
+        let count_before = broker.responses.len();
+        let bytes_before = broker.response_bytes;
+        let oversized_bound = "x".repeat(MAX_REMEMBERED_RESPONSE_BYTES + 1);
+        broker.remember_response("non-retainable", b"req", &oversized_bound);
+        assert!(!broker.responses.contains_key("non-retainable"));
+        assert_eq!(broker.responses.len(), count_before);
+        assert_eq!(broker.response_bytes, bytes_before);
+
+        // Reset with broker generation clears count, order, bytes, and floor.
+        let _hs2 = broker
+            .discover_connection(&handshake_message("byte-cap-adapter-2", "hs-2"))
+            .expect("handshake reset");
+        assert!(broker.responses.is_empty());
+        assert!(broker.response_order.is_empty());
+        assert_eq!(broker.response_bytes, 0);
+        assert_eq!(broker.source_floor, 0);
     }
 }

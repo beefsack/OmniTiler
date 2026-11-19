@@ -38,7 +38,8 @@
 //! re-observe, and command issuers must re-establish with fresh per-client
 //! command ids.
 
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use std::future::Future;
 use std::pin::Pin;
@@ -132,14 +133,44 @@ impl WorldBackend {
     }
 }
 
+#[derive(Debug)]
+struct InFlightEntry {
+    sender: String,
+    valid: AtomicBool,
+}
+
+/// Short-lived RAII registration for one in-flight `QueueWorldCommand`
+/// authorization. Removed once on commit or drop.
+#[derive(Debug)]
+pub(crate) struct InFlightQueueGuard {
+    entry: Arc<InFlightEntry>,
+    state: Option<Arc<Mutex<Vec<Arc<InFlightEntry>>>>>,
+}
+
+impl Drop for InFlightQueueGuard {
+    fn drop(&mut self) {
+        if let Some(state) = self.state.take() {
+            let mut entries = state.lock().unwrap_or_else(|poison| poison.into_inner());
+            entries.retain(|item| !Arc::ptr_eq(item, &self.entry));
+        }
+    }
+}
+
 /// World planner endpoint: pure request evaluation plus the single-flight
 /// lock. D-Bus authentication (same-UID, plus the KWin-owner check on the
 /// capture/discovery routes) lives in [`crate::planner_service`]; this type
-/// never touches the bus.
+/// never touches the bus and never authorizes.
 #[derive(Clone, Debug)]
 pub struct WorldService {
     backend: Arc<Mutex<WorldBackend>>,
     world_lock: Arc<async_lock::Mutex<()>>,
+    /// Short-lived per-sender in-flight `QueueWorldCommand` registrations
+    /// (independent of broker rotations and poison replacement).
+    in_flight_queue: Arc<Mutex<Vec<Arc<InFlightEntry>>>>,
+    #[cfg(test)]
+    retired_senders: Arc<Mutex<Vec<String>>>,
+    #[cfg(test)]
+    observed_alias_losses: Arc<Mutex<Vec<String>>>,
 }
 
 impl WorldService {
@@ -149,6 +180,11 @@ impl WorldService {
         Self {
             backend: Arc::new(Mutex::new(WorldBackend::fresh())),
             world_lock: Arc::new(async_lock::Mutex::new(())),
+            in_flight_queue: Arc::new(Mutex::new(Vec::new())),
+            #[cfg(test)]
+            retired_senders: Arc::new(Mutex::new(Vec::new())),
+            #[cfg(test)]
+            observed_alias_losses: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -159,6 +195,13 @@ impl WorldService {
             Ok(backend) => backend.generation().to_owned(),
             Err(_) => String::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn settled_and_retired_counts_for_sender(&self, sender: &str) -> (usize, usize) {
+        self.lock_backend_recovering_poison()
+            .broker
+            .settled_and_retired_counts_for_sender(sender)
     }
 
     #[cfg(test)]
@@ -221,6 +264,121 @@ impl WorldService {
             return Err(WorldServiceError::Oversized);
         }
         self.run_broker(|broker| broker.dispatch_capture(envelope))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_retired_sender(&self, sender: &str) -> bool {
+        self.retired_senders
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .iter()
+            .any(|s| s == sender)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_alias_loss_for_test(&self, alias: &str) {
+        self.observed_alias_losses
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(alias.to_owned());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_observed_alias_loss(&self, alias: &str) -> bool {
+        self.observed_alias_losses
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .iter()
+            .any(|a| a == alias)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_highwater_for_sender(&self, sender: &str) -> bool {
+        self.lock_backend_recovering_poison()
+            .broker
+            .has_highwater_for_sender(sender)
+    }
+
+    /// Register one in-flight `QueueWorldCommand` authorization for `sender`
+    /// before awaiting bus credentials.
+    #[must_use]
+    pub(crate) fn begin_in_flight_queue(&self, sender: &str) -> InFlightQueueGuard {
+        let entry = Arc::new(InFlightEntry {
+            sender: sender.to_owned(),
+            valid: AtomicBool::new(true),
+        });
+        {
+            let mut entries = self
+                .in_flight_queue
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            entries.push(Arc::clone(&entry));
+        }
+        InFlightQueueGuard {
+            entry,
+            state: Some(Arc::clone(&self.in_flight_queue)),
+        }
+    }
+
+    /// Retire one proved-lost unique D-Bus sender under the backend lock and
+    /// invalidate any in-flight `QueueWorldCommand` authorization for that
+    /// exact sender without affecting other senders.
+    pub(crate) fn retire_bus_sender(&self, sender: &str) {
+        let mut backend = self.lock_backend_recovering_poison();
+        {
+            let entries = self
+                .in_flight_queue
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            for entry in entries.iter() {
+                if entry.sender == sender {
+                    entry.valid.store(false, Ordering::Release);
+                }
+            }
+        }
+        backend.broker.retire_sender(sender);
+        #[cfg(test)]
+        self.retired_senders
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(sender.to_owned());
+        self.backend.clear_poison_if_needed();
+    }
+
+    /// File one external command iff the caller's in-flight registration
+    /// belongs to this service and was not invalidated by exact-sender loss
+    /// during authorization. Returns `Ok(None)` when invalidated.
+    pub(crate) fn commit_in_flight_queue(
+        &self,
+        mut guard: InFlightQueueGuard,
+        request: &str,
+    ) -> std::result::Result<Option<String>, WorldServiceError> {
+        let state = guard
+            .state
+            .take()
+            .expect("InFlightQueueGuard committed more than once");
+        assert!(
+            Arc::ptr_eq(&state, &self.in_flight_queue),
+            "InFlightQueueGuard does not belong to this WorldService"
+        );
+        if request.len() > WORLD_SERVICE_MAX_REQUEST {
+            let mut entries = state.lock().unwrap_or_else(|poison| poison.into_inner());
+            entries.retain(|item| !Arc::ptr_eq(item, &guard.entry));
+            return Err(WorldServiceError::Oversized);
+        }
+        let mut backend = self.lock_backend_recovering_poison();
+        let still_valid = {
+            let mut entries = state.lock().unwrap_or_else(|poison| poison.into_inner());
+            entries.retain(|item| !Arc::ptr_eq(item, &guard.entry));
+            guard.entry.valid.load(Ordering::Acquire)
+        };
+        if !still_valid {
+            self.backend.clear_poison_if_needed();
+            return Ok(None);
+        }
+        let outcome = backend.broker.queue_command(&guard.entry.sender, request);
+        self.backend.clear_poison_if_needed();
+        Self::coerce(outcome, &mut backend).map(Some)
     }
 
     /// File one external command: it parks for the next fresh capture,
@@ -309,16 +467,9 @@ impl WorldService {
     /// the backend and fails closed (the caller re-discovers; a retry
     /// under the new generation would mismatch the bound one), oversize
     /// fails closed.
-    fn run_broker(
-        &self,
-        op: impl FnOnce(&mut WorldBroker) -> std::result::Result<String, BrokerError>,
-    ) -> std::result::Result<String, WorldServiceError> {
+    fn lock_backend_recovering_poison(&self) -> MutexGuard<'_, WorldBackend> {
         match self.backend.lock() {
-            Ok(mut backend) => {
-                let outcome = op(&mut backend.broker);
-                self.backend.clear_poison_if_needed();
-                Self::coerce(outcome, &mut backend)
-            }
+            Ok(backend) => backend,
             Err(poison) => {
                 let mut backend = poison.into_inner();
                 let displaced = backend.broker.take_parked_waiter();
@@ -327,11 +478,19 @@ impl WorldService {
                     backend.broker.complete_displaced(waiter);
                 }
                 eprintln!("omnitiler:world-fault kind=poisoned-lock detail=replaced-with-fresh");
-                let outcome = op(&mut backend.broker);
-                self.backend.clear_poison_if_needed();
-                Self::coerce(outcome, &mut backend)
+                backend
             }
         }
+    }
+
+    fn run_broker(
+        &self,
+        op: impl FnOnce(&mut WorldBroker) -> std::result::Result<String, BrokerError>,
+    ) -> std::result::Result<String, WorldServiceError> {
+        let mut backend = self.lock_backend_recovering_poison();
+        let outcome = op(&mut backend.broker);
+        self.backend.clear_poison_if_needed();
+        Self::coerce(outcome, &mut backend)
     }
 
     /// Map a broker outcome onto the service surface. Counter exhaustion

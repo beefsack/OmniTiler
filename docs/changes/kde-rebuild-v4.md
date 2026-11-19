@@ -186,3 +186,26 @@ ordered recovery of a noncommuting focus/maximize pair. Saturation is
 offline; native close and later admission are part of the integrated leg.
 Scoped Rust format, strict all-target Clippy and all-target tests passed:
 3,546 tests with none failed or skipped. No fixture bytes changed.
+
+## Unit 3: bounded broker replay and issuer lifetime
+
+The checked broker retains exact capture requests and their bound replies
+under both the 1,024-source and combined 32 MiB payload limits. Exact replay
+bypasses dispatch and drain; changed reuse still refuses, and oldest-first
+eviction cannot reopen the sequence floor. Generation rotation clears
+retention and byte accounting. The checked regression fills the byte budget
+with admitted large reports, verifies replay and eviction independently of
+count pressure, and drains pending work only on a fresh source. A malformed
+gesture refusal with pending work does not advance the floor or drain.
+
+On the private D-Bus, an idle live issuer still deduplicates after result
+eviction and well-known alias loss. Proved unique-name loss frees namespaces
+and removes settled and retired results. A focus filed by that issuer still
+runs before another issuer's maximize-current-focus; only the latter receives
+a result. The post-credential barrier verifies exact-sender invalidation,
+no namespace recreation and no reauthorization of an unrelated caller.
+There is no wire or fixture-byte change. Planner replacement on the real
+desktop remains part of the integrated recovery unit.
+Scoped Rust format, strict all-target Clippy and all-target tests passed:
+3,548 tests with none failed or skipped. Independent review found no
+material issues with the command lifetime or replay boundaries.
