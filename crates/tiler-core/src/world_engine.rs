@@ -967,7 +967,7 @@ impl WorldEngine {
                     kind: KIND_OWNER,
                     message: MSG_OWNER,
                 },
-                incorporation: crate::world_report::ReportIncorporation::Rejected,
+                incorporation: crate::world_report::ReportIncorporation::NotAdmitted,
                 dispositions: Vec::new(),
             });
         };
@@ -979,7 +979,7 @@ impl WorldEngine {
                         kind: KIND_CORRELATION,
                         message: MSG_CORRELATION,
                     },
-                    incorporation: crate::world_report::ReportIncorporation::Rejected,
+                    incorporation: crate::world_report::ReportIncorporation::NotAdmitted,
                     dispositions: Vec::new(),
                 });
             }

@@ -3458,3 +3458,306 @@ fn unit_p_trailing_workspace_minting_skips_global_collisions_and_rolls_back() {
     assert_eq!(minted_after_switch, "ws-7");
     assert_eq!(staged.workspace.creation_counter, 7);
 }
+
+#[test]
+fn f4_pre_inspection_not_admitted_distinguishes_preflight_invalid_batch_and_replay() {
+    use crate::directional::WindowSubject;
+    use crate::world_admit_v4::StructuralCoreAdmissionGate;
+    use crate::world_engine::{
+        AdmissionGateDecision, CoreAdmissionGate, ExactInnerCheck, ExactInnerDecision,
+        FutureReserveGateFacts, MSG_CORRELATION, MSG_SUPERSEDED, PreflightGateFacts,
+    };
+    use crate::world_report::{
+        BatchDisposition, CommandDisposition, NativeWorkspaceFact, ReportIncorporation,
+        StateProperty, WorldReplyV4,
+    };
+
+    struct RefusePreflightGate;
+    impl CoreAdmissionGate for RefusePreflightGate {
+        fn check_request_size(&self, report: &WorldReportV4) -> AdmissionGateDecision {
+            StructuralCoreAdmissionGate.check_request_size(report)
+        }
+
+        fn check_preflight(
+            &self,
+            _report: &WorldReportV4,
+            _facts: &PreflightGateFacts<'_>,
+        ) -> AdmissionGateDecision {
+            AdmissionGateDecision::Refuse
+        }
+
+        fn check_exact_inner(&self, reply: &WorldReplyV4) -> ExactInnerDecision {
+            StructuralCoreAdmissionGate.check_exact_inner(reply)
+        }
+
+        fn check_future_reserve(
+            &self,
+            reply: &WorldReplyV4,
+            facts: &FutureReserveGateFacts,
+            exact: ExactInnerCheck,
+        ) -> AdmissionGateDecision {
+            StructuralCoreAdmissionGate.check_future_reserve(reply, facts, exact)
+        }
+    }
+
+    let mut engine = engine();
+    let r1 = report_full(
+        2,
+        1,
+        vec![screen("out-a", 0)],
+        facts_pair(),
+        "win-a",
+        PresentationRowV4::Valid(ingress("win-a")),
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+        true,
+    );
+    let seed = engine
+        .handle_report_with_gate_and_prepare(&r1, &[], &StructuralCoreAdmissionGate, |_| {
+            Ok::<(), ()>(())
+        })
+        .expect("seed");
+    assert_eq!(seed.incorporation, ReportIncorporation::Incorporated);
+    let rev_after_seed = engine.state_revision();
+    assert_eq!(engine.world.command_highwater, None);
+
+    let queued = [
+        (
+            1,
+            WorldCommand::Focus {
+                window: WindowSubject::Window(WindowId("win-b".to_owned())),
+                direction: None,
+            },
+        ),
+        (
+            2,
+            WorldCommand::ToggleMaximize {
+                window: WindowSubject::CurrentFocus,
+            },
+        ),
+    ];
+    let disordered = [queued[1].clone(), queued[0].clone()];
+
+    let mut prepare_calls = 0usize;
+    let assert_not_admitted = |engine: &mut WorldEngine,
+                               report: &WorldReportV4,
+                               batch: &[(u64, WorldCommand)],
+                               kind: &'static str,
+                               message: &'static str,
+                               prepare_calls: &mut usize| {
+        let before_prepare = *prepare_calls;
+        let res = engine
+            .handle_report_with_gate_and_prepare(
+                report,
+                batch,
+                &StructuralCoreAdmissionGate,
+                |_| {
+                    *prepare_calls += 1;
+                    Ok::<(), ()>(())
+                },
+            )
+            .expect("not-admitted refusal");
+        assert_eq!(res.incorporation, ReportIncorporation::NotAdmitted);
+        assert_eq!(res.outcome, V4RunOutcome::Rejected { kind, message });
+        assert!(res.dispositions.is_empty());
+        assert_eq!(*prepare_calls, before_prepare);
+        assert_eq!(engine.state_revision(), rev_after_seed);
+        assert_eq!(engine.world.command_highwater, None);
+    };
+
+    // 1. Public wrapper correlation fence refuses before queue inspection.
+    let mut bad_corr = observe(2, facts_pair(), "win-a");
+    bad_corr.request_seq = 3;
+    bad_corr.request_id.clear();
+    assert_not_admitted(
+        &mut engine,
+        &bad_corr,
+        &queued,
+        KIND_CORRELATION,
+        MSG_CORRELATION,
+        &mut prepare_calls,
+    );
+
+    // 2. Actual stale request (request_seq 1 < 2) refuses before queue inspection.
+    let mut stale_req = observe(2, facts_pair(), "win-a");
+    stale_req.request_seq = 1;
+    assert_not_admitted(
+        &mut engine,
+        &stale_req,
+        &queued,
+        KIND_SUPERSEDED,
+        MSG_SUPERSEDED,
+        &mut prepare_calls,
+    );
+
+    // 3. Reused request (request_seq 2 with changed report) refuses before queue inspection.
+    let reused_req = observe(2, facts_pair(), "win-a");
+    assert_not_admitted(
+        &mut engine,
+        &reused_req,
+        &queued,
+        KIND_REUSED,
+        MSG_REUSED,
+        &mut prepare_calls,
+    );
+
+    // 4. Capability fence refuses before queue inspection even with a disordered queue.
+    let mut native_fact = observe(2, facts_pair(), "win-a");
+    native_fact.request_seq = 3;
+    native_fact.windows[0].native_workspace = NativeWorkspaceFact::Value("ws-1".to_owned());
+    assert_not_admitted(
+        &mut engine,
+        &native_fact,
+        &disordered,
+        KIND_SNAPSHOT,
+        "native-without-capability",
+        &mut prepare_calls,
+    );
+
+    // 5. Next good capture executes the same queue once in FIFO order.
+    let mut r2 = observe(2, facts_pair(), "win-a");
+    r2.request_seq = 3;
+    let res_good = engine
+        .handle_report_with_gate_and_prepare(&r2, &queued, &StructuralCoreAdmissionGate, |_| {
+            prepare_calls += 1;
+            Ok::<(), ()>(())
+        })
+        .expect("good capture");
+    assert_eq!(res_good.incorporation, ReportIncorporation::Incorporated);
+    assert_eq!(prepare_calls, 1);
+    assert_eq!(engine.world.command_highwater, Some(2));
+    assert_eq!(res_good.dispositions.len(), 2);
+    assert!(matches!(
+        res_good.dispositions[0],
+        BatchDisposition {
+            seq: 1,
+            disposition: CommandDisposition::Executed(_),
+        }
+    ));
+    assert!(matches!(
+        res_good.dispositions[1],
+        BatchDisposition {
+            seq: 2,
+            disposition: CommandDisposition::Executed(_),
+        }
+    ));
+    let reply = accepted_reply(2, res_good.outcome);
+    assert_eq!(
+        reply.focus_request.as_ref().map(|f| &f.target),
+        Some(&WindowId("win-b".to_owned()))
+    );
+    let win_b = reply
+        .windows
+        .iter()
+        .find(|w| w.lifetime.0 == "win-b")
+        .expect("win-b");
+    let win_a = reply
+        .windows
+        .iter()
+        .find(|w| w.lifetime.0 == "win-a")
+        .expect("win-a");
+    assert!(
+        win_b
+            .state
+            .iter()
+            .any(|s| s.property == StateProperty::Maximized && s.value)
+    );
+    assert!(
+        !win_a
+            .state
+            .iter()
+            .any(|s| s.property == StateProperty::Maximized && s.value)
+    );
+
+    // 6. Exact replay continues the cached-publication contract with NotRun.
+    let res_replay = engine
+        .handle_report_with_gate_and_prepare(&r2, &queued, &StructuralCoreAdmissionGate, |_| {
+            prepare_calls += 1;
+            Ok::<(), ()>(())
+        })
+        .expect("exact replay");
+    assert_eq!(res_replay.incorporation, ReportIncorporation::Replay);
+    assert!(matches!(res_replay.outcome, V4RunOutcome::Duplicate(_)));
+    assert_eq!(prepare_calls, 1);
+    assert_eq!(
+        res_replay.dispositions,
+        vec![
+            BatchDisposition {
+                seq: 1,
+                disposition: CommandDisposition::NotRun,
+            },
+            BatchDisposition {
+                seq: 2,
+                disposition: CommandDisposition::NotRun,
+            },
+        ]
+    );
+
+    // 7. Valid inspected preflight refusal returns Rejected with NotRun.
+    let mut r3 = observe(3, facts_pair(), "win-a");
+    r3.request_seq = 4;
+    let next_queued = [
+        (
+            3,
+            WorldCommand::Focus {
+                window: WindowSubject::Window(WindowId("win-a".to_owned())),
+                direction: None,
+            },
+        ),
+        (
+            4,
+            WorldCommand::ToggleMaximize {
+                window: WindowSubject::CurrentFocus,
+            },
+        ),
+    ];
+    let res_preflight = engine
+        .handle_report_with_gate_and_prepare(&r3, &next_queued, &RefusePreflightGate, |_| {
+            prepare_calls += 1;
+            Ok::<(), ()>(())
+        })
+        .expect("preflight refusal");
+    assert_eq!(res_preflight.incorporation, ReportIncorporation::Rejected);
+    assert_eq!(
+        res_preflight.outcome,
+        V4RunOutcome::Rejected {
+            kind: KIND_REPLY_SIZE,
+            message: MSG_REPLY_SIZE,
+        }
+    );
+    assert_eq!(
+        res_preflight.dispositions,
+        vec![
+            BatchDisposition {
+                seq: 3,
+                disposition: CommandDisposition::NotRun,
+            },
+            BatchDisposition {
+                seq: 4,
+                disposition: CommandDisposition::NotRun,
+            },
+        ]
+    );
+    assert_eq!(prepare_calls, 1);
+
+    // 8. Invalid inspected batch returns Rejected with no per-command identities.
+    let bad_order = [next_queued[1].clone(), next_queued[0].clone()];
+    let res_invalid = engine
+        .handle_report_with_gate_and_prepare(&r3, &bad_order, &StructuralCoreAdmissionGate, |_| {
+            prepare_calls += 1;
+            Ok::<(), ()>(())
+        })
+        .expect("invalid batch");
+    assert_eq!(res_invalid.incorporation, ReportIncorporation::Rejected);
+    assert_eq!(
+        res_invalid.outcome,
+        V4RunOutcome::Rejected {
+            kind: KIND_SNAPSHOT,
+            message: "command-order-invalid",
+        }
+    );
+    assert!(res_invalid.dispositions.is_empty());
+    assert_eq!(prepare_calls, 1);
+}

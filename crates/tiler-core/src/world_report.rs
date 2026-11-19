@@ -2582,6 +2582,7 @@ pub enum ReportIncorporation {
     Incorporated,
     BootstrapIntentOnly,
     Replay,
+    NotAdmitted,
     Rejected,
 }
 

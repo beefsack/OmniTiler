@@ -1080,6 +1080,7 @@ impl WorldBroker {
             covered,
             staged_gesture_map,
             drained,
+            transition.incorporation,
             transition.outcome,
             transition.dispositions,
             prepared,
@@ -1100,6 +1101,18 @@ impl WorldBroker {
         outcome: WorldOutcome,
         dispositions: Vec<tiler_core::world_report::BatchDisposition>,
     ) -> Result<String, BrokerError> {
+        use tiler_core::world_report::ReportIncorporation;
+        let incorporation = match &outcome {
+            WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => {
+                if reply.ready {
+                    ReportIncorporation::Incorporated
+                } else {
+                    ReportIncorporation::BootstrapIntentOnly
+                }
+            }
+            WorldOutcome::Duplicate(_) => ReportIncorporation::Replay,
+            WorldOutcome::Rejected { .. } => ReportIncorporation::Rejected,
+        };
         let prepared = match &outcome {
             WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => {
                 Some(prepare_capture_reply_checked(
@@ -1122,6 +1135,7 @@ impl WorldBroker {
             covered,
             staged_gesture_map,
             drained,
+            incorporation,
             outcome,
             dispositions,
             prepared,
@@ -1137,6 +1151,7 @@ impl WorldBroker {
         covered: Option<CoverWitness>,
         staged_gesture_map: crate::kde_gesture::KdeGestureMap,
         drained: VecDeque<QueuedCommand>,
+        incorporation: tiler_core::world_report::ReportIncorporation,
         outcome: WorldOutcome,
         dispositions: Vec<tiler_core::world_report::BatchDisposition>,
         prepared: Option<PreparedCapture>,
@@ -1176,7 +1191,8 @@ impl WorldBroker {
                 return Ok(bound);
             }
             WorldOutcome::Rejected { kind, message } => {
-                if !drained.is_empty()
+                if incorporation != tiler_core::world_report::ReportIncorporation::NotAdmitted
+                    && !drained.is_empty()
                     && kind == "snapshot-invalid"
                     && (message == "command-invalid" || message == "command-order-invalid")
                 {

@@ -329,6 +329,14 @@ fn rejected_transition(
     }
 }
 
+fn not_admitted_transition(kind: &'static str, message: &'static str) -> TransitionResult {
+    TransitionResult {
+        outcome: V4RunOutcome::Rejected { kind, message },
+        incorporation: ReportIncorporation::NotAdmitted,
+        dispositions: Vec::new(),
+    }
+}
+
 impl WorldEngine {
     #[cfg(test)]
     pub(crate) fn handle_report_v4(
@@ -379,27 +387,19 @@ impl WorldEngine {
         // admission; this internal boundary re-checks the already-admitted
         // context so a stale or foreign envelope never reaches the run.
         if self.connection.adapter.as_deref() != Some(report.adapter_incarnation.as_str()) {
-            return Ok(rejected_transition(KIND_OWNER, MSG_OWNER, Vec::new()));
+            return Ok(not_admitted_transition(KIND_OWNER, MSG_OWNER));
         }
         if report.core_generation != self.connection.core_generation_str {
-            return Ok(rejected_transition(
-                KIND_GENERATION,
-                MSG_GENERATION,
-                Vec::new(),
-            ));
+            return Ok(not_admitted_transition(KIND_GENERATION, MSG_GENERATION));
         }
         let Some(bound_owner) = self.connection.connection_owner.clone() else {
-            return Ok(rejected_transition(KIND_OWNER, MSG_OWNER, Vec::new()));
+            return Ok(not_admitted_transition(KIND_OWNER, MSG_OWNER));
         };
         if issue.owner != bound_owner {
-            return Ok(rejected_transition(KIND_OWNER, MSG_OWNER, Vec::new()));
+            return Ok(not_admitted_transition(KIND_OWNER, MSG_OWNER));
         }
         if issue.correlation.as_str() != report.request_id {
-            return Ok(rejected_transition(
-                KIND_CORRELATION,
-                MSG_CORRELATION,
-                Vec::new(),
-            ));
+            return Ok(not_admitted_transition(KIND_CORRELATION, MSG_CORRELATION));
         }
         // Core-owned grading for the typed path: invalid scale/identity and
         // metadata/process rows become narrow holds like their
@@ -466,10 +466,9 @@ impl WorldEngine {
             || !report.creation_attempts.is_empty()
             || held_native_evidence;
         if native_evidence && !self.connection.host_owned_workspace_domains() {
-            return Ok(rejected_transition(
+            return Ok(not_admitted_transition(
                 KIND_SNAPSHOT,
                 "native-without-capability",
-                Vec::new(),
             ));
         }
         let host_owned = self.connection.host_owned_workspace_domains();
@@ -479,27 +478,22 @@ impl WorldEngine {
                 .any(|bracket| bracket.location.is_native() != host_owned)
         });
         if arrival_host_mismatch {
-            return Ok(rejected_transition(
+            return Ok(not_admitted_transition(
                 KIND_SNAPSHOT,
                 "arrival-host-mismatch",
-                Vec::new(),
             ));
         }
         match gate.check_request_size(report) {
             AdmissionGateDecision::Allow => {}
             AdmissionGateDecision::Refuse => {
-                return Ok(rejected_transition(
-                    KIND_OVERSIZED,
-                    MSG_OVERSIZED,
-                    Vec::new(),
-                ));
+                return Ok(not_admitted_transition(KIND_OVERSIZED, MSG_OVERSIZED));
             }
             AdmissionGateDecision::Reject { kind, message } => {
-                return Ok(rejected_transition(kind, message, Vec::new()));
+                return Ok(not_admitted_transition(kind, message));
             }
         }
         if let Some(reason) = validate_report_v4_reason(effective) {
-            return Ok(rejected_transition(KIND_SNAPSHOT, reason, Vec::new()));
+            return Ok(not_admitted_transition(KIND_SNAPSHOT, reason));
         }
         let digest = report_digest_v4(report);
         if let Some(replay) = &self.replay {
@@ -516,18 +510,10 @@ impl WorldEngine {
             ) {
                 V4Replay::Fresh => {}
                 V4Replay::Stale => {
-                    return Ok(rejected_transition(
-                        KIND_SUPERSEDED,
-                        MSG_SUPERSEDED,
-                        not_run_dispositions(report, queued),
-                    ));
+                    return Ok(not_admitted_transition(KIND_SUPERSEDED, MSG_SUPERSEDED));
                 }
                 V4Replay::Reused => {
-                    return Ok(rejected_transition(
-                        KIND_REUSED,
-                        MSG_REUSED,
-                        not_run_dispositions(report, queued),
-                    ));
+                    return Ok(not_admitted_transition(KIND_REUSED, MSG_REUSED));
                 }
                 V4Replay::Duplicate => {
                     let cached = replay.reply.clone();

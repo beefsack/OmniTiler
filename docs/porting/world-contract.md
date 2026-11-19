@@ -758,9 +758,20 @@ acceptance or adopt the separate close-focus amendment.
   state after prior commands, even if the first entry is consumed or refused.
 - Report incorporation is reported explicitly via `ReportIncorporation`:
   `Incorporated` (fresh ready report adopted), `BootstrapIntentOnly` (valid
-  report before readiness with no ready world authority), `Replay` (exact
-  report retry returning cached publication and `NotRun` for any resubmitted
-  batch), and `Rejected` (whole-report refusal with no adoption or execution).
+  report before readiness with no ready world authority), `Replay` (cached
+  publication for an exact report retry, not a refusal, returning the cached
+  reply and `NotRun` for any resubmitted batch), `NotAdmitted` (whole-capture
+  pre-inspection refusal before queue inspection --
+  owner/correlation/adapter/generation/capability/arrival/size/report-structure
+  and stale/reused request fences -- returning empty dispositions without
+  enumerating per-sequence receipts), and `Rejected` (inspected whole-report
+  or batch refusal with no adoption or execution). Invalid or disordered
+  inspected batches emit empty dispositions (`snapshot-invalid` with
+  `command-invalid` / `command-order-invalid`); valid inspected post-inspection
+  refusals (observation stale, preflight, row/operation caps, revision
+  exhaustion, or later staged/bootstrap outbound gates) retain `NotRun`
+  dispositions because queue validation already established the supplied
+  identities.
   A stale inline entry reports `AlreadyConsumed` without suppressing fresh
   queued commands; a per-command refusal returns `Refused(kind)`, consumes its
   sequence, and rolls back only that command's partial changes.

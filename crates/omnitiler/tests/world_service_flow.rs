@@ -5637,3 +5637,157 @@ fn migration_refill_parent_carries_through_issuing_and_retained_checked_broker()
     assert_eq!(mig_op_2, mig_op_1);
     assert_eq!(refill_op_2, refill_op_1);
 }
+
+#[test]
+fn f4_post_drain_pre_inspection_not_admitted_reparks_fifo_in_order() {
+    let service = WorldService::new();
+    let handshake =
+        handshake_req(ADAPTER, "req-0").replacen("\"hostOwned\":true", "\"hostOwned\":false", 1);
+    let discovery = parse(&service.discover(&handshake).expect("handshake routes"));
+    let generation = discovery["gen"].as_str().expect("gen").to_owned();
+    let settings = parse(&discover_settings(
+        &service,
+        ADAPTER,
+        &generation,
+        "settings-0",
+    ));
+    assert_eq!(settings["status"], "accepted", "{settings}");
+
+    let win_a = window_json("win-a", "[0,0,960,1040]", None);
+    let win_b = window_json("win-b", "[960,0,960,1040]", None);
+    let valid_inner = inner_report(&[win_a, win_b], true, false, "").replacen(
+        "\"focused\":\"\",\"foregroundKnown\":false",
+        "\"focused\":\"win-a\",\"foregroundKnown\":true",
+        1,
+    );
+
+    let seed = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &valid_inner))
+            .expect("seed capture"),
+    );
+    assert_eq!(seed["ready"], true, "seed ready: {seed}");
+    assert_eq!(seed["rev"], "1", "seed rev: {seed}");
+
+    // Queue two valid noncommuting commands: focus win-b, then toggle-maximize currentFocus.
+    service
+        .queue_command(
+            SENDER_A,
+            &queue_req(
+                &generation,
+                "panel-1",
+                "1",
+                "{\"op\":\"focus\",\"win\":\"win-b\"}",
+            ),
+        )
+        .expect("queue focus");
+    service
+        .queue_command(
+            SENDER_A,
+            &queue_req(
+                &generation,
+                "panel-1",
+                "2",
+                "{\"op\":\"toggle-maximize\",\"win\":{\"currentFocus\":true}}",
+            ),
+        )
+        .expect("queue maximize");
+
+    // Protocol-decodable capture carrying native evidence under a native-free handshake:
+    // broker drains the FIFO, core refuses before queue inspection with NotAdmitted
+    // (`native-without-capability`), and broker reparks both commands at FIFO head.
+    let native_inner = inner_report(
+        &[
+            window_json("win-a", "[0,0,960,1040]", Some("ws-1")),
+            window_json("win-b", "[960,0,960,1040]", Some("ws-1")),
+        ],
+        true,
+        false,
+        "",
+    )
+    .replacen(
+        "\"focused\":\"\",\"foregroundKnown\":false",
+        "\"focused\":\"win-a\",\"foregroundKnown\":true",
+        1,
+    );
+    let refused = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &native_inner))
+            .expect("in-band refusal"),
+    );
+    assert_eq!(refused["outcome"], "rejected", "{refused}");
+    assert_eq!(refused["kind"], "snapshot-invalid", "{refused}");
+    assert_eq!(refused["message"], "native-without-capability", "{refused}");
+
+    for cmd_id in ["1", "2"] {
+        let taken = parse(
+            &service
+                .take_result(SENDER_A, &take_req(&generation, "panel-1", cmd_id))
+                .expect("in-band take"),
+        );
+        assert_eq!(
+            taken["outcome"], "pending",
+            "cmd {cmd_id} must remain pending after NotAdmitted refusal: {taken}"
+        );
+    }
+
+    // Next valid fresh capture drains and executes both commands once in FIFO order.
+    let accepted = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &valid_inner))
+            .expect("accepted capture"),
+    );
+    assert_eq!(accepted["ready"], true, "accepted ready: {accepted}");
+    assert_eq!(accepted["rev"], "2", "no revision skipped by NotAdmitted");
+
+    let res_1 = parse(
+        &service
+            .take_result(SENDER_A, &take_req(&generation, "panel-1", "1"))
+            .expect("take 1"),
+    );
+    let res_2 = parse(
+        &service
+            .take_result(SENDER_A, &take_req(&generation, "panel-1", "2"))
+            .expect("take 2"),
+    );
+    assert_eq!(res_1["outcome"], "ready", "{res_1}");
+    assert_eq!(res_2["outcome"], "ready", "{res_2}");
+    let g_1: u64 = res_1["globalCmd"].as_str().unwrap().parse().unwrap();
+    let g_2: u64 = res_2["globalCmd"].as_str().unwrap().parse().unwrap();
+    assert!(g_1 < g_2, "FIFO order preserved: {g_1} vs {g_2}");
+
+    assert_eq!(accepted["focusRequest"]["target"], "win-b", "{accepted}");
+    let max_entry = |reply: &serde_json::Value, win: &str| {
+        reply_row(reply, win)["state"]
+            .as_array()
+            .expect("state")
+            .iter()
+            .find(|s| s["property"] == "maximized" && s["value"] == true)
+            .cloned()
+    };
+    let max_b = max_entry(&accepted, "win-b").unwrap_or_else(|| {
+        panic!("focus B then maximize currentFocus must maximize win-b: {accepted}")
+    });
+    assert_eq!(
+        max_b["cmdSeq"].as_str(),
+        Some(res_2["globalCmd"].as_str().unwrap()),
+        "win-b maximized state must record toggle-maximize cmdSeq: {max_b}"
+    );
+    assert!(
+        max_entry(&accepted, "win-a").is_none(),
+        "win-a must not be maximized: {accepted}"
+    );
+
+    // Follow-up fresh capture proves neither command re-executes (exactly once).
+    let follow_up = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 4, 4, &valid_inner))
+            .expect("follow-up capture"),
+    );
+    assert_eq!(follow_up["ready"], true, "{follow_up}");
+    assert!(
+        max_entry(&follow_up, "win-b").is_some(),
+        "win-b stays maximized (toggle-maximize ran once): {follow_up}"
+    );
+    assert!(max_entry(&follow_up, "win-a").is_none());
+}
