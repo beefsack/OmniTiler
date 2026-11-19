@@ -48,20 +48,18 @@ Mechanical API checks use `git show <pin>:<path>` and `git grep <pattern>
   changes current-desktop behavior. This is separate from `equalCount`.
   Connection vectors use `test-fixtures/world-wire/v4-active`; historical bytes
   stay unchanged. Current producer-byte checks use `test-fixtures/kde-v4-active`.
-- The retained close-focus amendment is implemented offline: required
-  `foregroundKnown` preserves literal no-client versus unknown/unbound/foreign;
-  the strict reader requires nullable `closeFocus`. The retained consumer spends
-  each bound opaque id once, including a safety no-call, from the latest
-  publication only. Already-target native fallback makes no setter call; a
-  different eligible survivor permits one fenced correction with raw feedback.
-  No extra input hook, adapter target selection or retry is added. The genuine
-  producer regression skips the issuing and two unchanged publications before
-  applying only the latest. Native acceptance remains separate.
-  [Adoption record](../changes/kde-retained-close-focus.md).
-
-- Unified retained `focusRequest` adoption is verified offline; native acceptance
-  remains open:
-  the strict reader and bounded retained consumer replace both old focus paths.
+- Current v4 reports require `foregroundKnown`: true with an empty `focused`
+  means no foreground client; false with an empty `focused` means unknown,
+  unreadable, unbound or foreign. Current v4 replies require nullable
+  `focusRequest` for all focus causes. `closeFocus` and focus effects are not
+  accepted reply shapes.
+- Unified retained focus is verified offline; native acceptance remains open.
+  The consumer acts only on the latest eligible publication, rechecking
+  generation, freshness, target lifetime and native safety before dispatch.
+  It spends a bound opaque request at most once, including a safety or
+  already-target no-call, and reports raw `focusFeedback` correlated by
+  request id, target and issuing revision. Setter success alone is not proof
+  of foreground equality.
   All four causes have genuine skipped-publication producer/codec/consumer
   proofs, including feedback and target-observation settlement from the same
   latest-only consumer. Core now owns the formerly adapter-only admission

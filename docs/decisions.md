@@ -61,6 +61,7 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 
 - macOS event-first AX recovery with deduplicated 1 s reread remains provisional/tunable, not renderer/paint proof; configuration and scoped defaults are active ([macOS](decisions/macos.md#fixture-and-scoped-input-defaults)).
 - macOS preview presets and remaining native shortcut ownership remain tentative; explicit Apply only is active ([shortcuts](decisions/reference-and-shortcuts.md#macos-preview-presets-and-native-shortcut-ownership)).
+- Decision (2026-11-20), pending user review: [unrepresentable underlay](decisions/engine.md#shared-presentation-and-cursor-authority), [migration refill parent](decisions/workspaces.md#workspace-migration-d5-source-refill), [migration membership authority](decisions/workspaces.md#workspace-migration-d7-floats-and-sticky-windows), and [admission phase and FIFO recovery](decisions/commands.md#ordered-core-commands-and-latest-world-application) ([engine](decisions/engine.md#world-transport-authority-and-boundedness)).
 
 ## Topics
 
