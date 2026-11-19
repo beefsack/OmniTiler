@@ -1,12 +1,15 @@
 # Core interface before the KDE rebuild
 
-**Approved (User 2026-11-19); implementation in progress.** Freeze the
-supported v4 report/command interface before KDE builds to it. Settings
-prepare-before-commit remains deferred (B3). Keep one logical
-world owner, ordered command execution, one full desired world per admitted
-capture, and separate requester results. Incorporating facts, applying native
-setters and proving their settlement are different operations. No native
+**Approved (User 2026-11-19); complete offline.** The supported v4
+report/command interface is ready for the KDE rebuild. Settings
+prepare-before-commit remains deferred (B3). One logical world owner
+processes ordered commands and returns one full desired world per admitted
+capture, with separate requester results. Incorporating facts, applying
+native setters and proving settlement remain different operations. No native
 acceptance is claimed here.
+
+The design sections below retain their pre-change source findings for context.
+Current rules are in the [world contract](../../porting/world-contract.md).
 
 ## A5. One current contract
 
@@ -38,10 +41,10 @@ acceptance is claimed here.
   transition; do not infer native proof from fixtures.
 
 Applicability table for `docs/porting/world-contract.md`; link the
-[handshake](../porting/world-contract.md#handshake-and-lifetime),
-[report fields](../porting/world-contract.md#worldreport),
-[result](../porting/world-contract.md#commands-and-results) and
-[apply/recovery](../porting/world-contract.md#freshness-and-recovery) rules:
+[handshake](../../porting/world-contract.md#handshake-and-lifetime),
+[report fields](../../porting/world-contract.md#worldreport),
+[result](../../porting/world-contract.md#commands-and-results) and
+[apply/recovery](../../porting/world-contract.md#freshness-and-recovery) rules:
 
 | Route / host | Producer | Actuator | Results and retry | Capability and evidence |
 | --- | --- | --- | --- | --- |
@@ -282,8 +285,8 @@ Applicability table for `docs/porting/world-contract.md`; link the
 
 ## Reference outcomes
 
-The [pre-KDE core interface discriminators](../spec/reference-outcomes.md#pre-kde-core-interface)
-record the selected behavior. Implementation and unsupported native outcomes
+The [pre-KDE core interface discriminators](../../spec/reference-outcomes.md#pre-kde-core-interface)
+record the selected behavior and its offline evidence. Native outcomes
 remain TBD. Existing typed replay, size and rapid-toggle rows still apply.
 
 ## Units and gates
@@ -330,8 +333,18 @@ The structural cost gate passed at 7.82M/34.63M Ir (4.43x); the separately
 measured checked count-and-encode path used 8.38M/36.82M Ir. T changed no
 recordings.
 
-Implementation gates (offline): use [C5 migration and cost](archive/core-wire-boundary.md#migration-acceptance-and-cost)
-and [completion evidence](archive/core-wire-boundary.md#completion-evidence).
+**C accepted offline:** The amended v4 contract describes supported host
+obligations, endpoint-specific refusal rules, and equivalent typed and
+bound-broker examples. Current captures pass; v3 and frozen v4 without
+`propertyAttempts` refuse under the existing precedence. Both command
+sequences pass all six route/delivery combinations below. Split routes
+distinguish modeled eligible writes from skipped intermediate application
+while withholding proof before the next command. The assertions cover the
+per-command payloads, refusal, exact redelivery, once-only retained focus
+identity, and the issuing sequence for B's maximize. A stays unchanged.
+
+Implementation gates (offline): use [C5 migration and cost](core-wire-boundary.md#migration-acceptance-and-cost)
+and [completion evidence](core-wire-boundary.md#completion-evidence).
 Scoped Rust format, all-target build, strict Clippy and tests for `tiler-core`,
 `tiler-protocol`, `omnitiler` (same `workspace_unsafe_posture` exclusion),
 KWin typecheck/tests, existing launcher/native-effect/helper gates, both
@@ -362,6 +375,43 @@ authenticated sender, file local 9 (focus unknown window) before local 1
 (focus known window). Check each issuer's result: the first is
 `failed/focus-unknown`, the second `ready`, in global filing order. Checking
 only ACKs or final focus would miss the ordering defect.
+
+## Completion evidence
+
+| Offline gate | Result | Baseline or limit |
+| --- | --- | --- |
+| Scoped Rust format, all-target build and strict Clippy | Pass | Same packages as C5 |
+| Scoped Rust all-target tests | 3,530 passed, 0 failed; one preexisting `workspace_unsafe_posture` exclusion | C5: 3,468 passed under its earlier invocation, without the final all-target scope |
+| KWin typecheck and tests with both Qt probes enabled | Pass; 1,383 passed, 0 failed, 0 skipped | G/I: 1,382 passed and one probe skip |
+| Stage 5 production routes | Checked broker 5/5, KWin subscriber 34/34; canonical byte oracles pass | Both routes enabled; only approved leaf tokens re-recorded (17 full, 11 s2) |
+| Launcher, native-effect and helper scripts | 703, 204 and 58 passed | Unchanged from C5 |
+| Frozen fixture families | Byte-identical to the frozen baseline | `world-wire/v4`, `stage5`, `stage5-v4`, `kde-v4` |
+
+Neither known test flake required a retry. The Qt gesture and presentation
+probes passed offline, including the connected x=16392 round trip. This is
+not native desktop, visibility, or paint acceptance.
+
+| Cost (same workloads as C5) | C5 | Final |
+| --- | --- | --- |
+| Callgrind, 50/200 windows | 7.72M / 34.07M Ir, 4.41x | 7,819,158.5 / 34,627,717.2 Ir, 4.43x (limits 24M / 100M Ir and 6.5x) |
+| Release steady worst p95, 10/50/200 windows | 0.2871 / 1.9622 / 4.4720 ms | 0.2411 / 2.0707 / 5.6019 ms (limits 1 / 4 / 10 ms) |
+| Release first reports, 10/50/200 windows | 0.1732-0.3786 / 1.0027-3.3286 / 12.3155-42.5533 ms | 0.1778-0.4167 / 1.0352-3.1294 / 12.5102-73.3692 ms |
+| Fresh broker p50/p95 | 203.0 / 211.1 us | 206.0 / 213.6 us |
+| Warm broker p50/p95 | 210.5 / 218.7 us | 211.3 / 220.6 us |
+
+Broker times are medians of seven series of 300 full captures through bound
+reply bytes, using the same active Stage 5 genesis and live correlation
+substitution as C5. Fresh and warm replies were 2,222-2,223 and 2,225-2,236
+bytes (C5: 2,221-2,222 and 2,224-2,235). Recorded Stage 5 byte checks pass
+separately. No broker wall-clock budget was added.
+
+Approved behavior changes were limited to carried coordinates and scoped
+holds; bounded opaque identities; bytewise tiled window order within each
+projected domain; the leaf-token-only active recordings; the separated
+semantic output error and batch admission outcomes; the trailing workspace
+mint skipping an existing explicit destination; and the stale global-swap
+hold no longer shadowing a live tile. No frozen recording or visibility
+refusal precedence changed.
 
 ## Non-goals
 
