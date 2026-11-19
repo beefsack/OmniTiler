@@ -927,6 +927,12 @@ impl WorldEngine {
         gate: &G,
         prepare: impl FnOnce(PreparedCandidate<'_>) -> Result<(), E>,
     ) -> Result<V4RunOutcome, E> {
+        if staged.workspace.members.len() > crate::world_report::MAX_RETAINED_MEMBERSHIPS {
+            return Ok(V4RunOutcome::Rejected {
+                kind: KIND_SNAPSHOT,
+                message: "membership-over-cap",
+            });
+        }
         let exact_inner = match Self::refuse_outbound_v4(&reply, gate) {
             Ok(exact) => exact,
             Err((kind, message)) => return Ok(V4RunOutcome::Rejected { kind, message }),

@@ -5791,3 +5791,231 @@ fn f4_post_drain_pre_inspection_not_admitted_reparks_fifo_in_order() {
     );
     assert!(max_entry(&follow_up, "win-a").is_none());
 }
+
+#[test]
+fn retained_membership_cap_checked_broker_refuses_preserves_fifo_and_recovers_on_close() {
+    let service = WorldService::new();
+    let handshake =
+        handshake_req(ADAPTER, "req-0").replacen("\"hostOwned\":true", "\"hostOwned\":false", 1);
+    let discovery = parse(&service.discover(&handshake).expect("handshake routes"));
+    let generation = discovery["gen"].as_str().expect("gen").to_owned();
+    let settings = parse(&discover_settings(
+        &service,
+        ADAPTER,
+        &generation,
+        "settings-0",
+    ));
+    assert_eq!(settings["status"], "accepted", "{settings}");
+
+    let win_a = window_json("win-a", "[0,0,960,1040]", None);
+    let win_b = window_json("win-b", "[960,0,960,1040]", None);
+    let valid_inner = inner_report(&[win_a.clone(), win_b.clone()], true, false, "").replacen(
+        "\"focused\":\"\",\"foregroundKnown\":false",
+        "\"focused\":\"win-a\",\"foregroundKnown\":true",
+        1,
+    );
+
+    let seed = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &valid_inner))
+            .expect("seed capture"),
+    );
+    assert_eq!(seed["ready"], true, "seed ready: {seed}");
+    assert_eq!(seed["rev"], "1", "seed rev: {seed}");
+
+    // Saturate retained lifetime membership to exactly 10,000 across 40
+    // incomplete-inventory captures (2 initial + 39*250 + 248 = 10,000).
+    let mut seq = 2u64;
+    let mut next_id = 0usize;
+    for batch_size in std::iter::repeat_n(250usize, 39).chain(std::iter::once(248)) {
+        let wins: Vec<String> = (0..batch_size)
+            .map(|_| {
+                let id = format!("win-c-{next_id}");
+                next_id += 1;
+                window_json(&id, "[0,0,400,400]", None)
+            })
+            .collect();
+        let batch_inner = inner_report(&wins, false, false, "");
+        let reply = parse(
+            &service
+                .evaluate_capture(&capture(ADAPTER, &generation, seq, seq, &batch_inner))
+                .expect("saturate capture"),
+        );
+        assert_eq!(reply["ready"], true, "batch seq {seq} ready: {reply}");
+        assert_eq!(reply["rev"], seq.to_string(), "batch seq {seq} rev");
+        seq += 1;
+    }
+    assert_eq!(next_id, 9_998);
+    let saturated_rev = (seq - 1).to_string();
+
+    let pre_proj = parse(
+        &service
+            .read_presentation("{\"v\":4,\"req\":\"proj-pre\"}")
+            .expect("pre-refusal presentation"),
+    );
+    assert_eq!(pre_proj["outcome"], "presentation", "{pre_proj}");
+    assert_eq!(pre_proj["rev"], saturated_rev, "{pre_proj}");
+
+    // Queue two valid noncommuting commands while at the 10,000 cap.
+    service
+        .queue_command(
+            SENDER_A,
+            &queue_req(
+                &generation,
+                "panel-1",
+                "1",
+                "{\"op\":\"focus\",\"win\":\"win-b\"}",
+            ),
+        )
+        .expect("queue focus");
+    service
+        .queue_command(
+            SENDER_A,
+            &queue_req(
+                &generation,
+                "panel-1",
+                "2",
+                "{\"op\":\"toggle-maximize\",\"win\":{\"currentFocus\":true}}",
+            ),
+        )
+        .expect("queue maximize");
+
+    // Over-cap capture (10,001st member) refuses with structural
+    // `snapshot-invalid` / `membership-over-cap` (never `reply-oversize`).
+    let over_inner = inner_report(
+        &[
+            win_a.clone(),
+            win_b.clone(),
+            window_json("win-over-10001", "[100,100,400,400]", None),
+        ],
+        false,
+        false,
+        "",
+    );
+    let over_cap_env = capture(ADAPTER, &generation, seq, seq, &over_inner);
+    let refused_raw = service
+        .evaluate_capture(&over_cap_env)
+        .expect("over-cap refusal");
+    let refused = parse(&refused_raw);
+    assert_eq!(refused["outcome"], "rejected", "{refused}");
+    assert_eq!(refused["kind"], "snapshot-invalid", "{refused}");
+    assert_eq!(refused["message"], "membership-over-cap", "{refused}");
+
+    // Exact replay of the refused capture returns identical raw response bytes.
+    let replayed_raw = service
+        .evaluate_capture(&over_cap_env)
+        .expect("over-cap replay");
+    assert_eq!(replayed_raw, refused_raw);
+
+    // Readiness remains intact with no result or projection adoption on refusal.
+    let post_proj = parse(
+        &service
+            .read_presentation("{\"v\":4,\"req\":\"proj-post\"}")
+            .expect("post-refusal presentation"),
+    );
+    assert_eq!(post_proj["outcome"], "presentation", "{post_proj}");
+    assert_eq!(post_proj["rev"], saturated_rev, "{post_proj}");
+    assert!(
+        !post_proj["windows"]
+            .as_array()
+            .expect("windows")
+            .iter()
+            .any(|w| w["win"] == "win-over-10001"),
+        "refused window must not enter cached presentation: {post_proj}"
+    );
+    for cmd_id in ["1", "2"] {
+        let taken = parse(
+            &service
+                .take_result(SENDER_A, &take_req(&generation, "panel-1", cmd_id))
+                .expect("take pending"),
+        );
+        assert_eq!(taken["outcome"], "pending", "cmd {cmd_id}: {taken}");
+    }
+
+    // Fitting capture in the same generation: exact authoritative close frees
+    // 1 slot so the new lifetime fits at 10,000. The refused capture advanced
+    // only the ingress source floor (so this capture uses seq + 1), never the
+    // adopted world revision/watermark (world advances from rev 41 -> 42 with
+    // no skipped revision), and both queued FIFO commands drain once in order.
+    let fit_inner = inner_report(
+        &[
+            win_a,
+            win_b,
+            window_json("win-recovered", "[200,200,400,400]", None),
+        ],
+        false,
+        false,
+        "",
+    )
+    .replacen("\"closed\":[]", "\"closed\":[\"win-c-0\"]", 1)
+    .replacen(
+        "\"focused\":\"\",\"foregroundKnown\":false",
+        "\"focused\":\"win-a\",\"foregroundKnown\":true",
+        1,
+    );
+    let accepted = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, seq + 1, seq + 1, &fit_inner))
+            .expect("fitting recovery capture"),
+    );
+    assert_eq!(accepted["ready"], true, "accepted ready: {accepted}");
+    assert_eq!(
+        accepted["rev"], "42",
+        "no revision skipped by refusal: {accepted}"
+    );
+    assert_eq!(
+        reply_row(&accepted, "win-recovered")["win"],
+        "win-recovered",
+        "new lifetime admitted: {accepted}"
+    );
+
+    let res_1 = parse(
+        &service
+            .take_result(SENDER_A, &take_req(&generation, "panel-1", "1"))
+            .expect("take 1"),
+    );
+    let res_2 = parse(
+        &service
+            .take_result(SENDER_A, &take_req(&generation, "panel-1", "2"))
+            .expect("take 2"),
+    );
+    assert_eq!(res_1["outcome"], "ready", "{res_1}");
+    assert_eq!(res_2["outcome"], "ready", "{res_2}");
+    let g_1: u64 = res_1["globalCmd"].as_str().unwrap().parse().unwrap();
+    let g_2: u64 = res_2["globalCmd"].as_str().unwrap().parse().unwrap();
+    assert!(g_1 < g_2, "FIFO order preserved: {g_1} vs {g_2}");
+
+    let max_entry = |reply: &serde_json::Value, win: &str| {
+        reply_row(reply, win)["state"]
+            .as_array()
+            .expect("state")
+            .iter()
+            .find(|s| s["property"] == "maximized" && s["value"] == true)
+            .cloned()
+    };
+    let max_b = max_entry(&accepted, "win-b").unwrap_or_else(|| {
+        panic!("focus B then maximize currentFocus must maximize win-b: {accepted}")
+    });
+    assert_eq!(
+        max_b["cmdSeq"].as_str(),
+        Some(res_2["globalCmd"].as_str().unwrap()),
+        "win-b maximized state must record toggle-maximize cmdSeq: {max_b}"
+    );
+    assert!(max_entry(&accepted, "win-a").is_none());
+
+    // Follow-up capture confirms neither command re-executes.
+    let follow_up = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                seq + 2,
+                seq + 2,
+                &valid_inner,
+            ))
+            .expect("follow-up capture"),
+    );
+    assert_eq!(follow_up["ready"], true, "{follow_up}");
+    assert!(max_entry(&follow_up, "win-b").is_some());
+    assert!(max_entry(&follow_up, "win-a").is_none());
+}

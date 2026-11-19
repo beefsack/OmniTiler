@@ -3761,3 +3761,506 @@ fn f4_pre_inspection_not_admitted_distinguishes_preflight_invalid_batch_and_repl
     assert!(res_invalid.dispositions.is_empty());
     assert_eq!(prepare_calls, 1);
 }
+
+fn cap_report(
+    seq: u64,
+    windows: Vec<WindowFact>,
+    focused: &str,
+    cmd: Option<(u64, WorldCommand)>,
+    closed: Vec<&str>,
+    inventory_complete: bool,
+) -> WorldReportV4 {
+    let (command_seq, command) = match cmd {
+        Some((cseq, c)) => (Some(cseq), Some(c)),
+        None => (None, None),
+    };
+    report_full(
+        seq,
+        seq,
+        vec![screen("out-a", 1920)],
+        windows,
+        focused,
+        PresentationRowV4::Valid(ingress(focused)),
+        command_seq,
+        command,
+        Vec::new(),
+        closed,
+        inventory_complete,
+    )
+}
+
+fn seed_cap_members(
+    eng: &mut WorldEngine,
+    prefix: &str,
+    count: usize,
+    home: &crate::session::DomainKey,
+    floating: bool,
+) {
+    use crate::world_members::MemberState;
+
+    for i in 0..count {
+        eng.world.workspace.members.insert(
+            WindowId(format!("{prefix}-{i}")),
+            MemberState {
+                home: home.clone(),
+                floating,
+                minimized: false,
+                geometry: None,
+            },
+        );
+    }
+}
+
+fn run_cap_report<G: crate::world_admit_v4::CoreAdmissionGate + ?Sized>(
+    eng: &mut WorldEngine,
+    rep: &WorldReportV4,
+    gate: &G,
+) -> crate::world_engine::TransitionResult {
+    eng.handle_report_v4_batched_with_gate_and_prepare(rep, &issue(rep), &[], gate, |_| {
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .unwrap_or_else(|e| match e {})
+}
+
+#[test]
+fn retained_membership_cap_cumulative_churn_refusal_before_outbound_and_close_recovery() {
+    use crate::session::DomainKey;
+    use crate::world_admit_v4::{
+        AdmissionGateDecision, CoreAdmissionGate, ExactInnerCheck, ExactInnerDecision,
+        FutureReserveGateFacts, PreflightGateFacts, StructuralCoreAdmissionGate,
+    };
+    use crate::world_report::{MAX_RETAINED_MEMBERSHIPS, ReportIncorporation, WorldReplyV4};
+
+    struct FailIfExactCalledGate;
+
+    impl CoreAdmissionGate for FailIfExactCalledGate {
+        fn check_request_size(&self, _report: &WorldReportV4) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+
+        fn check_preflight(
+            &self,
+            _report: &WorldReportV4,
+            _facts: &PreflightGateFacts<'_>,
+        ) -> AdmissionGateDecision {
+            AdmissionGateDecision::Allow
+        }
+
+        fn check_exact_inner(&self, _reply: &WorldReplyV4) -> ExactInnerDecision {
+            panic!("membership cap must refuse before check_exact_inner")
+        }
+
+        fn check_future_reserve(
+            &self,
+            _reply: &WorldReplyV4,
+            _facts: &FutureReserveGateFacts,
+            _exact: ExactInnerCheck,
+        ) -> AdmissionGateDecision {
+            panic!("membership cap must refuse before check_future_reserve")
+        }
+    }
+
+    let mut eng = engine();
+    let _ = accepted_reply(1, admit(&mut eng, &observe(1, facts_pair(), "win-a")));
+    assert_eq!(eng.world.workspace.members.len(), 2);
+
+    // Seed 9,990 retained lifetimes on ("out-a", "ws-1") so 8 more across
+    // cumulative incomplete reports reach the exact 10,000 cap.
+    let home = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
+    };
+    seed_cap_members(&mut eng, "win-seed", 9_990, &home, false);
+    assert_eq!(eng.world.workspace.members.len(), 9_992);
+
+    let mut seq = 2u64;
+    for batch in 0..2 {
+        let mut wins = facts_pair();
+        for j in 0..4 {
+            let idx = batch * 4 + j;
+            wins.push(fact(&format!("win-churn-{idx}"), "out-a", 200 + idx));
+        }
+        let rep = cap_report(seq, wins, "win-a", None, Vec::new(), false);
+        let _ = accepted_reply(seq, admit(&mut eng, &rep));
+        seq += 1;
+    }
+    assert_eq!(eng.world.workspace.members.len(), MAX_RETAINED_MEMBERSHIPS);
+
+    // Transitory pre-retirement count > 10,000 succeeds when exact closes
+    // bring the final staged count back to 10,000.
+    let mut fit_wins = facts_pair();
+    fit_wins.push(fact("win-fit-1", "out-a", 300));
+    fit_wins.push(fact("win-fit-2", "out-a", 301));
+    let fit_rep = cap_report(
+        seq,
+        fit_wins,
+        "win-a",
+        None,
+        vec!["win-seed-0", "win-seed-1"],
+        false,
+    );
+    let _ = accepted_reply(seq, admit(&mut eng, &fit_rep));
+    seq += 1;
+    assert_eq!(eng.world.workspace.members.len(), MAX_RETAINED_MEMBERSHIPS);
+    for closed_id in ["win-seed-0", "win-seed-1"] {
+        assert!(
+            !eng.world
+                .workspace
+                .members
+                .contains_key(&WindowId(closed_id.to_owned()))
+        );
+    }
+
+    // Over-cap refuses before outbound/reply-size work and preserves state/replay.
+    let rev_before = eng.state_revision();
+    let members_before = eng.world.workspace.members.clone();
+    let replay_before = eng.last_reply_v4();
+    let mut over_wins = facts_pair();
+    over_wins.push(fact("win-over-10001", "out-a", 302));
+    let over_rep = cap_report(seq, over_wins, "win-a", None, Vec::new(), false);
+    let over_res = run_cap_report(&mut eng, &over_rep, &FailIfExactCalledGate);
+    assert_eq!(over_res.incorporation, ReportIncorporation::Rejected);
+    assert_eq!(
+        over_res.outcome,
+        V4RunOutcome::Rejected {
+            kind: KIND_SNAPSHOT,
+            message: "membership-over-cap",
+        }
+    );
+    assert!(over_res.dispositions.is_empty());
+    assert_eq!(eng.state_revision(), rev_before);
+    assert_eq!(eng.world.workspace.members, members_before);
+    assert_eq!(eng.last_reply_v4(), replay_before);
+
+    // Exact authoritative close frees space and a fitting report succeeds in the
+    // same generation.
+    let mut recover_wins = facts_pair();
+    recover_wins.push(fact("win-recovered", "out-a", 303));
+    let recover_rep = cap_report(seq, recover_wins, "win-a", None, vec!["win-seed-2"], false);
+    let rec_res = run_cap_report(&mut eng, &recover_rep, &StructuralCoreAdmissionGate);
+    assert_eq!(rec_res.incorporation, ReportIncorporation::Incorporated);
+    match rec_res.outcome {
+        V4RunOutcome::Accepted(reply) => assert_eq!(reply.state_revision, rev_before + 1),
+        other => panic!("expected recovery acceptance, got {other:?}"),
+    }
+    assert_eq!(eng.world.workspace.members.len(), MAX_RETAINED_MEMBERSHIPS);
+    assert!(
+        !eng.world
+            .workspace
+            .members
+            .contains_key(&WindowId("win-seed-2".to_owned()))
+    );
+    assert!(
+        eng.world
+            .workspace
+            .members
+            .contains_key(&WindowId("win-recovered".to_owned()))
+    );
+}
+
+#[test]
+fn retained_membership_cap_uncertainty_controls_and_command_created_entry() {
+    use crate::directional::WindowSubject;
+    use crate::session::DomainKey;
+    use crate::world_admit_v4::StructuralCoreAdmissionGate;
+    use crate::world_report::{
+        FrameSetter, MAX_RETAINED_MEMBERSHIPS, ReportIncorporation, StateAttempt, StateProperty,
+        TilingMode,
+    };
+
+    // 1. Uncertainty protection: held, floating-scope, displaced, and transfer
+    //    members are never evicted at the 10,000 cap.
+    let mut eng = engine();
+    let mut initial_wins = facts_pair();
+    initial_wins.push(fact("win-flight", "out-a", 150));
+    let _ = accepted_reply(
+        1,
+        admit(&mut eng, &observe(1, initial_wins.clone(), "win-a")),
+    );
+
+    let send_rep = cap_report(
+        2,
+        initial_wins,
+        "win-flight",
+        Some((
+            1,
+            WorldCommand::Send {
+                window: WindowSubject::Window(WindowId("win-flight".to_owned())),
+                target_output: OutputId("out-a".to_owned()),
+                target_workspace: crate::directional::WorkspaceId("ws-2".to_owned()),
+                follow: false,
+            },
+        )),
+        Vec::new(),
+        true,
+    );
+    let send_reply = accepted_reply(2, admit(&mut eng, &send_rep));
+    assert_eq!(send_reply.transfers.len(), 1);
+    assert_eq!(eng.world.workspace.members.len(), 3);
+
+    let ws1 = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
+    };
+    let float_scope = DomainKey {
+        output: OutputId("out-a".to_owned()),
+        workspace: crate::directional::WorkspaceId("ws-2".to_owned()),
+    };
+    let disp_home = DomainKey {
+        output: OutputId("out-disp".to_owned()),
+        workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
+    };
+    eng.world.floating_scopes.insert(float_scope.clone());
+    eng.world
+        .workspace
+        .tiling
+        .insert(float_scope.clone(), TilingMode::Floating);
+    eng.world.workspace.displaced.insert(
+        "out-disp".to_owned(),
+        DisplacedEntry {
+            workspaces: vec!["ws-1".to_owned()],
+            owned: vec!["ws-1".to_owned()],
+            dest: "out-a".to_owned(),
+            origin_identity: crate::world_report::OutputIdentity::unknown(),
+            origin_tuple_contested: false,
+            origin_connector_contested: false,
+        },
+    );
+
+    seed_cap_members(&mut eng, "win-held", 1, &ws1, false);
+    seed_cap_members(&mut eng, "win-float", 1, &float_scope, true);
+    seed_cap_members(&mut eng, "win-disp", 1, &disp_home, false);
+    seed_cap_members(&mut eng, "win-u", 9_994, &float_scope, true);
+    assert_eq!(eng.world.workspace.members.len(), MAX_RETAINED_MEMBERSHIPS);
+
+    let mut complete_over = observe(
+        3,
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            fact("win-uncertain-over", "out-a", 200),
+        ],
+        "win-a",
+    );
+    complete_over.held_windows.push(HeldWindowRow {
+        window: WindowId("win-held-0".to_owned()),
+        ordinal: 0,
+        output: Some(OutputId("out-a".to_owned())),
+        has_native_workspace: false,
+        diagnostic: None,
+        kind: RowDiagnosticKind::ConflictingFact,
+    });
+    let rev_before = eng.state_revision();
+    let over_res = run_cap_report(&mut eng, &complete_over, &StructuralCoreAdmissionGate);
+    assert_eq!(over_res.incorporation, ReportIncorporation::Rejected);
+    assert_eq!(
+        over_res.outcome,
+        V4RunOutcome::Rejected {
+            kind: KIND_SNAPSHOT,
+            message: "membership-over-cap",
+        }
+    );
+    assert!(over_res.dispositions.is_empty());
+    assert_eq!(eng.state_revision(), rev_before);
+    for id in ["win-held-0", "win-float-0", "win-disp-0", "win-flight"] {
+        assert!(
+            eng.world
+                .workspace
+                .members
+                .contains_key(&WindowId(id.to_owned())),
+            "{id} must not be evicted"
+        );
+    }
+
+    // 2. Causal command-created membership entry at the 10,000 cap:
+    //    A sticky window (sticky: Some(true)) is excluded from members by
+    //    report-only ingestion. Issuing ToggleSticky mints a pending exact
+    //    native Sticky=false target; when the host refuses it (StateAttempt
+    //    RefusedProven), native sticky rollback inserts win-sticky into members,
+    //    overflowing 10,000 -> 10,001 until a positive close frees 1 slot.
+    let mut cmd_eng = engine();
+    let _ = accepted_reply(
+        1,
+        admit(
+            &mut cmd_eng,
+            &cap_report(
+                1,
+                vec![
+                    fact("win-a", "out-a", 0),
+                    fact("win-b", "out-a", 100),
+                    sticky_fact("win-sticky", "out-a", 200),
+                ],
+                "win-a",
+                None,
+                Vec::new(),
+                true,
+            ),
+        ),
+    );
+    assert_eq!(cmd_eng.world.workspace.members.len(), 2);
+    assert!(
+        !cmd_eng
+            .world
+            .workspace
+            .members
+            .contains_key(&WindowId("win-sticky".to_owned()))
+    );
+
+    cmd_eng.world.floating_scopes.insert(float_scope.clone());
+    cmd_eng
+        .world
+        .workspace
+        .tiling
+        .insert(float_scope.clone(), TilingMode::Floating);
+    seed_cap_members(&mut cmd_eng, "win-seed", 9_998, &float_scope, true);
+    assert_eq!(
+        cmd_eng.world.workspace.members.len(),
+        MAX_RETAINED_MEMBERSHIPS
+    );
+
+    let cmd_rep = cap_report(
+        2,
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            sticky_fact("win-sticky", "out-a", 200),
+        ],
+        "win-a",
+        Some((
+            1,
+            WorldCommand::ToggleSticky {
+                window: WindowSubject::Window(WindowId("win-sticky".to_owned())),
+            },
+        )),
+        Vec::new(),
+        true,
+    );
+    let cmd_reply = accepted_reply(2, admit(&mut cmd_eng, &cmd_rep));
+    assert!(cmd_eng.world.command_result.is_none());
+    let sticky_row = cmd_reply
+        .windows
+        .iter()
+        .find(|w| w.lifetime == WindowId("win-sticky".to_owned()))
+        .expect("win-sticky reply row");
+    assert_eq!(
+        sticky_row
+            .state
+            .iter()
+            .find_map(|t| (t.property == StateProperty::Sticky).then_some(t.value)),
+        Some(false),
+        "ToggleSticky must issue pending exact native Sticky=false target"
+    );
+    assert_eq!(
+        cmd_eng.world.workspace.members.len(),
+        MAX_RETAINED_MEMBERSHIPS
+    );
+
+    // Control at the exact same cap and identical sticky=true window fact
+    // (absent StateAttempt): accepted without inserting win-sticky.
+    let ack_base = cap_report(
+        3,
+        vec![
+            fact("win-a", "out-a", 0),
+            fact("win-b", "out-a", 100),
+            sticky_fact("win-sticky", "out-a", 200),
+        ],
+        "win-a",
+        None,
+        Vec::new(),
+        true,
+    );
+
+    let mut ctrl_eng = cmd_eng.clone();
+    let ctrl_res = run_cap_report(&mut ctrl_eng, &ack_base, &StructuralCoreAdmissionGate);
+    assert_eq!(ctrl_res.incorporation, ReportIncorporation::Incorporated);
+    assert_eq!(
+        ctrl_eng.world.workspace.members.len(),
+        MAX_RETAINED_MEMBERSHIPS
+    );
+    assert!(
+        !ctrl_eng
+            .world
+            .workspace
+            .members
+            .contains_key(&WindowId("win-sticky".to_owned()))
+    );
+
+    // Causal refusal: identical report + Refused StateAttempt proves
+    // RefusedProven and triggers native sticky rollback to insert win-sticky
+    // into members -> 10,001 -> refused.
+    let mut ack_with_attempt = ack_base;
+    ack_with_attempt.state_attempts.push(StateAttempt {
+        window: WindowId("win-sticky".to_owned()),
+        property: StateProperty::Sticky,
+        target: false,
+        revision: cmd_reply.state_revision,
+        setter: FrameSetter::Refused,
+        pre: Some(true),
+        post: Some(true),
+        attempt_ms: 1,
+    });
+    let rev_before_ack = cmd_eng.state_revision();
+    let ack_res = run_cap_report(
+        &mut cmd_eng,
+        &ack_with_attempt,
+        &StructuralCoreAdmissionGate,
+    );
+    assert_eq!(ack_res.incorporation, ReportIncorporation::Rejected);
+    assert_eq!(
+        ack_res.outcome,
+        V4RunOutcome::Rejected {
+            kind: KIND_SNAPSHOT,
+            message: "membership-over-cap",
+        }
+    );
+    assert!(ack_res.dispositions.is_empty());
+    assert_eq!(cmd_eng.state_revision(), rev_before_ack);
+    assert_eq!(
+        cmd_eng.world.workspace.members.len(),
+        MAX_RETAINED_MEMBERSHIPS
+    );
+    assert!(
+        !cmd_eng
+            .world
+            .workspace
+            .members
+            .contains_key(&WindowId("win-sticky".to_owned()))
+    );
+
+    // Positive close freeing 1 slot lets the command-created member fit.
+    let mut ack_recover = ack_with_attempt;
+    ack_recover.closed.push(WindowId("win-seed-0".to_owned()));
+    let fit_res = run_cap_report(&mut cmd_eng, &ack_recover, &StructuralCoreAdmissionGate);
+    assert_eq!(fit_res.incorporation, ReportIncorporation::Incorporated);
+    match fit_res.outcome {
+        V4RunOutcome::Accepted(reply) => {
+            assert_eq!(reply.state_revision, rev_before_ack + 1);
+            assert!(
+                reply
+                    .windows
+                    .iter()
+                    .any(|w| w.lifetime == WindowId("win-sticky".to_owned())),
+                "recovered reply must publish command-created member win-sticky"
+            );
+        }
+        other => panic!("expected command-created member to fit after close, got {other:?}"),
+    }
+    assert_eq!(
+        cmd_eng.world.workspace.members.len(),
+        MAX_RETAINED_MEMBERSHIPS
+    );
+    assert!(
+        !cmd_eng
+            .world
+            .workspace
+            .members
+            .contains_key(&WindowId("win-seed-0".to_owned()))
+    );
+    assert!(
+        cmd_eng
+            .world
+            .workspace
+            .members
+            .contains_key(&WindowId("win-sticky".to_owned()))
+    );
+}

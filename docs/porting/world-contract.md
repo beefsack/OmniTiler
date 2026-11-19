@@ -375,6 +375,14 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
   identity/envelope/structural bounds refuse the whole report before mutation.
   [Facts](../decisions/contract.md#facts-versus-classification),
   [row resilience](../changes/core-interface-review.md#original-backlog-lines-103-122).
+- Core retains at most 10,000 lifetime membership records, independently of
+  the window-row limit on a single report. The prepared transition checks
+  the final count after applying existing authoritative retirements and
+  staged admissions, including commands. An over-cap candidate refuses as
+  `snapshot-invalid` / `membership-over-cap`: no membership is evicted to
+  make room, no staged world or command results are adopted, and the
+  broker preserves its ordered FIFO. A fresh fitting capture can succeed
+  in the same generation.
 
 | Key | Type | Null/absence | Meaning |
 | --- | --- | --- | --- |

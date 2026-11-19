@@ -139,6 +139,8 @@ pub const MAX_INTENT_RECORDS: usize = 10_000;
 /// One authoritative current target per window lifetime, including explicit
 /// null clears; missing rows carry no storage authority and never delete.
 pub const MAX_INTENT_DESIRED: usize = 10_000;
+/// Bound on retained core lifetime membership records (`world.workspace.members`).
+pub const MAX_RETAINED_MEMBERSHIPS: usize = 10_000;
 
 /// Opaque host intent return row: the storage-verified live subject plus the
 /// exact core record bytes, never interpreted by the adapter. The outer

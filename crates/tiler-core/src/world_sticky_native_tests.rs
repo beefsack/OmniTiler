@@ -2855,22 +2855,36 @@ fn native_rollback_cap_blocked_retains_proof_without_fencing_sibling() {
             .intent
             .intent_desired
             .insert(id.clone(), Some(IntentData::new(Some(false), None)));
-        engine.world.workspace.members.insert(
-            id,
-            crate::world_members::MemberState {
-                home: crate::session::DomainKey {
-                    output: OutputId("out-a".to_owned()),
-                    workspace: crate::directional::WorkspaceId(fill_ws.clone()),
+        if i < MAX_INTENT_DESIRED - 2 {
+            engine.world.workspace.members.insert(
+                id,
+                crate::world_members::MemberState {
+                    home: crate::session::DomainKey {
+                        output: OutputId("out-a".to_owned()),
+                        workspace: crate::directional::WorkspaceId(fill_ws.clone()),
+                    },
+                    floating: false,
+                    minimized: false,
+                    geometry: None,
                 },
-                floating: false,
-                minimized: false,
-                geometry: None,
-            },
-        );
+            );
+        }
     }
     assert_eq!(engine.world.intent.intent_desired.len(), MAX_INTENT_DESIRED);
     assert!(!engine.world.intent.intent_desired.contains_key(&win_a));
     assert!(!engine.world.intent.sticky_saved_incomplete);
+
+    // Keep the last two filler intent-only lifetimes live as sticky facts so
+    // `members` stays at 10,000 while `intent_desired` stays at MAX_INTENT_DESIRED.
+    let with_intent_tail = |mut rows: Vec<crate::world_report::WindowFact>| {
+        let mut s1 = fact("win-fill-09998", "out-a", 500);
+        s1.sticky = Some(true);
+        let mut s2 = fact("win-fill-09999", "out-a", 600);
+        s2.sticky = Some(true);
+        rows.push(s1);
+        rows.push(s2);
+        rows
+    };
 
     // A receives a proven refusal at the full map: rollback is blocked
     // by capacity, retaining A's pending proof without latching the
@@ -2879,7 +2893,7 @@ fn native_rollback_cap_blocked_retains_proof_without_fencing_sibling() {
         &mut engine,
         &refused_proof(
             4,
-            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
+            with_intent_tail(vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)]),
             "win-a",
             true,
             rev_a,
@@ -2922,7 +2936,7 @@ fn native_rollback_cap_blocked_retains_proof_without_fencing_sibling() {
     let b_at_cap = cmd(
         5,
         3,
-        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
+        with_intent_tail(vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)]),
         set_sticky("win-b", true),
     );
     match engine.handle_report(&b_at_cap, &[]).0 {
@@ -2934,7 +2948,7 @@ fn native_rollback_cap_blocked_retains_proof_without_fencing_sibling() {
     }
     let mut spurious_a = observe(
         5,
-        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
+        with_intent_tail(vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)]),
     );
     spurious_a.state_attempts = vec![sticky_attempt(
         "win-a",
@@ -2961,7 +2975,10 @@ fn native_rollback_cap_blocked_retains_proof_without_fencing_sibling() {
     // freed slot before B.
     let mut held_a = fact("win-a", "out-a", 0);
     held_a.minimized = Some(true);
-    let mut free_for_b = observe(6, vec![held_a.clone(), fact("win-b", "out-a", 400)]);
+    let mut free_for_b = observe(
+        6,
+        with_intent_tail(vec![held_a.clone(), fact("win-b", "out-a", 400)]),
+    );
     free_for_b.closed = vec![WindowId("win-fill-00000".to_owned())];
     accepted(&mut engine, &free_for_b);
     assert_eq!(
@@ -2982,7 +2999,7 @@ fn native_rollback_cap_blocked_retains_proof_without_fencing_sibling() {
         &cmd(
             7,
             3,
-            vec![held_a.clone(), fact("win-b", "out-a", 400)],
+            with_intent_tail(vec![held_a.clone(), fact("win-b", "out-a", 400)]),
             set_sticky("win-b", true),
         ),
     );
@@ -3011,7 +3028,7 @@ fn native_rollback_cap_blocked_retains_proof_without_fencing_sibling() {
         &cmd(
             8,
             4,
-            vec![held_a, fact("win-b", "out-a", 400)],
+            with_intent_tail(vec![held_a, fact("win-b", "out-a", 400)]),
             set_sticky("win-b", false),
         ),
     );
@@ -3027,7 +3044,7 @@ fn native_rollback_cap_blocked_retains_proof_without_fencing_sibling() {
     // A's pending refusal completes its rollback exactly once.
     let mut a_recovers = observe(
         9,
-        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
+        with_intent_tail(vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)]),
     );
     a_recovers.closed = vec![WindowId("win-fill-00001".to_owned())];
     let recovered = accepted(&mut engine, &a_recovers);
@@ -3064,7 +3081,7 @@ fn native_rollback_cap_blocked_retains_proof_without_fencing_sibling() {
         &mut engine,
         &observe(
             10,
-            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
+            with_intent_tail(vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)]),
         ),
     );
     assert_eq!(repeat.intent_desired, recovered.intent_desired);

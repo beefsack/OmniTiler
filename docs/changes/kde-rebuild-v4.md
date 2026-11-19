@@ -164,3 +164,25 @@ Scoped Rust format, strict all-target Clippy and all-target tests passed:
 and after readiness, accepts a fitting same revision, and verifies duplicate,
 stale, reused and restart-required dispositions. Native settings reload is
 part of the integrated fixture proof, not established by this test.
+
+## Unit 2: retained lifetime membership bound
+
+Count the retained core membership map on the final staged v4 world,
+after the report and command batch have applied existing retirement
+rules. More than 10,000 records refuses as `snapshot-invalid` /
+`membership-over-cap` before outbound preparation or adoption. Rejected
+captures preserve accepted world state and leave checked broker commands
+parked in FIFO order. The checked ingress still remembers the bound
+refusal for exact redelivery; a later fitting report uses a fresh source
+in the same generation. Missing or uncertain lifetimes are not evicted
+to make room.
+
+Offline, cumulative incomplete inventories reach exactly 10,000; the
+next lifetime is refused. A native sticky rollback adds a member only
+in the proof-bearing branch, and that branch fits after an exact close.
+The checked service exercises 10,000 real admissions, byte-identical
+refusal replay, no result or presentation adoption on refusal, and
+ordered recovery of a noncommuting focus/maximize pair. Saturation is
+offline; native close and later admission are part of the integrated leg.
+Scoped Rust format, strict all-target Clippy and all-target tests passed:
+3,546 tests with none failed or skipped. No fixture bytes changed.
