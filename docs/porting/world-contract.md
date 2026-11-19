@@ -268,6 +268,11 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
   valid later value returns `restart-required` and takes effect only in a new lifetime.
   [Validation](../changes/core-interface-review.md#original-backlog-lines-103-122),
   [catalog/timing](../../crates/tiler-core/src/settings_catalog.rs).
+- A checked settings revision installs its requested and effective settings,
+  initial-settings readiness and layout settings only after preparing its
+  exact reply within the reply byte bound. If the reply is oversized, refuse
+  the whole revision with the existing transport size failure; a fitting
+  snapshot can still use that revision. Diagnostics are not truncated.
 
 | Record | Key | Type | Null/absence | Meaning |
 | --- | --- | --- | --- | --- |

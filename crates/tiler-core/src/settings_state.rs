@@ -86,8 +86,30 @@ impl Default for SettingsState {
     }
 }
 
+/// Staged computational settings produced by [`SettingsState::prepare`] and
+/// committed only after the caller's bounded reply check succeeds.
+pub(crate) struct PreparedSettingsTransition {
+    requested: BTreeMap<&'static str, EffectiveSetting>,
+    effective: BTreeMap<&'static str, EffectiveSetting>,
+    workspace_mode: crate::workspace_scope::WorkspaceMode,
+    revision: u64,
+    started: bool,
+}
+
 impl SettingsState {
     pub fn process(&mut self, request: &SettingsRequest, caps: &HostCapabilities) -> SettingsReply {
+        let (reply, next) = self.prepare(request, caps);
+        if let Some(transition) = next {
+            self.commit_prepared(transition, &request.values, &reply.diagnostics);
+        }
+        reply
+    }
+
+    pub(crate) fn prepare(
+        &self,
+        request: &SettingsRequest,
+        caps: &HostCapabilities,
+    ) -> (SettingsReply, Option<PreparedSettingsTransition>) {
         let mut reply = SettingsReply {
             adapter: request.adapter.clone(),
             generation: request.generation.clone(),
@@ -99,7 +121,7 @@ impl SettingsState {
         if let Some(revision) = self.revision {
             if request.revision < revision {
                 reply.status = SettingsStatus::Stale;
-                return reply;
+                return (reply, None);
             }
             if request.revision == revision {
                 if equivalent_values(
@@ -107,10 +129,10 @@ impl SettingsState {
                     &request.values,
                 ) {
                     reply.diagnostics.clone_from(&self.last_diagnostics);
-                    return reply;
+                    return (reply, None);
                 }
                 reply.status = SettingsStatus::RevisionReused;
-                return reply;
+                return (reply, None);
             }
         }
 
@@ -119,7 +141,7 @@ impl SettingsState {
             .iter()
             .map(|(key, value)| (key.as_str(), value))
             .collect();
-        let mut next = self.requested.clone();
+        let mut requested = self.requested.clone();
         for (wire, field_id) in WIRE_FIELDS {
             match supplied.get(wire) {
                 None => reply.diagnostics.push(diag(wire, Kind::Missing)),
@@ -151,7 +173,7 @@ impl SettingsState {
                             {
                                 reply.diagnostics.push(diag(wire, Kind::RestartRequired));
                             }
-                            next.insert(field_id, effective);
+                            requested.insert(field_id, effective);
                         }
                     }
                 }
@@ -166,24 +188,23 @@ impl SettingsState {
         }
 
         // Defaults and good sibling updates are committed together; invalid fields retain last-good.
-        self.requested = next;
-        if !self.started {
-            self.effective = self.requested.clone();
-            self.started = true;
+        let effective = if !self.started {
+            requested.clone()
         } else {
+            let mut next_effective = self.effective.clone();
             for (_, field_id) in WIRE_FIELDS {
                 let field = catalog::find_field(field_id).expect("wire field in catalog");
                 if field.timing != Timing::Restart {
-                    self.effective
-                        .insert(field_id, self.requested[field_id].clone());
+                    next_effective.insert(field_id, requested[field_id].clone());
                 }
             }
-        }
-        let requested_mode = match self.effective[catalog::FIELD_WORKSPACE_MODE] {
+            next_effective
+        };
+        let requested_mode = match effective[catalog::FIELD_WORKSPACE_MODE] {
             EffectiveSetting::Enum(token) => token,
             _ => unreachable!(),
         };
-        self.workspace_mode = if caps.host_owned
+        let workspace_mode = if caps.host_owned
             && caps.native_selector_scope == NativeSelectorScope::AllOutputs
             && requested_mode != "shared"
         {
@@ -195,7 +216,7 @@ impl SettingsState {
             crate::workspace_scope::parse_workspace_mode(requested_mode)
         };
         if matches!(
-            self.effective[catalog::FIELD_CURSOR_WARP],
+            effective[catalog::FIELD_CURSOR_WARP],
             EffectiveSetting::Bool(true)
         ) && !caps.warp
             && !reply.diagnostics.iter().any(|d| d.key == "cursorWarp")
@@ -204,11 +225,30 @@ impl SettingsState {
                 .diagnostics
                 .push(diag("cursorWarp", Kind::UnsupportedCapability));
         }
+        let transition = PreparedSettingsTransition {
+            requested,
+            effective,
+            workspace_mode,
+            revision: request.revision,
+            started: true,
+        };
+        (reply, Some(transition))
+    }
+
+    pub(crate) fn commit_prepared(
+        &mut self,
+        transition: PreparedSettingsTransition,
+        values: &[(String, RawSettingValue)],
+        diagnostics: &[SettingsDiagnostic],
+    ) {
+        self.requested = transition.requested;
+        self.effective = transition.effective;
+        self.workspace_mode = transition.workspace_mode;
         self.refresh_policy_enums();
-        self.revision = Some(request.revision);
-        self.last_values = Some(request.values.clone());
-        self.last_diagnostics.clone_from(&reply.diagnostics);
-        reply
+        self.revision = Some(transition.revision);
+        self.started = transition.started;
+        self.last_values = Some(values.to_vec());
+        self.last_diagnostics = diagnostics.to_vec();
     }
 
     fn refresh_policy_enums(&mut self) {

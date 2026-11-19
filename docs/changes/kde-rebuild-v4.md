@@ -137,3 +137,30 @@ subscriber 34/34; launcher/native-effect/helpers 703/204/58. Callgrind
 0.2316/1.7759/4.5770 ms. Small broker fresh p50/p95 204.8/212.0 us,
 warm 211.2/219.5 us. See the [full gates](archive/pre-kde-external-review-fixes.md#completion-gates).
 No native rebuild verdict at baseline.
+
+## Unit 1: bounded settings acknowledgement
+
+The checked settings route prepares its canonical acknowledgement inside
+the scoped core transition, then installs settings, readiness and layout
+knobs. Rejection cannot advance the settings revision or expose an escaped
+candidate. No handshake, wire shape or fixture change.
+
+The smallest witnessed overflowing request was 890,878 bytes: 100,193
+distinct short unknown keys, including short JSON C0 escapes, produced a
+4,194,307-byte candidate reply (limit 4,194,304). Dropping the last key in
+that family gave 4,194,265 reply bytes. A conservative lower bound across
+key spellings is 887,907 request bytes, not a proof of global minimum.
+Each unknown row costs at least five request bytes plus its encoded key,
+and contributes 34 reply bytes plus its canonical key. Above a 42:9
+reply/request ratio, the finite short-key classes contribute at most
+127,636 units of `3*reply - 14*request` in total; allow 8 KiB for the
+reply envelope and known settings diagnostics and one request comma.
+Ordinary settings have catalog-bounded keys, short values and at most one
+diagnostic per key; the KDE snapshot cannot approach this key count or
+reply size. The checked regression uses 105,000 simple distinct unknown
+keys to preserve the overflow without depending on an optimizer.
+Scoped Rust format, strict all-target Clippy and all-target tests passed:
+3,543 tests, none failed or skipped. The regression refuses overflow before
+and after readiness, accepts a fitting same revision, and verifies duplicate,
+stale, reused and restart-required dispositions. Native settings reload is
+part of the integrated fixture proof, not established by this test.

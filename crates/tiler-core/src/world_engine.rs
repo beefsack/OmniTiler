@@ -624,27 +624,53 @@ impl WorldEngine {
         )
     }
 
-    /// Accept settings only for the exact bound adapter and generation.
-    /// Stale or foreign envelopes cannot reach `SettingsState`.
-    pub fn handle_settings(&mut self, request: &SettingsRequest) -> Option<SettingsReply> {
+    /// Prepare a settings transition, pass `&SettingsReply` to `prepare_reply`,
+    /// and install staged settings state, initial-settings readiness, and
+    /// changed layout knobs only if `prepare_reply` returns `Ok`.
+    /// Returns `Ok(None)` when correlation, adapter, generation, or handshake
+    /// capabilities are not bound to this engine.
+    pub fn try_handle_settings<T, E>(
+        &mut self,
+        request: &SettingsRequest,
+        prepare_reply: impl FnOnce(&SettingsReply) -> Result<T, E>,
+    ) -> Result<Option<T>, E> {
         if CorrelationId::parse(&request.request).is_none()
             || self.connection.adapter.as_deref() != Some(request.adapter.as_str())
             || self.connection.core_generation_str != request.generation
         {
-            return None;
+            return Ok(None);
         }
-        let caps = self.connection.capabilities.as_ref()?;
-        let reply = self.connection.settings.process(request, caps);
-        if reply.status == crate::connection::SettingsStatus::Accepted {
-            self.connection.initial_settings_accepted = true;
-            self.world
-                .layout
-                .set_fixed_size_predicate(self.connection.settings.fixed_size_predicate);
-            self.world
-                .layout
-                .set_fresh_placement(self.connection.settings.fresh_placement);
+        let Some(caps) = self.connection.capabilities.as_ref() else {
+            return Ok(None);
+        };
+        let (reply, transition) = self.connection.settings.prepare(request, caps);
+        let prepared_reply = prepare_reply(&reply)?;
+        if let Some(transition) = transition {
+            self.connection.settings.commit_prepared(
+                transition,
+                &request.values,
+                &reply.diagnostics,
+            );
+            if reply.status == crate::connection::SettingsStatus::Accepted {
+                self.connection.initial_settings_accepted = true;
+                self.world
+                    .layout
+                    .set_fixed_size_predicate(self.connection.settings.fixed_size_predicate);
+                self.world
+                    .layout
+                    .set_fresh_placement(self.connection.settings.fresh_placement);
+            }
         }
-        Some(reply)
+        Ok(Some(prepared_reply))
+    }
+
+    /// Accept settings only for the exact bound adapter and generation.
+    /// Stale or foreign envelopes cannot reach `SettingsState`.
+    pub fn handle_settings(&mut self, request: &SettingsRequest) -> Option<SettingsReply> {
+        self.try_handle_settings(request, |reply| {
+            Ok::<_, std::convert::Infallible>(reply.clone())
+        })
+        .expect("infallible")
     }
 
     #[must_use]

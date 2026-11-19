@@ -1537,3 +1537,126 @@ fn rebind_from_max_64_byte_seed_mints_bounded_fresh_generation_and_rejects_spent
         }
     }
 }
+
+#[test]
+fn try_handle_settings_error_leaves_state_readiness_and_layout_knobs_untouched() {
+    let mut engine = WorldEngine::new("gen-prep").expect("engine");
+    let hs = engine.handshake(&HandshakeRequest {
+        adapter: "adapter-prep".into(),
+        request: "hs-1".into(),
+        application_identity: ApplicationIdentity {
+            app_id: None,
+            executable: Some("/usr/bin/kwin".into()),
+            process_id: Some("pid-1".into()),
+        },
+        capabilities: HostCapabilities::default(),
+    });
+    let generation = hs.generation.expect("bound generation");
+
+    let rev0_req = SettingsRequest {
+        adapter: "adapter-prep".into(),
+        generation: generation.clone(),
+        request: "set-0".into(),
+        revision: 0,
+        values: vec![
+            (
+                "predicate".into(),
+                RawSettingValue::String("either-axis-fixed".into()),
+            ),
+            (
+                "freshPlacement".into(),
+                RawSettingValue::String("focused-output-last-focused".into()),
+            ),
+            ("gap".into(), RawSettingValue::Number(19.0)),
+        ],
+    };
+    let err = engine
+        .try_handle_settings(&rev0_req, |reply| {
+            assert_eq!(reply.status, SettingsStatus::Accepted);
+            Err::<(), _>("oversized")
+        })
+        .expect_err("closure error aborts adoption");
+    assert_eq!(err, "oversized");
+
+    assert!(!engine.connection.initial_settings_accepted);
+    assert_eq!(
+        engine.world.layout.fixed_size_predicate(),
+        crate::size_hints::FixedSizePredicate::BothAxes
+    );
+    assert_eq!(
+        engine.settings().fresh_placement,
+        crate::cursor_targeting::FreshPlacement::CursorOutputMru
+    );
+
+    let fit0 = SettingsRequest {
+        adapter: "adapter-prep".into(),
+        generation: generation.clone(),
+        request: "set-0-fit".into(),
+        revision: 0,
+        values: vec![("gap".into(), RawSettingValue::Number(8.0))],
+    };
+    let reply0 = engine
+        .try_handle_settings(&fit0, |reply| Ok::<_, ()>(reply.clone()))
+        .expect("fitting rev 0")
+        .expect("bound engine");
+    assert_eq!(reply0.status, SettingsStatus::Accepted);
+    assert!(engine.connection.initial_settings_accepted);
+
+    let rev1_req = SettingsRequest {
+        adapter: "adapter-prep".into(),
+        generation,
+        request: "set-1".into(),
+        revision: 1,
+        values: vec![
+            ("gap".into(), RawSettingValue::Number(24.0)),
+            (
+                "mode".into(),
+                RawSettingValue::String("global-unique".into()),
+            ),
+            (
+                "predicate".into(),
+                RawSettingValue::String("either-axis-fixed".into()),
+            ),
+            (
+                "freshPlacement".into(),
+                RawSettingValue::String("focused-output-last-focused".into()),
+            ),
+        ],
+    };
+    let err1 = engine
+        .try_handle_settings(&rev1_req, |reply| {
+            assert_eq!(reply.status, SettingsStatus::Accepted);
+            Err::<(), _>("oversized")
+        })
+        .expect_err("rev 1 closure error aborts adoption");
+    assert_eq!(err1, "oversized");
+
+    assert_eq!(
+        engine.world.layout.fixed_size_predicate(),
+        crate::size_hints::FixedSizePredicate::BothAxes
+    );
+    assert_eq!(
+        engine.settings().fresh_placement,
+        crate::cursor_targeting::FreshPlacement::CursorOutputMru
+    );
+
+    let reply1 = engine
+        .try_handle_settings(&rev1_req, |reply| Ok::<_, ()>(reply.clone()))
+        .expect("rev 1 still open after aborted attempt")
+        .expect("bound engine");
+    assert_eq!(reply1.status, SettingsStatus::Accepted);
+    assert!(
+        reply1
+            .diagnostics
+            .iter()
+            .any(|d| d.key == "mode" && d.kind == SettingsDiagnosticKind::RestartRequired)
+    );
+    assert_eq!(
+        engine.world.layout.fixed_size_predicate(),
+        crate::size_hints::FixedSizePredicate::EitherAxis
+    );
+    assert_eq!(
+        engine.settings().fresh_placement,
+        crate::cursor_targeting::FreshPlacement::FocusedOutputMru
+    );
+}

@@ -689,9 +689,11 @@ impl WorldBroker {
         if input.len() > WORLD_MAX_REQUEST_BYTES {
             return Err(BrokerError::Oversized);
         }
-        let reply = match tiler_protocol::connection_protocol::route_connection_request(
+        let max_reply_bytes = self.final_reply_max_bytes();
+        let reply = match tiler_protocol::connection_protocol::route_connection_request_bounded(
             &mut self.engine,
             input,
+            max_reply_bytes,
         ) {
             Ok(reply) => reply,
             Err(e) => {
@@ -701,7 +703,7 @@ impl WorldBroker {
                 return Ok(self.error_body("malformed", "request is malformed"));
             }
         };
-        if reply.len() > WORLD_MAX_REPLY_BYTES {
+        if reply.len() > max_reply_bytes {
             return Err(BrokerError::Oversized);
         }
         if let Ok(handshake) = tiler_protocol::connection_protocol::decode_handshake_reply(&reply)
@@ -4693,5 +4695,225 @@ mod tests {
             .map(|w| w["id"].as_str().expect("id"))
             .collect();
         assert_eq!(ws_ids3, vec!["ws-1", "ws-2", "ws-3"]);
+    }
+
+    fn build_overflow_settings_request(
+        adapter: &str,
+        generation: &str,
+        req: &str,
+        rev: &str,
+        unknown_key_count: usize,
+        extra_pairs: &[(&str, &str)],
+    ) -> String {
+        let mut out = format!(
+            "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\"req\":\"{req}\",\"rev\":\"{rev}\",\"values\":{{"
+        );
+        let mut first = true;
+        for &(k, v) in extra_pairs {
+            if !first {
+                out.push(',');
+            }
+            first = false;
+            out.push_str(&format!("\"{k}\":{v}"));
+        }
+        for i in 0..unknown_key_count {
+            if !first {
+                out.push(',');
+            }
+            first = false;
+            out.push_str(&format!("\"u{i:05}\":0"));
+        }
+        out.push_str("}}");
+        out
+    }
+
+    #[test]
+    fn settings_reply_overflow_within_request_bound_refuses_without_mutating_readiness_or_layout() {
+        let mut broker = WorldBroker::new();
+        let adapter = "a";
+        let hs = format!(
+            "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"h\",\
+              \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\"processId\":\"pid-own-1\"}},\
+              \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
+              \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\"maximize\":true,\"fullscreen\":true,\
+              \"nativeSticky\":true,\"above\":false,\"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+        );
+        let hs_reply: serde_json::Value =
+            serde_json::from_str(&broker.discover_connection(&hs).expect("handshake succeeds"))
+                .expect("handshake json");
+        let generation = hs_reply["gen"].as_str().expect("gen").to_owned();
+
+        // 105,000 6-char unknown keys (~1.16 MiB request, < WORLD_MAX_REQUEST_BYTES) expand to ~4.20 MiB (> WORLD_MAX_REPLY_BYTES).
+        let overflow_keys = 105_000;
+
+        // 1. Before readiness: overflowing rev 0 refuses as Oversized without mutating readiness or layout.
+        let overflow_rev0 = build_overflow_settings_request(
+            adapter,
+            &generation,
+            "s0",
+            "0",
+            overflow_keys,
+            &[
+                ("gap", "17"),
+                ("predicate", "\"either-axis-fixed\""),
+                ("freshPlacement", "\"focused-output-last-focused\""),
+            ],
+        );
+        assert!(overflow_rev0.len() <= WORLD_MAX_REQUEST_BYTES);
+        assert_eq!(
+            broker
+                .discover_connection(&overflow_rev0)
+                .expect_err("overflowing rev 0 must fail as Oversized"),
+            BrokerError::Oversized
+        );
+        assert_eq!(
+            broker.engine.settings().fixed_size_predicate,
+            tiler_core::size_hints::FixedSizePredicate::BothAxes
+        );
+        assert_eq!(
+            broker.engine.settings().fresh_placement,
+            tiler_core::cursor_targeting::FreshPlacement::CursorOutputMru
+        );
+
+        let fixed_width_report = |win: &str| {
+            format!(
+                "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+                \"identity\":{{\"manufacturer\":\"Synthetic\",\"model\":\"Panel\",\"serial\":\"s-1\",\"connector\":\"DP-1\"}}}}],\
+                \"windows\":[{{\"win\":\"{win}\",\"out\":\"DP-1\",\"rect\":[0,0,400,400],\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"sticky\":false,\
+                \"hints\":{{\"minW\":400,\"minH\":100,\"maxW\":400,\"maxH\":900}},\"hostHidden\":false,\"privileged\":false,\"managed\":true,\"acceptsInput\":true,\
+                \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\
+                \"owner\":null,\"parent\":null,\"role\":\"normal\",\"appId\":\"org.example.fw\",\"executable\":\"/usr/bin/fw\",\"processId\":\"pid-foreign-1\",\
+                \"class\":\"Synthetic\",\"title\":\"FW\",\"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\"fullscreenOwner\":null,\
+                \"fullscreenExitable\":null,\"suppressionAvailable\":false,\"visibility\":{{\"visible\":true,\"suppressionOwned\":false}}}}],\
+                \"closed\":[],\"native\":[],\"focused\":\"{win}\",\"foregroundKnown\":true,\"complete\":true,\"gesture\":false,\"cursor\":[100,100],\
+                \"actionForeground\":\"DP-1\",\"actionCached\":\"DP-1\",\"actionOutputs\":[\"DP-1\"],\"presentation\":{{\"foreground\":\"{win}\",\"minimized\":false,\
+                \"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":[0,0,400,400],\"chordHeld\":false,\"moveWindow\":\"\",\
+                \"pagerOrder\":[\"{win}\"],\"pagerFrames\":[{{\"win\":\"{win}\",\"live\":[0,0,400,400]}}],\"witness\":null,\"foregroundOut\":\"DP-1\"}},\
+                \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\
+                \"cursorWindow\":null,\"nativeInvalidWitness\":null}}"
+            )
+        };
+        let cap_pre: serde_json::Value = serde_json::from_str(
+            &broker
+                .dispatch_capture(&format!(
+                    "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\"report\":{}}}",
+                    fixed_width_report("win-fw")
+                ))
+                .expect("capture routes"),
+        )
+        .expect("json");
+        assert!(!broker.engine.is_ready());
+        assert_eq!(cap_pre["ready"], false);
+
+        // 2. Fitting rev 0 succeeds and activates readiness + BothAxes predicate.
+        let fit_values = |gap: i32, mode: &str, pred: &str, fresh: &str| {
+            format!(
+                "{{\"gap\":{gap},\"outer\":8,\"defaultTiled\":true,\"mode\":\"{mode}\",\"sameAxis\":\"group-with-neighbor\",\
+                \"bornMaximized\":\"tile-on-launch\",\"predicate\":\"{pred}\",\"refill\":\"last-remaining-workspace\",\
+                \"switchTarget\":\"cursor-output\",\"freshPlacement\":\"{fresh}\",\"focusFollowsCursor\":false,\"cursorWarp\":false,\
+                \"borderEnabled\":false,\"underlayEnabled\":false,\"borderWidth\":2,\"borderGap\":0,\"borderRadius\":0,\"underlayExtension\":0}}"
+            )
+        };
+        let fit0_req = format!(
+            "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\"req\":\"s0-fit\",\"rev\":\"0\",\"values\":{}}}",
+            fit_values(8, "shared", "both-axes-fixed", "cursor-output-last-focused")
+        );
+        let fit0_reply: serde_json::Value =
+            serde_json::from_str(&broker.discover_connection(&fit0_req).expect("fit rev 0"))
+                .expect("json");
+        assert_eq!(fit0_reply["status"], "accepted");
+        let cap_ready: serde_json::Value = serde_json::from_str(
+            &broker
+                .dispatch_capture(&format!(
+                    "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\"source\":\"src-2\",\"sourceSeq\":\"2\",\"nativeInvalid\":\"2\",\"report\":{}}}",
+                    fixed_width_report("win-fw")
+                ))
+                .expect("capture ready"),
+        )
+        .expect("json");
+        assert!(broker.engine.is_ready());
+        assert!(cap_ready["windows"][0]["alloc"].is_array());
+
+        // 3. After readiness: overflowing rev 1 refuses without mutating values, revision, or layout;
+        //    duplicate/reused rev 0 remain valid, then fitting rev 1 succeeds with restart-required.
+        let overflow_rev1 = build_overflow_settings_request(
+            adapter,
+            &generation,
+            "s1",
+            "1",
+            overflow_keys,
+            &[
+                ("gap", "24"),
+                ("mode", "\"global-unique\""),
+                ("predicate", "\"either-axis-fixed\""),
+                ("freshPlacement", "\"focused-output-last-focused\""),
+            ],
+        );
+        assert_eq!(
+            broker
+                .discover_connection(&overflow_rev1)
+                .expect_err("overflowing rev 1 must fail as Oversized"),
+            BrokerError::Oversized
+        );
+        assert_eq!(
+            broker.engine.settings().fixed_size_predicate,
+            tiler_core::size_hints::FixedSizePredicate::BothAxes
+        );
+
+        let dup0: serde_json::Value = serde_json::from_str(
+            &broker
+                .discover_connection(&fit0_req.replace("\"s0-fit\"", "\"s0-dup\""))
+                .expect("dup rev 0"),
+        )
+        .expect("json");
+        assert_eq!(dup0["status"], "accepted");
+        let reused0: serde_json::Value = serde_json::from_str(
+            &broker
+                .discover_connection(
+                    &fit0_req
+                        .replace("\"gap\":8", "\"gap\":12")
+                        .replace("\"s0-fit\"", "\"s0-reuse\""),
+                )
+                .expect("reused rev 0"),
+        )
+        .expect("json");
+        assert_eq!(reused0["status"], "revision-reused");
+
+        let fit1_req = format!(
+            "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\"req\":\"s1-fit\",\"rev\":\"1\",\"values\":{}}}",
+            fit_values(
+                24,
+                "global-unique",
+                "either-axis-fixed",
+                "focused-output-last-focused"
+            )
+        );
+        let fit1_reply: serde_json::Value =
+            serde_json::from_str(&broker.discover_connection(&fit1_req).expect("fit rev 1"))
+                .expect("json");
+        assert_eq!(fit1_reply["status"], "accepted");
+        assert_eq!(
+            fit1_reply["diagnostics"],
+            serde_json::json!([{"key": "mode", "kind": "restart-required"}])
+        );
+
+        let cap_after: serde_json::Value = serde_json::from_str(
+            &broker
+                .dispatch_capture(&format!(
+                    "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\"source\":\"src-3\",\"sourceSeq\":\"3\",\"nativeInvalid\":\"3\",\"report\":{}}}",
+                    fixed_width_report("win-fw-2")
+                ))
+                .expect("capture after rev 1"),
+        )
+        .expect("json");
+        assert_eq!(cap_after["windows"][0]["floating"], true);
+
+        let stale0: serde_json::Value = serde_json::from_str(
+            &broker
+                .discover_connection(&fit0_req.replace("\"s0-fit\"", "\"s0-stale\""))
+                .expect("stale rev 0"),
+        )
+        .expect("json");
+        assert_eq!(stale0["status"], "stale");
     }
 }

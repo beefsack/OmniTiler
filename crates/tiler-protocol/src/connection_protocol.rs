@@ -655,6 +655,13 @@ pub fn encode_handshake_reply(v: &HandshakeReply) -> Result<String, CodecError> 
 }
 
 pub fn encode_settings_reply(v: &SettingsReply) -> Result<String, CodecError> {
+    encode_settings_reply_with_limit(v, MAX_MESSAGE)
+}
+
+fn encode_settings_reply_with_limit(
+    v: &SettingsReply,
+    max_reply_bytes: usize,
+) -> Result<String, CodecError> {
     if v.diagnostics
         .iter()
         .any(|diagnostic| diagnostic.key.len() > MAX_METADATA_TEXT)
@@ -685,7 +692,7 @@ pub fn encode_settings_reply(v: &SettingsReply) -> Result<String, CodecError> {
         ));
     }
     out.push_str("]}");
-    if out.len() > MAX_MESSAGE {
+    if out.len() > max_reply_bytes.min(MAX_MESSAGE) {
         return Err(CodecError("oversized"));
     }
     decode_settings_reply(&out)?;
@@ -719,6 +726,16 @@ pub fn route_connection_request(
     engine: &mut tiler_core::world_engine::WorldEngine,
     input: &str,
 ) -> Result<String, CodecError> {
+    route_connection_request_bounded(engine, input, MAX_MESSAGE)
+}
+
+/// Route a connection-family message while enforcing `max_reply_bytes` on
+/// settings replies before committing any staged settings transition.
+pub fn route_connection_request_bounded(
+    engine: &mut tiler_core::world_engine::WorldEngine,
+    input: &str,
+    max_reply_bytes: usize,
+) -> Result<String, CodecError> {
     let value = parse_strict_json(input)?;
     let message_type = value
         .as_object()
@@ -732,8 +749,10 @@ pub fn route_connection_request(
         }
         "settings" => {
             let request = decode_settings(input)?;
-            match engine.handle_settings(&request) {
-                Some(reply) => encode_settings_reply(&reply),
+            match engine.try_handle_settings(&request, |reply| {
+                encode_settings_reply_with_limit(reply, max_reply_bytes)
+            })? {
+                Some(reply) => Ok(reply),
                 None => encode_error(ProtocolKind::GenerationMismatch, engine.core_generation()),
             }
         }

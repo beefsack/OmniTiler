@@ -750,3 +750,64 @@ fn split_identity_availability_round_trips_canonically() {
     );
     assert_eq!(encode_handshake_request(&request).unwrap(), pid_only);
 }
+
+#[test]
+fn route_connection_request_bounded_refuses_overflow_without_consuming_revision() {
+    let mut engine = tiler_core::world_engine::WorldEngine::new("gen-route-bound").unwrap();
+    let hs = serde_json::json!({
+        "type": "handshake",
+        "v": 4,
+        "adapter": "a",
+        "req": "h",
+        "applicationIdentity": {
+            "appId": null,
+            "executable": "/usr/bin/kwin",
+            "processId": "pid-1"
+        },
+        "capabilities": {
+            "hostOwned": false,
+            "equalCount": false,
+            "sharedNativeRoster": false,
+            "birthClear": false,
+            "nativeSelectorScope": "per-output",
+            "windowSuppression": false,
+            "maximize": true,
+            "fullscreen": true,
+            "nativeSticky": true,
+            "above": false,
+            "warp": false,
+            "tiledFloatTransfer": false,
+            "unavailableFacts": []
+        }
+    });
+    let hs_reply: serde_json::Value = serde_json::from_str(
+        &route_connection_request(&mut engine, &hs.to_string()).expect("handshake routes"),
+    )
+    .expect("handshake json");
+    let generation = hs_reply["gen"].as_str().expect("gen");
+
+    let overflow_req = format!(
+        "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"a\",\"gen\":\"{generation}\",\"req\":\"s0\",\"rev\":\"0\",\"values\":{{\"predicate\":\"either-axis-fixed\",\"unknownA\":0,\"unknownB\":0}}}}"
+    );
+    assert_eq!(
+        route_connection_request_bounded(&mut engine, &overflow_req, 256),
+        Err(CodecError("oversized"))
+    );
+
+    // Same revision with a fitting snapshot must still be accepted, not revision-reused.
+    let fit_req = format!(
+        "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"a\",\"gen\":\"{generation}\",\"req\":\"s0-fit\",\"rev\":\"0\",\"values\":{{\"gap\":8,\"outer\":8,\"defaultTiled\":true,\"mode\":\"shared\",\"sameAxis\":\"group-with-neighbor\",\"bornMaximized\":\"tile-on-launch\",\"predicate\":\"both-axes-fixed\",\"refill\":\"last-remaining-workspace\",\"switchTarget\":\"cursor-output\",\"freshPlacement\":\"cursor-output-last-focused\",\"focusFollowsCursor\":false,\"cursorWarp\":false,\"borderEnabled\":false,\"underlayEnabled\":false,\"borderWidth\":2,\"borderGap\":0,\"borderRadius\":0,\"underlayExtension\":0}}}}"
+    );
+    let fit_reply: serde_json::Value = serde_json::from_str(
+        &route_connection_request(&mut engine, &fit_req).expect("fitting rev 0 routes"),
+    )
+    .expect("fit reply json");
+    assert_eq!(fit_reply["status"], "accepted");
+    assert_eq!(fit_reply["rev"], "0");
+    assert_eq!(fit_reply["diagnostics"], serde_json::json!([]));
+    assert!(
+        fit_reply.to_string().len() < 512,
+        "ordinary 18-field settings reply must be tiny: {} bytes",
+        fit_reply.to_string().len()
+    );
+}
