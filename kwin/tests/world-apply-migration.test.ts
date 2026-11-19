@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { applyWorldReply } from "../src/world-apply";
+import { incrementU64 } from "../src/world-seq";
 import { WorldAdapterState } from "../src/world-state";
 import { parseWorldReply, isWorldRejection, type WorldReply } from "../src/world-report";
 import type { WorldObservation } from "../src/world-observe";
@@ -669,5 +670,202 @@ describe("world migration refill gating", () => {
         assert.equal(world.sendToOutputCalls.length, 0, "no member replay");
         assert.equal(world.switchViewCalls.length, 0, "exact-output proof needs no call");
         assert.equal(applied.viewWrites, 0);
+    });
+});
+
+describe("world migration member authority", () => {
+    function makeSiblingObs(world: FakeWorld, includeWinC = true): WorldObservation {
+        const obs = makeObservation(world);
+        if (includeWinC) {
+            const homeC = world.homing.get("win-c") ?? { out: "out-a", ws: "wa1" };
+            const source = obs.domains[0];
+            assert.ok(source !== undefined);
+            source.windows.push({
+                win: "win-c", ref: { id: "win-c" }, out: homeC.out, ws: homeC.ws,
+                rect: { x: 100, y: 0, w: 100, h: 100 },
+                floating: false, fitExcluded: false, fullscreen: false,
+                maximized: false, sticky: false, fixedAuto: false, fixedSuppress: false, nativeWs: null,
+                hints: { minW: null, minH: null, maxW: null, maxH: null },
+                minimized: false,
+            });
+        }
+        return obs;
+    }
+
+    function loadAuthReply(
+        memberAuth: "hold" | "untouched" | "controlled",
+        memberHold: WorldReply["windows"][number]["member_hold"] = "",
+    ): WorldReply {
+        const reply = loadReply();
+        bindTarget(reply);
+        for (const ws of reply.workspaces) {
+            if (ws.id === "ws-6" && ws.out === "out-a") {
+                ws.bind = "ws-6";
+            }
+        }
+        const winA = reply.windows.find((w) => w.win === "win-a");
+        assert.ok(winA !== undefined);
+        winA.frame_auth = "untouched";
+        winA.frame_hold = "";
+        winA.member_auth = memberAuth;
+        winA.member_hold = memberHold;
+        winA.floating = true;
+        winA.alloc = null;
+        winA.frame = [10, 10, 200, 150];
+        reply.windows.push({
+            ...winA,
+            win: "win-c",
+            alloc: [0, 0, 100, 100],
+            frame: [0, 0, 100, 100],
+            frame_auth: "controlled",
+            frame_hold: "",
+            member_auth: "controlled",
+            member_hold: "",
+            floating: false,
+        });
+        return reply;
+    }
+
+    it("hold and untouched unhomed members block setters, view switches, and premature dispatch across controlled siblings", () => {
+        for (const [auth, hold] of [
+            ["hold", "unreadable"],
+            ["untouched", ""],
+        ] as const) {
+            const blockedReply = loadAuthReply(auth, hold);
+            const world: FakeWorld = {
+                homing: new Map([
+                    ["win-a", { out: "out-a", ws: "ws-0" }],
+                    ["win-c", { out: "out-a", ws: "ws-0" }],
+                    ["win-b", { out: "out-b", ws: "wb1" }],
+                ]),
+                currents: new Map([["out-a", "wa1"], ["out-b", "wb1"]]),
+                sendToOutputCalls: [], setMembershipCalls: [], switchViewCalls: [],
+                lieMembership: false,
+            };
+            const state = freshState(blockedReply);
+            const frameWrites: string[] = [];
+            const env = {
+                ...makeEnv(state, world),
+                setGeometry: (ref: object) => {
+                    assert.ok("id" in ref && typeof ref.id === "string");
+                    frameWrites.push(ref.id);
+                    return true;
+                },
+            };
+            const blocked = applyWorldReply({
+                dispatchWatermark: state.currentInvalid,
+                takeResult: MIGRATE_TAKE,
+                ...env,
+                observation: makeSiblingObs(world),
+                reply: blockedReply,
+            });
+            assert.equal(world.sendToOutputCalls.length, 0, `${auth}: no output setter`);
+            assert.equal(world.setMembershipCalls.length, 0, `${auth}: no membership setter`);
+            assert.equal(world.switchViewCalls.length, 0, `${auth}: no premature target/refill switch`);
+            assert.ok(!frameWrites.includes("win-a"), `${auth}: no frame write on blocked float`);
+            assert.ok(blocked.held >= 1, `${auth}: holds migration`);
+            const opId = blockedReply.transfers.find((t) => t.kind === "migration")?.op;
+            assert.ok(opId !== undefined);
+            assert.equal(state.isDispatched(opId), false, `${auth}: no premature dispatch before authorization`);
+
+            // A later authorized reply carries the same float without a frame write.
+            const authReply = loadAuthReply("controlled", "");
+            const rev = incrementU64(blockedReply.rev);
+            const obs = incrementU64(blockedReply.obs);
+            assert.ok(rev !== null && obs !== null);
+            authReply.rev = rev;
+            authReply.obs = obs;
+            authReply.req = authReply.source = "src-authorized-2";
+            const flight2 = state.beginCapture(authReply.source, null);
+            assert.ok(flight2 !== null);
+            assert.deepEqual(state.acceptReply(authReply, authReply.source, flight2.watermark), {
+                applied: true,
+                reason: "accepted",
+            });
+            const applied = applyWorldReply({
+                dispatchWatermark: state.currentInvalid,
+                takeResult: MIGRATE_TAKE,
+                ...env,
+                observation: makeSiblingObs(world),
+                reply: authReply,
+            });
+            assert.deepEqual(world.sendToOutputCalls, ["win-a->out-b", "win-c->out-b"], `${auth}: later authorized output moves`);
+            assert.deepEqual(world.setMembershipCalls, ["win-a->wa1", "win-c->wa1"], `${auth}: later authorized membership moves`);
+            assert.deepEqual(world.switchViewCalls, ["out-b->wa1", "out-a->ws-6"], `${auth}: target and refill switch on proof`);
+            assert.ok(!frameWrites.includes("win-a"), `${auth}: no frame write on authorized float`);
+            assert.equal(applied.membershipWrites, 2);
+        }
+    });
+
+    it("already-homed readback proves arrival without a setter even when unauthorized", () => {
+        const reply = loadAuthReply("untouched", "");
+        reply.windows = reply.windows.filter((w) => w.win === "win-a");
+        const world: FakeWorld = {
+            homing: new Map([
+                ["win-a", { out: "out-b", ws: "wa1" }],
+                ["win-b", { out: "out-b", ws: "wb1" }],
+            ]),
+            currents: new Map([["out-a", "wa1"], ["out-b", "wb1"]]),
+            sendToOutputCalls: [], setMembershipCalls: [], switchViewCalls: [],
+            lieMembership: false,
+        };
+        const state = freshState(reply);
+        let setGeometryCalls = 0;
+        const applied = applyWorldReply({
+            dispatchWatermark: state.currentInvalid,
+            takeResult: MIGRATE_TAKE,
+            ...makeEnv(state, world),
+            setGeometry: () => {
+                setGeometryCalls += 1;
+                return true;
+            },
+            observation: makeSiblingObs(world, false),
+            reply,
+        });
+        assert.equal(world.sendToOutputCalls.length, 0);
+        assert.equal(world.setMembershipCalls.length, 0);
+        assert.equal(setGeometryCalls, 0);
+        assert.deepEqual(world.switchViewCalls, ["out-b->wa1", "out-a->ws-6"]);
+        assert.equal(applied.viewWrites, 2);
+    });
+
+    it("changed readback before the setter pass fences unauthorized output/membership writes", () => {
+        const reply = loadAuthReply("untouched", "");
+        reply.windows = reply.windows.filter((w) => w.win === "win-a");
+        const world: FakeWorld = {
+            homing: new Map([
+                ["win-a", { out: "out-b", ws: "wa1" }],
+                ["win-b", { out: "out-b", ws: "wb1" }],
+            ]),
+            currents: new Map([["out-a", "wa1"], ["out-b", "wb1"]]),
+            sendToOutputCalls: [], setMembershipCalls: [], switchViewCalls: [],
+            lieMembership: false,
+        };
+        const state = freshState(reply);
+        let reads = 0;
+        const env = {
+            ...makeEnv(state, world),
+            readLiveMembership: (ref: object) => {
+                assert.ok("id" in ref && typeof ref.id === "string");
+                const id = ref.id;
+                if (id === "win-a") {
+                    reads += 1;
+                    // First read (prescan) sees already-homed; second read (setter pass) sees unhomed.
+                    return reads === 1 ? { out: "out-b", ws: "wa1" } : { out: "out-a", ws: "wa1" };
+                }
+                return world.homing.get(id) ?? null;
+            },
+        };
+        const applied = applyWorldReply({
+            dispatchWatermark: state.currentInvalid,
+            takeResult: MIGRATE_TAKE,
+            ...env,
+            observation: makeSiblingObs(world, false),
+            reply,
+        });
+        assert.equal(world.sendToOutputCalls.length, 0, "changed readback fences output setter");
+        assert.equal(world.setMembershipCalls.length, 0, "changed readback fences membership setter");
+        assert.equal(world.switchViewCalls.length, 0, "unresolved arrival blocks target/refill switches");
+        assert.ok(applied.held >= 1);
     });
 });

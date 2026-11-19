@@ -353,6 +353,8 @@ fn global_unique_swap_preserves_nonempty_units() {
         let row = window_row(&swapped, window);
         assert_eq!(row.output.0, output, "{window}: {row:?}");
         assert_eq!(row.workspace, workspace, "{window}: {row:?}");
+        assert_eq!(row.membership_authority, ScopeAuthority::Controlled);
+        assert_eq!(row.frame_authority, ScopeAuthority::Untouched);
     }
     for (window, output, workspace) in [
         ("win-am", "out-b", view_a.as_str()),
@@ -383,8 +385,18 @@ fn global_unique_swap_preserves_nonempty_units() {
         "unchanged holds without flap: {:?}",
         held.transfers
     );
-    for window in ["win-a1", "win-b1", "win-af", "win-bf", "win-am", "win-bm"] {
+    for window in ["win-a1", "win-b1", "win-am", "win-bm"] {
         let _ = window_row(&held, window);
+    }
+    for (window, output, workspace) in [
+        ("win-af", "out-b", view_a.as_str()),
+        ("win-bf", "out-a", view_b.as_str()),
+    ] {
+        let row = window_row(&held, window);
+        assert_eq!(row.output.0, output, "{window}: {row:?}");
+        assert_eq!(row.workspace, workspace, "{window}: {row:?}");
+        assert_eq!(row.membership_authority, ScopeAuthority::Controlled);
+        assert_eq!(row.frame_authority, ScopeAuthority::Untouched);
     }
 
     // Arrival: every member observed on its moved output with view echoes.

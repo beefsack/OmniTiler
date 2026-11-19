@@ -5148,6 +5148,133 @@ fn global_unique_swap_minimized_incoming_and_outgoing_over_checked_broker() {
 }
 
 #[test]
+fn global_unique_swap_float_carries_member_auth_without_frame_write_over_checked_broker() {
+    let make_inner = |windows: &[String], focused: &str| -> String {
+        let windows_json = windows.join(",");
+        format!(
+            "{{\"v\":4,\
+              \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+              \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+              \"identity\":{{\"manufacturer\":null,\"model\":null,\
+              \"serial\":null,\"connector\":null}}}},\
+              {{\"out\":\"DP-2\",\"full\":[1920,0,1920,1080],\
+              \"work\":[1920,0,1920,1040],\"complete\":true,\"scale\":1,\
+              \"identity\":{{\"manufacturer\":null,\"model\":null,\
+              \"serial\":null,\"connector\":null}}}}],\
+              \"windows\":[{windows_json}],\"closed\":[],\
+              \"native\":[{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\",\"{UUID_B}\",\"{UUID_C}\",\"{UUID_D}\"],\
+              \"current\":\"{UUID_A}\",\"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}},{{\"native\":\"{UUID_B}\",\"count\":null}},{{\"native\":\"{UUID_C}\",\"count\":null}},{{\"native\":\"{UUID_D}\",\"count\":null}}]}},\
+              {{\"out\":\"DP-2\",\"order\":[\"{UUID_A}\",\"{UUID_B}\",\"{UUID_C}\",\"{UUID_D}\"],\
+              \"current\":\"{UUID_B}\",\"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}},{{\"native\":\"{UUID_B}\",\"count\":null}},{{\"native\":\"{UUID_C}\",\"count\":null}},{{\"native\":\"{UUID_D}\",\"count\":null}}]}}],\
+              \"focused\":\"{focused}\",\"foregroundKnown\":true,\
+              \"complete\":true,\"gesture\":false,\
+              \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+              \"actionOutputs\":[\"DP-1\",\"DP-2\"],\
+              \"presentation\":{},\
+              \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
+              \"rendererInput\":null}}",
+            disabled_presentation()
+        )
+    };
+    let tiled = |win: &str, out: &str, rect: &str, native: &str| -> String {
+        window_json(win, rect, Some(native))
+            .replace("\"out\":\"DP-1\"", &format!("\"out\":\"{out}\""))
+    };
+    let float = |win: &str, out: &str, rect: &str, native: &str| -> String {
+        window_json(win, rect, Some(native))
+            .replace("\"out\":\"DP-1\"", &format!("\"out\":\"{out}\""))
+            .replace("\"transient\":false", "\"transient\":true")
+    };
+    fn find_row<'a>(reply: &'a serde_json::Value, win: &str) -> &'a serde_json::Value {
+        reply["windows"]
+            .as_array()
+            .expect("windows array")
+            .iter()
+            .find(|r| r["win"] == win)
+            .unwrap_or_else(|| panic!("missing window {win}: {reply}"))
+    }
+    let assert_carried_float = |reply: &serde_json::Value, view_a: &str| {
+        let has_migration = reply["transfers"]
+            .as_array()
+            .expect("transfers array")
+            .iter()
+            .any(|t| t["kind"] == "migration" && t["out"] == "DP-2" && t["ws"] == view_a);
+        assert!(
+            has_migration,
+            "outstanding migration to DP-2/{view_a}: {}",
+            reply["transfers"]
+        );
+        let row = find_row(reply, "win-af");
+        assert_eq!(row["out"], "DP-2", "{row}");
+        assert_eq!(row["ws"], view_a, "{row}");
+        assert_eq!(row["floating"], true, "{row}");
+        assert_eq!(row["member_auth"], "controlled", "{row}");
+        assert_eq!(row["member_hold"], "", "{row}");
+        assert_eq!(row["frame_auth"], "untouched", "{row}");
+        assert_eq!(row["frame_hold"], "", "{row}");
+        assert!(row["alloc"].is_null(), "{row}");
+        assert_eq!(row["frame_op"], "", "{row}");
+    };
+
+    let (service, generation) = discovered_equal_count_service_with_mode("global-unique");
+    let inner = make_inner(
+        &[
+            tiled("win-a1", "DP-1", "[0,0,1920,1040]", UUID_A),
+            float("win-af", "DP-1", "[200,150,400,300]", UUID_A),
+            tiled("win-b1", "DP-2", "[1920,0,1920,1040]", UUID_B),
+        ],
+        "win-a1",
+    );
+    let r1 = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &inner))
+            .expect("cap1"),
+    );
+    let view_a = r1["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["out"] == "DP-1")
+        .unwrap()["view"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let view_b = r1["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["out"] == "DP-2")
+        .unwrap()["view"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    service
+        .queue_command(
+            SENDER_A,
+            &queue_req(
+                &generation,
+                "panel-1",
+                "1",
+                &format!("{{\"op\":\"select-workspace\",\"out\":\"DP-1\",\"ws\":\"{view_b}\"}}"),
+            ),
+        )
+        .expect("queue swap");
+    let issuing = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &inner))
+            .expect("issuing swap"),
+    );
+    assert_carried_float(&issuing, &view_a);
+
+    let delayed = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &inner))
+            .expect("delayed capture"),
+    );
+    assert_carried_float(&delayed, &view_a);
+}
+
+#[test]
 fn ac3_cross_client_fifo_and_issuer_specific_settlements() {
     let (service, generation) = discovered_service();
     let native = "{\"out\":\"DP-1\",\"order\":[\"n-1\"],\"current\":\"n-1\",\"occupancy\":[{\"native\":\"n-1\",\"count\":null}]}";

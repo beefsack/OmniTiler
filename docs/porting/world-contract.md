@@ -1057,6 +1057,20 @@ acceptance or adopt the separate close-focus amendment.
   fact. `CommandResult::Maximize` remains the existing shape and describes the
   core-resolved toggle, not native completion or independent write permission.
 
+- Scope authority (`ScopeStatus`) and row authority (`WindowDesire`) are
+  independent: scope authority gates scope-level actuation (including
+  migration view/refill follow), while per-row `frame_auth,frame_hold` and
+  `member_auth,member_hold` govern geometry and membership writes separately.
+  A carried float or minimized member under an active retained
+  `TransferKind::Migration` targeting its published `(out,ws)` carries
+  `member_auth: controlled` (unless narrowly held) while preserving
+  `frame_auth: untouched` (or `hold/minimized`). Actuators must require
+  row-level `member_auth: controlled` with empty `member_hold` before either
+  output or membership writes; already-homed live readback still proves arrival
+  without a setter, and an unhomed unauthorized row must neither disappear
+  from membership proof nor release follow/refill view switches or premature
+  operation dispatch.
+
 ### Retained settlement outcomes
 
 - User 2026-11-14: the required `gestureSettled`, `operationSettled` and

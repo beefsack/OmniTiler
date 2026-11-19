@@ -2789,7 +2789,7 @@ fn tiled_workspace_migration_carries_float_members() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId("out-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
-                workspace: crate::directional::WorkspaceId(view_a),
+                workspace: crate::directional::WorkspaceId(view_a.clone()),
             }),
         ),
     );
@@ -2819,6 +2819,40 @@ fn tiled_workspace_migration_carries_float_members() {
         "migration mints no focus: {:?}",
         reply.effects
     );
+    let wf_issuing = row_of(&reply, "wf");
+    assert_eq!(wf_issuing.output.0, "out-b");
+    assert_eq!(wf_issuing.workspace, view_a);
+    assert!(wf_issuing.floating);
+    assert_eq!(wf_issuing.membership_authority, ScopeAuthority::Controlled);
+    assert_eq!(wf_issuing.frame_authority, ScopeAuthority::Untouched);
+    assert_eq!(wf_issuing.frame_operation, None);
+    let delayed = accepted(
+        &mut engine,
+        &report(
+            4,
+            screens,
+            vec![fact("w0", "out-a", 0), float_fact("wf", "out-a", 200)],
+            "w0",
+            vec![],
+            None,
+            None,
+        ),
+    );
+    assert!(
+        delayed
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Migration) && t.target_output.0 == "out-b"),
+        "migration remains retained without native feedback: {:?}",
+        delayed.transfers
+    );
+    let wf_delayed = row_of(&delayed, "wf");
+    assert_eq!(wf_delayed.output.0, "out-b");
+    assert_eq!(wf_delayed.workspace, view_a);
+    assert!(wf_delayed.floating);
+    assert_eq!(wf_delayed.membership_authority, ScopeAuthority::Controlled);
+    assert_eq!(wf_delayed.frame_authority, ScopeAuthority::Untouched);
+    assert_eq!(wf_delayed.frame_operation, None);
 }
 
 #[test]

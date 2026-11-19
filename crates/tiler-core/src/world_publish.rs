@@ -431,6 +431,25 @@ impl WorldTransaction<'_> {
                     scope: workspace_authority_scope(&key.output, &key.workspace.0),
                     authority: ScopeAuthority::Untouched,
                 });
+                let membership_authority = |window: &WindowId| {
+                    if self.style_flight_held(style_held_output, window) {
+                        ScopeAuthority::Hold(HoldReason::Unreadable)
+                    } else if self.world.settlement.retained.iter().any(|r| {
+                        r.target.target_output == key.output
+                            && r.target.target_workspace == key.workspace.0
+                            && match &r.target.kind {
+                                TransferKind::Window(w) => w == window,
+                                TransferKind::Migration => r.members.contains(window),
+                                TransferKind::View => false,
+                            }
+                    }) && !self.is_held_window(window)
+                        && !self.is_excluded_window(window)
+                    {
+                        ScopeAuthority::Controlled
+                    } else {
+                        ScopeAuthority::Untouched
+                    }
+                };
                 for window in &domain.windows {
                     // Floating rows here; redirected movers ride the
                     // target homing below (one homing).
@@ -440,11 +459,6 @@ impl WorldTransaction<'_> {
                     if !emitted.insert(window.window.0.clone()) {
                         continue;
                     }
-                    let boundary_mover = self.world.settlement.retained.iter().any(|r| {
-                        matches!(&r.target.kind, TransferKind::Window(w) if w == &window.window)
-                            && r.target.target_output == key.output
-                            && r.target.target_workspace == key.workspace.0
-                    });
                     windows.push(WindowDesire {
                         lifetime: window.window.clone(),
                         output: window.output.clone(),
@@ -452,15 +466,7 @@ impl WorldTransaction<'_> {
                         allocation: None,
                         effective_frame: None,
                         frame_authority: ScopeAuthority::Untouched,
-                        membership_authority: if self
-                            .style_flight_held(style_held_output, &window.window)
-                        {
-                            ScopeAuthority::Hold(HoldReason::Unreadable)
-                        } else if boundary_mover {
-                            ScopeAuthority::Controlled
-                        } else {
-                            ScopeAuthority::Untouched
-                        },
+                        membership_authority: membership_authority(&window.window),
                         frame_operation: None,
                         clear_operation: None,
                         floating: true,
@@ -485,7 +491,7 @@ impl WorldTransaction<'_> {
                         allocation: None,
                         effective_frame: None,
                         frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),
-                        membership_authority: ScopeAuthority::Untouched,
+                        membership_authority: membership_authority(window),
                         frame_operation: None,
                         clear_operation: None,
                         floating: true,
@@ -654,14 +660,24 @@ impl WorldTransaction<'_> {
                         if live.contains(&window.0) || !emitted.insert(window.0.clone()) {
                             continue;
                         }
+                        let (home_output, home_workspace) = redirect
+                            .get(&window.0)
+                            .map(|target| (target.output.clone(), target.workspace.0.clone()))
+                            .unwrap_or_else(|| (key.output.clone(), key.workspace.0.clone()));
+                        let session_flight_held =
+                            self.style_flight_held(style_held_output, &window);
                         windows.push(WindowDesire {
                             lifetime: window,
-                            output: key.output.clone(),
-                            workspace: key.workspace.0.clone(),
+                            output: home_output,
+                            workspace: home_workspace,
                             allocation: None,
                             effective_frame: None,
                             frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),
-                            membership_authority: ScopeAuthority::Controlled,
+                            membership_authority: if session_flight_held {
+                                ScopeAuthority::Hold(HoldReason::Unreadable)
+                            } else {
+                                ScopeAuthority::Controlled
+                            },
                             frame_operation: None,
                             clear_operation: None,
                             floating: false,
@@ -988,12 +1004,20 @@ impl WorldTransaction<'_> {
                 .cloned()
                 .collect();
             for window in exceptions {
-                let in_flight = self
-                    .world
-                    .settlement
-                    .retained
-                    .iter()
-                    .any(|r| matches!(&r.target.kind, TransferKind::Window(w) if w == &window));
+                let in_flight =
+                    self.world
+                        .settlement
+                        .retained
+                        .iter()
+                        .any(|r| match &r.target.kind {
+                            TransferKind::Window(w) => w == &window,
+                            TransferKind::Migration => {
+                                r.target.target_output == key.output
+                                    && r.target.target_workspace == key.workspace.0
+                                    && r.members.iter().any(|m| m == &window)
+                            }
+                            TransferKind::View => false,
+                        });
                 emitted.insert(window.0.clone());
                 // Explicit retained float target, if outstanding: the row
                 // carries the stable property operation id so the adapter
@@ -1192,7 +1216,10 @@ impl WorldTransaction<'_> {
                 let command_seq = frame_seq.or(clear_seq);
                 let membership_authority = if self.style_flight_held(style_held_output, &window) {
                     ScopeAuthority::Hold(HoldReason::Unreadable)
-                } else if in_flight {
+                } else if in_flight
+                    && !self.is_held_window(&window)
+                    && !self.is_excluded_window(&window)
+                {
                     ScopeAuthority::Controlled
                 } else {
                     ScopeAuthority::Untouched

@@ -1971,9 +1971,8 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         // empty desired set under the controlled scope above is complete and
         // proceeds to the view gates; any member not yet observable holds
         // without inventing writes for unknown ids.
-        const members = reply.windows
-            .filter((w) => w.out === t.out && w.ws === t.ws)
-            .map((w) => w.win);
+        const members = (reply.windows as WorldReplyWindow[])
+            .filter((w) => w.out === t.out && w.ws === t.ws);
         // Advisory source provenance for the refill view only (never member
         // authority): the correlated result when it names this transfer's
         // target, else the paired child or observed homing below.
@@ -1981,7 +1980,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             env.takeResult.targetOut === t.out && env.takeResult.targetWs === t.ws
             ? env.takeResult.sourceOut
             : null;
-        if (members.some((id) => !byWin.has(id))) {
+        if (members.some((w) => !byWin.has(w.win))) {
             // Not every member is observable yet (actuation lag or a stale
             // snapshot): hold without inventing writes for unknown ids.
             result.held += 1;
@@ -2023,8 +2022,8 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             // (proof before hold); anything less holds without another
             // native call. The dispatch record stays either way.
             let lateProof = members.length > 0;
-            for (const id of members) {
-                const observed = byWin.get(id);
+            for (const memberRow of members) {
+                const observed = byWin.get(memberRow.win);
                 let home: { out: string; ws: string } | null = null;
                 try {
                     home = observed !== undefined ? env.readLiveMembership(observed.ref) : null;
@@ -2055,10 +2054,11 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         // than fighting per-member battles. The core settles supersession
         // from the fresh native facts; the dispatch record stays.
         let superseded = false;
+        let unauthorizedUnhomed = false;
         let scanIdx = -1;
-        for (const id of members) {
+        for (const memberRow of members) {
             scanIdx += 1;
-            const observed = byWin.get(id);
+            const observed = byWin.get(memberRow.win);
             if (observed === undefined) {
                 continue;
             }
@@ -2074,6 +2074,12 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                 traceMigrate(env, `omnitiler:world:migrate-prescan op=${t.op} idx=${scanIdx}/${members.length} pre=${pre} branch=already-homed`);
                 continue;
             }
+            const memberControlled = memberRow.member_auth === "controlled" && memberRow.member_hold === "";
+            if (!memberControlled) {
+                traceMigrate(env, `omnitiler:world:migrate-prescan op=${t.op} idx=${scanIdx}/${members.length} pre=${pre} branch=held-unauthorized`);
+                unauthorizedUnhomed = true;
+                break;
+            }
             const atSource = home.out === observed.out && home.ws === observed.ws;
             const partialProgress =
                 (home.out === t.out && home.ws === observed.ws) ||
@@ -2085,7 +2091,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             }
             traceMigrate(env, `omnitiler:world:migrate-prescan op=${t.op} idx=${scanIdx}/${members.length} pre=${pre} branch=pending`);
         }
-        if (superseded) {
+        if (superseded || unauthorizedUnhomed) {
             result.held += 1;
             if (midApplyStopped(env, entryObs)) {
                 result.stoppedMidApply = true;
@@ -2101,8 +2107,9 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         let failed = false;
         let unproven = false;
         let actIdx = -1;
-        for (const id of members) {
+        for (const memberRow of members) {
             actIdx += 1;
+            const id = memberRow.win;
             const observed = byWin.get(id);
             if (observed === undefined) {
                 continue;
@@ -2121,6 +2128,13 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             if (home.out === t.out && home.ws === targetNative) {
                 traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=na tgtView=na echo=skipped set=skipped proof=target branch=already-homed`);
                 state.noteAppliedWindowTarget(id, t.op, t.out, targetNative);
+                continue;
+            }
+            const memberControlled = memberRow.member_auth === "controlled" && memberRow.member_hold === "";
+            if (!memberControlled) {
+                traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=na tgtView=na echo=skipped set=skipped proof=${pre} branch=held-unauthorized`);
+                result.held += 1;
+                unproven = true;
                 continue;
             }
             if (!preSetterOk(env, reply, entryObs, observed, false)) {
