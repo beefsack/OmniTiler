@@ -24,6 +24,8 @@
 //! - `crates/tiler-macos/src/ffi.rs`
 //! - `crates/tiler-live-fixture/src/pipe_win.rs`
 //! - `crates/tiler-live-fixture/src/menu_macos.rs`
+//! - `crates/tiler-live-fixture/examples/win-probe.rs` (example-local `ffi_ext`)
+//! - `crates/tiler-live-fixture/examples/win-dxgi-probe.rs` (example-local `nat`)
 //!
 //! Run: `cargo test --locked -p tiler-core --test unsafe_guardrail`
 //! (also runs inside `cargo test --workspace`). No dependencies beyond `std`.
@@ -54,6 +56,8 @@ const APPROVED_ALLOW_ROOTS: &[&str] = &[
     "crates/tiler-macos/src/ffi.rs",
     "crates/tiler-live-fixture/src/pipe_win.rs",
     "crates/tiler-live-fixture/src/menu_macos.rs",
+    "crates/tiler-live-fixture/examples/win-probe.rs",
+    "crates/tiler-live-fixture/examples/win-dxgi-probe.rs",
 ];
 
 /// Crates allowed a standalone `[lints.rust] unsafe_code = "deny"`.
@@ -1447,6 +1451,14 @@ mod e2e_tests {
             (
                 "crates/tiler-live-fixture/src/menu_macos.rs",
                 "#![allow(unsafe_code)]\n",
+            ),
+            (
+                "crates/tiler-live-fixture/examples/win-probe.rs",
+                "#[allow(unsafe_code)]\nmod ffi_ext {}\n",
+            ),
+            (
+                "crates/tiler-live-fixture/examples/win-dxgi-probe.rs",
+                "#[allow(unsafe_code)]\nmod nat {}\n",
             ),
         ];
         files.extend_from_slice(extra);
