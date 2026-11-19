@@ -1795,3 +1795,89 @@ fn logical_topology_reflow_at_scale_one_through_admit() {
         hidden => panic!("expected recomputed found underlay, got {hidden:?}"),
     }
 }
+
+#[test]
+fn edge_output_unrepresentable_underlay_hides_without_blocking_ready_or_neighbor() {
+    let mut engine = engine_with(vec![(
+        "underlayExtension".to_owned(),
+        RawSettingValue::Number(32.0),
+    )]);
+    let screens = vec![screen("out-a", -32768), screen("out-b", 0)];
+    let facts = vec![
+        fact("win-a", "out-a", -32768),
+        fact("win-b", "out-a", -32368),
+        fact("win-c", "out-b", 0),
+    ];
+    let first = report_v4(
+        1,
+        screens.clone(),
+        facts.clone(),
+        "win-a",
+        chord_ingress_v4("win-a", rect(-32768, 0, 40, 90), 1),
+    );
+    accepted_v4(&mut engine, &first);
+
+    let second = report_v4(
+        2,
+        screens.clone(),
+        facts.clone(),
+        "win-a",
+        chord_ingress_v4("win-a", rect(-32768, 0, 40, 90), 2),
+    );
+    let settled = accepted_v4(&mut engine, &second);
+    assert!(settled.ready);
+    assert!(matches!(
+        settled.presentation.underlay,
+        PresentationUnderlay::Hidden {
+            base_revision: Some(_),
+            reason: GroupHideReason::Unrepresentable,
+        }
+    ));
+    assert!(settled.scopes.iter().any(|row| {
+        row.scope == crate::world_report::AuthorityScope::Output(OutputId("out-b".to_owned()))
+            && row.authority == crate::world_report::ScopeAuthority::Controlled
+    }));
+    crate::world_reply_validation::validate_reply_v4(&settled, Some(&caps_full()))
+        .expect("reply with unrepresentable underlay validates");
+
+    let third = report_v4(
+        3,
+        screens,
+        facts,
+        "win-a",
+        chord_ingress_v4("win-a", rect(-32768, 0, 40, 90), 3),
+    );
+    let cmd = crate::world_report::WorldCommand::Focus {
+        window: crate::directional::WindowSubject::Window(WindowId("win-c".to_owned())),
+        direction: None,
+    };
+    let transition = engine
+        .handle_report_with_gate_and_prepare(
+            &third,
+            &[(1, cmd)],
+            &crate::world_admit_v4::StructuralCoreAdmissionGate,
+            |_| Ok::<(), std::convert::Infallible>(()),
+        )
+        .expect("prepared typed transition");
+    let after_cmd = match transition.outcome {
+        V4RunOutcome::Accepted(reply) => reply,
+        other => panic!("expected accepted v4 admission, got {other:?}"),
+    };
+    assert!(after_cmd.ready);
+    assert_eq!(
+        after_cmd
+            .focus_request
+            .as_ref()
+            .map(|req| req.target.0.as_str()),
+        Some("win-c")
+    );
+    assert_eq!(
+        transition.dispositions,
+        [crate::world_report::BatchDisposition {
+            seq: 1,
+            disposition: crate::world_report::CommandDisposition::Executed(None),
+        }]
+    );
+    crate::world_reply_validation::validate_reply_v4(&after_cmd, Some(&caps_full()))
+        .expect("post-command reply validates");
+}

@@ -8,6 +8,7 @@
 use crate::world_transaction::WorldTransaction;
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::bounds::valid_carried_rect;
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::session::DomainKey;
@@ -451,8 +452,10 @@ impl WorldTransaction<'_> {
         let Some(extension) = extension else {
             return hidden(GroupHideReason::NoGroup);
         };
-        let Some(outer) = group_underlay_outer_rect_px(group.bounds, gap, width, extension) else {
-            return hidden(GroupHideReason::NoGroup);
+        let Some(outer) = group_underlay_outer_rect_px(group.bounds, gap, width, extension)
+            .filter(|rect| valid_carried_rect(rect.x, rect.y, rect.w, rect.h))
+        else {
+            return hidden(GroupHideReason::Unrepresentable);
         };
         PresentationUnderlay::Found(PresentationUnderlayFound {
             base_revision: base,

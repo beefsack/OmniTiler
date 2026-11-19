@@ -217,4 +217,37 @@ describe("world presentation v2 anchored border", () => {
         assert.equal(hides, hidesBefore);
         assert.ok(!logs.some((l) => l.includes("presentation-malformed")), logs.join("\n"));
     });
+
+    it("accepts unrepresentable underlay hide reason and rejects unknown reasons", () => {
+        const accepted = parseWorldReply(
+            presentationReply("pres-unrep", HIDDEN_BORDER, {
+                presentation: {
+                    foreground: "win-a",
+                    rev: "1",
+                    border: HIDDEN_BORDER,
+                    underlay: { status: "hidden", reason: "unrepresentable", baseRev: "5" },
+                    pager: [],
+                },
+            }),
+        );
+        assert.ok(accepted !== null && isWorldPresentationReply(accepted));
+        assert.deepEqual(accepted.presentation.underlay, {
+            status: "hidden",
+            reason: "unrepresentable",
+            baseRev: "5",
+        });
+
+        const rejected = parseWorldReply(
+            presentationReply("pres-bad-reason", HIDDEN_BORDER, {
+                presentation: {
+                    foreground: "win-a",
+                    rev: "1",
+                    border: HIDDEN_BORDER,
+                    underlay: { status: "hidden", reason: "bogus-reason", baseRev: null },
+                    pager: [],
+                },
+            }),
+        );
+        assert.equal(rejected, null);
+    });
 });

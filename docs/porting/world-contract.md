@@ -1818,7 +1818,11 @@ acceptance or adopt the separate close-focus amendment.
   subjects beyond its watch cap and for stale/unknown eligibility, until causal
   coverage is established; a reread or timestamp is not a substitute.
   Underlay remains group-defined absolute; its baseRev is projection
-  provenance, not another input freshness rule.
+  provenance, not another input freshness rule. When the computed underlay
+  `outer` rect overflows or fails `bounds::valid_carried_rect` (such as an
+  expanded underlay on an output at `-32768`), underlay publication hides with
+  `status: "hidden"`, `reason: "unrepresentable"`, and retained `baseRev`
+  rather than clamping or failing reply validation.
   [R20](../decisions/contract.md#anchored-border-r20),
   [evidence](../changes/v4-migration.md#b-reconciliations-and-open-points).
 
@@ -1840,7 +1844,7 @@ acceptance or adopt the separate close-focus amendment.
 | `WorkspaceMode`, `MigrationSourceRefill`, `AnchorFallback`, `NoSpaceResult`, `SwitchTarget`, `FreshPlacement`, `BornMaximized` | [Settings baseline](world-contract-v3.md#current-message-shapes-v3), [catalog](../../crates/tiler-core/src/settings_catalog.rs) |
 | `CommandResult::Float`, `CommandResult::Migration`, `CommandResult::Maximize`, `DirectionalOutcome` | [Results](world-contract-v3.md#current-message-shapes-v3), [world_sizing.rs](../../crates/tiler-core/src/world_sizing.rs), [world_directional.rs](../../crates/tiler-core/src/world_directional.rs) |
 | `GestureIngress`, `GestureSettled`, `DragHoverPrior`, `PriorGroupEdge`, `DragSide`, `Direction`, `SameAxisMove` | [Wire baseline](world-contract-v3.md#current-message-shapes-v3), [gesture.rs](../../crates/tiler-core/src/gesture.rs), [world_protocol.rs](../../crates/tiler-protocol/src/world_protocol.rs) |
-| `PresentationUnderlay`, `PresentationUnderlayFound`, `GroupHideReason`, `ActiveGroupMember`, `PagerScreen`, `PagerWorkspace`, `PagerWindow` | [Presentation](world-contract-v3.md#8-border-underlay-drop-preview-and-pager), [world_presentation.rs](../../crates/tiler-core/src/world_presentation.rs), [world_sizing.rs](../../crates/tiler-core/src/world_sizing.rs) |
+| `PresentationUnderlay`, `PresentationUnderlayFound`, `GroupHideReason` (adds `Unrepresentable` / `unrepresentable`), `ActiveGroupMember`, `PagerScreen`, `PagerWorkspace`, `PagerWindow` | [Presentation](world-contract-v3.md#8-border-underlay-drop-preview-and-pager), [world_presentation.rs](../../crates/tiler-core/src/world_presentation.rs), [world_sizing.rs](../../crates/tiler-core/src/world_sizing.rs) |
 | `BorderHideReason` except HostHidden spelling | [visual.rs](../../crates/tiler-core/src/visual.rs) |
 | `DomainKey`, `OutputId`, `WorkspaceId`, `NativeWorkspaceId` string representation, `WindowId`, `NodeId`, `Rect` | [Baseline codec](../../crates/tiler-protocol/src/world_protocol.rs), [session/world.rs](../../crates/tiler-core/src/session/world.rs) |
 

@@ -2062,3 +2062,32 @@ fn v4_bound_and_projection_match_stage5_fixtures_and_serde_oracle_byte_for_byte(
     let oracle_rich_proj = legacy_projection_oracle(&rich, None);
     assert_eq!(actual_rich_proj, oracle_rich_proj);
 }
+
+#[test]
+fn underlay_unrepresentable_roundtrips_and_unknown_reason_rejects() {
+    use tiler_core::world_presentation::{GroupHideReason, PresentationUnderlay};
+
+    let mut decoded = decode_ok("messages/reply-observe.json");
+    decoded.reply.presentation.underlay = PresentationUnderlay::Hidden {
+        base_revision: Some(5),
+        reason: GroupHideReason::Unrepresentable,
+    };
+    let wire = encode_reply_v4(&decoded).expect("unrepresentable underlay encodes");
+    assert!(
+        wire.contains("\"reason\":\"unrepresentable\""),
+        "wire carries unrepresentable reason: {wire}"
+    );
+    let reparsed = decode_reply_v4(&wire).expect("unrepresentable underlay decodes");
+    assert_eq!(
+        reparsed.reply.presentation.underlay,
+        PresentationUnderlay::Hidden {
+            base_revision: Some(5),
+            reason: GroupHideReason::Unrepresentable,
+        }
+    );
+
+    let mut value: serde_json::Value = serde_json::from_str(&wire).expect("parses as json");
+    value["presentation"]["underlay"]["reason"] = serde_json::Value::String("bogus-reason".into());
+    let err = decode_reply_v4(&value.to_string()).expect_err("unknown reason refuses");
+    assert_eq!(err.kind, "unknown-value");
+}

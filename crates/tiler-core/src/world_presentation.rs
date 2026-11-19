@@ -51,6 +51,7 @@ pub enum GroupHideReason {
     NoGroup,
     Idle,
     Suspended,
+    Unrepresentable,
 }
 
 impl GroupHideReason {
@@ -70,6 +71,7 @@ impl GroupHideReason {
             Self::NoGroup => "no-group",
             Self::Idle => "idle",
             Self::Suspended => "suspended",
+            Self::Unrepresentable => "unrepresentable",
         }
     }
 }

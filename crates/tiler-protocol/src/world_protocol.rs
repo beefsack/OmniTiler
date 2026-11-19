@@ -5319,6 +5319,7 @@ fn decode_group_hide_reason(text: &str) -> Result<GroupHideReason> {
         "no-group" => Ok(GroupHideReason::NoGroup),
         "idle" => Ok(GroupHideReason::Idle),
         "suspended" => Ok(GroupHideReason::Suspended),
+        "unrepresentable" => Ok(GroupHideReason::Unrepresentable),
         _ => Err(unknown_value()),
     }
 }

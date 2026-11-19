@@ -5269,3 +5269,129 @@ fn a5_supported_routes_refuse_v3_and_frozen_v4_missing_property_attempts() {
     assert_eq!(frozen_reply["outcome"], "rejected", "{frozen_reply}");
     assert_eq!(frozen_reply["kind"], "malformed", "{frozen_reply}");
 }
+
+#[test]
+fn edge_output_unrepresentable_underlay_hides_without_blocking_ready_or_neighbor() {
+    let service = WorldService::new();
+    let handshake =
+        handshake_req(ADAPTER, "req-0").replacen("\"hostOwned\":true", "\"hostOwned\":false", 1);
+    let discovery = parse(&service.discover(&handshake).expect("handshake routes"));
+    let generation = discovery["gen"].as_str().expect("gen").to_owned();
+    let settings_body = format!(
+        "{{\"type\":\"settings\",\"v\":4,\"adapter\":\"{ADAPTER}\",\
+          \"gen\":\"{generation}\",\"req\":\"settings-0\",\"rev\":\"1\",\
+          \"values\":{{\"mode\":\"per-output-local\",\"gap\":8,\"outer\":8,\
+          \"underlayExtension\":32,\"bornMaximized\":\"tile-on-launch\"}}}}"
+    );
+    let settings = parse(&service.discover(&settings_body).expect("settings routes"));
+    assert_eq!(settings["status"], "accepted", "{settings}");
+
+    let win_a = window_json("win-a", "[-32760,8,948,1024]", None);
+    let win_b = window_json("win-b", "[-31804,8,948,1024]", None);
+    let win_c = window_json("win-c", "[8,8,1904,1024]", None).replacen(
+        "\"out\":\"DP-1\"",
+        "\"out\":\"HDMI-1\"",
+        1,
+    );
+    let windows = format!("{win_a},{win_b},{win_c}");
+    let make_inner = |obs: u64| {
+        format!(
+            "{{\"v\":4,\
+              \"screens\":[\
+                {{\"out\":\"DP-1\",\"full\":[-32768,0,1920,1080],\
+                  \"work\":[-32768,0,1920,1040],\"complete\":true,\"scale\":1,\
+                  \"identity\":{{\"manufacturer\":null,\"model\":null,\
+                  \"serial\":null,\"connector\":null}}}},\
+                {{\"out\":\"HDMI-1\",\"full\":[0,0,1920,1080],\
+                  \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+                  \"identity\":{{\"manufacturer\":null,\"model\":null,\
+                  \"serial\":null,\"connector\":null}}}}\
+              ],\
+              \"windows\":[{windows}],\"closed\":[],\"native\":[],\
+              \"focused\":\"win-a\",\"foregroundKnown\":true,\
+              \"complete\":true,\"gesture\":false,\
+              \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+              \"actionOutputs\":[\"DP-1\",\"HDMI-1\"],\
+              \"presentation\":{{\"foreground\":\"win-a\",\"minimized\":false,\
+                \"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\
+                \"hiddenWorkspace\":false,\"frame\":[-32760,8,948,1024],\
+                \"chordHeld\":true,\"moveWindow\":\"\",\
+                \"pagerOrder\":[],\"pagerFrames\":[],\
+                \"witness\":{{\"win\":\"win-a\",\"obs\":\"{obs}\",\
+                  \"frame\":[-32760,8,948,1024],\"foreground\":\"win-a\"}},\
+                \"foregroundOut\":\"DP-1\"}},\
+              \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
+              \"rendererInput\":null}}"
+        )
+    };
+
+    let raw_1 = service
+        .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &make_inner(1)))
+        .expect("capture 1");
+    let reply_1 = parse(&raw_1);
+    assert_eq!(reply_1["ready"], true, "{reply_1}");
+
+    let raw_2 = service
+        .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &make_inner(2)))
+        .expect("capture 2");
+    assert!(
+        raw_2.contains("\"reason\":\"unrepresentable\""),
+        "wire bytes carry unrepresentable reason: {raw_2}"
+    );
+    let reply_2 = parse(&raw_2);
+    assert_eq!(reply_2["ready"], true, "{reply_2}");
+    assert_eq!(
+        reply_2["presentation"]["underlay"]["status"], "hidden",
+        "{reply_2}"
+    );
+    assert_eq!(
+        reply_2["presentation"]["underlay"]["reason"], "unrepresentable",
+        "{reply_2}"
+    );
+    let scopes_2 = reply_2["scopes"].as_array().expect("scopes array");
+    assert!(
+        scopes_2.iter().any(|row| {
+            row["scope"]["kind"] == "output"
+                && row["scope"]["out"] == "HDMI-1"
+                && row["auth"] == "controlled"
+        }),
+        "healthy neighbor HDMI-1 retains controlled authority: {reply_2}"
+    );
+
+    let queued = parse(
+        &service
+            .queue_command(
+                SENDER_A,
+                &queue_req(
+                    &generation,
+                    "client-a",
+                    "1",
+                    "{\"op\":\"focus\",\"win\":\"win-c\"}",
+                ),
+            )
+            .expect("queue focus"),
+    );
+    assert_eq!(queued["outcome"], "queued", "{queued}");
+
+    let raw_3 = service
+        .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &make_inner(3)))
+        .expect("capture 3");
+    assert!(
+        raw_3.contains("\"reason\":\"unrepresentable\""),
+        "chord remains held on fresh capture 3: {raw_3}"
+    );
+    let reply_3 = parse(&raw_3);
+    assert_eq!(reply_3["ready"], true, "{reply_3}");
+    assert_eq!(
+        reply_3["presentation"]["underlay"]["reason"], "unrepresentable",
+        "{reply_3}"
+    );
+    assert_eq!(reply_3["focusRequest"]["target"], "win-c", "{reply_3}");
+
+    let taken = parse(
+        &service
+            .take_result(SENDER_A, &take_req(&generation, "client-a", "1"))
+            .expect("take focus result"),
+    );
+    assert_eq!(taken["outcome"], "ready", "{taken}");
+}

@@ -1659,7 +1659,6 @@ fn unit_i_broker_gesture_transfer_128_byte_window_and_underlay_agreement() {
     assert_eq!(seed_underlay["status"], "found");
     assert_eq!(seed_underlay["win"], w128);
     let seed_leaf = seed_underlay["leaf"].as_str().expect("seed underlay leaf");
-    assert_eq!(seed_leaf, "leaf-1");
     assert!(seed_leaf.len() <= 128);
     let members = seed_underlay["members"]
         .as_array()

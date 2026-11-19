@@ -509,7 +509,7 @@ export type WorldPresentationUnderlay =
     }
     | {
         status: "hidden";
-        reason: "disabled" | "minimized" | "maximized" | "fullscreen" | "floating" | "pending" | "diverged" | "root-leaf" | "focus-changed" | "no-group" | "idle" | "suspended";
+        reason: "disabled" | "minimized" | "maximized" | "fullscreen" | "floating" | "pending" | "diverged" | "root-leaf" | "focus-changed" | "no-group" | "idle" | "suspended" | "unrepresentable";
         baseRev: string | null;
     };
 export interface WorldPresentationPagerWindow {
@@ -1988,7 +1988,7 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
 const UNDERLAY_HIDE_REASONS = new Set([
     "disabled", "minimized", "maximized", "fullscreen", "floating",
     "pending", "diverged", "root-leaf", "focus-changed", "no-group",
-    "idle", "suspended",
+    "idle", "suspended", "unrepresentable",
 ]);
 
 function parsePresentation(value: unknown): WorldPresentation {
