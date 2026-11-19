@@ -11226,7 +11226,8 @@ fn migration_focused_producer_binds_both_outputs_and_settles_terminal() {
         granted
             .transfers
             .iter()
-            .all(|t| t.operation_id != "op-5-refill"),
+            .all(|t| t.parent.is_none()
+                && !matches!(t.kind, crate::world_report::TransferKind::View)),
         "no refill child on the native-free route: {:?}",
         granted.transfers
     );
@@ -12358,7 +12359,8 @@ fn migration_floating_source_binds_covering_selection() {
         granted
             .transfers
             .iter()
-            .all(|t| t.operation_id != "op-3-refill"),
+            .all(|t| t.parent.is_none()
+                && !matches!(t.kind, crate::world_report::TransferKind::View)),
         "no refill child on the floating route: {:?}",
         granted.transfers
     );

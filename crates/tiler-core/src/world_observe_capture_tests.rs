@@ -4324,8 +4324,8 @@ fn seed_view_transfer_4b2d(engine: &mut WorldEngine, operation: &str) {
 }
 
 /// TEST-ONLY migration join seed: two-output rings, a refill child
-/// (`{op}-refill` toward the source view) pushed before its migration
-/// parent so `settle_migration` reconciles them together. Staged homing
+/// (with `migration_parent_op` pointing to its parent) pushed before its
+/// migration parent so `settle_migration` reconciles them together. Staged homing
 /// is seeded per report below: the v4 accepted-run domain assembly is
 /// unbuilt, so this is a seed, never runtime proof.
 fn seed_migration_4b2d(engine: &mut WorldEngine, operation: &str) {
@@ -4343,7 +4343,7 @@ fn seed_migration_4b2d(engine: &mut WorldEngine, operation: &str) {
         .retained
         .push(crate::world_engine::RetainedTransfer {
             target: crate::world_report::TransferTarget {
-                operation_id: format!("{operation}-refill"),
+                operation_id: "view-alpha-9".to_owned(),
                 kind: crate::world_report::TransferKind::View,
                 target_output: OutputId("out-a".to_owned()),
                 target_workspace: "ws-9".to_owned(),
@@ -5966,7 +5966,7 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
         )
     };
     let parent_view = || view_out_4b2d("op-m", "out-b", "ws-1");
-    let refill_view = || view_4b2d("op-m-refill", "ws-9");
+    let refill_view = || view_4b2d("view-alpha-9", "ws-9");
     let parent_of = |engine: &WorldEngine| {
         engine
             .world
@@ -5983,7 +5983,7 @@ fn settle_migration_uses_staged_lanes_not_passed_report() {
             .settlement
             .retained
             .iter()
-            .find(|row| row.target.operation_id == "op-m-refill")
+            .find(|row| row.migration_parent_op.as_deref() == Some("op-m"))
             .expect("refill child held")
             .clone()
     };
@@ -13882,4 +13882,77 @@ fn host_shared_native_pending_return_backed_source_genuine_supersedes() {
         },
         "genuine receipt adopts over backed source"
     );
+}
+
+#[test]
+fn publish_v4_projects_explicit_refill_parent_for_unrelated_opaque_ids() {
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("gen");
+    seed_migration_4b2d(&mut engine, "opaque-mig-parent-42");
+    engine
+        .world
+        .settlement
+        .retained
+        .push(crate::world_engine::RetainedTransfer {
+            target: crate::world_report::TransferTarget {
+                operation_id: "unrelated-window-xfer".to_owned(),
+                kind: crate::world_report::TransferKind::Window(WindowId("win-x".to_owned())),
+                target_output: OutputId("out-b".to_owned()),
+                target_workspace: "ws-8".to_owned(),
+                follow: false,
+                held: false,
+            },
+            policy: false,
+            command_seq: None,
+            source_output: OutputId("out-a".to_owned()),
+            source_workspace: "ws-1".to_owned(),
+            members: Vec::new(),
+            migration_refill: None,
+            migration_parent_op: None,
+            migration_initial_empty: false,
+            migration_source_index: None,
+            migration_source_view: None,
+            migration_target_view: None,
+            migration_terminal: None,
+            migration_selection_rev: None,
+            pending_member: None,
+            member_predecessors: Vec::new(),
+            pending_members: BTreeMap::new(),
+            pending_view: None,
+        });
+
+    let reply = engine.tx(|tx| {
+        tx.publish_v4(
+            crate::world_publish_v4::PublishEnvelopeV4 {
+                adapter_incarnation: "adapter-1".to_owned(),
+                request_id: "req-1".to_owned(),
+                observation_seq: 1,
+                command_consumed: false,
+                issuing_revision: tx.world.state_revision + 1,
+            },
+            None,
+            Vec::new(),
+            &BTreeSet::new(),
+        )
+    });
+
+    let mig = reply
+        .transfers
+        .iter()
+        .find(|t| t.operation_id == "opaque-mig-parent-42")
+        .expect("migration transfer");
+    assert_eq!(mig.parent, None);
+
+    let refill = reply
+        .transfers
+        .iter()
+        .find(|t| t.operation_id == "view-alpha-9")
+        .expect("refill transfer");
+    assert_eq!(refill.parent.as_deref(), Some("opaque-mig-parent-42"));
+
+    let win_xfer = reply
+        .transfers
+        .iter()
+        .find(|t| t.operation_id == "unrelated-window-xfer")
+        .expect("window transfer");
+    assert_eq!(win_xfer.parent, None);
 }

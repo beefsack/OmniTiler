@@ -2625,7 +2625,6 @@ fn arrived_members_retire_parent_without_refill_child_across_ack() {
             vec![],
         ),
     );
-    let refill_op = "op-11-refill".to_owned();
     // Members arrive at the target but the source refill is refused: the
     // child stays, the parent holds.
     let refused = accepted(
@@ -2657,7 +2656,7 @@ fn arrived_members_retire_parent_without_refill_child_across_ack() {
         refused
             .transfers
             .iter()
-            .all(|t| t.operation_id != refill_op),
+            .all(|t| !matches!(t.kind, TransferKind::View) && t.parent.is_none()),
         "no refill child ever exists: {:?}",
         refused.transfers
     );
@@ -2724,11 +2723,14 @@ fn logical_refill_selector_attempt_is_rejected_and_migration_already_retired() {
             vec![],
         ),
     );
-    let refill_op = "op-11-refill".to_owned();
+    let refill_op = "op-refill-probe".to_owned();
     // No refill child exists on the native-free route; the source view
     // rides the commit reply instead.
     assert!(
-        reply.transfers.iter().all(|t| t.operation_id != refill_op),
+        reply
+            .transfers
+            .iter()
+            .all(|t| !matches!(t.kind, TransferKind::View) && t.parent.is_none()),
         "no refill child: {:?}",
         reply.transfers
     );

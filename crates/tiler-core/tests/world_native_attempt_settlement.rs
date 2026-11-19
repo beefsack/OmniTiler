@@ -336,21 +336,21 @@ fn migrate_setup() -> (WorldEngine, String, String, String, String, String, Stri
             vec![],
         ),
     );
-    let migration_op = drained
+    let migration_row = drained
         .transfers
         .iter()
         .find(|t| matches!(t.kind, tiler_core::world_report::TransferKind::Migration))
-        .expect("migration retained")
-        .operation_id
-        .clone();
-    let refill_op = format!("{migration_op}-refill");
-    let refill_ws = drained
+        .expect("migration retained");
+    assert_eq!(migration_row.parent, None);
+    let migration_op = migration_row.operation_id.clone();
+    let refill = drained
         .transfers
         .iter()
-        .find(|t| t.operation_id == refill_op)
-        .expect("refill child retained")
-        .target_workspace
-        .clone();
+        .find(|t| t.parent.as_deref() == Some(migration_op.as_str()))
+        .expect("refill child retained");
+    assert_eq!(refill.parent.as_deref(), Some(migration_op.as_str()));
+    let refill_op = refill.operation_id.clone();
+    let refill_ws = refill.target_workspace.clone();
     let refill_native = drained
         .workspaces
         .iter()
@@ -1363,8 +1363,8 @@ fn exact_old_source_pruned_rewind_holds_then_settles_with_fresh_adoption() {
     // hold. When the order catches up, the ordinary rule adopts UA1 fresh
     // at position 0 and the flight settles with the switch winning and
     // the refill retired forever.
-    let (mut engine, migrated, refill_ws, refill_native, migration_op, _, _) = migrate_setup();
-    let refill_op = format!("{migration_op}-refill");
+    let (mut engine, migrated, refill_ws, refill_native, migration_op, refill_op, _) =
+        migrate_setup();
     let view_attempts = || {
         vec![
             ViewAttempt {
@@ -2644,10 +2644,17 @@ fn deferred_release_completes_after_creation_resolves() {
             vec![],
         ),
     );
+    let mig11_op = drain1
+        .transfers
+        .iter()
+        .find(|t| matches!(t.kind, tiler_core::world_report::TransferKind::Migration))
+        .expect("migration retained")
+        .operation_id
+        .clone();
     let refill11_ws = drain1
         .transfers
         .iter()
-        .find(|t| t.operation_id == "op-11-refill")
+        .find(|t| t.parent.as_deref() == Some(mig11_op.as_str()))
         .expect("refill retained")
         .target_workspace
         .clone();

@@ -300,8 +300,8 @@ describe("world raw mechanical attempts", () => {
                     { win: "win-d", out: "out-1", ws: "w1", alloc: [100, 100, 50, 50], frame: [100, 100, 50, 50], frame_auth: "untouched", frame_hold: "", member_auth: "untouched", member_hold: "", frame_op: "", clear_op: "op-clear-2", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
                 reply["transfers"] = [
-                    { op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false, cmdSeq: null },
-                    { op: "op-10", kind: "view", win: "", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null },
+                    { op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false, cmdSeq: null, parent: null },
+                    { op: "op-10", kind: "view", win: "", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null },
                 ];
             });
             // The member move landed (output + desktop setters ran on the
@@ -498,7 +498,7 @@ describe("world raw mechanical attempts", () => {
                     { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
                 reply["transfers"] = [
-                    { op: "op-at-target", kind: "window", win: "win-a", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null },
+                    { op: "op-at-target", kind: "window", win: "win-a", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null },
                 ];
             });
             const expected = {
@@ -548,7 +548,7 @@ describe("world raw mechanical attempts", () => {
                     { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
                 reply["transfers"] = [
-                    { op: "op-at-target", kind: "window", win: "win-a", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null },
+                    { op: "op-at-target", kind: "window", win: "win-a", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null },
                 ];
             });
             flow.fire("desktopsChanged");
@@ -598,8 +598,8 @@ describe("world raw mechanical attempts", () => {
                     { win: "win-d", out: "out-1", ws: "w1", alloc: null, frame: null, frame_auth: "hold", frame_hold: "unreadable", member_auth: "hold", member_hold: "unreadable", frame_op: "", clear_op: "op-clear-2", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
                 reply["transfers"] = [
-                    { op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false, cmdSeq: null },
-                    { op: "op-10", kind: "view", win: "", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null },
+                    { op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false, cmdSeq: null, parent: null },
+                    { op: "op-10", kind: "view", win: "", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null },
                 ];
             });
             flow.fire("desktopsChanged");
@@ -779,8 +779,8 @@ describe("world empty migration controlled scope", () => {
         ],
         outputs,
         windows: [], transfers: [
-            { op: "op-1", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false, cmdSeq: null },
-            { op: "op-1-refill", kind: "view", win: "", out: "out-a", ws: "wr", follow: false, held: false, cmdSeq: null },
+            { op: "op-1", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null },
+            { op: "op-1-refill", kind: "view", win: "", out: "out-a", ws: "wr", follow: false, held: false, cmdSeq: null, parent: "op-1" },
         ],
         effects: [], focusRequest: null, dragPreview: null, gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null, operationSettled: [],
         nativeCreations: [], warpCursor: null,
@@ -1050,7 +1050,7 @@ describe("world setter attempt correspondence", () => {
                     frame_op: "", clear_op: "", floating: false, float_origin: "",
                     cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 }],
-                [{ op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false, cmdSeq: null }],
+                [{ op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false, cmdSeq: null, parent: null }],
                 [{ id: "w2", out: "out-2", bind: "d2", scope: { kind: "output", out: "out-2" }, order: 0, mode: "tiled", exist: true, hold: "" }],
             ),
             dispatchWatermark: "0",
@@ -1128,8 +1128,8 @@ describe("world setter attempt correspondence", () => {
                     },
                 ],
                 [
-                    { op: "op-7", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false, cmdSeq: null },
-                    { op: "op-8", kind: "migration", win: "", out: "out-b", ws: "w9", follow: false, held: false, cmdSeq: null },
+                    { op: "op-7", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null },
+                    { op: "op-8", kind: "migration", win: "", out: "out-b", ws: "w9", follow: false, held: false, cmdSeq: null, parent: null },
                 ],
                 [
                     { id: "w1", out: "out-b", bind: "wb1", scope: { kind: "output", out: "out-b" }, order: 0, mode: "tiled", exist: true, hold: "" },
@@ -1188,7 +1188,7 @@ describe("world setter attempt correspondence", () => {
                     frame_op: "", clear_op: "", floating: false, float_origin: "",
                     cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 }],
-                [{ op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false, cmdSeq: null }],
+                [{ op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false, cmdSeq: null, parent: null }],
                 [{ id: "w2", out: "out-2", bind: "d2", scope: { kind: "output", out: "out-2" }, order: 0, mode: "tiled", exist: true, hold: "" }],
             ),
             dispatchWatermark: "0",
@@ -1269,7 +1269,7 @@ describe("world setter attempt correspondence", () => {
                     frame_op: "", clear_op: "", floating: false, float_origin: "",
                     cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 }],
-                [{ op: "op-10", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false, cmdSeq: null }],
+                [{ op: "op-10", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null }],
                 [{ id: "w1", out: "out-b", bind: "wb1", scope: { kind: "output", out: "out-b" }, order: 0, mode: "tiled", exist: true, hold: "" }],
                 [{ scope: { kind: "workspace", out: "out-b", ws: "w1" }, auth: "controlled", reason: "" }],
             ),
@@ -1338,7 +1338,7 @@ describe("world setter attempt correspondence", () => {
                     frame_op: "", clear_op: "", floating: false, float_origin: "",
                     cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 }],
-                [{ op: "op-new", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false, cmdSeq: null }],
+                [{ op: "op-new", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false, cmdSeq: null, parent: null }],
                 [{ id: "w2", out: "out-2", bind: "d2", scope: { kind: "output", out: "out-2" }, order: 0, mode: "tiled", exist: true, hold: "" }],
             ),
             dispatchWatermark: "0",
@@ -1384,7 +1384,7 @@ describe("world setter attempt correspondence", () => {
                 frame_op: "", clear_op: "", floating: false, float_origin: "",
                 cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             }],
-            [{ op: "op-new", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: true, cmdSeq: null }],
+            [{ op: "op-new", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: true, cmdSeq: null, parent: null }],
             [{ id: "w2", out: "out-2", bind: "d2", scope: { kind: "output", out: "out-2" }, order: 0, mode: "tiled", exist: true, hold: "" }],
         );
         applyWorldReply({ ...env, reply: heldReply });

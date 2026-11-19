@@ -3161,7 +3161,7 @@ fn valid_migration_holds_target_without_suppression_then_retires_on_arrival() {
         reply
             .transfers
             .iter()
-            .all(|t| t.operation_id != "op-11-refill"),
+            .all(|t| t.parent.is_none() && !matches!(t.kind, TransferKind::View)),
         "no refill child on the native-free route: {:?}",
         reply.transfers
     );
@@ -3255,7 +3255,7 @@ fn valid_migration_holds_target_without_suppression_then_retires_on_arrival() {
         stuck
             .transfers
             .iter()
-            .all(|t| t.operation_id != "op-11-refill"),
+            .all(|t| t.parent.is_none() && !matches!(t.kind, TransferKind::View)),
         "unchanged report mints no refill child: {:?}",
         stuck.transfers
     );
@@ -3967,7 +3967,7 @@ fn empty_migration_binds_focusless_and_retires_without_echoes() {
         reply
             .transfers
             .iter()
-            .all(|t| t.operation_id != "op-11-refill"),
+            .all(|t| t.parent.is_none() && !matches!(t.kind, TransferKind::View)),
         "no refill child on the native-free route: {:?}",
         reply.transfers
     );
@@ -4090,7 +4090,7 @@ fn migration_refill_prefers_mru_history() {
         reply
             .transfers
             .iter()
-            .all(|t| t.operation_id != "op-13-refill"),
+            .all(|t| t.parent.is_none() && !matches!(t.kind, TransferKind::View)),
         "no refill child on the native-free route: {:?}",
         reply.transfers
     );
@@ -6109,7 +6109,7 @@ fn floating_migration_rekeys_floating_scope_and_migrates_back_sessionless() {
         moved
             .transfers
             .iter()
-            .all(|t| t.operation_id != "op-12-refill"),
+            .all(|t| t.parent.is_none() && !matches!(t.kind, TransferKind::View)),
         "no refill child on the native-free route: {:?}",
         moved.transfers
     );

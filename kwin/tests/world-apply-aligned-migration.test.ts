@@ -93,8 +93,8 @@ function loadMigrationReply(): WorldReply {
         { scope: { kind: "workspace", out: "out-b", ws: "al-1" }, auth: "controlled", reason: "" },
     ];
     reply.transfers = [
-        { op: "op-61", kind: "migration", win: "", out: "out-b", ws: "al-1", follow: false, held: false, cmdSeq: null },
-        { op: "op-61-refill", kind: "view", win: "", out: "out-a", ws: "al-4", follow: false, held: false, cmdSeq: null },
+        { op: "op-61", kind: "migration", win: "", out: "out-b", ws: "al-1", follow: false, held: false, cmdSeq: null, parent: null },
+        { op: "op-61-refill", kind: "view", win: "", out: "out-a", ws: "al-4", follow: false, held: false, cmdSeq: null, parent: "op-61" },
     ];
     // Core replies carry dragPreview (null here), never result (terminal
     // outcomes ride the take lane only, via takeResult at each call site).

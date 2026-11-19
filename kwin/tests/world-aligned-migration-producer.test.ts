@@ -935,7 +935,7 @@ describe("world migration producer", () => {
             const leg1migration = leg1transfers.find((t) => t["kind"] === "migration");
             assert.ok(leg1migration !== undefined, "migration transfer retained");
             assert.equal(leg1migration?.["ws"], sourceLogical, "migration transfer names the riding logical");
-            const leg1refill = leg1transfers.find((t) => t["kind"] === "view" && (t["op"] as string).endsWith("-refill"));
+            const leg1refill = leg1transfers.find((t) => t["kind"] === "view" && t["parent"] === leg1migration?.["op"]);
             assert.ok(leg1refill !== undefined, "explicit core refill retained");
             assert.equal(leg1refill?.["out"], RIGHT);
             const leg1refillWs = leg1refill?.["ws"] as string;
@@ -1061,7 +1061,9 @@ describe("world migration producer", () => {
             // The same stable logical rides back (never renamed across legs).
             const leg2targetWs = leg2result["targetWs"] as string;
             assert.equal(leg2targetWs, sourceLogical, "migrated logical id rides back");
-            const leg2refill = transfersOf(leg2reply).find((t) => t["kind"] === "view" && (t["op"] as string).endsWith("-refill"));
+            const leg2transfers = transfersOf(leg2reply);
+            const leg2migration = leg2transfers.find((t) => t["kind"] === "migration");
+            const leg2refill = leg2transfers.find((t) => t["kind"] === "view" && t["parent"] === leg2migration?.["op"]);
             assert.ok(leg2refill !== undefined, "return refill retained");
             const leg2refillWs = leg2refill?.["ws"] as string;
             assert.ok(leg2refillWs !== "" && leg2refillWs !== sourceLogical, "return refill excludes the riding logical");
@@ -1149,7 +1151,9 @@ describe("world migration producer", () => {
             assert.equal(leg3result["targetOut"], RIGHT);
             const leg3targetWs = leg3result["targetWs"] as string;
             assert.equal(leg3targetWs, emptyLogicalBefore, "empty source logical rides the move");
-            const leg3refill = transfersOf(leg3reply).find((t) => t["kind"] === "view" && (t["op"] as string).endsWith("-refill"));
+            const leg3transfers = transfersOf(leg3reply);
+            const leg3migration = leg3transfers.find((t) => t["kind"] === "migration");
+            const leg3refill = leg3transfers.find((t) => t["kind"] === "view" && t["parent"] === leg3migration?.["op"]);
             assert.ok(leg3refill !== undefined, "empty migration retains the explicit refill");
             const leg3refillWs = leg3refill?.["ws"] as string;
             assert.ok(leg3refillWs !== "" && leg3refillWs !== leg3targetWs, "empty refill excludes the riding logical");

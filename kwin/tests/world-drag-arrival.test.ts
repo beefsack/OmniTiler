@@ -59,7 +59,7 @@ function arrivalReply(): WorldReply {
             },
         ],
         transfers: [
-            { op: "op-87", kind: "window", win: "win-a", out: "out-b", ws: "wb1", follow: false, held: false, cmdSeq: null },
+            { op: "op-87", kind: "window", win: "win-a", out: "out-b", ws: "wb1", follow: false, held: false, cmdSeq: null, parent: null },
         ],
         effects: [],
         dragPreview: null,
@@ -265,7 +265,7 @@ function distinctSendReply(): WorldReply {
             },
         ],
         transfers: [
-            { op: SEND_OP, kind: "window", win: "win-a", out: "out-a", ws: LOGICAL_TARGET, follow: false, held: false, cmdSeq: null },
+            { op: SEND_OP, kind: "window", win: "win-a", out: "out-a", ws: LOGICAL_TARGET, follow: false, held: false, cmdSeq: null, parent: null },
         ],
     };
 }

@@ -504,7 +504,8 @@ impl WorldTransaction<'_> {
     /// or raw third-location proof settles to observed; any other raw
     /// attempt latches ambiguity without re-actuation (the adapter's spent
     /// view-phase fence blocks repeats). Paired migration refill children
-    /// (`{parent}-refill` with a live migration parent) are skipped here
+    /// Paired migration refill children (carrying `migration_parent_op`
+    /// matching a live migration parent) are skipped here
     /// and settled with their parent in [`WorldEngine::settle_migration`].
     /// Runs before [`WorldEngine::build_staged`] so homing assigns against
     /// adapter truth, never a stale desire.

@@ -566,7 +566,7 @@ describe("world command result entry", () => {
                 { scope: { kind: "workspace", out: "out-b", ws: "wb1" }, auth: "controlled", reason: "" },
             ];
             accept["transfers"] = [
-                { op: "op-1", kind: "migration", win: "", out: "out-b", ws: "ws-1", follow: false, held: false, cmdSeq: null },
+                { op: "op-1", kind: "migration", win: "", out: "out-b", ws: "ws-1", follow: false, held: false, cmdSeq: null, parent: null },
             ];
         });
         assert.ok(h.sentToOutput.some((c) => c === "win-a->out-b"), "member arrives natively");
@@ -605,7 +605,7 @@ describe("world command result entry", () => {
                     { ...tiledRow("win-b"), out: "out-b", ws: "wb1", alloc: [404, 4, 392, 592], frame: [404, 4, 392, 592] },
                 ],
                 transfers: [
-                    { op: "op-1", kind: "migration", win: "", out: "out-b", ws: "ws-1", follow: false, held: false, cmdSeq: null },
+                    { op: "op-1", kind: "migration", win: "", out: "out-b", ws: "ws-1", follow: false, held: false, cmdSeq: null, parent: null },
                 ], effects: [], dragPreview: null,
             };
             const secondText = JSON.stringify(second);

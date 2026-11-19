@@ -653,7 +653,7 @@ async function lagDirection(options: {
             const reply = JSON.parse(raw) as Record<string, unknown>;
             const migration = transfersOf(reply).find((t) => t["kind"] === "migration");
             if (migration !== undefined && migration["out"] === options.targetOut && migration["ws"] === migratedLogical) {
-                const refill = transfersOf(reply).find((t) => t["kind"] === "view" && (t["op"] as string) === `${migration["op"] as string}-refill`);
+                const refill = transfersOf(reply).find((t) => t["kind"] === "view" && t["parent"] === migration["op"]);
                 refillLogical = (refill?.["ws"] as string) ?? "";
                 break;
             }
@@ -785,7 +785,7 @@ describe("world migration engine", () => {
             assert.equal(migration?.["ws"], sourceLogicalBefore, "migration transfer names the riding logical");
             const refill = transfers.find((t) => t["kind"] === "view");
             assert.ok(refill !== undefined, "explicit core refill retained (reading B)");
-            assert.match(refill?.["op"] as string, /-refill$/);
+            assert.equal(refill?.["parent"], migration?.["op"]);
             assert.equal(refill?.["out"], "out-a");
             assert.equal(refill?.["ws"], "ws-4", "moved ws-1 and its fresh replacement excluded");
 

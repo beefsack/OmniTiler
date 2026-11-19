@@ -349,6 +349,9 @@ fn write_transfer_v4<S: ReplySink, const VALIDATE: bool>(
         check_reply_id(&row.operation_id)?;
         check_reply_id(&row.target_output.0)?;
         check_reply_id(&row.target_workspace)?;
+        if let Some(parent) = row.parent.as_deref() {
+            check_reply_id(parent)?;
+        }
         match &row.kind {
             TransferKind::Window(window) => check_reply_id(&window.0)?,
             TransferKind::View | TransferKind::Migration => {}
@@ -375,7 +378,17 @@ fn write_transfer_v4<S: ReplySink, const VALIDATE: bool>(
         obj.field_str("ws", &row.target_workspace)?;
         obj.field_bool("follow", row.follow)?;
         obj.field_bool("held", row.held)?;
-        obj.field_opt_u64_str("cmdSeq", row.command_seq)
+        obj.field_opt_u64_str("cmdSeq", row.command_seq)?;
+        obj.field("parent", |s| match row.parent.as_deref() {
+            None => {
+                s.push_str("null");
+                Ok(())
+            }
+            Some(parent) => {
+                s.push_json_str(parent);
+                Ok(())
+            }
+        })
     })
 }
 

@@ -485,6 +485,7 @@ pub fn valid_reply_cases() -> Vec<(&'static str, DecodedReplyV4)> {
                     follow: true,
                     held: false,
                     command_seq: Some(1),
+                    parent: None,
                 }];
             }),
         ),
@@ -499,6 +500,7 @@ pub fn valid_reply_cases() -> Vec<(&'static str, DecodedReplyV4)> {
                     follow: true,
                     held: false,
                     command_seq: Some(1),
+                    parent: None,
                 }];
             }),
         ),
@@ -513,6 +515,7 @@ pub fn valid_reply_cases() -> Vec<(&'static str, DecodedReplyV4)> {
                     follow: true,
                     held: false,
                     command_seq: Some(1),
+                    parent: None,
                 }];
             }),
         ),
@@ -527,6 +530,7 @@ pub fn valid_reply_cases() -> Vec<(&'static str, DecodedReplyV4)> {
                     follow: false,
                     held: true,
                     command_seq: None,
+                    parent: None,
                 }];
             }),
         ),

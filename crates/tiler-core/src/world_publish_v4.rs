@@ -199,6 +199,7 @@ impl WorldTransaction<'_> {
                             || *output == retained.source_output
                     }),
                 command_seq: retained.command_seq,
+                parent: retained.migration_parent_op.clone(),
             })
             .collect();
         // Retained focus lane: post-convergence eligibility gates run

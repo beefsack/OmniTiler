@@ -1829,9 +1829,9 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         // source view before member arrival proof would hide unmoved
         // members. Once the parent is gone (absent here), this normal
         // path actuates the child.
-        const refillParentPending = reply.transfers.some(
-            (m) => m.kind === "migration" && t.op === `${m.op}-refill`,
-        );
+        const refillParentPending =
+            t.parent !== null &&
+            reply.transfers.some((m) => m.kind === "migration" && m.op === t.parent);
         if (refillParentPending) {
             continue;
         }
@@ -1996,20 +1996,20 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         }
         const targetLogical = { out: t.out, ws: targetNative };
         // Paired refill child: the core-chosen refill view for THIS
-        // migration only (exact stable op pairing). Any other view to
+        // migration only (explicit typed parent edge). Any other view to
         // the source (stale selects, policy views) is never chosen as
         // the refill.
         const pairedRefill = reply.transfers.find(
-            (v) => v.kind === "view" && v.op === `${t.op}-refill` && v.ws !== "",
+            (v) => v.kind === "view" && v.parent === t.op && v.ws !== "",
         );
-        // Source output for the refill view: the correlated result names
-        // it, else the paired refill child. No native-derived fallback:
-        // member homing never authorizes the refill. Never the target
-        // where members already arrived.
-        let sourceOut: string | null = advisorySourceOut;
-        if (sourceOut === null && pairedRefill !== undefined && pairedRefill.out !== "") {
-            sourceOut = pairedRefill.out;
-        }
+        // Source output for the refill view: the paired refill child's
+        // typed output, else the correlated result if no child is present.
+        // No native-derived fallback: member homing never authorizes the
+        // refill. Never the target where members already arrived.
+        let sourceOut: string | null =
+            pairedRefill !== undefined && pairedRefill.out !== ""
+                ? pairedRefill.out
+                : advisorySourceOut;
         if (sourceOut === t.out) {
             // Members already homed at the target: observed homing no
             // longer names the source, and the target must never refill

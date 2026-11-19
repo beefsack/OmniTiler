@@ -5522,3 +5522,118 @@ fn edge_output_unrepresentable_underlay_hides_without_blocking_ready_or_neighbor
     );
     assert_eq!(taken["outcome"], "ready", "{taken}");
 }
+
+#[test]
+fn migration_refill_parent_carries_through_issuing_and_retained_checked_broker() {
+    let (service, generation) = discovered_equal_count_service_with_mode("per-output-local");
+    let make_inner = || -> String {
+        let win_a = window_json("win-a1", "[0,0,1920,1040]", Some(UUID_A));
+        let win_b = window_json("win-b1", "[1920,0,1920,1040]", Some(UUID_C))
+            .replace("\"out\":\"DP-1\"", "\"out\":\"DP-2\"");
+        format!(
+            "{{\"v\":4,\
+              \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+              \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+              \"identity\":{{\"manufacturer\":null,\"model\":null,\
+              \"serial\":null,\"connector\":null}}}},\
+              {{\"out\":\"DP-2\",\"full\":[1920,0,1920,1080],\
+              \"work\":[1920,0,1920,1040],\"complete\":true,\"scale\":1,\
+              \"identity\":{{\"manufacturer\":null,\"model\":null,\
+              \"serial\":null,\"connector\":null}}}}],\
+              \"windows\":[{win_a},{win_b}],\"closed\":[],\
+              \"native\":[{{\"out\":\"DP-1\",\"order\":[\"{UUID_A}\",\"{UUID_B}\"],\
+              \"current\":\"{UUID_A}\",\"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}},{{\"native\":\"{UUID_B}\",\"count\":null}}]}},\
+              {{\"out\":\"DP-2\",\"order\":[\"{UUID_C}\",\"{UUID_D}\"],\
+              \"current\":\"{UUID_C}\",\"occupancy\":[{{\"native\":\"{UUID_C}\",\"count\":null}},{{\"native\":\"{UUID_D}\",\"count\":null}}]}}],\
+              \"focused\":\"win-a1\",\"foregroundKnown\":true,\
+              \"complete\":true,\"gesture\":false,\
+              \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
+              \"actionOutputs\":[\"DP-1\",\"DP-2\"],\
+              \"presentation\":{},\
+              \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
+              \"rendererInput\":null}}",
+            disabled_presentation()
+        )
+    };
+
+    let seed = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &make_inner()))
+            .expect("seed"),
+    );
+    assert_eq!(seed["ready"], true, "seed reply ready: {seed}");
+    assert!(
+        seed["scopes"]
+            .as_array()
+            .expect("scopes")
+            .iter()
+            .all(|s| s["auth"] == "controlled"),
+        "supported capabilities / controlled scopes: {seed}"
+    );
+
+    let queued = parse(
+        &service
+            .queue_command(
+                SENDER_A,
+                &queue_req(
+                    &generation,
+                    "panel-1",
+                    "1",
+                    "{\"op\":\"migrate-directional\",\"direction\":\"right\"}",
+                ),
+            )
+            .expect("queue migrate"),
+    );
+    assert_eq!(
+        queued["outcome"], "queued",
+        "queue outcome accepted: {queued}"
+    );
+
+    let assert_parent_link = |reply: &serde_json::Value, phase: &str| {
+        let transfers = reply["transfers"].as_array().expect("transfers array");
+        let migration = transfers
+            .iter()
+            .find(|t| t["kind"] == "migration")
+            .unwrap_or_else(|| panic!("{phase}: missing migration transfer: {transfers:?}"));
+        assert!(
+            migration["parent"].is_null(),
+            "{phase}: migration parent must be null: {migration}"
+        );
+        let mig_op = migration["op"].as_str().expect("migration op");
+        let refill = transfers
+            .iter()
+            .find(|t| t["kind"] == "view" && t["parent"].as_str() == Some(mig_op))
+            .unwrap_or_else(|| panic!("{phase}: missing paired refill transfer: {transfers:?}"));
+        assert_eq!(refill["out"], "DP-1", "{phase}: refill targets source DP-1");
+        for row in transfers {
+            if row["op"] != refill["op"] {
+                assert!(
+                    row["parent"].is_null(),
+                    "{phase}: non-refill row must have null parent: {row}"
+                );
+            }
+        }
+        (
+            mig_op.to_owned(),
+            refill["op"].as_str().expect("refill op").to_owned(),
+        )
+    };
+
+    let issuing = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &make_inner()))
+            .expect("issuing capture"),
+    );
+    assert_eq!(issuing["ready"], true, "issuing reply ready: {issuing}");
+    let (mig_op_1, refill_op_1) = assert_parent_link(&issuing, "issuing");
+
+    let retained = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &make_inner()))
+            .expect("retained capture"),
+    );
+    assert_eq!(retained["ready"], true, "retained reply ready: {retained}");
+    let (mig_op_2, refill_op_2) = assert_parent_link(&retained, "retained");
+    assert_eq!(mig_op_2, mig_op_1);
+    assert_eq!(refill_op_2, refill_op_1);
+}

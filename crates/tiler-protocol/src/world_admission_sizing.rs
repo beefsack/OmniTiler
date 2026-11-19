@@ -369,7 +369,7 @@ pub fn reply_upper_bound_v4(
         .saturating_add(staged_windows)
         .saturating_add(retained_windows);
     report_estimate_v4(report)
-        .saturating_add(retained_transfers.saturating_mul(544))
+        .saturating_add(retained_transfers.saturating_mul(768))
         .saturating_add(created_workspaces.saturating_mul(512))
         .saturating_add(logical_workspaces.saturating_mul(336))
         .saturating_add(4096)

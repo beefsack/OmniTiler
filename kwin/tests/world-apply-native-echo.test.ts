@@ -268,8 +268,8 @@ function migrationReply(): WorldReply {
         outputs: [],
         windows: [windowRow("win-a", HDMI, D6), windowRow("win-b", HDMI, D6)],
         transfers: [
-            { op: "op-22", kind: "migration", win: "", out: HDMI, ws: D6, follow: false, held: false, cmdSeq: null },
-            { op: "op-22-refill", kind: "view", win: "", out: DP, ws: D3, follow: false, held: false, cmdSeq: null },
+            { op: "op-22", kind: "migration", win: "", out: HDMI, ws: D6, follow: false, held: false, cmdSeq: null, parent: null },
+            { op: "op-22-refill", kind: "view", win: "", out: DP, ws: D3, follow: false, held: false, cmdSeq: null, parent: "op-22" },
         ],
         effects: [],
         dragPreview: null,
@@ -345,8 +345,8 @@ describe("world native output echo", () => {
             scopes: [], workspaces: fusedRows(), outputs: [],
             windows: [windowRow("win-a", HDMI, DY), windowRow("win-b", HDMI, DY)],
             transfers: [
-                { op: "op-1", kind: "window", win: "win-a", out: HDMI, ws: DY, follow: true, held: false, cmdSeq: null },
-                { op: "op-2", kind: "window", win: "win-b", out: HDMI, ws: DY, follow: false, held: false, cmdSeq: null },
+                { op: "op-1", kind: "window", win: "win-a", out: HDMI, ws: DY, follow: true, held: false, cmdSeq: null, parent: null },
+                { op: "op-2", kind: "window", win: "win-b", out: HDMI, ws: DY, follow: false, held: false, cmdSeq: null, parent: null },
             ],
             effects: [],
             dragPreview: null,
@@ -608,7 +608,7 @@ describe("world native output lag (T05 producer shape)", () => {
             scopes: [], workspaces: fusedRows(), outputs: [],
             windows: [windowRow("win-a", HDMI, DY)],
             transfers: [
-                { op: "op-1", kind: "window", win: "win-a", out: HDMI, ws: DY, follow: true, held: false, cmdSeq: null },
+                { op: "op-1", kind: "window", win: "win-a", out: HDMI, ws: DY, follow: true, held: false, cmdSeq: null, parent: null },
             ],
             effects: [],
             dragPreview: null,

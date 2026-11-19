@@ -1588,7 +1588,7 @@ impl WorldTransaction<'_> {
         if let Some(pending) = pending_selection.clone() {
             // Latest intent wins on both outputs: supersede retained
             // selection authorization and prune stale View flights
-            // (no `{op}-refill` child rides this route).
+            // (no paired refill child rides this route).
             self.prune_selection_for_outputs(&pending.affected_outputs);
             self.world.settlement.retained.retain(|retained| {
                 !(matches!(&retained.target.kind, TransferKind::View)

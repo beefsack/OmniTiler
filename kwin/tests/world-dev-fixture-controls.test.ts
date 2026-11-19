@@ -919,7 +919,7 @@ describe("dev fixture-only deterministic omission and preview-reply skip", () =>
                     visibility_hold: "",
                     state: [],
                 }],
-                transfers: [{ op: "op-xfer-3", kind: "window", win: "win-a", out: "out", ws: "wl-1", follow: true, held: false, cmdSeq: "100" }],
+                transfers: [{ op: "op-xfer-3", kind: "window", win: "win-a", out: "out", ws: "wl-1", follow: true, held: false, cmdSeq: "100", parent: null }],
                 nativeCreations: [{ op: "op-create-4", ws: "wl-2", out: "out" }],
                 focusRequest: { id: "focus-5", target: "win-a", rev: "3", cause: "explicit-command", out: "out", ws: "wl-1", cmdSeq: "101", afterShown: null },
                 dragPreview: { id: "6", rev: "3", domainOut: "out", domainWs: "wl-1", sourceOut: "out", sourceWs: "wl-1", rect: [1, 2, 30, 40], hover: null, win: "win-a" },

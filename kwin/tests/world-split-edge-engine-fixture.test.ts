@@ -898,7 +898,9 @@ describe("world split-edge selection through the production entry (real Engine)"
             const refillTransfer = ((): Record<string, unknown> | undefined => {
                 for (const raw of h.replies.values()) {
                     const reply = JSON.parse(raw) as Record<string, unknown>;
-                    const found = (reply["transfers"] as Array<Record<string, unknown>>).find((t) => t["kind"] === "view" && (t["op"] as string).endsWith("-refill"));
+                    const replyTransfers = reply["transfers"] as Array<Record<string, unknown>>;
+                    const migration = replyTransfers.find((t) => t["kind"] === "migration");
+                    const found = replyTransfers.find((t) => t["kind"] === "view" && t["parent"] === migration?.["op"]);
                     if (found !== undefined) {
                         return found;
                     }

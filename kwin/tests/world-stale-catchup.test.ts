@@ -373,7 +373,7 @@ function staleReply(gen: string, dispatched: Record<string, unknown>, rev: strin
             visibility: null, visibility_auth: "untouched", visibility_hold: "",
             state: [],
         }],
-        transfers: [{ op: "op-9", kind: "view", win: "", out: "out", ws: "wl-1", follow: false, held: false, cmdSeq: null }],
+        transfers: [{ op: "op-9", kind: "view", win: "", out: "out", ws: "wl-1", follow: false, held: false, cmdSeq: null, parent: null }],
         effects: [],
         focusRequest: { id: "focus-9", target: "win-a", rev, cause: "automatic-admission", out: "out", ws: "wl-1", cmdSeq: null, afterShown: null },
         ...overrides,

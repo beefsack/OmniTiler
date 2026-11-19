@@ -5849,14 +5849,13 @@ fn idle_migration_target_and_refill_hold_through_stale_echo() {
         .expect("migration retained")
         .operation_id
         .clone();
-    let refill_op = format!("{migration_op}-refill");
-    let refill_ws = drained
+    let refill = drained
         .transfers
         .iter()
-        .find(|flight| flight.operation_id == refill_op)
-        .expect("refill child retained")
-        .target_workspace
-        .clone();
+        .find(|flight| flight.parent.as_deref() == Some(migration_op.as_str()))
+        .expect("refill child retained");
+    let refill_op = refill.operation_id.clone();
+    let refill_ws = refill.target_workspace.clone();
     let view_before_a = published_view(&drained, "out-a");
     let view_before_b = published_view(&drained, "out-b");
     // Stale repeat: both currents still name the pre-migration views while

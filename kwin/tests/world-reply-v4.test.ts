@@ -81,9 +81,30 @@ describe("world-reply-v4", () => {
         assert.deepEqual(tr.transfers, [
             {
                 op: "transfer-a", kind: "window", win: "win-a",
-                out: "out-a", ws: "ws-a", follow: true, held: false, cmdSeq: "1",
+                out: "out-a", ws: "ws-a", follow: true, held: false, cmdSeq: "1", parent: null,
             },
         ]);
+        const transferRow = (reply: Record<string, unknown>) => {
+            const rows = reply["transfers"];
+            assert.ok(Array.isArray(rows));
+            const row: unknown = rows[0];
+            assert.ok(typeof row === "object" && row !== null && "parent" in row);
+            return row;
+        };
+        const withParent = clone("reply-transfer-view.json");
+        transferRow(withParent).parent = "opaque-parent-9";
+        const parsedParent = parseWorldReply(boundText(withParent));
+        assert.ok(isCoreWorldReply(parsedParent));
+        assert.equal(parsedParent.transfers[0]?.parent, "opaque-parent-9");
+        const missingParent = clone("reply-transfer-view.json");
+        Reflect.deleteProperty(transferRow(missingParent), "parent");
+        assert.equal(parseWorldReply(boundText(missingParent)), null);
+        const badParent = clone("reply-transfer-view.json");
+        transferRow(badParent).parent = "";
+        assert.equal(parseWorldReply(boundText(badParent)), null);
+        const longParent = clone("reply-transfer-view.json");
+        transferRow(longParent).parent = "p".repeat(129);
+        assert.equal(parseWorldReply(boundText(longParent)), null);
     });
 
     it("dragPreview and core reply lanes decode truthfully", () => {

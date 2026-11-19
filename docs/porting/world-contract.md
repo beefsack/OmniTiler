@@ -1044,6 +1044,7 @@ acceptance or adopt the separate close-focus amendment.
 | | `cmdSeq` | Counter | yes | Command correlation, not parsed operation text. |
 | `TransferTarget` | `op,kind,win,out,ws,follow,held` | Id, TransferKind, WindowId, OutputId, WorkspaceId, bool, bool | win empty except window kind | Existing window/view/migration target shape. |
 | | `cmdSeq` | Counter | yes | Original command sequence, null for commandless work. |
+| | `parent` | Id | yes | Explicit parent operation id for a paired migration source-refill view; null everywhere else. Both `op` and `parent` are bounded opaque ids with no spelling guarantee; never parse or infer the relation from `op`. |
 
 - V4 `WorkspaceDesire` row uniqueness is keyed by `(out,id)` in both
   reply codecs. Shared mode may repeat one logical id on different outputs;
@@ -1062,7 +1063,7 @@ acceptance or adopt the separate close-focus amendment.
   migration view/refill follow), while per-row `frame_auth,frame_hold` and
   `member_auth,member_hold` govern geometry and membership writes separately.
   A carried float or minimized member under an active retained
-  `TransferKind::Migration` targeting its published `(out,ws)` carries
+  transfer with `kind: "migration"` targeting its published `(out,ws)` carries
   `member_auth: controlled` (unless narrowly held) while preserving
   `frame_auth: untouched` (or `hold/minimized`). Actuators must require
   row-level `member_auth: controlled` with empty `member_hold` before either

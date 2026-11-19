@@ -201,6 +201,9 @@ fn validate_transfer(row: &TransferTargetV4) -> Result<()> {
     check_id(&row.operation_id)?;
     check_id(&row.target_output.0)?;
     check_id(&row.target_workspace)?;
+    if let Some(parent) = row.parent.as_deref() {
+        check_id(parent)?;
+    }
     match &row.kind {
         TransferKind::Window(window) => check_id(&window.0),
         TransferKind::View | TransferKind::Migration => Ok(()),

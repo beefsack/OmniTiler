@@ -4785,7 +4785,9 @@ fn decode_transfer_v4(value: &serde_json::Value) -> Result<TransferTargetV4> {
     let map = as_object(value)?;
     check_keys(
         map,
-        &["op", "kind", "win", "out", "ws", "follow", "held", "cmdSeq"],
+        &[
+            "op", "kind", "win", "out", "ws", "follow", "held", "cmdSeq", "parent",
+        ],
     )?;
     let kind = match req_str(map, "kind")? {
         "window" => {
@@ -4817,6 +4819,7 @@ fn decode_transfer_v4(value: &serde_json::Value) -> Result<TransferTargetV4> {
         follow: req_bool(map, "follow")?,
         held: req_bool(map, "held")?,
         command_seq: opt_u64_or_null(map, "cmdSeq")?,
+        parent: opt_id_or_null(map, "parent")?,
     })
 }
 

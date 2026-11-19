@@ -155,6 +155,9 @@ export interface WorldReplyTransfer {
     // Retained originating command correlation (null on commandless work,
     // never a parsed id). Quoted decimal on the wire, null when absent.
     cmdSeq: string | null;
+    // Explicit parent operation id for a paired migration source-refill view
+    // (null everywhere else). Opaque bounded id; never parsed from `op`.
+    parent: string | null;
 }
 // Retained active drag-preview state on WorldReply (separated from
 // command outcomes; mirrors tiler-core world_report::DragPreviewV4).
@@ -1444,7 +1447,7 @@ function parseTransferRow(e: unknown): WorldReplyTransfer {
         throw new Error("transfer-keys");
     }
     const o = e as Record<string, unknown>;
-    if (!hasExactKeys(o, ["op", "kind", "win", "out", "ws", "follow", "held", "cmdSeq"])) {
+    if (!hasExactKeys(o, ["op", "kind", "win", "out", "ws", "follow", "held", "cmdSeq", "parent"])) {
         throw new Error("transfer-keys");
     }
     const kind = o["kind"];
@@ -1461,9 +1464,12 @@ function parseTransferRow(e: unknown): WorldReplyTransfer {
     } else {
         throw new Error("tr-kind");
     }
+    const parentRaw = o["parent"];
+    const parent = parentRaw === null ? null : isOpaqueId(parentRaw) ? parentRaw : undefined;
     if (
         !isOpaqueId(o["op"]) || !isOpaqueId(o["out"]) || !isOpaqueId(o["ws"]) ||
-        typeof o["follow"] !== "boolean" || typeof o["held"] !== "boolean"
+        typeof o["follow"] !== "boolean" || typeof o["held"] !== "boolean" ||
+        parent === undefined
     ) {
         throw new Error("tr");
     }
@@ -1472,6 +1478,7 @@ function parseTransferRow(e: unknown): WorldReplyTransfer {
         out: o["out"] as string, ws: o["ws"] as string,
         follow: o["follow"] as boolean, held: o["held"] as boolean,
         cmdSeq: optU64orNull(o["cmdSeq"]),
+        parent,
     };
 }
 

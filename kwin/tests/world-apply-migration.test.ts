@@ -23,6 +23,14 @@ import { WorldAdapterState } from "../src/world-state";
 import { parseWorldReply, isWorldRejection, type WorldReply } from "../src/world-report";
 import type { WorldObservation } from "../src/world-observe";
 import type { WorldReplyResult } from "../src/world-report";
+import {
+    awaitDescribeFrom,
+    awaitQueueCount,
+    deskById,
+    discover,
+    makeHarness,
+    winById,
+} from "./world-producer-harness";
 
 const FIXTURE = path.resolve("..", "test-fixtures", "kde-v4-active", "migration", "MIGRATE_DRAIN.reply.json");
 
@@ -438,7 +446,7 @@ describe("world migration apply", () => {
         // the exact target output still settles, because only the exact
         // target output proves. Any-output visibility alone never settles.
         reply.transfers = [
-            { op: "op-view-9", kind: "view", win: "", out: "out-b", ws: "ws-4", follow: false, held: false, cmdSeq: null },
+            { op: "op-view-9", kind: "view", win: "", out: "out-b", ws: "ws-4", follow: false, held: false, cmdSeq: null, parent: null },
         ];
         reply.windows = [];
         const world: FakeWorld = {
@@ -465,7 +473,7 @@ describe("world migration apply", () => {
         // switch lies (records but never shows), and wb1 stays visible
         // nowhere: any-output visibility must not settle applied.
         reply.transfers = [
-            { op: "op-view-1", kind: "view", win: "", out: "out-b", ws: "ws-4", follow: false, held: false, cmdSeq: null },
+            { op: "op-view-1", kind: "view", win: "", out: "out-b", ws: "ws-4", follow: false, held: false, cmdSeq: null, parent: null },
         ];
         reply.windows = [];
         const world: FakeWorld = {
@@ -560,7 +568,7 @@ describe("world migration refill gating", () => {
         // exact pairing rejects it, so the rows can never refill there.
         reply.transfers.push({
             op: "op-9", kind: "view", win: "", out: "out-a",
-            ws: "ws-gone", follow: false, held: true, cmdSeq: null,
+            ws: "ws-gone", follow: false, held: true, cmdSeq: null, parent: null,
         });
         const world = pairedWorld();
         const state = freshState(reply);
@@ -867,5 +875,150 @@ describe("world migration member authority", () => {
         assert.equal(world.setMembershipCalls.length, 0, "changed readback fences membership setter");
         assert.equal(world.switchViewCalls.length, 0, "unresolved arrival blocks target/refill switches");
         assert.ok(applied.held >= 1);
+    });
+
+    it("genuine checked-broker migration pairs unrelated opaque ops and inverse lookalike acts independently", async () => {
+        const h = await makeHarness("win-a", ["win-a", "win-b"], {
+            outputs: [
+                { name: "out-a", geometry: { x: 0, y: 0, width: 800, height: 600 } },
+                { name: "out-b", geometry: { x: 800, y: 0, width: 800, height: 600 } },
+            ],
+            desktops: ["wa1", "wa2", "wb1", "wb2"],
+            homes: { "win-a": "out-a", "win-b": "out-b" },
+            currents: { "out-a": "wa1", "out-b": "wb1" },
+            scopeClass: "per-output-local",
+        });
+        winById(h, "win-b").desktops = [deskById(h, "wb1")];
+
+        let brokerReplyRaw = "";
+        try {
+            await discover(h);
+            await h.settle();
+            h.handle.requestWorkspaceMigrate("right");
+            await awaitQueueCount(h, "migrate-directional", 1);
+            const cmds = h.commandPayloads("migrate-directional");
+            assert.equal(cmds.length, 1, "one genuine migrate-directional command filed");
+            const cmdIndex = cmds[0]?.index as number;
+            const drainIndex = await awaitDescribeFrom(h, cmdIndex + 1);
+            await h.settle();
+            brokerReplyRaw = h.replies.get(drainIndex) ?? "";
+            assert.ok(brokerReplyRaw !== "", "checked broker returned drain reply");
+        } finally {
+            h.handle.stop();
+            await h.bridge.close();
+        }
+
+        const prepareBrokerReply = (
+            migOp: string,
+            refillOp: string,
+            refillParent: string | null,
+        ): { reply: WorldReply; targetNative: string; refillNative: string } => {
+            const raw = JSON.parse(brokerReplyRaw) as Record<string, unknown>;
+            const rawTransfers = raw["transfers"] as Array<Record<string, unknown>>;
+            const rawMig = rawTransfers.find((t) => t["kind"] === "migration");
+            const rawRefill = rawTransfers.find(
+                (t) => t["kind"] === "view" && t["parent"] === rawMig?.["op"],
+            );
+            assert.ok(
+                rawMig !== undefined && rawRefill !== undefined,
+                "checked-broker drain carries migration and paired refill",
+            );
+            rawMig["op"] = migOp;
+            rawRefill["op"] = refillOp;
+            rawRefill["parent"] = refillParent;
+            const parsed = parseWorldReply(JSON.stringify(raw));
+            assert.ok(parsed !== null && !isWorldRejection(parsed), "strict reader accepts broker reply");
+            const reply = parsed as WorldReply;
+            const migRow = reply.transfers.find((t) => t.kind === "migration");
+            assert.ok(migRow !== undefined);
+            let targetNative =
+                reply.workspaces.find((ws) => ws.out === migRow.out && ws.id === migRow.ws)?.bind ?? "";
+            if (targetNative === "") {
+                targetNative = "wb2";
+                for (const ws of reply.workspaces) {
+                    if (ws.id === migRow.ws && ws.out === migRow.out && ws.bind === "") {
+                        ws.bind = targetNative;
+                    }
+                }
+            }
+            const refillRow = reply.transfers.find((t) => t.op === refillOp);
+            assert.ok(refillRow !== undefined);
+            const refillNative =
+                reply.workspaces.find((ws) => ws.out === refillRow.out && ws.id === refillRow.ws)?.bind ?? "";
+            assert.ok(refillNative !== "", "refill workspace has native binding");
+            return { reply, targetNative, refillNative };
+        };
+
+        // 1. Before arrival: no early refill or target switch.
+        const pre = prepareBrokerReply("mig-parent-alpha", "view-child-beta", "mig-parent-alpha");
+        const preWorld: FakeWorld = {
+            homing: new Map([
+                ["win-a", { out: "out-a", ws: "wa1" }],
+                ["win-b", { out: "out-b", ws: "wb1" }],
+            ]),
+            currents: new Map([["out-a", "wa1"], ["out-b", "wb1"]]),
+            sendToOutputCalls: [], setMembershipCalls: [], switchViewCalls: [],
+            lieMembership: true,
+        };
+        const preState = freshState(pre.reply);
+        const preApplied = applyWorldReply({
+            dispatchWatermark: preState.currentInvalid,
+            takeResult: null,
+            ...makeEnv(preState, preWorld),
+            observation: makeObservation(preWorld),
+            reply: pre.reply,
+        });
+        assert.deepEqual(preWorld.switchViewCalls, [], "no early refill or target switch before arrival");
+        assert.ok(preApplied.held >= 1);
+
+        // 2. Arrival succeeds with no requester result: target then paired source refill in order.
+        const arrived = prepareBrokerReply("mig-parent-alpha", "view-child-beta", "mig-parent-alpha");
+        const arrivedWorld: FakeWorld = {
+            homing: new Map([
+                ["win-a", { out: "out-a", ws: "wa1" }],
+                ["win-b", { out: "out-b", ws: "wb1" }],
+            ]),
+            currents: new Map([["out-a", "wa1"], ["out-b", "wb1"]]),
+            sendToOutputCalls: [], setMembershipCalls: [], switchViewCalls: [],
+            lieMembership: false,
+        };
+        const arrivedState = freshState(arrived.reply);
+        const arrivedApplied = applyWorldReply({
+            dispatchWatermark: arrivedState.currentInvalid,
+            takeResult: null,
+            ...makeEnv(arrivedState, arrivedWorld),
+            observation: makeObservation(arrivedWorld),
+            reply: arrived.reply,
+        });
+        assert.deepEqual(
+            arrivedWorld.switchViewCalls,
+            [`out-b->${arrived.targetNative}`, `out-a->${arrived.refillNative}`],
+        );
+        assert.ok(arrivedApplied.viewWrites >= 2);
+
+        // 3. Inverse: unparented suffix lookalike `<parent>-refill` with parent null acts independently.
+        const inverse = prepareBrokerReply("mig-parent-gamma", "mig-parent-gamma-refill", null);
+        const invWorld: FakeWorld = {
+            homing: new Map([
+                ["win-a", { out: "out-a", ws: "wa1" }],
+                ["win-b", { out: "out-b", ws: "wb1" }],
+            ]),
+            currents: new Map([["out-a", "wa1"], ["out-b", "wb1"]]),
+            sendToOutputCalls: [], setMembershipCalls: [], switchViewCalls: [],
+            lieMembership: true,
+        };
+        const invState = freshState(inverse.reply);
+        applyWorldReply({
+            dispatchWatermark: invState.currentInvalid,
+            takeResult: null,
+            ...makeEnv(invState, invWorld),
+            observation: makeObservation(invWorld),
+            reply: inverse.reply,
+        });
+        assert.deepEqual(
+            invWorld.switchViewCalls,
+            [`out-a->${inverse.refillNative}`],
+            "unparented suffix lookalike actuates independently while migration holds",
+        );
     });
 });

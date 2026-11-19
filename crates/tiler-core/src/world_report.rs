@@ -2622,8 +2622,11 @@ pub const MAX_STATE_TARGETS_PER_WINDOW: usize = 4;
 
 /// Staged v4 retained transfer/view target: the legacy [`TransferTarget`]
 /// shape plus the retained originating command correlation (`None` on
-/// commandless work, never a parsed id). `cmdSeq` spells the wire `cmdSeq`
-/// quoted decimal or null.
+/// commandless work, never a parsed id) and explicit nullable `parent`
+/// operation link (`Some` only on a paired migration source-refill view,
+/// `None` everywhere else). Both `op` and `parent` are opaque bounded IDs
+/// with no spelling guarantee; `cmdSeq` spells the wire `cmdSeq` quoted
+/// decimal or null.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferTargetV4 {
     pub operation_id: String,
@@ -2633,6 +2636,7 @@ pub struct TransferTargetV4 {
     pub follow: bool,
     pub held: bool,
     pub command_seq: Option<u64>,
+    pub parent: Option<String>,
 }
 
 /// Staged v4 reply presentation: the tick-time foreground token, the issuing

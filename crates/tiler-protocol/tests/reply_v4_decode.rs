@@ -871,7 +871,7 @@ fn v4_reply_structural_regression() {
         ),
         (
             "transfers",
-            serde_json::json!({"op":"transfer-a","kind":"window","win":"win-a","out":"out-a","ws":"ws-a","follow":true,"held":false,"cmdSeq":"1"}),
+            serde_json::json!({"op":"transfer-a","kind":"window","win":"win-a","out":"out-a","ws":"ws-a","follow":true,"held":false,"cmdSeq":"1","parent":null}),
             "duplicate-transfer",
         ),
         (
@@ -2090,4 +2090,48 @@ fn underlay_unrepresentable_roundtrips_and_unknown_reason_rejects() {
     value["presentation"]["underlay"]["reason"] = serde_json::Value::String("bogus-reason".into());
     let err = decode_reply_v4(&value.to_string()).expect_err("unknown reason refuses");
     assert_eq!(err.kind, "unknown-value");
+}
+
+#[test]
+fn transfer_parent_required_nullable_bounded_opaque_id_codec_semantics() {
+    let mut decoded = decode_ok("messages/reply-transfer-view.json");
+    assert_eq!(decoded.reply.transfers[0].parent, None);
+
+    decoded.reply.transfers[0].parent = Some("opaque-parent-7".to_owned());
+    let wire = encode_reply_v4(&decoded).expect("explicit opaque parent encodes");
+    assert!(wire.contains("\"parent\":\"opaque-parent-7\""));
+    let reparsed = decode_reply_v4(&wire).expect("explicit opaque parent decodes");
+    assert_eq!(
+        reparsed.reply.transfers[0].parent.as_deref(),
+        Some("opaque-parent-7")
+    );
+
+    let max_parent = "p".repeat(128);
+    decoded.reply.transfers[0].parent = Some(max_parent.clone());
+    let max_wire = encode_reply_v4(&decoded).expect("128-byte opaque parent encodes");
+    let max_reparsed = decode_reply_v4(&max_wire).expect("128-byte opaque parent decodes");
+    assert_eq!(
+        max_reparsed.reply.transfers[0].parent.as_deref(),
+        Some(max_parent.as_str())
+    );
+
+    let mut missing: serde_json::Value = serde_json::from_str(&wire).expect("json");
+    missing["transfers"][0]
+        .as_object_mut()
+        .expect("transfer object")
+        .remove("parent");
+    let missing_err =
+        decode_reply_v4(&missing.to_string()).expect_err("missing parent key must refuse");
+    assert_eq!(missing_err.kind, "malformed");
+
+    for bad in [
+        serde_json::Value::String(String::new()),
+        serde_json::Value::String("p".repeat(129)),
+        serde_json::json!(42),
+    ] {
+        let mut invalid: serde_json::Value = serde_json::from_str(&wire).expect("json");
+        invalid["transfers"][0]["parent"] = bad;
+        let err = decode_reply_v4(&invalid.to_string()).expect_err("invalid parent refuses");
+        assert_eq!(err.kind, "unknown-value");
+    }
 }
