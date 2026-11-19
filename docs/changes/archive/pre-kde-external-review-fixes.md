@@ -1,6 +1,6 @@
 # Pre-KDE external review fixes
 
-The review of `cb6a31e9..6912e88b` found two ways a valid capture could lose usable actuation authority, plus three contract problems. Keep the prepared transition, strict validation and FIFO. Correct the supported typed, checked broker and KDE offline routes before the KDE rebuild. This is not a KDE rebuild, a macOS or Windows change, or native desktop acceptance.
+**Complete offline (2026-11-20).** The review of `cb6a31e9..6912e88b` found two ways a valid capture could lose usable actuation authority, plus three contract problems. Keep the prepared transition, strict validation and FIFO. Correct the supported typed, checked broker and KDE offline routes before the KDE rebuild. This is not a KDE rebuild, a macOS or Windows change, or native desktop acceptance.
 
 ## Changes and offline evidence
 
@@ -22,4 +22,16 @@ The review of `cb6a31e9..6912e88b` found two ways a valid capture could lose usa
 
 An independent read-only audit found no material contradictions in the supported v4 routes, regression oracles or documentation, and confirmed the eight-path F3 recording scope.
 
-The final gates are offline: scoped Rust format, all-target build, strict Clippy and all-target tests without skips; KWin typecheck and full tests with both offline Qt probes; Stage 5 production routes and canonical byte oracles; frozen fixture comparison; launcher, native-effect and helper tests. Measure the instruction-count gate, the release structural steady p95 at 10/50/200 windows (1/4/10 ms caps), and the unchanged fresh/warm broker workload separately from other checks.
+The final gates are offline and passed:
+
+| Gate | Result |
+| --- | --- |
+| Scoped Rust format, all-target build, strict Clippy and all-target tests | 3,540 passed, none skipped |
+| KWin typecheck and full tests with both offline Qt probes | 1,388 passed, none skipped |
+| Stage 5 production routes and canonical byte oracles | Rust 5/5, KWin subscriber 34/34 |
+| Frozen fixtures; launcher, native-effect and helper tests | Bytes equal to `ff6eaddc`; 703, 204 and 58 checks passed |
+| Instruction count per report, 50/200 windows | 7.83M / 34.63M Ir, 4.42x growth (pre-review 7.819M / 34.628M, 4.43x) |
+| Release structural steady p95, 10/50/200 windows | 0.2316 / 1.7759 / 4.5770 ms against 1 / 4 / 10 ms caps |
+| Broker fresh / warm p50 and p95 | 204.8 / 212.0 µs and 211.2 / 219.5 µs (pre-review 206.0 / 213.6 and 211.3 / 220.6 µs) |
+
+The first report at 200 windows took 42.9143 ms; the steady caps do not cover cold reports, and the checked-service latency item in the KDE rebuild owns that budget.
