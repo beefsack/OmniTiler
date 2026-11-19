@@ -3658,4 +3658,236 @@ mod tests {
             .join()
             .expect("owned monitor thread must exit cleanly");
     }
+
+    #[test]
+    fn private_bus_b6_strict_ingress_precedence_and_no_state_effects() {
+        use crate::world_service::{
+            QUEUE_METHOD, READ_METHOD, TAKE_METHOD, WAIT_METHOD, WORLD_METHOD,
+            WORLD_SERVICE_MAX_REQUEST,
+        };
+        let bus = PrivateBus::start().expect("dbus-daemon required for B6 proof");
+        let server = bus.session().expect("server bus connection");
+        serve_intent_endpoint(&server, PlannerEndpoint::new());
+        let owner = bus.session().expect("owner bus connection");
+        owner
+            .request_name(KWIN_SERVICE)
+            .expect("claim KWin name on private bus");
+        let outsider = bus.session().expect("outsider bus connection");
+        let owner_proxy = intent_proxy(&owner);
+        let outsider_proxy = intent_proxy(&outsider);
+
+        let generation = discover_full(&owner_proxy, "test-adapter", "d-b6-1");
+        let stale_gen = "stale-gen-0";
+
+        let call_rejected_kind = |proxy: &zbus::blocking::Proxy<'_>, method: &str, body: &str| {
+            let reply: serde_json::Value =
+                serde_json::from_str(&call_intent(proxy, method, body)).expect("json reply");
+            assert_eq!(reply["outcome"], "rejected", "{method}: {reply}");
+            reply["kind"].as_str().expect("kind").to_owned()
+        };
+
+        // Oversize beats auth and malformed/duplicate JSON on all four endpoints.
+        let oversize = format!(
+            "{{\"v\":3,\"v\":4,\"pad\":\"{}\"}}",
+            "x".repeat(WORLD_SERVICE_MAX_REQUEST)
+        );
+        for (proxy, method) in [
+            (&outsider_proxy, QUEUE_METHOD),
+            (&outsider_proxy, TAKE_METHOD),
+            (&outsider_proxy, READ_METHOD),
+            (&outsider_proxy, WAIT_METHOD),
+        ] {
+            let err = proxy
+                .call::<_, _, (String,)>(method, &(oversize.clone(),))
+                .expect_err("oversize request must fail closed");
+            assert!(
+                err.to_string().contains("request exceeds size bound"),
+                "{method}: {err}"
+            );
+        }
+
+        // Observed authorization on WaitWorldWake beats duplicate/malformed JSON.
+        let dup_wait = format!(
+            "{{\"v\":3,\"v\":4,\"gen\":\"{generation}\",\"adapter\":\"test-adapter\",\
+              \"nonce\":\"w-dup\",\"cursor\":\"0\"}}"
+        );
+        assert_eq!(
+            call_rejected_kind(&outsider_proxy, WAIT_METHOD, &dup_wait),
+            "not-kwin-owner"
+        );
+
+        // Authorized top-level duplicates on all four endpoints -> malformed.
+        let dup_queue = format!(
+            "{{\"v\":3,\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+              \"clientCmd\":\"1\",\"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
+        );
+        assert_eq!(
+            call_rejected_kind(&outsider_proxy, QUEUE_METHOD, &dup_queue),
+            "malformed"
+        );
+        let dup_take = format!(
+            "{{\"v\":3,\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}}"
+        );
+        assert_eq!(
+            call_rejected_kind(&outsider_proxy, TAKE_METHOD, &dup_take),
+            "malformed"
+        );
+        assert_eq!(
+            call_rejected_kind(&owner_proxy, WAIT_METHOD, &dup_wait),
+            "malformed"
+        );
+        let dup_read = r#"{"v":3,"v":4,"req":"r-dup"}"#;
+        assert_eq!(
+            call_rejected_kind(&outsider_proxy, READ_METHOD, dup_read),
+            "malformed"
+        );
+
+        // Nested and escaped-equivalent duplicate keys on QueueWorldCommand.
+        let nested_escaped_queue = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+              \"command\":{{\"op\":\"select-numbered\",\"\\u006fp\":\"focus\",\"out\":null,\"index\":1}}}}"
+        );
+        assert_eq!(
+            call_rejected_kind(&outsider_proxy, QUEUE_METHOD, &nested_escaped_queue),
+            "malformed"
+        );
+
+        // WaitWorldWake precedence: duplicate > unknown-field > unsupported-version > unknown-value > generation-mismatch.
+        assert_eq!(
+            call_rejected_kind(
+                &owner_proxy,
+                WAIT_METHOD,
+                &format!(
+                    "{{\"v\":3,\"v\":4,\"extra\":1,\"gen\":\"{stale_gen}\",\"adapter\":\"\",\
+                      \"nonce\":\"\",\"cursor\":\"01\"}}"
+                ),
+            ),
+            "malformed"
+        );
+        assert_eq!(
+            call_rejected_kind(
+                &owner_proxy,
+                WAIT_METHOD,
+                &format!(
+                    "{{\"v\":3,\"extra\":1,\"gen\":\"{stale_gen}\",\"adapter\":\"\",\
+                      \"nonce\":\"\",\"cursor\":\"01\"}}"
+                ),
+            ),
+            "unknown-field"
+        );
+        assert_eq!(
+            call_rejected_kind(
+                &owner_proxy,
+                WAIT_METHOD,
+                &format!(
+                    "{{\"v\":3,\"gen\":\"{stale_gen}\",\"adapter\":\"\",\
+                      \"nonce\":\"\",\"cursor\":\"01\"}}"
+                ),
+            ),
+            "unsupported-version"
+        );
+        assert_eq!(
+            call_rejected_kind(
+                &owner_proxy,
+                WAIT_METHOD,
+                &format!(
+                    "{{\"v\":4,\"gen\":\"{stale_gen}\",\"adapter\":\"test-adapter\",\
+                      \"nonce\":\"w-bad\",\"cursor\":\"01\"}}"
+                ),
+            ),
+            "unknown-value"
+        );
+        assert_eq!(
+            call_rejected_kind(
+                &owner_proxy,
+                WAIT_METHOD,
+                &format!(
+                    "{{\"v\":4,\"gen\":\"{stale_gen}\",\"adapter\":\"test-adapter\",\
+                      \"nonce\":\"w-stale\",\"cursor\":\"0\"}}"
+                ),
+            ),
+            "generation-mismatch"
+        );
+
+        // Refusals did not park a waiter or queue work: a clean WaitWorldWake parks and wakes on valid QueueWorldCommand.
+        let waiter_conn = owner.clone();
+        let waiter_req = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"adapter\":\"test-adapter\",\
+              \"nonce\":\"w-ok\",\"cursor\":\"0\"}}"
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let proxy = intent_proxy(&waiter_conn);
+            let reply: (String,) = proxy
+                .call(WAIT_METHOD, &(waiter_req,))
+                .expect("wait answers");
+            let _ = tx.send(reply.0);
+        });
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(
+            rx.try_recv().is_err(),
+            "refusals must not cause immediate phantom wake"
+        );
+
+        let queued: serde_json::Value = serde_json::from_str(&call_intent(
+            &outsider_proxy,
+            QUEUE_METHOD,
+            &format!(
+                "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+                  \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
+            ),
+        ))
+        .expect("queue reply");
+        assert_eq!(queued["outcome"], "queued");
+        assert_eq!(queued["globalCmd"], "1");
+
+        let wake: serde_json::Value = serde_json::from_str(
+            &rx.recv_timeout(std::time::Duration::from_secs(10))
+                .expect("parked wait wakes on valid queue"),
+        )
+        .expect("wake json");
+        assert_eq!(wake["outcome"], "wake");
+        assert_eq!(wake["cursor"], "1");
+
+        // Capture drains the single valid command; Take refusal does not consume; Read refusal does not disturb presentation.
+        let envelope = capture_envelope("test-adapter", &generation, "actuator-1", 1);
+        let accepted: serde_json::Value =
+            serde_json::from_str(&call_intent(&owner_proxy, WORLD_METHOD, &envelope))
+                .expect("capture reply");
+        assert_eq!(accepted["ready"], true);
+
+        assert_eq!(
+            call_rejected_kind(&outsider_proxy, TAKE_METHOD, &dup_take),
+            "malformed"
+        );
+        let take_ok: serde_json::Value = serde_json::from_str(&call_intent(
+            &outsider_proxy,
+            TAKE_METHOD,
+            &format!(
+                "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}}"
+            ),
+        ))
+        .expect("take reply");
+        assert_eq!(take_ok["outcome"], "ready");
+
+        assert_eq!(
+            call_rejected_kind(&outsider_proxy, READ_METHOD, dup_read),
+            "malformed"
+        );
+        let read_ok: serde_json::Value = serde_json::from_str(&call_intent(
+            &outsider_proxy,
+            READ_METHOD,
+            r#"{"v":4,"req":"r-ok"}"#,
+        ))
+        .expect("read reply");
+        assert_eq!(read_ok["outcome"], "presentation");
+        assert_eq!(read_ok["rev"], "1");
+
+        drop(outsider_proxy);
+        drop(outsider);
+        drop(owner_proxy);
+        drop(owner);
+        server.close().expect("close server connection");
+        drop(bus);
+    }
 }

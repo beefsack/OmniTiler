@@ -101,9 +101,12 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 
 - Objects are closed: unknown keys/enum values and wrong JSON types refuse,
   except the per-field settings and identifiable fact-row validation specified
-  below. Duplicate keys refuse on capture and discovery; queue, take, wait,
-  and presentation-read endpoints still resolve duplicate object keys
-  last-wins until replaced in the KDE rebuild. Required means present; nullable does not mean optional.
+  below. Duplicate object keys at any depth refuse as `malformed` on
+  capture, discovery, queue, take, wait and presentation-read. For the last
+  four endpoints, size and authorization precede JSON decoding, then the
+  envelope's keys, version and field values are checked in that order.
+  Where required, serving generation is checked before command semantics
+  or state access. Required means present; nullable does not mean optional.
   Tables use `no`, `yes`, `omit`, or `empty` in the Null/absence column; `empty`
   means the existing empty-string sentinel, not JSON null. Keys grouped in one
   row each have that row's type. Message field order is table order; a grouped

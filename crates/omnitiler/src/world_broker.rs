@@ -2076,8 +2076,8 @@ fn parse_capture_envelope(envelope: &str) -> Result<ParsedCapture, CaptureFailur
 fn parse_queue_request(
     request: &str,
 ) -> Result<(String, String, u64, serde_json::Value), (&'static str, &'static str)> {
-    let value: serde_json::Value =
-        serde_json::from_str(request).map_err(|_| ("malformed", "request is malformed"))?;
+    let value = tiler_protocol::connection_protocol::parse_strict_json(request)
+        .map_err(|_| ("malformed", "request is malformed"))?;
     let map = value
         .as_object()
         .ok_or(("malformed", "request is malformed"))?;
@@ -2134,8 +2134,8 @@ fn parse_queue_request(
 fn parse_take_request(
     request: &str,
 ) -> Result<(String, String, u64), (&'static str, &'static str)> {
-    let value: serde_json::Value =
-        serde_json::from_str(request).map_err(|_| ("malformed", "request is malformed"))?;
+    let value = tiler_protocol::connection_protocol::parse_strict_json(request)
+        .map_err(|_| ("malformed", "request is malformed"))?;
     let map = value
         .as_object()
         .ok_or(("malformed", "request is malformed"))?;
@@ -2181,8 +2181,8 @@ fn parse_take_request(
 pub fn parse_wait_request(
     request: &str,
 ) -> Result<(String, String, String, u64), (&'static str, &'static str)> {
-    let value: serde_json::Value =
-        serde_json::from_str(request).map_err(|_| ("malformed", "request is malformed"))?;
+    let value = tiler_protocol::connection_protocol::parse_strict_json(request)
+        .map_err(|_| ("malformed", "request is malformed"))?;
     let map = value
         .as_object()
         .ok_or(("malformed", "request is malformed"))?;
@@ -2235,8 +2235,8 @@ pub fn parse_wait_request(
 
 /// Strict read-request parse: exact keys, v4, opaque correlation.
 fn parse_read_request(request: &str) -> Result<String, (&'static str, &'static str)> {
-    let value: serde_json::Value =
-        serde_json::from_str(request).map_err(|_| ("malformed", "request is malformed"))?;
+    let value = tiler_protocol::connection_protocol::parse_strict_json(request)
+        .map_err(|_| ("malformed", "request is malformed"))?;
     let map = value
         .as_object()
         .ok_or(("malformed", "request is malformed"))?;
@@ -5215,5 +5215,274 @@ mod tests {
         assert!(broker.response_order.is_empty());
         assert_eq!(broker.response_bytes, 0);
         assert_eq!(broker.source_floor, 0);
+    }
+
+    #[test]
+    fn b6_strict_ingress_rejects_duplicates_and_preserves_precedence() {
+        let mut broker = WorldBroker::new();
+        let _ = broker
+            .discover_connection(&handshake_message("b6-adapter", "hs-1"))
+            .expect("handshake");
+        let _ = broker
+            .discover_connection(&settings_message(
+                "b6-adapter",
+                broker.generation(),
+                "set-1",
+            ))
+            .expect("settings");
+        let generation = broker.generation().to_owned();
+        let stale_gen = "stale-gen-0";
+
+        let rejection_kind = |res: Result<String, BrokerError>| -> String {
+            let body = res.expect("in-band reply");
+            let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+            assert_eq!(v["outcome"], "rejected", "{v}");
+            v["kind"].as_str().expect("kind").to_owned()
+        };
+
+        // Top-level duplicates on all 4 endpoints (duplicate beats version/gen/fields).
+        let dup_queue = format!(
+            "{{\"v\":3,\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+              \"clientCmd\":\"1\",\"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
+        );
+        assert_eq!(
+            rejection_kind(broker.queue_command(":1.42", &dup_queue)),
+            "malformed"
+        );
+        let dup_take = format!(
+            "{{\"v\":3,\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}}"
+        );
+        assert_eq!(
+            rejection_kind(broker.take_result(":1.42", &dup_take)),
+            "malformed"
+        );
+        let dup_wait = format!(
+            "{{\"v\":3,\"v\":4,\"gen\":\"{generation}\",\"adapter\":\"b6-adapter\",\
+              \"nonce\":\"w-1\",\"cursor\":\"0\"}}"
+        );
+        assert_eq!(
+            parse_wait_request(&dup_wait).expect_err("dup wait").0,
+            "malformed"
+        );
+        let dup_read = r#"{"v":3,"v":4,"req":"r-1"}"#;
+        assert_eq!(
+            rejection_kind(broker.read_presentation(dup_read)),
+            "malformed"
+        );
+
+        // Nested and escaped-equivalent keys on Queue.
+        let nested_dup = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+              \"command\":{{\"op\":\"select-numbered\",\"op\":\"focus\",\"out\":null,\"index\":1}}}}"
+        );
+        assert_eq!(
+            rejection_kind(broker.queue_command(":1.42", &nested_dup)),
+            "malformed"
+        );
+        let deep_dup = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+              \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1,\
+              \"extra\":[{{\"k\":1,\"k\":2}}]}}}}"
+        );
+        assert_eq!(
+            rejection_kind(broker.queue_command(":1.42", &deep_dup)),
+            "malformed"
+        );
+        let escaped_top = format!(
+            "{{\"v\":4,\"\\u0076\":3,\"gen\":\"{generation}\",\"client\":\"panel-1\",\
+              \"clientCmd\":\"1\",\"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
+        );
+        assert_eq!(
+            rejection_kind(broker.queue_command(":1.42", &escaped_top)),
+            "malformed"
+        );
+        let escaped_nested = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+              \"command\":{{\"op\":\"select-numbered\",\"\\u006fp\":\"focus\",\"out\":null,\"index\":1}}}}"
+        );
+        assert_eq!(
+            rejection_kind(broker.queue_command(":1.42", &escaped_nested)),
+            "malformed"
+        );
+
+        // Mixed precedence: oversize > auth > malformed(dup) > keys > version > field-values > gen > command-semantics.
+        let oversize = format!(
+            "{{\"v\":4,\"v\":3,\"pad\":\"{}\"}}",
+            "x".repeat(WORLD_MAX_REQUEST_BYTES)
+        );
+        assert!(matches!(
+            broker.queue_command("", &oversize),
+            Err(BrokerError::Oversized)
+        ));
+        assert!(matches!(
+            broker.take_result("", &oversize),
+            Err(BrokerError::Oversized)
+        ));
+        assert!(matches!(
+            broker.read_presentation(&oversize),
+            Err(BrokerError::Oversized)
+        ));
+
+        assert_eq!(
+            rejection_kind(broker.queue_command("", &dup_queue)),
+            "unauthorized"
+        );
+        assert_eq!(
+            rejection_kind(broker.take_result("", &dup_take)),
+            "unauthorized"
+        );
+
+        // Duplicate beats unknown-field, unsupported-version, bad values, stale gen, bad command.
+        let dup_mixed = format!(
+            "{{\"v\":3,\"v\":9,\"extra\":1,\"gen\":\"{stale_gen}\",\"client\":\"\",\
+              \"clientCmd\":\"01\",\"command\":{{\"op\":\"bogus\"}}}}"
+        );
+        assert_eq!(
+            rejection_kind(broker.queue_command(":1.42", &dup_mixed)),
+            "malformed"
+        );
+        // Unknown-field beats unsupported-version.
+        let unknown_vs_ver = format!(
+            "{{\"v\":3,\"extra\":1,\"gen\":\"{stale_gen}\",\"client\":\"\",\"clientCmd\":\"01\"}}"
+        );
+        assert_eq!(
+            rejection_kind(broker.take_result(":1.42", &unknown_vs_ver)),
+            "unknown-field"
+        );
+        assert_eq!(
+            rejection_kind(broker.read_presentation(r#"{"v":3,"extra":1,"req":""}"#)),
+            "unknown-field"
+        );
+        // Unsupported-version beats bad field-values and stale gen.
+        let ver_vs_val = format!(
+            "{{\"v\":3,\"gen\":\"{stale_gen}\",\"client\":\"\",\"clientCmd\":\"01\",\
+              \"command\":{{\"op\":\"bogus\"}}}}"
+        );
+        assert_eq!(
+            rejection_kind(broker.queue_command(":1.42", &ver_vs_val)),
+            "unsupported-version"
+        );
+        assert_eq!(
+            parse_wait_request(&format!(
+                "{{\"v\":3,\"gen\":\"{stale_gen}\",\"adapter\":\"\",\"nonce\":\"\",\"cursor\":\"01\"}}"
+            ))
+            .expect_err("ver beats val")
+            .0,
+            "unsupported-version"
+        );
+        // Bad field-value beats stale gen.
+        let val_vs_gen = format!(
+            "{{\"v\":4,\"gen\":\"{stale_gen}\",\"client\":\"panel-1\",\"clientCmd\":\"01\",\
+              \"command\":{{\"op\":\"bogus\"}}}}"
+        );
+        assert_eq!(
+            rejection_kind(broker.queue_command(":1.42", &val_vs_gen)),
+            "unknown-value"
+        );
+        assert_eq!(
+            parse_wait_request(&format!(
+                "{{\"v\":4,\"gen\":\"{stale_gen}\",\"adapter\":\"b6-adapter\",\"nonce\":\"w-1\",\"cursor\":\"01\"}}"
+            ))
+            .expect_err("val beats gen")
+            .0,
+            "unknown-value"
+        );
+        assert_eq!(
+            rejection_kind(broker.read_presentation(r#"{"v":4,"req":""}"#)),
+            "unknown-value"
+        );
+        // Serving generation beats command semantics.
+        let gen_vs_sem = format!(
+            "{{\"v\":4,\"gen\":\"{stale_gen}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+              \"command\":{{\"op\":\"bogus\"}}}}"
+        );
+        assert_eq!(
+            rejection_kind(broker.queue_command(":1.42", &gen_vs_sem)),
+            "generation-mismatch"
+        );
+        // Valid gen + bad command semantics -> snapshot-invalid.
+        let bad_sem = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+              \"command\":{{\"op\":\"bogus\"}}}}"
+        );
+        assert_eq!(
+            rejection_kind(broker.queue_command(":1.42", &bad_sem)),
+            "snapshot-invalid"
+        );
+
+        // No queue/highwater/presentation progress from all those refusals.
+        assert!(broker.pending.is_empty());
+        assert!(broker.highwater.is_empty());
+        assert_eq!(
+            rejection_kind(broker.read_presentation(r#"{"v":4,"req":"r-pre"}"#)),
+            "not-ready"
+        );
+
+        // Clean valid controls: queue, capture drain, take refusal does not consume, then valid take & read.
+        let valid_queue = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\",\
+              \"command\":{{\"op\":\"select-numbered\",\"out\":null,\"index\":1}}}}"
+        );
+        let q_rep: serde_json::Value = serde_json::from_str(
+            &broker
+                .queue_command(":1.42", &valid_queue)
+                .expect("queue ok"),
+        )
+        .expect("json");
+        assert_eq!(q_rep["outcome"], "queued");
+        assert_eq!(q_rep["globalCmd"], "1");
+
+        let valid_wait = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"adapter\":\"b6-adapter\",\
+              \"nonce\":\"w-ok\",\"cursor\":\"0\"}}"
+        );
+        assert!(parse_wait_request(&valid_wait).is_ok());
+
+        let cap_env = format!(
+            "{{\"v\":4,\"adapter\":\"b6-adapter\",\"gen\":\"{generation}\",\
+              \"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\
+              \"report\":{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+              \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+              \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
+              \"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\
+              \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+              \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
+              \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
+              \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
+              \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\
+              \"witness\":null,\"foregroundOut\":null}},\
+              \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null}}}}"
+        );
+        let cap_rep: serde_json::Value =
+            serde_json::from_str(&broker.dispatch_capture(&cap_env).expect("capture"))
+                .expect("json");
+        assert_eq!(cap_rep["ready"], true, "{cap_rep}");
+
+        // Refused Takes must not consume the settled result.
+        assert_eq!(
+            rejection_kind(broker.take_result(":1.42", &dup_take)),
+            "malformed"
+        );
+        let valid_take = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"panel-1\",\"clientCmd\":\"1\"}}"
+        );
+        let take_rep: serde_json::Value =
+            serde_json::from_str(&broker.take_result(":1.42", &valid_take).expect("take ok"))
+                .expect("json");
+        assert_eq!(take_rep["outcome"], "ready");
+
+        // Refused Read must not disturb presentation.
+        assert_eq!(
+            rejection_kind(broker.read_presentation(dup_read)),
+            "malformed"
+        );
+        let read_rep: serde_json::Value = serde_json::from_str(
+            &broker
+                .read_presentation(r#"{"v":4,"req":"r-ok"}"#)
+                .expect("read ok"),
+        )
+        .expect("json");
+        assert_eq!(read_rep["outcome"], "presentation");
+        assert_eq!(read_rep["rev"], "1");
     }
 }

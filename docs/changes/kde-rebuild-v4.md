@@ -209,3 +209,19 @@ desktop remains part of the integrated recovery unit.
 Scoped Rust format, strict all-target Clippy and all-target tests passed:
 3,548 tests with none failed or skipped. Independent review found no
 material issues with the command lifetime or replay boundaries.
+
+## Unit 4: strict checked endpoint ingress
+
+Queue, Take, Wait and presentation-read now use the same strict JSON
+decoder as capture and discovery. Duplicate keys, including escaped spellings
+of the same key and nested objects inside arrays, refuse as `malformed`.
+Size and authorization still win before decoding; envelope keys, version and
+values precede serving generation and command semantics where applicable.
+Capture and discovery were not changed.
+
+Private-bus and broker checks cover mixed refusals, valid controls, no queued
+work or wake progress from refusals, and intact result/presentation delivery.
+The existing v3 and frozen-v4 capture refusals still pass. Scoped Rust format,
+strict all-target Clippy and all-target tests passed: 3,550 tests, none failed
+or skipped. No fixture bytes changed; native valid-route evidence belongs to
+the integrated recovery unit.
