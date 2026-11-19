@@ -188,8 +188,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -249,7 +248,7 @@
             "foregroundOut": "out-a"
           },
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -354,8 +353,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -416,8 +414,9 @@
           },
           "monotonicMs": "50",
           "intentRecords": [],
-          "stateAttempts": [
+          "propertyAttempts": [
             {
+              "kind": "state",
               "win": "win-a",
               "property": "above",
               "target": true,
@@ -532,8 +531,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             },
             {
               "win": "win-full",
@@ -583,8 +581,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -644,7 +641,7 @@
             "foregroundOut": "out-a"
           },
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -748,8 +745,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -810,8 +806,9 @@
           },
           "monotonicMs": "70",
           "intentRecords": [],
-          "stateAttempts": [
+          "propertyAttempts": [
             {
+              "kind": "state",
               "win": "win-a",
               "property": "above",
               "target": false,
@@ -925,8 +922,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -987,8 +983,9 @@
           },
           "monotonicMs": "500",
           "intentRecords": [],
-          "stateAttempts": [
+          "propertyAttempts": [
             {
+              "kind": "state",
               "win": "win-a",
               "property": "above",
               "target": true,
@@ -1102,8 +1099,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -1163,7 +1159,7 @@
             "foregroundOut": "out-a"
           },
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -1267,8 +1263,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -1329,8 +1324,9 @@
           },
           "monotonicMs": "700",
           "intentRecords": [],
-          "stateAttempts": [
+          "propertyAttempts": [
             {
+              "kind": "state",
               "win": "win-a",
               "property": "above",
               "target": false,
@@ -1444,8 +1440,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -1506,8 +1501,9 @@
           },
           "monotonicMs": "800",
           "intentRecords": [],
-          "stateAttempts": [
+          "propertyAttempts": [
             {
+              "kind": "state",
               "win": "win-a",
               "property": "above",
               "target": true,
@@ -1621,8 +1617,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -1682,7 +1677,7 @@
             "foregroundOut": "out-a"
           },
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -1786,8 +1781,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -1847,7 +1841,7 @@
             "foregroundOut": "out-a"
           },
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -1955,8 +1949,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -2016,7 +2009,7 @@
             "foregroundOut": "out-a"
           },
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -2121,8 +2114,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -2182,7 +2174,7 @@
             "foregroundOut": "out-a"
           },
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -2286,8 +2278,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -2347,7 +2338,7 @@
             "foregroundOut": "out-a"
           },
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -2451,8 +2442,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -2513,8 +2503,9 @@
           },
           "monotonicMs": "1400",
           "intentRecords": [],
-          "stateAttempts": [
+          "propertyAttempts": [
             {
+              "kind": "state",
               "win": "win-a",
               "property": "above",
               "target": true,
@@ -2628,8 +2619,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -2689,7 +2679,7 @@
             "foregroundOut": "out-a"
           },
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -2793,8 +2783,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -2854,7 +2843,7 @@
             "foregroundOut": "out-a"
           },
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -2959,7 +2948,7 @@
             "foregroundOut": "out-a"
           },
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": false
@@ -3067,8 +3056,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -3128,7 +3116,7 @@
             "foregroundOut": "out-a"
           },
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -3232,8 +3220,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             },
             {
               "win": "win-capacity",
@@ -3283,8 +3270,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [
@@ -3356,7 +3342,7 @@
             "foregroundOut": "out-a"
           },
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -3465,8 +3451,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [
@@ -3528,7 +3513,7 @@
             "foregroundOut": "out-a"
           },
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -3855,8 +3840,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -3916,7 +3900,7 @@
             "foregroundOut": "out-a"
           },
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true

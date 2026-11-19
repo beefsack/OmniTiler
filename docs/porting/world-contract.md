@@ -379,15 +379,11 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | `presentation` | PresentationIngress | no | Native foreground/render facts. |
 | `cursorHit` | WindowId | omit/null/empty | Native hit-test, never rectangle guess; empty when the hit is unreported/foreign/unbound. |
 | `monotonicMs` | Counter | omit -> 0 | Arbitrary-epoch milliseconds, not wall-clock. |
-| `frameAttempts` | FrameAttempt[] | omit -> [] | Existing geometry lane. |
-| `memberAttempts` | MemberAttempt[] | omit -> [] | Consolidated namespace evidence. |
-| `viewAttempts` | ViewAttempt[] | omit -> [] | Native selectors only. |
-| `clearAttempts` | ClearAttempt[] | omit -> [] | Existing maximize-clear lane. |
 | `creationAttempts` | NativeCreationAttempt[] | omit -> [] | Existing native-create lane. |
 | `gestureIngress` | GestureIngress | omit/null | Existing native gesture lifecycle. |
 | `primary` | OutputId | omit | Host-designated primary, unknown if absent. |
 | `intentRecords` | IntentRecord[] | no | Opaque host storage return. |
-| `stateAttempts` | StateAttempt[] | no | Raw fullscreen/maximize/sticky/above writes. |
+| `propertyAttempts` | PropertyAttempt[] | no | Required even when empty. Closed tagged union: `frame`, `member`, `view`, `clear`, `state`, `visibility`. Caps count all carried rows, including held rows: 1,024 per kind except 10,000 for `visibility`, 15,120 total. |
 | `focusFeedback` | FocusFeedback[] | no | Correlated native evidence for the retained focus request. |
 | `rendererInput` | RendererInput | yes | One exact core-drawn target per command. |
 
@@ -396,6 +392,9 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
   view echo cannot prove native-free completion; visibility/focus facts do.
   [Visibility removal](../decisions/windows.md#state-centric-v4-visibility),
   [G1 reconciliation](../changes/v4-migration.md#b-reconciliations-and-open-points).
+
+- The pre-release v4 attempt cutover has no dual spelling: the old five
+  attempt arrays and `WindowFact.lastWrite` are not accepted.
 
 - `foregroundKnown:false` with nonempty `focused` refuses as
   `snapshot-invalid` / `focused-unknown-mismatch`. Inventory completeness or
@@ -458,7 +457,6 @@ See the [authority decision](../decisions/contract.md#contract-authority-and-v4-
 | `fullscreenExitable` | bool | yes | Whether neutral core-authorized exit can be performed. |
 | `suppressionAvailable` | bool | yes | Per-window recoverable hide support/readability. |
 | `visibility` | VisibilityFact | no | Current native visibility and recovery ownership. |
-| `lastWrite` | LastWrite | yes | Latest visibility write evidence, no work id. |
 
 - Remove `floating,fitExcluded,fixedAuto,fixedSuppress,observedWs,shell,tool,ownedDialog,dialog,noActivate,cannotControl`; core derives these and
   owns explicit overrides, born latches and last-known frames. Native role/type,
@@ -1392,16 +1390,42 @@ acceptance or adopt the separate close-focus amendment.
 
 | Record | Key | Type | Null/absence | Meaning |
 | --- | --- | --- | --- | --- |
-| `MemberAttempt` | `op,win,out,ws,setter` | Id, WindowId, OutputId, WorkspaceId, MemberDisposition | no | Existing operation/subject/desired target/call or no-call disposition. |
+| `FrameAttempt` | `kind,win,target,setter` | `"frame"`, WindowId, Rect, SetterOutcome | no | Exact window and attempted frame target. |
+| | `readback` | Rect | yes | Immediate frame readback. |
+| | `dpiBefore,dpiAfter` | integer | yes | Native DPI observations around the call. |
+| | `attemptMs` | Counter | no | Original monotonic call stamp. |
+| | `op,pre` | Id, Rect | empty Id / nullable Rect | Operation and prewrite frame for correlated frame work. |
+| `MemberAttempt` | `kind,op,win,out,ws,setter` | `"member"`, Id, WindowId, OutputId, WorkspaceId, MemberDisposition | no | Operation, subject, target and call or no-call disposition. |
 | | `pre,post` | WorkspaceRef | yes | Single logical-or-native reference set, live before/after. |
 | | `attemptMs` | Counter | no | Original monotonic call or no-call consumption stamp. |
-| `ViewAttempt` | `op,out,ws,setter` | Id, OutputId, WorkspaceId, SetterOutcome | no | Native selector evidence for existing parent/phase. |
+| `ViewAttempt` | `kind,op,out,ws,setter` | `"view"`, Id, OutputId, WorkspaceId, SetterOutcome | no | Output-scoped native selector evidence for existing parent/phase. |
 | | `pre,post,base` | WorkspaceRef with kind native | yes | Native before/after/observation baseline only. |
 | | `attemptMs` | Counter | no | Original stamp. |
-| `StateAttempt` | `win,property,target,rev` | WindowId, state property, bool, Counter | no | Exact core native-state target. |
+| `ClearAttempt` | `kind,op,win,setter` | `"clear"`, Id, WindowId, SetterOutcome | no | Maximize-clear operation and exact window lifetime. |
+| | `pre,post` | bool | yes | Observed maximize state immediately around call. |
+| | `attemptMs` | Counter | no | Original stamp. |
+| `StateAttempt` | `kind,win,property,target,rev` | `"state"`, WindowId, state property, bool, Counter | no | Exact core native-state target. |
 | | `setter` | SetterOutcome | no | Actual native call disposition. |
 | | `pre,post` | bool | yes | Observed property immediately around call. |
 | | `attemptMs` | Counter | no | Original stamp. |
+
+- Duplicate keys by kind: frame by `win`, membership and clear by
+  `(op,win)`, view by `op`, native state by `(win,property)`, visibility by
+  `win`. Identifiable held rows count toward the same uniqueness checks.
+  Ingress uniqueness applies even if the window is absent or close-only.
+  A visibility duplicate refuses as `snapshot-invalid` with
+  `duplicate-visibility-attempt`. After structural checks, ignore visibility
+  rows without a live or held window, with no authority or diagnostic.
+  Identifiable malformed visibility evidence for a live or held window
+  holds only that scope. Native state malformed or duplicate rows refuse
+  rather than holding.
+- Decode by fixed kind/section order: frame, membership, view, clear,
+  separate creation, native state, visibility (tentative position), then
+  separate focus feedback. Use producer order within each kind; the first
+  hard error wins. The input ordinal is for wire reconstruction, not
+  settlement. Broker clock validation checks comparable canonical stamps
+  for frame, membership, view, clear and creation even on rows later held;
+  it does not add that check for native state or visibility.
 
 - StateAttempt `rev` is the acted-on WorldReply publication's `rev`, not the later
   report's `obs` or `reqSeq`, nor the write's `attemptMs`. The adapter acts only
@@ -1433,10 +1457,10 @@ acceptance or adopt the separate close-focus amendment.
   lane, retries or adapter policy; retained settlement outcomes are unchanged.
   KDE emits the row on its already-at-target transfer branch; macOS and Windows
   adopt the same row later.
-- FrameAttempt, ClearAttempt, NativeCreationAttempt and NativeCreationDesire
-  retain exact baseline keys/nullability and separate lanes, including frame
-  target/readback/DPI/prewrite, clear pre/post-maximized and creation
-  before/after/correlated-created id. Do not replace them with LastWrite.
+- Frame and maximize-clear rows retain their kind-specific target/readback/DPI/
+  prewrite and pre/post-maximized fields in `propertyAttempts`. Native
+  creation remains separate, retaining its before/after and correlated-created
+  identity fields.
   Creation needs explicit `nativeCreations` authorization, spent before call;
   an unbound spare is not permission. Unknown/ambiguous created identity holds
   without recreation. A causal receipt is not available on every route: without
@@ -1452,11 +1476,11 @@ acceptance or adopt the separate close-focus amendment.
 | Record | Key | Type | Null/absence | Meaning |
 | --- | --- | --- | --- | --- |
 | `VisibilityFact` | `visible,suppressionOwned` | bool | yes | Native shown state and project-owned suppression. |
-| `VisibilitySample` | `obs` | Counter | no | Invalidation watermark at the read; subject comes from enclosing window/bracket. |
+| `VisibilitySample` | `obs` | Counter | no | Invalidation watermark at the read; subject comes from the enclosing attempt row or bracket. |
 | | `lifetimeMatched` | bool | yes | Full native lifetime and any applicable stored suppression/recovery tag match, not handle equality. |
 | | `visibility` | VisibilityFact | no | Native state at this read. |
 | | `minimized,hostHidden` | bool | yes | Separate native ineligibility facts. |
-| `LastWrite` | `property` | `visibility` | no | Property tag reserved for later separate lane migrations. |
+| `VisibilityAttempt` | `kind,win` | `"visibility"`, WindowId | no | Closed `propertyAttempts` row for visibility writes; one row per window lifetime. |
 | | `target,revision` | bool, Counter | no | Existing desired-state target and revision; no visibility id. |
 | | `path` | `staged/fallback/independent` | no | Actual execution route. |
 | | `setter` | SetterOutcome or `not-called` | no | No-call is not a successful native call. |
@@ -1474,7 +1498,7 @@ acceptance or adopt the separate close-focus amendment.
 | | `reason` | VisibilityReason | empty on ordinary call | Mechanical blocked/refusal fact. |
 | | `pre,post` | WindowId | yes | Live foreground before/after; null means unknown. |
 | | `foregroundProven` | bool | no | Actual foreground equality proof, never setter success. |
-| | `arrival` | ArrivalBracket[] | no | Readiness brackets; blocked subjects use their LastWrite no-call evidence, not a different array arm. |
+| | `arrival` | ArrivalBracket[] | no | Readiness brackets; blocked subjects use their visibility attempt no-call evidence, not a different array arm. |
 | | `attemptMs` | Counter | no | Original dispatch/no-call stamp. |
 | `SwitchEvent` | `out,op` | OutputId, Id | no | Retained owner key and existing parent transfer/view operation. |
 | | `outcome` | `complete/completed-with-failures` | no | Core terminal accounting, not native per-entry verdict ingress. |
@@ -1568,15 +1592,15 @@ acceptance or adopt the separate close-focus amendment.
 5. At most one write per lifetime/revision/target. A disagreeing fact never
    rewrites that same target at that revision; only new intent grants a new
    authorization stamped with its existing world revision in `visibility.rev`.
-   Ordinary observation revisions do not renew it; LastWrite.revision names
-   that authorization revision, not the later report's revision.
-6. Issued writes stay spent across supersession/reset; report late LastWrite
-   evidence without letting an old target override the new desired target.
+   Ordinary observation revisions do not renew it; `VisibilityAttempt.revision`
+   names that authorization revision, not the later report's revision.
+6. Issued writes stay spent across supersession/reset; report late visibility
+   attempt evidence without letting an old target override the new desired target.
 
 - Core freezes switch target sets internally, derives each member's
   confirmed/refused/ambiguous/blocked state, and emits SwitchEvent only when
   every member has a correlated verdict. Arrival and proven focus never replace
-  a missing show LastWrite; the member stays pending, with no SwitchEvent.
+  a missing show attempt; the member stays pending, with no SwitchEvent.
   [Per-member decision](../decisions/workspaces.md#selection-visibility-accounting).
   Later admissions enter the next target revision,
   not the old switch silently. There are no visibility work/group ids,
@@ -1641,6 +1665,17 @@ acceptance or adopt the separate close-focus amendment.
   invalidity uses RowDiagnostic instead of a whole-report snapshot error.
   [Existing errors](../../crates/tiler-protocol/src/world_protocol.rs),
   [core kinds](../../crates/tiler-core/src/world_engine.rs).
+
+- The capture envelope rejects duplicate object keys as `malformed`,
+  including keys nested in its report. The protocol checks raw request
+  length before decoding and owns the 4 MiB byte policy; core owns structural
+  limits. Retain the conservative early reply bound. At staged admission,
+  exact canonical inner bytes plus future terminal headroom can cause a
+  remembered `reply-oversize`. Independently, actual broker-bound bytes
+  above 4 MiB give the unremembered transport error
+  `reply exceeds size bound` before installing candidate state, publishing
+  coverage or settling queued commands. The next fitting capture requires
+  a fresh broker source.
 
 ## Presentation and renderer input
 

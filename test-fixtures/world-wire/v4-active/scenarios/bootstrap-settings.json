@@ -187,8 +187,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -249,7 +248,7 @@
           },
           "monotonicMs": "100",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -624,8 +623,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -686,7 +684,7 @@
           },
           "monotonicMs": "200",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true

@@ -128,8 +128,7 @@ fn n5_raw_full(
           \"title\":null,\"type\":\"{kind}\",\"activationPolicy\":\"regular\",\
           \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
           \"suppressionAvailable\":null,\
-          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\
-          \"lastWrite\":null}}"
+          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}}}}"
     )
 }
 
@@ -162,7 +161,7 @@ fn inner_report(windows: &[String]) -> String {
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
           \"presentation\":{},\
-          \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\
+          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
           \"rendererInput\":null}}",
         windows.join(","),
         presentation(),
@@ -193,7 +192,7 @@ fn two_output_inner(windows: &[String]) -> String {
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\",\"DP-2\"],\
           \"presentation\":{},\
-          \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\
+          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
           \"rendererInput\":null}}",
         windows.join(","),
         presentation(),

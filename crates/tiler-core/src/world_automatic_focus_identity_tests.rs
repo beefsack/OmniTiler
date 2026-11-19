@@ -69,7 +69,6 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
-        last_write: None,
     }
 }
 
@@ -115,6 +114,7 @@ fn report(
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
+        visibility_attempts: Vec::new(),
         focus_feedback: Vec::new(),
         presentation: PresentationRowV4::Valid(empty_ingress()),
         intent_records: Vec::new(),
@@ -755,7 +755,6 @@ fn token_survives_incomplete_held_and_engine_known_absence() {
         ordinal: 1,
         output: None,
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];

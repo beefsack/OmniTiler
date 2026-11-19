@@ -21,14 +21,14 @@ use crate::world_members::MemberState;
 use crate::world_report::{
     ArrivalBracket, ArrivalLocation, AttemptLaneV4, AttemptOutcome, AuthorityScope, ClearAttempt,
     EffectCause, FocusFeedback, FrameAttempt, FrameSetter, HeldAttemptRow, HeldNativeRow,
-    HeldScreenRow, HeldWindowRow, HoldReason, IntentRecord, LastWrite, LastWritePath,
-    LastWriteProperty, MemberAttempt, NativeCreationAttempt, NativeObservation, NativeOccupancy,
-    NativeWorkspaceFact, OneShotEffect, OutputIdentity, PresentationIngressV4, PresentationRowV4,
-    RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
-    ScopeAuthority, ScreenReport, StateAttempt, StateProperty, SwitchOutcome, TransferKind,
-    TransferTarget, ViewAttempt, VisibilityFact, VisibilityReason, VisibilitySample,
-    VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowDesire, WindowFact, WorkspaceRef,
-    WorldCommand, WorldReplyV4, WorldReportV4,
+    HeldScreenRow, HeldWindowRow, HoldReason, IntentRecord, LastWritePath, MemberAttempt,
+    NativeCreationAttempt, NativeObservation, NativeOccupancy, NativeWorkspaceFact, OneShotEffect,
+    OutputIdentity, PresentationIngressV4, PresentationRowV4, RenderTarget, RendererInput,
+    RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScreenReport,
+    StateAttempt, StateProperty, SwitchOutcome, TransferKind, TransferTarget, ViewAttempt,
+    VisibilityAttempt, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
+    WORLD_CONTRACT_VERSION_V4, WindowDesire, WindowFact, WorkspaceRef, WorldCommand, WorldReplyV4,
+    WorldReportV4,
 };
 use crate::world_selection::{
     FrozenArrivalMember, RetainedSelection, SelectionScope, SelectionTarget, SwitchMember,
@@ -64,7 +64,6 @@ fn held_window_row(window: &str, output: &str, ordinal: usize) -> HeldWindowRow 
         ordinal,
         output: Some(OutputId(output.to_owned())),
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }
@@ -460,9 +459,9 @@ fn rich_lanes() -> RichLanes {
             held_window_row("win-h2", "out-b", 3),
         ],
         held_native: vec![held_native_row("out-c", 2)],
-        // Held attempt ordinals index their own lane array: two valid
-        // frame/member rows precede one held row each, so ordinal 2.
-        held_attempts: vec![held_frame_row(2), held_member_row(2)],
+        // Held property attempt ordinals index the shared propertyAttempts
+        // array across all property kinds (10 valid + 2 held = 12).
+        held_attempts: vec![held_frame_row(2), held_member_row(5)],
         cursor: Some((10, 20)),
         cursor_hit: Some(WindowId("win-a".to_owned())),
         focused: "win-a".to_owned(),
@@ -731,6 +730,7 @@ fn rich_v4(seq: u64, lanes: RichLanes) -> WorldReportV4 {
         creation_attempts: lanes.creation,
         held_attempts: lanes.held_attempts,
         state_attempts: lanes.state,
+        visibility_attempts: Vec::new(),
         focus_feedback: lanes.feedback,
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: lanes.records,
@@ -820,7 +820,7 @@ fn v4_capture_conserves_raw_lanes_in_order() {
             .iter()
             .map(|held| (held.lane, held.ordinal))
             .collect::<Vec<_>>(),
-        vec![(AttemptLaneV4::Frame, 2), (AttemptLaneV4::Member, 2)]
+        vec![(AttemptLaneV4::Frame, 2), (AttemptLaneV4::Member, 5)]
     );
     // Diagnostics follow lane order: screens, windows, the native row,
     // then the attempt row carrying a diagnostic (the diagnostic-less
@@ -1214,7 +1214,6 @@ fn held_scope_keeps_prior_staged_homing() {
         ordinal: 0,
         output: None,
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: crate::world_report::RowDiagnosticKind::InvalidFact,
     }];
@@ -1329,7 +1328,6 @@ fn intent_pending_survives_hold_cleared_by_close_and_late_fenced() {
         ordinal: 0,
         output: Some(OutputId("out-a".to_owned())),
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: crate::world_report::RowDiagnosticKind::InvalidFact,
     }];
@@ -1457,6 +1455,7 @@ fn v4_capture_keeps_original_rows_through_capability_grading() {
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
+        visibility_attempts: Vec::new(),
         focus_feedback: vec![feedback_row("ff-1", "win-b")],
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: vec![record("win-a", &float_true())],
@@ -1730,6 +1729,7 @@ fn report_v4_simple(
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
+        visibility_attempts: Vec::new(),
         focus_feedback: Vec::new(),
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
@@ -7319,9 +7319,14 @@ fn stage_born_mint(
     stage_v4_ingested(engine, &v4report);
 }
 
-fn confirm_last_write(target: bool, rev: u64, post_obs: u64) -> LastWrite {
-    LastWrite {
-        property: LastWriteProperty::Visibility,
+fn confirm_visibility_attempt(
+    window: &str,
+    target: bool,
+    rev: u64,
+    post_obs: u64,
+) -> VisibilityAttempt {
+    VisibilityAttempt {
+        window: WindowId(window.to_owned()),
         target,
         revision: rev,
         path: LastWritePath::Staged,
@@ -7341,10 +7346,9 @@ fn confirm_last_write(target: bool, rev: u64, post_obs: u64) -> LastWrite {
     }
 }
 
-fn fact_with_lw(window: &str, last: LastWrite) -> WindowFact {
-    let mut row = fact(window, "out-a", 0);
-    row.last_write = Some(last);
-    row
+fn report_with_vis(mut report: WorldReportV4, attempts: Vec<VisibilityAttempt>) -> WorldReportV4 {
+    report.visibility_attempts = attempts;
+    report
 }
 
 fn seed_switch_binding(engine: &mut WorldEngine, members: Vec<SwitchMember>) {
@@ -7392,10 +7396,9 @@ fn staged_switch_receipt_and_close_win_over_passed_report() {
     // seq would bracket it.
     let mut engine = engine_settle();
     seed_switch_binding(&mut engine, vec![switch_member("win-a", true)]);
-    let v4report = v4_report(
-        2,
-        vec![fact_with_lw("win-a", confirm_last_write(true, 1, 5))],
-        Vec::new(),
+    let v4report = report_with_vis(
+        v4_report(2, vec![fact("win-a", "out-a", 0)], Vec::new()),
+        vec![confirm_visibility_attempt("win-a", true, 1, 5)],
     );
     stage_v4_ingested(&mut engine, &v4report);
     engine.tx(|tx| tx.settle_selection_switch());
@@ -7424,13 +7427,13 @@ fn staged_switch_receipt_and_close_win_over_passed_report() {
         &mut engine,
         vec![switch_member("win-a", true), switch_member("win-b", false)],
     );
-    let v4report = v4_report(
-        2,
-        vec![
-            fact_with_lw("win-a", confirm_last_write(true, 1, 5)),
-            fact("win-b", "out-a", 100),
-        ],
-        Vec::new(),
+    let v4report = report_with_vis(
+        v4_report(
+            2,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            Vec::new(),
+        ),
+        vec![confirm_visibility_attempt("win-a", true, 1, 5)],
     );
     stage_v4_ingested(&mut engine, &v4report);
     engine.tx(|tx| tx.settle_selection_switch());
@@ -7438,13 +7441,13 @@ fn staged_switch_receipt_and_close_win_over_passed_report() {
         engine.world.settlement.switch_settled.is_empty(),
         "pending member holds terminal"
     );
-    let v4report = v4_report(
-        3,
-        vec![
-            fact_with_lw("win-a", confirm_last_write(true, 1, 2)),
-            fact("win-b", "out-a", 100),
-        ],
-        Vec::new(),
+    let v4report = report_with_vis(
+        v4_report(
+            3,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            Vec::new(),
+        ),
+        vec![confirm_visibility_attempt("win-a", true, 1, 2)],
     );
     stage_v4_ingested(&mut engine, &v4report);
     engine.tx(|tx| tx.settle_selection_switch());
@@ -7464,10 +7467,13 @@ fn staged_switch_receipt_and_close_win_over_passed_report() {
     // closes; a passed-only close changes nothing.
     let mut engine = engine_settle();
     seed_switch_binding(&mut engine, vec![switch_member("win-a", true)]);
-    let v4report = v4_report(
-        2,
-        vec![fact_with_lw("win-a", confirm_last_write(true, 1, 2))],
-        vec![WindowId("win-a".to_owned())],
+    let v4report = report_with_vis(
+        v4_report(
+            2,
+            vec![fact("win-a", "out-a", 0)],
+            vec![WindowId("win-a".to_owned())],
+        ),
+        vec![confirm_visibility_attempt("win-a", true, 1, 2)],
     );
     stage_v4_ingested(&mut engine, &v4report);
     engine.tx(|tx| tx.settle_selection_switch());
@@ -7482,10 +7488,9 @@ fn staged_switch_receipt_and_close_win_over_passed_report() {
     );
     let mut engine = engine_settle();
     seed_switch_binding(&mut engine, vec![switch_member("win-a", true)]);
-    let v4report = v4_report(
-        2,
-        vec![fact_with_lw("win-a", confirm_last_write(true, 1, 2))],
-        Vec::new(),
+    let v4report = report_with_vis(
+        v4_report(2, vec![fact("win-a", "out-a", 0)], Vec::new()),
+        vec![confirm_visibility_attempt("win-a", true, 1, 2)],
     );
     stage_v4_ingested(&mut engine, &v4report);
     let mut _contra_closed = contra_v4(2, Vec::new());
@@ -7499,88 +7504,65 @@ fn staged_switch_receipt_and_close_win_over_passed_report() {
 }
 
 #[test]
-fn visibility_normalization_keeps_healthy_over_held() {
-    // A healthy staged fact's raw last_write wins per window even when a held
-    // row for the same lifetime carries a different, otherwise-matching raw.
-    // The held row must not become a second (or replacement) canonical
-    // attempt: the exact old healthy-first precedence is preserved.
+fn visibility_normalization_grades_held_window_and_ignores_absent() {
+    // Eligible window facts and held window rows join uniformly into
+    // standalone visibility attempts with no provenance distinction; absent
+    // windows are ignored; duplicate visibility attempts refuse directly.
     let mut engine = engine();
-    let mut v4report = v4_report(
-        2,
-        vec![fact_with_lw("win-a", confirm_last_write(false, 1, 2))],
-        Vec::new(),
+    let mut v4report = report_with_vis(
+        v4_report(2, vec![fact("win-eligible", "out-a", 0)], Vec::new()),
+        vec![
+            confirm_visibility_attempt("win-eligible", true, 1, 2),
+            confirm_visibility_attempt("win-held", false, 1, 2),
+            confirm_visibility_attempt("win-absent", true, 1, 2),
+        ],
     );
-    let win_a_lw = confirm_last_write(true, 1, 2);
     v4report.held_windows = vec![HeldWindowRow {
-        window: WindowId("win-a".to_owned()),
-        ordinal: 1,
+        window: WindowId("win-held".to_owned()),
+        ordinal: 0,
         output: Some(OutputId("out-a".to_owned())),
         has_native_workspace: false,
-        last_write: Some(win_a_lw),
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];
+    assert_eq!(
+        crate::world_report_v4_checks::validate_report_v4_reason(&v4report),
+        None
+    );
     stage_v4_ingested(&mut engine, &v4report);
-    let targets: Vec<bool> = engine
+    let targets: Vec<(String, bool)> = engine
         .world
         .staged
         .observation
         .property_attempts
         .iter()
         .filter_map(crate::world_attempts::PropertyAttempt::as_visibility)
-        .filter(|evidence| evidence.window == WindowId("win-a".to_owned()))
-        .map(|evidence| evidence.target)
+        .map(|evidence| (evidence.window.0.clone(), evidence.target))
         .collect();
     assert_eq!(
         targets,
-        vec![false],
-        "healthy fact wins; held row is not a fallback attempt"
+        vec![
+            ("win-eligible".to_owned(), true),
+            ("win-held".to_owned(), false),
+        ],
+        "eligible and held windows join uniformly; absent window is ignored"
     );
-}
 
-#[test]
-fn visibility_normalization_falls_back_to_first_decodable_held_row() {
-    // With no healthy last_write, the first losslessly decodable held row by
-    // lifetime supplies the single canonical attempt. Malformed held raw
-    // (missing lastWrite) is skipped, never latched and never a failure.
-    let mut engine = engine();
-    let mut v4report = v4_report(2, vec![fact("win-a", "out-a", 0)], Vec::new());
-    let malformed = HeldWindowRow {
-        window: WindowId("win-a".to_owned()),
-        ordinal: 1,
-        output: Some(OutputId("out-a".to_owned())),
-        has_native_workspace: false,
-        last_write: None,
-        diagnostic: None,
-        kind: RowDiagnosticKind::InvalidFact,
-    };
-    let decodable_lw = confirm_last_write(true, 1, 2);
-    let decodable = HeldWindowRow {
-        window: WindowId("win-a".to_owned()),
-        ordinal: 2,
-        output: Some(OutputId("out-a".to_owned())),
-        has_native_workspace: false,
-        last_write: Some(decodable_lw),
-        diagnostic: None,
-        kind: RowDiagnosticKind::ConflictingFact,
-    };
-    v4report.held_windows = vec![malformed, decodable];
-    stage_v4_ingested(&mut engine, &v4report);
-    let targets: Vec<bool> = engine
-        .world
-        .staged
-        .observation
-        .property_attempts
-        .iter()
-        .filter_map(crate::world_attempts::PropertyAttempt::as_visibility)
-        .filter(|evidence| evidence.window == WindowId("win-a".to_owned()))
-        .map(|evidence| evidence.target)
-        .collect();
-    assert_eq!(
-        targets,
-        vec![true],
-        "malformed held skipped; first decodable held row latches once"
+    let dup_report = report_with_vis(
+        v4_report(3, vec![fact("win-eligible", "out-a", 0)], Vec::new()),
+        vec![
+            confirm_visibility_attempt("win-eligible", true, 1, 2),
+            confirm_visibility_attempt("win-eligible", false, 2, 3),
+        ],
     );
+    assert_eq!(
+        crate::world_report_v4_checks::validate_report_v4_reason(&dup_report),
+        Some("duplicate-visibility-attempt")
+    );
+    let err = engine
+        .handle_report_v4_for_test(&dup_report)
+        .expect_err("duplicate visibility attempts refuse directly");
+    assert_eq!(err, ("snapshot-invalid", "duplicate-visibility-attempt"));
 }
 
 #[test]
@@ -7608,10 +7590,9 @@ fn visibility_normalization_is_once_across_restage_even_at_zero() {
     assert_eq!(engine.world.staged.observation.property_attempts, before);
 
     let mut witness = engine;
-    let with_evidence = v4_report(
-        2,
-        vec![fact_with_lw("win-a", confirm_last_write(true, 1, 2))],
-        Vec::new(),
+    let with_evidence = report_with_vis(
+        v4_report(2, vec![fact("win-a", "out-a", 0)], Vec::new()),
+        vec![confirm_visibility_attempt("win-a", true, 1, 2)],
     );
     stage_v4_ingested(&mut witness, &with_evidence);
     let count = |engine: &WorldEngine| {

@@ -23,9 +23,9 @@ use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    AuthorityScope, LastWrite, LastWritePath, LastWriteProperty, OutputIdentity,
-    PresentationIngressV4, PresentationRowV4, ScopeAuthority, ScreenReport,
-    WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef, WorldCommand, WorldReplyV4, WorldReportV4,
+    AuthorityScope, LastWritePath, OutputIdentity, PresentationIngressV4, PresentationRowV4,
+    ScopeAuthority, ScreenReport, VisibilityAttempt, WORLD_CONTRACT_VERSION_V4, WindowFact,
+    WorkspaceRef, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 
 struct SimV4 {
@@ -142,37 +142,40 @@ fn build_report_v4(
             suppression_available: None,
             visibility,
             // Correlated visibility verdicts ride the next observation
-            // report only: the recorded target/revision plus the actual
-            // read sampled now (post at this report's observation, post
-            // state from the raw facts above). This lane holds every
-            // write, so the verdict is always the blocked no-call shape,
-            // never an invented write: a hide target cannot read back
-            // hidden while the raw fact stays visible, so it fails
-            // terminally through the common path. Command reports carry
-            // none (same-report raw would guess a future issuing
-            // revision).
-            last_write: if command.is_none() {
-                sim.grants.get(id).map(|(shown, rev)| LastWrite {
-                    property: LastWriteProperty::Visibility,
-                    target: *shown,
-                    revision: *rev,
-                    path: LastWritePath::Staged,
-                    setter: tiler_core::world_report::VisibilitySetter::NotCalled,
-                    reason: tiler_core::world_report::VisibilityReason::ScopeHeld,
-                    pre: None,
-                    post: Some(tiler_core::world_report::VisibilitySample {
-                        obs: sim.obs,
-                        lifetime_matched: Some(true),
-                        visibility,
-                        minimized: Some(false),
-                        host_hidden: Some(false),
-                    }),
-                })
-            } else {
-                None
-            },
         });
     }
+    // Truthful blocked-lane visibility attempts at the observation
+    // report only: the recorded target/revision plus the actual read
+    // sampled now (post at this report's observation, post state from
+    // the raw facts above). Command reports carry none (same-report raw
+    // would guess a future issuing revision).
+    let visibility_attempts = if command.is_none() {
+        windows
+            .iter()
+            .filter_map(|w| {
+                sim.grants
+                    .get(&w.window.0)
+                    .map(|(shown, rev)| VisibilityAttempt {
+                        window: w.window.clone(),
+                        target: *shown,
+                        revision: *rev,
+                        path: LastWritePath::Staged,
+                        setter: tiler_core::world_report::VisibilitySetter::NotCalled,
+                        reason: tiler_core::world_report::VisibilityReason::ScopeHeld,
+                        pre: None,
+                        post: Some(tiler_core::world_report::VisibilitySample {
+                            obs: sim.obs,
+                            lifetime_matched: Some(true),
+                            visibility: w.visibility,
+                            minimized: Some(false),
+                            host_hidden: Some(false),
+                        }),
+                    })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     // No view ingress on the v4 lane: no `views` echo exists on
     // [`WorldReportV4`], and `view_attempts` stays empty (native-only lane,
     // refused without the host-owned capability). Native-free selection
@@ -225,6 +228,7 @@ fn build_report_v4(
         creation_attempts: vec![],
         held_attempts: vec![],
         state_attempts: Vec::new(),
+        visibility_attempts,
         focus_feedback: Vec::new(),
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
 
@@ -1668,7 +1672,7 @@ mod tests {
         // The command report itself proves nothing.
         let cmd_report = &sim.pairs.last().expect("select report").0;
         assert!(
-            cmd_report.windows.iter().all(|w| w.last_write.is_none()),
+            cmd_report.visibility_attempts.is_empty(),
             "no premature verdict on the command report"
         );
         // Probe: a redundant select (no supersession) carries no verdict
@@ -1702,7 +1706,7 @@ mod tests {
             .expect("redundant select");
         let cmd_report = &sim.pairs.last().expect("redundant report").0;
         assert!(
-            cmd_report.windows.iter().all(|w| w.last_write.is_none()),
+            cmd_report.visibility_attempts.is_empty(),
             "commands never carry verdicts"
         );
         assert_eq!(
@@ -1715,16 +1719,14 @@ mod tests {
         submit_receipt_v4(&case, mode, &mut engine, &mut sim, "receipt").expect("receipt");
         let (report, reply) = sim.pairs.last().expect("receipt pair");
         assert_eq!(report.observation_seq, obs_before + 1);
+        assert_eq!(report.visibility_attempts.len(), report.windows.len());
         for window in &report.windows {
             let (shown, rev) = grants_before.get(&window.window.0).expect("spent grant");
-            let last = window
-                .last_write
-                .as_ref()
+            let last = report
+                .visibility_attempts
+                .iter()
+                .find(|att| att.window == window.window)
                 .expect("verdict rides the receipt");
-            assert_eq!(
-                last.property,
-                tiler_core::world_report::LastWriteProperty::Visibility
-            );
             assert_eq!(last.target, *shown);
             assert_eq!(last.revision, *rev);
             assert_eq!(
@@ -1780,7 +1782,7 @@ mod tests {
         .expect("again");
         let (report, reply) = sim.pairs.last().expect("second observation");
         assert!(
-            report.windows.iter().all(|w| w.last_write.is_none()),
+            report.visibility_attempts.is_empty(),
             "spent verdicts are not re-emitted"
         );
         assert_eq!(

@@ -630,7 +630,7 @@ fn v4_reply_decoder_rejects_strict_envelope_violations() {
 fn v4_reply_envelope_ids_match_report_validators() {
     use tiler_protocol::world_protocol::decode_report_v4;
     let reply = fixture_text("messages/reply-bootstrap.json");
-    let report = fixture_text("../v4/messages/report-empty.json");
+    let report = fixture_text("messages/report-empty.json");
     let long_adapter = "a".repeat(129);
     let long_gen = "g".repeat(65);
     let long_req = "r".repeat(129);

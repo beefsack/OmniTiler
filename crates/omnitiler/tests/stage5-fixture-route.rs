@@ -138,20 +138,23 @@ fn clock_settle_ms(chain: &str, replay: &[(&str, String)]) -> u64 {
     for (_envelope, body) in replay {
         let value: serde_json::Value = serde_json::from_str(body).expect("envelope is JSON");
         let report = &value["report"];
-        for lane in [
-            "frameAttempts",
-            "memberAttempts",
-            "viewAttempts",
-            "clearAttempts",
-            "creationAttempts",
-        ] {
-            if let Some(items) = report[lane].as_array() {
-                for item in items {
-                    if let Some(stamp) = item["attemptMs"].as_str()
-                        && let Ok(ms) = stamp.parse::<u64>()
-                    {
-                        max = max.max(ms);
-                    }
+        if let Some(items) = report["propertyAttempts"].as_array() {
+            for item in items {
+                let kind = item["kind"].as_str().unwrap_or("");
+                if matches!(kind, "frame" | "member" | "view" | "clear")
+                    && let Some(stamp) = item["attemptMs"].as_str()
+                    && let Ok(ms) = stamp.parse::<u64>()
+                {
+                    max = max.max(ms);
+                }
+            }
+        }
+        if let Some(items) = report["creationAttempts"].as_array() {
+            for item in items {
+                if let Some(stamp) = item["attemptMs"].as_str()
+                    && let Ok(ms) = stamp.parse::<u64>()
+                {
+                    max = max.max(ms);
                 }
             }
         }

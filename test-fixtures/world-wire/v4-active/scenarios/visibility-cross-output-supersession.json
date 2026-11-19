@@ -188,6 +188,7 @@
             "command": null,
             "complete": false,
             "cursor": null,
+            "propertyAttempts": [],
             "focusFeedback": [],
             "focused": "",
             "foregroundKnown": false,
@@ -215,7 +216,6 @@
             "req": "apply-1",
             "reqSeq": "1",
             "screens": [],
-            "stateAttempts": [],
             "v": 4,
             "windows": []
           }
@@ -648,6 +648,7 @@
             "command": null,
             "complete": false,
             "cursor": null,
+            "propertyAttempts": [],
             "focusFeedback": [],
             "focused": "",
             "foregroundKnown": false,
@@ -675,7 +676,6 @@
             "req": "apply-2",
             "reqSeq": "2",
             "screens": [],
-            "stateAttempts": [],
             "v": 4,
             "windows": []
           }
@@ -1138,6 +1138,7 @@
             "command": null,
             "complete": false,
             "cursor": null,
+            "propertyAttempts": [],
             "focusFeedback": [],
             "focused": "",
             "foregroundKnown": false,
@@ -1165,7 +1166,6 @@
             "req": "apply-3",
             "reqSeq": "3",
             "screens": [],
-            "stateAttempts": [],
             "v": 4,
             "windows": []
           }
@@ -1559,6 +1559,7 @@
             "command": null,
             "complete": false,
             "cursor": null,
+            "propertyAttempts": [],
             "focusFeedback": [],
             "focused": "",
             "foregroundKnown": false,
@@ -1586,7 +1587,6 @@
             "req": "apply-4",
             "reqSeq": "4",
             "screens": [],
-            "stateAttempts": [],
             "v": 4,
             "windows": []
           }
@@ -1980,6 +1980,7 @@
             "command": null,
             "complete": false,
             "cursor": null,
+            "propertyAttempts": [],
             "focusFeedback": [],
             "focused": "",
             "foregroundKnown": false,
@@ -2007,7 +2008,6 @@
             "req": "apply-5",
             "reqSeq": "5",
             "screens": [],
-            "stateAttempts": [],
             "v": 4,
             "windows": []
           }
@@ -2461,6 +2461,7 @@
             "command": null,
             "complete": false,
             "cursor": null,
+            "propertyAttempts": [],
             "focusFeedback": [],
             "focused": "",
             "foregroundKnown": false,
@@ -2488,7 +2489,6 @@
             "req": "apply-6",
             "reqSeq": "6",
             "screens": [],
-            "stateAttempts": [],
             "v": 4,
             "windows": []
           }

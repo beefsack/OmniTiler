@@ -60,6 +60,7 @@ fn report_v4(
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
+        visibility_attempts: Vec::new(),
         focus_feedback: Vec::new(),
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
@@ -90,7 +91,6 @@ fn held_window(window: &str, output: Option<&str>) -> HeldWindowRow {
         ordinal: 0,
         output: output.map(|out| OutputId(out.to_owned())),
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }
@@ -911,7 +911,6 @@ fn v4_state_offroute_scope_precedence_and_unresolved() {
         ordinal: 0,
         output: Some(OutputId("out-b".to_owned())),
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::ConflictingFact,
     };
@@ -940,7 +939,6 @@ fn v4_state_offroute_scope_precedence_and_unresolved() {
         ordinal: 0,
         output: Some(OutputId("out-b".to_owned())),
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     };

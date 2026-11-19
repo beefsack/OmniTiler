@@ -397,7 +397,6 @@ fn output_less_held_row_resolves_retained_home_hold() {
         ordinal: 0,
         output: None,
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];

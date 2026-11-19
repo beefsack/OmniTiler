@@ -368,7 +368,7 @@ describe("v4 inner report shape", () => {
             "foregroundKnown",
             "complete", "gesture", "cursor", "actionForeground",
             "actionCached", "actionOutputs", "presentation",
-            "intentRecords", "stateAttempts", "focusFeedback",
+            "intentRecords", "propertyAttempts", "focusFeedback",
             "rendererInput", "nativeGesture", "cursorWindow", "cursorHit",
             "nativeInvalidWitness",
         ]);
@@ -380,7 +380,7 @@ describe("v4 inner report shape", () => {
             "refill", "defaultTiled", "switchTarget", "freshPlacement", "focusFollowsCursor", "cursorWarp",
             "anchorFallback", "noSpaceResult", "bornMaximized", "floatIntent", "tileIntent",
             "primary", "monotonicMs", "gestureIngress",
-            "frameAttempts", "memberAttempts", "viewAttempts", "clearAttempts", "creationAttempts"]) {
+            "frameAttempts", "memberAttempts", "viewAttempts", "clearAttempts", "stateAttempts", "creationAttempts"]) {
             assert.ok(!(retired in value), `retired/optional ${retired} must be absent`);
         }
         assert.equal(value["cursorWindow"], "win-a", "raw windowAt fact rides");
@@ -400,7 +400,7 @@ describe("v4 inner report shape", () => {
             "owner", "parent", "role", "appId", "executable", "processId",
             "class", "title", "type", "activationPolicy", "layer",
             "fullscreenOwner", "fullscreenExitable", "suppressionAvailable",
-            "visibility", "lastWrite",
+            "visibility",
         ]);
         assert.deepEqual(row["rect"], [8, 9, 800, 600]);
         assert.deepEqual(row["hints"], { minW: 104, minH: 122, maxW: 2147483647, maxH: 2147483647 });
@@ -415,7 +415,7 @@ describe("v4 inner report shape", () => {
         assert.equal(row["resizable"], true);
         for (const key of ["privileged", "activationInhibited", "toolWindow", "owned",
             "executable", "activationPolicy", "layer", "fullscreenOwner",
-            "fullscreenExitable", "owner", "parent", "lastWrite"]) {
+            "fullscreenExitable", "owner", "parent"]) {
             assert.equal(row[key], null, `${key} must ride null`);
         }
         assert.equal(row["suppressionAvailable"], false);
@@ -621,10 +621,11 @@ describe("v4 frame attempt lane", () => {
     it("encodes an ordinary accepted write with empty op and present readback", () => {
         const { json, value } = buildWithFrames([ordinary()]);
         assert.ok(json !== null, "ordinary accepted row must encode");
-        const rows = (value as Record<string, unknown>)["frameAttempts"] as Array<Record<string, unknown>>;
+        const rows = ((value as Record<string, unknown>)["propertyAttempts"] as Array<Record<string, unknown>>)
+            .filter((r) => r["kind"] === "frame");
         assert.equal(rows.length, 1);
         assert.deepEqual(Object.keys(rows[0] as Record<string, unknown>), [
-            "win", "target", "setter", "readback",
+            "kind", "win", "target", "setter", "readback",
             "dpiBefore", "dpiAfter", "attemptMs", "op", "pre",
         ]);
         assert.equal(rows[0]?.["op"], "");
@@ -635,7 +636,8 @@ describe("v4 frame attempt lane", () => {
     it("encodes an ordinary refused write with null readback and null pre", () => {
         const { json, value } = buildWithFrames([ordinary({ setter: "refused", readback: null })]);
         assert.ok(json !== null, "ordinary refused row with unreadable readback must encode");
-        const rows = (value as Record<string, unknown>)["frameAttempts"] as Array<Record<string, unknown>>;
+        const rows = ((value as Record<string, unknown>)["propertyAttempts"] as Array<Record<string, unknown>>)
+            .filter((r) => r["kind"] === "frame");
         assert.equal(rows[0]?.["readback"], null);
         assert.equal(rows[0]?.["op"], "");
         assert.equal(rows[0]?.["pre"], null);
@@ -644,7 +646,8 @@ describe("v4 frame attempt lane", () => {
     it("encodes an explicit float placement under its retained operation id", () => {
         const { json, value } = buildWithFrames([ordinary({ op: "op-1", pre: [3, 3, 11, 11] })]);
         assert.ok(json !== null, "explicit placement row must encode");
-        const rows = (value as Record<string, unknown>)["frameAttempts"] as Array<Record<string, unknown>>;
+        const rows = ((value as Record<string, unknown>)["propertyAttempts"] as Array<Record<string, unknown>>)
+            .filter((r) => r["kind"] === "frame");
         assert.equal(rows[0]?.["op"], "op-1");
         assert.deepEqual(rows[0]?.["pre"], [3, 3, 11, 11]);
     });
@@ -720,10 +723,11 @@ describe("v4 member/view attempt lanes", () => {
     it("encodes native member evidence in canonical key order without sidecars", () => {
         const { json, value } = buildWithAttempts([member()], []);
         assert.ok(json !== null, "native member row must encode");
-        const rows = (value as Record<string, unknown>)["memberAttempts"] as Array<Record<string, unknown>>;
+        const rows = ((value as Record<string, unknown>)["propertyAttempts"] as Array<Record<string, unknown>>)
+            .filter((r) => r["kind"] === "member");
         assert.equal(rows.length, 1);
         assert.deepEqual(Object.keys(rows[0] as Record<string, unknown>), [
-            "op", "win", "out", "ws", "setter", "pre", "post", "attemptMs",
+            "kind", "op", "win", "out", "ws", "setter", "pre", "post", "attemptMs",
         ]);
         // The cross-output preimage keeps its source output, never the target.
         assert.ok(json.includes('"pre":{"kind":"native","out":"out-1","ws":"d1"}'), "pre ref spells kind/out/ws");
@@ -747,10 +751,11 @@ describe("v4 member/view attempt lanes", () => {
     it("encodes a native view row with pre/post/base and no sidecars", () => {
         const { json, value } = buildWithAttempts([], [view()]);
         assert.ok(json !== null, "native view row must encode");
-        const rows = (value as Record<string, unknown>)["viewAttempts"] as Array<Record<string, unknown>>;
+        const rows = ((value as Record<string, unknown>)["propertyAttempts"] as Array<Record<string, unknown>>)
+            .filter((r) => r["kind"] === "view");
         assert.equal(rows.length, 1);
         assert.deepEqual(Object.keys(rows[0] as Record<string, unknown>), [
-            "op", "out", "ws", "setter", "pre", "post", "base", "attemptMs",
+            "kind", "op", "out", "ws", "setter", "pre", "post", "base", "attemptMs",
         ]);
         assert.ok(json.includes('"base":{"kind":"native","out":"out-2","ws":"d1"}'), "baseline spells kind/out/ws");
         for (const sidecar of ["nativePre", "nativePost", "nativeBase"]) {
@@ -764,8 +769,9 @@ describe("v4 member/view attempt lanes", () => {
             [view({ pre: null, post: null, base: null })],
         );
         assert.ok(json !== null, "null-evidence rows must encode");
-        const members = (value as Record<string, unknown>)["memberAttempts"] as Array<Record<string, unknown>>;
-        const views = (value as Record<string, unknown>)["viewAttempts"] as Array<Record<string, unknown>>;
+        const propRows = (value as Record<string, unknown>)["propertyAttempts"] as Array<Record<string, unknown>>;
+        const members = propRows.filter((r) => r["kind"] === "member");
+        const views = propRows.filter((r) => r["kind"] === "view");
         assert.equal(members[0]?.["pre"], null);
         assert.equal(members[0]?.["post"], null);
         assert.equal(views[0]?.["pre"], null);

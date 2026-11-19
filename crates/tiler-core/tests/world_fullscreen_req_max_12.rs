@@ -88,7 +88,6 @@ fn host_fact(
             visible: Some(true),
             suppression_owned: None,
         },
-        last_write: None,
     }
 }
 
@@ -133,7 +132,6 @@ fn native_free_fact(window: &str, output: &str, frame: Rect, fullscreen: bool) -
             visible: Some(true),
             suppression_owned: Some(false),
         },
-        last_write: None,
     }
 }
 
@@ -196,6 +194,7 @@ fn build_report(
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
+        visibility_attempts: Vec::new(),
         focus_feedback: Vec::new(),
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),

@@ -25,7 +25,8 @@ use tiler_protocol::world_protocol::{
 };
 
 fn fixture_root() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/world-wire/v4")
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/world-wire/v4-active")
 }
 
 #[derive(serde::Deserialize)]
@@ -208,7 +209,6 @@ const WINDOW_SCHEMA: &[&str] = &[
     "fullscreenExitable",
     "suppressionAvailable",
     "visibility",
-    "lastWrite",
 ];
 
 #[test]
@@ -392,8 +392,9 @@ fn v4_structural_held_rows_accept_with_exact_retention() {
             "windows" => assert_window_hold(&decoded, &doc, &invalid, fixture),
             "native" => assert_native_hold(&decoded, &doc, &invalid, fixture),
             "presentation" => assert_presentation_hold(&decoded, &doc, &invalid, fixture),
-            "frameAttempts" | "memberAttempts" | "viewAttempts" | "clearAttempts"
-            | "creationAttempts" => assert_attempt_hold(&decoded, &doc, &invalid, fixture),
+            "propertyAttempts" | "creationAttempts" => {
+                assert_attempt_hold(&decoded, &doc, &invalid, fixture)
+            }
             other => panic!("{} unexpected held lane {other}", fixture.id),
         }
     }
@@ -516,15 +517,11 @@ fn assert_window_hold(
                     &["minW", "minH", "maxW", "maxH"],
                 ));
             }
-        } else if key == "visibility" {
-            if let RawSettingValue::Object(entries) = value.clone() {
-                *value = RawSettingValue::Object(order_object(
-                    entries,
-                    &["visible", "suppressionOwned"],
-                ));
-            }
-        } else if key == "lastWrite" {
-            order_last_write(value);
+        } else if key == "visibility"
+            && let RawSettingValue::Object(entries) = value.clone()
+        {
+            *value =
+                RawSettingValue::Object(order_object(entries, &["visible", "suppressionOwned"]));
         }
     }
     let fields = decoded
@@ -546,7 +543,7 @@ fn assert_window_hold(
     );
 }
 
-fn order_last_write(value: &mut RawSettingValue) {
+fn order_last_write_sample(value: &mut RawSettingValue) {
     const SAMPLE_ORDER: &[&str] = &[
         "obs",
         "lifetimeMatched",
@@ -555,27 +552,15 @@ fn order_last_write(value: &mut RawSettingValue) {
         "hostHidden",
     ];
     const VISIBILITY_ORDER: &[&str] = &["visible", "suppressionOwned"];
-    const LAST_WRITE_ORDER: &[&str] = &[
-        "property", "target", "revision", "path", "setter", "reason", "pre", "post",
-    ];
-    let RawSettingValue::Object(entries) = value else {
-        return;
-    };
-    let taken = std::mem::take(entries);
-    *entries = order_object(taken, LAST_WRITE_ORDER);
-    for (key, item) in entries.iter_mut() {
-        if (key == "pre" || key == "post")
-            && let RawSettingValue::Object(sample) = item
-        {
-            let taken = std::mem::take(sample);
-            *sample = order_object(taken, SAMPLE_ORDER);
-            for (sub_key, sub_value) in sample.iter_mut() {
-                if sub_key == "visibility"
-                    && let RawSettingValue::Object(visibility) = sub_value
-                {
-                    let taken = std::mem::take(visibility);
-                    *visibility = order_object(taken, VISIBILITY_ORDER);
-                }
+    if let RawSettingValue::Object(sample) = value {
+        let taken = std::mem::take(sample);
+        *sample = order_object(taken, SAMPLE_ORDER);
+        for (sub_key, sub_value) in sample.iter_mut() {
+            if sub_key == "visibility"
+                && let RawSettingValue::Object(visibility) = sub_value
+            {
+                let taken = std::mem::take(visibility);
+                *visibility = order_object(taken, VISIBILITY_ORDER);
             }
         }
     }
@@ -637,6 +622,7 @@ fn assert_native_hold(
 fn attempt_schema(lane: AttemptLaneV4) -> &'static [&'static str] {
     match lane {
         AttemptLaneV4::Frame => &[
+            "kind",
             "win",
             "target",
             "setter",
@@ -648,6 +634,7 @@ fn attempt_schema(lane: AttemptLaneV4) -> &'static [&'static str] {
             "pre",
         ],
         AttemptLaneV4::Member => &[
+            "kind",
             "op",
             "win",
             "out",
@@ -658,6 +645,7 @@ fn attempt_schema(lane: AttemptLaneV4) -> &'static [&'static str] {
             "attemptMs",
         ],
         AttemptLaneV4::View => &[
+            "kind",
             "op",
             "out",
             "ws",
@@ -667,7 +655,21 @@ fn attempt_schema(lane: AttemptLaneV4) -> &'static [&'static str] {
             "base",
             "attemptMs",
         ],
-        AttemptLaneV4::Clear => &["op", "win", "setter", "pre", "post", "attemptMs"],
+        AttemptLaneV4::Clear => &["kind", "op", "win", "setter", "pre", "post", "attemptMs"],
+        AttemptLaneV4::State => &[
+            "kind",
+            "win",
+            "property",
+            "target",
+            "rev",
+            "setter",
+            "pre",
+            "post",
+            "attemptMs",
+        ],
+        AttemptLaneV4::Visibility => &[
+            "kind", "win", "target", "revision", "path", "setter", "reason", "pre", "post",
+        ],
         AttemptLaneV4::Creation => &[
             "op",
             "ws",
@@ -681,12 +683,21 @@ fn attempt_schema(lane: AttemptLaneV4) -> &'static [&'static str] {
     }
 }
 
-fn lane_key(lane: &str) -> (&'static str, AttemptLaneV4) {
+fn lane_key(lane: &str, row: &serde_json::Value) -> (&'static str, AttemptLaneV4) {
     match lane {
-        "frameAttempts" => ("frameAttempts", AttemptLaneV4::Frame),
-        "memberAttempts" => ("memberAttempts", AttemptLaneV4::Member),
-        "viewAttempts" => ("viewAttempts", AttemptLaneV4::View),
-        "clearAttempts" => ("clearAttempts", AttemptLaneV4::Clear),
+        "propertyAttempts" => {
+            let kind = row.get("kind").and_then(|v| v.as_str()).expect("kind");
+            let attempt_lane = match kind {
+                "frame" => AttemptLaneV4::Frame,
+                "member" => AttemptLaneV4::Member,
+                "view" => AttemptLaneV4::View,
+                "clear" => AttemptLaneV4::Clear,
+                "state" => AttemptLaneV4::State,
+                "visibility" => AttemptLaneV4::Visibility,
+                other => panic!("unexpected propertyAttempts kind {other}"),
+            };
+            ("propertyAttempts", attempt_lane)
+        }
         "creationAttempts" => ("creationAttempts", AttemptLaneV4::Creation),
         other => panic!("unexpected attempt lane {other}"),
     }
@@ -700,7 +711,6 @@ fn assert_attempt_hold(
 ) {
     let report = &decoded.report;
     let lane_name = invalid.pointer.split('/').nth(1).expect("lane");
-    let (array_key, lane) = lane_key(lane_name);
     let ordinal: usize = invalid
         .pointer
         .split('/')
@@ -708,6 +718,12 @@ fn assert_attempt_hold(
         .expect("ordinal")
         .parse()
         .expect("usize");
+    let array_key_raw = if lane_name == "propertyAttempts" {
+        "propertyAttempts"
+    } else {
+        lane_name
+    };
+    let (array_key, lane) = lane_key(lane_name, &doc[array_key_raw][ordinal]);
     assert_eq!(report.held_attempts.len(), 1, "{}", fixture.id);
     let held = &report.held_attempts[0];
     assert_eq!(held.lane, lane, "{}", fixture.id);
@@ -746,7 +762,14 @@ fn assert_attempt_hold(
         (None, _) => {}
         (Some(_), None) => panic!("{} attempt diagnostic without output", fixture.id),
     }
-    let expected = expected_fields(row, attempt_schema(lane));
+    let mut expected = expected_fields(row, attempt_schema(lane));
+    if lane == AttemptLaneV4::Visibility {
+        for (key, value) in expected.iter_mut() {
+            if key == "pre" || key == "post" {
+                order_last_write_sample(value);
+            }
+        }
+    }
     let fields = decoded
         .residual
         .as_deref()
@@ -1280,8 +1303,8 @@ fn v4_decoder_enforces_cross_row_structural_gates() {
 
     // Duplicate frame identities refuse.
     let mut doc = fixture_value("messages/report-attempt-frame-ordinary.json");
-    let row = doc["frameAttempts"][0].clone();
-    doc["frameAttempts"]
+    let row = doc["propertyAttempts"][0].clone();
+    doc["propertyAttempts"]
         .as_array_mut()
         .expect("array")
         .push(row);
@@ -1294,6 +1317,7 @@ fn v4_decoder_enforces_cross_row_structural_gates() {
 
 fn frame_attempt_row(win: usize, held: bool) -> serde_json::Value {
     let mut row = serde_json::json!({
+        "kind": "frame",
         "win": format!("win-{win:05}"),
         "target": [8, 8, 800, 600],
         "setter": "accepted",
@@ -1332,6 +1356,7 @@ fn creation_attempt_row(op: usize, held: bool) -> serde_json::Value {
 
 fn member_attempt_row(i: usize, held: bool) -> serde_json::Value {
     let mut row = serde_json::json!({
+        "kind": "member",
         "op": format!("transfer-{i:05}"),
         "win": format!("win-{i:05}"),
         "out": "out-a",
@@ -1351,6 +1376,7 @@ fn member_attempt_row(i: usize, held: bool) -> serde_json::Value {
 
 fn view_attempt_row(i: usize, held: bool) -> serde_json::Value {
     let mut row = serde_json::json!({
+        "kind": "view",
         "op": format!("view-{i:05}"),
         "out": "out-a",
         "ws": "ws-a",
@@ -1370,12 +1396,47 @@ fn view_attempt_row(i: usize, held: bool) -> serde_json::Value {
 
 fn clear_attempt_row(i: usize, held: bool) -> serde_json::Value {
     let mut row = serde_json::json!({
+        "kind": "clear",
         "op": format!("clear-{i:05}"),
         "win": format!("win-{i:05}"),
         "setter": "refused",
         "pre": true,
         "post": true,
         "attemptMs": "20",
+    });
+    if held {
+        row.as_object_mut()
+            .expect("object")
+            .insert("zzzExtra".to_owned(), serde_json::Value::Bool(true));
+    }
+    row
+}
+
+fn state_attempt_row(i: usize) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "state",
+        "win": format!("state-{i:05}"),
+        "property": "fullscreen",
+        "target": true,
+        "rev": "1",
+        "setter": "accepted",
+        "pre": false,
+        "post": true,
+        "attemptMs": "20",
+    })
+}
+
+fn visibility_attempt_row(i: usize, held: bool) -> serde_json::Value {
+    let mut row = serde_json::json!({
+        "kind": "visibility",
+        "win": format!("vis-{i:05}"),
+        "target": i.is_multiple_of(2),
+        "revision": "1",
+        "path": "staged",
+        "setter": "accepted",
+        "reason": "",
+        "pre": null,
+        "post": null,
     });
     if held {
         row.as_object_mut()
@@ -1395,7 +1456,7 @@ fn v4_attempt_section_caps_count_held_rows() {
     let mut doc = fixture_value("messages/report-attempt-frame-ordinary.json");
     set_lane(
         &mut doc,
-        "frameAttempts",
+        "propertyAttempts",
         (0..1024)
             .map(|i| frame_attempt_row(i, i % 2 == 0))
             .collect(),
@@ -1415,7 +1476,7 @@ fn v4_attempt_section_caps_count_held_rows() {
     let mut doc = fixture_value("messages/report-attempt-frame-ordinary.json");
     set_lane(
         &mut doc,
-        "frameAttempts",
+        "propertyAttempts",
         (0..1025)
             .map(|i| frame_attempt_row(i, i % 2 == 0))
             .collect(),
@@ -1427,7 +1488,7 @@ fn v4_attempt_section_caps_count_held_rows() {
     let mut doc = fixture_value("messages/report-attempt-frame-ordinary.json");
     set_lane(
         &mut doc,
-        "frameAttempts",
+        "propertyAttempts",
         (0..1025).map(|i| frame_attempt_row(i, true)).collect(),
     );
     let error = decode_report_v4(&doc.to_string()).expect_err("frame all-held cap+1 refuses");
@@ -1474,7 +1535,7 @@ fn v4_attempt_section_caps_count_held_rows() {
     let mut doc = fixture_value("messages/report-attempt-member-native.json");
     set_lane(
         &mut doc,
-        "memberAttempts",
+        "propertyAttempts",
         (0..1025)
             .map(|i| member_attempt_row(i, i % 2 == 0))
             .collect(),
@@ -1485,7 +1546,7 @@ fn v4_attempt_section_caps_count_held_rows() {
     let mut doc = fixture_value("messages/report-attempt-view-native.json");
     set_lane(
         &mut doc,
-        "viewAttempts",
+        "propertyAttempts",
         (0..1025).map(|i| view_attempt_row(i, i % 2 == 0)).collect(),
     );
     let error = decode_report_v4(&doc.to_string()).expect_err("view cap+1 refuses");
@@ -1494,12 +1555,114 @@ fn v4_attempt_section_caps_count_held_rows() {
     let mut doc = fixture_value("messages/report-attempt-clear.json");
     set_lane(
         &mut doc,
-        "clearAttempts",
+        "propertyAttempts",
         (0..1025)
             .map(|i| clear_attempt_row(i, i % 2 == 0))
             .collect(),
     );
     let error = decode_report_v4(&doc.to_string()).expect_err("clear cap+1 refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "section-over-cap");
+}
+
+#[test]
+fn v4_visibility_attempt_cap_10000_accepts_mixed_and_10001_refuses() {
+    let mut doc = fixture_value("messages/report-attempt-frame-ordinary.json");
+    set_lane(
+        &mut doc,
+        "propertyAttempts",
+        (0..10_000)
+            .map(|i| visibility_attempt_row(i, i % 2 == 0))
+            .collect(),
+    );
+    let wire = doc.to_string();
+    assert!(wire.len() < tiler_protocol::world_protocol::WORLD_MAX_REQUEST_BYTES);
+    let decoded = decode_report_v4(&wire).expect("visibility at-cap decodes");
+    assert_eq!(decoded.report.visibility_attempts.len(), 5_000);
+    assert_eq!(decoded.report.visibility_attempts[0].window.0, "vis-00001");
+    assert_eq!(
+        decoded.report.visibility_attempts[4_999].window.0,
+        "vis-09999"
+    );
+    let held_vis: Vec<_> = decoded
+        .report
+        .held_attempts
+        .iter()
+        .filter(|held| held.lane == AttemptLaneV4::Visibility)
+        .collect();
+    assert_eq!(held_vis.len(), 5_000);
+    assert_eq!(held_vis[0].identity, vec!["vis-00000".to_owned()]);
+    assert_eq!(held_vis[4_999].identity, vec!["vis-09998".to_owned()]);
+
+    let mut doc = fixture_value("messages/report-attempt-frame-ordinary.json");
+    set_lane(
+        &mut doc,
+        "propertyAttempts",
+        (0..10_001)
+            .map(|i| visibility_attempt_row(i, i % 2 == 0))
+            .collect(),
+    );
+    let wire = doc.to_string();
+    assert!(wire.len() < tiler_protocol::world_protocol::WORLD_MAX_REQUEST_BYTES);
+    let error = decode_report_v4(&wire).expect_err("visibility cap+1 refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "section-over-cap");
+
+    let mut doc = fixture_value("messages/report-attempt-frame-ordinary.json");
+    set_lane(
+        &mut doc,
+        "propertyAttempts",
+        (0..10_001)
+            .map(|i| visibility_attempt_row(i, true))
+            .collect(),
+    );
+    let wire = doc.to_string();
+    assert!(wire.len() < tiler_protocol::world_protocol::WORLD_MAX_REQUEST_BYTES);
+    let error = decode_report_v4(&wire).expect_err("visibility all-held cap+1 refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "section-over-cap");
+}
+
+#[test]
+fn v4_unified_property_attempts_total_cap_15120_and_15121() {
+    let mut rows = Vec::with_capacity(15_121);
+    rows.extend((0..1024).map(|i| frame_attempt_row(i, false)));
+    rows.extend((0..1024).map(|i| member_attempt_row(i, false)));
+    rows.extend((0..1024).map(|i| view_attempt_row(i, false)));
+    rows.extend((0..1024).map(|i| clear_attempt_row(i, false)));
+    rows.extend((0..1024).map(state_attempt_row));
+    rows.extend((0..10_000).map(|i| visibility_attempt_row(i, false)));
+
+    let mut doc = fixture_value("messages/report-attempt-frame-ordinary.json");
+    set_lane(&mut doc, "propertyAttempts", rows.clone());
+    let wire = doc.to_string();
+    assert!(wire.len() < tiler_protocol::world_protocol::WORLD_MAX_REQUEST_BYTES);
+    let decoded = decode_report_v4(&wire).expect("unified propertyAttempts at-cap decodes");
+    assert_eq!(decoded.report.frames.len(), 1024);
+    assert_eq!(decoded.report.member_attempts.len(), 1024);
+    assert_eq!(decoded.report.view_attempts.len(), 1024);
+    assert_eq!(decoded.report.clear_attempts.len(), 1024);
+    assert_eq!(decoded.report.state_attempts.len(), 1024);
+    assert_eq!(decoded.report.visibility_attempts.len(), 10_000);
+
+    // Earlier-precedence discriminator: a malformed frame row with a valid
+    // kind tag fails before later per-kind caps when total <= 15120, but
+    // 15121 refuses immediately at the initial total cap.
+    rows[0] = serde_json::json!({"kind": "frame"});
+    let mut doc = fixture_value("messages/report-attempt-frame-ordinary.json");
+    set_lane(&mut doc, "propertyAttempts", rows.clone());
+    let wire = doc.to_string();
+    assert!(wire.len() < tiler_protocol::world_protocol::WORLD_MAX_REQUEST_BYTES);
+    let error = decode_report_v4(&wire).expect_err("15120 with malformed frame refuses");
+    assert_eq!(error.kind, "malformed");
+    assert_eq!(error.message, "request is malformed");
+
+    rows.push(visibility_attempt_row(10_000, false));
+    let mut doc = fixture_value("messages/report-attempt-frame-ordinary.json");
+    set_lane(&mut doc, "propertyAttempts", rows);
+    let wire = doc.to_string();
+    assert!(wire.len() < tiler_protocol::world_protocol::WORLD_MAX_REQUEST_BYTES);
+    let error = decode_report_v4(&wire).expect_err("unified propertyAttempts cap+1 refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "section-over-cap");
 }
@@ -2085,9 +2248,9 @@ fn v4_writer_refuses_inconsistent_metadata() {
     let error = encode_report_v4(&decoded).expect_err("presence without ingress refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "gesture-ingress-inconsistent");
-    // Carried attempt rows need their lane; a nonzero clock needs its key.
-    let mut decoded = decode_ok("messages/report-attempt-frame-ordinary.json");
-    decoded.wire.frame_attempts_present = false;
+    // Carried creation attempt rows need their lane; a nonzero clock needs its key.
+    let mut decoded = decode_ok("messages/report-attempt-creation-id.json");
+    decoded.wire.creation_attempts_present = false;
     let error = encode_report_v4(&decoded).expect_err("lane without key refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "attempt-lane-inconsistent");
@@ -2279,15 +2442,11 @@ fn v4_writer_primary_key_order_follows_contract() {
         "presentation",
         "cursorHit",
         "monotonicMs",
-        "frameAttempts",
-        "memberAttempts",
-        "viewAttempts",
-        "clearAttempts",
         "creationAttempts",
         "gestureIngress",
         "primary",
         "intentRecords",
-        "stateAttempts",
+        "propertyAttempts",
         "focusFeedback",
         "rendererInput",
     ]
@@ -2416,4 +2575,434 @@ fn v4_typed_core_command_wire_gates() {
             }))
         );
     }
+}
+
+#[test]
+fn v4_rejects_legacy_last_write_grammar() {
+    let mut isolated_null = fixture_value("messages/report-observe.json");
+    isolated_null["windows"][0]["lastWrite"] = serde_json::Value::Null;
+    let err = decode_report_v4(&isolated_null.to_string())
+        .expect_err("isolated lastWrite:null must reject");
+    assert_eq!(err.kind, "unknown-field");
+    assert_eq!(err.message, "request contains an unknown field");
+
+    let mut isolated_obj = fixture_value("messages/report-observe.json");
+    isolated_obj["windows"][0]["lastWrite"] = serde_json::json!({
+        "property": "visibility",
+        "target": true,
+        "revision": "1",
+        "path": "staged",
+        "setter": "accepted",
+        "reason": "",
+        "pre": null,
+        "post": null
+    });
+    let err = decode_report_v4(&isolated_obj.to_string())
+        .expect_err("isolated lastWrite object must reject");
+    assert_eq!(err.kind, "unknown-field");
+    assert_eq!(err.message, "request contains an unknown field");
+}
+
+#[test]
+fn v4_cross_section_and_kind_refusal_precedence() {
+    let bad_vis = serde_json::json!({
+        "kind": "visibility",
+        "win": "bad id!",
+        "target": true,
+        "revision": "1",
+        "path": "staged",
+        "setter": "accepted",
+        "reason": "",
+        "pre": null,
+        "post": null
+    });
+    let bad_state = serde_json::json!({
+        "kind": "state",
+        "win": "win-a",
+        "property": "fullscreen",
+        "target": true,
+        "rev": "1",
+        "setter": "accepted",
+        "pre": false
+        // missing "post" and "attemptMs" -> malformed
+    });
+    let bad_creation = serde_json::json!({
+        "op": "bad id!",
+        "ws": "ws-1",
+        "out": "out-a",
+        "setter": "accepted",
+        "before": [],
+        "after": [],
+        "created": null,
+        "attemptMs": "1"
+    });
+
+    // 1. Creation error ("unknown-value") beats state ("malformed") and visibility errors.
+    let mut creation_vs_state = fixture_value("messages/report-empty.json");
+    creation_vs_state["propertyAttempts"] = serde_json::json!([bad_vis, bad_state]);
+    creation_vs_state["creationAttempts"] = serde_json::json!([bad_creation]);
+    let err = decode_report_v4(&creation_vs_state.to_string())
+        .expect_err("creation error must beat state/visibility");
+    assert_eq!(err.kind, "unknown-value");
+
+    // 2. State error beats visibility error in either producer order.
+    for order in [vec![&bad_vis, &bad_state], vec![&bad_state, &bad_vis]] {
+        let mut state_vs_vis = fixture_value("messages/report-empty.json");
+        state_vs_vis["propertyAttempts"] = serde_json::json!(order);
+        let err = decode_report_v4(&state_vs_vis.to_string())
+            .expect_err("state error must beat visibility");
+        assert_eq!(err.kind, "malformed");
+    }
+
+    // 3. Within-kind producer order: first hard error wins.
+    let mut missing_win_vis = bad_vis.clone();
+    missing_win_vis.as_object_mut().unwrap().remove("win");
+    let mut vis_a = fixture_value("messages/report-empty.json");
+    vis_a["propertyAttempts"] = serde_json::json!([missing_win_vis, bad_vis]);
+    assert_eq!(
+        decode_report_v4(&vis_a.to_string()).unwrap_err().kind,
+        "malformed"
+    );
+    let mut vis_b = fixture_value("messages/report-empty.json");
+    vis_b["propertyAttempts"] = serde_json::json!([bad_vis, missing_win_vis]);
+    assert_eq!(
+        decode_report_v4(&vis_b.to_string()).unwrap_err().kind,
+        "unknown-value"
+    );
+}
+
+#[test]
+fn v4_visibility_attempt_discriminators() {
+    use tiler_core::directional::WindowId;
+    use tiler_core::world_engine::WorldEngine;
+    use tiler_core::world_report::{AttemptLaneV4, HoldReason, RowDiagnosticLane, ScopeAuthority};
+    use tiler_protocol::connection_protocol::{decode_handshake_request, decode_settings};
+
+    let scenario_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/world-wire/v4-active/scenarios/visibility-order-failure.json");
+    let scenario: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(scenario_path).expect("scenario"))
+            .expect("scenario json");
+    let msg_of = |id: &str| {
+        scenario["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id)
+            .unwrap()["input"]["message"]
+            .clone()
+    };
+
+    let sample_vis = |visible: bool, suppression_owned: bool| {
+        serde_json::json!({
+            "obs": "1",
+            "lifetimeMatched": true,
+            "visibility": {
+                "visible": visible,
+                "suppressionOwned": suppression_owned
+            },
+            "minimized": false,
+            "hostHidden": false
+        })
+    };
+    let gradeable_vis = |win: &str, target: bool| {
+        serde_json::json!({
+            "kind": "visibility",
+            "win": win,
+            "target": target,
+            "revision": "1",
+            "path": "staged",
+            "setter": "accepted",
+            "reason": "",
+            "pre": sample_vis(!target, target),
+            "post": sample_vis(target, !target)
+        })
+    };
+
+    let make_engine = || {
+        let mut engine = WorldEngine::new("generation-a").expect("engine");
+        engine.handshake(&decode_handshake_request(&msg_of("handshake").to_string()).expect("hs"));
+        engine
+            .handle_settings(&decode_settings(&msg_of("settings").to_string()).expect("st"))
+            .expect("settings");
+        engine
+    };
+
+    // Build a 2-output report based on accounting-admit:
+    // - out-a: win-b (ws-1) and win-c (ws-2) on the SAME output
+    // - out-b: win-a (held window via activationPolicy="bogus")
+    let mut base_doc = msg_of("accounting-admit");
+    let mut screen_a = base_doc["screens"][0].clone();
+    screen_a["out"] = serde_json::json!("out-a");
+    let mut screen_b = screen_a.clone();
+    screen_b["out"] = serde_json::json!("out-b");
+    screen_b["full"] = serde_json::json!([1920, 0, 1920, 1080]);
+    screen_b["work"] = serde_json::json!([1920, 0, 1920, 1040]);
+    screen_b["identity"]["serial"] = serde_json::json!("serial-b");
+    screen_b["identity"]["connector"] = serde_json::json!("connector-b");
+    base_doc["screens"] = serde_json::json!([screen_a, screen_b]);
+    base_doc["actionOutputs"] = serde_json::json!(["out-a", "out-b"]);
+
+    let win_proto = base_doc["windows"][0].clone();
+    let mut win_a = win_proto.clone();
+    win_a["win"] = serde_json::json!("win-a");
+    win_a["out"] = serde_json::json!("out-b");
+    win_a["rect"] = serde_json::json!([1928, 8, 800, 600]);
+    win_a["activationPolicy"] = serde_json::json!("regular");
+    let mut win_b = win_proto.clone();
+    win_b["win"] = serde_json::json!("win-b");
+    win_b["out"] = serde_json::json!("out-a");
+    let mut win_c = win_proto;
+    win_c["win"] = serde_json::json!("win-c");
+    win_c["out"] = serde_json::json!("out-a");
+
+    base_doc["windows"] = serde_json::json!([win_a.clone(), win_c.clone(), win_b.clone()]);
+    base_doc["focused"] = serde_json::json!("win-c");
+    let baseline_decoded = decode_report_v4(&base_doc.to_string()).expect("baseline decodes");
+
+    let mut send_doc = base_doc.clone();
+    send_doc["reqSeq"] = serde_json::json!("2");
+    send_doc["req"] = serde_json::json!("request-2");
+    send_doc["cmdSeq"] = serde_json::json!("1");
+    send_doc["command"] = serde_json::json!({
+        "op": "send-numbered",
+        "win": "win-c",
+        "source": {"explicit": "out-a"},
+        "index": 2,
+        "follow": false
+    });
+    let send_decoded = decode_report_v4(&send_doc.to_string()).expect("send decodes");
+
+    // Step 3 (obs=2): win-a held, win-b malformed visibility, win-c healthy visibility,
+    // plus malformed absent and close-only visibility rows.
+    base_doc["obs"] = serde_json::json!("2");
+    base_doc["reqSeq"] = serde_json::json!("3");
+    base_doc["req"] = serde_json::json!("request-3");
+    base_doc["windows"][0]["activationPolicy"] = serde_json::json!("bogus");
+    base_doc["closed"] = serde_json::json!(["win-closed"]);
+
+    let vis_a = gradeable_vis("win-a", false);
+    let mut mal_b = gradeable_vis("win-b", true);
+    mal_b["reason"] = serde_json::json!("not-a-reason");
+    let vis_c = gradeable_vis("win-c", true);
+    let mut mal_absent = gradeable_vis("win-absent", true);
+    mal_absent["reason"] = serde_json::json!("not-a-reason");
+    let mut mal_closed = gradeable_vis("win-closed", true);
+    mal_closed["reason"] = serde_json::json!("not-a-reason");
+
+    let run_order = |rows: serde_json::Value| {
+        let mut doc = base_doc.clone();
+        doc["propertyAttempts"] = rows;
+        let decoded = decode_report_v4(&doc.to_string()).expect("mixed visibility report decodes");
+        assert_eq!(decoded.report.held_attempts.len(), 3);
+        assert!(
+            decoded
+                .report
+                .held_attempts
+                .iter()
+                .all(|h| h.lane == AttemptLaneV4::Visibility)
+        );
+        assert!(
+            decoded
+                .report
+                .held_attempts
+                .iter()
+                .any(|h| h.identity == vec!["win-b".to_owned()])
+        );
+        let a_vis = decoded
+            .report
+            .visibility_attempts
+            .iter()
+            .find(|v| v.window == WindowId("win-a".to_owned()))
+            .expect("held A visibility row decoded");
+        assert!(a_vis.pre.is_some() && a_vis.post.is_some());
+
+        let mut engine = make_engine();
+        let r1 = engine
+            .handle_report_v4_for_test(&baseline_decoded.report)
+            .expect("baseline accepts");
+        assert!(r1.ready, "baseline readies");
+        let r2 = engine
+            .handle_report_v4_for_test(&send_decoded.report)
+            .expect("send accepts");
+        assert!(r2.ready, "send readies");
+        let reply = engine
+            .handle_report_v4_for_test(&decoded.report)
+            .expect("engine accepts mixed report");
+        assert!(reply.ready, "engine readies");
+
+        // Diagnostics: A (Window) and B (Attempt) present; C, win-absent, win-closed absent.
+        assert!(
+            reply
+                .diagnostics
+                .iter()
+                .any(|d| d.row == RowDiagnosticLane::Window && d.id.as_deref() == Some("win-a"))
+        );
+        assert!(
+            reply
+                .diagnostics
+                .iter()
+                .any(|d| d.row == RowDiagnosticLane::Attempt && d.id.as_deref() == Some("win-b"))
+        );
+        assert!(
+            !reply
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.id.as_deref(), Some("win-c" | "win-absent" | "win-closed"))),
+            "unexpected diagnostics: {:?}",
+            reply.diagnostics
+        );
+
+        // Narrow hold on B's scope vs healthy C authority on the same output out-a.
+        let b_row = reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime == WindowId("win-b".to_owned()))
+            .expect("win-b row");
+        assert_eq!(
+            b_row.frame_authority,
+            ScopeAuthority::Hold(HoldReason::Unreadable),
+            "malformed B visibility holds B's narrow scope"
+        );
+        let c_row = reply
+            .windows
+            .iter()
+            .find(|w| w.lifetime == WindowId("win-c".to_owned()))
+            .expect("win-c row");
+        assert_eq!(
+            c_row.frame_authority,
+            ScopeAuthority::Controlled,
+            "healthy C retains Controlled authority on same output; scopes={:?}",
+            reply.scopes
+        );
+        assert_eq!(c_row.membership_authority, ScopeAuthority::Controlled);
+
+        // Staging normalized only live/held A and C visibility rows, ignoring absent/close-only.
+        let normalized_vis = engine.staged_visibility_attempt_windows_for_test();
+        assert!(normalized_vis.contains(&WindowId("win-a".to_owned())));
+        assert!(normalized_vis.contains(&WindowId("win-c".to_owned())));
+        assert!(!normalized_vis.contains(&WindowId("win-absent".to_owned())));
+        assert!(!normalized_vis.contains(&WindowId("win-closed".to_owned())));
+        reply
+    };
+
+    let reply_order_1 = run_order(serde_json::json!([
+        mal_b, vis_c, vis_a, mal_absent, mal_closed
+    ]));
+    let reply_order_2 = run_order(serde_json::json!([
+        vis_a, mal_closed, vis_c, mal_absent, mal_b
+    ]));
+    assert_eq!(
+        reply_order_1.windows, reply_order_2.windows,
+        "reordered visibility producer input yields identical window authority/settlement"
+    );
+    assert_eq!(
+        reply_order_1.diagnostics, reply_order_2.diagnostics,
+        "reordered visibility producer input yields identical diagnostics"
+    );
+
+    // Structural duplicate refusal does not depend on window presence.
+    let mut mal_dup = gradeable_vis("win-b", true);
+    mal_dup["reason"] = serde_json::json!("not-a-reason");
+    let duplicates = serde_json::json!([gradeable_vis("win-b", true), mal_dup]);
+    for (subject, mut doc) in [
+        ("absent", fixture_value("messages/report-empty.json")),
+        ("live", base_doc.clone()),
+    ] {
+        doc["propertyAttempts"] = duplicates.clone();
+        let err = decode_report_v4(&doc.to_string()).expect_err(subject);
+        assert_eq!(err.kind, "snapshot-invalid");
+        assert_eq!(err.message, "duplicate-visibility-attempt");
+    }
+
+    // Extra key and zero-padded counter in a visibility row each produce a narrow hold
+    // of that window scope (no grading, no whole-report refusal, unrelated unaffected),
+    // for both live-window (win-b) and held-window (win-a) subjects.
+    let assert_narrow_vis_hold =
+        |target_win: &str, held_subject: bool, mut row: serde_json::Value, label: &str| {
+            row["win"] = serde_json::json!(target_win);
+            let mut doc = base_doc.clone();
+            doc["propertyAttempts"] = if held_subject {
+                serde_json::json!([row, vis_c.clone()])
+            } else {
+                serde_json::json!([vis_a.clone(), row, vis_c.clone()])
+            };
+            let decoded = decode_report_v4(&doc.to_string())
+                .unwrap_or_else(|e| panic!("{label}: unexpected whole-report refusal: {e:?}"));
+            assert!(
+                decoded
+                    .report
+                    .held_attempts
+                    .iter()
+                    .any(|h| h.lane == AttemptLaneV4::Visibility
+                        && h.identity == vec![target_win.to_owned()]),
+                "{label}: expected held Visibility attempt for {target_win}"
+            );
+            assert!(
+                !decoded
+                    .report
+                    .visibility_attempts
+                    .iter()
+                    .any(|v| v.window == WindowId(target_win.to_owned())),
+                "{label}: {target_win} must not decode into graded visibility_attempts"
+            );
+            let mut engine = make_engine();
+            engine
+                .handle_report_v4_for_test(&baseline_decoded.report)
+                .expect("baseline accepts");
+            engine
+                .handle_report_v4_for_test(&send_decoded.report)
+                .expect("send accepts");
+            let reply = engine
+                .handle_report_v4_for_test(&decoded.report)
+                .unwrap_or_else(|e| panic!("{label}: engine refused report: {e:?}"));
+            assert!(reply.ready, "{label}: engine readies");
+            assert!(
+                reply
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.row == RowDiagnosticLane::Attempt
+                        && d.id.as_deref() == Some(target_win)),
+                "{label}: expected Attempt diagnostic for {target_win}"
+            );
+            let target_row = reply
+                .windows
+                .iter()
+                .find(|w| w.lifetime == WindowId(target_win.to_owned()))
+                .expect("target window row");
+            assert!(
+                matches!(target_row.frame_authority, ScopeAuthority::Hold(_)),
+                "{label}: {target_win} should be narrowly held, got {:?}",
+                target_row.frame_authority
+            );
+            let c_row = reply
+                .windows
+                .iter()
+                .find(|w| w.lifetime == WindowId("win-c".to_owned()))
+                .expect("win-c row");
+            assert_eq!(
+                c_row.frame_authority,
+                ScopeAuthority::Controlled,
+                "{label}: unrelated win-c must remain Controlled"
+            );
+            let normalized_vis = engine.staged_visibility_attempt_windows_for_test();
+            assert!(
+                !normalized_vis.contains(&WindowId(target_win.to_owned())),
+                "{label}: {target_win} must not be graded"
+            );
+            assert!(
+                normalized_vis.contains(&WindowId("win-c".to_owned())),
+                "{label}: unrelated win-c visibility remains graded"
+            );
+        };
+
+    let mut extra_key_vis = gradeable_vis("win-b", true);
+    extra_key_vis["extraVisKey"] = serde_json::json!(1);
+    assert_narrow_vis_hold("win-b", false, extra_key_vis.clone(), "live-extra-key");
+    assert_narrow_vis_hold("win-a", true, extra_key_vis, "held-extra-key");
+
+    let mut zero_padded_vis = gradeable_vis("win-b", true);
+    zero_padded_vis["revision"] = serde_json::json!("01");
+    assert_narrow_vis_hold("win-b", false, zero_padded_vis.clone(), "live-zero-padded");
+    assert_narrow_vis_hold("win-a", true, zero_padded_vis, "held-zero-padded");
 }

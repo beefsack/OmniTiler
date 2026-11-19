@@ -118,10 +118,7 @@ function parseReport(envelopeBytes: string): Record<string, unknown> {
 }
 
 const ATTEMPT_LANES = [
-    "frameAttempts",
-    "memberAttempts",
-    "viewAttempts",
-    "clearAttempts",
+    "propertyAttempts",
     "creationAttempts",
 ] as const;
 
@@ -197,7 +194,8 @@ function assertGenesisAttempts(
             assert.deepEqual(restActual, restExpected, `${where} ${lane}[${i}] target/readback matches`);
         }
     }
-    const frames = attemptLane(regenReport, "frameAttempts");
+    const frames = attemptLane(regenReport, "propertyAttempts")
+        .filter((attempt) => attempt["kind"] === "frame");
     assert.ok(frames.length > 0, `${where} carries genuine frame writes from accepted startup`);
     for (const attempt of frames) {
         const frameStamp = attempt["attemptMs"];

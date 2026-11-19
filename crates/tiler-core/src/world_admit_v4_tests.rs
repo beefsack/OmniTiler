@@ -147,6 +147,7 @@ fn report_full(
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
+        visibility_attempts: Vec::new(),
         focus_feedback: Vec::new(),
         presentation,
         intent_records: intent_data
@@ -1005,7 +1006,6 @@ fn raw_capability_conflict_never_aliases_preheld_input() {
         ordinal: 0,
         output: Some(OutputId("out-a".to_owned())),
         has_native_workspace: sticky_fact.native_workspace.as_deref().is_some(),
-        last_write: sticky_fact.last_write,
         diagnostic: Some(RowDiagnostic {
             scope: AuthorityScope::Output(OutputId("out-a".to_owned())),
             row: RowDiagnosticLane::Window,
@@ -2571,7 +2571,6 @@ fn slice_7_1_mixed_invalid_structural_refused_atomically() {
         ordinal: 99,
         output: Some(OutputId("out-a".to_owned())),
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];
@@ -2912,7 +2911,6 @@ fn slice_7_1_held_window_typed_native_workspace_refuses_without_capability() {
         ordinal: 0,
         output: Some(OutputId("out-a".to_owned())),
         has_native_workspace: true,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];

@@ -86,20 +86,23 @@ use tiler_core::world_report::{
     CommandRejectKind, DragPreviewV4, EffectKind, FloatOrigin, FocusDirectionalSubject,
     FocusFeedback, FocusRequest, FocusRequestCause, FrameWitness, FullscreenOwner, HeldAttemptRow,
     HeldNativeRow, HeldPresentationRow, HeldScreenRow, HeldWindowRow, HoldReason, IntentDesire,
-    IntentRecord, LastWrite, LastWritePath, LastWriteProperty, MAX_FOCUS_DEPARTING,
-    MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED, MAX_FOCUS_VIEWS, MAX_INTENT_DESIRED, MAX_INTENT_RECORDS,
-    MAX_REPLY_DIAGNOSTICS, MAX_REPLY_EFFECTS, MAX_REPLY_NATIVE_CREATIONS, MAX_REPLY_OPERATIONS,
-    MAX_REPLY_OUTPUTS, MAX_REPLY_SCOPES, MAX_REPLY_SWITCH_EVENTS, MAX_REPLY_TRANSFERS,
-    MAX_REPLY_WINDOWS, MAX_REPLY_WORKSPACES, MAX_STATE_TARGETS_PER_WINDOW, NativeCreationDesire,
-    NativeObservation, NativeWorkspaceFact, OneShotEffect, OperationEvent, OperationKind,
-    OperationOutcome, OutputDesire, OutputIdentity, PresentationIngressV4,
-    PresentationPagerFrameV4, PresentationRowV4, RenderTarget, RendererInput, RowDiagnostic,
-    RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScopeStatus, ScreenReport, StateProperty,
-    StateTarget, SwitchEvent, SwitchFocus, SwitchOutcome, TilingMode, TransferKind,
-    TransferTargetV4, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
-    VisibilityTarget, WindowDesire, WindowFact, WindowType, WorkspaceDesire, WorkspaceRef,
-    WorldCommand, WorldPresentationV4, WorldReplyV4, WorldReportV4, check_screen_structure,
-    check_window_structure,
+    IntentRecord, MAX_FOCUS_DEPARTING, MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED, MAX_FOCUS_VIEWS,
+    MAX_INTENT_DESIRED, MAX_INTENT_RECORDS, MAX_REPLY_DIAGNOSTICS, MAX_REPLY_EFFECTS,
+    MAX_REPLY_NATIVE_CREATIONS, MAX_REPLY_OPERATIONS, MAX_REPLY_OUTPUTS, MAX_REPLY_SCOPES,
+    MAX_REPLY_SWITCH_EVENTS, MAX_REPLY_TRANSFERS, MAX_REPLY_WINDOWS, MAX_REPLY_WORKSPACES,
+    MAX_STATE_TARGETS_PER_WINDOW, NativeCreationDesire, NativeObservation, NativeWorkspaceFact,
+    OneShotEffect, OperationEvent, OperationKind, OperationOutcome, OutputDesire, OutputIdentity,
+    PresentationIngressV4, PresentationPagerFrameV4, PresentationRowV4, RenderTarget,
+    RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority,
+    ScopeStatus, ScreenReport, StateProperty, StateTarget, SwitchEvent, SwitchFocus, SwitchOutcome,
+    TilingMode, TransferKind, TransferTargetV4, VisibilityFact, VisibilityReason, VisibilitySample,
+    VisibilitySetter, VisibilityTarget, WindowDesire, WindowFact, WindowType, WorkspaceDesire,
+    WorkspaceRef, WorldCommand, WorldPresentationV4, WorldReplyV4, WorldReportV4,
+    check_screen_structure, check_window_structure,
+};
+
+pub use crate::world_property_attempts::{
+    decode_member_attempt, decode_state_attempt, decode_view_attempt,
 };
 
 /// World protocol contract version (equals the core world contract version:
@@ -123,7 +126,7 @@ const KIND_MALFORMED: &str = "malformed";
 const KIND_UNKNOWN_FIELD: &str = "unknown-field";
 const KIND_UNKNOWN_VALUE: &str = "unknown-value";
 pub(crate) const KIND_VERSION: &str = "unsupported-version";
-const KIND_SNAPSHOT: &str = "snapshot-invalid";
+pub(crate) const KIND_SNAPSHOT: &str = "snapshot-invalid";
 
 const MSG_OVERSIZED: &str = "request exceeds size bound";
 const MSG_MALFORMED: &str = "request is malformed";
@@ -131,7 +134,7 @@ const MSG_UNKNOWN_FIELD: &str = "request contains an unknown field";
 const MSG_UNKNOWN_VALUE: &str = "request contains an unknown value";
 pub(crate) const MSG_VERSION: &str = "unsupported contract version";
 
-fn malformed() -> WorldProtocolError {
+pub(crate) fn malformed() -> WorldProtocolError {
     WorldProtocolError {
         kind: KIND_MALFORMED,
         message: MSG_MALFORMED,
@@ -168,13 +171,18 @@ pub fn encode_error(kind: &str, message: &str, core_generation: &str) -> String 
     out
 }
 
-type Result<T> = std::result::Result<T, WorldProtocolError>;
+pub(crate) type Result<T> = std::result::Result<T, WorldProtocolError>;
 
-fn as_object(value: &serde_json::Value) -> Result<&serde_json::Map<String, serde_json::Value>> {
+pub(crate) fn as_object(
+    value: &serde_json::Value,
+) -> Result<&serde_json::Map<String, serde_json::Value>> {
     value.as_object().ok_or_else(malformed)
 }
 
-fn check_keys(map: &serde_json::Map<String, serde_json::Value>, known: &[&str]) -> Result<()> {
+pub(crate) fn check_keys(
+    map: &serde_json::Map<String, serde_json::Value>,
+    known: &[&str],
+) -> Result<()> {
     check_keys_with_optional(map, known, &[])
 }
 
@@ -182,7 +190,7 @@ fn check_keys(map: &serde_json::Map<String, serde_json::Value>, known: &[&str]) 
 /// required or optional vocabulary, and every required key must be present.
 /// Unknown keys refuse as `unknown-field`; missing required keys are
 /// `malformed`. Absent optional keys are fine (callers backfill defaults).
-fn check_keys_with_optional(
+pub(crate) fn check_keys_with_optional(
     map: &serde_json::Map<String, serde_json::Value>,
     required: &[&str],
     optional: &[&str],
@@ -199,13 +207,19 @@ fn check_keys_with_optional(
     Ok(())
 }
 
-fn req_str<'a>(map: &'a serde_json::Map<String, serde_json::Value>, key: &str) -> Result<&'a str> {
+pub(crate) fn req_str<'a>(
+    map: &'a serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<&'a str> {
     map.get(key)
         .and_then(serde_json::Value::as_str)
         .ok_or_else(malformed)
 }
 
-fn req_bool(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<bool> {
+pub(crate) fn req_bool(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<bool> {
     map.get(key)
         .and_then(serde_json::Value::as_bool)
         .ok_or_else(malformed)
@@ -276,7 +290,10 @@ fn parse_u64_decimal(text: &str) -> Option<u64> {
     text.parse::<u64>().ok()
 }
 
-fn req_u64_str(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<u64> {
+pub(crate) fn req_u64_str(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<u64> {
     let text = req_str(map, key)?;
     // A JSON number here would already have failed `req_str`: counters are
     // strings only, so no float decoding ever applies.
@@ -297,7 +314,7 @@ fn opt_u64_or_null(
     }
 }
 
-fn opt_rect_or_null(
+pub(crate) fn opt_rect_or_null(
     map: &serde_json::Map<String, serde_json::Value>,
     key: &str,
 ) -> Result<Option<Rect>> {
@@ -308,7 +325,7 @@ fn opt_rect_or_null(
     }
 }
 
-fn req_rect_value(value: &serde_json::Value) -> Result<Rect> {
+pub(crate) fn req_rect_value(value: &serde_json::Value) -> Result<Rect> {
     let items = value.as_array().ok_or_else(malformed)?;
     if items.len() != 4 {
         return Err(malformed());
@@ -331,7 +348,10 @@ fn req_rect_value(value: &serde_json::Value) -> Result<Rect> {
     })
 }
 
-fn req_id(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<String> {
+pub(crate) fn req_id(
+    map: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<String> {
     let text = req_str(map, key)?;
     if !is_opaque_id(text) {
         return Err(unknown_value());
@@ -382,7 +402,7 @@ pub(crate) fn is_generation_text(text: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-fn parse_frame_setter(text: &str) -> Result<tiler_core::world_report::FrameSetter> {
+pub(crate) fn parse_frame_setter(text: &str) -> Result<tiler_core::world_report::FrameSetter> {
     match text {
         "accepted" => Ok(tiler_core::world_report::FrameSetter::Accepted),
         "refused" => Ok(tiler_core::world_report::FrameSetter::Refused),
@@ -667,7 +687,7 @@ fn decode_visibility(value: &serde_json::Value) -> Result<VisibilityFact> {
 /// Strict nested `VisibilitySample` decode: `obs` is a required canonical
 /// decimal counter string; every other key is required and nullable;
 /// wrong types and bad counters refuse.
-fn decode_visibility_sample(value: &serde_json::Value) -> Result<VisibilitySample> {
+pub(crate) fn decode_visibility_sample(value: &serde_json::Value) -> Result<VisibilitySample> {
     let map = as_object(value)?;
     check_keys(
         map,
@@ -688,113 +708,10 @@ fn decode_visibility_sample(value: &serde_json::Value) -> Result<VisibilitySampl
     })
 }
 
-/// Strict nested `LastWrite` decode: every key required; `pre`/`post` are
-/// nullable samples; unknown property/path/setter/reason tokens refuse
-/// (`unknown-value`).
-fn decode_last_write(value: &serde_json::Value) -> Result<LastWrite> {
-    let map = as_object(value)?;
-    check_keys(
-        map,
-        &[
-            "property", "target", "revision", "path", "setter", "reason", "pre", "post",
-        ],
-    )?;
-    let property_text = req_str(map, "property")?;
-    let property = LastWriteProperty::parse(property_text).ok_or_else(unknown_value)?;
-    let path_text = req_str(map, "path")?;
-    let path = LastWritePath::parse(path_text).ok_or_else(unknown_value)?;
-    let setter_text = req_str(map, "setter")?;
-    let setter = VisibilitySetter::parse(setter_text).ok_or_else(unknown_value)?;
-    let reason_text = req_str(map, "reason")?;
-    let reason = VisibilityReason::parse(reason_text).ok_or_else(unknown_value)?;
-    let pre = match map.get("pre") {
-        None => return Err(malformed()),
-        Some(serde_json::Value::Null) => None,
-        Some(value) => Some(decode_visibility_sample(value)?),
-    };
-    let post = match map.get("post") {
-        None => return Err(malformed()),
-        Some(serde_json::Value::Null) => None,
-        Some(value) => Some(decode_visibility_sample(value)?),
-    };
-    Ok(LastWrite {
-        property,
-        target: req_bool(map, "target")?,
-        revision: req_u64_str(map, "revision")?,
-        path,
-        setter,
-        reason,
-        pre,
-        post,
-    })
-}
-
-/// Permissive held-row `lastWrite` decode: preserves the prior core
-/// `decode_held_last_write` tolerance for extra keys at `LastWrite`,
-/// `VisibilitySample`, and `VisibilityFact` nesting as well as
-/// `str::parse::<u64>()` counters (e.g. zero-padded strings). Returns `None`
-/// for `null` or any undecodable shape.
-fn decode_held_last_write_json(value: &serde_json::Value) -> Option<LastWrite> {
-    let map = value.as_object()?;
-    let as_str = |key: &str| map.get(key)?.as_str();
-    let property = LastWriteProperty::parse(as_str("property")?)?;
-    let target = map.get("target")?.as_bool()?;
-    let revision = as_str("revision")?.parse::<u64>().ok()?;
-    let path = LastWritePath::parse(as_str("path")?)?;
-    let setter = VisibilitySetter::parse(as_str("setter")?)?;
-    let reason = VisibilityReason::parse(as_str("reason")?)?;
-    fn decode_sample(value: &serde_json::Value) -> Option<VisibilitySample> {
-        let map = value.as_object()?;
-        let obs = map.get("obs")?.as_str()?.parse::<u64>().ok()?;
-        let opt_bool = |key: &str| match map.get(key)? {
-            serde_json::Value::Null => Some(None),
-            serde_json::Value::Bool(value) => Some(Some(*value)),
-            _ => None,
-        };
-        let visibility = {
-            let vis = map.get("visibility")?.as_object()?;
-            let opt = |key: &str| match vis.get(key)? {
-                serde_json::Value::Null => Some(None),
-                serde_json::Value::Bool(value) => Some(Some(*value)),
-                _ => None,
-            };
-            VisibilityFact {
-                visible: opt("visible")?,
-                suppression_owned: opt("suppressionOwned")?,
-            }
-        };
-        Some(VisibilitySample {
-            obs,
-            lifetime_matched: opt_bool("lifetimeMatched")?,
-            visibility,
-            minimized: opt_bool("minimized")?,
-            host_hidden: opt_bool("hostHidden")?,
-        })
-    }
-    let pre = match map.get("pre")? {
-        serde_json::Value::Null => None,
-        value => Some(decode_sample(value)?),
-    };
-    let post = match map.get("post")? {
-        serde_json::Value::Null => None,
-        value => Some(decode_sample(value)?),
-    };
-    Some(LastWrite {
-        property,
-        target,
-        revision,
-        path,
-        setter,
-        reason,
-        pre,
-        post,
-    })
-}
-
 /// Retain one identifiable-but-bad window row: every carried key in
 /// canonical schema order, then any other carried keys lexicographically,
 /// with an `InvalidFact` diagnostic only for the row's actual reported
-/// output (an output-less row carries no scope authority: `None`). The nested `hints`, `visibility`, and `lastWrite` objects are
+/// output (an output-less row carries no scope authority: `None`). The nested `hints` and `visibility` objects are
 /// retained in schema order with unknown sub-keys after in lexicographic
 /// order so the canonical writer spells the exact carried row. `ordinal`
 /// is the row's original index in the carried `windows` array.
@@ -840,13 +757,9 @@ fn held_window_row(
         "fullscreenExitable",
         "suppressionAvailable",
         "visibility",
-        "lastWrite",
     ];
     const HINTS_ORDER: &[&str] = &["minW", "minH", "maxW", "maxH"];
     const VISIBILITY_ORDER: &[&str] = &["visible", "suppressionOwned"];
-    const LAST_WRITE_ORDER: &[&str] = &[
-        "property", "target", "revision", "path", "setter", "reason", "pre", "post",
-    ];
     fn order_object(value: &serde_json::Value, order: &[&str]) -> RawSettingValue {
         let RawSettingValue::Object(entries) = raw_setting_value(value) else {
             return raw_setting_value(value);
@@ -870,7 +783,6 @@ fn held_window_row(
             let retained = match *key {
                 "hints" => order_object(value, HINTS_ORDER),
                 "visibility" => order_object(value, VISIBILITY_ORDER),
-                "lastWrite" => order_object(value, LAST_WRITE_ORDER),
                 _ => raw_setting_value(value),
             };
             fields.push((key.to_string(), retained));
@@ -884,26 +796,15 @@ fn held_window_row(
     for key in extra {
         fields.push((key.clone(), raw_setting_value(&map[key])));
     }
-    // Nested visibility samples keep schema order inside the retained
-    // `lastWrite` object: `pre`/`post` reorder to sample order and their
-    // nested `visibility` objects to visibility order, so witnesses are
-    // canonical regardless of carried order.
-    for (key, value) in fields.iter_mut() {
-        if key == "lastWrite" {
-            reorder_last_write(value);
-        }
-    }
     let has_native_workspace = matches!(
         map.get("nativeWs"),
         Some(serde_json::Value::String(id)) if !id.is_empty()
     );
-    let last_write = map.get("lastWrite").and_then(decode_held_last_write_json);
     let row = HeldWindowRow {
         window: fact.window.clone(),
         ordinal,
         output: fact.output.clone(),
         has_native_workspace,
-        last_write,
         diagnostic: fact.output.as_ref().map(|out| RowDiagnostic {
             scope: AuthorityScope::Output(out.clone()),
             row: RowDiagnosticLane::Window,
@@ -915,12 +816,10 @@ fn held_window_row(
     (row, fields)
 }
 
-/// Reorder the nested objects of a retained `lastWrite` value into
-/// schema order in place: the object itself is already ordered by the
-/// caller; `pre`/`post` sample objects reorder to sample order and their
-/// nested `visibility` objects to visibility order. Unknown sub-keys sort
-/// after in lexicographic order.
-fn reorder_last_write(value: &mut RawSettingValue) {
+/// Reorder a retained visibility sample object (`pre` or `post`) into
+/// schema order in place, with its nested `visibility` object in
+/// visibility order. Unknown sub-keys sort after in lexicographic order.
+pub(crate) fn reorder_visibility_sample(value: &mut RawSettingValue) {
     const SAMPLE_ORDER: &[&str] = &[
         "obs",
         "lifetimeMatched",
@@ -952,20 +851,14 @@ fn reorder_last_write(value: &mut RawSettingValue) {
             *entries = order_entries(taken, VISIBILITY_ORDER);
         }
     }
-    let RawSettingValue::Object(entries) = value else {
+    let RawSettingValue::Object(sample) = value else {
         return;
     };
-    for (key, item) in entries.iter_mut() {
-        if (key == "pre" || key == "post")
-            && let RawSettingValue::Object(sample) = item
-        {
-            let taken = std::mem::take(sample);
-            *sample = order_entries(taken, SAMPLE_ORDER);
-            for (sub_key, sub_value) in sample.iter_mut() {
-                if sub_key == "visibility" {
-                    order_visibility(sub_value);
-                }
-            }
+    let taken = std::mem::take(sample);
+    *sample = order_entries(taken, SAMPLE_ORDER);
+    for (sub_key, sub_value) in sample.iter_mut() {
+        if sub_key == "visibility" {
+            order_visibility(sub_value);
         }
     }
 }
@@ -1237,75 +1130,7 @@ fn decode_closed_ids(value: &serde_json::Value) -> Result<Vec<WindowId>> {
     Ok(closed)
 }
 
-pub fn decode_member_attempt(
-    value: &serde_json::Value,
-) -> Result<tiler_core::world_report::MemberAttempt> {
-    use tiler_core::world_report::MemberAttempt;
-    let map = as_object(value)?;
-    check_keys_with_optional(
-        map,
-        &[
-            "op",
-            "win",
-            "out",
-            "ws",
-            "setter",
-            "pre",
-            "post",
-            "attemptMs",
-        ],
-        &[],
-    )?;
-    Ok(MemberAttempt {
-        operation_id: req_id(map, "op")?,
-        window: WindowId(req_id(map, "win")?),
-        target_output: OutputId(req_id(map, "out")?),
-        target_workspace: req_id(map, "ws")?,
-        setter: match req_str(map, "setter")? {
-            "accepted" => tiler_core::world_report::MemberDisposition::Accepted,
-            "refused" => tiler_core::world_report::MemberDisposition::Refused,
-            "threw" => tiler_core::world_report::MemberDisposition::Threw,
-            "already-at-target" => tiler_core::world_report::MemberDisposition::AlreadyAtTarget,
-            _ => return Err(unknown_value()),
-        },
-        pre: opt_workspace_ref_or_null(map, "pre", false)?,
-        post: opt_workspace_ref_or_null(map, "post", false)?,
-        attempt_ms: req_u64_str(map, "attemptMs")?,
-    })
-}
-
-pub fn decode_view_attempt(
-    value: &serde_json::Value,
-) -> Result<tiler_core::world_report::ViewAttempt> {
-    use tiler_core::world_report::ViewAttempt;
-    let map = as_object(value)?;
-    check_keys_with_optional(
-        map,
-        &[
-            "op",
-            "out",
-            "ws",
-            "setter",
-            "pre",
-            "post",
-            "base",
-            "attemptMs",
-        ],
-        &[],
-    )?;
-    Ok(ViewAttempt {
-        operation_id: req_id(map, "op")?,
-        target_output: OutputId(req_id(map, "out")?),
-        target_workspace: req_id(map, "ws")?,
-        setter: parse_frame_setter(req_str(map, "setter")?)?,
-        pre: opt_workspace_ref_or_null(map, "pre", true)?,
-        post: opt_workspace_ref_or_null(map, "post", true)?,
-        baseline: opt_workspace_ref_or_null(map, "base", true)?,
-        attempt_ms: req_u64_str(map, "attemptMs")?,
-    })
-}
-
-fn opt_workspace_ref_or_null(
+pub(crate) fn opt_workspace_ref_or_null(
     map: &serde_json::Map<String, serde_json::Value>,
     key: &str,
     native_only: bool,
@@ -1347,7 +1172,7 @@ fn opt_workspace_ref_or_null(
     }
 }
 
-fn opt_u32_or_null(
+pub(crate) fn opt_u32_or_null(
     map: &serde_json::Map<String, serde_json::Value>,
     key: &str,
 ) -> Result<Option<u32>> {
@@ -1362,7 +1187,7 @@ fn opt_u32_or_null(
     }
 }
 
-fn opt_bool_or_null(
+pub(crate) fn opt_bool_or_null(
     map: &serde_json::Map<String, serde_json::Value>,
     key: &str,
 ) -> Result<Option<bool>> {
@@ -1372,57 +1197,6 @@ fn opt_bool_or_null(
         Some(serde_json::Value::Bool(value)) => Ok(Some(*value)),
         Some(_) => Err(malformed()),
     }
-}
-
-fn decode_clear_attempt(
-    value: &serde_json::Value,
-) -> Result<tiler_core::world_report::ClearAttempt> {
-    let map = as_object(value)?;
-    check_keys(map, &["op", "win", "setter", "pre", "post", "attemptMs"])?;
-    Ok(tiler_core::world_report::ClearAttempt {
-        operation_id: req_id(map, "op")?,
-        window: WindowId(req_id(map, "win")?),
-        setter: parse_frame_setter(req_str(map, "setter")?)?,
-        pre_maximized: opt_bool_or_null(map, "pre")?,
-        post_maximized: opt_bool_or_null(map, "post")?,
-        attempt_ms: req_u64_str(map, "attemptMs")?,
-    })
-}
-
-/// Decode one raw native-state attempt row. Every key is required on the
-/// wire (`win`, `property`, `target`, `rev`, `setter`, `pre`, `post`,
-/// `attemptMs`); absence refuses as malformed, unknown keys refuse as
-/// unknown-field, and unknown property/setter tokens or bad decimal
-/// counters refuse as unknown-value. `pre`/`post` are required nullable
-/// immediate proofs (`null` is unreadable, never a default).
-pub fn decode_state_attempt(
-    value: &serde_json::Value,
-) -> Result<tiler_core::world_report::StateAttempt> {
-    use tiler_core::world_report::StateProperty;
-    let map = as_object(value)?;
-    check_keys(
-        map,
-        &[
-            "win",
-            "property",
-            "target",
-            "rev",
-            "setter",
-            "pre",
-            "post",
-            "attemptMs",
-        ],
-    )?;
-    Ok(tiler_core::world_report::StateAttempt {
-        window: WindowId(req_id(map, "win")?),
-        property: StateProperty::parse(req_str(map, "property")?).ok_or_else(unknown_value)?,
-        target: req_bool(map, "target")?,
-        revision: req_u64_str(map, "rev")?,
-        setter: parse_frame_setter(req_str(map, "setter")?)?,
-        pre: opt_bool_or_null(map, "pre")?,
-        post: opt_bool_or_null(map, "post")?,
-        attempt_ms: req_u64_str(map, "attemptMs")?,
-    })
 }
 
 /// Decode one correlated focus-evidence row. Every key is required on the
@@ -2274,7 +2048,7 @@ fn decode_row_str<T>(json: &str, decode: fn(&serde_json::Value) -> Result<T>) ->
     decode(&value)
 }
 
-fn push_rect(out: &mut String, rect: &Rect) {
+pub(crate) fn push_rect(out: &mut String, rect: &Rect) {
     out.push('[');
     out.push_str(&rect.x.to_string());
     out.push(',');
@@ -2286,14 +2060,14 @@ fn push_rect(out: &mut String, rect: &Rect) {
     out.push(']');
 }
 
-fn push_opt_rect(out: &mut String, rect: &Option<Rect>) {
+pub(crate) fn push_opt_rect(out: &mut String, rect: &Option<Rect>) {
     match rect {
         None => out.push_str("null"),
         Some(rect) => push_rect(out, rect),
     }
 }
 
-fn push_opt_bool(out: &mut String, value: &Option<bool>) {
+pub(crate) fn push_opt_bool(out: &mut String, value: &Option<bool>) {
     match value {
         None => out.push_str("null"),
         Some(true) => out.push_str("true"),
@@ -2727,10 +2501,6 @@ pub enum GestureIngressWire {
 pub struct ReportWireOptionals {
     pub cursor_hit: CursorHitWire,
     pub monotonic_ms_present: bool,
-    pub frame_attempts_present: bool,
-    pub member_attempts_present: bool,
-    pub view_attempts_present: bool,
-    pub clear_attempts_present: bool,
     pub creation_attempts_present: bool,
     pub gesture_ingress: GestureIngressWire,
 }
@@ -2788,6 +2558,9 @@ pub enum CreationReceiptWire {
 pub struct DecodedReportV4 {
     pub report: WorldReportV4,
     pub wire: ReportWireOptionals,
+    /// Wire kind sequence of `propertyAttempts`, so canonical re-encoding
+    /// preserves the exact carried row order across mixed property kinds.
+    pub property_attempt_order: Vec<AttemptLaneV4>,
     /// Creation-receipt spellings aligned to [`WorldReportV4::creation_attempts`]
     /// in order (one entry per valid row).
     pub creation_receipts: Vec<CreationReceiptWire>,
@@ -2822,7 +2595,7 @@ enum NativeRowOutcome {
 /// Retain one identifiable-but-bad v4 attempt row: every carried key in
 /// the lane's canonical schema order, then any other carried keys
 /// lexicographically, as JSON-agnostic retained facts.
-fn held_attempt_row(
+pub(crate) fn held_attempt_row(
     lane: AttemptLaneV4,
     ordinal: usize,
     map: &serde_json::Map<String, serde_json::Value>,
@@ -2868,7 +2641,9 @@ fn held_attempt_row(
 /// Attempt-hold scope: the row's actual reported target output, when the
 /// carried `out` is a valid opaque id. Rows without an output (frame
 /// attempts name none) carry no scope authority (`None`).
-fn attempt_hold_scope(map: &serde_json::Map<String, serde_json::Value>) -> Option<RowDiagnostic> {
+pub(crate) fn attempt_hold_scope(
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> Option<RowDiagnostic> {
     match map.get("out") {
         Some(serde_json::Value::String(text)) if is_opaque_id(text) => Some(RowDiagnostic {
             scope: AuthorityScope::Output(OutputId(text.clone())),
@@ -3093,7 +2868,6 @@ fn decode_fact_v4(
         "fullscreenExitable",
         "suppressionAvailable",
         "visibility",
-        "lastWrite",
     ];
     let map = as_object(value)?;
     // v4 tolerant envelope: unknown non-retired keys refuse, but missing
@@ -3235,9 +3009,6 @@ fn decode_fact_v4(
     if matches!(map.get("visibility"), Some(v) if !v.is_object()) {
         held = true;
     }
-    if matches!(map.get("lastWrite"), Some(v) if !v.is_null() && !v.is_object()) {
-        held = true;
-    }
     for key in ["role", "appId", "executable", "class", "title"] {
         if let Some(serde_json::Value::String(text)) = map.get(key)
             && text.len() > tiler_core::world_report::MAX_METADATA_TEXT_BYTES
@@ -3284,16 +3055,10 @@ fn decode_fact_v4(
     {
         held = true;
     }
-    // Bad nested `visibility`/`lastWrite` shapes hold the row.
+    // Bad nested `visibility` shapes hold the row.
     if let Some(value) = map.get("visibility")
         && value.is_object()
         && decode_visibility(value).is_err()
-    {
-        held = true;
-    }
-    if let Some(value) = map.get("lastWrite")
-        && value.is_object()
-        && decode_last_write(value).is_err()
     {
         held = true;
     }
@@ -3349,7 +3114,6 @@ fn decode_fact_v4(
             visible: None,
             suppression_owned: None,
         },
-        last_write: None,
     };
     if held {
         // Bad `owner`/`parent` grammar refuses even with a hold cause
@@ -3407,11 +3171,6 @@ fn decode_fact_v4(
         fullscreen_exitable: opt_bool_or_null(map, "fullscreenExitable")?,
         suppression_available: opt_bool_or_null(map, "suppressionAvailable")?,
         visibility: decode_visibility(map.get("visibility").ok_or_else(malformed)?)?,
-        last_write: match map.get("lastWrite") {
-            None => return Err(malformed()),
-            Some(serde_json::Value::Null) => None,
-            Some(value) => Some(decode_last_write(value)?),
-        },
     };
     if let Some(reason) = check_window_structure(&fact, seen_windows) {
         return Err(WorldProtocolError {
@@ -3573,115 +3332,9 @@ fn decode_native_v4(
 /// Staged v4 frame-attempt decode: same carried keys as v3, but a missing
 /// `op`, a missing `pre`, a `pre` without an operation, and any carried
 /// extra key hold the identifiable row instead of refusing the envelope.
-/// A missing or bad-grammar `win` refuses (unidentifiable); every other
-/// value failure stays strict.
-fn decode_frame_attempt_v4(
-    value: &serde_json::Value,
-    ordinal: usize,
-    seen_frames: &mut std::collections::BTreeSet<String>,
-) -> Result<AttemptRowOutcome<tiler_core::world_report::FrameAttempt>> {
-    const SCHEMA: &[&str] = &[
-        "win",
-        "target",
-        "setter",
-        "readback",
-        "dpiBefore",
-        "dpiAfter",
-        "attemptMs",
-        "op",
-        "pre",
-    ];
-    let map = as_object(value)?;
-    let window = match map.get("win") {
-        Some(serde_json::Value::String(text)) if is_opaque_id(text) => WindowId(text.clone()),
-        Some(serde_json::Value::String(_)) => return Err(unknown_value()),
-        _ => return Err(malformed()),
-    };
-    let extra = map.keys().any(|key| !SCHEMA.contains(&key.as_str()));
-    // Lenient op/pre: missing keys and pre-without-operation hold.
-    let mut held = extra;
-    let operation_id = match map.get("op") {
-        None => {
-            held = true;
-            None
-        }
-        Some(serde_json::Value::String(op)) if op.is_empty() => None,
-        Some(serde_json::Value::String(op)) => Some(op.clone()),
-        Some(_) => {
-            held = true;
-            None
-        }
-    };
-    let prewrite = match map.get("pre") {
-        None => {
-            held = true;
-            None
-        }
-        Some(serde_json::Value::Null) => None,
-        Some(value) => match req_rect_value(value) {
-            Ok(rect) => Some(rect),
-            Err(_) => {
-                held = true;
-                None
-            }
-        },
-    };
-    if operation_id.as_deref().is_none_or(str::is_empty) && prewrite.is_some() {
-        held = true;
-    }
-    // Remaining lane shapes stay strict; failures refuse.
-    let target = req_rect_value(map.get("target").ok_or_else(malformed)?)?;
-    let setter = parse_frame_setter(req_str(map, "setter")?)?;
-    let readback = opt_rect_or_null(map, "readback")?;
-    let dpi_before = opt_u32_or_null(map, "dpiBefore")?;
-    let dpi_after = opt_u32_or_null(map, "dpiAfter")?;
-    let attempt_ms = req_u64_str(map, "attemptMs")?;
-    if !seen_frames.insert(window.0.clone()) {
-        return Err(WorldProtocolError {
-            kind: KIND_SNAPSHOT,
-            message: "duplicate-frame",
-        });
-    }
-    if held {
-        let mut identity = vec![window.0.clone()];
-        if let Some(op) = operation_id.as_deref()
-            && !op.is_empty()
-        {
-            identity.push(op.to_owned());
-        }
-        let (row, fields) =
-            held_attempt_row(AttemptLaneV4::Frame, ordinal, map, SCHEMA, identity, None);
-        return Ok(AttemptRowOutcome::Held { row, fields });
-    }
-    // Valid rows keep the core structural shape: a nonempty operation id
-    // must be opaque (mirrors the core gate).
-    if let Some(op) = operation_id.as_deref()
-        && !op.is_empty()
-        && !is_opaque_id(op)
-    {
-        return Err(WorldProtocolError {
-            kind: KIND_SNAPSHOT,
-            message: "frame-operation-invalid",
-        });
-    }
-    Ok(AttemptRowOutcome::Valid(
-        tiler_core::world_report::FrameAttempt {
-            window,
-            target,
-            setter,
-            readback,
-            dpi_before,
-            dpi_after,
-            attempt_ms,
-            operation_id,
-            prewrite,
-        },
-    ))
-}
-
 /// Lenient attempt identity: carried `op`/`win` strings when present and
 /// opaque, otherwise `None` (the strict error then refuses the envelope).
-fn attempt_identity(
+pub(crate) fn attempt_identity(
     map: &serde_json::Map<String, serde_json::Value>,
     want_op: bool,
     want_win: bool,
@@ -3706,202 +3359,6 @@ fn attempt_identity(
 }
 
 /// Staged v4 member-attempt decode: strict shapes from v3, but any carried
-/// extra key or other value failure holds the identifiable (`op` + `win`)
-/// row instead of refusing the envelope.
-fn decode_member_attempt_v4(
-    value: &serde_json::Value,
-    ordinal: usize,
-    seen_members: &mut std::collections::BTreeSet<(String, String)>,
-) -> Result<AttemptRowOutcome<tiler_core::world_report::MemberAttempt>> {
-    const SCHEMA: &[&str] = &[
-        "op",
-        "win",
-        "out",
-        "ws",
-        "setter",
-        "pre",
-        "post",
-        "attemptMs",
-    ];
-    let map = as_object(value)?;
-    let extra = map.keys().any(|key| !SCHEMA.contains(&key.as_str()));
-    match decode_member_attempt(value) {
-        Ok(attempt) => {
-            let key = (attempt.operation_id.clone(), attempt.window.0.clone());
-            if !seen_members.insert(key) {
-                return Err(WorldProtocolError {
-                    kind: KIND_SNAPSHOT,
-                    message: "duplicate-member",
-                });
-            }
-            if extra {
-                let diagnostic = attempt_hold_scope(map);
-                let (row, fields) = held_attempt_row(
-                    AttemptLaneV4::Member,
-                    ordinal,
-                    map,
-                    SCHEMA,
-                    vec![attempt.operation_id, attempt.window.0],
-                    diagnostic,
-                );
-                return Ok(AttemptRowOutcome::Held { row, fields });
-            }
-            Ok(AttemptRowOutcome::Valid(attempt))
-        }
-        Err(reason) => {
-            let (op, win) = attempt_identity(map, true, true);
-            match (op, win) {
-                (Some(op), Some(win)) => {
-                    if !seen_members.insert((op.clone(), win.clone())) {
-                        return Err(WorldProtocolError {
-                            kind: KIND_SNAPSHOT,
-                            message: "duplicate-member",
-                        });
-                    }
-                    let (row, fields) = held_attempt_row(
-                        AttemptLaneV4::Member,
-                        ordinal,
-                        map,
-                        SCHEMA,
-                        vec![op, win],
-                        attempt_hold_scope(map),
-                    );
-                    Ok(AttemptRowOutcome::Held { row, fields })
-                }
-                _ => Err(reason),
-            }
-        }
-    }
-}
-
-/// Staged v4 view-attempt decode: strict shapes from v3, but a logical
-/// (non-native-only) `pre`/`post`/`base`, any carried extra key, or any
-/// other value failure holds the identifiable (`op`) row instead of
-/// refusing the envelope.
-fn decode_view_attempt_v4(
-    value: &serde_json::Value,
-    ordinal: usize,
-    seen_views: &mut std::collections::BTreeSet<String>,
-) -> Result<AttemptRowOutcome<tiler_core::world_report::ViewAttempt>> {
-    const SCHEMA: &[&str] = &[
-        "op",
-        "out",
-        "ws",
-        "setter",
-        "pre",
-        "post",
-        "base",
-        "attemptMs",
-    ];
-    let map = as_object(value)?;
-    let extra = map.keys().any(|key| !SCHEMA.contains(&key.as_str()));
-    match decode_view_attempt(value) {
-        Ok(attempt) => {
-            if !seen_views.insert(attempt.operation_id.clone()) {
-                return Err(WorldProtocolError {
-                    kind: KIND_SNAPSHOT,
-                    message: "duplicate-view-attempt",
-                });
-            }
-            if extra {
-                let diagnostic = attempt_hold_scope(map);
-                let (row, fields) = held_attempt_row(
-                    AttemptLaneV4::View,
-                    ordinal,
-                    map,
-                    SCHEMA,
-                    vec![attempt.operation_id],
-                    diagnostic,
-                );
-                return Ok(AttemptRowOutcome::Held { row, fields });
-            }
-            Ok(AttemptRowOutcome::Valid(attempt))
-        }
-        Err(reason) => {
-            let (op, _) = attempt_identity(map, true, false);
-            match op {
-                Some(op) => {
-                    if !seen_views.insert(op.clone()) {
-                        return Err(WorldProtocolError {
-                            kind: KIND_SNAPSHOT,
-                            message: "duplicate-view-attempt",
-                        });
-                    }
-                    let (row, fields) = held_attempt_row(
-                        AttemptLaneV4::View,
-                        ordinal,
-                        map,
-                        SCHEMA,
-                        vec![op],
-                        attempt_hold_scope(map),
-                    );
-                    Ok(AttemptRowOutcome::Held { row, fields })
-                }
-                None => Err(reason),
-            }
-        }
-    }
-}
-
-/// Staged v4 clear-attempt decode: strict shapes from v3, but any carried
-/// extra key or other value failure holds the identifiable (`op` + `win`)
-/// row instead of refusing the envelope.
-fn decode_clear_attempt_v4(
-    value: &serde_json::Value,
-    ordinal: usize,
-    seen_clears: &mut std::collections::BTreeSet<(String, String)>,
-) -> Result<AttemptRowOutcome<tiler_core::world_report::ClearAttempt>> {
-    const SCHEMA: &[&str] = &["op", "win", "setter", "pre", "post", "attemptMs"];
-    let map = as_object(value)?;
-    let extra = map.keys().any(|key| !SCHEMA.contains(&key.as_str()));
-    match decode_clear_attempt(value) {
-        Ok(attempt) => {
-            let key = (attempt.operation_id.clone(), attempt.window.0.clone());
-            if !seen_clears.insert(key) {
-                return Err(WorldProtocolError {
-                    kind: KIND_SNAPSHOT,
-                    message: "duplicate-clear-attempt",
-                });
-            }
-            if extra {
-                let (row, fields) = held_attempt_row(
-                    AttemptLaneV4::Clear,
-                    ordinal,
-                    map,
-                    SCHEMA,
-                    vec![attempt.operation_id, attempt.window.0],
-                    attempt_hold_scope(map),
-                );
-                return Ok(AttemptRowOutcome::Held { row, fields });
-            }
-            Ok(AttemptRowOutcome::Valid(attempt))
-        }
-        Err(reason) => {
-            let (op, win) = attempt_identity(map, true, true);
-            match (op, win) {
-                (Some(op), Some(win)) => {
-                    if !seen_clears.insert((op.clone(), win.clone())) {
-                        return Err(WorldProtocolError {
-                            kind: KIND_SNAPSHOT,
-                            message: "duplicate-clear-attempt",
-                        });
-                    }
-                    let (row, fields) = held_attempt_row(
-                        AttemptLaneV4::Clear,
-                        ordinal,
-                        map,
-                        SCHEMA,
-                        vec![op, win],
-                        attempt_hold_scope(map),
-                    );
-                    Ok(AttemptRowOutcome::Held { row, fields })
-                }
-                _ => Err(reason),
-            }
-        }
-    }
-}
-
 /// Staged v4 creation-attempt decode: structural preflight over the readable
 /// fields first (mirrors the core creation gate: bad ids, per-row caps and
 /// dupes, op uniqueness, receipt reuse, aggregate budget), then the strict
@@ -4507,7 +3964,7 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
             "actionOutputs",
             "presentation",
             "intentRecords",
-            "stateAttempts",
+            "propertyAttempts",
             "focusFeedback",
             "rendererInput",
         ],
@@ -4515,10 +3972,6 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
             "cursorHit",
             "monotonicMs",
             "primary",
-            "frameAttempts",
-            "memberAttempts",
-            "viewAttempts",
-            "clearAttempts",
             "creationAttempts",
             "gestureIngress",
         ],
@@ -4727,90 +4180,17 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
         }
         Some(_) => return Err(unknown_value()),
     };
-    let mut frames = Vec::new();
-    let mut held_attempts: Vec<HeldAttemptRow> = Vec::new();
-    let mut held_attempt_fields = Vec::new();
-    let mut seen_frames = std::collections::BTreeSet::new();
-    if let Some(frames_value) = map.get("frameAttempts") {
-        let items = frames_value.as_array().ok_or_else(malformed)?;
-        // Total carried rows (valid plus held) share the lane bound: the
-        // gate runs before per-row decode so held rows cannot escape it.
-        if items.len() > tiler_core::world_report::MAX_WORLD_FRAMES {
-            return Err(WorldProtocolError {
-                kind: KIND_SNAPSHOT,
-                message: "section-over-cap",
-            });
-        }
-        for (ordinal, item) in items.iter().enumerate() {
-            match decode_frame_attempt_v4(item, ordinal, &mut seen_frames)? {
-                AttemptRowOutcome::Valid(attempt) => frames.push(attempt),
-                AttemptRowOutcome::Held { row, fields } => {
-                    held_attempt_fields.push((AttemptLaneV4::Frame, row.ordinal, fields));
-                    held_attempts.push(row);
-                }
-            }
-        }
-    }
-    let mut member_attempts = Vec::new();
-    let mut seen_members = std::collections::BTreeSet::new();
-    if let Some(value) = map.get("memberAttempts") {
-        let items = value.as_array().ok_or_else(malformed)?;
-        if items.len() > tiler_core::world_report::MAX_WORLD_MEMBER_ATTEMPTS {
-            return Err(WorldProtocolError {
-                kind: KIND_SNAPSHOT,
-                message: "section-over-cap",
-            });
-        }
-        for (ordinal, item) in items.iter().enumerate() {
-            match decode_member_attempt_v4(item, ordinal, &mut seen_members)? {
-                AttemptRowOutcome::Valid(attempt) => member_attempts.push(attempt),
-                AttemptRowOutcome::Held { row, fields } => {
-                    held_attempt_fields.push((AttemptLaneV4::Member, row.ordinal, fields));
-                    held_attempts.push(row);
-                }
-            }
-        }
-    }
-    let mut view_attempts = Vec::new();
-    let mut seen_views = std::collections::BTreeSet::new();
-    if let Some(value) = map.get("viewAttempts") {
-        let items = value.as_array().ok_or_else(malformed)?;
-        if items.len() > tiler_core::world_report::MAX_WORLD_VIEW_ATTEMPTS {
-            return Err(WorldProtocolError {
-                kind: KIND_SNAPSHOT,
-                message: "section-over-cap",
-            });
-        }
-        for (ordinal, item) in items.iter().enumerate() {
-            match decode_view_attempt_v4(item, ordinal, &mut seen_views)? {
-                AttemptRowOutcome::Valid(attempt) => view_attempts.push(attempt),
-                AttemptRowOutcome::Held { row, fields } => {
-                    held_attempt_fields.push((AttemptLaneV4::View, row.ordinal, fields));
-                    held_attempts.push(row);
-                }
-            }
-        }
-    }
-    let mut clear_attempts = Vec::new();
-    let mut seen_clears = std::collections::BTreeSet::new();
-    if let Some(value) = map.get("clearAttempts") {
-        let items = value.as_array().ok_or_else(malformed)?;
-        if items.len() > tiler_core::world_report::MAX_WORLD_CLEAR_ATTEMPTS {
-            return Err(WorldProtocolError {
-                kind: KIND_SNAPSHOT,
-                message: "section-over-cap",
-            });
-        }
-        for (ordinal, item) in items.iter().enumerate() {
-            match decode_clear_attempt_v4(item, ordinal, &mut seen_clears)? {
-                AttemptRowOutcome::Valid(attempt) => clear_attempts.push(attempt),
-                AttemptRowOutcome::Held { row, fields } => {
-                    held_attempt_fields.push((AttemptLaneV4::Clear, row.ordinal, fields));
-                    held_attempts.push(row);
-                }
-            }
-        }
-    }
+    let property_attempts_value = map.get("propertyAttempts").ok_or_else(malformed)?;
+    let property_items = property_attempts_value.as_array().ok_or_else(malformed)?;
+    let (decoded_prefix, property_tail) =
+        crate::world_property_attempts::decode_property_attempts_prefix(property_items)?;
+    let frames = decoded_prefix.frames;
+    let member_attempts = decoded_prefix.member_attempts;
+    let view_attempts = decoded_prefix.view_attempts;
+    let clear_attempts = decoded_prefix.clear_attempts;
+    let mut held_attempts = decoded_prefix.held_attempts;
+    let mut held_attempt_fields = decoded_prefix.held_attempt_fields;
+    let property_attempt_order = decoded_prefix.property_attempt_order;
     let mut creation_attempts = Vec::new();
     let mut creation_receipts = Vec::new();
     let mut seen_creations: std::collections::BTreeMap<String, Option<(String, String)>> =
@@ -4852,28 +4232,13 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
             }
         }
     }
-    // Required native-state attempts: closed mechanical rows, no missing
-    // tolerance. Unknown fields/values refuse; per-property duplicates
-    // refuse below.
-    let state_attempts_value = map.get("stateAttempts").ok_or_else(malformed)?;
-    let mut state_attempts = Vec::new();
-    let mut seen_states = std::collections::BTreeSet::new();
-    for item in state_attempts_value.as_array().ok_or_else(malformed)? {
-        let attempt = decode_state_attempt(item)?;
-        if !seen_states.insert((attempt.window.0.clone(), attempt.property)) {
-            return Err(WorldProtocolError {
-                kind: KIND_SNAPSHOT,
-                message: "duplicate-state-attempt",
-            });
-        }
-        state_attempts.push(attempt);
-    }
-    if state_attempts.len() > tiler_core::world_report::MAX_WORLD_STATE_ATTEMPTS {
-        return Err(WorldProtocolError {
-            kind: KIND_SNAPSHOT,
-            message: "section-over-cap",
-        });
-    }
+    let decoded_tail = crate::world_property_attempts::decode_property_attempts_tail(
+        property_tail,
+        &mut held_attempts,
+        &mut held_attempt_fields,
+    )?;
+    let state_attempts = decoded_tail.state_attempts;
+    let visibility_attempts = decoded_tail.visibility_attempts;
     // Required correlated focus evidence: closed mechanical rows, no
     // missing tolerance. Both arms decode context-free here; the engine
     // host gate owns the native/output check.
@@ -5031,6 +4396,7 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
         presentation,
         intent_records,
         state_attempts,
+        visibility_attempts,
         focus_feedback,
         primary_output: match map.get("primary") {
             None => None,
@@ -5088,10 +4454,6 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
             Some(_) => return Err(unknown_value()),
         },
         monotonic_ms_present: map.contains_key("monotonicMs"),
-        frame_attempts_present: map.contains_key("frameAttempts"),
-        member_attempts_present: map.contains_key("memberAttempts"),
-        view_attempts_present: map.contains_key("viewAttempts"),
-        clear_attempts_present: map.contains_key("clearAttempts"),
         creation_attempts_present: map.contains_key("creationAttempts"),
         gesture_ingress: match map.get("gestureIngress") {
             None => GestureIngressWire::Absent,
@@ -5120,6 +4482,7 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
     Ok(DecodedReportV4 {
         report,
         wire,
+        property_attempt_order,
         creation_receipts,
         residual,
     })
@@ -6508,7 +5871,7 @@ pub fn encode_reply_v4(decoded: &DecodedReplyV4) -> Result<String> {
 /// Fixed-message refusal for the staged v4 report writer: every writer
 /// refusal is `snapshot-invalid` with a fixed message, never a payload
 /// echo.
-fn snapshot_invalid(message: &'static str) -> WorldProtocolError {
+pub(crate) fn snapshot_invalid(message: &'static str) -> WorldProtocolError {
     WorldProtocolError {
         kind: KIND_SNAPSHOT,
         message,
@@ -6562,7 +5925,7 @@ fn merge_lane(valid: Vec<String>, held: Vec<(usize, String)>) -> Result<Vec<Stri
 /// Encode one retained held row field map in stored order (canonical schema
 /// order at decode, then extras lexicographically). A non-finite retained
 /// number anywhere inside refuses instead of normalizing to `null`.
-fn encode_held_fields(fields: &[(String, RawSettingValue)]) -> Result<String> {
+pub(crate) fn encode_held_fields(fields: &[(String, RawSettingValue)]) -> Result<String> {
     let mut out = String::new();
     out.push('{');
     for (i, (key, value)) in fields.iter().enumerate() {
@@ -6615,32 +5978,8 @@ fn encode_native_observation_v4(row: &NativeObservation) -> Result<String> {
 }
 
 /// Checked canonical encode of one valid v4 frame row.
-fn encode_frame_attempt_v4(row: &tiler_core::world_report::FrameAttempt) -> Result<String> {
-    let mut out = String::new();
-    out.push_str("{\"win\":");
-    push_json_string(&mut out, &row.window.0);
-    out.push_str(",\"target\":");
-    push_rect(&mut out, &row.target);
-    out.push_str(",\"setter\":");
-    push_json_string(&mut out, row.setter.as_str());
-    out.push_str(",\"readback\":");
-    push_opt_rect(&mut out, &row.readback);
-    out.push_str(",\"dpiBefore\":");
-    push_opt_u32(&mut out, &row.dpi_before);
-    out.push_str(",\"dpiAfter\":");
-    push_opt_u32(&mut out, &row.dpi_after);
-    out.push_str(",\"attemptMs\":\"");
-    out.push_str(&row.attempt_ms.to_string());
-    out.push_str("\",\"op\":");
-    push_json_string(&mut out, row.operation_id.as_deref().unwrap_or(""));
-    out.push_str(",\"pre\":");
-    push_opt_rect(&mut out, &row.prewrite);
-    out.push('}');
-    Ok(out)
-}
-
 /// Canonical encode of one nullable bare `u32` lane scalar.
-fn push_opt_u32(out: &mut String, value: &Option<u32>) {
+pub(crate) fn push_opt_u32(out: &mut String, value: &Option<u32>) {
     match value {
         None => out.push_str("null"),
         Some(value) => out.push_str(&value.to_string()),
@@ -6669,76 +6008,11 @@ fn push_workspace_ref(out: &mut String, reference: &WorkspaceRef) {
 }
 
 /// Canonical encode of one nullable workspace reference.
-fn push_opt_workspace_ref(out: &mut String, value: &Option<WorkspaceRef>) {
+pub(crate) fn push_opt_workspace_ref(out: &mut String, value: &Option<WorkspaceRef>) {
     match value {
         None => out.push_str("null"),
         Some(reference) => push_workspace_ref(out, reference),
     }
-}
-
-/// Checked canonical encode of one valid v4 member row.
-fn encode_member_attempt_v4(row: &tiler_core::world_report::MemberAttempt) -> Result<String> {
-    let mut out = String::new();
-    out.push_str("{\"op\":");
-    push_json_string(&mut out, &row.operation_id);
-    out.push_str(",\"win\":");
-    push_json_string(&mut out, &row.window.0);
-    out.push_str(",\"out\":");
-    push_json_string(&mut out, &row.target_output.0);
-    out.push_str(",\"ws\":");
-    push_json_string(&mut out, &row.target_workspace);
-    out.push_str(",\"setter\":");
-    push_json_string(&mut out, row.setter.as_str());
-    out.push_str(",\"pre\":");
-    push_opt_workspace_ref(&mut out, &row.pre);
-    out.push_str(",\"post\":");
-    push_opt_workspace_ref(&mut out, &row.post);
-    out.push_str(",\"attemptMs\":\"");
-    out.push_str(&row.attempt_ms.to_string());
-    out.push_str("\"}");
-    Ok(out)
-}
-
-/// Checked canonical encode of one valid v4 view row.
-fn encode_view_attempt_v4(row: &tiler_core::world_report::ViewAttempt) -> Result<String> {
-    let mut out = String::new();
-    out.push_str("{\"op\":");
-    push_json_string(&mut out, &row.operation_id);
-    out.push_str(",\"out\":");
-    push_json_string(&mut out, &row.target_output.0);
-    out.push_str(",\"ws\":");
-    push_json_string(&mut out, &row.target_workspace);
-    out.push_str(",\"setter\":");
-    push_json_string(&mut out, row.setter.as_str());
-    out.push_str(",\"pre\":");
-    push_opt_workspace_ref(&mut out, &row.pre);
-    out.push_str(",\"post\":");
-    push_opt_workspace_ref(&mut out, &row.post);
-    out.push_str(",\"base\":");
-    push_opt_workspace_ref(&mut out, &row.baseline);
-    out.push_str(",\"attemptMs\":\"");
-    out.push_str(&row.attempt_ms.to_string());
-    out.push_str("\"}");
-    Ok(out)
-}
-
-/// Checked canonical encode of one valid v4 clear row.
-fn encode_clear_attempt_v4(row: &tiler_core::world_report::ClearAttempt) -> Result<String> {
-    let mut out = String::new();
-    out.push_str("{\"op\":");
-    push_json_string(&mut out, &row.operation_id);
-    out.push_str(",\"win\":");
-    push_json_string(&mut out, &row.window.0);
-    out.push_str(",\"setter\":");
-    push_json_string(&mut out, row.setter.as_str());
-    out.push_str(",\"pre\":");
-    push_opt_bool(&mut out, &row.pre_maximized);
-    out.push_str(",\"post\":");
-    push_opt_bool(&mut out, &row.post_maximized);
-    out.push_str(",\"attemptMs\":\"");
-    out.push_str(&row.attempt_ms.to_string());
-    out.push_str("\"}");
-    Ok(out)
 }
 
 /// Checked canonical encode of one valid v4 creation row. The receipt key
@@ -6800,7 +6074,7 @@ fn encode_creation_attempt_v4(
 }
 
 /// Canonical encode of one visibility sample.
-fn push_visibility_sample(out: &mut String, sample: &VisibilitySample) {
+pub(crate) fn push_visibility_sample(out: &mut String, sample: &VisibilitySample) {
     out.push_str("{\"obs\":\"");
     out.push_str(&sample.obs.to_string());
     out.push_str("\",\"lifetimeMatched\":");
@@ -6846,29 +6120,6 @@ fn push_arrival_bracket(out: &mut String, bracket: &ArrivalBracket) {
     out.push_str(",\"after\":");
     push_visibility_sample(out, &bracket.after);
     out.push('}');
-}
-
-/// Checked canonical encode of one state row.
-fn encode_state_attempt(row: &tiler_core::world_report::StateAttempt) -> Result<String> {
-    let mut out = String::new();
-    out.push_str("{\"win\":");
-    push_json_string(&mut out, &row.window.0);
-    out.push_str(",\"property\":");
-    push_json_string(&mut out, row.property.as_str());
-    out.push_str(",\"target\":");
-    out.push_str(if row.target { "true" } else { "false" });
-    out.push_str(",\"rev\":\"");
-    out.push_str(&row.revision.to_string());
-    out.push_str("\",\"setter\":");
-    push_json_string(&mut out, row.setter.as_str());
-    out.push_str(",\"pre\":");
-    push_opt_bool(&mut out, &row.pre);
-    out.push_str(",\"post\":");
-    push_opt_bool(&mut out, &row.post);
-    out.push_str(",\"attemptMs\":\"");
-    out.push_str(&row.attempt_ms.to_string());
-    out.push_str("\"}");
-    Ok(out)
 }
 
 /// Checked canonical encode of one focus-feedback row.
@@ -7421,36 +6672,10 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
             .filter(move |held| held.lane == lane)
             .count()
     };
-    for (valid, lane, present) in [
-        (
-            report.frames.len(),
-            AttemptLaneV4::Frame,
-            wire.frame_attempts_present,
-        ),
-        (
-            report.member_attempts.len(),
-            AttemptLaneV4::Member,
-            wire.member_attempts_present,
-        ),
-        (
-            report.view_attempts.len(),
-            AttemptLaneV4::View,
-            wire.view_attempts_present,
-        ),
-        (
-            report.clear_attempts.len(),
-            AttemptLaneV4::Clear,
-            wire.clear_attempts_present,
-        ),
-        (
-            report.creation_attempts.len(),
-            AttemptLaneV4::Creation,
-            wire.creation_attempts_present,
-        ),
-    ] {
-        if (valid > 0 || held_in_lane(lane) > 0) && !present {
-            return Err(snapshot_invalid("attempt-lane-inconsistent"));
-        }
+    if (!report.creation_attempts.is_empty() || held_in_lane(AttemptLaneV4::Creation) > 0)
+        && !wire.creation_attempts_present
+    {
+        return Err(snapshot_invalid("attempt-lane-inconsistent"));
     }
     if decoded.creation_receipts.len() != report.creation_attempts.len() {
         return Err(snapshot_invalid("creation-receipt-mismatch"));
@@ -7714,58 +6939,6 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
         };
     emit_attempt_lane(
         &mut out,
-        "frameAttempts",
-        wire.frame_attempts_present,
-        merge_lane(
-            report
-                .frames
-                .iter()
-                .map(encode_frame_attempt_v4)
-                .collect::<Result<Vec<_>>>()?,
-            collect_held_attempts(AttemptLaneV4::Frame, report.frames.len())?,
-        )?,
-    );
-    emit_attempt_lane(
-        &mut out,
-        "memberAttempts",
-        wire.member_attempts_present,
-        merge_lane(
-            report
-                .member_attempts
-                .iter()
-                .map(encode_member_attempt_v4)
-                .collect::<Result<Vec<_>>>()?,
-            collect_held_attempts(AttemptLaneV4::Member, report.member_attempts.len())?,
-        )?,
-    );
-    emit_attempt_lane(
-        &mut out,
-        "viewAttempts",
-        wire.view_attempts_present,
-        merge_lane(
-            report
-                .view_attempts
-                .iter()
-                .map(encode_view_attempt_v4)
-                .collect::<Result<Vec<_>>>()?,
-            collect_held_attempts(AttemptLaneV4::View, report.view_attempts.len())?,
-        )?,
-    );
-    emit_attempt_lane(
-        &mut out,
-        "clearAttempts",
-        wire.clear_attempts_present,
-        merge_lane(
-            report
-                .clear_attempts
-                .iter()
-                .map(encode_clear_attempt_v4)
-                .collect::<Result<Vec<_>>>()?,
-            collect_held_attempts(AttemptLaneV4::Clear, report.clear_attempts.len())?,
-        )?,
-    );
-    emit_attempt_lane(
-        &mut out,
         "creationAttempts",
         wire.creation_attempts_present,
         merge_lane(
@@ -7802,14 +6975,16 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
         push_json_string(&mut out, &record.data);
         out.push('}');
     }
-    out.push_str("],\"stateAttempts\":[");
-    for (i, row) in report.state_attempts.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str(&encode_state_attempt(row)?);
-    }
-    out.push_str("],\"focusFeedback\":[");
+    out.push(']');
+    crate::world_property_attempts::encode_property_attempts_v4(
+        &mut out,
+        report,
+        &decoded.property_attempt_order,
+        residual_ref
+            .map(|r| r.held_attempt_fields.as_slice())
+            .unwrap_or(&[]),
+    )?;
+    out.push_str(",\"focusFeedback\":[");
     for (i, row) in report.focus_feedback.iter().enumerate() {
         if i > 0 {
             out.push(',');
@@ -8076,7 +7251,7 @@ mod tests {
               \"hiddenWorkspace\":null,\"frame\":null,\"chordHeld\":false,\
               \"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\
               \"witness\":null,\"foregroundOut\":null}},\
-              \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\
+              \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
               \"rendererInput\":null}}"
         )
     }

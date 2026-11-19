@@ -146,6 +146,7 @@ fn report_v4(
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
+        visibility_attempts: Vec::new(),
         focus_feedback: Vec::new(),
         presentation: PresentationRowV4::Valid(ingress),
         intent_records: Vec::new(),
@@ -2098,7 +2099,6 @@ fn staged_automatic_born_clear_at_1024_cap_rejects_transactionally_without_wedgi
             ordinal: i,
             output: None,
             has_native_workspace: false,
-            last_write: None,
             diagnostic: None,
             kind: RowDiagnosticKind::InvalidFact,
         })
@@ -2935,8 +2935,8 @@ fn published_settlement_trace_operation_q1_q2_duplicate_late_toggle_and_reset() 
 #[test]
 fn published_settlement_trace_switch_q1_lifecycle_genuine() {
     use crate::world_report::{
-        ArrivalBracket, ArrivalLocation, FocusFeedback, LastWrite, LastWritePath,
-        LastWriteProperty, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
+        ArrivalBracket, ArrivalLocation, FocusFeedback, LastWritePath, VisibilityAttempt,
+        VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
     };
 
     let mut engine = engine_with(Vec::new());
@@ -3005,8 +3005,8 @@ fn published_settlement_trace_switch_q1_lifecycle_genuine() {
         .find(|w| w.lifetime.0 == "win-b")
         .and_then(|w| w.effective_frame);
 
-    let lw = |target: bool, rev: u64, obs: u64| LastWrite {
-        property: LastWriteProperty::Visibility,
+    let vis_attempt = |win: &str, target: bool, rev: u64, obs: u64| VisibilityAttempt {
+        window: WindowId(win.to_owned()),
         target,
         revision: rev,
         path: LastWritePath::Staged,
@@ -3027,19 +3027,14 @@ fn published_settlement_trace_switch_q1_lifecycle_genuine() {
     let mut r4 = report_v4(
         4,
         screens.clone(),
-        vec![
-            WindowFact {
-                last_write: Some(lw(false, rev3, 4)),
-                ..w1.clone()
-            },
-            WindowFact {
-                last_write: Some(lw(true, rev3, 4)),
-                ..w2.clone()
-            },
-        ],
+        vec![w1.clone(), w2.clone()],
         "win-b",
         ingress_v4("win-b"),
     );
+    r4.visibility_attempts = vec![
+        vis_attempt("win-a", false, rev3, 4),
+        vis_attempt("win-b", true, rev3, 4),
+    ];
     r4.focus_feedback = vec![FocusFeedback {
         id: eff3.id,
         target: WindowId("win-b".to_owned()),
@@ -3125,22 +3120,11 @@ fn published_settlement_trace_switch_q1_lifecycle_genuine() {
         .iter()
         .find(|w| w.lifetime.0 == "win-a")
         .and_then(|w| w.effective_frame);
-    let mut r6 = report_v4(
-        6,
-        screens,
-        vec![
-            WindowFact {
-                last_write: Some(lw(true, rev5, 6)),
-                ..w1
-            },
-            WindowFact {
-                last_write: Some(lw(false, rev5, 6)),
-                ..w2
-            },
-        ],
-        "win-a",
-        ingress_v4("win-a"),
-    );
+    let mut r6 = report_v4(6, screens, vec![w1, w2], "win-a", ingress_v4("win-a"));
+    r6.visibility_attempts = vec![
+        vis_attempt("win-a", true, rev5, 6),
+        vis_attempt("win-b", false, rev5, 6),
+    ];
     r6.focus_feedback = vec![FocusFeedback {
         id: eff5.id,
         target: WindowId("win-a".to_owned()),

@@ -15,14 +15,16 @@ use tiler_core::connection::{FactName, HostCapabilities};
 use tiler_core::directional::OutputId;
 use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
-    AuthorityScope, PresentationRowV4, RowDiagnosticKind, RowDiagnosticLane, WorldReportV4,
+    AttemptLaneV4, AuthorityScope, PresentationRowV4, RowDiagnosticKind, RowDiagnosticLane,
+    WorldReportV4,
 };
 use tiler_core::world_stage_v4::StagedV4Census;
 use tiler_protocol::connection_protocol::decode_handshake_request;
 use tiler_protocol::world_protocol::decode_report_v4;
 
 fn fixture_root() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/world-wire/v4")
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/world-wire/v4-active")
 }
 
 /// Current active handshake/scenario family root. Frozen `v4` bytes predate
@@ -132,7 +134,22 @@ fn assert_conserved(id: &str, report: &WorldReportV4, census: &StagedV4Census) {
         + report
             .held_attempts
             .iter()
-            .filter(|held| held.diagnostic.is_some())
+            .filter(|held| {
+                if held.lane == AttemptLaneV4::Visibility {
+                    held.identity.first().is_some_and(|win| {
+                        report
+                            .windows
+                            .iter()
+                            .any(|w| w.window.0 == *win && w.output.is_some())
+                            || report
+                                .held_windows
+                                .iter()
+                                .any(|w| w.window.0 == *win && w.output.is_some())
+                    })
+                } else {
+                    held.diagnostic.is_some()
+                }
+            })
             .count()
         + usize::from(
             matches!(&report.presentation, PresentationRowV4::Held(held) if held.diagnostic.is_some()),

@@ -83,7 +83,6 @@ fn fact_native(window: &str, output: &str, frame: Rect, native: Option<&str>) ->
             visible: Some(true),
             suppression_owned: None,
         },
-        last_write: None,
     }
 }
 
@@ -152,6 +151,7 @@ fn report(
         creation_attempts: creations,
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
+        visibility_attempts: Vec::new(),
         focus_feedback: Vec::new(),
         presentation: tiler_core::world_report::PresentationRowV4::Valid(
             tiler_core::world_report::PresentationIngressV4::default(),

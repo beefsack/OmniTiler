@@ -174,34 +174,36 @@ impl StagedReport {
 }
 
 impl StagedObservation {
-    /// Normalize wire-bound visibility `LastWrite` evidence into the canonical
-    /// attempt lane at most once per captured report.
+    /// Normalize wire-bound visibility attempt evidence into the canonical
+    /// attempt lane at most once per captured report. Only rows whose window
+    /// matches a live or held window in this report are admitted; absent and
+    /// close-only subjects are ignored with no authority or diagnostic.
     pub(crate) fn normalize_visibility_attempts(
         &mut self,
+        visibility_attempts: &[crate::world_report::VisibilityAttempt],
         facts: &BTreeMap<WindowId, crate::world_report::WindowFact>,
         held_windows: &[crate::world_report::HeldWindowRow],
     ) {
         if self.visibility_normalized {
             return;
         }
-        let mut covered: BTreeSet<WindowId> = BTreeSet::new();
-        for (window, fact) in facts {
-            if let Some(last) = fact.last_write {
-                self.property_attempts.push(
-                    crate::world_attempts::PropertyAttempt::from_last_write(window, &last),
-                );
-                covered.insert(window.clone());
-            }
+        if visibility_attempts.is_empty() {
+            self.visibility_normalized = true;
+            return;
         }
-        for held_row in held_windows {
-            if covered.contains(&held_row.window) {
-                continue;
-            }
-            if let Some(attempt) =
-                crate::world_attempts::PropertyAttempt::from_held_last_write(held_row)
-            {
-                covered.insert(held_row.window.clone());
-                self.property_attempts.push(attempt);
+        let held_set: Option<std::collections::BTreeSet<&WindowId>> = if held_windows.is_empty() {
+            None
+        } else {
+            Some(held_windows.iter().map(|held| &held.window).collect())
+        };
+        for attempt in visibility_attempts {
+            let present = facts.contains_key(&attempt.window)
+                || held_set
+                    .as_ref()
+                    .is_some_and(|set| set.contains(&attempt.window));
+            if present {
+                self.property_attempts
+                    .push(crate::world_attempts::PropertyAttempt::from_visibility_attempt(attempt));
             }
         }
         self.visibility_normalized = true;

@@ -175,7 +175,7 @@
     },
     {
       "id": "report-empty",
-      "file": "../v4/messages/report-empty.json",
+      "file": "messages/report-empty.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -184,7 +184,7 @@
     },
     {
       "id": "report-observe",
-      "file": "../v4/messages/report-observe.json",
+      "file": "messages/report-observe.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -196,7 +196,7 @@
     },
     {
       "id": "report-native",
-      "file": "../v4/messages/report-native.json",
+      "file": "messages/report-native.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -208,7 +208,7 @@
     },
     {
       "id": "report-command-focus",
-      "file": "../v4/messages/report-command-focus.json",
+      "file": "messages/report-command-focus.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -220,7 +220,7 @@
     },
     {
       "id": "report-command-send",
-      "file": "../v4/messages/report-command-send.json",
+      "file": "messages/report-command-send.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -232,7 +232,7 @@
     },
     {
       "id": "report-command-select-workspace",
-      "file": "../v4/messages/report-command-select-workspace.json",
+      "file": "messages/report-command-select-workspace.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -244,7 +244,7 @@
     },
     {
       "id": "report-command-select-numbered",
-      "file": "../v4/messages/report-command-select-numbered.json",
+      "file": "messages/report-command-select-numbered.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -256,7 +256,7 @@
     },
     {
       "id": "report-command-select-relative",
-      "file": "../v4/messages/report-command-select-relative.json",
+      "file": "messages/report-command-select-relative.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -268,7 +268,7 @@
     },
     {
       "id": "report-command-select-previous",
-      "file": "../v4/messages/report-command-select-previous.json",
+      "file": "messages/report-command-select-previous.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -280,7 +280,7 @@
     },
     {
       "id": "report-command-select-trailing",
-      "file": "../v4/messages/report-command-select-trailing.json",
+      "file": "messages/report-command-select-trailing.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -292,7 +292,7 @@
     },
     {
       "id": "report-command-send-relative",
-      "file": "../v4/messages/report-command-send-relative.json",
+      "file": "messages/report-command-send-relative.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -304,7 +304,7 @@
     },
     {
       "id": "report-command-send-numbered",
-      "file": "../v4/messages/report-command-send-numbered.json",
+      "file": "messages/report-command-send-numbered.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -316,7 +316,7 @@
     },
     {
       "id": "report-command-set-workspace-tiling",
-      "file": "../v4/messages/report-command-set-workspace-tiling.json",
+      "file": "messages/report-command-set-workspace-tiling.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -328,7 +328,7 @@
     },
     {
       "id": "report-command-toggle-workspace-tiling",
-      "file": "../v4/messages/report-command-toggle-workspace-tiling.json",
+      "file": "messages/report-command-toggle-workspace-tiling.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -340,7 +340,7 @@
     },
     {
       "id": "report-command-migrate-workspace",
-      "file": "../v4/messages/report-command-migrate-workspace.json",
+      "file": "messages/report-command-migrate-workspace.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -352,7 +352,7 @@
     },
     {
       "id": "report-command-focus-directional",
-      "file": "../v4/messages/report-command-focus-directional.json",
+      "file": "messages/report-command-focus-directional.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -364,7 +364,7 @@
     },
     {
       "id": "report-command-move-directional",
-      "file": "../v4/messages/report-command-move-directional.json",
+      "file": "messages/report-command-move-directional.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -376,7 +376,7 @@
     },
     {
       "id": "report-command-send-directional",
-      "file": "../v4/messages/report-command-send-directional.json",
+      "file": "messages/report-command-send-directional.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -388,7 +388,7 @@
     },
     {
       "id": "report-command-migrate-directional",
-      "file": "../v4/messages/report-command-migrate-directional.json",
+      "file": "messages/report-command-migrate-directional.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -400,7 +400,7 @@
     },
     {
       "id": "report-command-toggle-maximize",
-      "file": "../v4/messages/report-command-toggle-maximize.json",
+      "file": "messages/report-command-toggle-maximize.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -412,7 +412,7 @@
     },
     {
       "id": "report-command-toggle-float",
-      "file": "../v4/messages/report-command-toggle-float.json",
+      "file": "messages/report-command-toggle-float.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -424,7 +424,7 @@
     },
     {
       "id": "report-command-toggle-orientation",
-      "file": "../v4/messages/report-command-toggle-orientation.json",
+      "file": "messages/report-command-toggle-orientation.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -436,7 +436,7 @@
     },
     {
       "id": "report-command-resize",
-      "file": "../v4/messages/report-command-resize.json",
+      "file": "messages/report-command-resize.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -448,7 +448,7 @@
     },
     {
       "id": "report-command-set-fullscreen",
-      "file": "../v4/messages/report-command-set-fullscreen.json",
+      "file": "messages/report-command-set-fullscreen.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -460,7 +460,7 @@
     },
     {
       "id": "report-command-toggle-fullscreen",
-      "file": "../v4/messages/report-command-toggle-fullscreen.json",
+      "file": "messages/report-command-toggle-fullscreen.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -472,7 +472,7 @@
     },
     {
       "id": "report-command-set-sticky",
-      "file": "../v4/messages/report-command-set-sticky.json",
+      "file": "messages/report-command-set-sticky.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -484,7 +484,7 @@
     },
     {
       "id": "report-command-toggle-sticky",
-      "file": "../v4/messages/report-command-toggle-sticky.json",
+      "file": "messages/report-command-toggle-sticky.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -496,7 +496,7 @@
     },
     {
       "id": "report-command-resize-inwards",
-      "file": "../v4/messages/report-command-resize-inwards.json",
+      "file": "messages/report-command-resize-inwards.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -505,7 +505,7 @@
     },
     {
       "id": "report-command-resize-horizontal",
-      "file": "../v4/messages/report-command-resize-horizontal.json",
+      "file": "messages/report-command-resize-horizontal.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -514,7 +514,7 @@
     },
     {
       "id": "report-command-resize-vertical",
-      "file": "../v4/messages/report-command-resize-vertical.json",
+      "file": "messages/report-command-resize-vertical.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -523,7 +523,7 @@
     },
     {
       "id": "report-command-move-group",
-      "file": "../v4/messages/report-command-move-group.json",
+      "file": "messages/report-command-move-group.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -532,7 +532,7 @@
     },
     {
       "id": "report-command-toggle-float-null",
-      "file": "../v4/messages/report-command-toggle-float-null.json",
+      "file": "messages/report-command-toggle-float-null.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -541,7 +541,7 @@
     },
     {
       "id": "report-unknown",
-      "file": "../v4/messages/report-unknown.json",
+      "file": "messages/report-unknown.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -551,7 +551,7 @@
     },
     {
       "id": "report-native-null",
-      "file": "../v4/messages/report-native-null.json",
+      "file": "messages/report-native-null.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -563,7 +563,7 @@
     },
     {
       "id": "report-native-empty",
-      "file": "../v4/messages/report-native-empty.json",
+      "file": "messages/report-native-empty.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -575,7 +575,7 @@
     },
     {
       "id": "report-incomplete",
-      "file": "../v4/messages/report-incomplete.json",
+      "file": "messages/report-incomplete.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -585,7 +585,7 @@
     },
     {
       "id": "report-closed",
-      "file": "../v4/messages/report-closed.json",
+      "file": "messages/report-closed.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -594,7 +594,7 @@
     },
     {
       "id": "report-scale-identity-primary",
-      "file": "../v4/messages/report-scale-identity-primary.json",
+      "file": "messages/report-scale-identity-primary.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -604,7 +604,7 @@
     },
     {
       "id": "report-foreground-unmanaged",
-      "file": "../v4/messages/report-foreground-unmanaged.json",
+      "file": "messages/report-foreground-unmanaged.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -614,7 +614,7 @@
     },
     {
       "id": "report-text-escaping-relationships",
-      "file": "../v4/messages/report-text-escaping-relationships.json",
+      "file": "messages/report-text-escaping-relationships.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -623,7 +623,7 @@
     },
     {
       "id": "report-fullscreen-tiler",
-      "file": "../v4/messages/report-fullscreen-tiler.json",
+      "file": "messages/report-fullscreen-tiler.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -632,7 +632,7 @@
     },
     {
       "id": "report-fullscreen-app",
-      "file": "../v4/messages/report-fullscreen-app.json",
+      "file": "messages/report-fullscreen-app.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -641,7 +641,7 @@
     },
     {
       "id": "report-optionals-omitted",
-      "file": "../v4/messages/report-optionals-omitted.json",
+      "file": "messages/report-optionals-omitted.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -650,7 +650,7 @@
     },
     {
       "id": "report-optionals-null",
-      "file": "../v4/messages/report-optionals-null.json",
+      "file": "messages/report-optionals-null.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -659,7 +659,7 @@
     },
     {
       "id": "report-optionals-empty",
-      "file": "../v4/messages/report-optionals-empty.json",
+      "file": "messages/report-optionals-empty.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -668,7 +668,7 @@
     },
     {
       "id": "report-optionals-id",
-      "file": "../v4/messages/report-optionals-id.json",
+      "file": "messages/report-optionals-id.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -677,7 +677,7 @@
     },
     {
       "id": "report-attempt-frame",
-      "file": "../v4/messages/report-attempt-frame.json",
+      "file": "messages/report-attempt-frame.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -686,7 +686,7 @@
     },
     {
       "id": "report-attempt-frame-ordinary",
-      "file": "../v4/messages/report-attempt-frame-ordinary.json",
+      "file": "messages/report-attempt-frame-ordinary.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -696,7 +696,7 @@
     },
     {
       "id": "report-attempt-member-logical",
-      "file": "../v4/messages/report-attempt-member-logical.json",
+      "file": "messages/report-attempt-member-logical.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -708,7 +708,7 @@
     },
     {
       "id": "report-attempt-member-native",
-      "file": "../v4/messages/report-attempt-member-native.json",
+      "file": "messages/report-attempt-member-native.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -720,7 +720,7 @@
     },
     {
       "id": "report-attempt-view-native",
-      "file": "../v4/messages/report-attempt-view-native.json",
+      "file": "messages/report-attempt-view-native.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -732,7 +732,7 @@
     },
     {
       "id": "report-attempt-clear",
-      "file": "../v4/messages/report-attempt-clear.json",
+      "file": "messages/report-attempt-clear.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -741,7 +741,7 @@
     },
     {
       "id": "report-attempt-creation-omitted",
-      "file": "../v4/messages/report-attempt-creation-omitted.json",
+      "file": "messages/report-attempt-creation-omitted.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -753,7 +753,7 @@
     },
     {
       "id": "report-attempt-creation-null",
-      "file": "../v4/messages/report-attempt-creation-null.json",
+      "file": "messages/report-attempt-creation-null.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -765,7 +765,7 @@
     },
     {
       "id": "report-attempt-creation-empty",
-      "file": "../v4/messages/report-attempt-creation-empty.json",
+      "file": "messages/report-attempt-creation-empty.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -777,7 +777,7 @@
     },
     {
       "id": "report-attempt-creation-id",
-      "file": "../v4/messages/report-attempt-creation-id.json",
+      "file": "messages/report-attempt-creation-id.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -789,7 +789,7 @@
     },
     {
       "id": "report-attempt-state",
-      "file": "../v4/messages/report-attempt-state.json",
+      "file": "messages/report-attempt-state.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -798,7 +798,7 @@
     },
     {
       "id": "report-gesture-started",
-      "file": "../v4/messages/report-gesture-started.json",
+      "file": "messages/report-gesture-started.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -807,7 +807,7 @@
     },
     {
       "id": "report-gesture-updated",
-      "file": "../v4/messages/report-gesture-updated.json",
+      "file": "messages/report-gesture-updated.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -816,7 +816,7 @@
     },
     {
       "id": "report-gesture-released",
-      "file": "../v4/messages/report-gesture-released.json",
+      "file": "messages/report-gesture-released.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -825,7 +825,7 @@
     },
     {
       "id": "report-gesture-cancelled",
-      "file": "../v4/messages/report-gesture-cancelled.json",
+      "file": "messages/report-gesture-cancelled.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -834,7 +834,7 @@
     },
     {
       "id": "report-last-write-accepted",
-      "file": "../v4/messages/report-last-write-accepted.json",
+      "file": "messages/report-last-write-accepted.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -844,7 +844,7 @@
     },
     {
       "id": "report-last-write-identity-stale",
-      "file": "../v4/messages/report-last-write-identity-stale.json",
+      "file": "messages/report-last-write-identity-stale.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -854,7 +854,7 @@
     },
     {
       "id": "report-last-write-scope-held",
-      "file": "../v4/messages/report-last-write-scope-held.json",
+      "file": "messages/report-last-write-scope-held.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -864,7 +864,7 @@
     },
     {
       "id": "report-last-write-unreadable",
-      "file": "../v4/messages/report-last-write-unreadable.json",
+      "file": "messages/report-last-write-unreadable.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -874,7 +874,7 @@
     },
     {
       "id": "report-last-write-unsupported",
-      "file": "../v4/messages/report-last-write-unsupported.json",
+      "file": "messages/report-last-write-unsupported.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -884,7 +884,7 @@
     },
     {
       "id": "report-last-write-preimage-unavailable",
-      "file": "../v4/messages/report-last-write-preimage-unavailable.json",
+      "file": "messages/report-last-write-preimage-unavailable.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -894,7 +894,7 @@
     },
     {
       "id": "report-last-write-foreground-changed",
-      "file": "../v4/messages/report-last-write-foreground-changed.json",
+      "file": "messages/report-last-write-foreground-changed.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -904,7 +904,7 @@
     },
     {
       "id": "report-last-write-fullscreen",
-      "file": "../v4/messages/report-last-write-fullscreen.json",
+      "file": "messages/report-last-write-fullscreen.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -914,7 +914,7 @@
     },
     {
       "id": "report-last-write-game",
-      "file": "../v4/messages/report-last-write-game.json",
+      "file": "messages/report-last-write-game.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -924,7 +924,7 @@
     },
     {
       "id": "report-last-write-show-blocked",
-      "file": "../v4/messages/report-last-write-show-blocked.json",
+      "file": "messages/report-last-write-show-blocked.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -934,7 +934,7 @@
     },
     {
       "id": "report-last-write-focus-unproven",
-      "file": "../v4/messages/report-last-write-focus-unproven.json",
+      "file": "messages/report-last-write-focus-unproven.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -944,7 +944,7 @@
     },
     {
       "id": "report-last-write-superseded",
-      "file": "../v4/messages/report-last-write-superseded.json",
+      "file": "messages/report-last-write-superseded.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -954,7 +954,7 @@
     },
     {
       "id": "report-last-write-native-refused",
-      "file": "../v4/messages/report-last-write-native-refused.json",
+      "file": "messages/report-last-write-native-refused.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -964,7 +964,7 @@
     },
     {
       "id": "report-last-write-threw",
-      "file": "../v4/messages/report-last-write-threw.json",
+      "file": "messages/report-last-write-threw.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -973,7 +973,7 @@
     },
     {
       "id": "report-focus-feedback-proven",
-      "file": "../v4/messages/report-focus-feedback-proven.json",
+      "file": "messages/report-focus-feedback-proven.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -985,7 +985,7 @@
     },
     {
       "id": "report-focus-feedback-unreadable",
-      "file": "../v4/messages/report-focus-feedback-unreadable.json",
+      "file": "messages/report-focus-feedback-unreadable.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -998,7 +998,7 @@
     },
     {
       "id": "report-focus-feedback-refused",
-      "file": "../v4/messages/report-focus-feedback-refused.json",
+      "file": "messages/report-focus-feedback-refused.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -1010,7 +1010,7 @@
     },
     {
       "id": "report-focus-feedback-threw",
-      "file": "../v4/messages/report-focus-feedback-threw.json",
+      "file": "messages/report-focus-feedback-threw.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -1022,7 +1022,7 @@
     },
     {
       "id": "report-intent-null",
-      "file": "../v4/messages/report-intent-null.json",
+      "file": "messages/report-intent-null.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -1031,7 +1031,7 @@
     },
     {
       "id": "report-intent-tile",
-      "file": "../v4/messages/report-intent-tile.json",
+      "file": "messages/report-intent-tile.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -1040,7 +1040,7 @@
     },
     {
       "id": "report-intent-float",
-      "file": "../v4/messages/report-intent-float.json",
+      "file": "messages/report-intent-float.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -1049,7 +1049,7 @@
     },
     {
       "id": "report-intent-unsupported-inner-version",
-      "file": "../v4/messages/report-intent-unsupported-inner-version.json",
+      "file": "messages/report-intent-unsupported-inner-version.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -1059,7 +1059,7 @@
     },
     {
       "id": "report-renderer-workspace",
-      "file": "../v4/messages/report-renderer-workspace.json",
+      "file": "messages/report-renderer-workspace.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -1068,7 +1068,7 @@
     },
     {
       "id": "report-renderer-window",
-      "file": "../v4/messages/report-renderer-window.json",
+      "file": "messages/report-renderer-window.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -1077,7 +1077,7 @@
     },
     {
       "id": "report-renderer-group",
-      "file": "../v4/messages/report-renderer-group.json",
+      "file": "messages/report-renderer-group.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -2044,7 +2044,7 @@
     },
     {
       "id": "invalid-counter-numeric",
-      "file": "../v4/messages/invalid-counter-numeric.json",
+      "file": "messages/invalid-counter-numeric.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2062,7 +2062,7 @@
     },
     {
       "id": "invalid-counter-leading-zero",
-      "file": "../v4/messages/invalid-counter-leading-zero.json",
+      "file": "messages/invalid-counter-leading-zero.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2080,7 +2080,7 @@
     },
     {
       "id": "invalid-counter-negative",
-      "file": "../v4/messages/invalid-counter-negative.json",
+      "file": "messages/invalid-counter-negative.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2098,7 +2098,7 @@
     },
     {
       "id": "invalid-counter-overflow",
-      "file": "../v4/messages/invalid-counter-overflow.json",
+      "file": "messages/invalid-counter-overflow.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2116,7 +2116,7 @@
     },
     {
       "id": "invalid-generation-uppercase",
-      "file": "../v4/messages/invalid-generation-uppercase.json",
+      "file": "messages/invalid-generation-uppercase.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2134,7 +2134,7 @@
     },
     {
       "id": "invalid-id-empty",
-      "file": "../v4/messages/invalid-id-empty.json",
+      "file": "messages/invalid-id-empty.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2152,7 +2152,7 @@
     },
     {
       "id": "invalid-id-alphabet",
-      "file": "../v4/messages/invalid-id-alphabet.json",
+      "file": "messages/invalid-id-alphabet.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2170,7 +2170,7 @@
     },
     {
       "id": "invalid-id-length",
-      "file": "../v4/messages/invalid-id-length.json",
+      "file": "messages/invalid-id-length.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2188,7 +2188,7 @@
     },
     {
       "id": "invalid-report-type-tag",
-      "file": "../v4/messages/invalid-report-type-tag.json",
+      "file": "messages/invalid-report-type-tag.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2206,7 +2206,7 @@
     },
     {
       "id": "invalid-command-seq-pair",
-      "file": "../v4/messages/invalid-command-seq-pair.json",
+      "file": "messages/invalid-command-seq-pair.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2224,7 +2224,7 @@
     },
     {
       "id": "invalid-command-pair",
-      "file": "../v4/messages/invalid-command-pair.json",
+      "file": "messages/invalid-command-pair.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2242,7 +2242,7 @@
     },
     {
       "id": "invalid-missing-required-focused",
-      "file": "../v4/messages/invalid-missing-required-focused.json",
+      "file": "messages/invalid-missing-required-focused.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2260,7 +2260,7 @@
     },
     {
       "id": "invalid-focused-null",
-      "file": "../v4/messages/invalid-focused-null.json",
+      "file": "messages/invalid-focused-null.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2278,7 +2278,7 @@
     },
     {
       "id": "invalid-primary-null",
-      "file": "../v4/messages/invalid-primary-null.json",
+      "file": "messages/invalid-primary-null.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2296,7 +2296,7 @@
     },
     {
       "id": "invalid-monotonic-number",
-      "file": "../v4/messages/invalid-monotonic-number.json",
+      "file": "messages/invalid-monotonic-number.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2311,7 +2311,7 @@
     },
     {
       "id": "invalid-removed-report-owner",
-      "file": "../v4/messages/invalid-removed-report-owner.json",
+      "file": "messages/invalid-removed-report-owner.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2329,7 +2329,7 @@
     },
     {
       "id": "invalid-removed-report-mode",
-      "file": "../v4/messages/invalid-removed-report-mode.json",
+      "file": "messages/invalid-removed-report-mode.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2347,7 +2347,7 @@
     },
     {
       "id": "invalid-removed-report-views",
-      "file": "../v4/messages/invalid-removed-report-views.json",
+      "file": "messages/invalid-removed-report-views.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2365,7 +2365,7 @@
     },
     {
       "id": "invalid-removed-report-hostOwned",
-      "file": "../v4/messages/invalid-removed-report-hostOwned.json",
+      "file": "messages/invalid-removed-report-hostOwned.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2383,7 +2383,7 @@
     },
     {
       "id": "invalid-removed-report-equalCount",
-      "file": "../v4/messages/invalid-removed-report-equalCount.json",
+      "file": "messages/invalid-removed-report-equalCount.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2401,7 +2401,7 @@
     },
     {
       "id": "invalid-removed-report-birthClear",
-      "file": "../v4/messages/invalid-removed-report-birthClear.json",
+      "file": "messages/invalid-removed-report-birthClear.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2419,7 +2419,7 @@
     },
     {
       "id": "invalid-removed-report-predicate",
-      "file": "../v4/messages/invalid-removed-report-predicate.json",
+      "file": "messages/invalid-removed-report-predicate.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2437,7 +2437,7 @@
     },
     {
       "id": "invalid-removed-report-refill",
-      "file": "../v4/messages/invalid-removed-report-refill.json",
+      "file": "messages/invalid-removed-report-refill.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2455,7 +2455,7 @@
     },
     {
       "id": "invalid-removed-report-defaultTiled",
-      "file": "../v4/messages/invalid-removed-report-defaultTiled.json",
+      "file": "messages/invalid-removed-report-defaultTiled.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2473,7 +2473,7 @@
     },
     {
       "id": "invalid-removed-report-switchTarget",
-      "file": "../v4/messages/invalid-removed-report-switchTarget.json",
+      "file": "messages/invalid-removed-report-switchTarget.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2491,7 +2491,7 @@
     },
     {
       "id": "invalid-removed-report-freshPlacement",
-      "file": "../v4/messages/invalid-removed-report-freshPlacement.json",
+      "file": "messages/invalid-removed-report-freshPlacement.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2509,7 +2509,7 @@
     },
     {
       "id": "invalid-removed-report-focusFollowsCursor",
-      "file": "../v4/messages/invalid-removed-report-focusFollowsCursor.json",
+      "file": "messages/invalid-removed-report-focusFollowsCursor.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2527,7 +2527,7 @@
     },
     {
       "id": "invalid-removed-report-cursorWarp",
-      "file": "../v4/messages/invalid-removed-report-cursorWarp.json",
+      "file": "messages/invalid-removed-report-cursorWarp.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2545,7 +2545,7 @@
     },
     {
       "id": "invalid-removed-report-anchorFallback",
-      "file": "../v4/messages/invalid-removed-report-anchorFallback.json",
+      "file": "messages/invalid-removed-report-anchorFallback.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2563,7 +2563,7 @@
     },
     {
       "id": "invalid-removed-report-noSpaceResult",
-      "file": "../v4/messages/invalid-removed-report-noSpaceResult.json",
+      "file": "messages/invalid-removed-report-noSpaceResult.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2581,7 +2581,7 @@
     },
     {
       "id": "invalid-removed-report-bornMaximized",
-      "file": "../v4/messages/invalid-removed-report-bornMaximized.json",
+      "file": "messages/invalid-removed-report-bornMaximized.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -2599,7 +2599,7 @@
     },
     {
       "id": "invalid-removed-window-floating",
-      "file": "../v4/messages/invalid-removed-window-floating.json",
+      "file": "messages/invalid-removed-window-floating.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2617,7 +2617,7 @@
     },
     {
       "id": "invalid-removed-window-fitExcluded",
-      "file": "../v4/messages/invalid-removed-window-fitExcluded.json",
+      "file": "messages/invalid-removed-window-fitExcluded.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2635,7 +2635,7 @@
     },
     {
       "id": "invalid-removed-window-fixedAuto",
-      "file": "../v4/messages/invalid-removed-window-fixedAuto.json",
+      "file": "messages/invalid-removed-window-fixedAuto.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2653,7 +2653,7 @@
     },
     {
       "id": "invalid-removed-window-fixedSuppress",
-      "file": "../v4/messages/invalid-removed-window-fixedSuppress.json",
+      "file": "messages/invalid-removed-window-fixedSuppress.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2671,7 +2671,7 @@
     },
     {
       "id": "invalid-removed-window-observedWs",
-      "file": "../v4/messages/invalid-removed-window-observedWs.json",
+      "file": "messages/invalid-removed-window-observedWs.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2689,7 +2689,7 @@
     },
     {
       "id": "invalid-removed-screen-gap",
-      "file": "../v4/messages/invalid-removed-screen-gap.json",
+      "file": "messages/invalid-removed-screen-gap.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2707,7 +2707,7 @@
     },
     {
       "id": "invalid-removed-screen-outer",
-      "file": "../v4/messages/invalid-removed-screen-outer.json",
+      "file": "messages/invalid-removed-screen-outer.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2725,7 +2725,7 @@
     },
     {
       "id": "invalid-removed-screen-primary",
-      "file": "../v4/messages/invalid-removed-screen-primary.json",
+      "file": "messages/invalid-removed-screen-primary.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2743,7 +2743,7 @@
     },
     {
       "id": "invalid-removed-presentation-borderEnabled",
-      "file": "../v4/messages/invalid-removed-presentation-borderEnabled.json",
+      "file": "messages/invalid-removed-presentation-borderEnabled.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2761,7 +2761,7 @@
     },
     {
       "id": "invalid-removed-presentation-underlayEnabled",
-      "file": "../v4/messages/invalid-removed-presentation-underlayEnabled.json",
+      "file": "messages/invalid-removed-presentation-underlayEnabled.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2779,7 +2779,7 @@
     },
     {
       "id": "invalid-removed-presentation-borderGap",
-      "file": "../v4/messages/invalid-removed-presentation-borderGap.json",
+      "file": "messages/invalid-removed-presentation-borderGap.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2797,7 +2797,7 @@
     },
     {
       "id": "invalid-removed-presentation-borderWidth",
-      "file": "../v4/messages/invalid-removed-presentation-borderWidth.json",
+      "file": "messages/invalid-removed-presentation-borderWidth.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2815,7 +2815,7 @@
     },
     {
       "id": "invalid-removed-presentation-underlayExtension",
-      "file": "../v4/messages/invalid-removed-presentation-underlayExtension.json",
+      "file": "messages/invalid-removed-presentation-underlayExtension.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2833,7 +2833,7 @@
     },
     {
       "id": "invalid-removed-presentation-paused",
-      "file": "../v4/messages/invalid-removed-presentation-paused.json",
+      "file": "messages/invalid-removed-presentation-paused.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2851,7 +2851,7 @@
     },
     {
       "id": "invalid-removed-presentation-cloaked",
-      "file": "../v4/messages/invalid-removed-presentation-cloaked.json",
+      "file": "messages/invalid-removed-presentation-cloaked.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2869,7 +2869,7 @@
     },
     {
       "id": "invalid-removed-pager-frame-float",
-      "file": "../v4/messages/invalid-removed-pager-frame-float.json",
+      "file": "messages/invalid-removed-pager-frame-float.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2887,7 +2887,7 @@
     },
     {
       "id": "invalid-removed-pager-frame-tile",
-      "file": "../v4/messages/invalid-removed-pager-frame-tile.json",
+      "file": "messages/invalid-removed-pager-frame-tile.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2905,7 +2905,7 @@
     },
     {
       "id": "invalid-screen-zero-scale",
-      "file": "../v4/messages/invalid-screen-zero-scale.json",
+      "file": "messages/invalid-screen-zero-scale.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2923,7 +2923,7 @@
     },
     {
       "id": "invalid-screen-negative-scale",
-      "file": "../v4/messages/invalid-screen-negative-scale.json",
+      "file": "messages/invalid-screen-negative-scale.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2941,7 +2941,7 @@
     },
     {
       "id": "invalid-screen-string-scale",
-      "file": "../v4/messages/invalid-screen-string-scale.json",
+      "file": "messages/invalid-screen-string-scale.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2959,7 +2959,7 @@
     },
     {
       "id": "invalid-identity-overbound",
-      "file": "../v4/messages/invalid-identity-overbound.json",
+      "file": "messages/invalid-identity-overbound.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2977,7 +2977,7 @@
     },
     {
       "id": "invalid-window-rect-object",
-      "file": "../v4/messages/invalid-window-rect-object.json",
+      "file": "messages/invalid-window-rect-object.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -2995,7 +2995,7 @@
     },
     {
       "id": "invalid-window-rect-zero-width",
-      "file": "../v4/messages/invalid-window-rect-zero-width.json",
+      "file": "messages/invalid-window-rect-zero-width.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -3013,7 +3013,7 @@
     },
     {
       "id": "invalid-window-missing-identity",
-      "file": "../v4/messages/invalid-window-missing-identity.json",
+      "file": "messages/invalid-window-missing-identity.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3031,7 +3031,7 @@
     },
     {
       "id": "invalid-native-missing-current",
-      "file": "../v4/messages/invalid-native-missing-current.json",
+      "file": "messages/invalid-native-missing-current.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -3049,7 +3049,7 @@
     },
     {
       "id": "invalid-native-empty-current",
-      "file": "../v4/messages/invalid-native-empty-current.json",
+      "file": "messages/invalid-native-empty-current.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -3067,7 +3067,7 @@
     },
     {
       "id": "invalid-native-order-known",
-      "file": "../v4/messages/invalid-native-order-known.json",
+      "file": "messages/invalid-native-order-known.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -3085,7 +3085,7 @@
     },
     {
       "id": "invalid-native-current-known",
-      "file": "../v4/messages/invalid-native-current-known.json",
+      "file": "messages/invalid-native-current-known.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -3103,7 +3103,7 @@
     },
     {
       "id": "invalid-command-unknown-op",
-      "file": "../v4/messages/invalid-command-unknown-op.json",
+      "file": "messages/invalid-command-unknown-op.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3121,7 +3121,7 @@
     },
     {
       "id": "invalid-focus-ignored-direction",
-      "file": "../v4/messages/invalid-focus-ignored-direction.json",
+      "file": "messages/invalid-focus-ignored-direction.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3139,7 +3139,7 @@
     },
     {
       "id": "invalid-focus-directional-null",
-      "file": "../v4/messages/invalid-focus-directional-null.json",
+      "file": "messages/invalid-focus-directional-null.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3157,7 +3157,7 @@
     },
     {
       "id": "invalid-focus-directional-missing",
-      "file": "../v4/messages/invalid-focus-directional-missing.json",
+      "file": "messages/invalid-focus-directional-missing.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3175,7 +3175,7 @@
     },
     {
       "id": "invalid-move-directional-empty",
-      "file": "../v4/messages/invalid-move-directional-empty.json",
+      "file": "messages/invalid-move-directional-empty.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3193,7 +3193,7 @@
     },
     {
       "id": "invalid-direction-token",
-      "file": "../v4/messages/invalid-direction-token.json",
+      "file": "messages/invalid-direction-token.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3211,7 +3211,7 @@
     },
     {
       "id": "invalid-same-axis-token",
-      "file": "../v4/messages/invalid-same-axis-token.json",
+      "file": "messages/invalid-same-axis-token.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3229,7 +3229,7 @@
     },
     {
       "id": "invalid-select-numbered-zero",
-      "file": "../v4/messages/invalid-select-numbered-zero.json",
+      "file": "messages/invalid-select-numbered-zero.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3247,7 +3247,7 @@
     },
     {
       "id": "invalid-select-numbered-ten",
-      "file": "../v4/messages/invalid-select-numbered-ten.json",
+      "file": "messages/invalid-select-numbered-ten.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3265,7 +3265,7 @@
     },
     {
       "id": "invalid-relative-delta-zero",
-      "file": "../v4/messages/invalid-relative-delta-zero.json",
+      "file": "messages/invalid-relative-delta-zero.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3283,7 +3283,7 @@
     },
     {
       "id": "invalid-send-source-string",
-      "file": "../v4/messages/invalid-send-source-string.json",
+      "file": "messages/invalid-send-source-string.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3301,7 +3301,7 @@
     },
     {
       "id": "invalid-send-source-removed",
-      "file": "../v4/messages/invalid-send-source-removed.json",
+      "file": "messages/invalid-send-source-removed.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3319,7 +3319,7 @@
     },
     {
       "id": "invalid-send-source-both",
-      "file": "../v4/messages/invalid-send-source-both.json",
+      "file": "messages/invalid-send-source-both.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3337,7 +3337,7 @@
     },
     {
       "id": "invalid-resize-negative-press",
-      "file": "../v4/messages/invalid-resize-negative-press.json",
+      "file": "messages/invalid-resize-negative-press.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3355,7 +3355,7 @@
     },
     {
       "id": "invalid-resize-overflow-press",
-      "file": "../v4/messages/invalid-resize-overflow-press.json",
+      "file": "messages/invalid-resize-overflow-press.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3373,7 +3373,7 @@
     },
     {
       "id": "invalid-resize-mode",
-      "file": "../v4/messages/invalid-resize-mode.json",
+      "file": "messages/invalid-resize-mode.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3391,7 +3391,7 @@
     },
     {
       "id": "invalid-toggle-float-missing-rect",
-      "file": "../v4/messages/invalid-toggle-float-missing-rect.json",
+      "file": "messages/invalid-toggle-float-missing-rect.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3409,7 +3409,7 @@
     },
     {
       "id": "invalid-state-command-property-name",
-      "file": "../v4/messages/invalid-state-command-property-name.json",
+      "file": "messages/invalid-state-command-property-name.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3427,7 +3427,7 @@
     },
     {
       "id": "invalid-removed-command-switch-view",
-      "file": "../v4/messages/invalid-removed-command-switch-view.json",
+      "file": "messages/invalid-removed-command-switch-view.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3445,7 +3445,7 @@
     },
     {
       "id": "invalid-removed-command-operation",
-      "file": "../v4/messages/invalid-removed-command-operation.json",
+      "file": "messages/invalid-removed-command-operation.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3463,7 +3463,7 @@
     },
     {
       "id": "invalid-removed-command-drag-preview",
-      "file": "../v4/messages/invalid-removed-command-drag-preview.json",
+      "file": "messages/invalid-removed-command-drag-preview.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3481,7 +3481,7 @@
     },
     {
       "id": "invalid-removed-command-drag-drop",
-      "file": "../v4/messages/invalid-removed-command-drag-drop.json",
+      "file": "messages/invalid-removed-command-drag-drop.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3499,7 +3499,7 @@
     },
     {
       "id": "invalid-removed-command-pointer-resize",
-      "file": "../v4/messages/invalid-removed-command-pointer-resize.json",
+      "file": "messages/invalid-removed-command-pointer-resize.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3517,7 +3517,7 @@
     },
     {
       "id": "invalid-removed-command-reconcile",
-      "file": "../v4/messages/invalid-removed-command-reconcile.json",
+      "file": "messages/invalid-removed-command-reconcile.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3535,7 +3535,7 @@
     },
     {
       "id": "invalid-removed-command-update-gaps",
-      "file": "../v4/messages/invalid-removed-command-update-gaps.json",
+      "file": "messages/invalid-removed-command-update-gaps.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3553,7 +3553,7 @@
     },
     {
       "id": "invalid-removed-command-release-domain",
-      "file": "../v4/messages/invalid-removed-command-release-domain.json",
+      "file": "messages/invalid-removed-command-release-domain.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3571,7 +3571,7 @@
     },
     {
       "id": "invalid-removed-command-move",
-      "file": "../v4/messages/invalid-removed-command-move.json",
+      "file": "messages/invalid-removed-command-move.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3589,7 +3589,7 @@
     },
     {
       "id": "invalid-removed-command-send-to-workspace",
-      "file": "../v4/messages/invalid-removed-command-send-to-workspace.json",
+      "file": "messages/invalid-removed-command-send-to-workspace.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3607,7 +3607,7 @@
     },
     {
       "id": "invalid-removed-command-send-to-output",
-      "file": "../v4/messages/invalid-removed-command-send-to-output.json",
+      "file": "messages/invalid-removed-command-send-to-output.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3625,7 +3625,7 @@
     },
     {
       "id": "invalid-view-logical-pre",
-      "file": "../v4/messages/invalid-view-logical-pre.json",
+      "file": "messages/invalid-view-logical-pre.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -3636,14 +3636,14 @@
       },
       "note": "G1 native selectors permit native references only; hold affected attempt scope.",
       "invalid": {
-        "pointer": "/viewAttempts/0/pre",
+        "pointer": "/propertyAttempts/0/pre",
         "rule": "G1 native selectors permit native references only; hold affected attempt scope.",
         "source": "report-attempt-view-native"
       }
     },
     {
       "id": "invalid-member-parallel-native",
-      "file": "../v4/messages/invalid-member-parallel-native.json",
+      "file": "messages/invalid-member-parallel-native.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -3654,14 +3654,14 @@
       },
       "note": "Invalid value at /memberAttempts/0/nativePre.",
       "invalid": {
-        "pointer": "/memberAttempts/0/nativePre",
+        "pointer": "/propertyAttempts/0/nativePre",
         "rule": "member-parallel-native",
         "source": "report-attempt-member-native"
       }
     },
     {
       "id": "invalid-view-parallel-native",
-      "file": "../v4/messages/invalid-view-parallel-native.json",
+      "file": "messages/invalid-view-parallel-native.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -3672,14 +3672,14 @@
       },
       "note": "Invalid value at /viewAttempts/0/nativeBase.",
       "invalid": {
-        "pointer": "/viewAttempts/0/nativeBase",
+        "pointer": "/propertyAttempts/0/nativeBase",
         "rule": "view-parallel-native",
         "source": "report-attempt-view-native"
       }
     },
     {
       "id": "invalid-attempt-settlement-verdict",
-      "file": "../v4/messages/invalid-attempt-settlement-verdict.json",
+      "file": "messages/invalid-attempt-settlement-verdict.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -3690,14 +3690,14 @@
       },
       "note": "Invalid value at /memberAttempts/0/outcome.",
       "invalid": {
-        "pointer": "/memberAttempts/0/outcome",
+        "pointer": "/propertyAttempts/0/outcome",
         "rule": "attempt-settlement-verdict",
         "source": "report-attempt-member-logical"
       }
     },
     {
       "id": "invalid-frame-missing-op",
-      "file": "../v4/messages/invalid-frame-missing-op.json",
+      "file": "messages/invalid-frame-missing-op.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -3705,14 +3705,14 @@
       "canonical": true,
       "note": "Invalid value at /frameAttempts/0/op.",
       "invalid": {
-        "pointer": "/frameAttempts/0/op",
+        "pointer": "/propertyAttempts/0/op",
         "rule": "frame-missing-op",
         "source": "report-attempt-frame-ordinary"
       }
     },
     {
       "id": "invalid-frame-missing-pre",
-      "file": "../v4/messages/invalid-frame-missing-pre.json",
+      "file": "messages/invalid-frame-missing-pre.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -3720,14 +3720,14 @@
       "canonical": true,
       "note": "Invalid value at /frameAttempts/0/pre.",
       "invalid": {
-        "pointer": "/frameAttempts/0/pre",
+        "pointer": "/propertyAttempts/0/pre",
         "rule": "frame-missing-pre",
         "source": "report-attempt-frame-ordinary"
       }
     },
     {
       "id": "invalid-frame-pre-without-op",
-      "file": "../v4/messages/invalid-frame-pre-without-op.json",
+      "file": "messages/invalid-frame-pre-without-op.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -3735,14 +3735,14 @@
       "canonical": true,
       "note": "Invalid value at /frameAttempts/0/pre.",
       "invalid": {
-        "pointer": "/frameAttempts/0/pre",
+        "pointer": "/propertyAttempts/0/pre",
         "rule": "frame-pre-without-op",
         "source": "report-attempt-frame-ordinary"
       }
     },
     {
       "id": "invalid-creation-created-wrong-type",
-      "file": "../v4/messages/invalid-creation-created-wrong-type.json",
+      "file": "messages/invalid-creation-created-wrong-type.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -3760,7 +3760,7 @@
     },
     {
       "id": "invalid-gesture-zero",
-      "file": "../v4/messages/invalid-gesture-zero.json",
+      "file": "messages/invalid-gesture-zero.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3775,7 +3775,7 @@
     },
     {
       "id": "invalid-gesture-kind",
-      "file": "../v4/messages/invalid-gesture-kind.json",
+      "file": "messages/invalid-gesture-kind.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3790,7 +3790,7 @@
     },
     {
       "id": "invalid-gesture-phase",
-      "file": "../v4/messages/invalid-gesture-phase.json",
+      "file": "messages/invalid-gesture-phase.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3805,7 +3805,7 @@
     },
     {
       "id": "invalid-generic-last-write-frame",
-      "file": "../v4/messages/invalid-generic-last-write-frame.json",
+      "file": "messages/invalid-generic-last-write-frame.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -3813,14 +3813,14 @@
       "canonical": true,
       "note": "Invalid value at /windows/0/lastWrite/property.",
       "invalid": {
-        "pointer": "/windows/0/lastWrite/property",
+        "pointer": "/propertyAttempts/0/property",
         "rule": "generic-last-write-frame",
         "source": "report-last-write-accepted"
       }
     },
     {
       "id": "invalid-last-write-work-id",
-      "file": "../v4/messages/invalid-last-write-work-id.json",
+      "file": "messages/invalid-last-write-work-id.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -3828,14 +3828,14 @@
       "canonical": true,
       "note": "Invalid value at /windows/0/lastWrite/id.",
       "invalid": {
-        "pointer": "/windows/0/lastWrite/id",
+        "pointer": "/propertyAttempts/0/id",
         "rule": "last-write-work-id",
         "source": "report-last-write-accepted"
       }
     },
     {
       "id": "invalid-last-write-new-counter",
-      "file": "../v4/messages/invalid-last-write-new-counter.json",
+      "file": "messages/invalid-last-write-new-counter.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -3843,14 +3843,14 @@
       "canonical": true,
       "note": "Invalid value at /windows/0/lastWrite/visibilitySeq.",
       "invalid": {
-        "pointer": "/windows/0/lastWrite/visibilitySeq",
+        "pointer": "/propertyAttempts/0/visibilitySeq",
         "rule": "last-write-new-counter",
         "source": "report-last-write-accepted"
       }
     },
     {
       "id": "invalid-last-write-setter-token",
-      "file": "../v4/messages/invalid-last-write-setter-token.json",
+      "file": "messages/invalid-last-write-setter-token.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -3858,14 +3858,14 @@
       "canonical": true,
       "note": "Invalid value at /windows/0/lastWrite/setter.",
       "invalid": {
-        "pointer": "/windows/0/lastWrite/setter",
+        "pointer": "/propertyAttempts/0/setter",
         "rule": "last-write-setter-token",
         "source": "report-last-write-accepted"
       }
     },
     {
       "id": "invalid-sample-redundant-win",
-      "file": "../v4/messages/invalid-sample-redundant-win.json",
+      "file": "messages/invalid-sample-redundant-win.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -3873,14 +3873,14 @@
       "canonical": true,
       "note": "Invalid value at /windows/0/lastWrite/pre/win.",
       "invalid": {
-        "pointer": "/windows/0/lastWrite/pre/win",
+        "pointer": "/propertyAttempts/0/pre/win",
         "rule": "sample-redundant-win",
         "source": "report-last-write-accepted"
       }
     },
     {
       "id": "invalid-intent-object-not-string",
-      "file": "../v4/messages/invalid-intent-object-not-string.json",
+      "file": "messages/invalid-intent-object-not-string.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3895,7 +3895,7 @@
     },
     {
       "id": "invalid-intent-outer-null",
-      "file": "../v4/messages/invalid-intent-outer-null.json",
+      "file": "messages/invalid-intent-outer-null.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3910,7 +3910,7 @@
     },
     {
       "id": "invalid-intent-overbound",
-      "file": "../v4/messages/invalid-intent-overbound.json",
+      "file": "messages/invalid-intent-overbound.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3925,7 +3925,7 @@
     },
     {
       "id": "invalid-renderer-without-command",
-      "file": "../v4/messages/invalid-renderer-without-command.json",
+      "file": "messages/invalid-renderer-without-command.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3940,7 +3940,7 @@
     },
     {
       "id": "invalid-renderer-target-missing-win",
-      "file": "../v4/messages/invalid-renderer-target-missing-win.json",
+      "file": "messages/invalid-renderer-target-missing-win.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3955,7 +3955,7 @@
     },
     {
       "id": "invalid-renderer-extra-win",
-      "file": "../v4/messages/invalid-renderer-extra-win.json",
+      "file": "messages/invalid-renderer-extra-win.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3970,7 +3970,7 @@
     },
     {
       "id": "invalid-renderer-unknown-kind",
-      "file": "../v4/messages/invalid-renderer-unknown-kind.json",
+      "file": "messages/invalid-renderer-unknown-kind.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -3985,7 +3985,7 @@
     },
     {
       "id": "invalid-witness-constant-string",
-      "file": "../v4/messages/invalid-witness-constant-string.json",
+      "file": "messages/invalid-witness-constant-string.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -4537,7 +4537,7 @@
     },
     {
       "id": "report-type-normal",
-      "file": "../v4/messages/report-type-normal.json",
+      "file": "messages/report-type-normal.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4546,7 +4546,7 @@
     },
     {
       "id": "report-type-dialog",
-      "file": "../v4/messages/report-type-dialog.json",
+      "file": "messages/report-type-dialog.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4555,7 +4555,7 @@
     },
     {
       "id": "report-type-sheet",
-      "file": "../v4/messages/report-type-sheet.json",
+      "file": "messages/report-type-sheet.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4564,7 +4564,7 @@
     },
     {
       "id": "report-type-utility",
-      "file": "../v4/messages/report-type-utility.json",
+      "file": "messages/report-type-utility.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4573,7 +4573,7 @@
     },
     {
       "id": "report-type-desktop",
-      "file": "../v4/messages/report-type-desktop.json",
+      "file": "messages/report-type-desktop.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4582,7 +4582,7 @@
     },
     {
       "id": "report-type-dock",
-      "file": "../v4/messages/report-type-dock.json",
+      "file": "messages/report-type-dock.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4591,7 +4591,7 @@
     },
     {
       "id": "report-type-menu",
-      "file": "../v4/messages/report-type-menu.json",
+      "file": "messages/report-type-menu.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4600,7 +4600,7 @@
     },
     {
       "id": "report-type-tooltip",
-      "file": "../v4/messages/report-type-tooltip.json",
+      "file": "messages/report-type-tooltip.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4609,7 +4609,7 @@
     },
     {
       "id": "report-type-notification",
-      "file": "../v4/messages/report-type-notification.json",
+      "file": "messages/report-type-notification.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4618,7 +4618,7 @@
     },
     {
       "id": "report-type-splash",
-      "file": "../v4/messages/report-type-splash.json",
+      "file": "messages/report-type-splash.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4627,7 +4627,7 @@
     },
     {
       "id": "report-type-other",
-      "file": "../v4/messages/report-type-other.json",
+      "file": "messages/report-type-other.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4636,7 +4636,7 @@
     },
     {
       "id": "report-type-unknown",
-      "file": "../v4/messages/report-type-unknown.json",
+      "file": "messages/report-type-unknown.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4645,7 +4645,7 @@
     },
     {
       "id": "invalid-window-type-unknown",
-      "file": "../v4/messages/invalid-window-type-unknown.json",
+      "file": "messages/invalid-window-type-unknown.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -4660,7 +4660,7 @@
     },
     {
       "id": "invalid-window-type-empty",
-      "file": "../v4/messages/invalid-window-type-empty.json",
+      "file": "messages/invalid-window-type-empty.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -4675,7 +4675,7 @@
     },
     {
       "id": "invalid-window-type-bool",
-      "file": "../v4/messages/invalid-window-type-bool.json",
+      "file": "messages/invalid-window-type-bool.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -4690,7 +4690,7 @@
     },
     {
       "id": "report-activation-regular",
-      "file": "../v4/messages/report-activation-regular.json",
+      "file": "messages/report-activation-regular.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4699,7 +4699,7 @@
     },
     {
       "id": "report-activation-accessory",
-      "file": "../v4/messages/report-activation-accessory.json",
+      "file": "messages/report-activation-accessory.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4708,7 +4708,7 @@
     },
     {
       "id": "report-activation-prohibited",
-      "file": "../v4/messages/report-activation-prohibited.json",
+      "file": "messages/report-activation-prohibited.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4717,7 +4717,7 @@
     },
     {
       "id": "invalid-activation-policy-unknown",
-      "file": "../v4/messages/invalid-activation-policy-unknown.json",
+      "file": "messages/invalid-activation-policy-unknown.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -4732,7 +4732,7 @@
     },
     {
       "id": "report-layer-min",
-      "file": "../v4/messages/report-layer-min.json",
+      "file": "messages/report-layer-min.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4741,7 +4741,7 @@
     },
     {
       "id": "report-layer-max",
-      "file": "../v4/messages/report-layer-max.json",
+      "file": "messages/report-layer-max.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4750,7 +4750,7 @@
     },
     {
       "id": "report-layer-null",
-      "file": "../v4/messages/report-layer-null.json",
+      "file": "messages/report-layer-null.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4759,7 +4759,7 @@
     },
     {
       "id": "invalid-layer-low",
-      "file": "../v4/messages/invalid-layer-low.json",
+      "file": "messages/invalid-layer-low.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -4774,7 +4774,7 @@
     },
     {
       "id": "invalid-layer-high",
-      "file": "../v4/messages/invalid-layer-high.json",
+      "file": "messages/invalid-layer-high.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -4789,7 +4789,7 @@
     },
     {
       "id": "invalid-layer-fraction",
-      "file": "../v4/messages/invalid-layer-fraction.json",
+      "file": "messages/invalid-layer-fraction.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -4804,7 +4804,7 @@
     },
     {
       "id": "invalid-layer-string",
-      "file": "../v4/messages/invalid-layer-string.json",
+      "file": "messages/invalid-layer-string.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -4819,7 +4819,7 @@
     },
     {
       "id": "report-raw-managed",
-      "file": "../v4/messages/report-raw-managed.json",
+      "file": "messages/report-raw-managed.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4828,7 +4828,7 @@
     },
     {
       "id": "invalid-raw-managed-type",
-      "file": "../v4/messages/invalid-raw-managed-type.json",
+      "file": "messages/invalid-raw-managed-type.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -4843,7 +4843,7 @@
     },
     {
       "id": "invalid-raw-managed-missing",
-      "file": "../v4/messages/invalid-raw-managed-missing.json",
+      "file": "messages/invalid-raw-managed-missing.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -4858,7 +4858,7 @@
     },
     {
       "id": "report-raw-acceptsInput",
-      "file": "../v4/messages/report-raw-acceptsInput.json",
+      "file": "messages/report-raw-acceptsInput.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4867,7 +4867,7 @@
     },
     {
       "id": "invalid-raw-acceptsInput-type",
-      "file": "../v4/messages/invalid-raw-acceptsInput-type.json",
+      "file": "messages/invalid-raw-acceptsInput-type.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -4882,7 +4882,7 @@
     },
     {
       "id": "invalid-raw-acceptsInput-missing",
-      "file": "../v4/messages/invalid-raw-acceptsInput-missing.json",
+      "file": "messages/invalid-raw-acceptsInput-missing.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -4897,7 +4897,7 @@
     },
     {
       "id": "report-raw-activationInhibited",
-      "file": "../v4/messages/report-raw-activationInhibited.json",
+      "file": "messages/report-raw-activationInhibited.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4906,7 +4906,7 @@
     },
     {
       "id": "invalid-raw-activationInhibited-type",
-      "file": "../v4/messages/invalid-raw-activationInhibited-type.json",
+      "file": "messages/invalid-raw-activationInhibited-type.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -4921,7 +4921,7 @@
     },
     {
       "id": "invalid-raw-activationInhibited-missing",
-      "file": "../v4/messages/invalid-raw-activationInhibited-missing.json",
+      "file": "messages/invalid-raw-activationInhibited-missing.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -4936,7 +4936,7 @@
     },
     {
       "id": "report-raw-toolWindow",
-      "file": "../v4/messages/report-raw-toolWindow.json",
+      "file": "messages/report-raw-toolWindow.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4945,7 +4945,7 @@
     },
     {
       "id": "invalid-raw-toolWindow-type",
-      "file": "../v4/messages/invalid-raw-toolWindow-type.json",
+      "file": "messages/invalid-raw-toolWindow-type.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -4960,7 +4960,7 @@
     },
     {
       "id": "invalid-raw-toolWindow-missing",
-      "file": "../v4/messages/invalid-raw-toolWindow-missing.json",
+      "file": "messages/invalid-raw-toolWindow-missing.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -4975,7 +4975,7 @@
     },
     {
       "id": "report-raw-owned",
-      "file": "../v4/messages/report-raw-owned.json",
+      "file": "messages/report-raw-owned.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -4984,7 +4984,7 @@
     },
     {
       "id": "invalid-raw-owned-type",
-      "file": "../v4/messages/invalid-raw-owned-type.json",
+      "file": "messages/invalid-raw-owned-type.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -4999,7 +4999,7 @@
     },
     {
       "id": "invalid-raw-owned-missing",
-      "file": "../v4/messages/invalid-raw-owned-missing.json",
+      "file": "messages/invalid-raw-owned-missing.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5014,7 +5014,7 @@
     },
     {
       "id": "report-raw-above",
-      "file": "../v4/messages/report-raw-above.json",
+      "file": "messages/report-raw-above.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -5023,7 +5023,7 @@
     },
     {
       "id": "invalid-raw-above-type",
-      "file": "../v4/messages/invalid-raw-above-type.json",
+      "file": "messages/invalid-raw-above-type.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5038,7 +5038,7 @@
     },
     {
       "id": "invalid-raw-above-missing",
-      "file": "../v4/messages/invalid-raw-above-missing.json",
+      "file": "messages/invalid-raw-above-missing.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5053,7 +5053,7 @@
     },
     {
       "id": "report-raw-below",
-      "file": "../v4/messages/report-raw-below.json",
+      "file": "messages/report-raw-below.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -5062,7 +5062,7 @@
     },
     {
       "id": "invalid-raw-below-type",
-      "file": "../v4/messages/invalid-raw-below-type.json",
+      "file": "messages/invalid-raw-below-type.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5077,7 +5077,7 @@
     },
     {
       "id": "invalid-raw-below-missing",
-      "file": "../v4/messages/invalid-raw-below-missing.json",
+      "file": "messages/invalid-raw-below-missing.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5092,7 +5092,7 @@
     },
     {
       "id": "report-unavailable-facts",
-      "file": "../v4/messages/report-unavailable-facts.json",
+      "file": "messages/report-unavailable-facts.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -5105,7 +5105,7 @@
     },
     {
       "id": "report-supported-fact-unknown",
-      "file": "../v4/messages/report-supported-fact-unknown.json",
+      "file": "messages/report-supported-fact-unknown.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -5118,7 +5118,7 @@
     },
     {
       "id": "invalid-unavailable-fact-contradiction",
-      "file": "../v4/messages/invalid-unavailable-fact-contradiction.json",
+      "file": "messages/invalid-unavailable-fact-contradiction.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5136,7 +5136,7 @@
     },
     {
       "id": "invalid-removed-window-shell",
-      "file": "../v4/messages/invalid-removed-window-shell.json",
+      "file": "messages/invalid-removed-window-shell.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5151,7 +5151,7 @@
     },
     {
       "id": "invalid-removed-window-tool",
-      "file": "../v4/messages/invalid-removed-window-tool.json",
+      "file": "messages/invalid-removed-window-tool.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5166,7 +5166,7 @@
     },
     {
       "id": "invalid-removed-window-ownedDialog",
-      "file": "../v4/messages/invalid-removed-window-ownedDialog.json",
+      "file": "messages/invalid-removed-window-ownedDialog.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5181,7 +5181,7 @@
     },
     {
       "id": "invalid-removed-window-dialog",
-      "file": "../v4/messages/invalid-removed-window-dialog.json",
+      "file": "messages/invalid-removed-window-dialog.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5196,7 +5196,7 @@
     },
     {
       "id": "invalid-removed-window-noActivate",
-      "file": "../v4/messages/invalid-removed-window-noActivate.json",
+      "file": "messages/invalid-removed-window-noActivate.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5211,7 +5211,7 @@
     },
     {
       "id": "invalid-removed-window-cannotControl",
-      "file": "../v4/messages/invalid-removed-window-cannotControl.json",
+      "file": "messages/invalid-removed-window-cannotControl.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5226,7 +5226,7 @@
     },
     {
       "id": "invalid-removed-ingress-shell",
-      "file": "../v4/messages/invalid-removed-ingress-shell.json",
+      "file": "messages/invalid-removed-ingress-shell.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5272,7 +5272,7 @@
     },
     {
       "id": "report-attempt-above-true",
-      "file": "../v4/messages/report-attempt-above-true.json",
+      "file": "messages/report-attempt-above-true.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -5294,7 +5294,7 @@
     },
     {
       "id": "report-attempt-above-false",
-      "file": "../v4/messages/report-attempt-above-false.json",
+      "file": "messages/report-attempt-above-false.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -5353,7 +5353,7 @@
     },
     {
       "id": "invalid-raw-type-missing",
-      "file": "../v4/messages/invalid-raw-type-missing.json",
+      "file": "messages/invalid-raw-type-missing.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5367,7 +5367,7 @@
     },
     {
       "id": "invalid-raw-activationPolicy-missing",
-      "file": "../v4/messages/invalid-raw-activationPolicy-missing.json",
+      "file": "messages/invalid-raw-activationPolicy-missing.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5381,7 +5381,7 @@
     },
     {
       "id": "invalid-raw-layer-missing",
-      "file": "../v4/messages/invalid-raw-layer-missing.json",
+      "file": "messages/invalid-raw-layer-missing.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5423,7 +5423,7 @@
     },
     {
       "id": "report-arrival-native",
-      "file": "../v4/messages/report-arrival-native.json",
+      "file": "messages/report-arrival-native.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -5436,7 +5436,7 @@
     },
     {
       "id": "report-arrival-output-null",
-      "file": "../v4/messages/report-arrival-output-null.json",
+      "file": "messages/report-arrival-output-null.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -5464,7 +5464,7 @@
     },
     {
       "id": "report-arrival-wrong-output",
-      "file": "../v4/messages/report-arrival-wrong-output.json",
+      "file": "messages/report-arrival-wrong-output.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -5492,7 +5492,7 @@
     },
     {
       "id": "report-arrival-wrong-frame",
-      "file": "../v4/messages/report-arrival-wrong-frame.json",
+      "file": "messages/report-arrival-wrong-frame.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -5520,7 +5520,7 @@
     },
     {
       "id": "report-arrival-wrong-lifetime",
-      "file": "../v4/messages/report-arrival-wrong-lifetime.json",
+      "file": "messages/report-arrival-wrong-lifetime.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -5548,7 +5548,7 @@
     },
     {
       "id": "report-arrival-wrong-watermark",
-      "file": "../v4/messages/report-arrival-wrong-watermark.json",
+      "file": "messages/report-arrival-wrong-watermark.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -5576,7 +5576,7 @@
     },
     {
       "id": "report-arrival-wrong-retained-home",
-      "file": "../v4/messages/report-arrival-wrong-retained-home.json",
+      "file": "messages/report-arrival-wrong-retained-home.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -5604,7 +5604,7 @@
     },
     {
       "id": "invalid-arrival-missing-kind",
-      "file": "../v4/messages/invalid-arrival-missing-kind.json",
+      "file": "messages/invalid-arrival-missing-kind.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -5622,7 +5622,7 @@
     },
     {
       "id": "invalid-arrival-unknown-kind",
-      "file": "../v4/messages/invalid-arrival-unknown-kind.json",
+      "file": "messages/invalid-arrival-unknown-kind.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -5640,7 +5640,7 @@
     },
     {
       "id": "invalid-arrival-missing-output",
-      "file": "../v4/messages/invalid-arrival-missing-output.json",
+      "file": "messages/invalid-arrival-missing-output.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -5658,7 +5658,7 @@
     },
     {
       "id": "invalid-arrival-mixed-arms",
-      "file": "../v4/messages/invalid-arrival-mixed-arms.json",
+      "file": "messages/invalid-arrival-mixed-arms.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -5676,7 +5676,7 @@
     },
     {
       "id": "invalid-arrival-output-type",
-      "file": "../v4/messages/invalid-arrival-output-type.json",
+      "file": "messages/invalid-arrival-output-type.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -5694,7 +5694,7 @@
     },
     {
       "id": "invalid-arrival-empty-output",
-      "file": "../v4/messages/invalid-arrival-empty-output.json",
+      "file": "messages/invalid-arrival-empty-output.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -5712,7 +5712,7 @@
     },
     {
       "id": "invalid-arrival-output-on-native-host",
-      "file": "../v4/messages/invalid-arrival-output-on-native-host.json",
+      "file": "messages/invalid-arrival-output-on-native-host.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -5730,7 +5730,7 @@
     },
     {
       "id": "invalid-arrival-native-on-tiler-host",
-      "file": "../v4/messages/invalid-arrival-native-on-tiler-host.json",
+      "file": "messages/invalid-arrival-native-on-tiler-host.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -5748,7 +5748,7 @@
     },
     {
       "id": "invalid-arrival-missing-home",
-      "file": "../v4/messages/invalid-arrival-missing-home.json",
+      "file": "messages/invalid-arrival-missing-home.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -5766,7 +5766,7 @@
     },
     {
       "id": "invalid-arrival-logical-home",
-      "file": "../v4/messages/invalid-arrival-logical-home.json",
+      "file": "messages/invalid-arrival-logical-home.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -5793,7 +5793,7 @@
     },
     {
       "id": "report-sticky-native-free",
-      "file": "../v4/messages/report-sticky-native-free.json",
+      "file": "messages/report-sticky-native-free.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -5806,7 +5806,7 @@
     },
     {
       "id": "invalid-sticky-projected-fact",
-      "file": "../v4/messages/invalid-sticky-projected-fact.json",
+      "file": "messages/invalid-sticky-projected-fact.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5824,7 +5824,7 @@
     },
     {
       "id": "invalid-sticky-native-free-attempt",
-      "file": "../v4/messages/invalid-sticky-native-free-attempt.json",
+      "file": "messages/invalid-sticky-native-free-attempt.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5835,7 +5835,7 @@
       },
       "note": "Unsolicited native sticky attempt with nativeSticky=false is conflicting-fact, not settlement.",
       "invalid": {
-        "pointer": "/stateAttempts/0/property",
+        "pointer": "/propertyAttempts/0/property",
         "rule": "sticky-native-free-attempt",
         "source": "report-attempt-state"
       }
@@ -5886,7 +5886,7 @@
     },
     {
       "id": "report-executable-null",
-      "file": "../v4/messages/report-executable-null.json",
+      "file": "messages/report-executable-null.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -5896,7 +5896,7 @@
     },
     {
       "id": "report-executable-bound",
-      "file": "../v4/messages/report-executable-bound.json",
+      "file": "messages/report-executable-bound.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -5906,7 +5906,7 @@
     },
     {
       "id": "invalid-executable-empty",
-      "file": "../v4/messages/invalid-executable-empty.json",
+      "file": "messages/invalid-executable-empty.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5921,7 +5921,7 @@
     },
     {
       "id": "invalid-executable-type",
-      "file": "../v4/messages/invalid-executable-type.json",
+      "file": "messages/invalid-executable-type.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5936,7 +5936,7 @@
     },
     {
       "id": "invalid-executable-overbound",
-      "file": "../v4/messages/invalid-executable-overbound.json",
+      "file": "messages/invalid-executable-overbound.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -5951,7 +5951,7 @@
     },
     {
       "id": "invalid-executable-nul",
-      "file": "../v4/messages/invalid-executable-nul.json",
+      "file": "messages/invalid-executable-nul.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -6056,7 +6056,7 @@
     },
     {
       "id": "invalid-executable-missing",
-      "file": "../v4/messages/invalid-executable-missing.json",
+      "file": "messages/invalid-executable-missing.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",
@@ -6086,7 +6086,7 @@
     },
     {
       "id": "invalid-executable-unavailable-value",
-      "file": "../v4/messages/invalid-executable-unavailable-value.json",
+      "file": "messages/invalid-executable-unavailable-value.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "accepted-held-row",
@@ -6271,7 +6271,7 @@
     },
     {
       "id": "report-macos",
-      "file": "../v4/messages/report-macos.json",
+      "file": "messages/report-macos.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -6285,7 +6285,7 @@
     },
     {
       "id": "report-foreground-known-none",
-      "file": "../v4/messages/report-foreground-known-none.json",
+      "file": "messages/report-foreground-known-none.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -6295,7 +6295,7 @@
     },
     {
       "id": "report-foreground-known-bound",
-      "file": "../v4/messages/report-foreground-known-bound.json",
+      "file": "messages/report-foreground-known-bound.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "valid-wire",
@@ -6308,7 +6308,7 @@
     },
     {
       "id": "invalid-foreground-unknown-mismatch",
-      "file": "../v4/messages/invalid-foreground-unknown-mismatch.json",
+      "file": "messages/invalid-foreground-unknown-mismatch.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
       "expectation": "reject-wire",

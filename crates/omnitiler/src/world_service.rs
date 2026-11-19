@@ -1278,7 +1278,6 @@ mod tests {
             "layer": 0, "fullscreenOwner": null, "fullscreenExitable": null,
             "suppressionAvailable": null,
             "visibility": {"visible": true, "suppressionOwned": null},
-            "lastWrite": null,
         })
     }
 
@@ -1339,7 +1338,7 @@ mod tests {
               {{\"win\":\"{WIN_C}\",\"live\":[800,0,40,90]}},\
               {{\"win\":\"{WIN_D}\",\"live\":[900,0,40,90]}}],\
               \"witness\":null,\"foregroundOut\":{foreground_out}}},\
-              \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\
+              \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
               \"rendererInput\":null,\"gestureIngress\":null,\
               \"nativeGesture\":{native_gesture},\
               \"cursorWindow\":{cursor_window},\"nativeInvalidWitness\":null}}",
@@ -1619,7 +1618,7 @@ mod tests {
             \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
             \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
-            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"lastWrite\":null}";
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
         let win_2 = "{\"win\":\"win-2\",\"out\":\"DP-1\",\"rect\":[480,0,480,1040],\
             \"fullscreen\":false,\"maximized\":false,\"sticky\":false,\"minimized\":false,\
             \"hints\":{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null},\
@@ -1630,7 +1629,7 @@ mod tests {
             \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
             \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
-            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"lastWrite\":null}";
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
 
         let make_inner = |gesture: bool, native_gesture: &str, cursor: &str, witness: &str| {
             format!(
@@ -1644,7 +1643,7 @@ mod tests {
                 \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
                 \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\
                 \"witness\":null,\"foregroundOut\":null}},\
-                \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+                \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
                 \"gestureIngress\":null,\"nativeGesture\":{native_gesture},\"cursorWindow\":null,\
                 \"nativeInvalidWitness\":{witness}}}"
             )

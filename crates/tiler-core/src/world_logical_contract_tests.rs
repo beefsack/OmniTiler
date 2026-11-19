@@ -10,9 +10,9 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandRejectKind, CommandResult, FrameSetter, HoldReason, LastWrite, LastWritePath,
-    LastWriteProperty, MemberAttempt, PresentationIngressV4, PresentationRowV4, ScopeAuthority,
-    ScreenReport, SendSource, TransferKind, VisibilityFact, VisibilityReason, VisibilitySample,
+    CommandRejectKind, CommandResult, FrameSetter, HoldReason, LastWritePath, MemberAttempt,
+    PresentationIngressV4, PresentationRowV4, ScopeAuthority, ScreenReport, SendSource,
+    TransferKind, VisibilityAttempt, VisibilityFact, VisibilityReason, VisibilitySample,
     VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef, WorldCommand,
     WorldReportV4,
 };
@@ -81,7 +81,6 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
-        last_write: None,
     }
 }
 
@@ -220,6 +219,7 @@ fn report_attempts(
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
+        visibility_attempts: Vec::new(),
         focus_feedback: Vec::new(),
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
@@ -5157,9 +5157,22 @@ fn standalone_view_hold_completes_through_member_verdict_not_echo() {
         .find(|binding| binding.parent_op == "op-11")
         .expect("frozen selection binding")
         .rev;
-    let mut hidden = fact("win-a", "out-a", 0);
-    hidden.last_write = Some(LastWrite {
-        property: LastWriteProperty::Visibility,
+    let hidden = fact("win-a", "out-a", 0);
+    let mut r4 = report(
+        4,
+        4,
+        two_screens(),
+        vec![hidden],
+        vec![],
+        vec![],
+        "",
+        None,
+        None,
+        true,
+        false,
+    );
+    r4.visibility_attempts = vec![VisibilityAttempt {
+        window: WindowId("win-a".to_owned()),
         target: false,
         revision: binding_rev,
         path: LastWritePath::Staged,
@@ -5176,23 +5189,8 @@ fn standalone_view_hold_completes_through_member_verdict_not_echo() {
             minimized: Some(false),
             host_hidden: Some(false),
         }),
-    });
-    let settled = accepted(
-        &mut engine,
-        &report(
-            4,
-            4,
-            two_screens(),
-            vec![hidden],
-            vec![],
-            vec![],
-            "",
-            None,
-            None,
-            true,
-            false,
-        ),
-    );
+    }];
+    let settled = accepted(&mut engine, &r4);
     assert!(
         settled.transfers.is_empty(),
         "verdict retires the flight: {:?}",

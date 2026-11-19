@@ -613,6 +613,18 @@ impl WorldEngine {
         self.connection.settings()
     }
 
+    /// Test-only accessor returning window IDs of normalized visibility
+    /// attempts staged on the latest observation.
+    pub fn staged_visibility_attempt_windows_for_test(&self) -> Vec<WindowId> {
+        self.world
+            .staged
+            .observation
+            .property_attempts
+            .iter()
+            .filter_map(|attempt| attempt.as_visibility().map(|vis| vis.window.clone()))
+            .collect()
+    }
+
     /// Scale one logical pixel setting into physical adapter units for one
     /// output: `floor(logical * scale + 0.5)`, checked. `None` on overflow
     /// (callers hold narrowly instead); never a 64-bit clamp.

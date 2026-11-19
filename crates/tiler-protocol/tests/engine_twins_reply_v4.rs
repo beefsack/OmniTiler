@@ -17,7 +17,8 @@ fn reply_root() -> std::path::PathBuf {
 }
 
 fn report_root() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/world-wire/v4")
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/world-wire/v4-active")
 }
 
 #[derive(serde::Deserialize)]

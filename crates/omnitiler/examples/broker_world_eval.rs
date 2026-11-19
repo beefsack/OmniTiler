@@ -309,7 +309,7 @@ mod tests {
           \"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\
           \"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\
           \"foregroundOut\":null},\
-          \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\
+          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
           \"rendererInput\":null}"
             .to_owned()
     }

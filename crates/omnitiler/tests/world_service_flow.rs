@@ -51,8 +51,7 @@ fn window_json(id: &str, rect: &str, native_ws: Option<&str>) -> String {
           \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
           \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
           \"suppressionAvailable\":null,\
-          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\
-          \"lastWrite\":null}}",
+          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}}}}",
         x = frame[0],
         y = frame[1],
         w = frame[2],
@@ -94,11 +93,7 @@ fn inner_report_with_attempts(
 ) -> String {
     let _ = host_owned;
     let _ = birth_clear;
-    let attempts_json = if attempts.is_empty() {
-        String::new()
-    } else {
-        format!(",\"frameAttempts\":[{attempts}]")
-    };
+    let property_attempts = attempts.to_owned();
     let native_json = if native.is_empty() {
         String::new()
     } else {
@@ -115,8 +110,8 @@ fn inner_report_with_attempts(
           \"complete\":{complete},\"gesture\":false,\
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
-          \"presentation\":{}{attempts_json},\
-          \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\
+          \"presentation\":{},\
+          \"intentRecords\":[],\"propertyAttempts\":[{property_attempts}],\"focusFeedback\":[],\
           \"rendererInput\":null}}",
         windows.join(","),
         disabled_presentation()
@@ -899,10 +894,11 @@ fn foreign_epoch_attempt_stamps_refuse_above_the_dispatch_clock() {
     assert!(is_canonical_u64(clock));
     // A raw attempt stamped past the dispatch clock (foreign epoch) refuses;
     // the stream and queue stay untouched.
-    let future_attempt = "{\"win\":\"win-001\",\"target\":[0,0,100,100],\"setter\":\"accepted\",\
+    let future_attempt =
+        "{\"kind\":\"frame\",\"win\":\"win-001\",\"target\":[0,0,100,100],\"setter\":\"accepted\",\
           \"readback\":[0,0,100,100],\"dpiBefore\":null,\"dpiAfter\":null,\
           \"attemptMs\":\"18446744073709551615\",\"op\":\"\",\"pre\":null}"
-        .to_owned();
+            .to_owned();
     let future_inner = inner_report_with_attempts(&[], true, false, "", &future_attempt, false);
     let refused = parse(
         &service
@@ -2532,15 +2528,15 @@ fn born_native_order() -> String {
 /// required `intentRecords` lane.
 fn with_clear_attempts(inner: &str, attempts: &str) -> String {
     inner.replace(
-        "\"intentRecords\":[]",
-        &format!("\"clearAttempts\":[{attempts}],\"intentRecords\":[]"),
+        "\"propertyAttempts\":[]",
+        &format!("\"propertyAttempts\":[{attempts}]"),
     )
 }
 
 fn clear_attempt(op: &str, win: &str, setter: &str, pre: bool, post: Option<bool>) -> String {
     let post_json = post.map_or("null".to_owned(), |v| v.to_string());
     format!(
-        "{{\"op\":\"{op}\",\"win\":\"{win}\",\"setter\":\"{setter}\",\
+        "{{\"kind\":\"clear\",\"op\":\"{op}\",\"win\":\"{win}\",\"setter\":\"{setter}\",\
           \"pre\":{pre},\"post\":{post_json},\"attemptMs\":\"0\"}}"
     )
 }
@@ -4031,7 +4027,7 @@ fn two_output_all_mode_inner(window: &str) -> String {
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\",\"DP-2\"],\
           \"presentation\":{},\
-          \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\
+          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
           \"rendererInput\":null}}",
         disabled_presentation()
     )

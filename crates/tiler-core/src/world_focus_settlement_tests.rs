@@ -70,7 +70,6 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
-        last_write: None,
     }
 }
 
@@ -121,6 +120,7 @@ fn report(
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
+        visibility_attempts: Vec::new(),
         focus_feedback: Vec::new(),
         presentation: PresentationRowV4::Valid(empty_ingress()),
         intent_records: Vec::new(),
@@ -955,7 +955,6 @@ fn first_tuple_latches_under_hold_incomplete_barrier_and_keeps_stamp() {
             ordinal: 0,
             output: None,
             has_native_workspace: false,
-            last_write: None,
             diagnostic: None,
             kind: RowDiagnosticKind::InvalidFact,
         }];
@@ -1344,7 +1343,6 @@ fn settle_under_sweep_hold_and_held_presence_retains() {
         ordinal: 0,
         output: None,
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];

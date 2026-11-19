@@ -69,7 +69,6 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
-        last_write: None,
     }
 }
 
@@ -142,6 +141,7 @@ fn report(
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
+        visibility_attempts: Vec::new(),
         focus_feedback: Vec::new(),
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
@@ -983,9 +983,9 @@ fn explicit_close_settles_across_gaps() {
 #[test]
 fn retained_settlements_grant_no_extra_writes_or_spend_pending_obligations() {
     use tiler_core::world_report::{
-        ArrivalBracket, ArrivalLocation, FocusFeedback, LastWrite, LastWritePath,
-        LastWriteProperty, OperationKind, OperationOutcome, SwitchOutcome, VisibilityFact,
-        VisibilityReason, VisibilitySample, VisibilitySetter,
+        ArrivalBracket, ArrivalLocation, FocusFeedback, LastWritePath, OperationKind,
+        OperationOutcome, SwitchOutcome, VisibilityAttempt, VisibilityFact, VisibilityReason,
+        VisibilitySample, VisibilitySetter,
     };
 
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
@@ -1082,32 +1082,30 @@ fn retained_settlements_grant_no_extra_writes_or_spend_pending_obligations() {
         minimized: Some(false),
         host_hidden: Some(false),
     };
-    let with_lw = |mut f: WindowFact, shown: bool, rev: u64, obs: u64| {
-        f.last_write = Some(LastWrite {
-            property: LastWriteProperty::Visibility,
-            target: shown,
-            revision: rev,
-            path: LastWritePath::Staged,
-            setter: VisibilitySetter::Accepted,
-            reason: VisibilityReason::Empty,
-            pre: None,
-            post: Some(sample(obs, shown)),
-        });
-        f
+    let vis_attempt = |win: &str, shown: bool, rev: u64, obs: u64| VisibilityAttempt {
+        window: WindowId(win.to_owned()),
+        target: shown,
+        revision: rev,
+        path: LastWritePath::Staged,
+        setter: VisibilitySetter::Accepted,
+        reason: VisibilityReason::Empty,
+        pre: None,
+        post: Some(sample(obs, shown)),
     };
     let mut s1_settle_report = report(
         4,
         4,
-        vec![
-            with_lw(fact("w1", "out-a", 0), false, s1_rev, 4),
-            with_lw(fact("w2", "out-a", 100), true, s1_rev, 4),
-        ],
+        vec![fact("w1", "out-a", 0), fact("w2", "out-a", 100)],
         vec![],
         None,
         None,
         vec![],
         true,
     );
+    s1_settle_report.visibility_attempts = vec![
+        vis_attempt("w1", false, s1_rev, 4),
+        vis_attempt("w2", true, s1_rev, 4),
+    ];
     s1_settle_report.focused_global = "w2".to_owned();
     s1_settle_report.focus_feedback = vec![FocusFeedback {
         id: s1_eff.id.clone(),

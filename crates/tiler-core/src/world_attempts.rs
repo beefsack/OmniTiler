@@ -12,9 +12,9 @@ use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::world_engine::EventIssue;
 use crate::world_report::{
-    ClearAttempt, FrameAttempt, FrameSetter, HeldWindowRow, LastWrite, LastWritePath,
-    MemberAttempt, MemberDisposition, StateAttempt, StateProperty, TransferKind, ViewAttempt,
-    VisibilityReason, VisibilitySample, VisibilitySetter, WorkspaceRef, WorldCommand,
+    ClearAttempt, FrameAttempt, FrameSetter, LastWritePath, MemberAttempt, MemberDisposition,
+    StateAttempt, StateProperty, TransferKind, ViewAttempt, VisibilityAttempt, VisibilityReason,
+    VisibilitySample, VisibilitySetter, WorkspaceRef, WorldCommand,
 };
 
 /// Shared mechanical call disposition carried by canonical attempts. The
@@ -347,36 +347,22 @@ impl PropertyAttempt {
         })
     }
 
-    /// Normalize one wire-bound visibility `LastWrite` into its typed canonical
-    /// evidence at the staged boundary. The window subject comes from the
-    /// staged row that carried the raw; every payload fact is carried over
+    /// Normalize one wire-bound visibility attempt into its typed canonical
+    /// evidence at the staged boundary. Every payload fact is carried over
     /// verbatim (no stamp, id, property tag or verdict is invented), and the
     /// raw DTO is never reconstructed downstream.
     #[must_use]
-    pub(crate) fn from_last_write(window: &WindowId, last: &LastWrite) -> Self {
+    pub(crate) fn from_visibility_attempt(raw: &VisibilityAttempt) -> Self {
         Self::Visibility(VisibilityAttemptEvidence {
-            window: window.clone(),
-            revision: last.revision,
-            target: last.target,
-            path: last.path,
-            disposition: last.setter.into(),
-            reason: last.reason,
-            pre: last.pre,
-            post: last.post,
+            window: raw.window.clone(),
+            revision: raw.revision,
+            target: raw.target,
+            path: raw.path,
+            disposition: raw.setter.into(),
+            reason: raw.reason,
+            pre: raw.pre,
+            post: raw.post,
         })
-    }
-
-    /// Normalize one losslessly retained held row's visibility `LastWrite`
-    /// into canonical evidence, keyed by the held window lifetime. Returns
-    /// `None` for an absent, `null`, or undecodable raw `lastWrite` (an
-    /// uncorrelated no-evidence case, never a failure verdict and never a
-    /// bypass of the post proof). Malformed rows are skipped here so held
-    /// precedence stays exactly the old healthy-first-then-first-decodable
-    /// rule.
-    #[must_use]
-    pub(crate) fn from_held_last_write(held: &HeldWindowRow) -> Option<Self> {
-        let last = held.last_write.as_ref()?;
-        Some(Self::from_last_write(&held.window, last))
     }
 
     /// Normalize one raw wire frame attempt at the capture boundary. Every
@@ -877,7 +863,7 @@ impl crate::world_transaction::WorldTransaction<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world_report::LastWriteProperty;
+    use crate::world_report::VisibilityAttempt;
 
     fn window(name: &str) -> WindowId {
         WindowId(name.to_owned())
@@ -1381,9 +1367,9 @@ mod tests {
         assert!(zero.is_empty(), "zero stamp never enters the watermark");
     }
 
-    fn visibility_last(setter: VisibilitySetter, with_post: bool) -> LastWrite {
-        LastWrite {
-            property: LastWriteProperty::Visibility,
+    fn visibility_last(setter: VisibilitySetter, with_post: bool) -> VisibilityAttempt {
+        VisibilityAttempt {
+            window: window("win-v"),
             target: true,
             revision: 7,
             path: LastWritePath::Fallback,
@@ -1415,7 +1401,7 @@ mod tests {
     #[test]
     fn visibility_normalization_preserves_raw_facts_and_isolates_kind() {
         let raw = visibility_last(VisibilitySetter::Refused, true);
-        let normalized = PropertyAttempt::from_last_write(&window("win-v"), &raw);
+        let normalized = PropertyAttempt::from_visibility_attempt(&raw);
         let evidence = normalized.as_visibility().expect("visibility arm");
         assert_eq!(evidence.window, window("win-v"));
         assert_eq!(evidence.revision, 7);
@@ -1453,16 +1439,16 @@ mod tests {
             (VisibilitySetter::Threw, AttemptDisposition::Threw),
         ] {
             let normalized =
-                PropertyAttempt::from_last_write(&window("win-v"), &visibility_last(setter, false));
+                PropertyAttempt::from_visibility_attempt(&visibility_last(setter, false));
             assert_eq!(
                 normalized.as_visibility().map(|e| e.disposition),
                 Some(VisibilityAttemptDisposition::Called(shared))
             );
         }
-        let not_called = PropertyAttempt::from_last_write(
-            &window("win-v"),
-            &visibility_last(VisibilitySetter::NotCalled, false),
-        );
+        let not_called = PropertyAttempt::from_visibility_attempt(&visibility_last(
+            VisibilitySetter::NotCalled,
+            false,
+        ));
         assert_eq!(
             not_called.as_visibility().map(|e| e.disposition),
             Some(VisibilityAttemptDisposition::NotCalled)
@@ -1471,10 +1457,10 @@ mod tests {
 
     #[test]
     fn visibility_evidence_matches_exact_authorization_only() {
-        let normalized = PropertyAttempt::from_last_write(
-            &window("win-v"),
-            &visibility_last(VisibilitySetter::Accepted, true),
-        );
+        let normalized = PropertyAttempt::from_visibility_attempt(&visibility_last(
+            VisibilitySetter::Accepted,
+            true,
+        ));
         let evidence = normalized.as_visibility().expect("visibility arm");
         assert!(visibility_evidence_matches(
             evidence,
@@ -1507,10 +1493,10 @@ mod tests {
         let attempts = vec![
             state(),
             clear("op-c", "win-v", AttemptDisposition::Accepted),
-            PropertyAttempt::from_last_write(
-                &window("win-v"),
-                &visibility_last(VisibilitySetter::Accepted, true),
-            ),
+            PropertyAttempt::from_visibility_attempt(&visibility_last(
+                VisibilitySetter::Accepted,
+                true,
+            )),
         ];
         let mut slot = None;
         assert!(retain_matching_attempt(

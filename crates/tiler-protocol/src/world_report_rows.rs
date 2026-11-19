@@ -6,9 +6,7 @@ use crate::world_protocol::push_json_string;
 use tiler_core::connection::RawSettingValue;
 use tiler_core::directional::WindowId;
 use tiler_core::geometry::Rect;
-use tiler_core::world_report::{
-    LastWrite, NativeWorkspaceFact, ScreenReport, VisibilityFact, VisibilitySample, WindowFact,
-};
+use tiler_core::world_report::{NativeWorkspaceFact, ScreenReport, VisibilityFact, WindowFact};
 
 /// Exact canonical encoding for one held screen row: the retained carried
 /// fields as a JSON object in stored order (canonical schema order at
@@ -40,10 +38,9 @@ pub fn encode_held_screen_canonical(
 /// `transient`, `modal`, `resizable`, `above`, `below`, `owner`, `parent`,
 /// `role`, `appId`, `executable`, `processId`, `class`, `title`, `type`,
 /// `activationPolicy`, `layer`, `fullscreenOwner`, `fullscreenExitable`,
-/// `suppressionAvailable`, `visibility`, `lastWrite`, then any other carried
-/// keys lexicographically, with the nested `hints`, `visibility`, and
-/// `lastWrite` objects in schema order). Checked: a non-finite retained
-/// number is an error, never a silent `null`.
+/// `suppressionAvailable`, `visibility`, then any other carried keys
+/// lexicographically, with nested `hints` and `visibility` in schema order).
+/// Checked: a non-finite retained number is an error, never a silent `null`.
 pub fn encode_held_window_canonical(
     fields: &[(String, RawSettingValue)],
 ) -> Result<String, NonFiniteNumber> {
@@ -68,9 +65,9 @@ pub fn encode_held_window_canonical(
 /// `resizable`, `above`, `below`, `owner`, `parent`, `role`, `appId`,
 /// `executable`, `processId`, `class`, `title`, `type`, `activationPolicy`,
 /// `layer`, `fullscreenOwner`, `fullscreenExitable`, `suppressionAvailable`,
-/// `visibility`, `lastWrite`, with the nested `hints`, `visibility`, and
-/// `lastWrite` objects in schema order). Reuses [`retained_window_fields`]
-/// so the spelling cannot drift from the held-row writer.
+/// `visibility`, with nested `hints` and `visibility` in schema order).
+/// Reuses [`retained_window_fields`] so spelling cannot drift from the
+/// held-row writer.
 pub fn encode_window_canonical(fact: &WindowFact) -> Result<String, NonFiniteNumber> {
     let mut out = String::new();
     out.push('{');
@@ -144,8 +141,7 @@ pub fn encode_screen_canonical(screen: &ScreenReport) -> Result<String, NonFinit
 /// `resizable`, `above`, `below`, `owner`, `parent`, `role`, `appId`,
 /// `executable`, `processId`, `class`, `title`, `type`, `activationPolicy`,
 /// `layer`, `fullscreenOwner`, `fullscreenExitable`, `suppressionAvailable`,
-/// `visibility`, `lastWrite`), with nested `hints`, `visibility`, and
-/// `lastWrite` objects in schema order.
+/// `visibility`), with nested `hints` and `visibility` in schema order.
 pub(crate) fn retained_window_fields(fact: &WindowFact) -> Vec<(String, RawSettingValue)> {
     fn opt_bool(value: Option<bool>) -> RawSettingValue {
         value.map_or(RawSettingValue::Null, RawSettingValue::Bool)
@@ -176,58 +172,6 @@ pub(crate) fn retained_window_fields(fact: &WindowFact) -> Vec<(String, RawSetti
             (
                 "suppressionOwned".to_owned(),
                 opt_bool(visibility.suppression_owned),
-            ),
-        ])
-    }
-    fn sample_value(sample: &VisibilitySample) -> RawSettingValue {
-        RawSettingValue::Object(vec![
-            (
-                "obs".to_owned(),
-                RawSettingValue::String(sample.obs.to_string()),
-            ),
-            (
-                "lifetimeMatched".to_owned(),
-                opt_bool(sample.lifetime_matched),
-            ),
-            ("visibility".to_owned(), visibility_value(sample.visibility)),
-            ("minimized".to_owned(), opt_bool(sample.minimized)),
-            ("hostHidden".to_owned(), opt_bool(sample.host_hidden)),
-        ])
-    }
-    fn last_write_value(last: &LastWrite) -> RawSettingValue {
-        RawSettingValue::Object(vec![
-            (
-                "property".to_owned(),
-                RawSettingValue::String(last.property.as_str().to_owned()),
-            ),
-            ("target".to_owned(), RawSettingValue::Bool(last.target)),
-            (
-                "revision".to_owned(),
-                RawSettingValue::String(last.revision.to_string()),
-            ),
-            (
-                "path".to_owned(),
-                RawSettingValue::String(last.path.as_str().to_owned()),
-            ),
-            (
-                "setter".to_owned(),
-                RawSettingValue::String(last.setter.as_str().to_owned()),
-            ),
-            (
-                "reason".to_owned(),
-                RawSettingValue::String(last.reason.as_str().to_owned()),
-            ),
-            (
-                "pre".to_owned(),
-                last.pre
-                    .as_ref()
-                    .map_or(RawSettingValue::Null, sample_value),
-            ),
-            (
-                "post".to_owned(),
-                last.post
-                    .as_ref()
-                    .map_or(RawSettingValue::Null, sample_value),
             ),
         ])
     }
@@ -348,12 +292,6 @@ pub(crate) fn retained_window_fields(fact: &WindowFact) -> Vec<(String, RawSetti
             opt_bool(fact.suppression_available),
         ),
         ("visibility".to_owned(), visibility_value(fact.visibility)),
-        (
-            "lastWrite".to_owned(),
-            fact.last_write
-                .as_ref()
-                .map_or(RawSettingValue::Null, last_write_value),
-        ),
     ]);
     fields
 }

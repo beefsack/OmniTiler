@@ -25,7 +25,8 @@ use tiler_protocol::world_admission_sizing::{
 use tiler_protocol::world_protocol::{decode_report_v4, encode_report_v4};
 
 fn fixture_root() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/world-wire/v4")
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/world-wire/v4-active")
 }
 
 #[derive(serde::Deserialize)]

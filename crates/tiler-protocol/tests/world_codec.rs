@@ -44,7 +44,7 @@ fn request_json(
           \"closed\":[],\"native\":[],\
          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"out\"],\
-          \"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null}},\"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null}}"
+          \"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null}},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null}}"
     )
 }
 
@@ -63,8 +63,7 @@ fn fact_json(id: &str, x: i32) -> String {
          \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
          \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
          \"suppressionAvailable\":null,\
-         \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\
-         \"lastWrite\":null}}"
+         \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}}}}"
     )
 }
 
@@ -88,7 +87,6 @@ fn v4_window(win: &str, out: &str, rect: [i32; 4]) -> serde_json::Value {
         "layer": 0, "fullscreenOwner": null, "fullscreenExitable": null,
         "suppressionAvailable": null,
         "visibility": {"visible": true, "suppressionOwned": null},
-        "lastWrite": null,
     })
 }
 
@@ -894,7 +892,8 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     // Present keys decode to the typed mechanical shape.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["monotonicMs"] = serde_json::Value::String("1200".to_owned());
-    value["frameAttempts"] = serde_json::json!([{
+    value["propertyAttempts"] = serde_json::json!([{
+        "kind": "frame",
         "win": "win-a", "target": [0, 0, 800, 560], "setter": "accepted",
         "readback": [0, 0, 700, 560], "dpiBefore": 96, "dpiAfter": 120,
         "attemptMs": "1000", "op": "op-7", "pre": [0, 0, 800, 560],
@@ -921,7 +920,8 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     );
     // Ordinary writes carry an empty operation id and no prewrite.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["frameAttempts"] = serde_json::json!([{
+    value["propertyAttempts"] = serde_json::json!([{
+        "kind": "frame",
         "win": "win-a", "target": [0, 0, 800, 560], "setter": "refused",
         "readback": null, "dpiBefore": null, "dpiAfter": null,
         "attemptMs": "1001", "op": "", "pre": null,
@@ -933,7 +933,8 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     // placement writes carry a preimage, and the identifiable row is
     // retained instead of refusing the envelope.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["frameAttempts"] = serde_json::json!([{
+    value["propertyAttempts"] = serde_json::json!([{
+        "kind": "frame",
         "win": "win-a", "target": [0, 0, 800, 560], "setter": "refused",
         "readback": null, "dpiBefore": null, "dpiAfter": null,
         "attemptMs": "1001", "op": "", "pre": [0, 0, 800, 560],
@@ -957,7 +958,8 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     assert!(decode_request(&value.to_string()).is_err());
     // Unknown setter vocabulary refuses; unknown attempt fields refuse.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["frameAttempts"] = serde_json::json!([{
+    value["propertyAttempts"] = serde_json::json!([{
+        "kind": "frame",
         "win": "win-a", "target": [0, 0, 800, 560], "setter": "clamped",
         "readback": null, "dpiBefore": null, "dpiAfter": null,
         "attemptMs": "1000", "op": "", "pre": null,
@@ -965,7 +967,8 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     let error = decode_request(&value.to_string()).expect_err("bad setter refuses");
     assert_eq!(error.kind, "unknown-value");
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["frameAttempts"] = serde_json::json!([{
+    value["propertyAttempts"] = serde_json::json!([{
+        "kind": "frame",
         "win": "win-a", "target": [0, 0, 800, 560], "setter": "threw",
         "readback": null, "dpiBefore": null, "dpiAfter": null,
         "attemptMs": "1000", "op": "", "pre": null, "verdict": "clamp",
@@ -977,11 +980,11 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     assert_eq!(held_report.held_attempts.len(), 1, "one held attempt row");
     // Duplicate windows refuse with fixed vocabulary, never payload bytes.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["frameAttempts"] = serde_json::json!([
-        {"win": "win-a", "target": [0, 0, 800, 560], "setter": "refused",
+    value["propertyAttempts"] = serde_json::json!([
+        {"kind": "frame", "win": "win-a", "target": [0, 0, 800, 560], "setter": "refused",
          "readback": null, "dpiBefore": null, "dpiAfter": null, "attemptMs": "1000",
          "op": "", "pre": null},
-        {"win": "win-a", "target": [0, 0, 800, 560], "setter": "refused",
+        {"kind": "frame", "win": "win-a", "target": [0, 0, 800, 560], "setter": "refused",
          "readback": null, "dpiBefore": null, "dpiAfter": null, "attemptMs": "1001",
          "op": "", "pre": null},
     ]);
@@ -998,10 +1001,10 @@ fn typed_attempts_decode_v4_nested_witnesses_and_reject_old_or_wrong_arms() {
     use tiler_protocol::world_protocol::{decode_member_attempt, decode_view_attempt};
 
     let logical: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-attempt-member-logical.json"
+        "../../../test-fixtures/world-wire/v4-active/messages/report-attempt-member-logical.json"
     ))
     .expect("fixture JSON");
-    let row = &logical["memberAttempts"][0];
+    let row = &logical["propertyAttempts"][0];
     assert_eq!(
         decode_member_attempt(row).expect("logical member witness"),
         MemberAttempt {
@@ -1023,20 +1026,20 @@ fn typed_attempts_decode_v4_nested_witnesses_and_reject_old_or_wrong_arms() {
     );
 
     let native: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-attempt-member-native.json"
+        "../../../test-fixtures/world-wire/v4-active/messages/report-attempt-member-native.json"
     ))
     .expect("fixture JSON");
     assert!(matches!(
-        decode_member_attempt(&native["memberAttempts"][0]).expect("native member witness").pre,
+        decode_member_attempt(&native["propertyAttempts"][0]).expect("native member witness").pre,
         Some(WorkspaceRef::Native { ref output, ref workspace })
             if output == &OutputId("out-a".into()) && workspace.as_str() == "native-a"
     ));
 
     let view: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-attempt-view-native.json"
+        "../../../test-fixtures/world-wire/v4-active/messages/report-attempt-view-native.json"
     ))
     .expect("fixture JSON");
-    let row = &view["viewAttempts"][0];
+    let row = &view["propertyAttempts"][0];
     assert_eq!(
         decode_view_attempt(row).expect("native view witness"),
         ViewAttempt {
@@ -1065,14 +1068,14 @@ fn typed_attempts_decode_v4_nested_witnesses_and_reject_old_or_wrong_arms() {
     // the full fixture messages decode through the v4 ingress to the
     // identical typed witnesses row-for-row.
     let logical_report = decode_request(include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-attempt-member-logical.json"
+        "../../../test-fixtures/world-wire/v4-active/messages/report-attempt-member-logical.json"
     ))
     .expect("logical member envelope decodes");
     assert_eq!(logical_report.member_attempts.len(), 2);
     for (attempt, row) in logical_report
         .member_attempts
         .iter()
-        .zip(logical["memberAttempts"].as_array().expect("array"))
+        .zip(logical["propertyAttempts"].as_array().expect("array"))
     {
         assert_eq!(
             *attempt,
@@ -1080,14 +1083,14 @@ fn typed_attempts_decode_v4_nested_witnesses_and_reject_old_or_wrong_arms() {
         );
     }
     let native_report = decode_request(include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-attempt-member-native.json"
+        "../../../test-fixtures/world-wire/v4-active/messages/report-attempt-member-native.json"
     ))
     .expect("native member envelope decodes");
     assert_eq!(native_report.member_attempts.len(), 2);
     for (attempt, row) in native_report
         .member_attempts
         .iter()
-        .zip(native["memberAttempts"].as_array().expect("array"))
+        .zip(native["propertyAttempts"].as_array().expect("array"))
     {
         assert_eq!(
             *attempt,
@@ -1095,14 +1098,14 @@ fn typed_attempts_decode_v4_nested_witnesses_and_reject_old_or_wrong_arms() {
         );
     }
     let view_report = decode_request(include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-attempt-view-native.json"
+        "../../../test-fixtures/world-wire/v4-active/messages/report-attempt-view-native.json"
     ))
     .expect("native view envelope decodes");
     assert_eq!(view_report.view_attempts.len(), 2);
     for (attempt, row) in view_report
         .view_attempts
         .iter()
-        .zip(view["viewAttempts"].as_array().expect("array"))
+        .zip(view["propertyAttempts"].as_array().expect("array"))
     {
         assert_eq!(
             *attempt,
@@ -1111,6 +1114,7 @@ fn typed_attempts_decode_v4_nested_witnesses_and_reject_old_or_wrong_arms() {
     }
 
     let logical_view = serde_json::json!({
+        "kind":"view",
         "op":"view-a", "out":"out-a", "ws":"ws-a", "setter":"accepted",
         "pre":{"kind":"logical","out":"out-a","ws":"ws-a"},
         "post":null, "base":null, "attemptMs":"20"
@@ -1120,6 +1124,7 @@ fn typed_attempts_decode_v4_nested_witnesses_and_reject_old_or_wrong_arms() {
         "unknown-value"
     );
     let parallel = serde_json::json!({
+        "kind":"view",
         "op":"view-a", "out":"out-a", "ws":"ws-a", "setter":"accepted",
         "pre":null, "post":null, "base":null, "nativePost":"native-a", "attemptMs":"20"
     });
@@ -1128,6 +1133,7 @@ fn typed_attempts_decode_v4_nested_witnesses_and_reject_old_or_wrong_arms() {
         "unknown-field"
     );
     let malformed_member = serde_json::json!({
+        "kind":"member",
         "op":"transfer-a", "win":"win-a", "out":"out-a", "ws":"ws-a", "setter":"accepted",
         "pre":{"kind":"native","out":"out-a","ws":"native-a","extra":true},
         "post":null, "attemptMs":"20"
@@ -1152,7 +1158,8 @@ fn member_already_at_target_round_trips_both_namespaces() {
         let mut value: serde_json::Value =
             serde_json::from_str(&one_window_request()).expect("report");
         let home = serde_json::json!({"kind":kind,"out":"out","ws":"target"});
-        value["memberAttempts"] = serde_json::json!([{
+        value["propertyAttempts"] = serde_json::json!([{
+            "kind":"member",
             "op":"transfer-a","win":"win-a","out":"out","ws":target,
             "setter":"already-at-target","pre":home,"post":home,"attemptMs":"23"
         }]);
@@ -1168,7 +1175,7 @@ fn member_already_at_target_round_trips_both_namespaces() {
         assert_eq!(attempt.attempt_ms, 23);
         let encoded = encode_report_v4(&decoded).expect("encode no-call report");
         let encoded_value: serde_json::Value = serde_json::from_str(&encoded).expect("JSON");
-        assert_eq!(encoded_value["memberAttempts"], value["memberAttempts"]);
+        assert_eq!(encoded_value["propertyAttempts"], value["propertyAttempts"]);
         assert_eq!(
             decode_report_v4(&encoded).expect("round trip").report,
             decoded.report
@@ -1212,7 +1219,10 @@ fn member_already_at_target_keeps_strict_shape_and_member_only_disposition() {
     assert!(decode_view_attempt(&view).is_err());
 
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("report");
-    value["memberAttempts"] = serde_json::json!([row, row]);
+    value["propertyAttempts"] = serde_json::json!([
+        {"kind":"member","op":"transfer-a","win":"win-a","out":"out","ws":"target","setter":"already-at-target","pre":{"kind":"logical","out":"out","ws":"target"},"post":{"kind":"logical","out":"out","ws":"target"},"attemptMs":"23"},
+        {"kind":"member","op":"transfer-a","win":"win-a","out":"out","ws":"target","setter":"already-at-target","pre":{"kind":"logical","out":"out","ws":"target"},"post":{"kind":"logical","out":"out","ws":"target"},"attemptMs":"23"},
+    ]);
     let error = decode_request(&value.to_string()).expect_err("duplicate no-call row");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "duplicate-member");
@@ -1229,7 +1239,8 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
     // window correlation, setter disposition, and nullable immediate
     // pre/post maximized proofs. No verdict rides the lane.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["clearAttempts"] = serde_json::json!([{
+    value["propertyAttempts"] = serde_json::json!([{
+        "kind": "clear",
         "op": "op-13", "win": "win-a", "setter": "accepted",
         "pre": true, "post": false, "attemptMs": "2000",
     }]);
@@ -1245,7 +1256,8 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
     assert_eq!(attempt.attempt_ms, 2000);
     // Null proofs stay unknown; duplicates refuse with fixed vocabulary.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["clearAttempts"] = serde_json::json!([{
+    value["propertyAttempts"] = serde_json::json!([{
+        "kind": "clear",
         "op": "op-13", "win": "win-a", "setter": "threw",
         "pre": null, "post": null, "attemptMs": "1",
     }]);
@@ -1253,10 +1265,10 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
     assert_eq!(null_report.clear_attempts[0].pre_maximized, None);
     assert_eq!(null_report.clear_attempts[0].post_maximized, None);
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["clearAttempts"] = serde_json::json!([
-        {"op": "op-9", "win": "win-a", "setter": "accepted",
+    value["propertyAttempts"] = serde_json::json!([
+        {"kind": "clear", "op": "op-9", "win": "win-a", "setter": "accepted",
          "pre": true, "post": false, "attemptMs": "1"},
-        {"op": "op-9", "win": "win-a", "setter": "accepted",
+        {"kind": "clear", "op": "op-9", "win": "win-a", "setter": "accepted",
          "pre": true, "post": false, "attemptMs": "2"},
     ]);
     let error = decode_request(&value.to_string()).expect_err("duplicate refuses");
@@ -1277,8 +1289,7 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
           \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
           \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
           \"suppressionAvailable\":null,\
-          \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\
-          \"lastWrite\":null}";
+          \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
     let mut value: serde_json::Value = serde_json::from_str(&request_json(
         "adapter-1",
         "gen-1",
@@ -1376,7 +1387,8 @@ fn empty_view_attempt_refs_hold_identifiable_row() {
     // Identifiable empty refs hold narrowly in v4 (contract 307-314):
     // the row leaves `view_attempts` with its carried refs retained.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["viewAttempts"] = serde_json::json!([{
+    value["propertyAttempts"] = serde_json::json!([{
+        "kind": "view",
         "op": "op-9", "out": "out-a", "ws": "ws-2", "setter": "threw",
         "pre": "", "post": "", "base": "", "attemptMs": "1",
     }]);
@@ -4037,10 +4049,23 @@ fn v4_window_rows_retain_canonical_bytes_from_immutable_fixtures() {
         rows[0].to_owned()
     }
 
-    // 1. Healthy row: full `lastWrite` with pre/post samples.
-    let healthy_raw = raw_window(include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-last-write-accepted.json"
-    ));
+    // 1. Healthy row + standalone visibility attempt with pre/post samples.
+    let healthy_msg = include_str!(
+        "../../../test-fixtures/world-wire/v4-active/messages/report-last-write-accepted.json"
+    );
+    let healthy_full = decode_request(healthy_msg).expect("healthy message decodes");
+    assert_eq!(healthy_full.visibility_attempts.len(), 1);
+    let vis = &healthy_full.visibility_attempts[0];
+    assert_eq!(vis.revision, 1);
+    assert_eq!(vis.path, tiler_core::world_report::LastWritePath::Staged);
+    assert_eq!(
+        vis.setter,
+        tiler_core::world_report::VisibilitySetter::Accepted
+    );
+    assert_eq!(vis.pre.as_ref().expect("pre").obs, 1);
+    assert_eq!(vis.post.as_ref().expect("post").obs, 1);
+
+    let healthy_raw = raw_window(healthy_msg);
     assert!(
         !healthy_raw.contains("\"nativeWs\""),
         "ordinary row omits nativeWs"
@@ -4054,19 +4079,6 @@ fn v4_window_rows_retain_canonical_bytes_from_immutable_fixtures() {
         fact.native_workspace,
         tiler_core::world_report::NativeWorkspaceFact::Omitted
     );
-    let last = fact.last_write.as_ref().expect("lastWrite rides");
-    assert_eq!(
-        last.property,
-        tiler_core::world_report::LastWriteProperty::Visibility
-    );
-    assert_eq!(last.revision, 1);
-    assert_eq!(last.path, tiler_core::world_report::LastWritePath::Staged);
-    assert_eq!(
-        last.setter,
-        tiler_core::world_report::VisibilitySetter::Accepted
-    );
-    assert_eq!(last.pre.as_ref().expect("pre").obs, 1);
-    assert_eq!(last.post.as_ref().expect("post").obs, 1);
     assert_eq!(
         encode_window_canonical(fact).expect("finite row"),
         healthy_raw,
@@ -4085,17 +4097,30 @@ fn v4_window_rows_retain_canonical_bytes_from_immutable_fixtures() {
         "digest stable over identical bytes"
     );
 
-    // 2. Nullable row: `pre`/`post` null samples stay unknown, never defaults.
-    let nullable_raw = raw_window(include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/report-last-write-preimage-unavailable.json"
-    ));
+    // 2. Nullable row + standalone visibility attempt: `pre`/`post` null samples stay unknown.
+    let nullable_msg = include_str!(
+        "../../../test-fixtures/world-wire/v4-active/messages/report-last-write-preimage-unavailable.json"
+    );
+    let nullable_full = decode_request(nullable_msg).expect("nullable message decodes");
+    assert_eq!(nullable_full.visibility_attempts.len(), 1);
+    let vis_null = &nullable_full.visibility_attempts[0];
+    assert_eq!(vis_null.revision, 1);
+    assert_eq!(
+        vis_null.path,
+        tiler_core::world_report::LastWritePath::Independent
+    );
+    assert_eq!(
+        vis_null.setter,
+        tiler_core::world_report::VisibilitySetter::NotCalled
+    );
+    assert!(vis_null.pre.is_none() && vis_null.post.is_none());
+
+    let nullable_raw = raw_window(nullable_msg);
     let staged = stage_fixture_window_rows(&[&nullable_raw]);
     let report = decode_request(&staged).expect("nullable row decodes");
     assert_eq!(report.windows.len(), 1);
     assert!(report.held_windows.is_empty());
     let fact = &report.windows[0];
-    let last = fact.last_write.as_ref().expect("lastWrite rides");
-    assert!(last.pre.is_none() && last.post.is_none());
     assert_eq!(
         encode_window_canonical(fact).expect("finite row"),
         nullable_raw,
@@ -4119,7 +4144,7 @@ fn v4_window_rows_retain_canonical_bytes_from_immutable_fixtures() {
     // 3. Held row: retired `floating` verdict holds the identifiable row with
     // its carried key retained (fail closed, never a silent drop).
     let held_raw = raw_window(include_str!(
-        "../../../test-fixtures/world-wire/v4/messages/invalid-removed-window-floating.json"
+        "../../../test-fixtures/world-wire/v4-active/messages/invalid-removed-window-floating.json"
     ));
     let staged = stage_fixture_window_rows(&[&held_raw]);
     let decoded = tiler_protocol::world_protocol::decode_report_v4(&staged).expect("retired holds");
@@ -4178,7 +4203,7 @@ fn v4_window_canonical_spells_escapes_and_preserves_native_ws() {
 
     let healthy_raw = {
         let message = include_str!(
-            "../../../test-fixtures/world-wire/v4/messages/report-last-write-accepted.json"
+            "../../../test-fixtures/world-wire/v4-active/messages/report-last-write-accepted.json"
         );
         let rows = raw_lane_elements(message, "windows");
         assert_eq!(rows.len(), 1);
@@ -4282,7 +4307,7 @@ fn v4_window_vocab_rejects_unknown_enums_and_holds_retired() {
     // Unknown `type` token holds the identifiable row with exact bytes.
     let unknown = {
         let message = include_str!(
-            "../../../test-fixtures/world-wire/v4/messages/invalid-window-type-unknown.json"
+            "../../../test-fixtures/world-wire/v4-active/messages/invalid-window-type-unknown.json"
         );
         let rows = raw_lane_elements(message, "windows");
         assert_eq!(rows.len(), 1);
@@ -4312,7 +4337,7 @@ fn v4_window_vocab_rejects_unknown_enums_and_holds_retired() {
     // Wrong-typed `type` holds the identifiable row with exact bytes.
     let mistyped = {
         let message = include_str!(
-            "../../../test-fixtures/world-wire/v4/messages/invalid-window-type-bool.json"
+            "../../../test-fixtures/world-wire/v4-active/messages/invalid-window-type-bool.json"
         );
         let rows = raw_lane_elements(message, "windows");
         assert_eq!(rows.len(), 1);
@@ -4341,7 +4366,7 @@ fn v4_window_vocab_rejects_unknown_enums_and_holds_retired() {
     // bytes (fixture-derived healthy row plus one carried retired key).
     let healthy = {
         let message = include_str!(
-            "../../../test-fixtures/world-wire/v4/messages/report-last-write-accepted.json"
+            "../../../test-fixtures/world-wire/v4-active/messages/report-last-write-accepted.json"
         );
         let rows = raw_lane_elements(message, "windows");
         assert_eq!(rows.len(), 1);
@@ -4681,28 +4706,7 @@ fn consumed_command_replays_no_explicit_effect_with_metadata() {
 fn v4_held_rows_project_typed_facts_with_wire_parity() {
     let mut raw: serde_json::Value = serde_json::from_str(&one_window_request()).expect("report");
     raw["windows"][0]["nativeWs"] = serde_json::json!("ws-native-1");
-    raw["windows"][0]["lastWrite"] = serde_json::json!({
-        "property": "visibility",
-        "target": true,
-        "revision": "007",
-        "path": "staged",
-        "setter": "accepted",
-        "reason": "",
-        "pre": {
-            "obs": "001",
-            "lifetimeMatched": true,
-            "visibility": {
-                "visible": false,
-                "suppressionOwned": false,
-                "extraVisKey": 1
-            },
-            "minimized": false,
-            "hostHidden": false,
-            "extraSampleKey": "x"
-        },
-        "post": null,
-        "extraLastWriteKey": true
-    });
+    raw["windows"][0]["type"] = serde_json::json!("bogus");
     raw["native"] = serde_json::json!([{
         "out": "out",
         "order": ["ws-native-1", "ws-native-2"],
@@ -4712,7 +4716,8 @@ fn v4_held_rows_project_typed_facts_with_wire_parity() {
             {"native": "ws-native-2", "count": 0}
         ]
     }]);
-    raw["memberAttempts"] = serde_json::json!([{
+    raw["propertyAttempts"] = serde_json::json!([{
+        "kind": "member",
         "op": "op-m",
         "win": "win-a",
         "out": "out",
@@ -4725,11 +4730,6 @@ fn v4_held_rows_project_typed_facts_with_wire_parity() {
     let report = decode_request(&raw.to_string()).expect("decodes with held rows");
     assert_eq!(report.held_windows.len(), 1);
     assert!(report.held_windows[0].has_native_workspace);
-    let lw = report.held_windows[0]
-        .last_write
-        .expect("permissive held lastWrite decodes with extra keys and zero-padded counters");
-    assert_eq!(lw.revision, 7);
-    assert_eq!(lw.pre.as_ref().map(|s| s.obs), Some(1));
     assert_eq!(report.held_native.len(), 1);
     assert_eq!(report.held_native[0].order_len, 2);
     assert_eq!(report.held_attempts.len(), 1);
@@ -4799,7 +4799,8 @@ fn held_native_and_attempt_replay_residual_and_order_len_cap() {
         "occupancy": [{"native": "ws-1", "count": 1}],
         "extra": "v1"
     }]);
-    first_val["memberAttempts"] = serde_json::json!([{
+    first_val["propertyAttempts"] = serde_json::json!([{
+        "kind": "member",
         "op": "op-m",
         "win": "win-a",
         "out": "out",
@@ -4864,7 +4865,7 @@ fn held_native_and_attempt_replay_residual_and_order_len_cap() {
 
     // Changed extra field in malformed held_attempt refuses request-reused.
     let mut changed_attempt = first_val;
-    changed_attempt["memberAttempts"][0]["extraAttempt"] = serde_json::json!("a2");
+    changed_attempt["propertyAttempts"][0]["extraAttempt"] = serde_json::json!("a2");
     let changed_attempt_decoded =
         decode_report_v4(&changed_attempt.to_string()).expect("changed attempt decodes");
     assert_eq!(changed_attempt_decoded.report, first.report);

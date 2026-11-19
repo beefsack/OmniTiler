@@ -117,7 +117,11 @@ impl WorldTransaction<'_> {
         for (held, diag) in held_windows.iter_mut().zip(derived.held_window_diagnostics) {
             held.diagnostic = diag;
         }
-        observation.normalize_visibility_attempts(&derived.facts, &held_windows);
+        observation.normalize_visibility_attempts(
+            &effective.visibility_attempts,
+            &derived.facts,
+            &held_windows,
+        );
         let staged = StagedReport {
             observation: std::sync::Arc::new(observation),
             screens: effective.screens.clone(),

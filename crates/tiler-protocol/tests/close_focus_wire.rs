@@ -15,7 +15,8 @@ use tiler_protocol::world_protocol::{
 use tiler_protocol::world_reply_write::count_reply_v4;
 
 fn fixture_root() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/world-wire/v4")
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-fixtures/world-wire/v4-active")
 }
 
 fn reply_root() -> std::path::PathBuf {

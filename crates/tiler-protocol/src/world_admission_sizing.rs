@@ -10,8 +10,8 @@ use tiler_core::world_report::{
 
 use crate::world_admission_rows::{
     bool_len, command_estimate_owned, focus_feedback_estimate, gesture_ingress_v4_estimate,
-    int_len, intent_records_estimate, json_string_len, last_write_estimate,
-    presentation_row_v4_estimate, rect_len, renderer_input_estimate, u64_len, usize_len,
+    int_len, intent_records_estimate, json_string_len, presentation_row_v4_estimate, rect_len,
+    renderer_input_estimate, u64_len, usize_len, visibility_sample_estimate,
     workspace_ref_option_len,
 };
 
@@ -178,8 +178,7 @@ pub fn report_estimate_v4_with_residual(
             + fact.suppression_available.map_or(4, bool_len)
             + 32
             + fact.visibility.visible.map_or(4, bool_len)
-            + fact.visibility.suppression_owned.map_or(4, bool_len)
-            + last_write_estimate(&fact.last_write);
+            + fact.visibility.suppression_owned.map_or(4, bool_len);
     }
     for id in &report.closed {
         bytes += json_string_len(&id.0) + 1;
@@ -199,7 +198,7 @@ pub fn report_estimate_v4_with_residual(
     }
     bytes += 20;
     for attempt in &report.frames {
-        bytes += 98
+        bytes += 113
             + json_string_len(&attempt.window.0)
             + int_len(attempt.target.x)
             + int_len(attempt.target.y)
@@ -217,9 +216,8 @@ pub fn report_estimate_v4_with_residual(
                 5 + int_len(rect.x) + int_len(rect.y) + int_len(rect.w) + int_len(rect.h)
             });
     }
-    bytes += 21;
     for attempt in &report.member_attempts {
-        bytes += "{\"op\":\"\",\"win\":\"\",\"out\":\"\",\"ws\":\"\",\"setter\":\"\",\"pre\":null,\"post\":null,\"attemptMs\":\"\"}".len() - 12
+        bytes += "{\"kind\":\"member\",\"op\":\"\",\"win\":\"\",\"out\":\"\",\"ws\":\"\",\"setter\":\"\",\"pre\":null,\"post\":null,\"attemptMs\":\"\"}".len() - 12
             + json_string_len(&attempt.operation_id)
             + json_string_len(&attempt.window.0)
             + json_string_len(&attempt.target_output.0)
@@ -229,9 +227,8 @@ pub fn report_estimate_v4_with_residual(
             + workspace_ref_option_len(&attempt.post)
             + u64_len(attempt.attempt_ms);
     }
-    bytes += 19;
     for attempt in &report.view_attempts {
-        bytes += "{\"op\":\"\",\"out\":\"\",\"ws\":\"\",\"setter\":\"\",\"pre\":null,\"post\":null,\"base\":null,\"attemptMs\":\"\"}".len() - 10
+        bytes += "{\"kind\":\"view\",\"op\":\"\",\"out\":\"\",\"ws\":\"\",\"setter\":\"\",\"pre\":null,\"post\":null,\"base\":null,\"attemptMs\":\"\"}".len() - 10
             + json_string_len(&attempt.operation_id)
             + json_string_len(&attempt.target_output.0)
             + json_string_len(&attempt.target_workspace)
@@ -241,15 +238,36 @@ pub fn report_estimate_v4_with_residual(
             + workspace_ref_option_len(&attempt.baseline)
             + u64_len(attempt.attempt_ms);
     }
-    bytes += 20;
     for attempt in &report.clear_attempts {
-        bytes += 62
+        bytes += 77
             + json_string_len(&attempt.operation_id)
             + json_string_len(&attempt.window.0)
             + json_string_len(attempt.setter.as_str())
             + 5
             + 5
             + u64_len(attempt.attempt_ms);
+    }
+    for attempt in &report.state_attempts {
+        bytes += 94
+            + json_string_len(&attempt.window.0)
+            + json_string_len(attempt.property.as_str())
+            + bool_len(attempt.target)
+            + u64_len(attempt.revision)
+            + json_string_len(attempt.setter.as_str())
+            + attempt.pre.map_or(4, bool_len)
+            + attempt.post.map_or(4, bool_len)
+            + u64_len(attempt.attempt_ms);
+    }
+    for attempt in &report.visibility_attempts {
+        bytes += 97
+            + json_string_len(&attempt.window.0)
+            + bool_len(attempt.target)
+            + u64_len(attempt.revision)
+            + json_string_len(attempt.path.as_str())
+            + json_string_len(attempt.setter.as_str())
+            + json_string_len(attempt.reason.as_str())
+            + visibility_sample_estimate(&attempt.pre)
+            + visibility_sample_estimate(&attempt.post);
     }
     bytes += 22;
     for attempt in &report.creation_attempts {
@@ -272,17 +290,6 @@ pub fn report_estimate_v4_with_residual(
         bytes += 11 + json_string_len(&primary.0);
     }
     bytes += intent_records_estimate(&report.intent_records);
-    for attempt in &report.state_attempts {
-        bytes += 79
-            + json_string_len(&attempt.window.0)
-            + json_string_len(attempt.property.as_str())
-            + bool_len(attempt.target)
-            + u64_len(attempt.revision)
-            + json_string_len(attempt.setter.as_str())
-            + attempt.pre.map_or(4, bool_len)
-            + attempt.post.map_or(4, bool_len)
-            + u64_len(attempt.attempt_ms);
-    }
     for (i, row) in report.focus_feedback.iter().enumerate() {
         if i > 0 {
             bytes += 1;

@@ -619,6 +619,7 @@ mod tests {
             creation_attempts: Vec::new(),
             held_attempts: Vec::new(),
             state_attempts: Vec::new(),
+            visibility_attempts: Vec::new(),
             focus_feedback: Vec::new(),
             presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
             intent_records: Vec::new(),
@@ -1201,7 +1202,7 @@ mod tests {
             .expect("settings");
 
         let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-            "../../test-fixtures/world-wire/v4/messages/invalid-witness-constant-string.json",
+            "../../test-fixtures/world-wire/v4-active/messages/invalid-witness-constant-string.json",
         );
         let base_text = std::fs::read_to_string(fixture_path).expect("held presentation fixture");
         let mut doc: serde_json::Value = serde_json::from_str(&base_text).expect("json");
@@ -1289,8 +1290,9 @@ mod tests {
             })
             .expect("settings");
 
-        let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../test-fixtures/world-wire/v4/messages/invalid-screen-string-scale.json");
+        let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../test-fixtures/world-wire/v4-active/messages/invalid-screen-string-scale.json",
+        );
         let base_text = std::fs::read_to_string(fixture_path).expect("held screen fixture");
         let mut doc: serde_json::Value = serde_json::from_str(&base_text).expect("json");
         doc["adapter"] = serde_json::json!("adapter-a");
@@ -1357,8 +1359,9 @@ mod tests {
         assert_eq!(engine.state_revision(), rev_after_accept);
 
         // Held window residual: same discrimination at reqSeq 2.
-        let win_fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../test-fixtures/world-wire/v4/messages/invalid-window-type-unknown.json");
+        let win_fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../test-fixtures/world-wire/v4-active/messages/invalid-window-type-unknown.json",
+        );
         let win_text = std::fs::read_to_string(win_fixture_path).expect("held window fixture");
         let mut win_doc: serde_json::Value = serde_json::from_str(&win_text).expect("json");
         win_doc["adapter"] = serde_json::json!("adapter-a");

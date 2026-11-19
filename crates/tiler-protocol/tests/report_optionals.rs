@@ -31,7 +31,7 @@ use tiler_protocol::world_reply_write::count_reply_v4;
 
 fn fixture_text(name: &str) -> String {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../test-fixtures/world-wire/v4/messages")
+        .join("../../test-fixtures/world-wire/v4-active/messages")
         .join(format!("{name}.json"));
     std::fs::read_to_string(&path).expect("fixture JSON")
 }
@@ -55,10 +55,6 @@ fn base_value() -> serde_json::Value {
             "cursorHit",
             "monotonicMs",
             "primary",
-            "frameAttempts",
-            "memberAttempts",
-            "viewAttempts",
-            "clearAttempts",
             "creationAttempts",
             "gestureIngress",
         ] {
@@ -272,20 +268,16 @@ fn monotonic_clock_absent_zero_and_max() {
 #[test]
 fn attempt_lanes_absent_empty_and_nonempty() {
     // Fragment sources (isolated lane arrays only, never whole fixtures):
-    // report-optionals-omitted (every lane `[]`) plus one representative
+    // report-optionals-omitted (`creationAttempts: []`) plus one representative
     // nonempty lane fixture each: report-attempt-frame,
     // report-attempt-member-logical, report-attempt-view-native,
     // report-attempt-clear, report-attempt-creation-id.
     let omitted: serde_json::Value = fixture_value("report-optionals-omitted");
-    for lane in [
-        "frameAttempts",
-        "memberAttempts",
-        "viewAttempts",
-        "clearAttempts",
-        "creationAttempts",
-    ] {
-        assert_eq!(omitted[lane], serde_json::json!([]), "{lane} empty");
-    }
+    assert_eq!(
+        omitted["creationAttempts"],
+        serde_json::json!([]),
+        "creationAttempts empty"
+    );
 
     let frame_fixture: serde_json::Value = fixture_value("report-attempt-frame");
     let member_fixture: serde_json::Value = fixture_value("report-attempt-member-logical");
@@ -293,12 +285,8 @@ fn attempt_lanes_absent_empty_and_nonempty() {
     let clear_fixture: serde_json::Value = fixture_value("report-attempt-clear");
     let creation_fixture: serde_json::Value = fixture_value("report-attempt-creation-id");
 
-    // Absent lanes backfill empty with presence false.
+    // Absent creationAttempts backfills empty with presence false.
     let decoded = decode_both(&one_window_request());
-    assert!(!decoded.wire.frame_attempts_present);
-    assert!(!decoded.wire.member_attempts_present);
-    assert!(!decoded.wire.view_attempts_present);
-    assert!(!decoded.wire.clear_attempts_present);
     assert!(!decoded.wire.creation_attempts_present);
     assert!(decoded.report.frames.is_empty());
     assert!(decoded.report.member_attempts.is_empty());
@@ -306,23 +294,11 @@ fn attempt_lanes_absent_empty_and_nonempty() {
     assert!(decoded.report.clear_attempts.is_empty());
     assert!(decoded.report.creation_attempts.is_empty());
 
-    // Explicit empty arrays stay empty with presence true; the normalized
-    // report matches the absent spelling exactly (equal digest).
+    // Explicit empty creationAttempts stays empty with presence true; the
+    // normalized report matches the absent spelling exactly (equal digest).
     let mut empty_lanes = base_value();
-    for lane in [
-        "frameAttempts",
-        "memberAttempts",
-        "viewAttempts",
-        "clearAttempts",
-        "creationAttempts",
-    ] {
-        empty_lanes[lane] = serde_json::json!([]);
-    }
+    empty_lanes["creationAttempts"] = serde_json::json!([]);
     let decoded = decode_both(&empty_lanes.to_string());
-    assert!(decoded.wire.frame_attempts_present);
-    assert!(decoded.wire.member_attempts_present);
-    assert!(decoded.wire.view_attempts_present);
-    assert!(decoded.wire.clear_attempts_present);
     assert!(decoded.wire.creation_attempts_present);
     assert!(decoded.report.frames.is_empty());
     let absent_report = decode_request(&one_window_request()).expect("decodes");
@@ -330,16 +306,14 @@ fn attempt_lanes_absent_empty_and_nonempty() {
     assert_eq!(absent_report, empty_report);
     assert_eq!(report_digest(&absent_report), report_digest(&empty_report));
 
-    // Nonempty lanes decode to their typed rows with presence true. The
-    // rows come verbatim from the immutable v4 lane fixtures above.
+    // Nonempty propertyAttempts decode to their typed rows.
     let mut framed = base_value();
     framed["monotonicMs"] = frame_fixture["monotonicMs"].clone();
-    framed["frameAttempts"] = frame_fixture["frameAttempts"].clone();
+    framed["propertyAttempts"] = frame_fixture["propertyAttempts"].clone();
     let decoded = decode_both(&framed.to_string());
-    assert!(decoded.wire.frame_attempts_present);
     assert_eq!(
         decoded.report.frames.len(),
-        frame_fixture["frameAttempts"]
+        frame_fixture["propertyAttempts"]
             .as_array()
             .expect("array")
             .len()
@@ -347,21 +321,18 @@ fn attempt_lanes_absent_empty_and_nonempty() {
     assert_eq!(decoded.report.monotonic_ms, 50);
 
     let mut membered = base_value();
-    membered["memberAttempts"] = member_fixture["memberAttempts"].clone();
+    membered["propertyAttempts"] = member_fixture["propertyAttempts"].clone();
     let decoded = decode_both(&membered.to_string());
-    assert!(decoded.wire.member_attempts_present);
     assert_eq!(decoded.report.member_attempts.len(), 2);
 
     let mut viewed = base_value();
-    viewed["viewAttempts"] = view_fixture["viewAttempts"].clone();
+    viewed["propertyAttempts"] = view_fixture["propertyAttempts"].clone();
     let decoded = decode_both(&viewed.to_string());
-    assert!(decoded.wire.view_attempts_present);
     assert_eq!(decoded.report.view_attempts.len(), 2);
 
     let mut cleared = base_value();
-    cleared["clearAttempts"] = clear_fixture["clearAttempts"].clone();
+    cleared["propertyAttempts"] = clear_fixture["propertyAttempts"].clone();
     let decoded = decode_both(&cleared.to_string());
-    assert!(decoded.wire.clear_attempts_present);
     assert_eq!(decoded.report.clear_attempts.len(), 2);
 
     let mut created = base_value();
@@ -488,7 +459,7 @@ fn render_frame_attempt(attempt: &FrameAttempt) -> String {
         .map(|dpi| dpi.to_string())
         .unwrap_or_else(|| "null".to_owned());
     format!(
-        "{{\"win\":{},\"target\":{},\"setter\":\"{}\",\"readback\":{},\
+        "{{\"kind\":\"frame\",\"win\":{},\"target\":{},\"setter\":\"{}\",\"readback\":{},\
          \"dpiBefore\":{},\"dpiAfter\":{},\"attemptMs\":\"{}\",\"op\":{},\"pre\":{}}}",
         wire_str(&attempt.window.0),
         rect_text(&attempt.target),
@@ -504,7 +475,7 @@ fn render_frame_attempt(attempt: &FrameAttempt) -> String {
 
 fn render_member_attempt(attempt: &MemberAttempt) -> String {
     format!(
-        "{{\"op\":{},\"win\":{},\"out\":{},\"ws\":{},\"setter\":\"{}\",\
+        "{{\"kind\":\"member\",\"op\":{},\"win\":{},\"out\":{},\"ws\":{},\"setter\":\"{}\",\
          \"pre\":{},\"post\":{},\"attemptMs\":\"{}\"}}",
         wire_str(&attempt.operation_id),
         wire_str(&attempt.window.0),
@@ -519,7 +490,7 @@ fn render_member_attempt(attempt: &MemberAttempt) -> String {
 
 fn render_view_attempt(attempt: &ViewAttempt) -> String {
     format!(
-        "{{\"op\":{},\"out\":{},\"ws\":{},\"setter\":\"{}\",\
+        "{{\"kind\":\"view\",\"op\":{},\"out\":{},\"ws\":{},\"setter\":\"{}\",\
          \"pre\":{},\"post\":{},\"base\":{},\"attemptMs\":\"{}\"}}",
         wire_str(&attempt.operation_id),
         wire_str(&attempt.target_output.0),
@@ -534,7 +505,7 @@ fn render_view_attempt(attempt: &ViewAttempt) -> String {
 
 fn render_clear_attempt(attempt: &ClearAttempt) -> String {
     format!(
-        "{{\"op\":{},\"win\":{},\"setter\":\"{}\",\
+        "{{\"kind\":\"clear\",\"op\":{},\"win\":{},\"setter\":\"{}\",\
          \"pre\":{},\"post\":{},\"attemptMs\":\"{}\"}}",
         wire_str(&attempt.operation_id),
         wire_str(&attempt.window.0),
@@ -713,63 +684,37 @@ fn optional_fragments_reconstruct_byte_exact() {
         serde_json::json!({"monotonicMs": u64::MAX.to_string()}),
     );
 
-    // Attempt lanes: an absent lane renders omitted for every lane (any
-    // false-flag regression fails here), while an explicitly empty lane
-    // renders `[]` byte-exact.
+    // Attempt lanes: absent `creationAttempts` renders omitted, while an
+    // explicitly empty lane renders `[]` byte-exact.
     let decoded = decode_both(&one_window_request());
-    assert_eq!(
-        render_lane(decoded.wire.frame_attempts_present, vec![]),
-        None
-    );
-    assert_eq!(
-        render_lane(decoded.wire.member_attempts_present, vec![]),
-        None
-    );
-    assert_eq!(
-        render_lane(decoded.wire.view_attempts_present, vec![]),
-        None
-    );
-    assert_eq!(
-        render_lane(decoded.wire.clear_attempts_present, vec![]),
-        None
-    );
     assert_eq!(
         render_lane(decoded.wire.creation_attempts_present, vec![]),
         None
     );
     let mut empty_lanes = base_value();
-    for lane in [
-        "frameAttempts",
-        "memberAttempts",
-        "viewAttempts",
-        "clearAttempts",
-        "creationAttempts",
-    ] {
-        empty_lanes[lane] = serde_json::json!([]);
-    }
+    empty_lanes["creationAttempts"] = serde_json::json!([]);
     let decoded = decode_both(&empty_lanes.to_string());
-    for (present, lane) in [
-        (decoded.wire.frame_attempts_present, "frameAttempts"),
-        (decoded.wire.member_attempts_present, "memberAttempts"),
-        (decoded.wire.view_attempts_present, "viewAttempts"),
-        (decoded.wire.clear_attempts_present, "clearAttempts"),
-        (decoded.wire.creation_attempts_present, "creationAttempts"),
-    ] {
-        assert_eq!(render_lane(present, vec![]), Some("[]".to_owned()));
-        assert!(
-            omitted_text.contains(&format!("\"{lane}\":[]")),
-            "{lane} empty fragment"
-        );
-    }
+    assert_eq!(
+        render_lane(decoded.wire.creation_attempts_present, vec![]),
+        Some("[]".to_owned())
+    );
+    assert!(
+        omitted_text.contains("\"creationAttempts\":[]"),
+        "creationAttempts empty fragment"
+    );
+    assert!(
+        omitted_text.contains("\"propertyAttempts\":[]"),
+        "propertyAttempts empty fragment"
+    );
 
     // Nonempty frame rows: every typed row renders back to its exact
     // fixture bytes.
     let frame_text = fixture_text("report-attempt-frame");
     let frame_fixture: serde_json::Value = serde_json::from_str(&frame_text).expect("fixture JSON");
     let mut framed = base_value();
-    framed["frameAttempts"] = frame_fixture["frameAttempts"].clone();
+    framed["propertyAttempts"] = frame_fixture["propertyAttempts"].clone();
     let decoded = decode_both(&framed.to_string());
-    let rows = frame_fixture["frameAttempts"].as_array().expect("array");
+    let rows = frame_fixture["propertyAttempts"].as_array().expect("array");
     assert_eq!(decoded.report.frames.len(), rows.len());
     for (attempt, row) in decoded.report.frames.iter().zip(rows.iter()) {
         let rendered = render_frame_attempt(attempt);
@@ -782,17 +727,17 @@ fn optional_fragments_reconstruct_byte_exact() {
             *row,
         );
     }
-    // The whole carried group rebuilds from the lane flag plus typed rows.
     let rendered_rows: Vec<String> = decoded
         .report
         .frames
         .iter()
         .map(render_frame_attempt)
         .collect();
-    let group =
-        render_lane(decoded.wire.frame_attempts_present, rendered_rows).expect("present lane");
     assert!(
-        frame_text.contains(&format!("\"frameAttempts\":{group}")),
+        frame_text.contains(&format!(
+            "\"propertyAttempts\":[{}]",
+            rendered_rows.join(",")
+        )),
         "frame group renders byte-exact"
     );
 
@@ -801,9 +746,11 @@ fn optional_fragments_reconstruct_byte_exact() {
     let member_fixture: serde_json::Value =
         serde_json::from_str(&member_text).expect("fixture JSON");
     let mut membered = base_value();
-    membered["memberAttempts"] = member_fixture["memberAttempts"].clone();
+    membered["propertyAttempts"] = member_fixture["propertyAttempts"].clone();
     let decoded = decode_both(&membered.to_string());
-    let rows = member_fixture["memberAttempts"].as_array().expect("array");
+    let rows = member_fixture["propertyAttempts"]
+        .as_array()
+        .expect("array");
     for (attempt, row) in decoded.report.member_attempts.iter().zip(rows.iter()) {
         let rendered = render_member_attempt(attempt);
         assert!(
@@ -821,10 +768,11 @@ fn optional_fragments_reconstruct_byte_exact() {
         .iter()
         .map(render_member_attempt)
         .collect();
-    let group =
-        render_lane(decoded.wire.member_attempts_present, rendered_rows).expect("present lane");
     assert!(
-        member_text.contains(&format!("\"memberAttempts\":{group}")),
+        member_text.contains(&format!(
+            "\"propertyAttempts\":[{}]",
+            rendered_rows.join(",")
+        )),
         "member group renders byte-exact"
     );
 
@@ -832,9 +780,9 @@ fn optional_fragments_reconstruct_byte_exact() {
     let view_text = fixture_text("report-attempt-view-native");
     let view_fixture: serde_json::Value = serde_json::from_str(&view_text).expect("fixture JSON");
     let mut viewed = base_value();
-    viewed["viewAttempts"] = view_fixture["viewAttempts"].clone();
+    viewed["propertyAttempts"] = view_fixture["propertyAttempts"].clone();
     let decoded = decode_both(&viewed.to_string());
-    let rows = view_fixture["viewAttempts"].as_array().expect("array");
+    let rows = view_fixture["propertyAttempts"].as_array().expect("array");
     for (attempt, row) in decoded.report.view_attempts.iter().zip(rows.iter()) {
         let rendered = render_view_attempt(attempt);
         assert!(view_text.contains(&rendered), "view row renders byte-exact");
@@ -849,10 +797,11 @@ fn optional_fragments_reconstruct_byte_exact() {
         .iter()
         .map(render_view_attempt)
         .collect();
-    let group =
-        render_lane(decoded.wire.view_attempts_present, rendered_rows).expect("present lane");
     assert!(
-        view_text.contains(&format!("\"viewAttempts\":{group}")),
+        view_text.contains(&format!(
+            "\"propertyAttempts\":[{}]",
+            rendered_rows.join(",")
+        )),
         "view group renders byte-exact"
     );
 
@@ -860,9 +809,9 @@ fn optional_fragments_reconstruct_byte_exact() {
     let clear_text = fixture_text("report-attempt-clear");
     let clear_fixture: serde_json::Value = serde_json::from_str(&clear_text).expect("fixture JSON");
     let mut cleared = base_value();
-    cleared["clearAttempts"] = clear_fixture["clearAttempts"].clone();
+    cleared["propertyAttempts"] = clear_fixture["propertyAttempts"].clone();
     let decoded = decode_both(&cleared.to_string());
-    let rows = clear_fixture["clearAttempts"].as_array().expect("array");
+    let rows = clear_fixture["propertyAttempts"].as_array().expect("array");
     for (attempt, row) in decoded.report.clear_attempts.iter().zip(rows.iter()) {
         let rendered = render_clear_attempt(attempt);
         assert!(
@@ -880,10 +829,11 @@ fn optional_fragments_reconstruct_byte_exact() {
         .iter()
         .map(render_clear_attempt)
         .collect();
-    let group =
-        render_lane(decoded.wire.clear_attempts_present, rendered_rows).expect("present lane");
     assert!(
-        clear_text.contains(&format!("\"clearAttempts\":{group}")),
+        clear_text.contains(&format!(
+            "\"propertyAttempts\":[{}]",
+            rendered_rows.join(",")
+        )),
         "clear group renders byte-exact"
     );
 
@@ -987,7 +937,8 @@ fn malformed_optionals_reject_identically_on_both_apis() {
     // lanes keep unknown fields narrowly instead of refusing the
     // envelope).
     let mut bad_setter = base_value();
-    bad_setter["frameAttempts"] = serde_json::json!([{
+    bad_setter["propertyAttempts"] = serde_json::json!([{
+        "kind": "frame",
         "win": "win-a", "target": [0, 0, 800, 560], "setter": "clamped",
         "readback": null, "dpiBefore": null, "dpiAfter": null,
         "attemptMs": "1000", "op": "", "pre": null,
@@ -995,7 +946,8 @@ fn malformed_optionals_reject_identically_on_both_apis() {
     let (kind, _) = assert_same_rejection(&bad_setter.to_string());
     assert_eq!(kind, "unknown-value");
     let mut unknown_field = base_value();
-    unknown_field["frameAttempts"] = serde_json::json!([{
+    unknown_field["propertyAttempts"] = serde_json::json!([{
+        "kind": "frame",
         "win": "win-a", "target": [0, 0, 800, 560], "setter": "threw",
         "readback": null, "dpiBefore": null, "dpiAfter": null,
         "attemptMs": "1000", "op": "", "pre": null, "verdict": "clamp",
@@ -1007,7 +959,6 @@ fn malformed_optionals_reject_identically_on_both_apis() {
         decoded.report.frames.is_empty(),
         "unknown field holds the frame row"
     );
-    assert!(decoded.wire.frame_attempts_present, "lane stays present");
     assert_eq!(
         decoded
             .residual
@@ -1025,7 +976,8 @@ fn malformed_optionals_reject_identically_on_both_apis() {
     // memberAttempts: unknown fields hold the identifiable row on both
     // APIs for the same v4 reason.
     let mut bad_member = base_value();
-    bad_member["memberAttempts"] = serde_json::json!([{
+    bad_member["propertyAttempts"] = serde_json::json!([{
+        "kind": "member",
         "op": "transfer-a", "win": "win-a", "out": "out", "ws": "ws-a",
         "setter": "accepted", "pre": null, "post": null, "attemptMs": "20",
         "nativePost": "native-a",
@@ -1045,7 +997,8 @@ fn malformed_optionals_reject_identically_on_both_apis() {
     // viewAttempts: empty typed refs hold the identifiable row on both
     // APIs for the same v4 reason.
     let mut bad_view = base_value();
-    bad_view["viewAttempts"] = serde_json::json!([{
+    bad_view["propertyAttempts"] = serde_json::json!([{
+        "kind": "view",
         "op": "op-9", "out": "out", "ws": "ws-1", "setter": "threw",
         "pre": "", "post": "", "base": "", "attemptMs": "1",
     }]);
@@ -1057,12 +1010,25 @@ fn malformed_optionals_reject_identically_on_both_apis() {
         "empty refs hold the view row"
     );
 
+    // propertyAttempts is required and must be an array.
+    let mut missing_attempts = base_value();
+    missing_attempts
+        .as_object_mut()
+        .expect("object")
+        .remove("propertyAttempts");
+    let (kind, _) = assert_same_rejection(&missing_attempts.to_string());
+    assert_eq!(kind, "malformed");
+    let mut non_array_attempts = base_value();
+    non_array_attempts["propertyAttempts"] = serde_json::json!({});
+    let (kind, _) = assert_same_rejection(&non_array_attempts.to_string());
+    assert_eq!(kind, "malformed");
+
     // clearAttempts: duplicates refuse.
     let mut dup_clear = base_value();
-    dup_clear["clearAttempts"] = serde_json::json!([
-        {"op": "op-9", "win": "win-a", "setter": "accepted",
+    dup_clear["propertyAttempts"] = serde_json::json!([
+        {"kind": "clear", "op": "op-9", "win": "win-a", "setter": "accepted",
          "pre": true, "post": false, "attemptMs": "1"},
-        {"op": "op-9", "win": "win-a", "setter": "accepted",
+        {"kind": "clear", "op": "op-9", "win": "win-a", "setter": "accepted",
          "pre": true, "post": false, "attemptMs": "2"},
     ]);
     let (kind, message) = assert_same_rejection(&dup_clear.to_string());
@@ -1172,7 +1138,7 @@ fn wrapper_preserves_primary_native_and_held_row_semantics() {
               \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
               \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
               \"suppressionAvailable\":null,\
-              \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"lastWrite\":null}",
+              \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}",
         )
         .expect("row");
         row["nativeWs"] = native;
@@ -1237,7 +1203,6 @@ fn wrapper_preserves_primary_native_and_held_row_semantics() {
         "fullscreenExitable",
         "suppressionAvailable",
         "visibility",
-        "lastWrite",
     ];
     assert_eq!(&names[..schema_order.len()], &schema_order);
     assert_eq!(names[schema_order.len()..], ["floating"]);

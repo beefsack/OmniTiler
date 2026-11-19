@@ -90,7 +90,6 @@ fn fact(window: &str, output: &str, x: i32) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
-        last_write: None,
     }
 }
 
@@ -135,7 +134,6 @@ fn fact_rect(window: &str, output: &str, r: Rect) -> WindowFact {
             visible: Some(true),
             suppression_owned: None,
         },
-        last_write: None,
     }
 }
 
@@ -208,6 +206,7 @@ fn report_full(
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
+        visibility_attempts: Vec::new(),
         focus_feedback: Vec::new(),
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),

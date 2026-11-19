@@ -1272,7 +1272,6 @@ fn fences_hold_max_without_renewal() {
         ordinal: 0,
         output: None,
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: crate::world_report::RowDiagnosticKind::InvalidFact,
     }];

@@ -130,6 +130,7 @@ fn report_full(
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
+        visibility_attempts: Vec::new(),
         focus_feedback: Vec::new(),
         presentation,
         intent_records: intent_data
@@ -1578,7 +1579,6 @@ fn pager_finish_retains_held_and_gaps_prunes_complete_and_close() {
         ordinal: 0,
         output: Some(OutputId("out-a".to_owned())),
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];

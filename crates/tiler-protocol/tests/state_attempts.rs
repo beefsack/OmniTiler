@@ -21,7 +21,7 @@ use tiler_protocol::world_protocol::{decode_request, decode_state_attempt};
 
 fn fixture(name: &str) -> serde_json::Value {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../test-fixtures/world-wire/v4/messages")
+        .join("../../test-fixtures/world-wire/v4-active/messages")
         .join(format!("{name}.json"));
     serde_json::from_str(&std::fs::read_to_string(&path).expect("fixture bytes"))
         .expect("fixture JSON")
@@ -36,7 +36,7 @@ fn envelope(rows: &serde_json::Value) -> String {
     base["adapter"] = serde_json::json!("adapter-1");
     base["gen"] = serde_json::json!("gen-1");
     base["req"] = serde_json::json!("req-1");
-    base["stateAttempts"] = rows.clone();
+    base["propertyAttempts"] = rows.clone();
     base.to_string()
 }
 
@@ -52,7 +52,7 @@ fn state_row(
     attempt_ms: &str,
 ) -> serde_json::Value {
     serde_json::json!({
-        "win": win, "property": property, "target": target, "rev": rev,
+        "kind": "state", "win": win, "property": property, "target": target, "rev": rev,
         "setter": setter, "pre": pre, "post": post, "attemptMs": attempt_ms,
     })
 }
@@ -62,9 +62,9 @@ fn immutable_state_rows_decode_through_the_typed_shape() {
     // Raw fixture bytes first: the oracle is the immutable file, never a
     // decoder-shaped map.
     let state = fixture("report-attempt-state");
-    let rows = state["stateAttempts"]
+    let rows = state["propertyAttempts"]
         .as_array()
-        .expect("fixture stateAttempts");
+        .expect("fixture propertyAttempts");
     assert_eq!(rows.len(), 3, "report-attempt-state carries three rows");
     assert_eq!(rows[0]["win"], "win-a");
     assert_eq!(rows[0]["property"], "fullscreen");
@@ -81,13 +81,13 @@ fn immutable_state_rows_decode_through_the_typed_shape() {
     assert_eq!(rows[2]["pre"], serde_json::Value::Null);
     assert_eq!(rows[2]["post"], serde_json::Value::Null);
     let above_true = fixture("report-attempt-above-true");
-    let above_row = &above_true["stateAttempts"][0];
+    let above_row = &above_true["propertyAttempts"][0];
     assert_eq!(above_row["property"], "above");
     assert_eq!(above_row["target"], true);
     assert_eq!(above_row["pre"], false);
     assert_eq!(above_row["post"], true);
     let above_false = fixture("report-attempt-above-false");
-    let below_row = &above_false["stateAttempts"][0];
+    let below_row = &above_false["propertyAttempts"][0];
     assert_eq!(below_row["property"], "above");
     assert_eq!(below_row["target"], false);
     assert_eq!(below_row["pre"], true);
@@ -160,7 +160,7 @@ fn missing_lane_refuses_without_backfill() {
     value
         .as_object_mut()
         .expect("object")
-        .remove("stateAttempts");
+        .remove("propertyAttempts");
     let error = decode_request(&value.to_string()).expect_err("missing refuses");
     assert_eq!(error.kind, "malformed");
 }
@@ -183,7 +183,7 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
     // required.
     for (row, kind) in [
         (
-            serde_json::json!({"win":"win-a","property":"above","target":true,"rev":"20","setter":"accepted","pre":false,"post":true,"attemptMs":"20","extra":1}),
+            serde_json::json!({"kind":"state","win":"win-a","property":"above","target":true,"rev":"20","setter":"accepted","pre":false,"post":true,"attemptMs":"20","extra":1}),
             "unknown-field",
         ),
         // Unknown property/setter tokens refuse as unknown-value.
@@ -466,7 +466,7 @@ fn digest_separates_every_raw_field_so_changed_reuse_fences() {
 
 #[test]
 fn estimate_covers_state_rows_exactly_at_the_margin() {
-    let rows = fixture("report-attempt-state")["stateAttempts"].clone();
+    let rows = fixture("report-attempt-state")["propertyAttempts"].clone();
     let empty = envelope(&serde_json::json!([]));
     let full = envelope(&rows);
     let empty_report = decode_request(&empty).expect("empty decodes");

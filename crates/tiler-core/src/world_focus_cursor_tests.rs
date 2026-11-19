@@ -102,6 +102,7 @@ fn report(
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
+        visibility_attempts: Vec::new(),
         focus_feedback: Vec::new(),
         presentation: PresentationRowV4::Valid(ingress(focused)),
         intent_records: Vec::new(),
@@ -743,7 +744,6 @@ fn pending_live_empty_cursor_guards_implicit_subject() {
         ordinal: 0,
         output: None,
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];
@@ -868,7 +868,6 @@ fn gap_prefix(engine: &mut WorldEngine) -> WorldReplyV4 {
         ordinal: 0,
         output: None,
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];
@@ -1251,7 +1250,6 @@ fn held_absent_target_retains_row_with_empty_cursor_until_live_recovery() {
         ordinal: 0,
         output: None,
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     };
@@ -1449,7 +1447,6 @@ fn unavailable_pending_same_batch_refuses_then_newer_report_acts_on_observed_and
         ordinal: 0,
         output: None,
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     };
@@ -1515,7 +1512,6 @@ fn unavailable_pending_same_batch_refuses_then_newer_report_acts_on_observed_and
         ordinal: 0,
         output: None,
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     };
@@ -1657,7 +1653,6 @@ fn unavailable_pending_newer_accepted_report_with_equal_observation_seq_acts_on_
         ordinal,
         output: None,
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     };
@@ -1756,7 +1751,6 @@ fn same_batch_focus_decision_blocks_fallback_even_with_older_unavailable_pending
         ordinal,
         output: None,
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     };
@@ -1847,7 +1841,6 @@ fn unavailable_pending_newer_unknown_or_unbound_foreground_refuses() {
         ordinal,
         output: None,
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     };
@@ -2226,7 +2219,6 @@ fn failed_record_command_focus_clears_prior_cursor() {
         ordinal: 0,
         output: None,
         has_native_workspace: false,
-        last_write: None,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];

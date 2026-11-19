@@ -229,7 +229,8 @@ function pendingWrites(h: Harness): number {
     return h.calls.filter((c) => c.method === "WriteNativePreimage" && !c.answered).length;
 }
 function stateAttemptsOf(h: Harness): Array<Record<string, unknown>> {
-    return ((reportOf(h)["stateAttempts"] as Array<Record<string, unknown>>) ?? []);
+    const rows = ((reportOf(h)["propertyAttempts"] as Array<Record<string, unknown>>) ?? []);
+    return rows.filter((row) => row["kind"] === "state");
 }
 
 describe("world state-target entry (production wiring)", () => {

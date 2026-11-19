@@ -188,8 +188,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -250,7 +249,7 @@
           },
           "monotonicMs": "100",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -358,8 +357,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -420,7 +418,7 @@
           },
           "monotonicMs": "200",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -528,8 +526,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -590,7 +587,7 @@
           },
           "monotonicMs": "300",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -700,8 +697,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -762,7 +758,7 @@
           },
           "monotonicMs": "400",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -871,8 +867,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -933,7 +928,7 @@
           },
           "monotonicMs": "500",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -1042,8 +1037,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -1104,7 +1098,7 @@
           },
           "monotonicMs": "600",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -1214,8 +1208,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -1276,7 +1269,7 @@
           },
           "monotonicMs": "700",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -1388,8 +1381,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -1450,7 +1442,7 @@
           },
           "monotonicMs": "800",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -1561,8 +1553,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -1623,7 +1614,7 @@
           },
           "monotonicMs": "900",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -1732,8 +1723,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -1794,7 +1784,7 @@
           },
           "monotonicMs": "1000",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -1906,8 +1896,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -1968,7 +1957,7 @@
           },
           "monotonicMs": "1100",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -2077,8 +2066,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -2139,7 +2127,7 @@
           },
           "monotonicMs": "1200",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -2251,8 +2239,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -2313,7 +2300,7 @@
           },
           "monotonicMs": "1300",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -2423,8 +2410,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -2485,7 +2471,7 @@
           },
           "monotonicMs": "1400",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -2596,8 +2582,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -2658,7 +2643,7 @@
           },
           "monotonicMs": "1500",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -2893,8 +2878,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -2955,7 +2939,7 @@
           },
           "monotonicMs": "100",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -3165,8 +3149,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -3227,7 +3210,7 @@
           },
           "monotonicMs": "100",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -3335,8 +3318,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -3397,7 +3379,7 @@
           },
           "monotonicMs": "200",
           "intentRecords": [],
-          "stateAttempts": [],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
           "foregroundKnown": true
@@ -3502,8 +3484,7 @@
               "visibility": {
                 "visible": true,
                 "suppressionOwned": false
-              },
-              "lastWrite": null
+              }
             }
           ],
           "closed": [],
@@ -3564,8 +3545,9 @@
           },
           "monotonicMs": "300",
           "intentRecords": [],
-          "stateAttempts": [
+          "propertyAttempts": [
             {
+              "kind": "state",
               "win": "win-a",
               "property": "sticky",
               "target": true,

@@ -8,7 +8,7 @@ use tiler_protocol::world_protocol::decode_report_v4;
 fn fixture_text(name: &str) -> String {
     std::fs::read_to_string(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../test-fixtures/world-wire/v4/messages")
+            .join("../../test-fixtures/world-wire/v4-active/messages")
             .join(name),
     )
     .expect("fixture reads")

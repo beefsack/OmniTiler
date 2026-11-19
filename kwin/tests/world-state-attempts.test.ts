@@ -127,11 +127,11 @@ describe("world state attempt encoding", () => {
             const bytes = encodeV4StateAttempt(stateRow({ win: "win-a", property }));
             assert.equal(
                 bytes,
-                `{"win":"win-a","property":"${property}","target":true,` +
+                `{"kind":"state","win":"win-a","property":"${property}","target":true,` +
                 `"rev":"2","setter":"accepted","pre":false,"post":true,"attemptMs":"7"}`,
             );
             assert.deepEqual(Object.keys(JSON.parse(bytes as string)), [
-                "win", "property", "target", "rev", "setter", "pre", "post", "attemptMs",
+                "kind", "win", "property", "target", "rev", "setter", "pre", "post", "attemptMs",
             ]);
         }
     });
@@ -143,7 +143,7 @@ describe("world state attempt encoding", () => {
                     const bytes = encodeV4StateAttempt(stateRow({ win: "win-a", target, pre, post }));
                     assert.equal(
                         bytes,
-                        `{"win":"win-a","property":"fullscreen","target":${flag(target)},` +
+                        `{"kind":"state","win":"win-a","property":"fullscreen","target":${flag(target)},` +
                         `"rev":"2","setter":"accepted","pre":${flag(pre)},"post":${flag(post)},"attemptMs":"7"}`,
                         `exact bytes for target=${flag(target)} pre=${flag(pre)} post=${flag(post)}`,
                     );
@@ -156,7 +156,7 @@ describe("world state attempt encoding", () => {
         }));
         assert.equal(
             maxed,
-            `{"win":"win-a","property":"fullscreen","target":true,` +
+            `{"kind":"state","win":"win-a","property":"fullscreen","target":true,` +
             `"rev":"18446744073709551615","setter":"accepted","pre":false,"post":true,` +
             `"attemptMs":"18446744073709551615"}`,
         );
@@ -354,14 +354,17 @@ describe("world state attempt report lane", () => {
     it("always presents the required lane, empty or populated", () => {
         const empty = buildInner([]);
         assert.ok(empty !== null);
-        assert.deepEqual((JSON.parse(empty as string) as Record<string, unknown>)["stateAttempts"], []);
+        assert.deepEqual((JSON.parse(empty as string) as Record<string, unknown>)["propertyAttempts"], []);
         const rows = [
             stateRow({ win: "win-a", property: "fullscreen" }),
             stateRow({ win: "win-a", property: "sticky", target: false, rev: "3", setter: "threw", pre: null, post: false, attemptMs: "8" }),
         ];
         const full = buildInner(rows);
         assert.ok(full !== null);
-        assert.deepEqual((JSON.parse(full as string) as Record<string, unknown>)["stateAttempts"], rows);
+        assert.deepEqual(
+            (JSON.parse(full as string) as Record<string, unknown>)["propertyAttempts"],
+            rows.map((row) => ({ kind: "state", ...row })),
+        );
     });
     it("fails a malformed row closed without poisoning retained evidence", () => {
         const state = new WorldAdapterState("adapter-a", "owner-a");
@@ -372,7 +375,10 @@ describe("world state attempt report lane", () => {
         assert.equal(poisoned, null, "malformed row fails the whole report closed");
         const clean = buildInner(state.statesForReport());
         assert.ok(clean !== null, "retained evidence still builds after a refused row");
-        assert.deepEqual((JSON.parse(clean as string) as Record<string, unknown>)["stateAttempts"], [stateRow({ win: "win-a" })]);
+        assert.deepEqual(
+            (JSON.parse(clean as string) as Record<string, unknown>)["propertyAttempts"],
+            [{ kind: "state", ...stateRow({ win: "win-a" }) }],
+        );
     });
 });
 
@@ -526,7 +532,7 @@ describe("world state attempt strict engine", () => {
             const envelope = buildCaptureEnvelope("test-adapter", gen, "src-1", "1", "1", inner as string);
             const stamped = broker.stampCapture(envelope);
             const stampedValue = JSON.parse(stamped) as Record<string, unknown>;
-            assert.equal((stampedValue["stateAttempts"] as unknown[]).length, 4, "all four property rows ride verbatim");
+            assert.equal((stampedValue["propertyAttempts"] as unknown[]).length, 4, "all four property rows ride verbatim");
             const coreReply = await bridge.send("DescribeWorld", stamped);
             const parsed = JSON.parse(coreReply) as Record<string, unknown>;
             // Accepted strict shape is the absence of the error envelope:

@@ -314,10 +314,11 @@ describe("world raw mechanical attempts", () => {
             runTimers(flow);
             const payload = JSON.parse(lastPayload(flow, "DescribeWorld")) as Record<string, unknown>;
             const inner = payload["report"] as Record<string, unknown>;
-            const frames = inner["frameAttempts"] as Array<Record<string, unknown>>;
-            const members = inner["memberAttempts"] as Array<Record<string, unknown>>;
-            const views = inner["viewAttempts"] as Array<Record<string, unknown>>;
-            const clears = inner["clearAttempts"] as Array<Record<string, unknown>>;
+            const propAttempts = inner["propertyAttempts"] as Array<Record<string, unknown>>;
+            const frames = propAttempts.filter((r) => r["kind"] === "frame");
+            const members = propAttempts.filter((r) => r["kind"] === "member");
+            const views = propAttempts.filter((r) => r["kind"] === "view");
+            const clears = propAttempts.filter((r) => r["kind"] === "clear");
             const diag = `logs=${JSON.stringify(flow.logs)} wins=${JSON.stringify(inner["windows"])}`;
             assert.ok(Array.isArray(frames) && frames.length === 2, `two frame attempts ride, got ${JSON.stringify(frames)} ${diag}`);
             assert.ok(Array.isArray(members) && members.length === 1, `one member attempt rides, got ${JSON.stringify(members)}`);
@@ -325,7 +326,7 @@ describe("world raw mechanical attempts", () => {
             assert.ok(Array.isArray(clears) && clears.length === 1, `one clear attempt rides, got ${JSON.stringify(clears)} ${diag}`);
             assert.deepEqual(
                 clears[0],
-                { op: "op-clear-2", win: "win-d", setter: "accepted", pre: true, post: false, attemptMs: "1" },
+                { kind: "clear", op: "op-clear-2", win: "win-d", setter: "accepted", pre: true, post: false, attemptMs: "1" },
                 "native nonactivating clear with fresh pre/post proof; the already-clear token spends silently",
             );
             // Tiled sweep: ordinary write (empty op, no prewrite), real
@@ -333,14 +334,14 @@ describe("world raw mechanical attempts", () => {
             const sweep = frames.find((f) => f["op"] === "");
             assert.deepEqual(
                 sweep,
-                { win: "win-b", target: [800, 0, 400, 300], setter: "accepted", readback: [800, 0, 400, 300], dpiBefore: null, dpiAfter: null, attemptMs: "1", op: "", pre: null },
+                { kind: "frame", win: "win-b", target: [800, 0, 400, 300], setter: "accepted", readback: [800, 0, 400, 300], dpiBefore: null, dpiAfter: null, attemptMs: "1", op: "", pre: null },
             );
             // Explicit float placement: stable op correlation plus the live
             // pre-write frame; the setter alone never proves completion.
             const placed = frames.find((f) => f["op"] === "op-float-1");
             assert.deepEqual(
                 placed,
-                { win: "win-c", target: [300, 200, 250, 180], setter: "accepted", readback: [300, 200, 250, 180], dpiBefore: null, dpiAfter: null, attemptMs: "1", op: "op-float-1", pre: [10, 10, 100, 100] },
+                { kind: "frame", win: "win-c", target: [300, 200, 250, 180], setter: "accepted", readback: [300, 200, 250, 180], dpiBefore: null, dpiAfter: null, attemptMs: "1", op: "op-float-1", pre: [10, 10, 100, 100] },
             );
             // Membership: exact logical target correlation plus the real
             // setter; the exact live WorkspaceRefs ride pre/post (the
@@ -349,7 +350,7 @@ describe("world raw mechanical attempts", () => {
             assert.deepEqual(
                 members[0],
                 {
-                    op: "op-9", win: "win-a", out: "out-2", ws: "w2", setter: "accepted",
+                    kind: "member", op: "op-9", win: "win-a", out: "out-2", ws: "w2", setter: "accepted",
                     pre: { kind: "native", out: "out-1", ws: "d1" },
                     post: { kind: "native", out: "out-2", ws: "d2" },
                     attemptMs: "1",
@@ -362,7 +363,7 @@ describe("world raw mechanical attempts", () => {
             assert.deepEqual(
                 follow,
                 {
-                    op: "op-9", out: "out-2", ws: "w2", setter: "accepted",
+                    kind: "view", op: "op-9", out: "out-2", ws: "w2", setter: "accepted",
                     pre: { kind: "native", out: "out-2", ws: "d1" },
                     post: { kind: "native", out: "out-2", ws: "d2" },
                     base: { kind: "native", out: "out-2", ws: "d1" },
@@ -373,7 +374,7 @@ describe("world raw mechanical attempts", () => {
             assert.deepEqual(
                 alone,
                 {
-                    op: "op-10", out: "out-1", ws: "w1", setter: "accepted",
+                    kind: "view", op: "op-10", out: "out-1", ws: "w1", setter: "accepted",
                     pre: { kind: "native", out: "out-1", ws: "d2" },
                     post: { kind: "native", out: "out-1", ws: "d1" },
                     base: { kind: "native", out: "out-1", ws: "d2" },
@@ -444,10 +445,13 @@ describe("world raw mechanical attempts", () => {
             const lastCapture = (): { source: string; members: Array<Record<string, unknown>> } => {
                 const payload = JSON.parse(lastPayload(flow, "DescribeWorld")) as Record<string, unknown>;
                 const inner = payload["report"] as Record<string, unknown>;
-                const members = inner["memberAttempts"];
+                const propAttempts = inner["propertyAttempts"];
+                const members = Array.isArray(propAttempts)
+                    ? propAttempts.filter((r) => (r as Record<string, unknown>)["kind"] === "member")
+                    : [];
                 return {
                     source: payload["source"] as string,
-                    members: (Array.isArray(members) ? members : []) as Array<Record<string, unknown>>,
+                    members: members as Array<Record<string, unknown>>,
                 };
             };
             const malformedDescribe = (): void => {
@@ -510,7 +514,8 @@ describe("world raw mechanical attempts", () => {
             flow.fire("desktopsChanged");
             runTimers(flow);
             const carrying = lastCapture();
-            assert.deepEqual(carrying.members, [expected], `actual captured report carries the exact no-call row ${diag()}`);
+            const wireExpected = { kind: "member", ...expected };
+            assert.deepEqual(carrying.members, [wireExpected], `actual captured report carries the exact no-call row ${diag()}`);
             const firstBytes = JSON.stringify(carrying.members);
             assertNoNativeWrites("fresh already-at-target");
 
@@ -523,7 +528,7 @@ describe("world raw mechanical attempts", () => {
             runTimers(flow);
             const redelivered = lastCapture();
             assert.notEqual(redelivered.source, carrying.source, "lost ACK is followed by a genuinely fresh capture");
-            assert.deepEqual(redelivered.members, [expected], `lost ACK keeps the exact row and stamp ${diag()}`);
+            assert.deepEqual(redelivered.members, [wireExpected], `lost ACK keeps the exact row and stamp ${diag()}`);
             assert.equal(JSON.stringify(redelivered.members), firstBytes, "lost ACK redelivers the serialized row byte-for-byte unchanged");
             assertNoNativeWrites("lost-ACK redelivery");
 
@@ -601,12 +606,13 @@ describe("world raw mechanical attempts", () => {
             runTimers(flow);
             const payload = JSON.parse(lastPayload(flow, "DescribeWorld")) as Record<string, unknown>;
             const inner = payload["report"] as Record<string, unknown>;
-            const clears = inner["clearAttempts"] as Array<Record<string, unknown>>;
+            const propAttempts = inner["propertyAttempts"] as Array<Record<string, unknown>>;
+            const clears = propAttempts.filter((r) => r["kind"] === "clear");
             const diag = `logs=${JSON.stringify(flow.logs)} wins=${JSON.stringify(inner["windows"])}`;
             assert.ok(Array.isArray(clears) && clears.length === 1, `one clear attempt rides from the held row, got ${JSON.stringify(clears)} ${diag}`);
             assert.deepEqual(
                 clears[0],
-                { op: "op-clear-2", win: "win-d", setter: "accepted", pre: true, post: false, attemptMs: "1" },
+                { kind: "clear", op: "op-clear-2", win: "win-d", setter: "accepted", pre: true, post: false, attemptMs: "1" },
                 "held scope authorizes the property clear with fresh pre/post proof",
             );
         } finally {

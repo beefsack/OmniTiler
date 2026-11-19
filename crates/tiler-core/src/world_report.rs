@@ -105,6 +105,12 @@ pub const MAX_WORLD_CREATION_ATTEMPTS: usize = 256;
 /// Bound on mechanical native-state attempts per report (one latest-wins
 /// row per window property at most).
 pub const MAX_WORLD_STATE_ATTEMPTS: usize = 1024;
+/// Bound on mechanical visibility attempts per report (one latest-wins row
+/// per window at most, matching the window fact ceiling).
+pub const MAX_WORLD_VISIBILITY_ATTEMPTS: usize = 10_000;
+/// Total bound on `propertyAttempts` per report across all six kinds
+/// (5 * 1024 + 10_000), including held rows.
+pub const MAX_WORLD_PROPERTY_ATTEMPTS: usize = 15_120;
 /// Bound on the presentation native order per report (same lifetime
 /// alphabet as windows): the adapter's top-to-bottom stacking snapshot.
 pub const MAX_PRESENTATION_ORDER: usize = 1024;
@@ -1308,7 +1314,6 @@ pub struct HeldWindowRow {
     pub ordinal: usize,
     pub output: Option<OutputId>,
     pub has_native_workspace: bool,
-    pub last_write: Option<LastWrite>,
     pub diagnostic: Option<RowDiagnostic>,
     pub kind: RowDiagnosticKind,
 }
@@ -1338,6 +1343,8 @@ pub enum AttemptLaneV4 {
     Member,
     View,
     Clear,
+    State,
+    Visibility,
     Creation,
 }
 
@@ -1350,6 +1357,8 @@ impl AttemptLaneV4 {
             Self::Member => "member",
             Self::View => "view",
             Self::Clear => "clear",
+            Self::State => "state",
+            Self::Visibility => "visibility",
             Self::Creation => "creation",
         }
     }
@@ -1489,6 +1498,9 @@ pub struct WorldReportV4 {
     /// Mechanical native-state attempts (at most one latest-wins entry per
     /// window property).
     pub state_attempts: Vec<StateAttempt>,
+    /// Mechanical visibility attempts (at most one latest-wins entry per
+    /// window).
+    pub visibility_attempts: Vec<VisibilityAttempt>,
     /// Correlated one-shot native focus evidence.
     pub focus_feedback: Vec<FocusFeedback>,
     /// Normalized presentation ingress: the valid ingress or the held
@@ -1674,9 +1686,11 @@ pub struct VisibilitySample {
 /// setter disposition (`not-called` is not a successful native call), the
 /// bounded typed mechanical reason, and the identity-bound reads around
 /// the action or no-call. No work id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LastWrite {
-    pub property: LastWriteProperty,
+/// One normalized raw visibility attempt: latest visibility write or no-call
+/// evidence for one window lifetime (`propertyAttempts` kind `"visibility"`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibilityAttempt {
+    pub window: WindowId,
     pub target: bool,
     pub revision: u64,
     pub path: LastWritePath,
@@ -1684,32 +1698,6 @@ pub struct LastWrite {
     pub reason: VisibilityReason,
     pub pre: Option<VisibilitySample>,
     pub post: Option<VisibilitySample>,
-}
-
-/// Property tag for [`LastWrite`]: only `visibility` today, reserved for
-/// later separate lane migrations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LastWriteProperty {
-    Visibility,
-}
-
-impl LastWriteProperty {
-    /// Wire token for this value, matching the protocol codec vocabulary.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Visibility => "visibility",
-        }
-    }
-
-    /// Parse a wire token; `None` for unknown tokens (the codec refuses).
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        Some(match value {
-            "visibility" => Self::Visibility,
-            _ => return None,
-        })
-    }
 }
 
 /// Actual execution route for [`LastWrite`]: `staged`, `fallback`, or
@@ -1929,7 +1917,6 @@ pub struct WindowFact {
     pub fullscreen_exitable: Option<bool>,
     pub suppression_available: Option<bool>,
     pub visibility: VisibilityFact,
-    pub last_write: Option<LastWrite>,
 }
 
 /// Observed applied logical view per screen: the stable logical workspace id
@@ -2921,7 +2908,6 @@ pub(crate) fn graded_held_window_row(fact: &WindowFact, ordinal: usize) -> HeldW
             .native_workspace
             .as_deref()
             .is_some_and(|id| !id.is_empty()),
-        last_write: fact.last_write,
         diagnostic: fact.output.as_ref().map(|out| RowDiagnostic {
             scope: AuthorityScope::Output(out.clone()),
             row: RowDiagnosticLane::Window,

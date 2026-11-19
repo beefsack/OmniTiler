@@ -37,8 +37,7 @@ fn window_json(id: &str) -> String {
           \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
           \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
           \"suppressionAvailable\":null,\
-          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\
-          \"lastWrite\":null}}"
+          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}}}}"
     )
 }
 
@@ -59,8 +58,7 @@ fn window_json_native(id: &str) -> String {
           \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
           \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
           \"suppressionAvailable\":null,\
-          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\
-          \"lastWrite\":null}}"
+          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}}}}"
     )
 }
 
@@ -85,7 +83,7 @@ fn inner_report_closed_focused(windows: &[String], closed: &[String], focused: &
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
           \"presentation\":{},\
-          \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\
+          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
           \"rendererInput\":null}}",
         windows.join(","),
         closed
@@ -116,7 +114,7 @@ fn inner_report_host_native(windows: &[String], focused: &str) -> String {
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
           \"presentation\":{},\
-          \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\
+          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
           \"rendererInput\":null}}",
         windows.join(","),
         !focused.is_empty(),
@@ -196,8 +194,7 @@ fn window_json_at(id: &str, x: i32) -> String {
           \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
           \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
           \"suppressionAvailable\":null,\
-          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\
-          \"lastWrite\":null}}"
+          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}}}}"
     )
 }
 

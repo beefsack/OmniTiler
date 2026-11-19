@@ -16,11 +16,11 @@
 //! Offline only: no D-Bus, no KWin.
 
 use tiler_core::connection::HostCapabilities;
-use tiler_core::directional::OutputId;
+use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    ArrivalBracket, ArrivalLocation, FocusFeedback, LastWrite, LastWritePath, LastWriteProperty,
-    ScopeAuthority, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
+    ArrivalBracket, ArrivalLocation, FocusFeedback, LastWritePath, ScopeAuthority,
+    VisibilityAttempt, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
     WorldReplyV4, WorldReportV4,
 };
 use tiler_protocol::world_admission_sizing::max_switch_settle_reserve;
@@ -31,7 +31,7 @@ use tiler_protocol::world_reply_write::count_reply_v4;
 
 fn fixture_text(name: &str) -> String {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../test-fixtures/world-wire/v4/messages")
+        .join("../../test-fixtures/world-wire/v4-active/messages")
         .join(format!("{name}.json"));
     std::fs::read_to_string(&path).expect("fixture bytes")
 }
@@ -103,9 +103,9 @@ fn reply_wire(reply: &WorldReplyV4) -> String {
     wire
 }
 
-fn confirmed_write(target: bool, rev: u64, post_obs: u64) -> LastWrite {
-    LastWrite {
-        property: LastWriteProperty::Visibility,
+fn confirmed_write(win: &str, target: bool, rev: u64, post_obs: u64) -> VisibilityAttempt {
+    VisibilityAttempt {
+        window: WindowId(win.to_owned()),
         target,
         revision: rev,
         path: LastWritePath::Staged,
@@ -127,18 +127,12 @@ fn confirmed_write(target: bool, rev: u64, post_obs: u64) -> LastWrite {
 
 fn settle_report(
     seq: u64,
-    w1_last: LastWrite,
-    w2_last: LastWrite,
+    w1_last: VisibilityAttempt,
+    w2_last: VisibilityAttempt,
     feedback: FocusFeedback,
 ) -> WorldReportV4 {
     let mut decoded = report(seq, None, None, "");
-    for window in &mut decoded.windows {
-        if window.window.0 == "win-a" {
-            window.last_write = Some(w1_last);
-        } else if window.window.0 == "win-b" {
-            window.last_write = Some(w2_last);
-        }
-    }
+    decoded.visibility_attempts = vec![w1_last, w2_last];
     decoded.focus_feedback = vec![feedback];
     decoded
 }
@@ -361,8 +355,8 @@ fn selection_reply_carries_switch_terminal_through_v4_writer() {
         &mut engine,
         &settle_report(
             4,
-            confirmed_write(false, rev, 4),
-            confirmed_write(true, rev, 4),
+            confirmed_write("win-a", false, rev, 4),
+            confirmed_write("win-b", true, rev, 4),
             feedback,
         ),
     );

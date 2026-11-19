@@ -36,13 +36,13 @@ Existing citation keys retain historical pins until relied on again; KDE policy 
 
 | Minimal action sequence | Current core evidence | Selected outcome |
 | --- | --- | --- |
-| Once ready, submit a fresh commandless typed report with an empty queued list. Resubmit the identical report with one new queued command. | Source inspection: the report matches the replay entry; core returns the cached reply and no batch settlement, without executing the new command. | User 2026-11-18: Reusing the latest sequence with a changed typed report or ordered batch refuses `request-reused`; an exact retry returns the cached reply with no new settlements. Conditional on bounded exact identity and proof that the broker reparks commands without loss or reexecution and the next fresh capture progresses. Otherwise retain report-only matching and report. [C5 design](../changes/core-wire-boundary.md#user-decisions-2026-11-18) |
+| Once ready, submit a fresh commandless typed report with an empty queued list. Resubmit the identical report with one new queued command. | Core returns the cached reply and no batch settlement, without executing the new command. | Report-only matching retained (D2 A): bounded exact ordered-batch identity and broker repark/next-fresh-capture recovery were not demonstrated. A changed report still refuses `request-reused`. [C5 outcome](../changes/archive/core-wire-boundary.md#user-decisions-2026-11-18) |
 
 ### Typed native capture over the JSON budget
 
 | Minimal action sequence | Current core evidence | Selected outcome |
 | --- | --- | --- |
-| Submit a fresh, otherwise valid in-process report that meets typed structural limits but exceeds the protocol size budget. | Source inspection: the current typed ingress runs the JSON size gates before adoption. | D3 = B (user, 2026-11-18): Keep the protocol size gate by default. Revisit removal only if measurements justify it. Keep the same semantic checks before adoption either way. [C5 design](../changes/core-wire-boundary.md#user-decisions-2026-11-18) |
+| Submit a fresh, otherwise valid in-process report that meets typed structural limits but exceeds the protocol size budget. | The protocol gate checks the size budget before adoption without requiring a JSON round trip; the format-neutral core entry checks structural limits. | D3 = B (user 2026-11-18): Keep the protocol size gate by default. Revisit removal only if measurements justify it. Keep the same semantic checks before adoption either way. [C5 decision](../changes/archive/core-wire-boundary.md#user-decisions-2026-11-18) |
 
 ### Staged reply size versus terminal headroom
 
@@ -54,7 +54,7 @@ Existing citation keys retain historical pins until relied on again; KDE policy 
 
 | ID | Minimal action sequence | Intended result |
 | --- | --- | --- |
-| `visibility-attempt-shared-rules` | Report healthy B and a visibility attempt for absent A; repeat with A only in `closed`. Then report A live with two visibility attempts for its lifetime, one readable and one identifiable malformed. Finally combine the absent-A case with an independently malformed state attempt; reverse the two rows in each paired case. | User 2026-11-18: Ignore visibility attempts without a live or held window in the report, with no authority or diagnostic. Duplicate visibility identities refuse `snapshot-invalid` with `duplicate-visibility-attempt`, including identifiable malformed rows. Use fixed section/kind order and producer order within a kind; first hard error wins. The mixed case reports the state error in either order. [C5 design](../changes/core-wire-boundary.md#user-decisions-2026-11-18) |
+| `visibility-attempt-shared-rules` | Report healthy B and a visibility attempt for absent A; repeat with A only in `closed`. Then report two visibility attempts for A, one readable and one identifiable malformed; compare A live and A absent. Finally combine an unidentifiable visibility row with an independently malformed state attempt; reverse row order. | User 2026-11-18: Check duplicates structurally at ingress for every kind, independently of subject presence. Duplicate visibility identities refuse `snapshot-invalid` with `duplicate-visibility-attempt`, including identifiable malformed rows. After structural checks, visibility attempts without a live or held window have no authority or diagnostic. Use fixed section/kind order and producer order within a kind; first hard error wins. Tentative: the mixed-error case reports the state error in either order. [C5 tentative precedence](../changes/archive/core-wire-boundary.md#tentative-decisions-pending-user-review) |
 
 ### Inventory hold and pending execution subject
 

@@ -165,6 +165,7 @@
             "command": null,
             "complete": false,
             "cursor": null,
+            "propertyAttempts": [],
             "focusFeedback": [],
             "focused": "",
             "foregroundKnown": false,
@@ -192,7 +193,6 @@
             "req": "apply-1",
             "reqSeq": "1",
             "screens": [],
-            "stateAttempts": [],
             "v": 4,
             "windows": []
           }
@@ -541,6 +541,7 @@
             "command": null,
             "complete": false,
             "cursor": null,
+            "propertyAttempts": [],
             "focusFeedback": [],
             "focused": "",
             "foregroundKnown": false,
@@ -568,7 +569,6 @@
             "req": "apply-2",
             "reqSeq": "2",
             "screens": [],
-            "stateAttempts": [],
             "v": 4,
             "windows": []
           }
@@ -939,6 +939,7 @@
             "command": null,
             "complete": false,
             "cursor": null,
+            "propertyAttempts": [],
             "focusFeedback": [],
             "focused": "",
             "foregroundKnown": false,
@@ -966,7 +967,6 @@
             "req": "apply-3",
             "reqSeq": "3",
             "screens": [],
-            "stateAttempts": [],
             "v": 4,
             "windows": []
           }
@@ -1304,6 +1304,7 @@
             "command": null,
             "complete": false,
             "cursor": null,
+            "propertyAttempts": [],
             "focusFeedback": [],
             "focused": "",
             "foregroundKnown": false,
@@ -1331,7 +1332,6 @@
             "req": "apply-4",
             "reqSeq": "4",
             "screens": [],
-            "stateAttempts": [],
             "v": 4,
             "windows": []
           }
@@ -1635,6 +1635,7 @@
             20,
             30
           ],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "focused": "win-a",
           "foregroundKnown": true,
@@ -1714,7 +1715,6 @@
               ]
             }
           ],
-          "stateAttempts": [],
           "v": 4,
           "windows": [
             {
@@ -1736,7 +1736,6 @@
                 "minW": 1
               },
               "hostHidden": false,
-              "lastWrite": null,
               "layer": 0,
               "managed": true,
               "maximized": false,
@@ -1787,7 +1786,6 @@
                 "minW": 1
               },
               "hostHidden": false,
-              "lastWrite": null,
               "layer": 0,
               "managed": true,
               "maximized": false,
@@ -1860,6 +1858,7 @@
             20,
             30
           ],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "focused": "win-a",
           "foregroundKnown": true,
@@ -1939,7 +1938,6 @@
               ]
             }
           ],
-          "stateAttempts": [],
           "v": 4,
           "windows": [
             {
@@ -1961,7 +1959,6 @@
                 "minW": 1
               },
               "hostHidden": false,
-              "lastWrite": null,
               "layer": 0,
               "managed": true,
               "maximized": false,
@@ -2012,7 +2009,6 @@
                 "minW": 1
               },
               "hostHidden": false,
-              "lastWrite": null,
               "layer": 0,
               "managed": true,
               "maximized": false,
@@ -2077,6 +2073,7 @@
             20,
             30
           ],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "focused": "win-old",
           "foregroundKnown": true,
@@ -2156,7 +2153,6 @@
               ]
             }
           ],
-          "stateAttempts": [],
           "v": 4,
           "windows": [
             {
@@ -2178,7 +2174,6 @@
                 "minW": 1
               },
               "hostHidden": false,
-              "lastWrite": null,
               "layer": 0,
               "managed": true,
               "maximized": false,
@@ -2229,7 +2224,6 @@
                 "minW": 1
               },
               "hostHidden": false,
-              "lastWrite": null,
               "layer": 0,
               "managed": true,
               "maximized": false,
@@ -2298,6 +2292,7 @@
             20,
             30
           ],
+          "propertyAttempts": [],
           "focusFeedback": [],
           "focused": "win-a",
           "foregroundKnown": true,
@@ -2377,7 +2372,6 @@
               ]
             }
           ],
-          "stateAttempts": [],
           "v": 4,
           "windows": [
             {
@@ -2399,7 +2393,6 @@
                 "minW": 1
               },
               "hostHidden": false,
-              "lastWrite": null,
               "layer": 0,
               "managed": true,
               "maximized": false,
@@ -2450,7 +2443,6 @@
                 "minW": 1
               },
               "hostHidden": false,
-              "lastWrite": null,
               "layer": 0,
               "managed": true,
               "maximized": false,
@@ -2515,6 +2507,66 @@
           "cursor": [
             20,
             30
+          ],
+          "propertyAttempts": [
+            {
+              "kind": "visibility",
+              "win": "win-a",
+              "path": "staged",
+              "post": {
+                "hostHidden": false,
+                "lifetimeMatched": true,
+                "minimized": false,
+                "obs": "6",
+                "visibility": {
+                  "suppressionOwned": false,
+                  "visible": true
+                }
+              },
+              "pre": {
+                "hostHidden": false,
+                "lifetimeMatched": true,
+                "minimized": false,
+                "obs": "5",
+                "visibility": {
+                  "suppressionOwned": true,
+                  "visible": false
+                }
+              },
+              "reason": "",
+              "revision": "4",
+              "setter": "accepted",
+              "target": true
+            },
+            {
+              "kind": "visibility",
+              "win": "win-old",
+              "path": "staged",
+              "post": {
+                "hostHidden": false,
+                "lifetimeMatched": true,
+                "minimized": false,
+                "obs": "6",
+                "visibility": {
+                  "suppressionOwned": true,
+                  "visible": false
+                }
+              },
+              "pre": {
+                "hostHidden": false,
+                "lifetimeMatched": true,
+                "minimized": false,
+                "obs": "5",
+                "visibility": {
+                  "suppressionOwned": false,
+                  "visible": true
+                }
+              },
+              "reason": "",
+              "revision": "4",
+              "setter": "accepted",
+              "target": false
+            }
           ],
           "focusFeedback": [
             {
@@ -2641,7 +2693,6 @@
               ]
             }
           ],
-          "stateAttempts": [],
           "v": 4,
           "windows": [
             {
@@ -2663,34 +2714,6 @@
                 "minW": 1
               },
               "hostHidden": false,
-              "lastWrite": {
-                "path": "staged",
-                "post": {
-                  "hostHidden": false,
-                  "lifetimeMatched": true,
-                  "minimized": false,
-                  "obs": "6",
-                  "visibility": {
-                    "suppressionOwned": false,
-                    "visible": true
-                  }
-                },
-                "pre": {
-                  "hostHidden": false,
-                  "lifetimeMatched": true,
-                  "minimized": false,
-                  "obs": "5",
-                  "visibility": {
-                    "suppressionOwned": true,
-                    "visible": false
-                  }
-                },
-                "property": "visibility",
-                "reason": "",
-                "revision": "4",
-                "setter": "accepted",
-                "target": true
-              },
               "layer": 0,
               "managed": true,
               "maximized": false,
@@ -2741,34 +2764,6 @@
                 "minW": 1
               },
               "hostHidden": false,
-              "lastWrite": {
-                "path": "staged",
-                "post": {
-                  "hostHidden": false,
-                  "lifetimeMatched": true,
-                  "minimized": false,
-                  "obs": "6",
-                  "visibility": {
-                    "suppressionOwned": true,
-                    "visible": false
-                  }
-                },
-                "pre": {
-                  "hostHidden": false,
-                  "lifetimeMatched": true,
-                  "minimized": false,
-                  "obs": "5",
-                  "visibility": {
-                    "suppressionOwned": false,
-                    "visible": true
-                  }
-                },
-                "property": "visibility",
-                "reason": "",
-                "revision": "4",
-                "setter": "accepted",
-                "target": false
-              },
               "layer": 0,
               "managed": true,
               "maximized": false,

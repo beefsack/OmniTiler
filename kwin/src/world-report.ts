@@ -2779,8 +2779,7 @@ function encodeV4WindowRow(w: RawWindowFact, hostOwned: boolean): string | null 
         `"activationPolicy":null,"layer":null,` +
         `"fullscreenOwner":null,"fullscreenExitable":${encodeV4NullableBool(w.fullScreenable)},` +
         `"suppressionAvailable":false,` +
-        `"visibility":{"visible":${encodeV4NullableBool(visible)},"suppressionOwned":false},` +
-        `"lastWrite":null}`;
+        `"visibility":{"visible":${encodeV4NullableBool(visible)},"suppressionOwned":false}}`;
     return row;
 }
 
@@ -3169,10 +3168,6 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
         return true;
     };
     const attemptOk =
-        attemptLane("frameAttempts", input.frameAttempts, encodeV4FrameAttempt) &&
-        attemptLane("memberAttempts", input.memberAttempts, encodeV4MemberAttempt) &&
-        attemptLane("viewAttempts", input.viewAttempts, encodeV4ViewAttempt) &&
-        attemptLane("clearAttempts", input.clearAttempts, encodeV4ClearAttempt) &&
         attemptLane("creationAttempts", input.creationAttempts, encodeV4CreationAttempt);
     if (!attemptOk) {
         return null;
@@ -3218,20 +3213,34 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
         focusRows.push(bytes);
     }
     const focusLane = `"focusFeedback":[${focusRows.join(",")}]`;
-    // Retained native-state evidence rides verbatim in canonical key
-    // order (at most one entry per window property). The lane is
-    // required: empty rides the literal empty lane, never an omission. A
-    // row that cannot be spelled canonically fails the whole report
-    // closed, never a partial lane.
-    const stateRows: string[] = [];
-    for (const row of input.stateAttempts) {
-        const bytes = encodeV4StateAttempt(row);
-        if (bytes === null) {
-            return null;
+    // Retained property-attempt evidence rides verbatim in canonical key
+    // order inside one required propertyAttempts array. Empty rides the
+    // literal empty lane, never an omission. A row that cannot be spelled
+    // canonically fails the whole report closed, never a partial lane.
+    const propertyRows: string[] = [];
+    const pushPropertyRows = <T>(
+        rows: ReadonlyArray<T>,
+        encode: (row: T) => string | null,
+    ): boolean => {
+        for (const row of rows) {
+            const bytes = encode(row);
+            if (bytes === null) {
+                return false;
+            }
+            propertyRows.push(bytes);
         }
-        stateRows.push(bytes);
+        return true;
+    };
+    if (
+        !pushPropertyRows(input.frameAttempts, encodeV4FrameAttempt) ||
+        !pushPropertyRows(input.memberAttempts, encodeV4MemberAttempt) ||
+        !pushPropertyRows(input.viewAttempts, encodeV4ViewAttempt) ||
+        !pushPropertyRows(input.clearAttempts, encodeV4ClearAttempt) ||
+        !pushPropertyRows(input.stateAttempts, encodeV4StateAttempt)
+    ) {
+        return null;
     }
-    const stateLane = `"stateAttempts":[${stateRows.join(",")}]`;
+    const propertyLane = `"propertyAttempts":[${propertyRows.join(",")}]`;
     // Required foreground provenance bit: true with nonempty focused proves
     // bound foreground, true with empty proves no client, false (always with
     // empty focus) means unknown. False with nonempty focus is invalid and
@@ -3249,7 +3258,7 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
         `"actionOutputs":[${actionOutputs.join(",")}],` +
         `"presentation":${presentation}${lanes},` +
         `"intentRecords":[${intentRecords.join(",")}],` +
-        `${stateLane},${focusLane},` +
+        `${propertyLane},${focusLane},` +
         `"rendererInput":null,` +
         `"nativeGesture":${nativeGesture},"cursorWindow":${cursorWindow}${cursorHitLane},` +
         `"nativeInvalidWitness":${witness}}`;
@@ -3399,7 +3408,7 @@ function encodeV4FrameAttempt(a: WorldFrameAttempt): string | null {
     if (dpiBefore === null || dpiAfter === null) {
         return null;
     }
-    return `{"win":${encodeV4String(a.win)},"target":${target},` +
+    return `{"kind":"frame","win":${encodeV4String(a.win)},"target":${target},` +
         `"setter":${encodeV4String(a.setter)},"readback":${readback},` +
         `"dpiBefore":${dpiBefore},"dpiAfter":${dpiAfter},` +
         `"attemptMs":${encodeV4String(a.attemptMs)},` +
@@ -3439,7 +3448,7 @@ function encodeV4MemberAttempt(a: WorldMemberAttempt): string | null {
     if (pre === null || post === null) {
         return null;
     }
-    return `{"op":${encodeV4String(a.op)},"win":${encodeV4String(a.win)},` +
+    return `{"kind":"member","op":${encodeV4String(a.op)},"win":${encodeV4String(a.win)},` +
         `"out":${encodeV4String(a.out)},"ws":${encodeV4String(a.ws)},` +
         `"setter":${encodeV4String(a.setter)},"pre":${pre},"post":${post},` +
         `"attemptMs":${encodeV4String(a.attemptMs)}}`;
@@ -3457,7 +3466,7 @@ function encodeV4ViewAttempt(a: WorldViewAttempt): string | null {
     if (pre === null || post === null || base === null) {
         return null;
     }
-    return `{"op":${encodeV4String(a.op)},"out":${encodeV4String(a.out)},` +
+    return `{"kind":"view","op":${encodeV4String(a.op)},"out":${encodeV4String(a.out)},` +
         `"ws":${encodeV4String(a.ws)},"setter":${encodeV4String(a.setter)},` +
         `"pre":${pre},"post":${post},"base":${base},` +
         `"attemptMs":${encodeV4String(a.attemptMs)}}`;
@@ -3468,7 +3477,7 @@ function encodeV4ClearAttempt(a: WorldClearAttempt): string | null {
         return null;
     }
     const flag = (v: boolean | null): string => (v === null ? "null" : encodeV4Bool(v));
-    return `{"op":${encodeV4String(a.op)},"win":${encodeV4String(a.win)},` +
+    return `{"kind":"clear","op":${encodeV4String(a.op)},"win":${encodeV4String(a.win)},` +
         `"setter":${encodeV4String(a.setter)},"pre":${flag(a.pre)},"post":${flag(a.post)},` +
         `"attemptMs":${encodeV4String(a.attemptMs)}}`;
 }
@@ -3508,7 +3517,7 @@ export function encodeV4StateAttempt(a: WorldStateAttempt): string | null {
     if (typeof a.attemptMs !== "string" || !isCanonicalU64(a.attemptMs)) {
         return null;
     }
-    return `{"win":${encodeV4String(a.win)},"property":${encodeV4String(a.property)},` +
+    return `{"kind":"state","win":${encodeV4String(a.win)},"property":${encodeV4String(a.property)},` +
         `"target":${encodeV4Bool(a.target)},"rev":${encodeV4String(a.rev)},` +
         `"setter":${encodeV4String(a.setter)},"pre":${pre},"post":${post},` +
         `"attemptMs":${encodeV4String(a.attemptMs)}}`;

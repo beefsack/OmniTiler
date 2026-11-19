@@ -47,8 +47,7 @@ fn v4_win(id: &str, rect: &str) -> String {
           \"title\":null,\"type\":\"normal\",\"activationPolicy\":\"regular\",\
           \"layer\":0,\"fullscreenOwner\":null,\"fullscreenExitable\":null,\
           \"suppressionAvailable\":null,\
-          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\
-          \"lastWrite\":null}}",
+          \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}}}}",
         x = frame[0],
         y = frame[1],
         w = frame[2],
@@ -81,7 +80,7 @@ fn inner_report(windows: &[String]) -> String {
           \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}},\
           {{\"win\":\"win-b\",\"live\":[300,0,200,200]}}],\
           \"witness\":null,\"foregroundOut\":null}},\
-          \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\
+          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
           \"rendererInput\":null,\
           \"gestureIngress\":null,\"nativeGesture\":null,\
           \"cursorWindow\":null,\"nativeInvalidWitness\":null}}",

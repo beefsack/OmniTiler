@@ -2103,28 +2103,38 @@ fn encode_result_value(
 /// canonical `attemptMs` must fit the dispatch clock. Malformed stamps are
 /// the codec's business; only comparable stamps gate here. Never adjusts or
 /// manufactures evidence.
+fn attempt_ms_fits_clock(item: &serde_json::Value, clock: u64) -> bool {
+    let Some(stamp) = item.get("attemptMs").and_then(|v| v.as_str()) else {
+        return true;
+    };
+    if !is_canonical_u64(stamp) {
+        return true;
+    }
+    let Ok(value) = stamp.parse::<u64>() else {
+        return true;
+    };
+    value <= clock
+}
+
 fn attempts_clock_valid(inner: &serde_json::Map<String, serde_json::Value>, clock: u64) -> bool {
-    for lane in [
-        "frameAttempts",
-        "memberAttempts",
-        "viewAttempts",
-        "clearAttempts",
-        "creationAttempts",
-    ] {
-        let Some(items) = inner.get(lane).and_then(|v| v.as_array()) else {
-            continue;
-        };
-        for item in items {
-            let Some(stamp) = item.get("attemptMs").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            if !is_canonical_u64(stamp) {
-                continue;
+    if let Some(items) = inner.get("propertyAttempts").and_then(|v| v.as_array()) {
+        for kind_name in ["frame", "member", "view", "clear"] {
+            for item in items {
+                let Some(kind) = item.get("kind").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                if kind != kind_name {
+                    continue;
+                }
+                if !attempt_ms_fits_clock(item, clock) {
+                    return false;
+                }
             }
-            let Ok(value) = stamp.parse::<u64>() else {
-                continue;
-            };
-            if value > clock {
+        }
+    }
+    if let Some(items) = inner.get("creationAttempts").and_then(|v| v.as_array()) {
+        for item in items {
+            if !attempt_ms_fits_clock(item, clock) {
                 return false;
             }
         }
@@ -3279,7 +3289,7 @@ mod tests {
     fn foreign_epoch_attempts_refuse_above_the_clock() {
         let inner: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str::<serde_json::Value>(
-                "{\"frameAttempts\":[{\"attemptMs\":\"9\"}]}",
+                "{\"propertyAttempts\":[{\"kind\":\"frame\",\"attemptMs\":\"9\"}]}",
             )
             .expect("object")
             .as_object()
@@ -3287,7 +3297,17 @@ mod tests {
             .clone();
         assert!(attempts_clock_valid(&inner, 9));
         assert!(!attempts_clock_valid(&inner, 8));
-        // The creation lane gates exactly like the other attempt lanes.
+        // Visibility and state rows have no attemptMs clock gate.
+        let vis_state: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str::<serde_json::Value>(
+                "{\"propertyAttempts\":[{\"kind\":\"visibility\",\"attemptMs\":\"9\"},{\"kind\":\"state\",\"attemptMs\":\"9\"}]}",
+            )
+            .expect("object")
+            .as_object()
+            .expect("map")
+            .clone();
+        assert!(attempts_clock_valid(&vis_state, 0));
+        // The creation lane gates exactly like the stamped propertyAttempt kinds.
         let created: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str::<serde_json::Value>(
                 "{\"creationAttempts\":[{\"attemptMs\":\"9\"}]}",
@@ -3308,7 +3328,7 @@ mod tests {
         assert!(attempts_clock_valid(&empty, 0));
         let junk: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str::<serde_json::Value>(
-                "{\"frameAttempts\":[{\"attemptMs\":\"xx\"}]}",
+                "{\"propertyAttempts\":[{\"kind\":\"frame\",\"attemptMs\":\"xx\"}]}",
             )
             .expect("object")
             .as_object()
@@ -3424,7 +3444,7 @@ mod tests {
             \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
             \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
-            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"lastWrite\":null}";
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
         // Seed one observation-only capture so win-a is admitted and ready
         // before opening the gesture.
         let seed_inner = format!(
@@ -3439,7 +3459,7 @@ mod tests {
             \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
             \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
             \"witness\":null,\"foregroundOut\":null}},\
-            \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
             \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}"
         );
         let seed_env = format!(
@@ -3461,7 +3481,7 @@ mod tests {
             \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
             \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
             \"witness\":null,\"foregroundOut\":null}},\
-            \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
             \"gestureIngress\":null,\
             \"nativeGesture\":{{\"v\":1,\"instance\":\"gesture-1\",\"serial\":\"1\",\"revision\":\"1\",\
             \"phase\":\"started\",\"win\":\"win-a\",\"kind\":\"move\",\"startRect\":[0,0,200,200],\
@@ -3588,7 +3608,7 @@ mod tests {
             \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
             \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\
             \"witness\":null,\"foregroundOut\":null}},\
-            \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
             \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\
             \"nativeInvalidWitness\":null}}}}"
         );
@@ -3630,7 +3650,7 @@ mod tests {
                 \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
                 \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
                 \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
-                \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}},\"lastWrite\":null}}"
+                \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}}}}"
             )
         };
         let wins = format!("[{},{}]", mk_win("win-a", 0), mk_win("win-b", 400));
@@ -3650,7 +3670,7 @@ mod tests {
             \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\",\"win-b\"],\
             \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,400,600]}},{{\"win\":\"win-b\",\"live\":[400,0,400,600]}}],\
             \"witness\":null,\"foregroundOut\":\"DP-1\"}},\
-            \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
             \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}}}"
         );
         let absent = with_broker_trace_capture(|| {
@@ -3678,7 +3698,7 @@ mod tests {
             \"chordHeld\":false,\"moveWindow\":\"win-a\",\"pagerOrder\":[\"win-a\",\"win-b\"],\
             \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,400,600]}},{{\"win\":\"win-b\",\"live\":[400,0,400,600]}}],\
             \"witness\":null,\"foregroundOut\":\"DP-1\"}},\
-            \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
             \"gestureIngress\":null,\
             \"nativeGesture\":{{\"v\":1,\"instance\":\"g-1\",\"serial\":\"1\",\"revision\":\"1\",\
             \"phase\":\"started\",\"win\":\"win-a\",\"kind\":\"move\",\"startRect\":[0,0,400,600],\
@@ -3701,7 +3721,7 @@ mod tests {
             \"chordHeld\":false,\"moveWindow\":\"win-a\",\"pagerOrder\":[\"win-a\",\"win-b\"],\
             \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,400,600]}},{{\"win\":\"win-b\",\"live\":[400,0,400,600]}}],\
             \"witness\":null,\"foregroundOut\":\"DP-1\"}},\
-            \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
             \"gestureIngress\":null,\
             \"nativeGesture\":{{\"v\":1,\"instance\":\"g-1\",\"serial\":\"2\",\"revision\":\"2\",\
             \"phase\":\"updated\",\"win\":\"win-a\",\"kind\":\"move\",\"startRect\":[0,0,400,600],\
@@ -3853,7 +3873,7 @@ mod tests {
             \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
             \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
-            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"lastWrite\":null}";
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
         let inner = format!(
             "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
@@ -3866,7 +3886,7 @@ mod tests {
             \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
             \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
             \"witness\":null,\"foregroundOut\":null}},\
-            \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
             \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}"
         );
         let cap1 = format!(
@@ -3942,7 +3962,7 @@ mod tests {
             \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
             \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
-            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"lastWrite\":null}";
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
         let inner = format!(
             "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
@@ -3955,7 +3975,7 @@ mod tests {
             \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
             \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
             \"witness\":null,\"foregroundOut\":null}},\
-            \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
             \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}"
         );
         let cap1 = format!(
@@ -4064,7 +4084,7 @@ mod tests {
             \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
             \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
-            \"visibility\":{\"visible\":true,\"suppressionOwned\":null},\"lastWrite\":null}";
+            \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
         let inner = format!(
             "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
@@ -4077,7 +4097,7 @@ mod tests {
             \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
             \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
             \"witness\":null,\"foregroundOut\":null}},\
-            \"intentRecords\":[],\"stateAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
             \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\
             \"nativeInvalidWitness\":{{\"instance\":\"inst-1\",\"counter\":\"5\"}}}}"
         );

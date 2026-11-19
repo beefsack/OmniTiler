@@ -16,8 +16,8 @@ use crate::world_engine::{ExcludedIntent, RetainedFloat, WorldState};
 use crate::world_layout::WorldLayout;
 use crate::world_members::MemberState;
 use crate::world_report::{
-    AuthorityScope, HeldAttemptRow, HeldNativeRow, HeldScreenRow, HeldWindowRow, PresentationRowV4,
-    RowDiagnostic, RowDiagnosticLane, StateAttempt, StateProperty, WindowFact,
+    AttemptLaneV4, AuthorityScope, HeldAttemptRow, HeldNativeRow, HeldScreenRow, HeldWindowRow,
+    PresentationRowV4, RowDiagnostic, RowDiagnosticLane, StateAttempt, StateProperty, WindowFact,
 };
 use crate::world_state::{state_offroute_diagnostic_in, state_property_supported};
 
@@ -183,12 +183,45 @@ pub(crate) fn classify_stage(
         .chain(held_window_diagnostics.iter().flatten().cloned())
         .collect();
     diagnostics.extend(input.held_native.iter().map(|held| held.diagnostic.clone()));
-    diagnostics.extend(
-        input
-            .held_attempts
-            .iter()
-            .filter_map(|held| held.diagnostic.clone()),
-    );
+    let mut vis_window_outputs: Option<BTreeMap<&WindowId, Option<&OutputId>>> = None;
+    diagnostics.extend(input.held_attempts.iter().filter_map(|held| {
+        if held.lane == AttemptLaneV4::Visibility {
+            let win_str = held.identity.first()?;
+            let win = WindowId(win_str.clone());
+            let index = vis_window_outputs.get_or_insert_with(|| {
+                let mut map = BTreeMap::new();
+                for fact in input.windows {
+                    map.insert(&fact.window, fact.output.as_ref());
+                }
+                for row in input.held_windows {
+                    map.entry(&row.window).or_insert(row.output.as_ref());
+                }
+                map
+            });
+            let &fact_output = index.get(&win)?;
+            let output = fact_output
+                .cloned()
+                .or_else(|| {
+                    crate::world_members::core_homing_in(
+                        ctx.members,
+                        ctx.mapping,
+                        ctx.displaced,
+                        &win,
+                    )
+                    .map(|home| home.output)
+                })
+                .or_else(|| ctx.layout.retained_home_any(&win))
+                .or_else(|| ctx.prior_homing.get(&win).map(|key| key.output.clone()))?;
+            Some(RowDiagnostic {
+                scope: AuthorityScope::Output(output),
+                row: RowDiagnosticLane::Attempt,
+                id: Some(win.0),
+                kind: held.kind,
+            })
+        } else {
+            held.diagnostic.clone()
+        }
+    }));
     diagnostics.extend(collect_state_offroute_diagnostics(ctx, &input));
     if let Some(PresentationRowV4::Held(held)) = input.presentation
         && let Some(diagnostic) = &held.diagnostic

@@ -35,8 +35,8 @@ use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    AuthorityScope, LastWrite, LastWritePath, LastWriteProperty, PresentationIngressV4,
-    PresentationRowV4, ScreenReport, VisibilityReason, VisibilitySample, VisibilitySetter,
+    AuthorityScope, LastWritePath, PresentationIngressV4, PresentationRowV4, ScreenReport,
+    VisibilityAttempt, VisibilityReason, VisibilitySample, VisibilitySetter,
     WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 
@@ -327,34 +327,35 @@ fn build_report_v4(
             suppression_available: None,
             visibility,
             // Correlated visibility verdicts ride the next observation
-            // report only: the recorded target/revision plus the actual
-            // read sampled now (post at this report's observation, post
-            // state from the raw facts above). This lane holds every
-            // write, so the verdict is always the blocked no-call shape,
-            // never an invented write. Command reports carry none
-            // (same-report raw would guess a future issuing revision).
-            last_write: if step.command.is_none() {
-                grants.get(id).map(|(shown, rev)| LastWrite {
-                    property: LastWriteProperty::Visibility,
-                    target: *shown,
-                    revision: *rev,
-                    path: LastWritePath::Staged,
-                    setter: VisibilitySetter::NotCalled,
-                    reason: VisibilityReason::ScopeHeld,
-                    pre: None,
-                    post: Some(VisibilitySample {
-                        obs: step.observation,
-                        lifetime_matched: Some(true),
-                        visibility,
-                        minimized: Some(false),
-                        host_hidden: Some(false),
-                    }),
-                })
-            } else {
-                None
-            },
         });
     }
+    let visibility_attempts = if step.command.is_none() {
+        windows
+            .iter()
+            .filter_map(|w| {
+                grants
+                    .get(&w.window.0)
+                    .map(|(shown, rev)| VisibilityAttempt {
+                        window: w.window.clone(),
+                        target: *shown,
+                        revision: *rev,
+                        path: LastWritePath::Staged,
+                        setter: VisibilitySetter::NotCalled,
+                        reason: VisibilityReason::ScopeHeld,
+                        pre: None,
+                        post: Some(VisibilitySample {
+                            obs: step.observation,
+                            lifetime_matched: Some(true),
+                            visibility: w.visibility,
+                            minimized: Some(false),
+                            host_hidden: Some(false),
+                        }),
+                    })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let command = build_command(step, binding)?;
     // No `views` echo on the v4 lane: native-free selection completes
     // through the frozen binding plus the verdict lane above. The authored
@@ -407,6 +408,7 @@ fn build_report_v4(
         creation_attempts: vec![],
         held_attempts: vec![],
         state_attempts: Vec::new(),
+        visibility_attempts,
         focus_feedback: Vec::new(),
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),

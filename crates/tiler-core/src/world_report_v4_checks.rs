@@ -16,8 +16,9 @@ use crate::world_report::{
     MAX_NATIVE_OCCUPANTS_PER_DESKTOP, MAX_NATIVE_PER_OUTPUT, MAX_PRESENTATION_ORDER,
     MAX_WORLD_CLEAR_ATTEMPTS, MAX_WORLD_CLOSED, MAX_WORLD_CREATION_ATTEMPTS, MAX_WORLD_FACTS,
     MAX_WORLD_FOCUS_FEEDBACK, MAX_WORLD_FRAMES, MAX_WORLD_MEMBER_ATTEMPTS, MAX_WORLD_NATIVE,
-    MAX_WORLD_SCREENS, MAX_WORLD_STATE_ATTEMPTS, MAX_WORLD_VIEW_ATTEMPTS, PresentationRowV4,
-    RenderTarget, RowDiagnosticKind, WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef,
+    MAX_WORLD_PROPERTY_ATTEMPTS, MAX_WORLD_SCREENS, MAX_WORLD_STATE_ATTEMPTS,
+    MAX_WORLD_VIEW_ATTEMPTS, MAX_WORLD_VISIBILITY_ATTEMPTS, PresentationRowV4, RenderTarget,
+    RowDiagnosticKind, VisibilityAttempt, WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef,
     WorldCommand, WorldReportV4, check_screen_structure, check_window_structure,
     conflicting_window, gradable_screen, gradable_window, graded_held_row, graded_held_window_row,
     hidden_window_id_violation, valid_command,
@@ -89,6 +90,25 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
             .saturating_add(held_in_lane(report, AttemptLaneV4::Creation))
             > MAX_WORLD_CREATION_ATTEMPTS
         || report.state_attempts.len() > MAX_WORLD_STATE_ATTEMPTS
+        || report
+            .visibility_attempts
+            .len()
+            .saturating_add(held_in_lane(report, AttemptLaneV4::Visibility))
+            > MAX_WORLD_VISIBILITY_ATTEMPTS
+        || report
+            .frames
+            .len()
+            .saturating_add(held_in_lane(report, AttemptLaneV4::Frame))
+            .saturating_add(report.member_attempts.len())
+            .saturating_add(held_in_lane(report, AttemptLaneV4::Member))
+            .saturating_add(report.view_attempts.len())
+            .saturating_add(held_in_lane(report, AttemptLaneV4::View))
+            .saturating_add(report.clear_attempts.len())
+            .saturating_add(held_in_lane(report, AttemptLaneV4::Clear))
+            .saturating_add(report.state_attempts.len())
+            .saturating_add(report.visibility_attempts.len())
+            .saturating_add(held_in_lane(report, AttemptLaneV4::Visibility))
+            > MAX_WORLD_PROPERTY_ATTEMPTS
         || report.focus_feedback.len() > MAX_WORLD_FOCUS_FEEDBACK
         || report.intent_records.len() > MAX_INTENT_RECORDS
     {
@@ -500,28 +520,64 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
         }
     }
     {
-        // Held attempt ordinals index their own carried lane array: each one
-        // names a distinct slot shared with the valid rows of that lane.
-        for lane in [
-            AttemptLaneV4::Frame,
-            AttemptLaneV4::Member,
-            AttemptLaneV4::View,
-            AttemptLaneV4::Clear,
-            AttemptLaneV4::Creation,
-        ] {
-            let valid = match lane {
-                AttemptLaneV4::Frame => report.frames.len(),
-                AttemptLaneV4::Member => report.member_attempts.len(),
-                AttemptLaneV4::View => report.view_attempts.len(),
-                AttemptLaneV4::Clear => report.clear_attempts.len(),
-                AttemptLaneV4::Creation => report.creation_attempts.len(),
-            };
-            let total = valid.saturating_add(held_in_lane(report, lane));
-            let mut seen_ordinals = BTreeSet::new();
-            for held in report.held_attempts.iter().filter(|held| held.lane == lane) {
-                if held.ordinal >= total || !seen_ordinals.insert(held.ordinal) {
-                    return Some("held-ordinal-invalid");
-                }
+        let mut seen_visibility = BTreeSet::new();
+        for attempt in &report.visibility_attempts {
+            if !is_opaque_id(&attempt.window.0) {
+                return Some("visibility-window-invalid");
+            }
+            if !seen_visibility.insert(attempt.window.0.clone()) {
+                return Some("duplicate-visibility-attempt");
+            }
+        }
+        for held in report
+            .held_attempts
+            .iter()
+            .filter(|held| held.lane == AttemptLaneV4::Visibility)
+        {
+            if let Some(win) = held.identity.first()
+                && !seen_visibility.insert(win.clone())
+            {
+                return Some("duplicate-visibility-attempt");
+            }
+        }
+    }
+    {
+        // Property attempt held ordinals index the unified `propertyAttempts`
+        // array; creation attempt held ordinals index `creationAttempts`.
+        let property_valid = report.frames.len()
+            + report.member_attempts.len()
+            + report.view_attempts.len()
+            + report.clear_attempts.len()
+            + report.state_attempts.len()
+            + report.visibility_attempts.len();
+        let property_held = report
+            .held_attempts
+            .iter()
+            .filter(|held| held.lane != AttemptLaneV4::Creation)
+            .count();
+        let property_total = property_valid.saturating_add(property_held);
+        let mut seen_property_ordinals = BTreeSet::new();
+        for held in report
+            .held_attempts
+            .iter()
+            .filter(|held| held.lane != AttemptLaneV4::Creation)
+        {
+            if held.ordinal >= property_total || !seen_property_ordinals.insert(held.ordinal) {
+                return Some("held-ordinal-invalid");
+            }
+        }
+        let creation_total = report
+            .creation_attempts
+            .len()
+            .saturating_add(held_in_lane(report, AttemptLaneV4::Creation));
+        let mut seen_creation_ordinals = BTreeSet::new();
+        for held in report
+            .held_attempts
+            .iter()
+            .filter(|held| held.lane == AttemptLaneV4::Creation)
+        {
+            if held.ordinal >= creation_total || !seen_creation_ordinals.insert(held.ordinal) {
+                return Some("held-ordinal-invalid");
             }
         }
     }
@@ -960,7 +1016,6 @@ pub fn grade_conflicting_windows_v4(
                     .native_workspace
                     .as_deref()
                     .is_some_and(|id| !id.is_empty()),
-                last_write: fact.last_write,
                 diagnostic: fact
                     .output
                     .as_ref()
@@ -1053,36 +1108,27 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         }
         flag(hash, diagnostic.id.is_some());
     }
-    fn feed_last_write(hash: &mut u64, last_write: &Option<crate::world_report::LastWrite>) {
-        match last_write.as_ref() {
-            None => {
-                feed(hash, "no-last-write");
-                sep(hash);
-            }
-            Some(last) => {
-                feed(hash, last.property.as_str());
-                sep(hash);
-                flag(hash, last.target);
-                feed(hash, &last.revision.to_string());
-                sep(hash);
-                feed(hash, last.path.as_str());
-                sep(hash);
-                feed(hash, last.setter.as_str());
-                sep(hash);
-                feed(hash, last.reason.as_str());
-                sep(hash);
-                for sample in [last.pre.as_ref(), last.post.as_ref()] {
-                    match sample {
-                        None => {
-                            feed(hash, "no-sample");
-                            sep(hash);
-                        }
-                        Some(sample) => feed_visibility_sample(hash, sample),
-                    }
+    fn feed_visibility_attempt(hash: &mut u64, attempt: &VisibilityAttempt) {
+        feed(hash, &attempt.window.0);
+        sep(hash);
+        flag(hash, attempt.target);
+        feed(hash, &attempt.revision.to_string());
+        sep(hash);
+        feed(hash, attempt.path.as_str());
+        sep(hash);
+        feed(hash, attempt.setter.as_str());
+        sep(hash);
+        feed(hash, attempt.reason.as_str());
+        sep(hash);
+        for sample in [attempt.pre.as_ref(), attempt.post.as_ref()] {
+            match sample {
+                None => {
+                    feed(hash, "no-sample");
+                    sep(hash);
                 }
+                Some(sample) => feed_visibility_sample(hash, sample),
             }
         }
-        flag(hash, last_write.is_some());
     }
     fn feed_visibility_sample(hash: &mut u64, sample: &crate::world_report::VisibilitySample) {
         feed(hash, &sample.obs.to_string());
@@ -1144,6 +1190,7 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         creation_attempts,
         held_attempts,
         state_attempts,
+        visibility_attempts,
         focus_feedback,
         presentation,
         intent_records,
@@ -1299,7 +1346,10 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         sep(&mut hash);
         flag(&mut hash, held.output.is_some());
         flag(&mut hash, held.has_native_workspace);
-        feed_last_write(&mut hash, &held.last_write);
+        feed(&mut hash, &held.ordinal.to_string());
+        sep(&mut hash);
+        feed(&mut hash, held.kind.as_str());
+        sep(&mut hash);
         feed(&mut hash, held.kind.as_str());
         sep(&mut hash);
         flag(&mut hash, held.diagnostic.is_some());
@@ -1550,6 +1600,9 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         }
         feed(&mut hash, &attempt.attempt_ms.to_string());
         sep(&mut hash);
+    }
+    for attempt in visibility_attempts {
+        feed_visibility_attempt(&mut hash, attempt);
     }
     for row in focus_feedback {
         feed(&mut hash, &row.id);
@@ -1878,49 +1931,6 @@ fn feed_window_facts(hash: &mut u64, facts: &[WindowFact]) {
             sep(hash);
             flag(hash, value.is_some());
         }
-        match fact.last_write.as_ref() {
-            None => {
-                feed(hash, "no-last-write");
-                sep(hash);
-            }
-            Some(last) => {
-                feed(hash, last.property.as_str());
-                sep(hash);
-                flag(hash, last.target);
-                feed(hash, &last.revision.to_string());
-                sep(hash);
-                feed(hash, last.path.as_str());
-                sep(hash);
-                feed(hash, last.setter.as_str());
-                sep(hash);
-                feed(hash, last.reason.as_str());
-                sep(hash);
-                for sample in [last.pre.as_ref(), last.post.as_ref()] {
-                    match sample {
-                        None => {
-                            feed(hash, "no-sample");
-                            sep(hash);
-                        }
-                        Some(sample) => {
-                            feed(hash, &sample.obs.to_string());
-                            sep(hash);
-                            for value in [
-                                sample.lifetime_matched,
-                                sample.visibility.visible,
-                                sample.visibility.suppression_owned,
-                                sample.minimized,
-                                sample.host_hidden,
-                            ] {
-                                feed(hash, &value.map(|set| set.to_string()).unwrap_or_default());
-                                sep(hash);
-                                flag(hash, value.is_some());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        flag(hash, fact.last_write.is_some());
         flag(hash, fact.hints.is_some());
         let hints = fact
             .hints

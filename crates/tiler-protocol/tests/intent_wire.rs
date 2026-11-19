@@ -41,7 +41,7 @@ use tiler_protocol::world_reply_write::count_reply_v4_bytes;
 
 fn fixture(name: &str) -> serde_json::Value {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../test-fixtures/world-wire/v4/messages")
+        .join("../../test-fixtures/world-wire/v4-active/messages")
         .join(format!("{name}.json"));
     serde_json::from_str(&std::fs::read_to_string(&path).expect("fixture JSON"))
         .expect("fixture JSON")

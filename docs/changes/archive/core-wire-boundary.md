@@ -1,6 +1,6 @@
 # Core wire boundary (C5)
 
-**Approved 2026-11-18; implementation in progress.** Finish [C5](core-v4-review.md#c5-the-json-wire-format-lives-inside-core) after the contract-shape work. Preserve behaviour except for the changes recorded below. Keep C2's single report transaction and C4's settlement engine. No compatibility shims, host policy moves or unrelated port work.
+**Approved 2026-11-18; shared boundary completed 2026-11-19.** [C5](../core-v4-review.md#c5-the-json-wire-format-lives-inside-core) preserves behavior except for the changes recorded below. It retains C2's single report transaction and C4's settlement engine without compatibility shims, host policy moves or unrelated port changes.
 
 ## Ownership and admission
 
@@ -72,18 +72,21 @@
   a kind; first hard error wins. A single wire ordinal reconstructs input,
   not settlement order. Creation keeps its own ordinal; creation and focus
   feedback stay separate, and arrival brackets stay nested read-only proof.
-- Visibility joins by exact window lifetime. `normalize_visibility_attempts`
-  takes eligible fact evidence first, then the first decodable held evidence
-  in defensive staging; duplicate window lifetimes already refuse at wire
-  ingress. A readable sample on a held window must still be graded, not
-  discarded or granted authority just for parsing. Identifiable malformed
-  evidence beside a matching window holds that scope without disabling
-  unrelated windows. Reject unidentifiable rows without inventing scope.
-  Visibility follows the shared attempt rules: ignore evidence without a
-  live or held window in the report (including close-only), with no authority
-  or diagnostic. Duplicate visibility rows for the same lifetime, including
-  an identifiable malformed row, refuse `snapshot-invalid` with
-  `duplicate-visibility-attempt`.
+- One visibility attempt per exact window lifetime joins to a live fact or
+  held window in the report. A readable sample on a held window must still
+  be graded, not discarded or granted authority just for parsing.
+  Identifiable malformed evidence beside a matching window holds that scope
+  without disabling unrelated windows. Reject unidentifiable rows without
+  inventing scope.
+  Duplicate keys are a structural check at ingress for every kind and apply
+  whether or not the window is present. A duplicate refuses even for absent
+  or close-only windows. Rows with no live or held window are ignored only
+  after they pass the structural checks, with no authority or diagnostic.
+  For visibility, duplicate rows for the same lifetime, including an
+  identifiable malformed row, refuse `snapshot-invalid` with
+  `duplicate-visibility-attempt`. Malformed visibility samples formerly
+  tolerated on held rows (extra keys, zero-padded counters) now hold narrowly
+  under the shared rule.
 - Preserve `attempts_clock_valid`: check comparable canonical stamps on
   frame, membership, view, clear and creation, including rows later held.
   Do not invent stamps for visibility or state. KWin keeps its per-kind
@@ -110,27 +113,26 @@
 
 1. **Wire cutover (A):** Amend pre-release v4 in place. The codec, broker
    and KWin update together; mixed versions are unsupported.
-2. **Batch replay (B, conditional):** Enable last, only with bounded exact
-   identity and proof of broker FIFO repark and next-fresh-capture recovery.
-   Until then retain C2 report-only matching; if proof fails, keep A and
-   report. Test the three identities at their owning boundaries:
+2. **Batch replay (A, final):** Retain C2 report-only core replay matching.
+   The conditional B criteria were not met: bounded exact submitted-batch
+   identity and broker FIFO repark with next-fresh-capture recovery from a
+   changed-batch refusal were not demonstrated. These distinct identities
+   explain the boundary and the rejected expansion:
    - **Broker source:** exact incoming envelope bytes replay the remembered
      response and original clock before drain, without attaching new input.
-   - **Core request:** same latest sequence plus changed report or changed
-     submitted ordered `(global sequence, typed command)` list refuses
-     `request-reused`. An exact retry returns the cached reply without new
-     settlements. Bound count and variable-length members, including skipped
-     entries, before comparison (128 broker entries alone is not a bound).
-     Use full equality, not digest-only or debug strings; preserve high-water
-     fencing. Test changed batch directly at core; at the broker's defensive
-     outcome/repark boundary prove refusal then a real fresh capture and
-     take-results, without a production retry API.
+   - **Core request:** Exact report retry returns the cached reply without
+     new settlements, even if the separate queued list changed. A changed
+     report at the latest sequence still refuses `request-reused`, with
+     full equality and high-water fencing. Conditional B would also have
+     compared every submitted `(global sequence, typed command)` in order,
+     including skipped entries; a 128-entry limit alone would not bound
+     variable-length members.
    - **Malformed evidence:** the checked protocol admission path, including
      direct wire calls, compares exact bounded residual evidence before a
      duplicate can be returned. Distinguish decoded content, not whitespace.
      Replace/reset with the one core replay entry, never on final refusal;
      no raw maps in core or independent replay authority.
-   [Reference outcome](../spec/reference-outcomes.md#typed-report-replay-with-a-changed-queued-list).
+   [Reference outcome](../../spec/reference-outcomes.md#typed-report-replay-with-a-changed-queued-list).
 3. **Native size limits (B, user 2026-11-18):** Keep the protocol size gate
    for in-process callers by default, without round-trip decoding. Revisit
    only if measurements justify removal: 10,000 facts x 4,096-byte titles
@@ -143,10 +145,10 @@
    applied by `decode_reply_v4_for_host`: unsupported above, warp and native
    sticky, plus report grading and defaults such as missing monotonic clock
    and creation receipt null versus absence.
-   [Discriminator](../spec/reference-outcomes.md#typed-native-capture-over-the-json-budget).
+   [Discriminator](../../spec/reference-outcomes.md#typed-native-capture-over-the-json-budget).
 4. **Visibility attempts (user 2026-11-18):** Apply the shared
    property-attempt rules above for subject, duplicates and diagnostic order.
-   [Discriminator](../spec/reference-outcomes.md#visibility-attempt-shared-rules).
+   [Discriminator](../../spec/reference-outcomes.md#visibility-attempt-shared-rules).
 5. **Final reply and terminal headroom (user 2026-11-18):** Drop the
    estimate-only final refusal. Keep early preflight, staged structural checks,
    the exact canonical inner checkpoint, future reserve, wake-epoch rotation
@@ -157,7 +159,7 @@
    writer-count equality, add one estimate-only discriminator, and retain
    early, exact and future-reserve rollback coverage. No fixture byte changes
    for these decisions.
-   [Discriminator](../spec/reference-outcomes.md#staged-reply-size-versus-terminal-headroom).
+   [Discriminator](../../spec/reference-outcomes.md#staged-reply-size-versus-terminal-headroom).
 6. **Platform scope (user 2026-11-19):** Finish and prove the core and
    protocol rebuild first. macOS and Windows ports and their checks are
    deferred to separate rebuilds on their native platforms; do not add
@@ -165,6 +167,16 @@
    also slated for a rebuild. Migrate the current KWin code here where it
    provides a direct, straightforward consumer proof of the contract;
    defer substantial KWin changes to its rebuild.
+
+## Tentative decisions pending user review
+
+- Decode visibility after native state and before focus for first-hard-error
+  precedence. This puts visibility errors after frame, membership, view,
+  maximize-clear, creation and state errors. The alternative is visibility
+  first, preserving its former window-section precedence. Appending the new
+  kind keeps the existing kinds' relative order. Reversal moves visibility
+  to the front of the attempt decode order and flips the visibility cases
+  in `v4_cross_section_and_kind_refusal_precedence`.
 
 ## Migration, acceptance and cost
 
@@ -182,7 +194,7 @@
    and Windows callers are out of scope. Tabs need no new fields: report
    lifetime-bound setter/readbacks, not tab verdicts or a separate hide
    ledger. Keep future exact group/member clicks distinct from
-   execution-time focus. Enable D2 last, subject to its evidence.
+   execution-time focus. Retain report-only core replay as specified above.
 3. Frozen `world-wire/v4`, `stage5`, `stage5-v4` and `kde-v4` stay
    byte-identical, even if their historical shape is rejected by the active
    codec. Use `world-wire/v4-active`, `stage5-v4-active` and `kde-v4-active`
@@ -266,8 +278,78 @@ comparison. The scoped Rust suite passed 3,464 tests with the workspace
 unsafe-posture test excluded, including the Stage 5 production routes and
 byte oracles. Active and frozen fixtures are unchanged.
 
+The coordinated Rust and KWin cutover uses required `propertyAttempts`.
+Focused checks preserved the broker clock gate, visibility grading and
+narrow holds, KWin evidence retirement, and both Stage 5 production
+routes. The scoped Rust suite passed 3,466 tests before the final
+visibility assertion additions; the three affected suites then passed
+99, 27 and 65 tests. KWin typecheck and 1,378 tests passed. The frozen
+families are unchanged; only active report inputs were migrated or
+re-recorded. KWin hide/show actuation does not yet produce visibility
+attempts; that work belongs to the KDE rebuild.
+
 For the final broker comparison, the release harness at `b6f097d0` used
 the original active genesis fixture and the workload above. Median series
 p50/p95 was 198.5/205.5 us fresh and 205.6/214.7 us warm; replies were
 2,220-2,234 bytes. This is the comparison baseline; earlier timings above
 are historical context.
+
+## Completion evidence
+
+Independent source review covered wire changes from the capture parser and
+size-policy extraction through the six-kind cutover. It found no lost
+discriminating coverage, core dependency on protocol, compatibility shim,
+arithmetic twin or FIFO regression. Command-result spelling and queue
+validation precedence are unchanged. Rapid commands still evaluate in
+core order; KWin applies only the latest eligible world.
+
+Two decoder tests cover 10,000/10,001 visibility and 15,120/15,121 total
+attempt rows. The total case distinguishes the total guard from later
+per-kind checks. The structural duplicate test now sends the same
+readable/malformed pair for both absent and live subjects. No production
+behavior changed during review. The final test-only lint correction
+passed strict Clippy.
+
+Scoped Rust format, all-target build and strict Clippy passed. Rust:
+3,468 passed with `workspace_unsafe_posture` excluded; 3,447 at C2,
+3,458 after the writer, sizing and typed-command units, 3,464 after typed
+holds, 3,466 after the unified cutover, and two additional cap tests at
+completion. KWin typecheck and 1,378 tests passed. Launcher 703,
+native-effect 204 and helper 58 passed, all unchanged from C2. Neither
+known flake occurred. Both Stage 5 production routes passed; all 651
+frozen fixtures are unchanged.
+
+Callgrind counted 7.72M/34.07M instructions per report at 50/200
+windows with 4.41 growth (C2: 8.11M/35.58M, 4.39). All cost limits
+passed. Release `report_scale all 31 3 all` worst steady p95 was
+0.2871/1.9622/4.4720 ms at 10/50/200 windows (budgets 1/4/10 ms).
+First reports, measured separately, ranged 0.1732-0.3786,
+1.0027-3.3286 and 12.3155-42.5533 ms, respectively.
+
+The release broker harness used the re-recorded active genesis and the
+same workload as the `b6f097d0` comparison. Median series p50/p95 over
+seven series of 300 captures was 203.0/211.1 us fresh and 210.5/218.7 us
+warm, compared with 198.5/205.5 and 205.6/214.7 us. The increase was
+4.0-5.6 us across the four measures. Replies were 2,221-2,222 bytes
+fresh and 2,224-2,235 bytes warm, versus 2,220-2,234 bytes overall at
+baseline. The recorded Stage 5 reply bytes are unchanged.
+
+The codec now separates attempt rows, canonical reply output, row sizing,
+admission and retained wire evidence. The remaining shared codec is
+larger than the soft target because it still contains existing connection,
+command, report and reply codecs outside the extracted responsibilities.
+The stress harness remains intact, and the decoder suite slightly exceeds
+its soft target to keep threshold evidence with the other decoder cases.
+
+## Deferred work
+
+- KDE rebuild: produce lifetime-bound visibility attempts from KWin
+  hide/show actuation; no visibility-producer acceptance is claimed here.
+- macOS and Windows rebuilds: adopt typed ingress and command construction
+  and prove semantics and native-target behavior. No checks were run on
+  those ports for final C5 acceptance.
+- Duplicate object keys on queue/take/wait/presentation-read still resolve
+  last-wins (unchanged since before C5); capture and discovery refuse them as
+  malformed. Strictness for the remaining endpoints, and where malformed
+  ranks against generation/high-water checks, goes to the protocol
+  correctness review.

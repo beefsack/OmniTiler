@@ -41,7 +41,7 @@ fn scenario_path() -> std::path::PathBuf {
 
 fn base_report_value() -> serde_json::Value {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../test-fixtures/world-wire/v4/messages/report-intent-float.json");
+        .join("../../test-fixtures/world-wire/v4-active/messages/report-intent-float.json");
     let mut base: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).expect("fixture JSON"))
             .expect("fixture JSON");
@@ -66,7 +66,7 @@ fn step_report_wire(
     value["obs"] = serde_json::json!(obs);
     value["cmdSeq"] = cmd_seq;
     value["command"] = command;
-    value["stateAttempts"] = attempts;
+    value["propertyAttempts"] = attempts;
     value.to_string()
 }
 
@@ -192,6 +192,7 @@ fn produce() -> Vec<(String, String, String)> {
         serde_json::Value::Null,
         serde_json::json!([{
             "win": "win-a",
+            "kind": "state",
             "property": "sticky",
             "target": true,
             "rev": binding_rev.to_string(),

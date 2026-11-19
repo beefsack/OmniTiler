@@ -5,6 +5,7 @@ pub mod world_admission;
 mod world_admission_rows;
 pub mod world_admission_sizing;
 pub mod world_command_result;
+mod world_property_attempts;
 pub mod world_protocol;
 mod world_reply_sink;
 pub mod world_reply_write;

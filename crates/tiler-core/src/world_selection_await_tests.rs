@@ -23,11 +23,10 @@ use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
     ArrivalBracket, ArrivalLocation, AuthorityScope, FocusFeedback, FrameSetter, HeldScreenRow,
-    HeldWindowRow, LastWrite, LastWritePath, LastWriteProperty, MemberAttempt, OneShotEffect,
-    PresentationRowV4, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority,
-    SwitchFocus, SwitchOutcome, VisibilityFact, VisibilityReason, VisibilitySample,
-    VisibilitySetter, WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef, WorldCommand,
-    WorldReportV4,
+    HeldWindowRow, LastWritePath, MemberAttempt, OneShotEffect, PresentationRowV4, RowDiagnostic,
+    RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, SwitchFocus, SwitchOutcome,
+    VisibilityAttempt, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
+    WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef, WorldCommand, WorldReportV4,
 };
 use crate::world_v4_support_tests::empty_ingress;
 
@@ -91,7 +90,6 @@ fn sfact(window: &str, output: &str, x: i32) -> WindowFact {
             visible: Some(true),
             suppression_owned: Some(false),
         },
-        last_write: None,
     }
 }
 
@@ -212,6 +210,7 @@ fn report(
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
+        visibility_attempts: Vec::new(),
         focus_feedback: feedback,
         presentation: PresentationRowV4::Valid(empty_ingress()),
         intent_records: Vec::new(),
@@ -1544,20 +1543,20 @@ fn selection_without_suppression_caps_binds_focusless_with_direct_effect() {
     // no views lane, so the port observes the same proof echoless and the
     // retained select-time view stands structurally.
     let rev = reply.state_revision;
-    let proving = report(
-        4,
+    let proving = with_visibility(
+        report(
+            4,
+            vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+            vec![],
+            None,
+            None,
+            vec![],
+            "",
+        ),
         vec![
-            with_lw(sfact("w1", "out-a", 0), last_write_confirmed(false, rev, 4)),
-            with_lw(
-                sfact("w2", "out-a", 100),
-                last_write_confirmed(true, rev, 4),
-            ),
+            vis_confirmed("w1", false, rev, 4),
+            vis_confirmed("w2", true, rev, 4),
         ],
-        vec![],
-        None,
-        None,
-        vec![],
-        "",
     );
     let done = accepted(&mut engine, &proving);
     assert_eq!(done.switch_settled.len(), 1, "one terminal: {done:?}");
@@ -2264,7 +2263,6 @@ fn follow_send_settles_membership_before_selection_terminal() {
         .focus_request
         .clone()
         .expect("retained focus request");
-    let w_lw = last_write_confirmed(true, rev, 5);
     let frame_w1 = row(&followed, "w1").effective_frame;
     let feedback = feedback_row(
         &effect.id,
@@ -2279,17 +2277,20 @@ fn follow_send_settles_membership_before_selection_terminal() {
     );
     let done = accepted(
         &mut engine,
-        &report(
-            5,
+        &with_visibility(
+            report(
+                5,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                None,
+                None,
+                vec![feedback],
+                "",
+            ),
             vec![
-                with_lw(sfact("w1", "out-a", 0), w_lw),
-                with_lw(sfact("w2", "out-a", 100), w_lw),
+                vis_confirmed("w1", true, rev, 5),
+                vis_confirmed("w2", true, rev, 5),
             ],
-            vec![],
-            None,
-            None,
-            vec![feedback],
-            "",
         ),
     );
     assert_eq!(done.switch_settled.len(), 1, "one terminal: {done:?}");
@@ -2995,7 +2996,6 @@ fn native_free_follow_source_echo_survives_then_proves() {
         .clone()
         .expect("retained focus request");
     let rev = granted.state_revision;
-    let w_lw = last_write_confirmed(true, rev, 6);
     let frames: std::collections::BTreeMap<WindowId, Option<Rect>> = granted
         .windows
         .iter()
@@ -3025,17 +3025,20 @@ fn native_free_follow_source_echo_survives_then_proves() {
         Some("w1"),
         arrival_brackets,
     );
-    let proof_report = report(
-        6,
+    let proof_report = with_visibility(
+        report(
+            6,
+            vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+            vec![],
+            None,
+            None,
+            vec![feedback],
+            "w1",
+        ),
         vec![
-            with_lw(sfact("w1", "out-a", 0), w_lw),
-            with_lw(sfact("w2", "out-a", 100), w_lw),
+            vis_confirmed("w1", true, rev, 6),
+            vis_confirmed("w2", true, rev, 6),
         ],
-        vec![],
-        None,
-        None,
-        vec![feedback],
-        "w1",
     );
     let done = accepted(&mut engine, &proof_report);
     assert_eq!(done.switch_settled.len(), 1, "one terminal: {done:?}");
@@ -4690,9 +4693,9 @@ fn confirm_sample(obs: u64, shown: bool) -> VisibilitySample {
     }
 }
 
-fn last_write_confirmed(target: bool, rev: u64, post_obs: u64) -> LastWrite {
-    LastWrite {
-        property: LastWriteProperty::Visibility,
+fn vis_confirmed(window: &str, target: bool, rev: u64, post_obs: u64) -> VisibilityAttempt {
+    VisibilityAttempt {
+        window: WindowId(window.to_owned()),
         target,
         revision: rev,
         path: LastWritePath::Staged,
@@ -4703,15 +4706,16 @@ fn last_write_confirmed(target: bool, rev: u64, post_obs: u64) -> LastWrite {
     }
 }
 
-fn last_write_with(
+fn vis_with(
+    window: &str,
     target: bool,
     rev: u64,
     setter: VisibilitySetter,
     reason: VisibilityReason,
     post: Option<VisibilitySample>,
-) -> LastWrite {
-    LastWrite {
-        property: LastWriteProperty::Visibility,
+) -> VisibilityAttempt {
+    VisibilityAttempt {
+        window: WindowId(window.to_owned()),
         target,
         revision: rev,
         path: LastWritePath::Staged,
@@ -4722,9 +4726,9 @@ fn last_write_with(
     }
 }
 
-fn with_lw(mut fact: WindowFact, last: LastWrite) -> WindowFact {
-    fact.last_write = Some(last);
-    fact
+fn with_visibility(mut report: WorldReportV4, attempts: Vec<VisibilityAttempt>) -> WorldReportV4 {
+    report.visibility_attempts = attempts;
+    report
 }
 
 fn refused_feedback(id: &str, target: &str, revision: u64) -> FocusFeedback {
@@ -4768,8 +4772,8 @@ fn switch_all_confirmed_completes_with_proven_focus() {
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
     assert!(frame.is_some());
-    let w2_lw = last_write_confirmed(true, rev, 4);
-    let w1_lw = last_write_confirmed(false, rev, 4);
+    let w2_lw = vis_confirmed("w2", true, rev, 4);
+    let w1_lw = vis_confirmed("w1", false, rev, 4);
     let feedback = feedback_row(
         &effect.id,
         "w2",
@@ -4780,17 +4784,17 @@ fn switch_all_confirmed_completes_with_proven_focus() {
     );
     let reply = accepted(
         &mut engine,
-        &report(
-            4,
-            vec![
-                with_lw(sfact("w1", "out-a", 0), w1_lw),
-                with_lw(sfact("w2", "out-a", 100), w2_lw),
-            ],
-            vec![],
-            None,
-            None,
-            vec![feedback],
-            "",
+        &with_visibility(
+            report(
+                4,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                None,
+                None,
+                vec![feedback],
+                "",
+            ),
+            vec![w1_lw, w2_lw],
         ),
     );
     assert_eq!(reply.switch_settled.len(), 1, "one terminal: {reply:?}");
@@ -4862,8 +4866,8 @@ fn switch_foreground_without_arrival_never_proves_focus_or_complete() {
         .clone()
         .expect("retained focus request");
     let rev = granted.state_revision;
-    let w2_lw = last_write_confirmed(true, rev, 4);
-    let w1_lw = last_write_confirmed(false, rev, 4);
+    let w2_lw = vis_confirmed("w2", true, rev, 4);
+    let w1_lw = vis_confirmed("w1", false, rev, 4);
     let feedback = feedback_row(
         &effect.id,
         "w2",
@@ -4874,17 +4878,17 @@ fn switch_foreground_without_arrival_never_proves_focus_or_complete() {
     );
     let reply = accepted(
         &mut engine,
-        &report(
-            4,
-            vec![
-                with_lw(sfact("w1", "out-a", 0), w1_lw),
-                with_lw(sfact("w2", "out-a", 100), w2_lw),
-            ],
-            vec![],
-            None,
-            None,
-            vec![feedback],
-            "",
+        &with_visibility(
+            report(
+                4,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                None,
+                None,
+                vec![feedback],
+                "",
+            ),
+            vec![w1_lw, w2_lw],
         ),
     );
     assert_eq!(reply.switch_settled.len(), 1, "still terminal: {reply:?}");
@@ -4911,22 +4915,22 @@ fn switch_refused_focus_with_confirmed_visibility_fails_outcome() {
         .clone()
         .expect("retained focus request");
     let rev = granted.state_revision;
-    let w2_lw = last_write_confirmed(true, rev, 4);
-    let w1_lw = last_write_confirmed(false, rev, 4);
+    let w2_lw = vis_confirmed("w2", true, rev, 4);
+    let w1_lw = vis_confirmed("w1", false, rev, 4);
     let feedback = refused_feedback(&effect.id, "w2", effect.issued_revision);
     let reply = accepted(
         &mut engine,
-        &report(
-            4,
-            vec![
-                with_lw(sfact("w1", "out-a", 0), w1_lw),
-                with_lw(sfact("w2", "out-a", 100), w2_lw),
-            ],
-            vec![],
-            None,
-            None,
-            vec![feedback],
-            "",
+        &with_visibility(
+            report(
+                4,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                None,
+                None,
+                vec![feedback],
+                "",
+            ),
+            vec![w1_lw, w2_lw],
         ),
     );
     assert_eq!(reply.switch_settled.len(), 1);
@@ -4944,8 +4948,9 @@ fn switch_hide_refused_terminates_with_failed_without_readiness() {
         .clone()
         .expect("retained focus request");
     let rev = granted.state_revision;
-    let w2_lw = last_write_confirmed(true, rev, 4);
-    let w1_lw = last_write_with(
+    let w2_lw = vis_confirmed("w2", true, rev, 4);
+    let w1_lw = vis_with(
+        "w1",
         false,
         rev,
         VisibilitySetter::Refused,
@@ -4955,17 +4960,17 @@ fn switch_hide_refused_terminates_with_failed_without_readiness() {
     let feedback = notcalled_feedback(&effect.id, "w2", effect.issued_revision);
     let reply = accepted(
         &mut engine,
-        &report(
-            4,
-            vec![
-                with_lw(sfact("w1", "out-a", 0), w1_lw),
-                with_lw(sfact("w2", "out-a", 100), w2_lw),
-            ],
-            vec![],
-            None,
-            None,
-            vec![feedback],
-            "",
+        &with_visibility(
+            report(
+                4,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                None,
+                None,
+                vec![feedback],
+                "",
+            ),
+            vec![w1_lw, w2_lw],
         ),
     );
     assert_eq!(
@@ -4996,28 +5001,29 @@ fn switch_blocked_show_and_nocall_focus_terminates() {
         .clone()
         .expect("retained focus request");
     let rev = granted.state_revision;
-    let w2_lw = last_write_with(
+    let w2_lw = vis_with(
+        "w2",
         true,
         rev,
         VisibilitySetter::NotCalled,
         VisibilityReason::ScopeHeld,
         Some(confirm_sample(4, false)),
     );
-    let w1_lw = last_write_confirmed(false, rev, 4);
+    let w1_lw = vis_confirmed("w1", false, rev, 4);
     let feedback = notcalled_feedback(&effect.id, "w2", effect.issued_revision);
     let reply = accepted(
         &mut engine,
-        &report(
-            4,
-            vec![
-                with_lw(sfact("w1", "out-a", 0), w1_lw),
-                with_lw(sfact("w2", "out-a", 100), w2_lw),
-            ],
-            vec![],
-            None,
-            None,
-            vec![feedback],
-            "",
+        &with_visibility(
+            report(
+                4,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                None,
+                None,
+                vec![feedback],
+                "",
+            ),
+            vec![w1_lw, w2_lw],
         ),
     );
     assert_eq!(reply.switch_settled.len(), 1);
@@ -5036,7 +5042,7 @@ fn switch_missing_or_uncorrelated_evidence_stays_pending() {
         .expect("retained focus request");
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
-    let w2_lw = last_write_confirmed(true, rev, 4);
+    let w2_lw = vis_confirmed("w2", true, rev, 4);
     let feedback = feedback_row(
         &effect.id,
         "w2",
@@ -5047,17 +5053,17 @@ fn switch_missing_or_uncorrelated_evidence_stays_pending() {
     );
     let reply = accepted(
         &mut engine,
-        &report(
-            4,
-            vec![
-                sfact("w1", "out-a", 0),
-                with_lw(sfact("w2", "out-a", 100), w2_lw),
-            ],
-            vec![],
-            None,
-            None,
-            vec![feedback],
-            "",
+        &with_visibility(
+            report(
+                4,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                None,
+                None,
+                vec![feedback],
+                "",
+            ),
+            vec![w2_lw],
         ),
     );
     assert!(
@@ -5079,8 +5085,8 @@ fn switch_missing_or_uncorrelated_evidence_stays_pending() {
         .expect("retained focus request");
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
-    let bad_rev = last_write_confirmed(true, rev + 1, 4);
-    let w1_lw = last_write_confirmed(false, rev, 4);
+    let bad_rev = vis_confirmed("w2", true, rev + 1, 4);
+    let w1_lw = vis_confirmed("w1", false, rev, 4);
     let feedback = feedback_row(
         &effect.id,
         "w2",
@@ -5091,17 +5097,17 @@ fn switch_missing_or_uncorrelated_evidence_stays_pending() {
     );
     let reply = accepted(
         &mut engine,
-        &report(
-            4,
-            vec![
-                with_lw(sfact("w1", "out-a", 0), w1_lw),
-                with_lw(sfact("w2", "out-a", 100), bad_rev),
-            ],
-            vec![],
-            None,
-            None,
-            vec![feedback],
-            "",
+        &with_visibility(
+            report(
+                4,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                None,
+                None,
+                vec![feedback],
+                "",
+            ),
+            vec![w1_lw, bad_rev],
         ),
     );
     assert!(
@@ -5120,21 +5126,21 @@ fn switch_first_evidence_immutable_and_future_stays_failed() {
         .expect("retained focus request");
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
-    let future_w2 = last_write_confirmed(true, rev, 5);
-    let w1_lw = last_write_confirmed(false, rev, 4);
+    let future_w2 = vis_confirmed("w2", true, rev, 5);
+    let w1_lw = vis_confirmed("w1", false, rev, 4);
     let reply = accepted(
         &mut engine,
-        &report(
-            4,
-            vec![
-                with_lw(sfact("w1", "out-a", 0), w1_lw),
-                with_lw(sfact("w2", "out-a", 100), future_w2),
-            ],
-            vec![],
-            None,
-            None,
-            vec![],
-            "",
+        &with_visibility(
+            report(
+                4,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                None,
+                None,
+                vec![],
+                "",
+            ),
+            vec![w1_lw, future_w2],
         ),
     );
     assert!(reply.switch_settled.is_empty(), "no feedback yet: pending");
@@ -5182,7 +5188,7 @@ fn switch_held_raw_evidence_correlates_without_healthy_visibility() {
         .expect("retained focus request");
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
-    let w1_lw = last_write_confirmed(false, rev, 4);
+    let w1_lw = vis_confirmed("w1", false, rev, 4);
     let feedback = feedback_row(
         &effect.id,
         "w2",
@@ -5191,27 +5197,26 @@ fn switch_held_raw_evidence_correlates_without_healthy_visibility() {
         Some("w2"),
         vec![bracket("w2", "out-a", 4, frame)],
     );
-    let mut held_report = report(
-        4,
-        vec![with_lw(
-            sfact("w2", "out-a", 100),
-            last_write_confirmed(true, rev, 4),
-        )],
-        vec![],
-        None,
-        None,
-        vec![feedback],
-        "",
+    let mut held_report = with_visibility(
+        report(
+            4,
+            vec![sfact("w2", "out-a", 100)],
+            vec![],
+            None,
+            None,
+            vec![feedback],
+            "",
+        ),
+        vec![vis_confirmed("w2", true, rev, 4), w1_lw],
     );
-    // w1 (departing hide) rides held with its lossless raw lastWrite; w2
-    // (selected show) stays live so arrival still proves.
-    let w1_fact = with_lw(sfact("w1", "out-a", 0), w1_lw);
+    // w1 (departing hide) rides held with its lossless raw visibility attempt;
+    // w2 (selected show) stays live so arrival still proves.
+    let w1_fact = sfact("w1", "out-a", 0);
     held_report.held_windows = vec![HeldWindowRow {
         window: WindowId("w1".to_owned()),
         ordinal: 1,
         output: Some(OutputId("out-a".to_owned())),
         has_native_workspace: w1_fact.native_workspace.as_deref().is_some(),
-        last_write: w1_fact.last_write,
         diagnostic: None,
         kind: RowDiagnosticKind::InvalidFact,
     }];
@@ -5426,16 +5431,15 @@ fn switch_shared_fanout_freezes_all_outputs_and_retires_flight() {
         .find(|r| r.lifetime.0 == effect.target.0)
         .and_then(|r| r.effective_frame);
     let mut facts = Vec::new();
+    let mut vis = Vec::new();
     for (window, out, x, shown) in [
         ("w1", "out-a", 0, false),
         ("w2", "out-a", 100, true),
         ("w3", "out-b", 800, false),
         ("w4", "out-b", 900, false),
     ] {
-        facts.push(with_lw(
-            sfact(window, out, x),
-            last_write_confirmed(shown, rev, 4),
-        ));
+        facts.push(sfact(window, out, x));
+        vis.push(vis_confirmed(window, shown, rev, 4));
     }
     let feedback = feedback_row(
         &effect.id,
@@ -5447,15 +5451,18 @@ fn switch_shared_fanout_freezes_all_outputs_and_retires_flight() {
     );
     let reply = accepted(
         &mut engine,
-        &report_multi(
-            4,
-            facts,
-            vec![],
-            None,
-            None,
-            vec![feedback],
-            "",
-            screens.clone(),
+        &with_visibility(
+            report_multi(
+                4,
+                facts,
+                vec![],
+                None,
+                None,
+                vec![feedback],
+                "",
+                screens.clone(),
+            ),
+            vis,
         ),
     );
     assert_eq!(reply.switch_settled.len(), 1, "shared terminal: {reply:?}");
@@ -5626,30 +5633,30 @@ fn switch_rejected_command_keeps_presettled_terminal_and_consumes_seq() {
     // The switch evidence is spent before the command-only rollback
     // boundary, so a refused command restores a pre-command image that
     // already carries the terminal: the event publishes with the refusal.
-    let refused_settle = report(
-        4,
+    let refused_settle = with_visibility(
+        report(
+            4,
+            vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+            vec![],
+            Some(4),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: crate::directional::WorkspaceId("ws-nope".to_owned()),
+            }),
+            vec![feedback_row(
+                &effect.id,
+                "w2",
+                effect.issued_revision,
+                true,
+                Some("w2"),
+                vec![bracket("w2", "out-a", 4, frame)],
+            )],
+            "",
+        ),
         vec![
-            with_lw(sfact("w1", "out-a", 0), last_write_confirmed(false, rev, 4)),
-            with_lw(
-                sfact("w2", "out-a", 100),
-                last_write_confirmed(true, rev, 4),
-            ),
+            vis_confirmed("w1", false, rev, 4),
+            vis_confirmed("w2", true, rev, 4),
         ],
-        vec![],
-        Some(4),
-        Some(WorldCommand::SelectWorkspace {
-            output: OutputId("out-a".to_owned()),
-            workspace: crate::directional::WorkspaceId("ws-nope".to_owned()),
-        }),
-        vec![feedback_row(
-            &effect.id,
-            "w2",
-            effect.issued_revision,
-            true,
-            Some("w2"),
-            vec![bracket("w2", "out-a", 4, frame)],
-        )],
-        "",
     );
     let (reply, settlements) = accepted_with_settlements(&mut engine, &refused_settle);
     assert_eq!(settlements.len(), 1);
@@ -5747,27 +5754,27 @@ fn switch_incomplete_inventory_settles_spent_evidence_without_renewal() {
         .expect("retained focus request");
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
-    let mut gapped = report(
-        4,
+    let mut gapped = with_visibility(
+        report(
+            4,
+            vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+            vec![],
+            None,
+            None,
+            vec![feedback_row(
+                &effect.id,
+                "w2",
+                effect.issued_revision,
+                true,
+                Some("w2"),
+                vec![bracket("w2", "out-a", 4, frame)],
+            )],
+            "",
+        ),
         vec![
-            with_lw(sfact("w1", "out-a", 0), last_write_confirmed(false, rev, 4)),
-            with_lw(
-                sfact("w2", "out-a", 100),
-                last_write_confirmed(true, rev, 4),
-            ),
+            vis_confirmed("w1", false, rev, 4),
+            vis_confirmed("w2", true, rev, 4),
         ],
-        vec![],
-        None,
-        None,
-        vec![feedback_row(
-            &effect.id,
-            "w2",
-            effect.issued_revision,
-            true,
-            Some("w2"),
-            vec![bracket("w2", "out-a", 4, frame)],
-        )],
-        "",
     );
     gapped.inventory_complete = false;
     let reply = accepted(&mut engine, &gapped);
@@ -5935,49 +5942,45 @@ fn switch_two_output_bindings_settle_two_events_in_one_report() {
         (2, 4),
         "two bindings with four frozen members"
     );
-    let settle = report_multi(
-        6,
-        vec![
-            with_lw(
+    let settle = with_visibility(
+        report_multi(
+            6,
+            vec![
                 sfact("w1", "out-a", 0),
-                last_write_confirmed(false, rev_a, 6),
-            ),
-            with_lw(
                 sfact("w2", "out-a", 100),
-                last_write_confirmed(true, rev_a, 6),
-            ),
-            with_lw(
                 sfact("w3", "out-b", 800),
-                last_write_confirmed(false, rev_b, 6),
-            ),
-            with_lw(
                 sfact("w4", "out-b", 900),
-                last_write_confirmed(true, rev_b, 6),
-            ),
-        ],
-        vec![],
-        None,
-        None,
+            ],
+            vec![],
+            None,
+            None,
+            vec![
+                feedback_row(
+                    &effect_a.id,
+                    "w2",
+                    effect_a.issued_revision,
+                    true,
+                    Some("w2"),
+                    vec![bracket("w2", "out-a", 6, frame_a)],
+                ),
+                feedback_row(
+                    &effect_b.id,
+                    "w4",
+                    effect_b.issued_revision,
+                    true,
+                    Some("w4"),
+                    vec![bracket("w4", "out-b", 6, frame_b)],
+                ),
+            ],
+            "",
+            screens.clone(),
+        ),
         vec![
-            feedback_row(
-                &effect_a.id,
-                "w2",
-                effect_a.issued_revision,
-                true,
-                Some("w2"),
-                vec![bracket("w2", "out-a", 6, frame_a)],
-            ),
-            feedback_row(
-                &effect_b.id,
-                "w4",
-                effect_b.issued_revision,
-                true,
-                Some("w4"),
-                vec![bracket("w4", "out-b", 6, frame_b)],
-            ),
+            vis_confirmed("w1", false, rev_a, 6),
+            vis_confirmed("w2", true, rev_a, 6),
+            vis_confirmed("w3", false, rev_b, 6),
+            vis_confirmed("w4", true, rev_b, 6),
         ],
-        "",
-        screens.clone(),
     );
     let reply = accepted(&mut engine, &settle);
     assert_eq!(
@@ -6044,27 +6047,27 @@ fn switch_duplicate_replays_identical_outcome_then_next_report_retains() {
         .expect("retained focus request");
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
-    let settle = report(
-        4,
+    let settle = with_visibility(
+        report(
+            4,
+            vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+            vec![],
+            None,
+            None,
+            vec![feedback_row(
+                &effect.id,
+                "w2",
+                effect.issued_revision,
+                true,
+                Some("w2"),
+                vec![bracket("w2", "out-a", 4, frame)],
+            )],
+            "",
+        ),
         vec![
-            with_lw(sfact("w1", "out-a", 0), last_write_confirmed(false, rev, 4)),
-            with_lw(
-                sfact("w2", "out-a", 100),
-                last_write_confirmed(true, rev, 4),
-            ),
+            vis_confirmed("w1", false, rev, 4),
+            vis_confirmed("w2", true, rev, 4),
         ],
-        vec![],
-        None,
-        None,
-        vec![feedback_row(
-            &effect.id,
-            "w2",
-            effect.issued_revision,
-            true,
-            Some("w2"),
-            vec![bracket("w2", "out-a", 4, frame)],
-        )],
-        "",
     );
     let reply = accepted(&mut engine, &settle);
     assert_eq!(reply.switch_settled.len(), 1);
@@ -6103,7 +6106,7 @@ fn switch_conflicting_held_row_correlates_without_healthy_visibility() {
         .expect("retained focus request");
     let rev = granted.state_revision;
     let frame = row(&granted, "w2").effective_frame;
-    let w1_lw = last_write_confirmed(false, rev, 4);
+    let w1_lw = vis_confirmed("w1", false, rev, 4);
     let feedback = feedback_row(
         &effect.id,
         "w2",
@@ -6112,27 +6115,26 @@ fn switch_conflicting_held_row_correlates_without_healthy_visibility() {
         Some("w2"),
         vec![bracket("w2", "out-a", 4, frame)],
     );
-    let mut held_report = report(
-        4,
-        vec![with_lw(
-            sfact("w2", "out-a", 100),
-            last_write_confirmed(true, rev, 4),
-        )],
-        vec![],
-        None,
-        None,
-        vec![feedback],
-        "",
+    let mut held_report = with_visibility(
+        report(
+            4,
+            vec![sfact("w2", "out-a", 100)],
+            vec![],
+            None,
+            None,
+            vec![feedback],
+            "",
+        ),
+        vec![vis_confirmed("w2", true, rev, 4), w1_lw],
     );
     // Same lossless raw as the invalid-fact path, but graded conflicting:
     // the kind never gates the decoded post proof.
-    let w1_fact = with_lw(sfact("w1", "out-a", 0), w1_lw);
+    let w1_fact = sfact("w1", "out-a", 0);
     held_report.held_windows = vec![HeldWindowRow {
         window: WindowId("w1".to_owned()),
         ordinal: 1,
         output: Some(OutputId("out-a".to_owned())),
         has_native_workspace: w1_fact.native_workspace.as_deref().is_some(),
-        last_write: w1_fact.last_write,
         diagnostic: None,
         kind: RowDiagnosticKind::ConflictingFact,
     }];
@@ -6176,7 +6178,8 @@ fn switch_nocall_hide_terminates_without_retry_and_preserves_state() {
     // Explicit no-call hide: a correlated row with no post can never
     // confirm, so the departing hide fails terminally while the show
     // confirms; unproven focus (no arrival) keeps the outcome failed.
-    let w1_lw = last_write_with(
+    let w1_lw = vis_with(
+        "w1",
         false,
         rev,
         VisibilitySetter::NotCalled,
@@ -6185,20 +6188,17 @@ fn switch_nocall_hide_terminates_without_retry_and_preserves_state() {
     );
     let reply = accepted(
         &mut engine,
-        &report(
-            4,
-            vec![
-                with_lw(sfact("w1", "out-a", 0), w1_lw),
-                with_lw(
-                    sfact("w2", "out-a", 100),
-                    last_write_confirmed(true, rev, 4),
-                ),
-            ],
-            vec![],
-            None,
-            None,
-            vec![notcalled_feedback(&effect.id, "w2", effect.issued_revision)],
-            "",
+        &with_visibility(
+            report(
+                4,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                None,
+                None,
+                vec![notcalled_feedback(&effect.id, "w2", effect.issued_revision)],
+                "",
+            ),
+            vec![w1_lw, vis_confirmed("w2", true, rev, 4)],
         ),
     );
     assert_eq!(
@@ -6272,7 +6272,8 @@ fn switch_threw_hide_with_mismatched_post_terminates() {
     // Throwing hide with a mismatched post (visible where hidden was
     // granted) is a correlated failure; accepted focus feedback that
     // names the wrong foreground stays unproven without arrival.
-    let w1_lw = last_write_with(
+    let w1_lw = vis_with(
+        "w1",
         false,
         rev,
         VisibilitySetter::Threw,
@@ -6281,27 +6282,24 @@ fn switch_threw_hide_with_mismatched_post_terminates() {
     );
     let reply = accepted(
         &mut engine,
-        &report(
-            4,
-            vec![
-                with_lw(sfact("w1", "out-a", 0), w1_lw),
-                with_lw(
-                    sfact("w2", "out-a", 100),
-                    last_write_confirmed(true, rev, 4),
-                ),
-            ],
-            vec![],
-            None,
-            None,
-            vec![feedback_row(
-                &effect.id,
-                "w2",
-                effect.issued_revision,
-                false,
-                Some("w1"),
+        &with_visibility(
+            report(
+                4,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
                 vec![],
-            )],
-            "",
+                None,
+                None,
+                vec![feedback_row(
+                    &effect.id,
+                    "w2",
+                    effect.issued_revision,
+                    false,
+                    Some("w1"),
+                    vec![],
+                )],
+                "",
+            ),
+            vec![w1_lw, vis_confirmed("w2", true, rev, 4)],
         ),
     );
     assert_eq!(
@@ -6380,8 +6378,8 @@ fn switch_partial_hide_failure_with_proven_arrival_and_focus() {
     // w1 hide refuses with proper readable unchanged pre/post evidence
     // (visible before and after, never a ShowBlocked token); w3 hide and
     // w2 show confirm; full fresh arrival plus w2 foreground proof.
-    let w1_refused = LastWrite {
-        property: LastWriteProperty::Visibility,
+    let w1_refused = VisibilityAttempt {
+        window: WindowId("w1".to_owned()),
         target: false,
         revision: rev,
         path: LastWritePath::Staged,
@@ -6392,31 +6390,32 @@ fn switch_partial_hide_failure_with_proven_arrival_and_focus() {
     };
     let reply = accepted(
         &mut engine,
-        &report(
-            4,
-            vec![
-                with_lw(sfact("w1", "out-a", 0), w1_refused),
-                with_lw(
+        &with_visibility(
+            report(
+                4,
+                vec![
+                    sfact("w1", "out-a", 0),
                     sfact("w2", "out-a", 100),
-                    last_write_confirmed(true, rev, 4),
-                ),
-                with_lw(
                     sfact("w3", "out-a", 200),
-                    last_write_confirmed(false, rev, 4),
-                ),
+                ],
+                vec![],
+                None,
+                None,
+                vec![feedback_row(
+                    &effect.id,
+                    "w2",
+                    effect.issued_revision,
+                    true,
+                    Some("w2"),
+                    vec![bracket("w2", "out-a", 4, frame)],
+                )],
+                "",
+            ),
+            vec![
+                w1_refused,
+                vis_confirmed("w2", true, rev, 4),
+                vis_confirmed("w3", false, rev, 4),
             ],
-            vec![],
-            None,
-            None,
-            vec![feedback_row(
-                &effect.id,
-                "w2",
-                effect.issued_revision,
-                true,
-                Some("w2"),
-                vec![bracket("w2", "out-a", 4, frame)],
-            )],
-            "",
         ),
     );
     assert_eq!(
@@ -6571,20 +6570,17 @@ fn focusless_occupied_to_empty_freezes_hide_and_completes_unproven() {
     // First-correlated hide proof settles the terminal with unproven focus.
     let settled = accepted(
         &mut engine,
-        &report(
-            6,
-            vec![
-                sfact("w1", "out-a", 0),
-                with_lw(
-                    sfact("w2", "out-a", 100),
-                    last_write_confirmed(false, rev, 6),
-                ),
-            ],
-            vec![],
-            None,
-            None,
-            vec![],
-            "",
+        &with_visibility(
+            report(
+                6,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                None,
+                None,
+                vec![],
+                "",
+            ),
+            vec![vis_confirmed("w2", false, rev, 6)],
         ),
     );
     assert_eq!(settled.switch_settled.len(), 1, "one terminal: {settled:?}");
@@ -6656,7 +6652,8 @@ fn focusless_occupied_to_empty_hide_refusal_fails() {
     assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
     assert!(reply.switch_settled.is_empty(), "hide needs proof: pending");
     let rev = reply.state_revision;
-    let refused = last_write_with(
+    let refused = vis_with(
+        "w2",
         false,
         rev,
         VisibilitySetter::Refused,
@@ -6665,17 +6662,17 @@ fn focusless_occupied_to_empty_hide_refusal_fails() {
     );
     let settled = accepted(
         &mut engine,
-        &report(
-            5,
-            vec![
-                sfact("w1", "out-a", 0),
-                with_lw(sfact("w2", "out-a", 100), refused),
-            ],
-            vec![],
-            None,
-            None,
-            vec![],
-            "",
+        &with_visibility(
+            report(
+                5,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                None,
+                None,
+                vec![],
+                "",
+            ),
+            vec![refused],
         ),
     );
     assert_eq!(
@@ -8321,30 +8318,27 @@ fn q1_switch_predecessor_remains_through_successor_pending_and_replaces_at_termi
     let s1_frame = row(&s1_grant, "w2").effective_frame;
     let s1_settled = accepted(
         &mut engine,
-        &report(
-            4,
+        &with_visibility(
+            report(
+                4,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                None,
+                None,
+                vec![feedback_row(
+                    &s1_effect.id,
+                    "w2",
+                    s1_effect.issued_revision,
+                    true,
+                    Some("w2"),
+                    vec![bracket("w2", "out-a", 4, s1_frame)],
+                )],
+                "",
+            ),
             vec![
-                with_lw(
-                    sfact("w1", "out-a", 0),
-                    last_write_confirmed(false, s1_rev, 4),
-                ),
-                with_lw(
-                    sfact("w2", "out-a", 100),
-                    last_write_confirmed(true, s1_rev, 4),
-                ),
+                vis_confirmed("w1", false, s1_rev, 4),
+                vis_confirmed("w2", true, s1_rev, 4),
             ],
-            vec![],
-            None,
-            None,
-            vec![feedback_row(
-                &s1_effect.id,
-                "w2",
-                s1_effect.issued_revision,
-                true,
-                Some("w2"),
-                vec![bracket("w2", "out-a", 4, s1_frame)],
-            )],
-            "",
         ),
     );
     assert_eq!(s1_settled.switch_settled.len(), 1);
@@ -8453,27 +8447,24 @@ fn q1_switch_predecessor_remains_through_successor_pending_and_replaces_at_termi
     // Settle S2 (op-5) with arrival + refused focus -> replaces out-a with op-5 CompletedWithFailures/Refused.
     let s2_settled = accepted(
         &mut engine,
-        &report(
-            8,
+        &with_visibility(
+            report(
+                8,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                None,
+                None,
+                vec![refused_feedback(
+                    &s2_effect.id,
+                    "w1",
+                    s2_effect.issued_revision,
+                )],
+                "",
+            ),
             vec![
-                with_lw(
-                    sfact("w1", "out-a", 0),
-                    last_write_confirmed(true, s2_rev, 8),
-                ),
-                with_lw(
-                    sfact("w2", "out-a", 100),
-                    last_write_confirmed(false, s2_rev, 8),
-                ),
+                vis_confirmed("w1", true, s2_rev, 8),
+                vis_confirmed("w2", false, s2_rev, 8),
             ],
-            vec![],
-            None,
-            None,
-            vec![refused_feedback(
-                &s2_effect.id,
-                "w1",
-                s2_effect.issued_revision,
-            )],
-            "",
         ),
     );
     assert!(
@@ -8588,49 +8579,45 @@ fn q2_switch_output_retention_and_departure_with_trace_and_reuse() {
 
     let both_settled = accepted(
         &mut engine,
-        &report_multi(
-            6,
-            vec![
-                with_lw(
+        &with_visibility(
+            report_multi(
+                6,
+                vec![
                     sfact("w1", "out-a", 0),
-                    last_write_confirmed(false, rev_a, 6),
-                ),
-                with_lw(
                     sfact("w2", "out-a", 100),
-                    last_write_confirmed(true, rev_a, 6),
-                ),
-                with_lw(
                     sfact("w3", "out-b", 800),
-                    last_write_confirmed(false, rev_b, 6),
-                ),
-                with_lw(
                     sfact("w4", "out-b", 900),
-                    last_write_confirmed(true, rev_b, 6),
-                ),
-            ],
-            vec![],
-            None,
-            None,
+                ],
+                vec![],
+                None,
+                None,
+                vec![
+                    feedback_row(
+                        &eff_a.id,
+                        "w2",
+                        eff_a.issued_revision,
+                        true,
+                        Some("w2"),
+                        vec![bracket("w2", "out-a", 6, frame_a)],
+                    ),
+                    feedback_row(
+                        &eff_b.id,
+                        "w4",
+                        eff_b.issued_revision,
+                        true,
+                        Some("w4"),
+                        vec![bracket("w4", "out-b", 6, frame_b)],
+                    ),
+                ],
+                "",
+                screens.clone(),
+            ),
             vec![
-                feedback_row(
-                    &eff_a.id,
-                    "w2",
-                    eff_a.issued_revision,
-                    true,
-                    Some("w2"),
-                    vec![bracket("w2", "out-a", 6, frame_a)],
-                ),
-                feedback_row(
-                    &eff_b.id,
-                    "w4",
-                    eff_b.issued_revision,
-                    true,
-                    Some("w4"),
-                    vec![bracket("w4", "out-b", 6, frame_b)],
-                ),
+                vis_confirmed("w1", false, rev_a, 6),
+                vis_confirmed("w2", true, rev_a, 6),
+                vis_confirmed("w3", false, rev_b, 6),
+                vis_confirmed("w4", true, rev_b, 6),
             ],
-            "",
-            screens.clone(),
         ),
     );
     assert_eq!(both_settled.switch_settled.len(), 2);
@@ -9148,6 +9135,7 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
             creation_attempts: Vec::new(),
             held_attempts: Vec::new(),
             state_attempts: Vec::new(),
+            visibility_attempts: Vec::new(),
             focus_feedback: Vec::new(),
             presentation: crate::world_report::PresentationRowV4::Valid(
                 crate::world_report::PresentationIngressV4::default(),
@@ -11418,20 +11406,20 @@ fn migration_focused_producer_binds_both_outputs_and_settles_terminal() {
     };
     // Target-only verdicts plus the first feedback still pend: the refill
     // obligation is missing.
-    let w2_lw = last_write_confirmed(true, rev, 8);
+    let w2_lw = vis_confirmed("w2", true, rev, 8);
     let partial = accepted(
         &mut engine,
-        &mreport(
-            8,
-            vec![
-                with_lw(mfact("w2", "out-b", 800), w2_lw),
-                mfact("w0", "out-a", 0),
-            ],
-            vec![],
-            None,
-            None,
-            vec![ready(8)],
-            "w2",
+        &with_visibility(
+            mreport(
+                8,
+                vec![mfact("w2", "out-b", 800), mfact("w0", "out-a", 0)],
+                vec![],
+                None,
+                None,
+                vec![ready(8)],
+                "w2",
+            ),
+            vec![w2_lw],
         ),
     );
     assert!(
@@ -11450,21 +11438,21 @@ fn migration_focused_producer_binds_both_outputs_and_settles_terminal() {
     assert!(latched.arrival_ready, "real frame proves arrival");
     // Full verdicts complete with ONE terminal event; the repeated
     // feedback never upgrades the first latch.
-    let w0_lw = last_write_confirmed(true, rev, 9);
-    let w2_lw2 = last_write_confirmed(true, rev, 9);
+    let w0_lw = vis_confirmed("w0", true, rev, 9);
+    let w2_lw2 = vis_confirmed("w2", true, rev, 9);
     let done = accepted(
         &mut engine,
-        &mreport(
-            9,
-            vec![
-                with_lw(mfact("w2", "out-b", 800), w2_lw2),
-                with_lw(mfact("w0", "out-a", 0), w0_lw),
-            ],
-            vec![],
-            None,
-            None,
-            vec![ready(8)],
-            "w2",
+        &with_visibility(
+            mreport(
+                9,
+                vec![mfact("w2", "out-b", 800), mfact("w0", "out-a", 0)],
+                vec![],
+                None,
+                None,
+                vec![ready(8)],
+                "w2",
+            ),
+            vec![w2_lw2, w0_lw],
         ),
     );
     assert_eq!(done.switch_settled.len(), 1, "one terminal: {done:?}");
@@ -11762,19 +11750,19 @@ fn migration_focusless_variants_bind_without_effect() {
     );
     // Full verdicts complete focusless with Unproven and no feedback gate.
     let rev = granted.state_revision;
-    let lws: Vec<WindowFact> = binding
+    let facts: Vec<WindowFact> = binding
         .switch_members
         .iter()
-        .map(|m| {
-            with_lw(
-                mfact(&m.window.0, &m.home.output.0, 0),
-                last_write_confirmed(m.shown, rev, 7),
-            )
-        })
+        .map(|m| mfact(&m.window.0, &m.home.output.0, 0))
+        .collect();
+    let vis: Vec<VisibilityAttempt> = binding
+        .switch_members
+        .iter()
+        .map(|m| vis_confirmed(&m.window.0, m.shown, rev, 7))
         .collect();
     let done = accepted(
         &mut engine,
-        &mreport(7, lws, vec![], None, None, vec![], ""),
+        &with_visibility(mreport(7, facts, vec![], None, None, vec![], ""), vis),
     );
     assert_eq!(done.switch_settled.len(), 1, "one terminal: {done:?}");
     assert_eq!(done.switch_settled[0].focus, SwitchFocus::Unproven);
@@ -12039,8 +12027,8 @@ fn migration_source_output_bracket_never_proves_arrival() {
     );
     // Full visibility verdicts but the mover bracket names the source
     // output: the frozen home is the migrated target id on out-b.
-    let w2_lw = last_write_confirmed(true, rev, 8);
-    let w0_lw = last_write_confirmed(true, rev, 8);
+    let w2_lw = vis_confirmed("w2", true, rev, 8);
+    let w0_lw = vis_confirmed("w0", true, rev, 8);
     let wrong = feedback_row(
         &effect.id,
         "w2",
@@ -12054,17 +12042,17 @@ fn migration_source_output_bracket_never_proves_arrival() {
     );
     let held = accepted(
         &mut engine,
-        &mreport(
-            8,
-            vec![
-                with_lw(mfact("w2", "out-b", 800), w2_lw),
-                with_lw(mfact("w0", "out-a", 0), w0_lw),
-            ],
-            vec![],
-            None,
-            None,
-            vec![wrong],
-            "w2",
+        &with_visibility(
+            mreport(
+                8,
+                vec![mfact("w2", "out-b", 800), mfact("w0", "out-a", 0)],
+                vec![],
+                None,
+                None,
+                vec![wrong],
+                "w2",
+            ),
+            vec![w2_lw, w0_lw],
         ),
     );
     assert_eq!(
@@ -12499,20 +12487,20 @@ fn selection_eligible_ignores_logical_echo_then_completes_on_verdicts() {
     );
     let done = accepted(
         &mut engine,
-        &report(
-            4,
+        &with_visibility(
+            report(
+                4,
+                vec![sfact("w1", "out-a", 0), sfact("w2", "out-a", 100)],
+                vec![],
+                None,
+                None,
+                vec![feedback],
+                "",
+            ),
             vec![
-                with_lw(sfact("w1", "out-a", 0), last_write_confirmed(false, rev, 4)),
-                with_lw(
-                    sfact("w2", "out-a", 100),
-                    last_write_confirmed(true, rev, 4),
-                ),
+                vis_confirmed("w1", false, rev, 4),
+                vis_confirmed("w2", true, rev, 4),
             ],
-            vec![],
-            None,
-            None,
-            vec![feedback],
-            "",
         ),
     );
     assert_eq!(done.switch_settled.len(), 1, "one terminal: {done:?}");
@@ -12645,24 +12633,21 @@ fn policy_displaced_view_binds_focusless_under_own_parent_and_completes() {
     let rev = binding.rev;
     let done = accepted(
         &mut engine,
-        &report_multi(
-            3,
+        &with_visibility(
+            report_multi(
+                3,
+                vec![sfact("w-a", "out-a", 0), sfact("w-b", "out-a", 800)],
+                vec![],
+                None,
+                None,
+                vec![],
+                "",
+                vec![screen("out-a", 0)],
+            ),
             vec![
-                with_lw(
-                    sfact("w-a", "out-a", 0),
-                    last_write_confirmed(false, rev, 3),
-                ),
-                with_lw(
-                    sfact("w-b", "out-a", 800),
-                    last_write_confirmed(true, rev, 3),
-                ),
+                vis_confirmed("w-a", false, rev, 3),
+                vis_confirmed("w-b", true, rev, 3),
             ],
-            vec![],
-            None,
-            None,
-            vec![],
-            "",
-            vec![screen("out-a", 0)],
         ),
     );
     assert_eq!(done.switch_settled.len(), 1, "one terminal: {done:?}");

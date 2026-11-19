@@ -317,13 +317,40 @@ impl WorldTransaction<'_> {
                 held_scopes.insert(key);
             }
         }
-        let held_window_scopes: Vec<DomainKey> = self
+        let mut held_window_scopes: Vec<DomainKey> = self
             .world
             .staged
             .held_windows
             .iter()
             .filter_map(|held| self.core_homing(&held.window))
             .collect();
+        let mut held_window_set: Option<BTreeSet<&WindowId>> = None;
+        for held in &self.world.staged.held_attempts {
+            if held.lane == crate::world_report::AttemptLaneV4::Visibility
+                && let Some(win_str) = held.identity.first()
+            {
+                let win = WindowId(win_str.clone());
+                let present = self.world.staged.facts.contains_key(&win)
+                    || (!self.world.staged.held_windows.is_empty()
+                        && held_window_set
+                            .get_or_insert_with(|| {
+                                self.world
+                                    .staged
+                                    .held_windows
+                                    .iter()
+                                    .map(|row| &row.window)
+                                    .collect()
+                            })
+                            .contains(&win));
+                if present
+                    && let Some(key) = self
+                        .core_homing(&win)
+                        .or_else(|| self.world.staged.homing.get(&win).cloned())
+                {
+                    held_window_scopes.push(key);
+                }
+            }
+        }
         for key in &held_window_scopes {
             self.world
                 .hold_reasons

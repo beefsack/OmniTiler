@@ -7,7 +7,7 @@ use tiler_core::geometry::Rect;
 use tiler_core::gesture::GestureIngress;
 use tiler_core::session::{DomainKey, DragHoverPrior};
 use tiler_core::world_report::{
-    ArrivalBracket, ArrivalLocation, FocusFeedback, FrameWitness, IntentRecord, LastWrite,
+    ArrivalBracket, ArrivalLocation, FocusFeedback, FrameWitness, IntentRecord,
     PresentationIngressV4, PresentationRowV4, RenderTarget, RendererInput, SendSource,
     VisibilitySample, WorkspaceRef, WorldCommand,
 };
@@ -142,7 +142,7 @@ pub(crate) fn focus_feedback_estimate(row: &FocusFeedback) -> usize {
         + u64_len(row.attempt_ms)
 }
 
-fn visibility_sample_estimate(sample: &Option<VisibilitySample>) -> usize {
+pub(crate) fn visibility_sample_estimate(sample: &Option<VisibilitySample>) -> usize {
     match sample {
         None => 4,
         Some(sample) => {
@@ -153,22 +153,6 @@ fn visibility_sample_estimate(sample: &Option<VisibilitySample>) -> usize {
                 + sample.visibility.suppression_owned.map_or(4, bool_len)
                 + sample.minimized.map_or(4, bool_len)
                 + sample.host_hidden.map_or(4, bool_len)
-        }
-    }
-}
-
-pub(crate) fn last_write_estimate(last: &Option<LastWrite>) -> usize {
-    match last {
-        None => 4,
-        Some(last) => {
-            80 + json_string_len(last.property.as_str())
-                + bool_len(last.target)
-                + u64_len(last.revision)
-                + json_string_len(last.path.as_str())
-                + json_string_len(last.setter.as_str())
-                + json_string_len(last.reason.as_str())
-                + visibility_sample_estimate(&last.pre)
-                + visibility_sample_estimate(&last.post)
         }
     }
 }
