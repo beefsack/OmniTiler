@@ -1465,7 +1465,7 @@ acceptance or adopt the separate close-focus amendment.
   holds only that scope. Native state malformed or duplicate rows refuse
   rather than holding.
 - Decode by fixed kind/section order: frame, membership, view, clear,
-  separate creation, native state, visibility (tentative position), then
+  separate creation, native state, visibility, then
   separate focus feedback. Use producer order within each kind; the first
   hard error wins. The input ordinal is for wire reconstruction, not
   settlement. Broker clock validation checks comparable canonical stamps
