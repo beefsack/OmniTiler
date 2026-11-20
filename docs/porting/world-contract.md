@@ -1307,6 +1307,13 @@ acceptance or adopt the separate close-focus amendment.
   eligibility and use positive native observations for relevant selector
   changes. A gap conservatively retires the older unspent request
   without inventing a replacement.
+- A retained selection's own view write may activate a destination
+  fallback before `afterShown` is ready. This is not new intent when a
+  scoped native call and matching readback prove the activation on that
+  operation's output and destination. A simultaneous view readback and
+  changed foreground snapshot alone are not proof. Keep the original
+  request and its dependencies; newer independent foreground evidence
+  still takes precedence.
 - A newer accepted focus decision can replace an older one; executing
   or refusing a non-focus command does not itself supersede. Superseded
   requests cannot resurrect or grant a compensating setter. Target

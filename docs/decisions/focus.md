@@ -10,6 +10,11 @@
 - Status: active, 2026-10-30; generalized retained request implemented in core/protocol; coordinated adapter adoption and native acceptance incomplete
 - Evidence: [review R5, F10](../changes/core-interface-review.md); [design](../changes/retained-focus-requests.md).
 
+### Foreground fallback during an own view switch
+- Decision (User 2026-11-20): a foreground change caused by a retained focus request's own view switch does not cancel the request.
+- Attribution boundary (tentative): require the matching scoped view call and native readback of the fallback on that output and destination. Unknown causality does not qualify; newer independent eligible foreground intent still supersedes. The request keeps its identity and existing spend-once and readiness rules.
+- Evidence: [v4 contract](../porting/world-contract.md#one-retained-focus-request) and [fixture replay](../changes/focus-intent-supersession.md#real-kde-selection-passed-after-the-qv4-fix).
+
 ### Workspace active-window memory
 - Decision: core remembers lifetime-bound floating, sticky and tiled identities in one workspace slot. Restore eligible remembered target first without float/tile preference, then existing tiled MRU/layout fallback. Accepted focus choices, including admission newcomers, record before native effects; exception observations use tiled-observation safeguards. Sticky focus records only in workspace selected/observed focused, not every view where visible.
 - Positive-close selection freezes tiled MRU before ingesting host fallback; accepted logical selection never fabricates observed/native foreground. Workspace-return float/sticky memory does not expand close candidate eligibility.

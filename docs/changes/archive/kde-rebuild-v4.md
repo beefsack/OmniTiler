@@ -5,9 +5,9 @@
 Make the supported KDE route correct and recoverable under races, and measure
 where latency is spent. This is a cutover of the remaining delivery, bounds
 and native-evidence seams, not a rewrite of the compositor integration. The
-[amended v4 contract](../porting/world-contract.md) is normative;
-[pre-KDE preparation](archive/core-pre-kde-interface.md#deferred-to-kde-rebuild-note)
-and [review fixes](archive/pre-kde-external-review-fixes.md) passed offline.
+[amended v4 contract](../../porting/world-contract.md) is normative;
+[pre-KDE preparation](core-pre-kde-interface.md#deferred-to-kde-rebuild-note)
+and [review fixes](pre-kde-external-review-fixes.md) passed offline.
 That does not prove the current KDE route on a real desktop.
 
 Keep the Rust broker as sole checked capture/command authority, the prepared
@@ -18,7 +18,7 @@ latest-only native apply, retained focus/drag/intent/settlements and strict
 reply checks. Replace the particular paths below; delete their obsolete
 implementations in the same cutover. No v3/old-v4 fallback, parallel planner,
 new adapter policy, new package/runtime topology, macOS or Windows code, or
-change to frozen fixtures. The [KDE checklist](kde-v4-acceptance-checklist.md)
+change to frozen fixtures. The [KDE checklist](../kde-v4-acceptance-checklist.md)
 remains the single checklist for release acceptance. Its user-owned physical,
 real-app, manual display/topology and subjective feel legs stay TBD where
 unverified. Bounded fixture evidence does not replace them.
@@ -57,8 +57,8 @@ unchanged unrelated bytes. Table gates are additional discriminators.
 | 7. Checked-service and host latency | Reproducible release workload through the real checked service, starting before ingress and ending at returned checked bytes/results. Cold: fresh admitted 200-window inventory, report first sample and distribution across fresh worlds; disclose handshake/settings separately. Warm: 200 stable windows, fixed no-refusal 16-command burst including noncommuting operations; terminal results for every command, exact replay without duplicate execution and final state oracle. Publish p50/p95/max, workload, counts and payload sizes; retain comparable small broker and structural gates. | Separately time callback-to-capture, capture round trip, eligible reply-to-native setter and matching native frame event (not delayed polling); include cold fixture admission, FIFO burst and current two-output sends if present. For drag X–Y–X and release, count motion, dispatch and paint updates and split event-to-dispatch, service and reply-to-paint. Confirm final release uses current target; no stale repaint or fleeting invalid target. Change the scheduler only if evidence isolates it: first changed motion promptly, coalesce replaceable samples while busy, never debounce away a terminal. Re-measure after a change. |
 | 8. Recovery and integrated native proof | Preserve coverage for latest-only application, request cancellation/redelivery, exact-lifetime recovery and no busy refusal; exercise readiness and wake/timeout recovery without replaying dead-generation intent. Run final Stage 5, both Qt probes, launcher/native-effect/helper tests and structural cost comparisons on the resulting tree. | Rerun small genuine producer journeys after orderly scoped controller and Planner restart: fresh generation/readiness, withheld stale callbacks, preserved exact-lifetime intent, no repeat setter, pending operations settle or have their actual refusal recorded. Retained focus: explicit, admission, positive close and follow/selection as applicable; skip issuing/intermediate apply, prove one setter or real no-call and cancellation before readiness. Run ordinary admission/reflow, float parity, rapid directional FIFO and two-output named readbacks on already present outputs. No hotplug or display changes. A forced process-loss variant uses nested KWin only. |
 
-Native legs follow the [Testing Posture](../live-kwin-testing.md#testing-posture-user-2026-11-15)
-and use [fixture windows](../../crates/tiler-live-fixture/README.md) scoped to
+Native legs follow the [Testing Posture](../../live-kwin-testing.md#testing-posture-user-2026-11-15)
+and use [fixture windows](../../../crates/tiler-live-fixture/README.md) scoped to
 `OmniTilerTestWindow`. Join sentinel, PID and exact native UUID before making
 native claims. Keep correlation, decisive log lines and actual native
 readbacks; a full correlated Describe, not presentation, proves operation-lane
@@ -135,7 +135,7 @@ Pre-rebuild offline baseline (not a run of this change): Rust 3,540 and KWin
 subscriber 34/34; launcher/native-effect/helpers 703/204/58. Callgrind
 7.83M/34.63M instructions at 50/200 windows, 4.42x growth; steady p95
 0.2316/1.7759/4.5770 ms. Small broker fresh p50/p95 204.8/212.0 us,
-warm 211.2/219.5 us. See the [full gates](archive/pre-kde-external-review-fixes.md#completion-gates).
+warm 211.2/219.5 us. See the [full gates](pre-kde-external-review-fixes.md#completion-gates).
 No native rebuild verdict at baseline.
 
 ## Unit 1: bounded settings acknowledgement
@@ -258,7 +258,7 @@ seq 14 capture retired one close and consumed the one-shot apply skip.
 ## Unit 6: native arrival and creation
 
 **User decision (2026-11-20):** KDE visibility is native-owned. The
-[v4 contract](../porting/world-contract.md#visibility-and-focus-ordering)
+[v4 contract](../../porting/world-contract.md#visibility-and-focus-ordering)
 uses native desktop selection and membership with `windowSuppression:false`,
 null visibility targets, and no visibility writes. KDE emits no visibility
 attempts or no-calls by design.
@@ -376,7 +376,7 @@ On an orderly controller and Planner restart, the same fixture lifetime
 retained byte-identical stored intent. The replacement Planner refused the
 old pending result request with `generation-mismatch`. Native sticky and
 keep-above state went true→false→true: startup repaired the original native
-state as required by the [preimage contract](../porting/world-contract.md#freshness-and-recovery),
+state as required by the [preimage contract](../../porting/world-contract.md#freshness-and-recovery),
 then a fresh commandless plan reconciled the retained intent. Exactly one
 accepted setter per property read `pre=0 post=1`. The next accepted capture
 and an independent native readback confirmed the final state, with no stale
@@ -412,7 +412,7 @@ latest applies once with the issuing rev”. Readiness cancellation is
 covered separately by `world-focus-feedback.test.ts`, “null envelope
 cancels unstarted readiness; a newer id then adopts once”, using a
 deferred explicit selection. By the
-[v4 focus contract](../porting/world-contract.md#one-retained-focus-request),
+[v4 focus contract](../../porting/world-contract.md#one-retained-focus-request),
 only an explicit command may carry non-null `afterShown`; admission
 never waits on readiness.
 
@@ -429,14 +429,20 @@ request with `no-call reason=baseline-changed`. This proves retention
 and the view change, not a native focus setter or a `complete/proven`
 `SwitchEvent` for the selection.
 
-`retire_pending_focus` in `world_close_focus.rs` retires the request
-when `focused_global` differs from `baseline_focused`. In this run the
-accepted view switch itself caused KWin to activate C, so the next
-capture tripped that fence before the focus setter could run. Unit 6's
-native arrival proof covered the already-target equality branch only.
-User decision (2026-11-20): a foreground change caused by the request's
-own view switch should not cancel it. The contract change that expresses
-this is still open for design and is not part of this unit.
+The retained-focus supersession change (`090a72cd`) resolved this failure
+under the User 2026-11-20 decision. KWin omits the fallback activation
+from the ordered focus interval only when the scoped native view call,
+destination view, output and foreground readback prove it was a
+consequence of that call. Core adjudicates independent evidence in capture
+order instead of treating a changed snapshot as automatically new intent.
+The checked regressions `selection_focus_survives_own_view_switch_fallback`
+and `selection_focus_snapshot_only_does_not_prove_own_view_switch_fallback`
+distinguish proved own fallback from a lookalike snapshot. In the
+[fixed fixture rerun](../focus-intent-supersession.md#real-kde-selection-passed-after-the-qv4-fix),
+the same id and issuing revision survived both skipped replies and fallback
+C. KWin called the target setter once; native readback confirmed B, and
+the first terminal switch receipt was `complete/proven`. This closes the
+selection leg; the send-follow run above still proves only equality.
 
 In isolated nested KWin, killing the exact Planner process removed its
 D-Bus owner. The controller and both fixture lifetimes stayed in place.

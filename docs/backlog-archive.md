@@ -13,6 +13,19 @@ retained as delivery evidence and planning history.
 - Decisions cited here remain in [decisions](decisions.md); nothing in this
   archive re-decides them.
 
+## KDE rebuild on the supported v4 interface (closed 2026-11-21)
+
+- P0 | KDE rebuild on the supported v4 interface | Closed the eight rebuild
+  units: bounded settings acknowledgement, retained membership and broker
+  replay/issuer lifetimes; strict endpoint ingress; exact close delivery;
+  native arrival and creation; checked-service latency; and integrated
+  recovery. `090a72cd` resolved the retained selection failure: the native
+  fixture run retained the request through proved own fallback, called the
+  target setter once and settled `complete/proven`.
+  [Rebuild record](changes/archive/kde-rebuild-v4.md).
+  User-owned physical, real-app and subjective acceptance remains in the
+  [KDE checklist](changes/kde-v4-acceptance-checklist.md).
+
 ## KDE shared window-policy adoption (closed 2026-10-29)
 
 - P1 | KDE shared window-policy adoption | Runtime adoption was already
