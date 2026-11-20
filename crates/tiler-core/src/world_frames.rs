@@ -17,10 +17,11 @@
 //! Two suppression lanes, a persistent floor, and a burst budget, all keyed
 //! by exact window lifetime:
 //!
-//! - `clamp`: an accepted setter with readable proof whose later observation
-//!   still mismatches.
-//!   The identical `(desired, observed)` pair suppresses until either side
-//!   genuinely changes.
+//! - `clamp`: an accepted setter with a corroborated synchronous mismatch
+//!   or a later mismatch after exact readback. For ordinary frame writes,
+//!   the latter must include a size change: position-only drift is not
+//!   pinned as a clamp. A clamp suppresses the identical `(desired, observed)`
+//!   pair until either side genuinely changes.
 //! - `transient`: a refused/throwing setter (or an unreadable proof).
 //!   Retried with bounded backoff (500ms doubling, capped at 5s) against
 //!   the neutral adapter clock; any change re-arms, and an unreported
@@ -140,10 +141,10 @@ pub(crate) struct FrameBurst {
 /// readable, else the immediate readback. The staged fact is the later
 /// observation, which may still be in flight, while the readback is the
 /// synchronous post-write proof; when they disagree the staged fact owns
-/// the pair, so a premature exact readback never clears a still-mismatched
-/// window. A staged fact that disagrees with an already mismatched readback
-/// is not proof of a clamp for the new pair; consumption re-arms instead
-/// (see `consume_attempt`). `None` means unreadable evidence: the core
+/// the pair, so a premature exact readback never proves completion for a
+/// still-mismatched window. A staged fact that disagrees with an already
+/// mismatched readback does not prove a clamp for the new pair (see
+/// `consume_attempt`). `None` means unreadable evidence: the core
 /// records nothing for the attempt.
 #[must_use]
 pub(crate) fn attempt_observed(attempt: &FrameAttemptEvidence, fact: Option<Rect>) -> Option<Rect> {
@@ -163,11 +164,10 @@ pub(crate) fn attempt_observed(attempt: &FrameAttemptEvidence, fact: Option<Rect
 /// - an accepted setter with a changed DPI basis records nothing
 ///   (invalidated placement retries under fresh state);
 /// - an accepted setter with readable post-write proof and a corroborated
-///   mismatch pins the clamp lane (synchronous readback mismatch matched by
-///   the staged fact, or an exact synchronous readback with a later stable
-///   staged fact holding a larger size); a staged fact that disagrees with
-///   an already mismatched readback proves nothing about the new pair, so
-///   the attempt clears suppression and re-arms instead of clamping;
+///   mismatch pins the clamp lane. A changed pair after mismatched readback
+///   or position-only drift after an exact ordinary write clears pair
+///   suppression instead. The independent tiled burst budget still applies;
+///   explicit float operations keep their separate settlement behavior;
 ///   an accepted setter with unreadable post-write proof is a
 ///   transient like any refused/throwing setter (keyed on the staged
 ///   fact), never a permanent clamp;
@@ -206,20 +206,18 @@ pub(crate) fn consume_attempt(
     {
         return existing;
     }
-    // A readable post-write proof plus a corroborated mismatch pins the
-    // clamp lane: the staged fact matches a mismatched readback
-    // (synchronous shape), or carries a larger size after an exact
-    // readback (async shape). Without a post-write proof the attempt
-    // cannot distinguish an app-held size from a setter that never
-    // landed, so it rides the transient lane even when the setter
-    // reported success.
+    // Without a post-write proof, acceptance alone cannot distinguish a
+    // size clamp from a setter that never landed. It rides the transient lane.
     let proven_dispatch = attempt.readback.is_some();
-    // Changed pair after a mismatched readback: this write never proved
-    // the new pair, so clear suppression and retry from it (no backoff).
+    // A mismatched readback never proved a changed pair; after an exact
+    // ordinary write, position-only drift is not evidence of a size constraint.
     if attempt.disposition == AttemptDisposition::Accepted
         && let Some(readback) = attempt.readback
-        && readback != attempt.target
-        && observed != readback
+        && if readback == attempt.target {
+            attempt.operation_id.is_none() && observed.w == readback.w && observed.h == readback.h
+        } else {
+            observed != readback
+        }
     {
         return None;
     }

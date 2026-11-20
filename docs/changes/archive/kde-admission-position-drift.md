@@ -1,0 +1,9 @@
+# KDE admission position drift
+
+- Goal: A newly admitted tiled window that briefly reaches its tile and then moves back at the same size should receive the ordinary bounded frame correction.
+- Scope: Correct interpretation of accepted exact frame readback followed by a position-only mismatch. Preserve size clamp and learned minimum behavior, the existing burst budget, and the adapter/wire contract. Native configure ordering is outside this change.
+- Diagnosis: The adapter applied the right tile and read it back exactly, then a later native frame signal reported the window centred again at the same size. The next observation yielded `hold/constraint-clamp`, so the adapter never wrote the correction. The admission had no transfers.
+- Approach and acceptance: Treat the later position-only mismatch as drift rather than proof of a constraint clamp. A deterministic two-window admission sequence must retain the right tile and authorize one correction; repeated drift must still exhaust the existing two-attempt burst budget. Preserve synchronous clamp and async sizing coverage.
+- Verification: Rust formatting, strict clippy and serial tests for the affected packages; KWin typecheck and test suite.
+- Outcome: Exact readback followed by position-only drift no longer pins an ordinary frame attempt. A sequential-admission regression proves the correction remains authorized after the first attempt and blocked by the burst budget after the second. Explicit float operations retain their existing semantics.
+- Evidence: The regression, serial tests for `tiler-core`, `tiler-protocol` and `omnitiler`, strict all-target clippy for those packages, Rust formatting, KWin typecheck and all 1,442 KWin tests passed. Native inspection corroborated the original drift; post-fix native convergence was not tested.

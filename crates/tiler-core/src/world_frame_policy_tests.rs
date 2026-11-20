@@ -4215,6 +4215,96 @@ fn shrink(rect: Rect, dw: i32) -> Rect {
 }
 
 #[test]
+fn admission_exact_readback_then_center_drift_uses_only_burst_budget() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let first = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("w1", Some(rect(0, 0, 40, 90)))],
+            vec![],
+            vec![],
+            800,
+            true,
+        ),
+    );
+    let full = frame_row(&first, "w1").effective_frame.expect("full tile");
+    let admission = accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![
+                fact("w1", Some(full)),
+                fact(
+                    "w2",
+                    Some(rect(full.x + full.w / 4, full.y, full.w / 2, full.h)),
+                ),
+            ],
+            vec![],
+            vec![],
+            900,
+            true,
+        ),
+    );
+    let left = frame_row(&admission, "w1")
+        .effective_frame
+        .expect("left tile");
+    let right = frame_row(&admission, "w2");
+    assert_eq!(right.frame_authority, ScopeAuthority::Controlled);
+    let desired = right.effective_frame.expect("right tile");
+    assert!(left.x + left.w <= desired.x);
+    let centered = Rect {
+        x: left.x + (desired.x - left.x) / 2,
+        ..desired
+    };
+    assert_ne!(centered, desired);
+    let key = WindowId("w2".to_owned());
+
+    // Each write reaches the right tile synchronously, but the staged
+    // snapshot shows the same-size window back in the center.
+    for (seq, clock, count, authority) in [
+        (3, 1000, 1, ScopeAuthority::Controlled),
+        (
+            4,
+            1100,
+            2,
+            ScopeAuthority::Hold(HoldReason::ConstraintClamp),
+        ),
+    ] {
+        let reply = accepted(
+            &mut engine,
+            &report(
+                seq,
+                vec![fact("w1", Some(left)), fact("w2", Some(centered))],
+                vec![],
+                vec![attempt(
+                    "w2",
+                    desired,
+                    FrameSetter::Accepted,
+                    Some(desired),
+                    clock,
+                )],
+                clock,
+                true,
+            ),
+        );
+        let row = frame_row(&reply, "w2");
+        assert_eq!(row.effective_frame, Some(desired));
+        assert_eq!(row.frame_authority, authority);
+        assert!(!engine.world.settlement.frames.contains_key(&key));
+        assert_eq!(learned_of(&engine, "w2"), (None, None));
+        let burst = engine
+            .world
+            .settlement
+            .frame_bursts
+            .get(&key)
+            .expect("each accepted attempt spends budget");
+        assert_eq!(burst.desired, desired);
+        assert_eq!(burst.attempts, count);
+    }
+}
+
+#[test]
 fn burst_two_attempt_cap_holds_despite_redrift() {
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let first = accepted(
