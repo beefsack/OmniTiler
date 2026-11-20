@@ -800,10 +800,10 @@ impl WorldTransaction<'_> {
         }
     }
 
-    /// Append must not replace a sole member's workspace with its adjacent
-    /// spare. Require positive local evidence; uncertainty leaves the
-    /// regular send path (and its existing safety fences) in charge.
-    fn append_would_replace_source(
+    /// Prove that the mover is the only ordinary member of its local source
+    /// and the adjacent spare is empty. Uncertainty leaves the regular send
+    /// path (and its existing safety fences) in charge.
+    fn sole_member_with_empty_spare(
         &self,
         window: &WindowId,
         source: &DomainKey,
@@ -875,6 +875,13 @@ impl WorldTransaction<'_> {
             }
             let shape = self.derived_for(candidate);
             if shape.sticky && !shape.hold {
+                // Semantic-only sticky facts still count for the trailing
+                // selector. Explicit digits must use the same empty-spare rule.
+                if fact.sticky != Some(true)
+                    && home.is_some_and(|home| home.output == *output && home.workspace.0 == spare)
+                {
+                    return false;
+                }
                 continue;
             }
             if shape.hold {
@@ -907,9 +914,9 @@ impl WorldTransaction<'_> {
 
     /// Numbered send over the scoped ring for `output`: positional
     /// `1..=9`, or `0` for the trailing path (reuse the live trailing
-    /// empty, else mint the trailing workspace immediately). Append to an
-    /// adjacent empty spare is a no-op for a proven sole ordinary member;
-    /// otherwise follow selects the target view and stay never switches.
+    /// empty, else mint the trailing workspace immediately). Following
+    /// into the adjacent empty spare is a no-op for a proven sole ordinary
+    /// member, regardless of selector. Stay never switches views.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_numbered_send(
         &mut self,
@@ -989,30 +996,11 @@ impl WorldTransaction<'_> {
                 message: MSG_SEND_TARGET,
             };
         }
-        if index == 0 {
+        let target = if index == 0 {
             let occupied = self.ring_occupied(output);
             let selection = resolve_trailing(&ring, &occupied);
             match selection {
-                TrailingSelection::Reuse(target) => {
-                    if matches!(ring.as_slice(), [.., source, _] if source == &source_key.workspace.0)
-                        && self.append_would_replace_source(window, &source_key, &target)
-                    {
-                        self.note_command(command_seq);
-                        return CommandApplied::NoEffect;
-                    }
-                    let operation_id = format!("op-{command_seq}");
-                    let result = self.execute_send(
-                        issue,
-                        &operation_id,
-                        window,
-                        output,
-                        &target,
-                        follow,
-                        by_id,
-                        held_scopes,
-                    );
-                    self.settle_send(command_seq, operation_id, result, held_scopes)
-                }
+                TrailingSelection::Reuse(target) => target,
                 TrailingSelection::Create => {
                     // Trailing workspaces exist immediately in the logical
                     // contract: mint, stage an empty readable domain for the
@@ -1088,18 +1076,7 @@ impl WorldTransaction<'_> {
                     if self.world.workspace.is_floating(&target_key) {
                         self.world.floating_scopes.insert(target_key);
                     }
-                    let operation_id = format!("op-{command_seq}");
-                    let result = self.execute_send(
-                        issue,
-                        &operation_id,
-                        window,
-                        output,
-                        &target,
-                        follow,
-                        by_id,
-                        held_scopes,
-                    );
-                    self.settle_send(command_seq, operation_id, result, held_scopes)
+                    target
                 }
             }
         } else {
@@ -1109,19 +1086,33 @@ impl WorldTransaction<'_> {
                     message: MSG_SEND_TARGET,
                 };
             };
-            let operation_id = format!("op-{command_seq}");
-            let result = self.execute_send(
-                issue,
-                &operation_id,
-                window,
-                output,
-                &target,
-                follow,
-                by_id,
-                held_scopes,
-            );
-            self.settle_send(command_seq, operation_id, result, held_scopes)
+            target
+        };
+        if follow
+            && matches!(
+                ring.as_slice(),
+                [.., source, spare] if source == &source_key.workspace.0 && spare == &target
+            )
+            && !held_scopes
+                .iter()
+                .any(|held| held.output == *output && held.workspace.0 == target)
+            && self.sole_member_with_empty_spare(window, &source_key, &target)
+        {
+            self.note_command(command_seq);
+            return CommandApplied::NoEffect;
         }
+        let operation_id = format!("op-{command_seq}");
+        let result = self.execute_send(
+            issue,
+            &operation_id,
+            window,
+            output,
+            &target,
+            follow,
+            by_id,
+            held_scopes,
+        );
+        self.settle_send(command_seq, operation_id, result, held_scopes)
     }
 }
 

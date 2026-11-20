@@ -1238,11 +1238,11 @@ fn shared_mode_unified_retire_and_reselect() {
     );
 }
 
-fn append_command(window: &str, follow: bool) -> WorldCommand {
+fn numbered_send(window: &str, index: u8, follow: bool) -> WorldCommand {
     WorldCommand::SendNumbered {
         window: WindowSubject::Window(WindowId(window.to_owned())),
         source: SendSource::HomeThenAction,
-        index: 0,
+        index,
         follow,
     }
 }
@@ -1267,18 +1267,19 @@ fn single_output_append_report(seq: u64, middle: bool, spare_count: Option<u32>)
     report
 }
 
-#[test]
-fn repeated_adjacent_sole_append_is_noop_for_follow_and_stay() {
+fn assert_repeated_adjacent_sole_follow_is_noop(index: u8) {
     let mut engine = engine_host_pipeline(WorkspaceMode::PerOutputLocal);
     let boot = accepted(&mut engine, &single_output_append_report(1, false, Some(0)));
     let home = binding_for(&boot, "out-a", "n0").expect("source bound");
+    let spare = binding_for(&boot, "out-a", "spare").expect("spare bound");
     let creation_counter = engine.world.workspace.creation_counter;
     let original = ring_ids_live(&engine, "out-a");
-    for (index, follow) in [true, true, false, false].into_iter().enumerate() {
-        let cmd = index as u64 + 1;
+    assert_eq!(original, [home.clone(), spare]);
+    let mover = WindowId("wb".to_owned());
+    for cmd in 1..=2 {
         let mut report = single_output_append_report(cmd + 1, false, Some(0));
         report.command_seq = Some(cmd);
-        report.command = Some(append_command("wb", follow));
+        report.command = Some(numbered_send("wb", index, true));
         let reply = accepted(&mut engine, &report);
         assert_eq!(engine.world.command_highwater, Some(cmd));
         assert_eq!(step_counts(&reply), (0, 0, 0));
@@ -1288,43 +1289,150 @@ fn repeated_adjacent_sole_append_is_noop_for_follow_and_stay() {
         assert_eq!(engine.world.workspace.creation_counter, creation_counter);
         assert_eq!(engine.world.workspace.views["out-a"], home);
         assert_eq!(
-            engine.world.workspace.members[&WindowId("wb".to_owned())]
-                .home
-                .workspace
-                .0,
-            home
+            engine.world.workspace.members[&mover].home,
+            DomainKey {
+                output: OutputId("out-a".to_owned()),
+                workspace: WorkspaceId(home.clone()),
+            }
         );
     }
 }
 
 #[test]
-fn append_moves_sole_member_into_nonadjacent_spare() {
-    let mut engine = engine_host_pipeline(WorkspaceMode::PerOutputLocal);
-    let boot = accepted(&mut engine, &single_output_append_report(1, true, Some(0)));
-    let spare = binding_for(&boot, "out-a", "spare").expect("spare bound");
-    let mut report = single_output_append_report(2, true, Some(0));
-    report.command_seq = Some(1);
-    report.command = Some(append_command("wb", true));
-    let reply = accepted(&mut engine, &report);
-    assert!(reply.transfers.iter().any(|transfer| {
-        transfer.kind == TransferKind::Window(WindowId("wb".to_owned()))
-            && transfer.target_workspace == spare
-    }));
+fn repeated_adjacent_sole_append_follow_is_noop() {
+    assert_repeated_adjacent_sole_follow_is_noop(0);
 }
 
 #[test]
-fn adjacent_append_keeps_normal_send_when_spare_occupancy_is_unknown() {
+fn repeated_adjacent_sole_digit_follow_is_noop() {
+    assert_repeated_adjacent_sole_follow_is_noop(2);
+}
+
+fn adjacent_sole_stay_arrival(index: u8) -> (WorldEngine, String, String) {
     let mut engine = engine_host_pipeline(WorkspaceMode::PerOutputLocal);
-    let boot = accepted(&mut engine, &single_output_append_report(1, false, None));
+    let boot = accepted(&mut engine, &single_output_append_report(1, false, Some(0)));
+    let source = binding_for(&boot, "out-a", "n0").expect("source bound");
     let spare = binding_for(&boot, "out-a", "spare").expect("spare bound");
-    let mut report = single_output_append_report(2, false, None);
+    assert_eq!(
+        ring_ids_live(&engine, "out-a"),
+        [source.clone(), spare.clone()]
+    );
+
+    let mut send = single_output_append_report(2, false, Some(0));
+    send.command_seq = Some(1);
+    send.command = Some(numbered_send("wb", index, false));
+    let sent = accepted(&mut engine, &send);
+    let [transfer] = sent.transfers.as_slice() else {
+        panic!("expected only the mover's transfer: {:?}", sent.transfers);
+    };
+    let mover = WindowId("wb".to_owned());
+    assert_eq!(transfer.kind, TransferKind::Window(mover.clone()));
+    assert_eq!(transfer.target_output.0, "out-a");
+    assert_eq!(transfer.target_workspace, spare);
+    assert!(!transfer.follow);
+    assert!(sent.focus_request.is_none(), "the source has no survivor");
+    assert_eq!(engine.world.command_highwater, Some(1));
+    assert_eq!(engine.world.workspace.views["out-a"], source);
+    assert_eq!(
+        engine.world.workspace.members[&mover].home.workspace.0,
+        spare
+    );
+
+    // Membership readback arrives without a native view switch.
+    let arrived = accepted(
+        &mut engine,
+        &report_host(
+            3,
+            vec![screen("out-a", 0)],
+            vec![hfact("wb", "out-a", "spare", 0, false)],
+            vec![obs(
+                "out-a",
+                vec!["n0", "spare"],
+                "n0",
+                vec![("n0", Some(0)), ("spare", Some(1))],
+            )],
+        ),
+    );
+    assert!(arrived.transfers.is_empty());
+    assert_eq!(binding_for(&arrived, "out-a", "n0").as_ref(), Some(&source));
+    assert_eq!(engine.world.workspace.views["out-a"], source);
+    assert_eq!(
+        engine.world.workspace.members[&mover].home.workspace.0,
+        spare
+    );
+    (engine, source, spare)
+}
+
+#[test]
+fn adjacent_sole_digit_stay_moves_without_following() {
+    adjacent_sole_stay_arrival(2);
+}
+
+#[test]
+fn adjacent_sole_append_stay_leaves_source_available_for_new_window() {
+    let (mut engine, source, spare) = adjacent_sole_stay_arrival(0);
+    let reply = accepted(
+        &mut engine,
+        &report_host(
+            4,
+            vec![screen("out-a", 0)],
+            vec![
+                hfact("wb", "out-a", "spare", 0, false),
+                hfact("new", "out-a", "n0", 100, true),
+            ],
+            vec![obs(
+                "out-a",
+                vec!["n0", "spare"],
+                "n0",
+                vec![("n0", Some(1)), ("spare", Some(1))],
+            )],
+        ),
+    );
+    assert!(reply.transfers.is_empty());
+    assert_eq!(engine.world.workspace.views["out-a"], source);
+    for (window, workspace) in [("wb", spare), ("new", source)] {
+        assert_eq!(
+            engine.world.workspace.members[&WindowId(window.to_owned())].home,
+            DomainKey {
+                output: OutputId("out-a".to_owned()),
+                workspace: WorkspaceId(workspace),
+            }
+        );
+    }
+}
+
+#[test]
+fn numbered_follow_moves_sole_member_into_nonadjacent_spare() {
+    for index in [0, 3] {
+        assert_numbered_follow_moves_to_spare(index, true, Some(0));
+    }
+}
+
+#[test]
+fn adjacent_numbered_follow_keeps_normal_send_when_spare_occupancy_is_unknown() {
+    for index in [0, 2] {
+        assert_numbered_follow_moves_to_spare(index, false, None);
+    }
+}
+
+fn assert_numbered_follow_moves_to_spare(index: u8, middle: bool, spare_count: Option<u32>) {
+    let mut engine = engine_host_pipeline(WorkspaceMode::PerOutputLocal);
+    let boot = accepted(
+        &mut engine,
+        &single_output_append_report(1, middle, spare_count),
+    );
+    let spare = binding_for(&boot, "out-a", "spare").expect("spare bound");
+    let mut report = single_output_append_report(2, middle, spare_count);
     report.command_seq = Some(1);
-    report.command = Some(append_command("wb", true));
+    report.command = Some(numbered_send("wb", index, true));
     let reply = accepted(&mut engine, &report);
     assert!(reply.transfers.iter().any(|transfer| {
         transfer.kind == TransferKind::Window(WindowId("wb".to_owned()))
+            && transfer.target_output.0 == "out-a"
             && transfer.target_workspace == spare
+            && transfer.follow
     }));
+    assert_eq!(engine.world.workspace.views["out-a"], spare);
 }
 
 #[test]
@@ -1340,7 +1448,7 @@ fn adjacent_sole_append_does_not_spend_unbound_spare() {
     report.request_seq = 2;
     report.observation_seq = 2;
     report.command_seq = Some(1);
-    report.command = Some(append_command("wb", true));
+    report.command = Some(numbered_send("wb", 0, true));
     let reply = accepted(&mut engine, &report);
     assert!(reply.transfers.is_empty());
     assert!(reply.focus_request.is_none());
@@ -1351,7 +1459,7 @@ fn adjacent_sole_append_does_not_spend_unbound_spare() {
 enum SharedSpareFill {
     Relative,
     RelativeAfterDivergence,
-    Append,
+    NumberedFollow,
 }
 
 fn exercise_shared_roster_spare_fills(fill: SharedSpareFill) {
@@ -1433,11 +1541,13 @@ fn exercise_shared_roster_spare_fills(fill: SharedSpareFill) {
     let boot = accepted(&mut engine, &report(1, &order, &order, "n0"));
     assert_eq!(step_counts(&boot), (0, 0, 0));
     check_live(&boot, &engine, &order, "n0");
-    if matches!(fill, SharedSpareFill::Append) {
-        for (command_seq, follow) in [(1, true), (2, true), (3, false), (4, false)] {
+    if matches!(fill, SharedSpareFill::NumberedFollow) {
+        // Both outputs show n0, and the shared native occupancy is two.
+        // Only wb is homed on out-b's source; wa does not defeat local proof.
+        for (command_seq, index) in [(1, 0), (2, 0), (3, 2), (4, 2)] {
             let mut send = report(command_seq + 1, &order, &order, "n0");
             send.command_seq = Some(command_seq);
-            send.command = Some(append_command("wb", follow));
+            send.command = Some(numbered_send("wb", index, true));
             let sent = accepted(&mut engine, &send);
             assert_eq!(engine.world.command_highwater, Some(command_seq));
             assert_eq!(step_counts(&sent), (0, 0, 0));
@@ -1552,8 +1662,8 @@ fn shared_roster_divergent_readback_holds_retirement_and_spare_backing() {
 }
 
 #[test]
-fn shared_roster_repeated_adjacent_sole_append_leaves_both_rings_unchanged() {
-    exercise_shared_roster_spare_fills(SharedSpareFill::Append);
+fn shared_roster_adjacent_sole_numbered_follow_ignores_visible_sibling_occupant() {
+    exercise_shared_roster_spare_fills(SharedSpareFill::NumberedFollow);
 }
 
 // ---------------------------------------------------------------------------

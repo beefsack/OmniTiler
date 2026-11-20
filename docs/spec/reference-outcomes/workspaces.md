@@ -179,13 +179,19 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
 
 | Minimal action sequence | Selected outcome |
 | --- | --- |
-| `[B*, E]`: B is the sole ordinary member of the penultimate local workspace; E is the empty final spare. Repeat Append with follow, then with stay. Also run on two outputs sharing native backing, with an ordinary member on the other output. | User 2026-11-20: no move, view change, focus change, retirement, or creation. The other output's member on the same native is not a local member. If held or unreadable evidence obscures local occupancy, use the ordinary send path. |
-| `[B*, A, E]`: an occupied workspace intervenes; Append B into E. | Reuse E and send B; the guard is adjacency-specific, not a sole-member ban. User 2026-11-20. |
+| `[B*, E]`: B is the sole ordinary member of the penultimate local workspace; E is the empty final spare. From fresh fixtures, send-and-follow via Append and via the explicit digit resolving to E. Repeat on two outputs sharing native backing, with an ordinary member on the sibling output protecting the source backing. | No move, view change, focus change, retirement, or creation. The guard uses local occupancy only: the sibling's member on the same native backing does not count. If held or unreadable evidence obscures local occupancy, use the ordinary send path and its safety gates. |
+| `[A*, E]`: A is the sole ordinary member of the penultimate local workspace. From fresh fixtures, send A and stay via Append and via the explicit digit resolving to the empty final spare E. Then launch a new window B without switching workspaces. | A moves to E and remains hidden there. The original source stays viewed throughout, and the new B is admitted to that source. Neither action switches the view or fabricates focus on E. Filling E creates exactly one new trailing spare. |
+| `[B*, A, E]`: An occupied workspace intervenes. From fresh fixtures, send B into E via Append and via its explicit digit, with each intent. | Reuse E and send B. Follow switches to E with B; stay keeps the source view. The guard is adjacency-specific, not a sole-member ban. |
+| `[H[A,B*], E]`: The penultimate local workspace has two ordinary members. From fresh fixtures, send B into E via Append and via its explicit digit, with each intent. | Reuse E and send B. Follow switches to E with B; stay keeps the source view with A as the survivor. The guard requires a sole ordinary member. |
+
+Selected outcomes: User 2026-11-20; no native run recorded for the amended behavior.
 
 COSMIC `epoch-1.11.0` binds `Super+Shift+0` to `MoveToLastWorkspace`. The
-last-workspace action attempts the existing last cell; the move routine
-refuses the sole member's move into an adjacent final empty, with no
-fallback. An intervening workspace allows the move. See
+last-workspace action attempts the existing last cell; the same move routine
+refuses a sole member's move into an adjacent final empty for both numbered
+and last-workspace targets, including stay, with no fallback on those paths.
+OmniTiler deliberately differs on stay: both targets move normally and keep
+the source view. An intervening workspace allows the move in COSMIC. See
 [binding](https://github.com/pop-os/cosmic-comp/blob/epoch-1.11.0/data/keybindings.ron#L47-L64),
 [last-action dispatch](https://github.com/pop-os/cosmic-comp/blob/epoch-1.11.0/src/input/actions.rs#L322-L349),
 [move guard](https://github.com/pop-os/cosmic-comp/blob/epoch-1.11.0/src/shell/mod.rs#L3332-L3354)

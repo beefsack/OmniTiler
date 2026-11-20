@@ -2908,7 +2908,7 @@ fn numbered_follow_fans_out_views_in_shared_mode() {
             2,
             2,
             two_screens(),
-            vec![fact("win-a", "out-a", 0)],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
             vec![],
             vec![],
             "",
@@ -2936,14 +2936,15 @@ fn numbered_follow_fans_out_views_in_shared_mode() {
         .expect("trailing target")
         .clone();
     let index = (ring.iter().position(|id| id == &view_b).expect("target") + 1) as u8;
-    // Follow moves the one shared view: every live output shows the target.
+    // Leave a member on the source so the adjacent-spare no-op does not
+    // apply. A successful follow moves the shared view on every live output.
     let reply = accepted(
         &mut engine,
         &report_mode(
             3,
             3,
             two_screens(),
-            vec![fact("win-a", "out-a", 0)],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
             vec![],
             vec![],
             "win-a",
