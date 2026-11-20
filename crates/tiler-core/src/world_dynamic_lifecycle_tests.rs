@@ -8,15 +8,17 @@
 
 use crate::connection::HostCapabilities;
 use crate::connection::RawSettingValue;
-use crate::directional::{OutputId, WindowId};
+use crate::directional::{OutputId, WindowId, WindowSubject, WorkspaceId};
 use crate::geometry::Rect;
+use crate::session::DomainKey;
 use crate::size_hints::WindowSizeHints;
 use crate::workspace::{WorkspaceFacts, plan_trailing};
 use crate::workspace_scope::WorkspaceMode;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
     FrameSetter, NativeCreationAttempt, NativeObservation, NativeOccupancy, PresentationIngressV4,
-    PresentationRowV4, ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldReportV4,
+    PresentationRowV4, ScreenReport, SendSource, TransferKind, WORLD_CONTRACT_VERSION_V4,
+    WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1234,6 +1236,210 @@ fn shared_mode_unified_retire_and_reselect() {
             && !engine.tx(|tx| tx.is_locally_retired("out-b", &retired_native)),
         "selection evidence clears every pair naming the native"
     );
+}
+
+enum SharedSpareFill {
+    Relative,
+    RelativeAfterDivergence,
+    Append,
+}
+
+fn exercise_shared_roster_spare_fills(fill: SharedSpareFill) {
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            host_owned: true,
+            equal_count: true,
+            shared_native_roster: true,
+            window_suppression: true,
+            maximize: true,
+            ..Default::default()
+        },
+        vec![(
+            "mode".to_owned(),
+            RawSettingValue::String("per-output-local".to_owned()),
+        )],
+    )
+    .expect("generation");
+    let report = |seq, order_a: &[&str], order_b: &[&str], current_b| {
+        let native = |output, order: &[&str], current| {
+            obs(
+                output,
+                order.to_vec(),
+                current,
+                order
+                    .iter()
+                    .map(|&id| (id, Some(u32::from(id == "n0") + u32::from(id == current_b))))
+                    .collect(),
+            )
+        };
+        let mut report = report_host(
+            seq,
+            vec![screen("out-a", 0), screen("out-b", 800)],
+            vec![
+                hfact("wa", "out-a", "n0", 0, true),
+                hfact("wb", "out-b", current_b, 800, true),
+            ],
+            vec![
+                native("out-a", order_a, "n0"),
+                native("out-b", order_b, current_b),
+            ],
+        );
+        report.monotonic_ms = seq;
+        report.focused_global = "wb".to_owned();
+        report.foreground_known = true;
+        report
+    };
+    let check_live = |reply: &WorldReplyV4, engine: &WorldEngine, order: &[&str], current| {
+        for (output, window, native) in [("out-a", "wa", "n0"), ("out-b", "wb", current)] {
+            let ring = ring_ids_live(engine, output);
+            let bindings: Vec<_> = ring
+                .iter()
+                .map(|id| {
+                    reply
+                        .workspaces
+                        .iter()
+                        .find(|row| row.output.0 == output && row.id == *id && row.existence)
+                        .expect("live workspace row")
+                        .native_binding
+                        .as_deref()
+                        .expect("backed workspace")
+                })
+                .collect();
+            assert_eq!(bindings, order, "{output} keeps the shared native order");
+            let logical = binding_for(reply, output, native).expect("current native is live");
+            assert_eq!(engine.world.workspace.views[output], logical);
+            assert_eq!(
+                engine.world.workspace.members[&WindowId(window.to_owned())].home,
+                DomainKey {
+                    output: OutputId(output.to_owned()),
+                    workspace: WorkspaceId(logical),
+                }
+            );
+        }
+    };
+    let mut order = vec!["n0", "n1"];
+    let boot = accepted(&mut engine, &report(1, &order, &order, "n0"));
+    assert_eq!(step_counts(&boot), (0, 0, 0));
+    check_live(&boot, &engine, &order, "n0");
+    let mut seq = 1;
+    for (command_seq, from, to, created) in [(1, "n0", "n1", "n2"), (2, "n1", "n2", "n3")] {
+        seq += 1;
+        let mut send = report(seq, &order, &order, from);
+        send.command_seq = Some(command_seq);
+        let window = WindowSubject::Window(WindowId("wb".to_owned()));
+        send.command = Some(if matches!(fill, SharedSpareFill::Append) {
+            WorldCommand::SendNumbered {
+                window,
+                source: SendSource::HomeThenAction,
+                index: 0,
+                follow: true,
+            }
+        } else {
+            WorldCommand::SendRelative {
+                window,
+                source: SendSource::HomeThenAction,
+                delta: 1,
+                follow: true,
+            }
+        });
+        let sent = accepted(&mut engine, &send);
+        let target = binding_for(&sent, "out-b", to).expect("send fills the already-backed spare");
+        let member_transfers: Vec<_> = sent
+            .transfers
+            .iter()
+            .filter(|transfer| matches!(transfer.kind, TransferKind::Window(_)))
+            .collect();
+        let [transfer] = member_transfers.as_slice() else {
+            panic!("expected one member move: {:?}", sent.transfers);
+        };
+        assert_eq!(
+            transfer.kind,
+            TransferKind::Window(WindowId("wb".to_owned()))
+        );
+        assert_eq!(transfer.target_output.0, "out-b");
+        assert_eq!(transfer.target_workspace, target);
+
+        if command_seq == 2 && matches!(fill, SharedSpareFill::RelativeAfterDivergence) {
+            // A different readback order is not proof of a joint removal
+            // or authorization to back an extra spare.
+            seq += 1;
+            let divergent = accepted(&mut engine, &report(seq, &["n1", "n0", "n2"], &order, to));
+            assert!(divergent.native_creations.is_empty());
+            for output in ["out-a", "out-b"] {
+                assert!(binding_for(&divergent, output, from).is_some());
+                assert!(tombstone_for(&divergent, &engine, output, from).is_none());
+            }
+        }
+        seq += 1;
+        let arrived = accepted(&mut engine, &report(seq, &order, &order, to));
+        assert!(arrived.transfers.is_empty(), "{:?}", arrived.transfers);
+        for output in ["out-a", "out-b"] {
+            assert_eq!(
+                tombstone_for(&arrived, &engine, output, from).is_some(),
+                command_seq == 2,
+                "press {command_seq}: retire the old source on both outputs or neither"
+            );
+        }
+        let [desire] = arrived.native_creations.as_slice() else {
+            panic!(
+                "one spare creation per settled fill: {:?}",
+                arrived.native_creations
+            );
+        };
+        seq += 1;
+        let replay = accepted(&mut engine, &report(seq, &order, &order, to));
+        assert_eq!(replay.native_creations, arrived.native_creations);
+        assert!(replay.transfers.is_empty());
+
+        let before = order.iter().map(|id| (*id).to_owned()).collect();
+        order.push(created);
+        seq += 1;
+        let mut readback = report(seq, &order, &order, to);
+        readback.creation_attempts.push(NativeCreationAttempt {
+            operation_id: desire.operation_id.clone(),
+            logical_workspace: desire.logical_workspace.clone(),
+            target_output: desire.target_output.clone(),
+            setter: FrameSetter::Accepted,
+            order_before: before,
+            order_after: order.iter().map(|id| (*id).to_owned()).collect(),
+            created_native: Some(created.to_owned()),
+            attempt_ms: seq,
+        });
+        let backed = accepted(&mut engine, &readback);
+        assert!(
+            backed.native_creations.is_empty(),
+            "{:?}",
+            backed.native_creations
+        );
+        assert!(backed.transfers.is_empty());
+        if command_seq == 2 {
+            for output in ["out-a", "out-b"] {
+                assert!(tombstone_for(&backed, &engine, output, from).is_some());
+            }
+            order.retain(|&id| id != from);
+        }
+        seq += 1;
+        let settled = accepted(&mut engine, &report(seq, &order, &order, to));
+        assert_eq!(step_counts(&settled), (0, 0, 0));
+        check_live(&settled, &engine, &order, to);
+    }
+}
+
+#[test]
+fn shared_roster_relative_send_retires_vacated_native_before_spare_padding() {
+    exercise_shared_roster_spare_fills(SharedSpareFill::Relative);
+}
+
+#[test]
+fn shared_roster_divergent_readback_holds_retirement_and_spare_backing() {
+    exercise_shared_roster_spare_fills(SharedSpareFill::RelativeAfterDivergence);
+}
+
+#[test]
+fn shared_roster_repeated_append_creates_one_native_per_fill() {
+    exercise_shared_roster_spare_fills(SharedSpareFill::Append);
 }
 
 // ---------------------------------------------------------------------------

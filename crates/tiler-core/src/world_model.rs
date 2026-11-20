@@ -84,6 +84,8 @@ impl WorldTransaction<'_> {
     /// the unified ring with union occupancy: a workspace occupied on any
     /// live output survives everywhere (never deleted because one screen's
     /// scoped view is empty).
+    /// Independently scoped projections of a shared native roster retire
+    /// together; spare padding happens after the joint removal decision.
     pub(crate) fn converge_logical_post(&mut self) {
         use crate::workspace::{WorkspaceFacts, plan_trailing};
         let inventory_complete = self.world.staged.observation.inventory_complete;
@@ -141,6 +143,8 @@ impl WorldTransaction<'_> {
         }
         let shared = self.connection.workspace_mode_setting()
             == crate::workspace_scope::WorkspaceMode::Shared;
+        let shared_native_roster = self.connection.shared_native_roster();
+        let mut joint_native_plan = false;
         if shared {
             // Union occupancy over logical ids across all live outputs.
             let mut occupied_ids: BTreeSet<String> = BTreeSet::new();
@@ -351,35 +355,37 @@ impl WorldTransaction<'_> {
                 let plan = plan_trailing(&facts);
                 plans.insert(output.clone(), (ring, plan));
             }
-            // Shared identical roster: prune one GLOBAL native set on every
-            // output (identity-based, not count-based). Intersect the local
-            // ordinary-empty plan with the globally eligible natives so a
-            // globally occupied/shown/protected native stays everywhere and
-            // all outputs choose the same removal identities with equal
-            // lengths. Any shared-active state without one computable
-            // global set (divergent split async, partial, or different
-            // orders, or otherwise unresolved coverage) holds all pruning
-            // instead of falling back to independent per-output identity
-            // removal. No window moves to compact.
-            if let Some(global) = self.shared_global_prunable_natives() {
-                for (output, (ring, plan)) in plans.iter_mut() {
-                    let global_here: BTreeSet<usize> = ring
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, id)| {
-                            self.native_binding_for(output, id)
+            if shared_native_roster {
+                if let Some(mut global) = self.shared_global_prunable_natives() {
+                    joint_native_plan = true;
+                    // A globally eligible native may still be kept by a
+                    // local trailing plan. Only remove groups every plan
+                    // would remove, before padding any spare demand.
+                    for (output, (ring, plan)) in &plans {
+                        global.retain(|native| {
+                            self.world
+                                .settlement
+                                .native_map
+                                .get(&(output.clone(), native.clone()))
+                                .is_some_and(|logical| {
+                                    plan.remove.iter().any(|&index| &ring[index] == logical)
+                                })
+                        });
+                    }
+                    for (output, (ring, plan)) in &mut plans {
+                        plan.remove.retain(|&index| {
+                            self.native_binding_for(output, &ring[index])
                                 .is_some_and(|native| global.contains(&native))
-                        })
-                        .map(|(index, _)| index)
-                        .collect();
-                    plan.remove.retain(|index| global_here.contains(index));
+                        });
+                    }
+                } else {
+                    // Incomplete or divergent observations cannot prove
+                    // all projections safe; never retire a subset.
+                    for (_, plan) in plans.values_mut() {
+                        plan.remove.clear();
+                    }
                 }
-            } else if self.shared_roster_active() {
-                for (_, plan) in plans.values_mut() {
-                    plan.remove.clear();
-                }
-            }
-            if self.connection.host_owned_workspace_domains()
+            } else if self.connection.host_owned_workspace_domains()
                 && self.connection.equal_workspace_count()
             {
                 // Partial native retirement readback must not replace an old
@@ -446,6 +452,8 @@ impl WorldTransaction<'_> {
         }
         // Equal-count parity: pad shorter rings to the longest (never
         // remove for parity; per-screen lifecycle already cleaned).
+        // After joint retirement, padding projects one successor spare
+        // onto all aligned outputs; native creation elects one coordinator.
         // Host-owned padding needs readable inventories, screens, and
         // native orders: an incomplete list or a missing/empty native row
         // proves no count, so padding waits for a complete re-read.
@@ -457,7 +465,10 @@ impl WorldTransaction<'_> {
             || live
                 .iter()
                 .all(|output| native_nonempty.contains(output.as_str()));
-        if self.connection.equal_workspace_count() && inventories_readable && native_orders_known {
+        if (self.connection.equal_workspace_count() || joint_native_plan)
+            && inventories_readable
+            && native_orders_known
+        {
             let max_len = live
                 .iter()
                 .filter_map(|output| self.world.workspace.mapping.get(output).map(Vec::len))
