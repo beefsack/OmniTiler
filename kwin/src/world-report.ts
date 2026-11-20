@@ -8,6 +8,7 @@
 // these, never a synchronous TS desktop decision.
 
 import { isCanonicalU64, isCarriedPoint, isCarriedRect as isCarriedRectBounds, isCorrelationId, isGenerationId, isOpaqueId, incrementU64, utf8ByteLength, WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES } from "./world-seq";
+import { MAX_FOCUS_CHANGES, type FocusChanges } from "./world-focus-changes";
 import type { RawWindowFact, WorldObservation } from "./world-observe";
 import { rawNativeGestureJson, type NativeGestureSnapshot } from "./world-gesture";
 
@@ -3051,6 +3052,7 @@ export interface WorldReportV4IntentRecord {
 // was spent).
 export interface WorldReportV4Input {
     readonly observation: WorldObservation;
+    readonly focusChanges: FocusChanges | null;
     readonly creationAttempts: ReadonlyArray<WorldCreationAttempt>;
     readonly frameAttempts: ReadonlyArray<WorldFrameAttempt>;
     readonly memberAttempts: ReadonlyArray<WorldMemberAttempt>;
@@ -3066,7 +3068,65 @@ export interface WorldReportV4Input {
     readonly intentRecords: ReadonlyArray<WorldReportV4IntentRecord>;
 }
 
+export interface WorldAttemptLanes {
+    frames: WorldFrameAttempt[];
+    members: WorldMemberAttempt[];
+    views: WorldViewAttempt[];
+    clears: WorldClearAttempt[];
+    states: WorldStateAttempt[];
+    focus: WorldFocusFeedback[];
+}
+
+export interface IncorporatedReportRows {
+    closed: ReadonlySet<string>;
+    attempts: ReadonlySet<string>;
+}
+
+export function incorporatedReportRows(closed: ReadonlyArray<string>, delivered: WorldAttemptLanes): IncorporatedReportRows {
+    const attempts = new Set<string>();
+    const collect = <T>(rows: T[], encode: (row: T) => string | null): void => {
+        for (const row of rows) {
+            const bytes = encode(row);
+            if (bytes !== null) attempts.add(bytes);
+        }
+    };
+    collect(delivered.frames, encodeV4FrameAttempt);
+    collect(delivered.members, encodeV4MemberAttempt);
+    collect(delivered.views, encodeV4ViewAttempt);
+    collect(delivered.clears, encodeV4ClearAttempt);
+    collect(delivered.states, encodeV4StateAttempt);
+    collect(delivered.focus, encodeV4FocusFeedback);
+    return { closed: new Set(closed.map(encodeV4String)), attempts };
+}
+
+export function subtractIncorporatedAttempts(delivered: WorldAttemptLanes, incorporated: IncorporatedReportRows): WorldAttemptLanes {
+    if (incorporated.attempts.size === 0) return delivered;
+    const retain = <T>(rows: T[], encode: (row: T) => string | null): T[] => rows.filter((row) => {
+        const bytes = encode(row);
+        return bytes === null || !incorporated.attempts.has(bytes);
+    });
+    return {
+        frames: retain(delivered.frames, encodeV4FrameAttempt),
+        members: retain(delivered.members, encodeV4MemberAttempt),
+        views: retain(delivered.views, encodeV4ViewAttempt),
+        clears: retain(delivered.clears, encodeV4ClearAttempt),
+        states: retain(delivered.states, encodeV4StateAttempt),
+        focus: retain(delivered.focus, encodeV4FocusFeedback),
+    };
+}
+
+export interface FrozenWorldReport {
+    encode(changes: FocusChanges | null): string | null;
+    subtract(incorporated: IncorporatedReportRows): void;
+}
+
 export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string | null {
+    return freezeWorldReportV4InnerJson(input)?.encode(input.focusChanges) ?? null;
+}
+
+// Encode all native facts now, but bind the interval to the incorporated
+// predecessor when this cut reaches the wire. The closure holds only bytes.
+export function freezeWorldReportV4InnerJson(input: Omit<WorldReportV4Input, "focusChanges">): FrozenWorldReport | null {
     const { observation } = input;
     const esc = encodeV4String;
     const screens: string[] = [];
@@ -3090,7 +3150,7 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
         seenWindows.add(w.win);
         windows.push(row);
     }
-    const closed: string[] = [];
+    let closed: string[] = [];
     for (const id of observation.closed) {
         if (!isOpaqueId(id) || seenWindows.has(id)) {
             return null;
@@ -3204,7 +3264,7 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
     // Retained one-shot focus correlation rides verbatim in canonical key
     // order (at most one entry per spent effect id). Empty rides the
     // literal empty lane, never an omission: the core requires the key.
-    const focusRows: string[] = [];
+    let focusRows: string[] = [];
     for (const row of input.focusFeedbacks ?? []) {
         const bytes = encodeV4FocusFeedback(row);
         if (bytes === null) {
@@ -3212,12 +3272,11 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
         }
         focusRows.push(bytes);
     }
-    const focusLane = `"focusFeedback":[${focusRows.join(",")}]`;
     // Retained property-attempt evidence rides verbatim in canonical key
     // order inside one required propertyAttempts array. Empty rides the
     // literal empty lane, never an omission. A row that cannot be spelled
     // canonically fails the whole report closed, never a partial lane.
-    const propertyRows: string[] = [];
+    let propertyRows: string[] = [];
     const pushPropertyRows = <T>(
         rows: ReadonlyArray<T>,
         encode: (row: T) => string | null,
@@ -3240,7 +3299,6 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
     ) {
         return null;
     }
-    const propertyLane = `"propertyAttempts":[${propertyRows.join(",")}]`;
     // Required foreground provenance bit: true with nonempty focused proves
     // bound foreground, true with empty proves no client, false (always with
     // empty focus) means unknown. False with nonempty focus is invalid and
@@ -3249,19 +3307,65 @@ export function buildWorldReportV4InnerJson(input: WorldReportV4Input): string |
     if (!foregroundKnown && observation.focusedGlobal !== "") {
         return null;
     }
-    return `{"v":${WORLD_CONTRACT_VERSION},` +
-        `"screens":[${screens.join(",")}],"windows":[${windows.join(",")}],` +
-        `"closed":[${closed.join(",")}],"native":[${native.join(",")}],` +
-        `"focused":${focused},"foregroundKnown":${encodeV4Bool(foregroundKnown)},"complete":${encodeV4Bool(observation.complete)},` +
+    const prefix = `{"v":${WORLD_CONTRACT_VERSION},` +
+        `"screens":[${screens.join(",")}],"windows":[${windows.join(",")}],"closed":[`;
+    const beforeFocus = `],"native":[${native.join(",")}],` +
+        `"focused":${focused},"foregroundKnown":${encodeV4Bool(foregroundKnown)},"focusChanges":`;
+    const suffix = `,"complete":${encodeV4Bool(observation.complete)},` +
         `"gesture":${encodeV4Bool(observation.gesture)},"cursor":${cursor},` +
         `"actionForeground":${actionForeground},"actionCached":${actionCached},` +
         `"actionOutputs":[${actionOutputs.join(",")}],` +
         `"presentation":${presentation}${lanes},` +
         `"intentRecords":[${intentRecords.join(",")}],` +
-        `${propertyLane},${focusLane},` +
-        `"rendererInput":null,` +
+        `"propertyAttempts":[`;
+    const end = `],"rendererInput":null,` +
         `"nativeGesture":${nativeGesture},"cursorWindow":${cursorWindow}${cursorHitLane},` +
         `"nativeInvalidWitness":${witness}}`;
+    return {
+        encode: (changes) => encodeV4ReportFocusChanges(changes,
+            prefix + closed.join(",") + beforeFocus,
+            suffix + propertyRows.join(",") + `],"focusFeedback":[${focusRows.join(",")}` + end),
+        subtract: (incorporated) => {
+            if (incorporated.closed.size > 0) closed = closed.filter((row) => !incorporated.closed.has(row));
+            if (incorporated.attempts.size > 0) {
+                propertyRows = propertyRows.filter((row) => !incorporated.attempts.has(row));
+                focusRows = focusRows.filter((row) => !incorporated.attempts.has(row));
+            }
+        },
+    };
+}
+
+function encodeV4ReportFocusChanges(changes: FocusChanges | null, prefix: string, suffix: string): string | null {
+    const esc = encodeV4String;
+    if (changes === undefined) {
+        return null;
+    }
+    let focusChanges = "null";
+    if (changes !== null) {
+        if (changes.after !== null && !isCanonicalU64(changes.after)) {
+            return null;
+        }
+        let events = "null";
+        if (changes.events !== null) {
+            if (changes.events.length > MAX_FOCUS_CHANGES) {
+                return null;
+            }
+            const rows: string[] = [];
+            for (const event of changes.events) {
+                if (event.kind === "foreground" &&
+                    (event.win === null || event.win === "" || isOpaqueId(event.win))) {
+                    rows.push(`{"kind":"foreground","win":${event.win === null ? "null" : esc(event.win)}}`);
+                } else if (event.kind === "view" && isOpaqueId(event.out) && isOpaqueId(event.native)) {
+                    rows.push(`{"kind":"view","out":${esc(event.out)},"native":${esc(event.native)}}`);
+                } else {
+                    return null;
+                }
+            }
+            events = `[${rows.join(",")}]`;
+        }
+        focusChanges = `{"after":${changes.after === null ? "null" : esc(changes.after)},"events":${events}}`;
+    }
+    return prefix + focusChanges + suffix;
 }
 
 const FOCUS_SETTERS = new Set(["accepted", "refused", "threw", "not-called"]);

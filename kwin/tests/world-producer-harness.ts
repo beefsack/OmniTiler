@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { dirname, join, resolve } from "node:path";
 
-import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
+import { WORLD_DEBOUNCE_MS, WORLD_WAIT_METHOD, startWorldAdapterEntry } from "../src/world-entry";
 
 function repoRoot(): string {
     let dir = resolve(process.cwd());
@@ -203,6 +203,11 @@ export interface Harness {
     readonly answered: Set<number>;
     readonly replies: Map<number, string>;
     readonly takeReplies: string[];
+    readonly waits: CapturedCall[];
+    readonly shortcuts: Map<string, () => void>;
+    // Optional transport gate: broker admission is real even while the
+    // test holds delivery of its Queue ACK to the producer.
+    deliverQueueAck: (reply: string, callback: CapturedCall["callback"]) => void;
     // Presentation lane (recorded only, never auto-answered: the
     // production subscriber stays in flight until a test forwards a read
     // to the real broker, exactly like discover() does for DiscoverWorld).
@@ -279,7 +284,7 @@ export function truthfulClientFor(f: { x: number; y: number; width: number; heig
     return { x, y, width: w, height: h };
 }
 
-export async function makeHarness(focusId: string, ids: string[], opts?: { withEffectFacts?: boolean; withNativePreimage?: boolean; withIntentStore?: boolean; withNativeCreation?: boolean; desktops?: string[]; fractionalScale?: number; outputs?: FakeOutputSpec[]; homes?: Record<string, string>; currents?: Record<string, string>; scopeClass?: string; devSettingsJson?: string; options?: unknown }): Promise<Harness> {
+export async function makeHarness(focusId: string, ids: string[], opts?: { withEffectFacts?: boolean; withNativePreimage?: boolean; withIntentStore?: boolean; withNativeCreation?: boolean; withWait?: boolean; desktops?: string[]; fractionalScale?: number; outputs?: FakeOutputSpec[]; homes?: Record<string, string>; currents?: Record<string, string>; scopeClass?: string; devSettingsJson?: string; options?: unknown }): Promise<Harness> {
     // Multi-desktop selection support (tier 2A): the default stays exactly
     // one native desktop (`ws1`, the pre-existing shape); passing
     // `desktops` seeds that many natives in order, all but the first empty.
@@ -424,6 +429,9 @@ export async function makeHarness(focusId: string, ids: string[], opts?: { withE
         answered: new Set<number>(),
         replies: new Map<number, string>(),
         takeReplies: [],
+        shortcuts: new Map(),
+        deliverQueueAck: (reply, callback) => callback(reply),
+        waits: [],
         reads: [],
         readReplies: [],
         renders: [],
@@ -736,9 +744,12 @@ export async function makeHarness(focusId: string, ids: string[], opts?: { withE
         // migration-producer fixture. The single-desktop default never
         // fires this path (nothing ever switches away from `ws1`).
         setCurrentDesktopForScreen: (deskRef: unknown, screen: { name: string }): void => {
+            const previous = currentByOutput.get(screen.name);
             currentByOutput.set((screen as { name: string }).name, deskRef as FakeDesktop);
             harness.viewWrites.push(`${(screen as { name: string }).name}->${(deskRef as FakeDesktop).id}`);
-            harness.fire("currentDesktopChanged");
+            for (const handler of [...(signals["currentDesktopChanged"] as FakeSignal).handlers]) {
+                (handler as (...args: Array<unknown>) => void)(previous, deskRef, screen);
+            }
         },
         // Pinned KWin `sendClientToScreen` echo (`window.cpp`
         // `finishInteractiveOutputChange` at pin ab7df7cc, mirroring the
@@ -948,6 +959,10 @@ export async function makeHarness(focusId: string, ids: string[], opts?: { withE
                 }));
                 return;
             }
+            if (method === WORLD_WAIT_METHOD && opts?.withWait === true) {
+                harness.waits.push({ method, payload, callback });
+                return;
+            }
             if (method !== "DiscoverWorld" && method !== "DescribeWorld" && method !== "QueueWorldCommand" && method !== "TakeCommandResult") {
                 return;
             }
@@ -960,7 +975,7 @@ export async function makeHarness(focusId: string, ids: string[], opts?: { withE
             // filings to the entry's own timeouts.
             if (method === "QueueWorldCommand") {
                 harness.bridge.send("QueueWorldCommand", payload).then(
-                    (queueReply) => callback(queueReply),
+                    (queueReply) => harness.deliverQueueAck(queueReply, callback),
                     () => undefined,
                 );
             } else if (method === "TakeCommandResult") {
@@ -984,7 +999,10 @@ export async function makeHarness(focusId: string, ids: string[], opts?: { withE
             harness.logs.push(message);
         },
         gestureActive: () => false,
-        registerShortcutFn: () => true,
+        registerShortcutFn: (_id, _description, key, callback) => {
+            harness.shortcuts.set(key, callback);
+            return true;
+        },
         readWorkspaceModeFn: () => "per-output-local",
         readDefaultTiledFn: () => true,
         ...(opts?.scopeClass !== undefined ? { readScopeClassFn: () => opts.scopeClass } : {}),

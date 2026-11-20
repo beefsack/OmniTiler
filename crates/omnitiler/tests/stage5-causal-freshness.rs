@@ -80,7 +80,7 @@ fn inner_report(windows: &[String]) -> String {
           \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}},\
           {{\"win\":\"win-b\",\"live\":[300,0,200,200]}}],\
           \"witness\":null,\"foregroundOut\":null}},\
-          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
+          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\
           \"rendererInput\":null,\
           \"gestureIngress\":null,\"nativeGesture\":null,\
           \"cursorWindow\":null,\"nativeInvalidWitness\":null}}",

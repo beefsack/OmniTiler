@@ -6,6 +6,10 @@ conformance target.
 
 - Source of truth: `manifest.json` in this directory. Unchanged vectors are
   referenced by relative `../v4/...` paths, not copied.
+- Current `WorldReport` vectors and the evaluator transcript carry
+  `focusChanges:null`: these profiles are snapshot-only. Accepted canonical
+  vectors were recorded through the strict report encoder. Reject vectors
+  retain the manifest's counterfactual mutation and verdict.
 - Changed bytes (generated with the real strict `encode_handshake_request`
   from typed requests, never string-patched):
   - `messages/handshake-*.json` (8 valid requests). Rule: `sharedNativeRoster`

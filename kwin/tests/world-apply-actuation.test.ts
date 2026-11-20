@@ -1252,6 +1252,162 @@ describe("world actuation identity and proof", () => {
         assert.equal(attempts[0]?.["created"], null, "late desktop never rewrites the spent receipt");
     });
 
+    it("spends nothing on a superseded creation publication and redelivers the same op exactly once", () => {
+        const h = makeHarness();
+        discover(h);
+        const rev = { n: 0 };
+        h.handle?.requestWorkspaceRelative(1);
+        const unbound = unboundRow("wl-1");
+        // Explicit pending view for the same target: without it, zero
+        // view switches would be vacuous (no transfer, no obligation).
+        // It must stay held with no switch until the native is bound and
+        // observed, then actuate exactly once as the positive control.
+        const viewTransfer: Record<string, unknown> = {
+            op: "op-view-1", kind: "view", win: "", out: "out", ws: "wl-1", follow: false, held: false, cmdSeq: null, parent: null,
+        };
+        // Baseline: an unbound row alone authorizes nothing.
+        dispatchAndReply(h, rev, { workspaces: [unbound], transfers: [viewTransfer] });
+        assert.equal(h.world.createCalls, 0, "unbound rows never authorize creation");
+        assert.equal(h.world.viewSwitches.length, 0, "pending view holds with no switch before arrival");
+        // Checked publication lands during flight, but a native
+        // invalidation before the reply supersedes the watermark: the
+        // accepted reply is checked yet apply-skipped, so the desire
+        // spends nothing and no receipt is recorded.
+        h.fire("desktopsChanged");
+        h.runTimers();
+        answerQueue(h);
+        const call = lastDescribe(h);
+        const body = JSON.parse(call.payload) as Record<string, unknown>;
+        h.fire("desktopsChanged");
+        rev.n += 1;
+        call.callback(acceptedReply("gen-1", body["source"] as string, body["nativeInvalid"] as string, String(rev.n), {
+            workspaces: [unbound],
+            nativeCreations: [desire("op-native-1", "wl-1")],
+            transfers: [viewTransfer],
+        }));
+        answerTake(h, null);
+        assert.equal(h.world.createCalls, 0, "superseded publication spends nothing");
+        assert.equal(h.world.created.length, 0, "no native created on superseded reply");
+        assert.ok(h.logs.some((l) => l.includes("superseded-during-flight")), "superseded reply is skipped, not applied");
+        assert.equal(h.world.viewSwitches.length, 0, "pending view stays incomplete and unswitched on superseded reply");
+        // Protocol-equivalent redelivery is the same desire row (same
+        // op/ws/out) on the next reply, never a byte-identical envelope
+        // and never a fresh resize/membership proof: the core retains
+        // the outstanding op until a receipt binds it.
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, {
+            workspaces: [unbound],
+            nativeCreations: [desire("op-native-1", "wl-1")],
+            transfers: [viewTransfer],
+        });
+        assert.equal(h.world.createCalls, 1, "redelivered desire mints exactly once");
+        assert.deepEqual(h.world.createArgs[0], [3, "wl-1"], "explicit position plus logical token");
+        assert.equal(h.world.created.length, 1, "same-turn delta proves the created id");
+        assert.equal(h.world.viewSwitches.length, 0, "mint alone completes no view switch before bind and arrival");
+        const created = h.world.created[0] as string;
+        // The causal receipt then rides verbatim until the core bind.
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, {
+            workspaces: [unbound],
+            nativeCreations: [desire("op-native-1", "wl-1")],
+            transfers: [viewTransfer],
+        });
+        assert.equal(h.world.createCalls, 1, "spent op never re-executes");
+        const attempts = lastCreationAttempts(h);
+        assert.equal(attempts.length, 1, "one retained receipt");
+        assert.equal(attempts[0]?.["op"], "op-native-1", "exact op correlation");
+        assert.equal(attempts[0]?.["created"], created, "exact op-native correlation");
+        assert.equal(attempts[0]?.["setter"], "accepted", "same-call acceptance preserved");
+        assert.equal(h.world.viewSwitches.length, 0, "receipt alone completes no view switch before bind and arrival");
+        // Positive arrival/control: the core bind incorporates the receipt
+        // once with no second mint, and the same pending view now proves
+        // its native target (bound and observed) and switches exactly once.
+        // Zero before here was therefore non-vacuous: same op, same target.
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, { workspaces: [boundRow("wl-1", created)], transfers: [viewTransfer] });
+        assert.equal(h.world.createCalls, 1, "incorporated desire never repeats");
+        assert.deepEqual(h.world.viewSwitches, [created], "pending view switches exactly once after bind and arrival");
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, { workspaces: [boundRow("wl-1", created)], transfers: [viewTransfer] });
+        assert.equal(lastCreationAttempts(h).length, 0, "incorporated receipt retires once");
+        assert.deepEqual(h.world.viewSwitches, [created], "confirmed view never re-switches");
+    });
+
+    it("redelivers an identical receipt after a timed-out ACK with no second mint and binds once", () => {
+        const h = makeHarness();
+        discover(h);
+        const rev = { n: 0 };
+        h.handle?.requestWorkspaceRelative(1);
+        const unbound = unboundRow("wl-1");
+        const desires = [desire("op-native-1", "wl-1")];
+        const viewTransfer: Record<string, unknown> = {
+            op: "op-view-1", kind: "view", win: "", out: "out", ws: "wl-1", follow: false, held: false, cmdSeq: null, parent: null,
+        };
+        // Mint once through the ordinary applied publication.
+        dispatchAndReply(h, rev, { workspaces: [unbound], nativeCreations: desires, transfers: [viewTransfer] });
+        assert.equal(h.world.createCalls, 1, "one creation flight per stable op");
+        const created = h.world.created[0] as string;
+        assert.equal(h.world.viewSwitches.length, 0, "pending view holds with no switch before bind and arrival");
+        // Dispatch the receipt flight, then lose its ACK: the callback
+        // never lands and the 2 s capture timeout fires (on-next-event
+        // recovery only, never a blind replay).
+        h.fire("desktopsChanged");
+        h.runTimers();
+        answerQueue(h);
+        const lostCall = lastDescribe(h);
+        const lostBody = JSON.parse(lostCall.payload) as Record<string, unknown>;
+        const lostReport = (lostBody["report"] ?? lostBody) as Record<string, unknown>;
+        const lostAttempts = (lostReport["creationAttempts"] ?? []) as Array<Record<string, unknown>>;
+        assert.equal(lostAttempts.length, 1, "receipt rides the lost flight");
+        assert.equal(lostAttempts[0]?.["op"], "op-native-1");
+        assert.equal(lostAttempts[0]?.["created"], created);
+        const queueBefore = h.calls.filter((c) => c.method === "QueueWorldCommand").length;
+        const memberBefore = h.world.membershipCalls.length;
+        const viewBefore = h.world.viewSwitches.length;
+        h.runTimers(2000);
+        assert.ok(h.logs.some((l) => l.includes("omnitiler:world:timeout recovery=on-next-event")), "capture timeout arms on-next-event recovery");
+        assert.equal(h.world.createCalls, 1, "timeout never remints");
+        // Actual redelivery is a fresh capture (new source/watermark)
+        // carrying the byte-identical receipt row, never a same-envelope
+        // replay, fresh resize observation, membership write, or Queue
+        // filing: only the retained creation lane may carry it.
+        h.fire("desktopsChanged");
+        h.runTimers();
+        answerQueue(h);
+        const redeliveredCall = lastDescribe(h);
+        assert.ok(redeliveredCall !== lostCall, "redelivery is a fresh capture, never same-envelope reuse");
+        const redeliveredBody = JSON.parse(redeliveredCall.payload) as Record<string, unknown>;
+        assert.notEqual(redeliveredBody["source"], lostBody["source"], "fresh source proves a new capture");
+        const redeliveredReport = (redeliveredBody["report"] ?? redeliveredBody) as Record<string, unknown>;
+        const redeliveredAttempts = (redeliveredReport["creationAttempts"] ?? []) as Array<Record<string, unknown>>;
+        assert.deepEqual(redeliveredAttempts, lostAttempts, "identical receipt payload redelivers verbatim: op/ws/out/setter/before/after/created/attemptMs");
+        assert.equal(redeliveredAttempts[0]?.["op"], "op-native-1", "exact op correlation");
+        assert.equal(redeliveredAttempts[0]?.["created"], created, "exact op-native correlation");
+        assert.equal(h.calls.filter((c) => c.method === "QueueWorldCommand").length, queueBefore, "redelivery files no Queue substitute");
+        assert.equal(h.world.membershipCalls.length, memberBefore, "redelivery performs no membership substitute");
+        assert.equal(h.world.viewSwitches.length, viewBefore, "pending view stays incomplete and unswitched through timed-out ACK and redelivery");
+        // Deliver the redelivered flight (desire retained to prove the
+        // spent guard), then bind once with no second mint. The same
+        // pending view now switches exactly once as the positive control.
+        rev.n += 1;
+        redeliveredCall.callback(acceptedReply("gen-1", redeliveredBody["source"] as string, redeliveredBody["nativeInvalid"] as string, String(rev.n), {
+            workspaces: [unbound],
+            nativeCreations: desires,
+            transfers: [viewTransfer],
+        }));
+        answerTake(h, null);
+        assert.equal(h.world.createCalls, 1, "redelivered ACK never remints");
+        assert.equal(h.world.viewSwitches.length, viewBefore, "redelivered receipt alone completes no view switch");
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, { workspaces: [boundRow("wl-1", created)], transfers: [viewTransfer] });
+        assert.equal(h.world.createCalls, 1, "incorporated desire never repeats");
+        assert.deepEqual(h.world.viewSwitches, [created], "pending view switches exactly once after bind and arrival");
+        h.fire("desktopsChanged");
+        dispatchAndReply(h, rev, { workspaces: [boundRow("wl-1", created)], transfers: [viewTransfer] });
+        assert.equal(lastCreationAttempts(h).length, 0, "incorporated receipt retires once");
+        assert.deepEqual(h.world.viewSwitches, [created], "confirmed view never re-switches");
+    });
+
     it("survives a synchronous desktop signal during creation without duplication", () => {
         const h = makeHarness();
         discover(h);
@@ -1318,6 +1474,7 @@ describe("world actuation identity and proof", () => {
         });
         assert.equal(parseWorldReply(refused), null, "non-empty effects refuses at the reader");
         const h = makeHarness();
+        h.world.currentDesktop = h.world.desktops[1]!;
         discover(h);
         const rev = { n: 0 };
         h.handle?.requestWorkspaceRelative(1);

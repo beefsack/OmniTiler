@@ -220,6 +220,7 @@ fn synchronous_atomic_revision_and_public_reply_contract() {
             held_attempts: Vec::new(),
             state_attempts: Vec::new(),
             visibility_attempts: Vec::new(),
+            focus_changes: None,
             focus_feedback: Vec::new(),
             presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
             intent_records: Vec::new(),

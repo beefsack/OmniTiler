@@ -1496,7 +1496,7 @@ mod tests {
               {{\"win\":\"{WIN_C}\",\"live\":[800,0,40,90]}},\
               {{\"win\":\"{WIN_D}\",\"live\":[900,0,40,90]}}],\
               \"witness\":null,\"foregroundOut\":{foreground_out}}},\
-              \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
+              \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\
               \"rendererInput\":null,\"gestureIngress\":null,\
               \"nativeGesture\":{native_gesture},\
               \"cursorWindow\":{cursor_window},\"nativeInvalidWitness\":null}}",
@@ -1801,7 +1801,7 @@ mod tests {
                 \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
                 \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\
                 \"witness\":null,\"foregroundOut\":null}},\
-                \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+                \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\
                 \"gestureIngress\":null,\"nativeGesture\":{native_gesture},\"cursorWindow\":null,\
                 \"nativeInvalidWitness\":{witness}}}"
             )
@@ -2172,7 +2172,7 @@ mod tests {
             \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
             \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
             \"witness\":null,\"foregroundOut\":null}},\
-            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\
             \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}"
         );
 
@@ -2312,7 +2312,7 @@ mod tests {
             ))
             .expect("settings");
 
-        let plain_inner = "{\"v\":4,\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
+        let plain_inner = "{\"v\":4,\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
         let cap1 = format!(
             "{{\"v\":4,\"adapter\":\"kwin-test\",\"gen\":\"{generation}\",\"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\"report\":{plain_inner}}}"
         );
@@ -2386,7 +2386,7 @@ mod tests {
             ))
             .expect("settings");
 
-        let plain_inner = "{\"v\":4,\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
+        let plain_inner = "{\"v\":4,\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
         let cap1 = format!(
             "{{\"v\":4,\"adapter\":\"kwin-test\",\"gen\":\"{generation}\",\"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\"report\":{plain_inner}}}"
         );
@@ -2460,7 +2460,7 @@ mod tests {
             ))
             .expect("settings");
 
-        let plain_inner = "{\"v\":4,\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
+        let plain_inner = "{\"v\":4,\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
 
         // Queue a failing command (focus unknown window) -> settles as Failed("focus-unknown").
         service

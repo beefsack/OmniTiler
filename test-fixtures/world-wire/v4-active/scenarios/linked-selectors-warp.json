@@ -313,7 +313,8 @@
           "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
-          "foregroundKnown": true
+          "foregroundKnown": true,
+          "focusChanges": null
         }
       },
       "expect": {
@@ -543,7 +544,8 @@
           "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
-          "foregroundKnown": true
+          "foregroundKnown": true,
+          "focusChanges": null
         }
       },
       "expect": {
@@ -775,7 +777,8 @@
           "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
-          "foregroundKnown": true
+          "foregroundKnown": true,
+          "focusChanges": null
         }
       },
       "expect": {
@@ -1108,7 +1111,8 @@
           "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
-          "foregroundKnown": true
+          "foregroundKnown": true,
+          "focusChanges": null
         }
       },
       "expect": {
@@ -1338,7 +1342,8 @@
           "propertyAttempts": [],
           "focusFeedback": [],
           "rendererInput": null,
-          "foregroundKnown": true
+          "foregroundKnown": true,
+          "focusChanges": null
         }
       },
       "expect": {

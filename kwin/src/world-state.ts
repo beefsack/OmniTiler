@@ -7,12 +7,14 @@
 // observations and transport results.
 
 import { type ClosedEvidenceToken } from "./world-close-tracker";
+import { FocusChangesTracker, type FocusChangesCut } from "./world-focus-changes";
 import { compareU64, incrementU64, isCanonicalU64, isOpaqueId } from "./world-seq";
 import {
     encodeV4FocusFeedback,
     encodeV4StateAttempt,
     isWorldRejection,
     type FrameSetter,
+    type WorldAttemptLanes,
     type WorldAfterShown,
     type WorldClearAttempt,
     type WorldCommand,
@@ -91,6 +93,8 @@ export interface QueuedIntent {
 export interface CaptureFlight {
     source: string;
     watermark: string;
+    subjectGuard: number | null;
+    torn?: true;
     // Queue-client command the fresh capture drains (FIFO head), if any.
     // Terminal results arrive requester-only via TakeCommandResult, never
     // in the capture reply.
@@ -106,24 +110,14 @@ export interface CaptureFlight {
     // entries, so a lost acknowledgement redelivers the same attempt
     // stamps while a newer update for the same key survives its
     // predecessor's ack. Never a verdict: the core owns every outcome.
-    delivered: AttemptFlight;
+    delivered: WorldAttemptLanes;
     // Immutable serialized close evidence bound to tracker lifetime,
     // generation, and source; retired only on validated bound ready
     // incorporation.
     closedToken: ClosedEvidenceToken | null;
+    focusChangesCut: FocusChangesCut | null;
 }
 
-// Mechanical write/readback facts delivered by one capture flight (see
-// CaptureFlight.delivered). Snapshots only; the live pending maps keep
-// latest-wins until the bound reply consumes them.
-export interface AttemptFlight {
-    frames: WorldFrameAttempt[];
-    members: WorldMemberAttempt[];
-    views: WorldViewAttempt[];
-    clears: WorldClearAttempt[];
-    states: WorldStateAttempt[];
-    focus: WorldFocusFeedback[];
-}
 
 // Latest-wins bounds mirror the core report caps (world_report.rs
 // MAX_WORLD_*): eviction drops the oldest entry past the cap so a report
@@ -158,6 +152,7 @@ function isStamp(value: unknown): value is string {
 }
 
 export class WorldAdapterState {
+    readonly focusChanges = new FocusChangesTracker();
     readonly adapter: string;
     readonly owner: string;
     // Queue-client namespace (stable per evaluation; the sender binds the
@@ -962,6 +957,9 @@ export class WorldAdapterState {
             this.dirty = true;
             return { applied: false, reason: "not-ready" };
         }
+        if (this.inFlight.subjectGuard !== null && reply.nativeInvalid !== dispatchWatermark) {
+            return { applied: false, reason: "watermark-mismatch" };
+        }
         if (!isCanonicalU64(reply.rev) || !isCanonicalU64(reply.obs)) {
             this.observationOnlyCatchup = true;
             this.dirty = true;
@@ -974,6 +972,9 @@ export class WorldAdapterState {
         // delivered facts (attempts included): retire exactly-equal
         // delivered entries. Newer updates for the same keys survive.
         this.ackDelivered(dispatchSource, true);
+        if (this.inFlight.focusChangesCut !== null) {
+            this.focusChanges.incorporate(this.inFlight.focusChangesCut, reply.rev);
+        }
         void dispatchWatermark;
         this.lastAcceptedRev = reply.rev;
         this.hasAccepted = true;
@@ -1016,6 +1017,10 @@ export class WorldAdapterState {
         source: string,
         clientCmd: string | null,
         closedToken: ClosedEvidenceToken | null = null,
+        focusChangesCut: FocusChangesCut | null = null,
+        watermark = this.currentInvalid,
+        delivered?: WorldAttemptLanes,
+        subjectGuard: number | null = null,
     ): CaptureFlight | null {
         if (this.inFlight !== null) {
             return null;
@@ -1024,9 +1029,9 @@ export class WorldAdapterState {
         // consumes exactly-equal entries, so redelivery after a lost
         // acknowledgement reuses the original write stamps.
         const flight: CaptureFlight = {
-            source, watermark: this.currentInvalid, clientCmd,
+            source, watermark, clientCmd, subjectGuard,
             gesture: null,
-            delivered: {
+            delivered: delivered ?? {
                 frames: this.framesForReport(),
                 members: this.memberAttemptsForReport(),
                 views: this.viewAttemptsForReport(),
@@ -1035,6 +1040,7 @@ export class WorldAdapterState {
                 focus: this.focusFeedbacksForReport(),
             },
             closedToken,
+            focusChangesCut,
         };
         this.inFlight = flight;
         this.dirty = false;
@@ -1051,12 +1057,11 @@ export class WorldAdapterState {
         watermark: string,
         clientCmd: string | null,
         closedToken: ClosedEvidenceToken | null = null,
+        focusChangesCut: FocusChangesCut | null = null,
+        delivered?: WorldAttemptLanes,
+        subjectGuard: number | null = null,
     ): CaptureFlight | null {
-        const flight = this.beginCapture(source, clientCmd, closedToken);
-        if (flight !== null) {
-            flight.watermark = watermark;
-        }
-        return flight;
+        return this.beginCapture(source, clientCmd, closedToken, focusChangesCut, watermark, delivered, subjectGuard);
     }
 
     onDiscovery(gen: string, adapter?: string, req?: string, expectedReq?: string): boolean {
@@ -1076,6 +1081,7 @@ export class WorldAdapterState {
         // queue-client namespace restarts at 1: commands queued under a
         // dead generation settle there and are uncollectible here.
         this.boundGen = gen;
+        this.focusChanges.reset();
         this.inFlight = null;
         this.lastReply = null;
         this.lastTakeResult = null;

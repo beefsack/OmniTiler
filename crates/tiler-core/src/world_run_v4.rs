@@ -23,7 +23,9 @@
 use crate::world_transaction::WorldTransaction;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::directional::{OutputId, WindowId, WorkspaceId};
+use crate::boundary::CoreCommand;
+use crate::directional::{OutputId, WindowId, WindowSubject, WorkspaceId};
+use crate::geometry::Rect;
 use crate::session::DomainKey;
 use crate::world_commands::CommandApplied;
 use crate::world_engine::{
@@ -37,6 +39,16 @@ use crate::world_report::{
     TilingMode, TransferKind, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 use crate::world_report_v4_checks::graded_effective_v4;
+
+fn is_implicit_float_without_frame(command: &WorldCommand) -> bool {
+    matches!(
+        command,
+        WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: WindowSubject::CurrentFocus,
+            float_rect: None,
+        })
+    )
+}
 
 /// Genuine outcome of one v4 accepted run: the v4 reply on
 /// observation/command progression, or the envelope refusal kind when
@@ -72,8 +84,15 @@ impl WorldTransaction<'_> {
         consumed: bool,
         issuing_revision: u64,
     ) -> V4RunOutcome {
-        let (outcome, _) =
-            self.run_accepted_v4_batched(report, issue, consumed, issuing_revision, &[]);
+        let predecessor = (self.world.state_revision != 0).then_some(self.world.state_revision);
+        let (outcome, _) = self.run_accepted_v4_batched(
+            report,
+            issue,
+            consumed,
+            issuing_revision,
+            predecessor,
+            &[],
+        );
         outcome
     }
 
@@ -90,12 +109,15 @@ impl WorldTransaction<'_> {
     /// `report.command` first if present, then `queued`). A
     /// creation-exhausted command discards the whole staged candidate with
     /// empty settlements so the caller reparks the batch.
+    /// `predecessor` is the last fully incorporated reply's revision, absent
+    /// at generation start. It is not the observation watermark.
     pub(crate) fn run_accepted_v4_batched(
         &mut self,
         report: &WorldReportV4,
         issue: &EventIssue,
         consumed: bool,
         issuing_revision: u64,
+        predecessor: Option<u64>,
         queued: &[(u64, WorldCommand)],
     ) -> (V4RunOutcome, Vec<BatchDisposition>) {
         // Admitted-candidate precondition without implementing admission:
@@ -152,6 +174,33 @@ impl WorldTransaction<'_> {
             maximize_supported,
         );
         let effective = graded.as_ref().unwrap_or(report);
+        // A commandless native report carrying a focus interval is the cut
+        // paired with queued work. A declared focus gap does not erase its
+        // readable per-window facts. Freeze only pre-existing floats, before
+        // this observation can admit windows or settle an in-flight float.
+        // An outstanding placement can still be showing the old tile frame.
+        let mut cut_float_frames: BTreeMap<&WindowId, Rect> = BTreeMap::new();
+        if report.command.is_none()
+            && report.focus_changes.is_some()
+            && queued
+                .iter()
+                .any(|(_, command)| is_implicit_float_without_frame(command))
+        {
+            cut_float_frames.extend(effective.windows.iter().filter_map(|fact| {
+                let rect = fact.rect?;
+                let window = &fact.window;
+                (fact.fullscreen == Some(false)
+                    && fact.maximized != Some(true)
+                    && self.is_ordinary_float(window)
+                    && !self
+                        .world
+                        .settlement
+                        .retained_floats
+                        .iter()
+                        .any(|pending| &pending.window == window))
+                .then_some((window, rect))
+            }));
+        }
         let source_routing = RawRouting::from_v4(effective);
         // First-command freeze stays contracted on the first command of the
         // batch (inline else oldest queued), never on a later one.
@@ -218,7 +267,7 @@ impl WorldTransaction<'_> {
         // Freeze the positive-close survivor before convergence ingests the
         // host fallback: the retained request records the pre-close MRU
         // winner while later observations stay truthful.
-        self.freeze_close_focus(report, issuing_revision);
+        self.freeze_close_focus(report, issuing_revision, predecessor);
         self.converge_logical_pre();
         self.settle_views_pre();
         self.build_staged_domains();
@@ -397,45 +446,14 @@ impl WorldTransaction<'_> {
         }
         self.settle_intent_admissions();
         {
-            let prev = self.world.prior_context.prev_focused_global.clone();
-            let current_focused = self.world.staged.observation.focused_global.clone();
-            if !current_focused.is_empty() && prev != current_focused {
-                let active = WindowId(current_focused.clone());
-                let _ = self.record_canonical(&active, &held_scopes, false);
-                // A genuine new native focus event beats prior core intent:
-                // when the fail-closed record above skipped, the stale slot
-                // must not survive under the new event.
-                if self
-                    .world
-                    .focus
-                    .logical_focus_cursor
-                    .as_ref()
-                    .is_none_or(|slot| slot.0 != current_focused)
-                {
-                    self.world.focus.logical_focus_cursor = None;
-                }
-            } else if current_focused.is_empty() {
-                // Genuine native focus loss clears the execution-time
-                // subject. Per-workspace canonical memory
-                // (`last_active_window`) is untouched: it stays best-effort
-                // for workspace return.
-                self.world.focus.logical_focus_cursor = None;
+            let observed = &report.focused_global;
+            if self.world.prior_context.prev_focused_global != *observed && !observed.is_empty() {
+                let _ = self.record_canonical(&WindowId(observed.clone()), &held_scopes, false);
             }
-            // Close or departure clears a slot target that left the live
-            // set; unchanged re-reports keep an unlanded command choice.
-            if let Some(slot) = self.world.focus.logical_focus_cursor.clone()
-                && (self.world.staged.closes.contains(&slot)
-                    || !self.world.staged.homing.contains_key(&slot))
-            {
-                self.world.focus.logical_focus_cursor = None;
-            }
-            // A live retained request preserves its target as the cursor
-            // across an unchanged-baseline report: stale observed A must
-            // not overwrite pending B.
-            {
-                let observed = self.world.staged.observation.focused_global.clone();
-                self.preserve_live_pending_cursor(&observed);
-            }
+            // Canonical history follows native input independently of the
+            // execution subject. It cannot cancel an adjudicated request or
+            // leave an abandoned logical target in the FIFO cursor.
+            self.seed_focus_cursor();
         }
         // Deferred first-command subject re-resolution: the pre-observation
         // freeze read the stale slot, but native incorporation above moved
@@ -518,7 +536,7 @@ impl WorldTransaction<'_> {
         if report.command.is_none() && queued.is_empty() {
             let _ = self.world.command_result.take();
             crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
-            effects = self.drain_focus_candidates(effects, &held_scopes, report, issuing_revision);
+            effects = self.drain_focus_candidates(effects, &held_scopes, issuing_revision);
             let reply = self.publish_v4(
                 PublishEnvelopeV4 {
                     adapter_incarnation: report.adapter_incarnation.clone(),
@@ -557,6 +575,7 @@ impl WorldTransaction<'_> {
         // state, before the first command runs. Observations applied once
         // above; every command below owns post-previous-command state.
         self.snapshot_batch_focus_baseline();
+        cut_float_frames.retain(|window, _| self.is_ordinary_float(window));
         // Retained intent updates in execution order: sticky mutations
         // already updated the single owner during execution, and each
         // successful command below upserts its ordinary ToggleFloat save
@@ -632,7 +651,19 @@ impl WorldTransaction<'_> {
             // Resolve the execution-time subject once per command before
             // execution: both bookkeeping and dispatch share the single
             // resolved command (explicit commands borrow without cloning).
-            let (resolved_focus, dispatched) = self.resolve_command_subject(command);
+            let (resolved_focus, mut dispatched) = self.resolve_command_subject(command);
+            if !cut_float_frames.is_empty()
+                && is_implicit_float_without_frame(command)
+                && let Some(rect) = resolved_focus
+                    .as_ref()
+                    .and_then(|window| cut_float_frames.get(window))
+                && let std::borrow::Cow::Owned(WorldCommand::Operation(CoreCommand::ToggleFloat {
+                    float_rect,
+                    ..
+                })) = &mut dispatched
+            {
+                *float_rect = Some(*rect);
+            }
             match self.execute_resolved_command(
                 issue,
                 command_seq,
@@ -729,6 +760,9 @@ impl WorldTransaction<'_> {
                     last_bookkeeping = Some(dispatched);
                 }
             }
+            // Once a command changes a donor's state, this cut cannot supply
+            // a frame for it again, even if a later command re-floats it.
+            cut_float_frames.retain(|window, _| self.is_ordinary_float(window));
         }
         if dispositions
             .iter()
@@ -751,7 +785,7 @@ impl WorldTransaction<'_> {
         // Winner pass before publication: the final focus decision
         // supersedes the retained slot here, while the carriers stay
         // internal for the selection freeze inside publication.
-        let effects = self.drain_focus_candidates(effects, &held_scopes, report, issuing_revision);
+        let effects = self.drain_focus_candidates(effects, &held_scopes, issuing_revision);
         let reply = self.publish_v4(
             PublishEnvelopeV4 {
                 adapter_incarnation: report.adapter_incarnation.clone(),
@@ -768,6 +802,18 @@ impl WorldTransaction<'_> {
             self.finish_v4(report, issuing_revision, reply),
             dispositions,
         )
+    }
+
+    fn is_ordinary_float(&self, window: &WindowId) -> bool {
+        // Composed maximize can use the same layout exception but owns a
+        // distinct unfloat transition.
+        !self.world.runtime.composed_maximized.contains(window)
+            && self
+                .world
+                .workspace
+                .members
+                .get(window)
+                .is_some_and(|member| self.world.layout.is_ordinary_float(&member.home, window))
     }
 
     #[allow(clippy::too_many_arguments)]

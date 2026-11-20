@@ -1704,6 +1704,7 @@ mod tests {
                 cursor_hit: None,
                 focused_global: "w1".to_owned(),
                 foreground_known: true,
+                focus_changes: None,
                 action_foreground: None,
                 action_cached: None,
                 action_outputs: Vec::new(),

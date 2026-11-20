@@ -57,7 +57,7 @@ fn inner_report(windows: &[String]) -> String {
           \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}},\
           {{\"win\":\"win-b\",\"live\":[300,0,200,200]}}],\
           \"witness\":null,\"foregroundOut\":null}},\
-          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
+          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\
           \"rendererInput\":null,\
           \"gestureIngress\":null,\"nativeGesture\":null,\
           \"cursorWindow\":null,\"nativeInvalidWitness\":null}}",
@@ -1637,7 +1637,7 @@ fn unit_i_broker_gesture_transfer_128_byte_window_and_underlay_agreement() {
               {{\"win\":\"win-peer\",\"live\":[960,0,960,1040]}},\
               {{\"win\":\"win-2\",\"live\":[1920,0,1920,1040]}}],\
               \"witness\":null,\"foregroundOut\":null}},\
-              \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
+              \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\
               \"rendererInput\":null,\
               \"gestureIngress\":null,\"nativeGesture\":{native},\
               \"cursorWindow\":null,\"nativeInvalidWitness\":null}}",

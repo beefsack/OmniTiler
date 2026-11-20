@@ -1473,10 +1473,16 @@ impl WorldTransaction<'_> {
         // Same-freeze `afterShown` copy: when the retained focus winner is
         // the selection-backed explicit request this binding was just
         // frozen for (same command sequence and focus target), project the
-        // binding's exact frozen state into it. No row re-derivation, no
-        // caps, no truncation; parent settlement later cannot erase the
-        // copy. Direct/directional explicit winners have no binding and
-        // keep `None`.
+        // binding's exact frozen state into it. The same freeze also moves
+        // the request's activation scope to the target member's frozen
+        // post-layout home: for a follow mover that is the destination,
+        // for a sticky target the window's actual home (never the
+        // aggregate selected home in `binding.home` nor the pre-move
+        // staged home the mint read). If the target has no frozen
+        // member row, the slot's prior home is preserved. Direct/
+        // directional explicit winners have no binding and keep neither
+        // copy. No row re-derivation, no caps, no truncation; parent
+        // settlement later cannot erase the copy.
         if let (Some(focus), Some(focus_seq)) = (focus_key, focus_seq) {
             let matches = self.world.focus.pending_focus.as_ref().is_some_and(|slot| {
                 slot.cause == crate::world_report::FocusRequestCause::ExplicitCommand
@@ -1505,6 +1511,15 @@ impl WorldTransaction<'_> {
                     binding.after_shown_projection(&self.world.settlement.selection_scopes);
                 if let Some(slot) = self.world.focus.pending_focus.as_mut() {
                     slot.after_shown = Some(projection);
+                    let target_home = binding
+                        .members
+                        .iter()
+                        .find(|member| member.window == focus)
+                        .map(|member| member.home.clone());
+                    if let Some(home) = target_home {
+                        slot.output = home.output.clone();
+                        slot.workspace = home.workspace.0.clone();
+                    }
                 }
             }
         }

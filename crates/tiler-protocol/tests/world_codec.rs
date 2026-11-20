@@ -4,7 +4,7 @@
 //! golden bootstrap bytes, and budget gates.
 //! Every staged envelope is a genuine v4 envelope (`"v":4`, no `views`
 //! lane, the v4 presentation shape, plus the required `intentRecords`,
-//! `stateAttempts`, `focusFeedback`, and `rendererInput` lanes) decoded
+//! `propertyAttempts`, `focusFeedback`, `focusChanges`, and `rendererInput` lanes) decoded
 //! through the genuine v4 ingress.
 //! Offline only: no D-Bus, no KWin.
 
@@ -60,8 +60,147 @@ fn request_json(
           \"closed\":[],\"native\":[],\
          \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"out\"],\
-          \"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null}},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null}}"
+          \"focused\":\"\",\"foregroundKnown\":false,\"focusChanges\":null,\"complete\":true,\"gesture\":false,\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null}},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null}}"
     )
+}
+
+#[test]
+fn focus_changes_required_and_canonical_with_exact_size_delta() {
+    use serde_json::{Value, json};
+    use tiler_core::directional::{OutputId, WindowId};
+    use tiler_core::world_report::{FocusChange, FocusChanges, MAX_FOCUS_CHANGES};
+    use tiler_protocol::world_protocol::encode_report_v4;
+
+    let mut report: Value =
+        serde_json::from_str(&request_json("adapter-1", "gen-1", "1", "1", "req-1", "")).unwrap();
+    let snapshot = decode_report_v4(&report.to_string()).unwrap();
+    assert_eq!(snapshot.report.focus_changes, None);
+    let canonical_snapshot = encode_report_v4(&snapshot).unwrap();
+    assert!(canonical_snapshot.contains(",\"focusChanges\":null,"));
+    report.as_object_mut().unwrap().remove("focusChanges");
+    assert!(decode_report_v4(&report.to_string()).is_err());
+
+    let foreground = FocusChange::Foreground {
+        win: Some(WindowId("win-1".into())),
+    };
+    let max_events = vec![foreground.clone(); MAX_FOCUS_CHANGES];
+    let max_row = r#"{"kind":"foreground","win":"win-1"}"#;
+    let cases = [
+        (
+            r#"{"after":null,"events":null}"#.to_owned(),
+            FocusChanges {
+                after: None,
+                events: None,
+            },
+        ),
+        (
+            r#"{"after":"0","events":[]}"#.to_owned(),
+            FocusChanges {
+                after: Some(0),
+                events: Some(vec![]),
+            },
+        ),
+        (
+            concat!(
+                r#"{"after":"18446744073709551615","events":["#,
+                r#"{"kind":"foreground","win":"win-1"},"#,
+                r#"{"kind":"view","out":"out-1","native":"desktop_1.2"},"#,
+                r#"{"kind":"foreground","win":""},"#,
+                r#"{"kind":"foreground","win":null},"#,
+                r#"{"kind":"foreground","win":"win-1"}]}"#,
+            )
+            .to_owned(),
+            FocusChanges {
+                after: Some(u64::MAX),
+                events: Some(vec![
+                    foreground.clone(),
+                    FocusChange::View {
+                        out: OutputId("out-1".into()),
+                        native: "desktop_1.2".into(),
+                    },
+                    FocusChange::Foreground {
+                        win: Some(WindowId(String::new())),
+                    },
+                    FocusChange::Foreground { win: None },
+                    foreground,
+                ]),
+            },
+        ),
+        (
+            format!(
+                r#"{{"after":"1","events":[{}]}}"#,
+                [max_row; MAX_FOCUS_CHANGES].join(",")
+            ),
+            FocusChanges {
+                after: Some(1),
+                events: Some(max_events),
+            },
+        ),
+    ];
+    for (wire, expected) in cases {
+        report["focusChanges"] = serde_json::from_str(&wire).unwrap();
+        let decoded = decode_report_v4(&report.to_string()).unwrap();
+        assert_eq!(decoded.report.focus_changes, Some(expected));
+        let canonical = encode_report_v4(&decoded).unwrap();
+        assert_eq!(
+            canonical,
+            canonical_snapshot.replacen(
+                ",\"focusChanges\":null,",
+                &format!(",\"focusChanges\":{wire},"),
+                1
+            )
+        );
+        assert_eq!(
+            report_estimate_v4(&decoded.report) - report_estimate_v4(&snapshot.report),
+            canonical.len() - canonical_snapshot.len()
+        );
+    }
+    let overflow = vec![json!({"kind": "foreground", "win": null}); MAX_FOCUS_CHANGES + 1];
+    report["focusChanges"] = json!({"after": null, "events": overflow});
+    let err = decode_report_v4(&report.to_string()).unwrap_err();
+    assert_eq!(err.message, "section-over-cap");
+}
+
+#[test]
+fn focus_changes_rejects_noncanonical_counters_ids_and_open_objects() {
+    use serde_json::{Value, json};
+
+    let mut report: Value =
+        serde_json::from_str(&request_json("adapter-1", "gen-1", "1", "1", "req-1", "")).unwrap();
+    for changes in [
+        json!([]),
+        json!({"events": []}),
+        json!({"after": null}),
+        json!({"after": null, "events": [], "extra": null}),
+        json!({"after": null, "events": {}}),
+        json!({"after": 0, "events": null}),
+        json!({"after": "00", "events": null}),
+        json!({"after": "-1", "events": null}),
+        json!({"after": "18446744073709551616", "events": null}),
+    ] {
+        report["focusChanges"] = changes;
+        assert!(decode_report_v4(&report.to_string()).is_err(), "{report}");
+    }
+    for event in [
+        json!(null),
+        json!({"win": "win-1"}),
+        json!({"kind": "foreground"}),
+        json!({"kind": "foreground", "win": "", "out": "out-1"}),
+        json!({"kind": "foreground", "win": 1}),
+        json!({"kind": "foreground", "win": "bad id"}),
+        json!({"kind": "foreground", "win": "w".repeat(129)}),
+        json!({"kind": "view", "native": "desk"}),
+        json!({"kind": "view", "out": "out-1"}),
+        json!({"kind": "view", "out": "out-1", "native": "desk", "win": null}),
+        json!({"kind": "view", "out": "", "native": "desk"}),
+        json!({"kind": "view", "out": "out-1", "native": ""}),
+        json!({"kind": "view", "out": "out-1", "native": "desk/1"}),
+        json!({"kind": "view", "out": "out-1", "native": null}),
+        json!({"kind": "other"}),
+    ] {
+        report["focusChanges"] = json!({"after": "1", "events": [event]});
+        assert!(decode_report_v4(&report.to_string()).is_err(), "{report}");
+    }
 }
 
 fn fact_json(id: &str, x: i32) -> String {

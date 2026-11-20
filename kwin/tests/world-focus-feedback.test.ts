@@ -453,11 +453,10 @@ describe("world focus feedback rows", () => {
         const targetRef = {};
         const observation = makeObs(targetRef);
         const fg: FgModel = { current: null };
-        // The production reader exists but the id is unreadable (null)
-        // while the ref still lists: the lifetime is unknown (never
-        // matched), so the setter may still run but nothing proves.
+        // A listed, identity-bound target can be called. Loss of the
+        // production identity read after the call cannot prove arrival.
         const env = baseEnv(state, observation, reply, fg, targetRef, {
-            readWindowId: () => null,
+            readWindowId: () => fg.current === "win-b" ? null : "win-b",
             readLiveVisibility: () => ({ minimized: false, hostHidden: false, visible: null }),
             readLiveView: () => "ws1",
             focusWindow: (ref) => {
@@ -476,6 +475,27 @@ describe("world focus feedback rows", () => {
         assert.equal(rows[0]?.post, "win-b");
         assert.equal(rows[0]?.foregroundProven, false);
         assert.deepEqual(rows[0]?.arrival ?? [], [], "no afterShown means no arrival sampling");
+    });
+
+    it("does not spend a setter when the production lifetime is unreadable before focus", () => {
+        const state = setupState();
+        const reply = acceptParsed(state, replyText({
+            focusRequest: focusReqRow("focus-1", "win-b", { cause: "automatic-admission" }),
+            workspaces: [wsBindRow("ws1")],
+        }));
+        assert.equal(state.acceptReply(reply, "req-1", state.currentInvalid).applied, true);
+        const target = {};
+        const env = baseEnv(state, makeObs(target), reply, { current: null }, target, {
+            readWindowId: () => null,
+            readLiveView: () => "ws1",
+            focusWindow: () => assert.fail("unreadable target lifetime must not actuate"),
+        });
+        applyWorldReply(env);
+        applyWorldReply(env);
+        const rows = state.focusFeedbacksForReport();
+        assert.equal(rows.length, 1);
+        assert.equal(rows[0]?.setter, "not-called");
+        assert.equal(rows[0]?.reason, "identity-stale");
     });
 
     it("stamps bracket obs from the reply and the write stamp from the clock, diverged", () => {
@@ -567,6 +587,116 @@ describe("world focus feedback rows", () => {
         const again = state.focusFeedbacksForReport();
         assert.equal(again.length, 1, "spent request never records twice");
         assert.equal(again[0]?.attemptMs, "9");
+    });
+
+    for (const path of ["ordinary-final-read", "stopped-before-read", "stopped-final-read"] as const) {
+        for (const superseding of [false, true]) {
+            it(`${path}: ${superseding ? "D cancels without a call" : "S defers and the same id applies later"}`, () => {
+                const state = setupState();
+                const focusRequest = focusReqRow("focus-1", "win-b", { cause: "explicit-command" });
+                const stopped = path !== "ordinary-final-read";
+                const reply = acceptParsed(state, replyText({
+                    focusRequest,
+                    workspaces: [wsBindRow("ws1")],
+                    ...(stopped ? { windows: [
+                        { ...winRow("win-b", "ws1"), frame: [10, 10, 200, 200], alloc: [10, 10, 200, 200] },
+                        winRow("win-c", "ws1"),
+                    ] } : {}),
+                }));
+                assert.equal(state.acceptReply(reply, "req-1", state.currentInvalid).applied, true);
+                const target = {};
+                const observation = makeObs(target, { focusedGlobal: "win-a" });
+                const fg: FgModel = { current: "win-a" };
+                let calls = 0;
+                let activation = false;
+                function activate(): void {
+                    if (!activation) {
+                        activation = true;
+                        fg.current = superseding ? "win-d" : "win-s";
+                        state.focusChanges.record({ kind: "foreground", win: fg.current });
+                        state.invalidate();
+                    }
+                }
+                const focusWindow = (): boolean => {
+                    calls += 1;
+                    fg.current = "win-b";
+                    return true;
+                };
+                const result = applyWorldReply(baseEnv(state, observation, reply, fg, target, {
+                    setGeometry: () => {
+                        state.invalidate(); // stop before the focus section
+                        if (path === "stopped-before-read") {
+                            activate();
+                        }
+                        return true;
+                    },
+                    readLiveView: () => "ws1",
+                    readFocusEvidence: () => {
+                        assert.notEqual(path, "stopped-before-read", "pending input needs no additional native read");
+                        activate();
+                        // Simulate a reentrant getter returning its earlier sample.
+                        return "win-a";
+                    },
+                    focusWindow,
+                }));
+                assert.equal(result.stoppedMidApply, true);
+                assert.equal(activation, true, "native input actually entered the fence");
+                assert.equal(calls, 0);
+                assert.deepEqual(state.focusFeedbacksForReport(), [], "deferral is not a terminal spend");
+
+                const nextObs = { ...observation, focusedGlobal: fg.current ?? "" };
+                const cut = state.focusChanges.freeze(nextObs, state.focusChanges.mark());
+                assert.deepEqual(cut.interval.events, [{ kind: "foreground", win: superseding ? "win-d" : "win-s" }]);
+                const next = {
+                    ...reply, req: "req-2", source: "req-2", rev: "2",
+                    windows: [], focusRequest: superseding ? null : reply.focusRequest,
+                };
+                const flight = state.beginCapture("req-2", null, null, cut);
+                assert.ok(flight !== null);
+                assert.equal(state.acceptReply(next, flight.source, flight.watermark).applied, true);
+                applyWorldReply(baseEnv(state, nextObs, next, fg, target, {
+                    readLiveView: () => "ws1",
+                    readFocusEvidence: () => fg.current,
+                    focusWindow,
+                }));
+                assert.equal(calls, superseding ? 0 : 1);
+                assert.equal(state.focusFeedbacksForReport()[0]?.id, superseding ? undefined : "focus-1");
+            });
+        }
+    }
+
+    it("defers unspent when the final view read exposes an unreported selector change", () => {
+        const state = setupState();
+        const reply = acceptParsed(state, replyText({
+            focusRequest: focusReqRow("focus-1", "win-b", { cause: "explicit-command" }),
+            workspaces: [wsBindRow("ws1")],
+            windows: [],
+        }));
+        assert.equal(state.acceptReply(reply, "req-1", state.currentInvalid).applied, true);
+        const target = {};
+        const observation = makeObs(target, { focusedGlobal: "win-a" });
+        state.focusChanges.freeze(observation, state.focusChanges.mark());
+        const fg = { current: "win-a" };
+        let native = "ws1";
+        let reads = 0;
+        let calls = 0;
+        const result = applyWorldReply(baseEnv(state, observation, reply, fg, target, {
+            readLiveView: () => native,
+            readFocusEvidence: (view) => {
+                if (view !== undefined) {
+                    state.focusChanges.checkView(view.out, view.native);
+                }
+                if (++reads === 1) {
+                    native = "ws2";
+                }
+                return fg.current;
+            },
+            focusWindow: () => { calls += 1; return true; },
+        }));
+        assert.equal(result.stoppedMidApply, true);
+        assert.equal(calls, 0);
+        assert.equal(state.focusChanges.pending(), true);
+        assert.deepEqual(state.focusFeedbacksForReport(), []);
     });
 });
 
@@ -831,6 +961,51 @@ describe("world selection readiness", () => {
         assert.equal(rows.length, 1);
         assert.deepEqual((rows[0]?.arrival ?? []).map((b) => b.win), ["win-b", "win-extra"]);
     });
+
+    for (const movedAgain of [false, true]) {
+        it(movedAgain
+            ? "refuses moved-target focus if the proven home changes before the setter"
+            : "focuses the transferred target at its proven same-turn destination, not its captured source", () => {
+            const state = setupState();
+            const destination = { out: "out", ws: "ws2" };
+            const frozen = {
+                ...afterShownFor([], { views: [destination], selected: [destination] }),
+                members: [{ ...destination, win: "win-b", frame: null }],
+            };
+            const reply = acceptParsed(state, replyText({
+                focusRequest: {
+                    ...focusReqRow("focus-5", "win-b", { cause: "explicit-command", afterShown: frozen }),
+                    ...destination,
+                },
+                workspaces: [{ ...wsBindRow("ws2"), bind: "native-destination" }],
+            }));
+            assert.deepEqual(state.acceptReply(reply, "req-1", state.currentInvalid), { applied: true, reason: "accepted" });
+            const refs = readyRefs();
+            const observation = readyObs(refs, ["win-b"]); // Captured at source ws1.
+            const fg: FgModel = { current: "win-a" };
+            const calls: string[] = [];
+            const env = readyEnv(state, observation, reply, refs, fg, calls, { view: "native-destination" });
+            let home = "native-destination"; // The transfer has taken effect in this apply.
+            env.readLiveMembership = () => ({ out: "out", ws: home });
+            env.readActiveWindowId = () => {
+                if (movedAgain) home = "other-desktop";
+                return fg.current;
+            };
+            const result = applyWorldReply(env);
+            assert.deepEqual(calls, movedAgain ? [] : ["win-b"]);
+            assert.equal(result.effects, movedAgain ? 0 : 1);
+            const rows = state.focusFeedbacksForReport();
+            assert.equal(rows.length, 1);
+            const row = rows[0]!;
+            assert.equal(row.foregroundProven, !movedAgain);
+            assert.equal(row.setter, movedAgain ? "not-called" : "accepted");
+            assert.equal(row.reason, movedAgain ? "identity-stale" : "");
+            if (!movedAgain) {
+                assert.equal(row.arrival[0]?.before.obs, reply.obs);
+                assert.deepEqual(row.arrival[0]?.home, { out: "out", ws: "native-destination" });
+            }
+        });
+    }
 
     it("withholds on an unreadable live frame for a null frozen frame, resumes once readable", () => {
         const state = setupState();

@@ -83,7 +83,7 @@ fn inner_report_closed_focused(windows: &[String], closed: &[String], focused: &
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
           \"presentation\":{},\
-          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
+          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\
           \"rendererInput\":null}}",
         windows.join(","),
         closed
@@ -114,7 +114,7 @@ fn inner_report_host_native(windows: &[String], focused: &str) -> String {
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
           \"presentation\":{},\
-          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
+          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\
           \"rendererInput\":null}}",
         windows.join(","),
         !focused.is_empty(),
@@ -1418,4 +1418,643 @@ fn rapid_input_live_split_batch_unchanged_focus_matches_one_batch() {
         fresh["outcome"], "ready",
         "same implicit resize with caught-up native evidence succeeds: {fresh}"
     );
+}
+
+// Checked-service release workload (change record `kde-rebuild-v4` row 7 /
+// decision 7): reproducible, offline-only, real `WorldService` lifecycle.
+// Cold: 30 fresh worlds, each admitting 200 windows on its first capture;
+// the timed region starts just before `evaluate_capture` ingress and ends
+// when the checked reply bytes are returned (fixture string building and
+// the oracle JSON parse run outside it). Handshake and settings are timed
+// in their own vectors and disclosed separately, never folded into the
+// cold capture samples. Warm: 30 samples, each on a fresh service with a
+// stable admitted 200-window inventory, filing one deterministic
+// 16-command FIFO burst (8 x focus a distinct window, then
+// toggle-maximize `currentFocus`). Every checked Queue/Take request, the
+// capture envelope and the reply vectors are prebuilt before `burst_start`,
+// so the timed region runs only the service calls, from the first Queue
+// ingress through the last Take reply, with the single draining capture
+// timed separately inside the burst. Both request bytes (read from the
+// prebuilt strings outside the timer) and reply bytes (the raw checked
+// strings each call returns) are reported per lane (queue, capture, take).
+// The final-state oracle (last focus target plus the per-window maximized
+// `cmdSeq` map, one entry per toggle) distinguishes reorder, because a
+// reordered toggle attaches to a different subject, and distinguishes
+// duplicate execution, because a second toggle of the same window would
+// un-maximize it. Exact capture redelivery, lost-take re-service and
+// re-filing of all 16 exact requests (each must duplicate with its
+// original globalCmd, including the non-idempotent toggles) are asserted
+// outside the timed region and must not re-execute. The 100 ms / 50 ms
+// p95 figures in decision 7 are investigation budgets only: they are
+// printed for comparison and never asserted as a gate. Small-broker and
+// structural timing gates live elsewhere and are untouched by this test.
+// Sample counts are profile-dependent by design, not a skip: release
+// (the runnable command below) keeps all 30 samples per leg for the
+// p50/p95/max distribution, while a normal debug run exercises each
+// full semantic workload exactly once per leg (200-window admission,
+// all 16 operations and their replays) so dev iterations stay fast.
+// Runnable (build first, then time alone, serially):
+//   cargo test --release --locked -p omnitiler --test rapid_input_burst \
+//     checked_service_release_latency_workload -- --exact --nocapture \
+//     --test-threads=1
+#[test]
+fn checked_service_release_latency_workload() {
+    use std::time::Instant;
+
+    const WINDOWS: usize = 200;
+    const COLD_SAMPLES: usize = if cfg!(debug_assertions) { 1 } else { 30 };
+    const WARM_SAMPLES: usize = if cfg!(debug_assertions) { 1 } else { 30 };
+    const BURST_COMMANDS: usize = 16;
+
+    fn window_id(n: usize) -> String {
+        format!("win-{n:03}")
+    }
+
+    fn windows_200() -> Vec<String> {
+        (0..WINDOWS).map(|n| window_json(&window_id(n))).collect()
+    }
+
+    // Same percentile definition as `tiler-core/examples/report_scale.rs`:
+    // median is the middle order statistic, p95 is the order statistic at
+    // ceil(0.95 * n) (1-based), max is the largest sample.
+    fn median_p95_max(mut values: Vec<f64>) -> (f64, f64, f64) {
+        values.sort_by(f64::total_cmp);
+        let n = values.len();
+        let p95_index = ((n as f64) * 0.95).ceil() as usize - 1;
+        (values[n / 2], values[p95_index.min(n - 1)], values[n - 1])
+    }
+
+    fn maximized_map(reply: &serde_json::Value) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = reply["windows"]
+            .as_array()
+            .expect("reply publishes windows")
+            .iter()
+            .filter_map(|row| {
+                let entry = row["state"]
+                    .as_array()?
+                    .iter()
+                    .find(|s| s["property"] == "maximized" && s["value"] == true)?;
+                Some((
+                    row["win"].as_str().expect("window id").to_owned(),
+                    entry["cmdSeq"].as_str().expect("cmdSeq").to_owned(),
+                ))
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    // Exact admitted identity set, checked outside every timer: the
+    // published rows must be precisely the prebuilt win-000..win-199,
+    // once each (no duplicates or substitutions), in every capture.
+    fn assert_admitted_200(reply: &serde_json::Value, expected: &[String], what: &str) {
+        let mut ids: Vec<String> = reply["windows"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{what} publishes windows: {reply}"))
+            .iter()
+            .map(|row| {
+                row["win"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{what} row has no win id: {row}"))
+                    .to_owned()
+            })
+            .collect();
+        ids.sort();
+        assert_eq!(
+            ids.as_slice(),
+            expected,
+            "{what} admits exactly win-000..win-199"
+        );
+    }
+
+    let expected_ids: Vec<String> = (0..WINDOWS).map(window_id).collect();
+    // Cold leg: fresh world per sample, first admitted 200-window capture.
+    let mut cold_ms: Vec<f64> = Vec::with_capacity(COLD_SAMPLES);
+    let mut handshake_ms: Vec<f64> = Vec::with_capacity(COLD_SAMPLES);
+    let mut settings_ms: Vec<f64> = Vec::with_capacity(COLD_SAMPLES);
+    let mut cold_first_request_bytes = 0usize;
+    let mut cold_first_reply_bytes = 0usize;
+    let mut cold_max_reply_bytes = 0usize;
+    for sample in 0..COLD_SAMPLES {
+        let service = WorldService::new();
+        let start = Instant::now();
+        let discovery_raw = service
+            .discover(&handshake_req_owned(ADAPTER, "req-0", false))
+            .expect("handshake routes");
+        handshake_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+        let discovery = parse(&discovery_raw);
+        assert_eq!(discovery["ready"], false, "handshake pre-ready");
+        let generation = discovery["gen"].as_str().expect("gen").to_owned();
+        let start = Instant::now();
+        let settings_raw = service
+            .discover(&settings_req(ADAPTER, &generation, "settings-0"))
+            .expect("settings routes");
+        settings_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(parse(&settings_raw)["status"], "accepted");
+        // Fixture construction runs outside the timed region.
+        let inner = inner_report_closed_focused(&windows_200(), &[], "win-000");
+        let envelope = capture(ADAPTER, &generation, 1, 1, &inner);
+        let start = Instant::now();
+        let reply_raw = service
+            .evaluate_capture(&envelope)
+            .expect("cold capture accepted");
+        cold_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+        if sample == 0 {
+            cold_first_request_bytes = envelope.len();
+            cold_first_reply_bytes = reply_raw.len();
+        }
+        cold_max_reply_bytes = cold_max_reply_bytes.max(reply_raw.len());
+        let reply = parse(&reply_raw);
+        assert_eq!(reply["ready"], true, "cold sample {sample}: {reply}");
+        assert_eq!(reply["rev"], "1", "cold sample {sample} first revision");
+        assert_admitted_200(&reply, &expected_ids, &format!("cold sample {sample}"));
+    }
+
+    // Warm leg: stable 200-window inventory, one 16-command FIFO burst.
+    let mut warm_ms: Vec<f64> = Vec::with_capacity(WARM_SAMPLES);
+    let mut warm_capture_ms: Vec<f64> = Vec::with_capacity(WARM_SAMPLES);
+    let mut warm_first_queue_bytes = 0usize;
+    let mut warm_first_capture_bytes = 0usize;
+    let mut warm_first_take_bytes = 0usize;
+    let mut warm_max_queue_bytes = 0usize;
+    let mut warm_max_capture_bytes = 0usize;
+    let mut warm_max_take_bytes = 0usize;
+    let mut warm_first_queue_req_bytes = 0usize;
+    let mut warm_first_capture_req_bytes = 0usize;
+    let mut warm_first_take_req_bytes = 0usize;
+    let mut warm_max_queue_req_bytes = 0usize;
+    let mut warm_max_capture_req_bytes = 0usize;
+    let mut warm_max_take_req_bytes = 0usize;
+    for sample in 0..WARM_SAMPLES {
+        let (service, generation) = discovered_service();
+        let inner = inner_report_closed_focused(&windows_200(), &[], "win-000");
+        let admit_raw = service
+            .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &inner))
+            .expect("warm admission accepted");
+        let admit = parse(&admit_raw);
+        assert_eq!(admit["ready"], true, "warm sample {sample} admission");
+        assert_admitted_200(
+            &admit,
+            &expected_ids,
+            &format!("warm sample {sample} admission"),
+        );
+        // Deterministic noncommuting burst: each toggle-maximize binds to
+        // the immediately preceding focus via `currentFocus`, so any
+        // reorder changes which window each toggle maximizes.
+        let mut commands: Vec<String> = Vec::with_capacity(BURST_COMMANDS);
+        for k in 0..8 {
+            commands.push(focus_cmd(&window_id(k)));
+            commands
+                .push("{\"op\":\"toggle-maximize\",\"win\":{\"currentFocus\":true}}".to_owned());
+        }
+        assert_eq!(commands.len(), BURST_COMMANDS);
+        let ids: Vec<String> = (1..=BURST_COMMANDS as u64).map(|n| n.to_string()).collect();
+        // Prebuild every checked request, the capture envelope and the reply
+        // vectors before the timer starts, so the timed region is only the
+        // service calls themselves (first request ingress through the last
+        // Take reply); request byte counts are read from these prebuilt
+        // strings outside the timer.
+        let queue_reqs: Vec<String> = ids
+            .iter()
+            .zip(&commands)
+            .map(|(id, command)| queue_req(&generation, "panel-1", id, command))
+            .collect();
+        let take_reqs: Vec<String> = ids
+            .iter()
+            .map(|id| take_req(&generation, "panel-1", id))
+            .collect();
+        let burst_envelope = capture(ADAPTER, &generation, 2, 2, &inner);
+        let queue_req_bytes: usize = queue_reqs.iter().map(String::len).sum();
+        let capture_req_bytes = burst_envelope.len();
+        let take_req_bytes: usize = take_reqs.iter().map(String::len).sum();
+        let mut queue_raws: Vec<String> = Vec::with_capacity(BURST_COMMANDS);
+        let mut take_raws: Vec<String> = Vec::with_capacity(BURST_COMMANDS);
+        // Timed burst: first Queue send through last checked Take reply.
+        let burst_start = Instant::now();
+        for request in &queue_reqs {
+            queue_raws.push(
+                service
+                    .queue_command(SENDER_A, request)
+                    .expect("queue in-band"),
+            );
+        }
+        let capture_start = Instant::now();
+        let capture_raw = service
+            .evaluate_capture(&burst_envelope)
+            .expect("burst capture drains");
+        warm_capture_ms.push(capture_start.elapsed().as_secs_f64() * 1000.0);
+        for request in &take_reqs {
+            take_raws.push(
+                service
+                    .take_result(SENDER_A, request)
+                    .expect("take in-band"),
+            );
+        }
+        warm_ms.push(burst_start.elapsed().as_secs_f64() * 1000.0);
+        let queue_bytes: usize = queue_raws.iter().map(String::len).sum();
+        let take_bytes: usize = take_raws.iter().map(String::len).sum();
+        if sample == 0 {
+            warm_first_queue_bytes = queue_bytes;
+            warm_first_capture_bytes = capture_raw.len();
+            warm_first_take_bytes = take_bytes;
+            warm_first_queue_req_bytes = queue_req_bytes;
+            warm_first_capture_req_bytes = capture_req_bytes;
+            warm_first_take_req_bytes = take_req_bytes;
+        }
+        warm_max_queue_bytes = warm_max_queue_bytes.max(queue_bytes);
+        warm_max_capture_bytes = warm_max_capture_bytes.max(capture_raw.len());
+        warm_max_take_bytes = warm_max_take_bytes.max(take_bytes);
+        warm_max_queue_req_bytes = warm_max_queue_req_bytes.max(queue_req_bytes);
+        warm_max_capture_req_bytes = warm_max_capture_req_bytes.max(capture_req_bytes);
+        warm_max_take_req_bytes = warm_max_take_req_bytes.max(take_req_bytes);
+        // Oracle runs outside the timed region, on the returned raw bytes.
+        let queues: Vec<serde_json::Value> = queue_raws.iter().map(|raw| parse(raw)).collect();
+        for (index, queue) in queues.iter().enumerate() {
+            assert_eq!(
+                queue["outcome"],
+                "queued",
+                "warm sample {sample} queue {} must not refuse: {queue}",
+                index + 1
+            );
+        }
+        let queue_cmds: Vec<String> = queues
+            .iter()
+            .map(|queue| {
+                queue["globalCmd"]
+                    .as_str()
+                    .expect("queue globalCmd")
+                    .to_owned()
+            })
+            .collect();
+        for pair in queue_cmds.windows(2) {
+            let (prev, next): (u64, u64) = (
+                pair[0].parse().expect("globalCmd parses"),
+                pair[1].parse().expect("globalCmd parses"),
+            );
+            assert!(
+                prev < next,
+                "queue globalCmd strictly increasing: {queue_cmds:?}"
+            );
+        }
+        let burst_reply = parse(&capture_raw);
+        assert_eq!(
+            burst_reply["ready"], true,
+            "warm sample {sample} burst capture: {burst_reply}"
+        );
+        assert_eq!(burst_reply["rev"], "2", "burst drains in one revision");
+        assert_admitted_200(
+            &burst_reply,
+            &expected_ids,
+            &format!("warm sample {sample} burst"),
+        );
+        assert_eq!(
+            burst_reply["focusRequest"]["target"], "win-007",
+            "final focus is the last focused window in FIFO order"
+        );
+        let takes: Vec<serde_json::Value> = take_raws.iter().map(|raw| parse(raw)).collect();
+        for (index, take) in takes.iter().enumerate() {
+            assert_eq!(
+                take["outcome"],
+                "ready",
+                "warm sample {sample} take {} settles terminally: {take}",
+                index + 1
+            );
+            assert_eq!(
+                take["globalCmd"].as_str(),
+                Some(queue_cmds[index].as_str()),
+                "terminal result {} carries its filed globalCmd",
+                index + 1
+            );
+        }
+        let expected_maximized: Vec<(String, String)> = (0..8)
+            .map(|k| (window_id(k), queue_cmds[2 * k + 1].clone()))
+            .collect();
+        assert_eq!(
+            maximized_map(&burst_reply),
+            expected_maximized,
+            "warm sample {sample}: each toggle maximized its preceding focus, once"
+        );
+        // Exact replay without duplicate effects, outside the timed region.
+        let replay_raw = service
+            .evaluate_capture(&burst_envelope)
+            .expect("capture replay");
+        assert_eq!(
+            replay_raw, capture_raw,
+            "warm sample {sample} capture redelivery replays byte-identically"
+        );
+        for (request, first) in take_reqs.iter().zip(&take_raws) {
+            let again = service
+                .take_result(SENDER_A, request)
+                .expect("take replay in-band");
+            assert_eq!(again, *first, "lost take reply re-serves verbatim");
+        }
+        // Refile every exact original request: each duplicates with its
+        // original globalCmd and must not execute. The toggle-maximizes are
+        // non-idempotent (a second execution would un-maximize), so the
+        // unchanged maximized map on the follow-up capture below proves
+        // the whole burst ran exactly once.
+        for (index, request) in queue_reqs.iter().enumerate() {
+            let duplicate = parse(
+                &service
+                    .queue_command(SENDER_A, request)
+                    .expect("duplicate queue in-band"),
+            );
+            assert_eq!(
+                duplicate["outcome"],
+                "duplicate",
+                "re-filing request {} duplicates",
+                index + 1
+            );
+            assert_eq!(
+                duplicate["globalCmd"].as_str(),
+                Some(queue_cmds[index].as_str()),
+                "duplicate {} carries the original globalCmd",
+                index + 1
+            );
+        }
+        let follow_up = parse(
+            &service
+                .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &inner))
+                .expect("follow-up capture accepted"),
+        );
+        assert_eq!(
+            follow_up["rev"], "3",
+            "follow-up advances exactly one revision"
+        );
+        assert_admitted_200(
+            &follow_up,
+            &expected_ids,
+            &format!("warm sample {sample} follow-up"),
+        );
+        assert_eq!(
+            maximized_map(&follow_up),
+            expected_maximized,
+            "warm sample {sample}: replay and duplicate queue did not re-execute"
+        );
+    }
+
+    let cold_first_ms = cold_ms[0];
+    let warm_first_ms = warm_ms[0];
+    let warm_capture_first_ms = warm_capture_ms[0];
+    let (cold_p50, cold_p95, cold_max) = median_p95_max(cold_ms);
+    let (handshake_p50, handshake_p95, handshake_max) = median_p95_max(handshake_ms);
+    let (settings_p50, settings_p95, settings_max) = median_p95_max(settings_ms);
+    let (warm_p50, warm_p95, warm_max) = median_p95_max(warm_ms);
+    let (capture_p50, capture_p95, capture_max) = median_p95_max(warm_capture_ms);
+    eprintln!(
+        "checked-service release workload: windows={WINDOWS} cold_samples={COLD_SAMPLES} \
+         warm_samples={WARM_SAMPLES} burst_commands={BURST_COMMANDS}"
+    );
+    eprintln!(
+        "cold first-capture ms: first={:.3} p50={cold_p50:.3} p95={cold_p95:.3} max={cold_max:.3} \
+         request_bytes(first)={cold_first_request_bytes} reply_bytes(first)={cold_first_reply_bytes} \
+         reply_bytes(max)={cold_max_reply_bytes}",
+        cold_first_ms
+    );
+    eprintln!(
+        "handshake ms (disclosed, excluded from cold): p50={handshake_p50:.3} \
+         p95={handshake_p95:.3} max={handshake_max:.3}"
+    );
+    eprintln!(
+        "settings ms (disclosed, excluded from cold): p50={settings_p50:.3} \
+         p95={settings_p95:.3} max={settings_max:.3}"
+    );
+    eprintln!(
+        "warm burst ms (first Queue through last Take): first={:.3} p50={warm_p50:.3} \
+         p95={warm_p95:.3} max={warm_max:.3}",
+        warm_first_ms
+    );
+    eprintln!(
+        "warm capture-in-burst ms: first={:.3} p50={capture_p50:.3} p95={capture_p95:.3} \
+         max={capture_max:.3}",
+        warm_capture_first_ms
+    );
+    eprintln!(
+        "warm bytes per sample, request/reply per lane (16 queue / capture / 16 take): \
+         first=({warm_first_queue_req_bytes}/{warm_first_queue_bytes} \
+         {warm_first_capture_req_bytes}/{warm_first_capture_bytes} \
+         {warm_first_take_req_bytes}/{warm_first_take_bytes}) \
+         max=({warm_max_queue_req_bytes}/{warm_max_queue_bytes} \
+         {warm_max_capture_req_bytes}/{warm_max_capture_bytes} \
+         {warm_max_take_req_bytes}/{warm_max_take_bytes})"
+    );
+    eprintln!(
+        "investigation budgets (not gates, decision 7): cold p95 vs 100 ms, warm p95 vs 50 ms"
+    );
+}
+
+// Offline, observational service sequence: the fixture supplies the cuts and
+// stages the corresponding reports. It does not exercise or prove producer
+// continuity, native capture cost, or physical key-to-publication latency.
+// cargo test --release --locked -p omnitiler --test rapid_input_burst \
+//   checked_service_sealed_float_bursts -- --exact --nocapture --test-threads=1
+#[test]
+fn checked_service_sealed_float_bursts() {
+    use std::time::Instant;
+
+    const SAMPLES: usize = if cfg!(debug_assertions) { 1 } else { 30 };
+    const TOGGLE: &str = r#"{"op":"toggle-float","win":{"currentFocus":true},"rect":null}"#;
+    const SENDER_B: &str = ":1.43";
+    const SINGLE_CUT: &[usize] = &[9];
+    const ALTERNATING: &[usize] = &[1, 2, 3, 2, 1];
+
+    struct Filing {
+        sender: &'static str,
+        queue: String,
+        take: String,
+    }
+
+    fn assert_membership(
+        raw: &serde_json::Value,
+        ids: &[String],
+        expected_float: [bool; 2],
+        rev: u64,
+    ) {
+        assert_eq!(raw["ready"], true, "capture must incorporate: {raw}");
+        assert_eq!(raw["rev"], rev.to_string(), "one revision per report cut");
+        let mut rows: Vec<_> = raw["windows"]
+            .as_array()
+            .expect("published windows")
+            .iter()
+            .map(|row| {
+                (
+                    row["win"].as_str().expect("window identity"),
+                    row["floating"].as_bool().expect("float membership"),
+                )
+            })
+            .collect();
+        rows.sort_unstable();
+        assert_eq!(rows.len(), ids.len());
+        for (index, ((win, floating), expected_id)) in rows.into_iter().zip(ids).enumerate() {
+            assert_eq!(win, expected_id.as_str(), "admitted roster at rev {rev}");
+            assert_eq!(
+                floating,
+                expected_float.get(index).copied().unwrap_or(false),
+                "{win} float membership at rev {rev}"
+            );
+        }
+    }
+
+    for window_count in [50, 200] {
+        let ids: Vec<_> = (0..window_count).map(|n| format!("win-{n:03}")).collect();
+        let windows: Vec<_> = ids.iter().map(|id| window_json(id)).collect();
+        let unchanged = inner_report_closed_focused(&windows, &[], &ids[0]);
+        let alternate = inner_report_closed_focused(&windows, &[], &ids[1]);
+        // Identical Queue/Take load in every leg: eight local toggles and one
+        // external toggle between the fourth and fifth local filings.
+        for (label, sealed, sizes) in [
+            ("one-revision unchanged control", false, SINGLE_CUT),
+            ("sealed unchanged", true, SINGLE_CUT),
+            ("sealed alternating", true, ALTERNATING),
+        ] {
+            let mut publication_ms = Vec::with_capacity(SAMPLES);
+            let mut burst_ms = Vec::with_capacity(SAMPLES);
+            let mut max_bytes = [0_usize; 6];
+            for _ in 0..SAMPLES {
+                let (service, generation) = discovered_service();
+                let admit = service
+                    .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &unchanged))
+                    .expect("admission reply");
+                assert_membership(&parse(&admit), &ids, [false; 2], 1);
+
+                let filings: Vec<_> = (1..=9)
+                    .map(|n| {
+                        let (sender, client) = if n == 5 {
+                            (SENDER_B, "panel-1")
+                        } else {
+                            (SENDER_A, "shortcut-1")
+                        };
+                        let id = n.to_string();
+                        Filing {
+                            sender,
+                            queue: queue_req(&generation, client, &id, TOGGLE),
+                            take: take_req(&generation, client, &id),
+                        }
+                    })
+                    .collect();
+                let envelopes: Vec<_> = sizes
+                    .iter()
+                    .enumerate()
+                    .map(|(cut, _)| {
+                        let after = cut as u64 + 1;
+                        let focused = &ids[cut % 2];
+                        let inner = if cut % 2 == 0 { &unchanged } else { &alternate };
+                        let report = if sealed {
+                            let events = if cut == 0 {
+                                serde_json::json!([])
+                            } else {
+                                serde_json::json!([{"kind": "foreground", "win": focused}])
+                            };
+                            let interval = serde_json::json!({
+                                "after": after.to_string(),
+                                "events": events,
+                            });
+                            inner.replace(
+                                "\"focusChanges\":null",
+                                &format!("\"focusChanges\":{interval}"),
+                            )
+                        } else {
+                            inner.clone()
+                        };
+                        capture(ADAPTER, &generation, after + 1, after + 1, &report)
+                    })
+                    .collect();
+
+                let mut queues = Vec::with_capacity(filings.len());
+                let mut takes = Vec::with_capacity(filings.len());
+                let mut captures = Vec::with_capacity(sizes.len());
+                let mut through_publication_ms = 0.0;
+                let mut offset = 0;
+                let start = Instant::now();
+                for (size, envelope) in sizes.iter().zip(&envelopes) {
+                    let segment = &filings[offset..offset + size];
+                    for filing in segment {
+                        queues.push(
+                            service
+                                .queue_command(filing.sender, &filing.queue)
+                                .expect("Queue reply"),
+                        );
+                    }
+                    captures.push(service.evaluate_capture(envelope).expect("capture reply"));
+                    through_publication_ms = start.elapsed().as_secs_f64() * 1000.0;
+                    for filing in segment {
+                        takes.push(
+                            service
+                                .take_result(filing.sender, &filing.take)
+                                .expect("Take reply"),
+                        );
+                    }
+                    offset += size;
+                }
+                burst_ms.push(start.elapsed().as_secs_f64() * 1000.0);
+                publication_ms.push(through_publication_ms);
+
+                let bytes = [
+                    filings.iter().map(|f| f.queue.len()).sum(),
+                    queues.iter().map(String::len).sum(),
+                    envelopes.iter().map(String::len).sum(),
+                    captures.iter().map(String::len).sum(),
+                    filings.iter().map(|f| f.take.len()).sum(),
+                    takes.iter().map(String::len).sum(),
+                ];
+                for (max, actual) in max_bytes.iter_mut().zip(bytes) {
+                    *max = (*max).max(actual);
+                }
+
+                let mut expected_float = [false; 2];
+                let mut previous_global = 0;
+                let mut offset = 0;
+                for (cut, (&size, raw)) in sizes.iter().zip(&captures).enumerate() {
+                    let target = cut % 2;
+                    for index in offset..offset + size {
+                        let queue = parse(&queues[index]);
+                        let take = parse(&takes[index]);
+                        assert_eq!(queue["outcome"], "queued", "{queue}");
+                        let global: u64 = queue["globalCmd"]
+                            .as_str()
+                            .expect("global FIFO token")
+                            .parse()
+                            .expect("numeric FIFO token");
+                        assert!(global > previous_global, "FIFO across both senders");
+                        previous_global = global;
+                        assert_eq!(take["outcome"], "ready", "{take}");
+                        assert_eq!(take["globalCmd"], queue["globalCmd"]);
+                        assert_eq!(take["result"]["op"], "toggle-float");
+                        assert_eq!(take["result"]["win"], ids[target].as_str());
+                        expected_float[target] = !expected_float[target];
+                    }
+                    assert_membership(&parse(raw), &ids, expected_float, cut as u64 + 2);
+                    offset += size;
+                }
+                assert_eq!(offset, filings.len());
+            }
+
+            // Same order statistics as the existing checked-service workload.
+            publication_ms.sort_by(f64::total_cmp);
+            burst_ms.sort_by(f64::total_cmp);
+            let p50 = SAMPLES / 2;
+            let p95 = (SAMPLES * 95).div_ceil(100) - 1;
+            let [
+                queue_req,
+                queue_reply,
+                capture_req,
+                capture_reply,
+                take_req,
+                take_reply,
+            ] = max_bytes;
+            eprintln!(
+                "checked-service float bursts: windows={window_count} case={label} \
+                 cuts={} samples={SAMPLES}\n\
+                 first Queue to last publication ms: p50={:.3} p95={:.3}; \
+                 through last Take ms: p50={:.3} p95={:.3}\n\
+                 max sample bytes, request/reply: Queue={queue_req}/{queue_reply} \
+                 capture={capture_req}/{capture_reply} Take={take_req}/{take_reply}",
+                sizes.len(),
+                publication_ms[p50],
+                publication_ms[p95],
+                burst_ms[p50],
+                burst_ms[p95],
+            );
+        }
+    }
 }

@@ -261,21 +261,25 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
                         (handler as (...args: Array<unknown>) => void)(arg);
                     }
                 };
-                if (mode === "truthful" || mode === "truthful-1arg") {
-                    // Native order: the workspace selector restores focus
-                    // (windowActivated) before the VDM currentChanged script
-                    // callback (currentDesktopChanged) reaches the wrapper.
-                    // The native chain may pick a different eligible member
-                    // than the granted focus target, so the last member on
-                    // the new view activates here and the core focus setter
-                    // corrects to its target afterwards.
-                    const members = world.wins.filter((w) => w.desktops[0] === (newDesk as FakeDesktop));
-                    const member = members.length > 0 ? members[members.length - 1] : undefined;
-                    if (member !== undefined) {
-                        (world as { activeWindow: FakeWindow | null }).activeWindow = member;
-                        fireActive(member as unknown);
+                if (mode === "pin-current-changed" || mode === "truthful-1arg") {
+                    // The Workspace currentChanged listener runs before the
+                    // scripting bridge's currentDesktopChanged listener.
+                    // It hides the departing window and requests native focus
+                    // on the arriving view before the bridge emits.
+                    const departing = world.activeWindow;
+                    if (mode === "pin-current-changed" && departing?.desktops[0] === oldDesk) {
+                        departing.hidden = true;
                     }
-                    if (mode === "truthful") {
+                    const members = world.wins.filter((w) => w.desktops[0] === newDesk);
+                    const member = members.length > 0 ? members[members.length - 1] : undefined;
+                    const requestFocus = (target: FakeWindow): void => {
+                        world.activeWindow = target;
+                        fireActive(target);
+                    };
+                    if (member !== undefined) {
+                        requestFocus(member);
+                    }
+                    if (mode === "pin-current-changed") {
                         fireView(oldDesk as unknown, newDesk as unknown, outObj);
                     } else {
                         fireView(oldDesk as unknown);
@@ -629,6 +633,14 @@ function queueCalls(h: Harness): Array<Record<string, unknown>> {
         .map((c) => JSON.parse(c.payload) as Record<string, unknown>);
 }
 
+function expireDescribe(h: Harness): void {
+    // The current Describe timeout is armed after its Queue timeout.
+    const timeout = [...h.timers].reverse().find((t) => t.delay === 2000);
+    assert.ok(timeout !== undefined, "capture timeout armed");
+    h.timers.splice(h.timers.indexOf(timeout), 1);
+    timeout.cb();
+}
+
 describe("world entry discovery and observation", () => {
     it("discovers on start and sends a full observation report", () => {
         const h = makeHarness();
@@ -932,20 +944,87 @@ describe("world entry discovery and observation", () => {
         assert.equal(h.world.membershipWrites.length, 0);
     });
 
-    it("defers truthful view+focus own echoes to one authorized focus dispatch", () => {
+    it("cuts ordered native selector and activation evidence at the capture, even across a skipped apply", () => {
         const h = makeHarness();
         discover(h);
-        // The native focus chain picks its own eligible member on the new
-        // view (win-c), distinct from the granted core focus target
-        // (win-b); the core focus setter corrects afterwards.
-        const ws2 = h.world.desktops[1] as FakeDesktop;
-        h.world.wins.push(win("win-c", "out", ws2, 0));
-        (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = "truthful";
+        try {
+            const [before, after] = h.world.desktops;
+            const [s, d] = h.world.wins;
+            assert.ok(before && after && s && d);
+            const activate = (win: FakeWindow): void => {
+                h.world.activeWindow = win;
+                for (const handler of [...(h.signals.windowActivated as FakeSignal).handlers]) {
+                    handler(win);
+                }
+            };
+            h.world.currentDesktop = after;
+            for (const handler of [...(h.signals.currentDesktopChanged as FakeSignal).handlers]) {
+                handler(before, after, h.world.screens[0]);
+            }
+            activate(d);
+            h.runTimers();
+            const first = requestOf(h);
+            assert.deepEqual(reportOf(h)["focusChanges"], {
+                after: "0", events: [
+                    { kind: "view", out: "out", native: "ws2" },
+                    { kind: "foreground", win: "win-b" },
+                ],
+            });
+            activate(s);
+            h.lastCall("DescribeWorld").callback(acceptedReply(
+                "gen-1", first["source"] as string, first["nativeInvalid"] as string, "1", { obs: "0" },
+            ));
+            h.runTimers();
+            assert.ok(h.logs.includes("omnitiler:world:stale reason=superseded-during-flight recovery=catchup"));
+            assert.deepEqual(reportOf(h)["focusChanges"], {
+                after: "1", events: [{ kind: "foreground", win: "win-a" }],
+            }, "anchor is the incorporated rev even with equal obs; only the in-flight suffix remains");
+        } finally {
+            h.handle?.stop();
+        }
+    });
+
+    it("proves own echoes when the KWin pin activates before exporting currentDesktopChanged", () => {
+        const h = makeHarness();
+        const a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        const c = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        const departing = h.world.wins[0] as FakeWindow;
+        const target = h.world.wins[1] as FakeWindow;
+        departing.internalId = `{${a}}`;
+        target.internalId = `{${b}}`;
+        // Native focus picks C; the retained core request targets B.
+        const fallback = win(`{${c}}`, "out", h.world.desktops[1] as FakeDesktop);
+        h.world.wins.push(fallback);
+        discover(h);
+        (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = "pin-current-changed";
         (h.world as unknown as Record<string, unknown>)["__syncFocusEcho"] = "truthful";
+        const nativeOrder: string[] = [];
+        h.signals.windowActivated!.handlers.push((ref) => {
+            if (ref === fallback) {
+                assert.equal(departing.hidden, true, "A is hidden before C's native activation");
+                nativeOrder.push("activate C");
+            } else if (ref === target) {
+                nativeOrder.push("activate B");
+            }
+        });
+        h.signals.currentDesktopChanged!.handlers.push(() => nativeOrder.push("export currentDesktopChanged"));
+        const focusRequest = {
+            id: "focus-view-1", target: b, rev: "1", cause: "explicit-command",
+            out: "out", ws: "wl-2", cmdSeq: "1",
+            afterShown: {
+                op: "op-view-1", obs: "1",
+                members: [b, c].map((win) => ({ win, out: "out", ws: "wl-2", frame: [0, 0, 200, 200] })),
+                views: [{ out: "out", ws: "wl-2" }],
+                selected: [{ out: "out", ws: "wl-2" }],
+                departing: [{ out: "out", ws: "wl-1" }],
+            },
+        };
         try {
             h.handle?.requestWorkspaceRelative(1);
             h.runTimers();
             const req = requestOf(h);
+            assert.equal(reportOf(h)["focused"], a, "pre-write foreground is normalized on the wire");
             h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
                 workspaces: [
                     { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
@@ -953,17 +1032,37 @@ describe("world entry discovery and observation", () => {
                 ],
                 outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
                 transfers: [{ op: "op-view-1", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null }],
-                focusRequest: { id: "focus-view-1", target: "win-b", rev: "1", cause: "explicit-command", out: "out", ws: "wl-2", cmdSeq: "1", afterShown: { op: "op-view-1", obs: "1", members: [{ win: "win-b", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }, { win: "win-c", out: "out", ws: "wl-2", frame: [0, 0, 200, 200] }], views: [{ out: "out", ws: "wl-2" }], selected: [{ out: "out", ws: "wl-2" }], departing: [{ out: "out", ws: "wl-1" }] } },
+                focusRequest,
             }));
             assert.equal(h.world.currentDesktop.id, "ws2", "view switch actuates");
-            assert.deepEqual(h.world.focused, ["win-b"], "exactly one core-target focus setter");
+            assert.equal(departing.hidden, true, "the native selector hides A");
+            assert.deepEqual(h.world.focused, [target.internalId], "exactly one core-target focus setter");
+            assert.deepEqual(nativeOrder, ["activate C", "export currentDesktopChanged", "activate B"]);
             h.runTimers();
+            assert.deepEqual(reportOf(h)["focusChanges"], { after: "1", events: [] },
+                "proved native fallback C does not escape the scope as foreground intent");
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
             const row = wire.find((r) => r["id"] === "focus-view-1");
             assert.ok(row !== undefined, "focus row rides the next report");
+            assert.equal(row["target"], b, "feedback uses the canonical target, not the native braces");
             assert.equal(row["setter"], "accepted");
             assert.equal(row["foregroundProven"], true);
             assert.ok(Array.isArray(row["arrival"]) && (row["arrival"] as Array<unknown>).length >= 1, "arrival brackets ride");
+            const settled = requestOf(h);
+            h.lastCall("DescribeWorld").callback(acceptedReply(
+                "gen-1", settled["source"] as string, settled["nativeInvalid"] as string, "2", { focusRequest },
+            ));
+            assert.deepEqual(h.world.focused, [target.internalId], "the retained request does not reissue");
+            // An identical payload delivered out of stack (e.g. a later
+            // X11 activation) is never covered by the completed scope.
+            h.world.activeWindow = fallback;
+            for (const handler of [...(h.signals.windowActivated as FakeSignal).handlers]) {
+                handler(fallback);
+            }
+            h.runTimers();
+            assert.deepEqual(reportOf(h)["focusChanges"], {
+                after: "2", events: [{ kind: "foreground", win: c }],
+            });
         } finally {
             (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
             (h.world as unknown as Record<string, unknown>)["__syncFocusEcho"] = false;
@@ -991,10 +1090,9 @@ describe("world entry discovery and observation", () => {
             assert.equal(h.world.focused.length, 0, "mismatched view echo stops the focus setter");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "focus-view-2");
-            assert.ok(row !== undefined, "superseded row rides");
-            assert.equal(row["setter"], "not-called");
-            assert.equal(row["reason"], "superseded");
+            assert.equal(wire.some((r) => r["id"] === "focus-view-2"), false, "unproved evidence defers unspent");
+            assert.deepEqual(reportOf(h)["focusChanges"], { after: "1", events: null },
+                "selector readback disagrees with the observed signal");
         } finally {
             (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
             h.handle?.stop();
@@ -1003,6 +1101,7 @@ describe("world entry discovery and observation", () => {
 
     it("mismatched reentrant focus activation never proves", () => {
         const h = makeHarness();
+        h.world.currentDesktop = h.world.desktops[1] as FakeDesktop;
         discover(h);
         (h.world as unknown as Record<string, unknown>)["__syncFocusEcho"] = "mismatched";
         try {
@@ -1046,10 +1145,7 @@ describe("world entry discovery and observation", () => {
             assert.equal(h.world.focused.length, 0, "unlisted activation stops focus");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "focus-view-3");
-            assert.ok(row !== undefined);
-            assert.equal(row["setter"], "not-called");
-            assert.equal(row["reason"], "superseded");
+            assert.equal(wire.some((r) => r["id"] === "focus-view-3"), false, "unbound activation defers unspent");
         } finally {
             (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
             h.handle?.stop();
@@ -1117,10 +1213,7 @@ describe("world entry discovery and observation", () => {
             assert.equal(h.world.focused.length, 0, "rejected view echo stops the focus setter");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "focus-view-7");
-            assert.ok(row !== undefined, "superseded row rides");
-            assert.equal(row["setter"], "not-called");
-            assert.equal(row["reason"], "superseded");
+            assert.equal(wire.some((r) => r["id"] === "focus-view-7"), false, "unreadable selector defers unspent");
         } finally {
             (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
             h.handle?.stop();
@@ -1147,10 +1240,7 @@ describe("world entry discovery and observation", () => {
             assert.equal(h.world.focused.length, 0, "wrong-output echo stops the focus setter");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "focus-view-8");
-            assert.ok(row !== undefined, "superseded row rides");
-            assert.equal(row["setter"], "not-called");
-            assert.equal(row["reason"], "superseded");
+            assert.equal(wire.some((r) => r["id"] === "focus-view-8"), false, "unproved selector defers unspent");
         } finally {
             (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
             h.handle?.stop();
@@ -1177,10 +1267,7 @@ describe("world entry discovery and observation", () => {
             assert.equal(h.world.focused.length, 0, "foreign activation stops the focus setter");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "focus-view-9");
-            assert.ok(row !== undefined, "superseded row rides");
-            assert.equal(row["setter"], "not-called");
-            assert.equal(row["reason"], "superseded");
+            assert.equal(wire.some((r) => r["id"] === "focus-view-9"), false, "unproved activation defers unspent");
         } finally {
             (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
             h.handle?.stop();
@@ -1207,10 +1294,7 @@ describe("world entry discovery and observation", () => {
             assert.equal(h.world.focused.length, 0, "activation naming a non-foreground member stops the focus setter");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "focus-view-10");
-            assert.ok(row !== undefined, "superseded row rides");
-            assert.equal(row["setter"], "not-called");
-            assert.equal(row["reason"], "superseded");
+            assert.equal(wire.some((r) => r["id"] === "focus-view-10"), false, "unproved activation defers unspent");
         } finally {
             (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
             h.handle?.stop();
@@ -1237,10 +1321,7 @@ describe("world entry discovery and observation", () => {
             assert.equal(h.world.focused.length, 0, "stale-lifetime activation stops the focus setter");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "focus-view-11");
-            assert.ok(row !== undefined, "superseded row rides");
-            assert.equal(row["setter"], "not-called");
-            assert.equal(row["reason"], "superseded");
+            assert.equal(wire.some((r) => r["id"] === "focus-view-11"), false, "unbound activation defers unspent");
         } finally {
             (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
             h.handle?.stop();
@@ -1267,10 +1348,10 @@ describe("world entry discovery and observation", () => {
             assert.equal(h.world.focused.length, 0, "post-echo home drift stops the focus setter");
             h.runTimers();
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
-            const row = wire.find((r) => r["id"] === "focus-view-12");
-            assert.ok(row !== undefined, "superseded row rides");
-            assert.equal(row["setter"], "not-called");
-            assert.equal(row["reason"], "superseded");
+            assert.equal(wire.some((r) => r["id"] === "focus-view-12"), false, "failed post-call proof defers unspent");
+            assert.deepEqual(reportOf(h)["focusChanges"], {
+                after: "1", events: [{ kind: "foreground", win: "win-b" }],
+            }, "keep the activation at its real position when post-call proof fails");
         } finally {
             (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
             h.handle?.stop();
@@ -1279,6 +1360,7 @@ describe("world entry discovery and observation", () => {
 
     it("records a throwing native focus setter truthfully instead of refusing", () => {
         const h = makeHarness();
+        h.world.currentDesktop = h.world.desktops[1] as FakeDesktop;
         discover(h);
         (h.world as unknown as Record<string, unknown>)["__throwFocus"] = true;
         try {
@@ -1595,35 +1677,19 @@ describe("world entry rapid directional FIFO", () => {
     // dispatches in press order across debounce and flight boundaries.
     const sentCmdSeqs = (h: Harness): string[] => queueCalls(h)
         .map((req) => req["clientCmd"] as string);
-    // Fire the earliest due timer at/after `from` only: the entry arms
-    // follow-up timers from inside callbacks, firing the whole queue at
-    // once would also expire a follow-up's own timeout before its reply
-    // can arrive, and dead (cancel-noop) timers from earlier legs must
-    // not steal the pump.
-    const fireNextTimer = (hh: Harness, maxDelay: number, from = 0): void => {
-        let at = -1;
-        for (let i = from; i < hh.timers.length; i += 1) {
-            const t = hh.timers[i] as { delay: number; cb: () => void };
-            if (t.delay <= maxDelay && (at < 0 || t.delay < (hh.timers[at] as { delay: number; cb: () => void }).delay)) {
-                at = i;
-            }
-        }
-        assert.ok(at >= 0, "expected a due timer");
-        const [timer] = hh.timers.splice(at, 1);
-        (timer as { delay: number; cb: () => void }).cb();
-    };
     const acceptLast = (h: Harness, gen: string, rev: string): void => {
         const req = requestOf(h);
         h.lastCall("DescribeWorld").callback(acceptedReply(gen, req["source"] as string, req["nativeInvalid"] as string, rev));
     };
 
     it("dispatches rapid left then right in order, preempting the native debounce with zero wait", () => {
-        const h = makeHarness();
+        const hold = { value: true };
+        const h = makeHarness("per-output-local", false, true, undefined, undefined, true, startWorldAdapterEntry, false, false, hold);
         discover(h);
         const describesBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
         // A native burst arms the debounce with no command in flight.
         for (const handler of [...(h.signals.windowActivated as FakeSignal).handlers]) {
-            handler();
+            handler(h.world.activeWindow);
         }
         const left = h.shortcuts.get("omnitiler-focus-left") as () => void;
         const right = h.shortcuts.get("omnitiler-focus-right") as () => void;
@@ -1633,22 +1699,27 @@ describe("world entry rapid directional FIFO", () => {
         // Both presses accepted: no busy refusal, no shortcut failure.
         assert.ok(!h.logs.some((l) => l.includes("command-busy")));
         assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")));
-        // FIFO batch: the whole parked batch files before the single
-        // draining capture (press order preserved, no capture of its own
-        // while parking).
-        assert.equal(queueCalls(h).length, 2);
+        // The left cut preempts immediately. The outstanding Queue ACK
+        // prevents dispatch, so the unchanged right press can share it.
+        assert.equal(queueCalls(h).length, 1, "only one Queue in flight");
+        assert.equal(
+            h.calls.filter((c) => c.method === "DescribeWorld").length,
+            describesBefore,
+            "Describe waits for the pending Queue ACK",
+        );
+        const head = h.lastCall("QueueWorldCommand");
+        const body = JSON.parse(head.payload) as Record<string, unknown>;
+        hold.value = false;
+        head.callback(JSON.stringify({
+            v: 4, outcome: "queued", gen: body["gen"], client: body["client"],
+            clientCmd: body["clientCmd"], globalCmd: "1",
+        }));
         assert.deepEqual(
             queueCalls(h).map((req) => (req["command"] as Record<string, unknown>)["direction"]),
             ["left", "right"],
         );
-        assert.equal(
-            h.calls.filter((c) => c.method === "DescribeWorld").length,
-            describesBefore,
-            "parking files no capture of its own",
-        );
-        // The filed batch preempts the armed native debounce: it drains
-        // in exactly one fresh capture on the zero-delay path, without
-        // waiting for the 120 ms native timer (which never fires first).
+        // Only zero-delay timers may run; the native debounce must not
+        // carry the draining capture.
         h.runTimers(0);
         assert.ok(
             h.timers.some((t) => t.delay === 120),
@@ -1667,6 +1738,7 @@ describe("world entry rapid directional FIFO", () => {
         const queued = queueCalls(h);
         assert.equal(queued.length, 2);
         assert.ok((queued[1]?.["clientCmd"] as string) > (queued[0]?.["clientCmd"] as string));
+        assert.equal(h.calls.filter((c) => c.method === "DescribeWorld").length, describesBefore + 1);
     });
 
     it("preserves repeated directional moves in order across successive flights", () => {
@@ -1680,15 +1752,14 @@ describe("world entry rapid directional FIFO", () => {
         const headQ = JSON.parse(queueOf(h)) as Record<string, unknown>;
         assert.equal((headQ["command"] as Record<string, unknown>)["op"], "move-directional");
         const describesAfterHead = h.calls.filter((c) => c.method === "DescribeWorld").length;
-        // Two more presses park FIFO behind the flight (filed promptly,
-        // no watermark advance), so the head still accepts; the pair then
-        // drains as ONE batch after the acceptance.
+        // Two more presses park locally behind the flight. Only ready
+        // incorporation permits the pair to file and drain as one batch.
         moveLeft();
         moveLeft();
         assert.ok(!h.logs.some((l) => l.includes("command-busy")));
         assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")));
         assert.ok(!h.logs.some((l) => l.includes("stale")));
-        assert.equal(queueCalls(h).length, 3, "all three presses filed upfront in press order");
+        assert.equal(queueCalls(h).length, 1, "only the head files before incorporation");
         assert.equal(
             h.calls.filter((c) => c.method === "DescribeWorld").length,
             describesAfterHead,
@@ -1703,7 +1774,7 @@ describe("world entry rapid directional FIFO", () => {
             describesAfterHead + 1,
             "tails drain as one batch",
         );
-        assert.equal(queueCalls(h).length, 3, "the batch drain files nothing further");
+        assert.equal(queueCalls(h).length, 3, "both tails file after ready");
         acceptLast(h, "gen-1", "2");
         h.runTimers();
         assert.equal(queueCalls(h).length, 3);
@@ -1714,66 +1785,63 @@ describe("world entry rapid directional FIFO", () => {
         assert.equal(new Set(seqs).size, 3);
     });
 
-    it("drains the parked tail after a busy rejection without replay, unsignalled", () => {
+    it("retries a busy shortcut cut with a fresh source before filing the tail, unsignalled", () => {
         const h = makeHarness();
         discover(h);
-        // Idle fast path: the first press files and captures at once; the
-        // second parks FIFO behind the flight (filed promptly).
-        h.handle?.requestFocus("left");
-        h.handle?.requestFocus("right");
-        assert.equal(queueCalls(h).length, 2, "both presses filed upfront in press order");
-        // Core busy: the consumed head ends without replay; the parked tail
-        // survives for the next drain.
+        const left = h.shortcuts.get("omnitiler-focus-left");
+        const right = h.shortcuts.get("omnitiler-focus-right");
+        assert.ok(left !== undefined && right !== undefined);
+        left();
+        const first = requestOf(h);
+        right();
+        assert.equal(queueCalls(h).length, 1, "tail stays unfiled");
+        // Busy proves the frozen cut did not run. Retry that cut, not the
+        // Queue command or a capture carrying the tail.
         h.lastCall("DescribeWorld").callback(JSON.stringify({
             v: 4, outcome: "rejected", kind: "busy", message: "busy", gen: "gen-1",
-            source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null, gestureSettledAssoc: null,
+            source: first["source"], nativeInvalid: first["nativeInvalid"], clock: "0",
+            gestureAssoc: null, gestureSettledAssoc: null,
         }));
-        // No native event and no new press: the terminal failure alone
-        // redrains the parked tail.
         h.runTimers();
-        assert.equal(queueCalls(h).length, 2, "the redrain files nothing further");
-        const queued = queueCalls(h);
-        const drained = queued[1]?.["command"] as Record<string, unknown>;
-        assert.equal(drained["op"], "focus-directional");
-        assert.equal(drained["direction"], "right");
+        const retry = requestOf(h);
+        assert.notEqual(retry["source"], first["source"]);
+        assert.deepEqual(retry["report"], first["report"]);
+        assert.equal(retry["nativeInvalid"], first["nativeInvalid"]);
+        assert.equal(queueCalls(h).length, 1, "retry doesn't file or refile commands");
         acceptLast(h, "gen-1", "1");
-        // No replay anywhere: the refused head and the parked tail each
-        // filed exactly once.
+        h.runTimers();
+        assert.equal(queueCalls(h).length, 2, "tail files after ready");
+        assert.equal((queueCalls(h)[1]?.["command"] as Record<string, unknown>)["direction"], "right");
+        assert.notEqual(requestOf(h)["source"], retry["source"]);
+        acceptLast(h, "gen-1", "2");
         const cmdSeqs = sentCmdSeqs(h);
         assert.equal(new Set(cmdSeqs).size, cmdSeqs.length);
         assert.equal(cmdSeqs.length, 2);
     });
 
-    it("drops only the consumed head on timeout and drains the tail unsignalled", () => {
+    it("replays the timed-out shortcut cut before filing the tail, unsignalled", () => {
         const h = makeHarness();
         discover(h);
-        const mark = h.timers.length;
-        // Idle fast path: the first press files and captures at once; the
-        // second parks FIFO behind the flight.
-        h.handle?.requestFocus("left");
-        const firstClientCmd = (queueCalls(h)[0] as Record<string, unknown>)["clientCmd"] as string;
-        h.handle?.requestFocus("right");
-        assert.equal(queueCalls(h).length, 2, "both presses filed upfront");
-        // Expire the debounce, both settled queue timers, and the flight's
-        // own capture timeout in turn. No native event is delivered anywhere
-        // below.
-        fireNextTimer(h, 2000, mark);
-        fireNextTimer(h, 2000, mark);
-        fireNextTimer(h, 2000, mark);
-        fireNextTimer(h, 2000, mark);
+        const left = h.shortcuts.get("omnitiler-focus-left");
+        const right = h.shortcuts.get("omnitiler-focus-right");
+        assert.ok(left !== undefined && right !== undefined);
+        left();
+        const first = h.lastCall("DescribeWorld");
+        right();
+        assert.deepEqual(sentCmdSeqs(h), ["1"], "tail stays unfiled");
+        expireDescribe(h);
         assert.ok(h.logs.some((l) => l.includes("timeout")));
-        // The timeout redrains the parked tail (filing nothing further).
         h.runTimers();
-        assert.equal(queueCalls(h).length, 2, "the redrain files nothing further");
-        const queued = queueCalls(h);
-        const drained = queued[1]?.["command"] as Record<string, unknown>;
-        assert.equal(drained["op"], "focus-directional");
-        assert.equal(drained["direction"], "right");
+        const replay = h.lastCall("DescribeWorld");
+        assert.notEqual(replay, first, "timeout schedules an exact replay");
+        assert.equal(replay.payload, first.payload);
+        assert.deepEqual(sentCmdSeqs(h), ["1"], "no Queue replay and no tail filing");
         acceptLast(h, "gen-1", "1");
-        // The timed-out head never reappears.
-        const seqs = sentCmdSeqs(h);
-        assert.equal(seqs.filter((s) => s === firstClientCmd).length, 1);
-        assert.equal(new Set(seqs).size, seqs.length);
+        h.runTimers();
+        assert.deepEqual(sentCmdSeqs(h), ["1", "2"]);
+        assert.equal((queueCalls(h)[1]?.["command"] as Record<string, unknown>)["direction"], "right");
+        assert.notEqual(requestOf(h)["source"], (JSON.parse(first.payload) as Record<string, unknown>)["source"]);
+        acceptLast(h, "gen-1", "2");
     });
 
     it("drops queued directionals on generation mismatch with a diagnostic", () => {
@@ -1782,8 +1850,7 @@ describe("world entry rapid directional FIFO", () => {
         h.handle?.requestFocus("left");
         h.handle?.requestFocus("right");
         h.handle?.requestFocus("left");
-        // Poison while one head flies and two tails wait: the whole queue
-        // belongs to the dead generation.
+        assert.deepEqual(sentCmdSeqs(h), ["1", "2", "3"], "all unsealed requests file before generation loss");
         h.lastCall("DescribeWorld").callback(JSON.stringify({
             v: 4, outcome: "rejected", kind: "generation-mismatch", message: "stale", gen: "gen-2",
             source: "", nativeInvalid: "0", clock: "0", gestureAssoc: null, gestureSettledAssoc: null,
@@ -1812,8 +1879,7 @@ describe("world entry rapid directional FIFO", () => {
         assert.equal(fresh["gen"], "gen-2");
         const freshQ = JSON.parse(queueOf(h)) as Record<string, unknown>;
         assert.equal((freshQ["command"] as Record<string, unknown>)["direction"], "right");
-        // Filing history keeps the pre-drop parks (filed promptly at press)
-        // plus the fresh post-rebind press; only the fresh press drains.
+        // History includes the old filings, but neither tail replays.
         const dirs = queueCalls(h)
             .map((req) => (req["command"] as Record<string, unknown>)["direction"]);
         assert.deepEqual(dirs, ["left", "right", "left", "right"]);
@@ -1824,22 +1890,18 @@ describe("world entry rapid directional FIFO", () => {
         discover(h);
         const describesBefore = h.calls.filter((c) => c.method === "DescribeWorld").length;
         h.handle?.requestFocus("left");
-        // A workspace select behind a directional flight parks FIFO too
-        // (QueueWorldCommand only parks; one capture drains the batch):
-        // no busy refusal, no shortcut failure, native state untouched.
+        // Unsealed workspace select and resize file while the head flies.
         h.handle?.requestWorkspaceRelative(1);
         assert.ok(!h.logs.some((l) => l.includes("command-busy")));
         assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")));
         // A resize parks the same way.
         h.handle?.requestResize("left", "outwards");
         assert.ok(!h.logs.some((l) => l.includes("shortcut-failed action=resize")));
-        assert.equal(queueCalls(h).length, 3, "all three presses filed upfront in press order");
         assert.deepEqual(
             queueCalls(h).map((req) => (req["command"] as Record<string, unknown>)["op"]),
             ["focus-directional", "select-relative", "resize"],
+            "all three unsealed requests file upfront in press order",
         );
-        // The idle fast path already flew the first press alone; the parked
-        // pair drains as one batch after its acceptance.
         assert.equal(
             h.calls.filter((c) => c.method === "DescribeWorld").length,
             describesBefore + 1,
@@ -1851,7 +1913,7 @@ describe("world entry rapid directional FIFO", () => {
             describesBefore + 2,
             "parked pair drains as one batch",
         );
-        assert.equal(queueCalls(h).length, 3, "the batch drain files nothing further");
+        assert.equal(queueCalls(h).length, 3, "the follow-up batch files nothing further");
     });
 
     it("drops the queue on stop with no post-stop dispatch", () => {
@@ -4501,6 +4563,9 @@ describe("world entry focus feedback production regression", () => {
             set activeWindow(ref: unknown) {
                 focusSets += 1;
                 active = ref as FakeWindow;
+                for (const handler of [...(signals["windowActivated"] as FakeSignal).handlers]) {
+                    handler(active);
+                }
             },
             cursorPos: { x: 2, y: 100 },
             windowAdded: (signals.windowAdded as FakeSignal).signal,
@@ -4516,11 +4581,11 @@ describe("world entry focus feedback production regression", () => {
                 const oldId = currents.get(screen.name) ?? "ws1";
                 const oldDesk = oldId === "ws2" ? ws2 : ws1;
                 currents.set(screen.name, (deskRef as { id: string }).id);
+                for (const handler of [...(signals["currentDesktopChanged"] as FakeSignal).handlers]) {
+                    (handler as (...args: Array<unknown>) => void)(oldDesk, deskRef, screens[0]);
+                }
                 if (syncViewSignals) {
                     active = w2;
-                    for (const handler of [...(signals["currentDesktopChanged"] as FakeSignal).handlers]) {
-                        (handler as (...args: Array<unknown>) => void)(oldDesk, deskRef, screens[0]);
-                    }
                     for (const handler of [...(signals["windowActivated"] as FakeSignal).handlers]) {
                         (handler as (...args: Array<unknown>) => void)(w2);
                     }
@@ -4598,13 +4663,11 @@ describe("world entry focus feedback production regression", () => {
                 }
             }
         };
-        // Signal-driven recapture: native view/foreground moves only
-        // re-observe on their signals, so fire them before each pump.
-        const fireAll = (): void => {
-            for (const key of ["windowActivated", "desktopsChanged", "currentDesktopChanged", "screensChanged", "activeScreenChanged"] as const) {
-                for (const handler of [...(signals[key] as FakeSignal).handlers]) {
-                    handler();
-                }
+        // Pump a neutral native invalidation without fabricating activation
+        // or view changes on an unchanged foreground and selector.
+        const invalidate = (): void => {
+            for (const handler of [...(signals["desktopsChanged"] as FakeSignal).handlers]) {
+                handler();
             }
         };
         let flushed = 0;
@@ -4719,7 +4782,7 @@ describe("world entry focus feedback production regression", () => {
                 // zero feedback rows (nothing recorded, still unspent),
                 // settles nothing, and the core re-publishes the identical
                 // retained id.
-                fireAll();
+                invalidate();
                 runTimers();
                 const deferred = await flushNextDescribe();
                 const deferredInner = (deferred.req["report"] ?? deferred.req) as Record<string, unknown>;
@@ -4743,7 +4806,7 @@ describe("world entry focus feedback production regression", () => {
                     deadIds.push(supersededId);
                     handle!.requestWorkspaceSelect(1);
                     runTimers();
-                    fireAll();
+                    invalidate();
                     runTimers();
                     const supersede = await flushNextDescribe();
                     const supersedeInner = (supersede.req["report"] ?? supersede.req) as Record<string, unknown>;
@@ -4758,7 +4821,7 @@ describe("world entry focus feedback production regression", () => {
                     // restore carries a null envelope. The adapter retires
                     // its unstarted record with no row and no setter call.
                     surface["windowAt"] = () => [w1, w2];
-                    fireAll();
+                    invalidate();
                     runTimers();
                     const retired = await flushNextDescribe();
                     const retiredInner = (retired.req["report"] ?? retired.req) as Record<string, unknown>;
@@ -4787,7 +4850,7 @@ describe("world entry focus feedback production regression", () => {
                 // flush actuates and records the genuine row; the shared
                 // tail below then loss-tests, retries, and settles it.
                 surface["windowAt"] = () => [w1, w2];
-                fireAll();
+                invalidate();
                 runTimers();
                 const resumed = await flushNextDescribe();
                 // The resumed report itself predates the apply, so the row
@@ -4834,7 +4897,7 @@ describe("world entry focus feedback production regression", () => {
             calls[dropAt]!.callback(undefined);
             // The retry is a real redispatch (signals plus queue pump
             // drive it): it must arrive, never be silently skipped.
-            fireAll();
+            invalidate();
             runTimers();
             const feedback = await flushNextDescribe();
             const feedbackPayload = calls[flushed - 1]!.payload;
@@ -4852,7 +4915,7 @@ describe("world entry focus feedback production regression", () => {
                 switchEvents = (last.reply["switchSettled"] ?? []) as Array<Record<string, unknown>>;
             }
             for (let i = 0; i < 4 && switchEvents.length === 0; i += 1) {
-                fireAll();
+                invalidate();
                 runTimers();
                 last = await flushNextDescribe();
                 switchEvents = (last.reply["switchSettled"] ?? []) as Array<Record<string, unknown>>;
@@ -4866,7 +4929,7 @@ describe("world entry focus feedback production regression", () => {
             // Post-settlement capture: a real dispatch must follow, with
             // NO additional switch events, no new feedback rows, and no
             // second setter call.
-            fireAll();
+            invalidate();
             runTimers();
             const later = await flushNextDescribe();
             const laterSwitchEvents = (later.reply["switchSettled"] ?? []) as Array<Record<string, unknown>>;
@@ -4987,26 +5050,15 @@ describe("world entry focus feedback production regression", () => {
 });
 
 describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
-    // KDE rapid-input batching (decisions/commands.md#kde-rapid-input) and
-    // the queued-ingress contract (porting/world-contract.md#queued-kde-ingress).
-    // every press parks FIFO with no busy refusal (QueueWorldCommand only
-    // parks); ONE fresh capture drains the whole parked batch against
-    // post-previous-action core state; presses arriving mid-flight ride the
-    // next batch. Ordinary keyboard windowed actions resolve implicit at
-    // core current focus (`win:{"currentFocus":true}`, exact closed object;
-    // null invalid); explicit string ids (settled by-id continuations) and
-    // the directional nofocus `win:""` keep their meaning. Overlapping
-    // accepted publications share one latest-pending slot while previous
-    // writes are genuinely in flight: superseded unissued targets never
-    // issue, issued writes spend at-most-once, and an intermediate
-    // superseded publication drives no covering persist of its own.
-    // These FAIL against the current busy/directional-only single-head
-    // drain (submitCommandInner busy, per-head fileQueue, one
-    // WriteFloatIntent per persist waiter) and pin the correction.
+    // The direct request seam exercises FIFO and latest-world apply:
+    // one capture drains the eligible batch against the prior actions'
+    // core state. Presses arriving during a capture stay local until
+    // the next batch. Ordinary windowed requests carry currentFocus,
+    // while explicit by-id routes and the no-focus marker keep their
+    // meaning. Overlapping accepted publications share one latest-
+    // pending slot while earlier writes are in flight.
 
-    // Existing harness boundary for parking before a capture: a native
-    // burst arms the observation debounce, so every press below queues
-    // instead of taking the idle fast path (no retroactive joining).
+    // A native burst arms the debounce before the direct requests file.
     const armDebounce = (h: Harness): void => {
         for (const handler of [...(h.signals.windowActivated as FakeSignal).handlers]) {
             (handler as (...args: Array<unknown>) => void)();
@@ -5206,10 +5258,10 @@ describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
             flightDescribes,
             "no second flight while one owns the wire",
         );
-        assert.equal(queueCalls(h).length, 3, "late press parks for the next batch");
+        assert.deepEqual(queueCalls(h).map((req) => req["clientCmd"]), ["1", "2", "3"], "late unsealed request files for the next batch");
         acceptLast(h, "1");
         h.runTimers();
-        assert.equal(queueCalls(h).length, 3, "the next batch files nothing further");
+        assert.equal(queueCalls(h).length, 3, "the follow-up batch files nothing further");
         assert.equal(
             h.calls.filter((c) => c.method === "DescribeWorld").length,
             flightDescribes + 1,
@@ -5516,6 +5568,11 @@ describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
         assert.equal(h.intentWriteFlights.length, 1, "second publication queues behind the in-flight write");
         assert.deepEqual(h.world.focused, [], "still nothing issued");
         // A third publication overlaps the same barrier.
+        // Sample the actual pre-barrier foreground on the latest capture.
+        h.world.activeWindow = h.world.wins.find((w) => w.internalId === "win-c") ?? null;
+        for (const handler of [...(h.signals["windowActivated"] as FakeSignal).handlers]) {
+            handler(h.world.activeWindow);
+        }
         h.handle?.requestFocus("right");
         h.runTimers();
         assert.equal(queueCalls(h).length, 3, "third batch files its park");
@@ -5526,9 +5583,6 @@ describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
         }));
         assert.equal(h.intentWriteFlights.length, 1, "third publication queues behind the same in-flight write");
         assert.deepEqual(h.world.focused, [], "nothing issued before the barrier lifts");
-        // Latest target (win-a) differs from the pre-barrier foreground
-        // (win-c) so the covering apply can issue it once the barrier lifts.
-        h.world.activeWindow = h.world.wins.find((w) => w.internalId === "win-c") ?? null;
         // The in-flight write lands: the first superseded publication drops
         // without issuing and the next waiter persists covering.
         h.intentWriteFlights[0]!.callback(storedIntentReply(h.intentWriteFlights[0]!.payload));
@@ -5689,41 +5743,35 @@ describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
         h.handle?.stop();
     });
 
-    it("a later accept collects every outstanding requester result, including a timed-out capture", () => {
-        // A capture timeout never requeues its sent commands, but their
-        // identities stay undecided: the next accepted capture (even one
-        // draining a newer batch) collects every outstanding take,
-        // distinguishing pending retries from terminal settlements.
+    it("collects pending requester results after exact replay and again on the next ready cut", () => {
         const h = makeHarness();
         discover(h);
-        h.handle?.requestFocus("left");
-        const filed = queueCalls(h);
-        assert.equal(filed.length, 1, "first press files");
-        const firstCmd = filed[0]?.["clientCmd"] as string;
+        const left = h.shortcuts.get("omnitiler-focus-left");
+        const right = h.shortcuts.get("omnitiler-focus-right");
+        assert.ok(left !== undefined && right !== undefined);
+        const identities = (method: string): unknown[] => h.calls
+            .filter((c) => c.method === method)
+            .map((c) => (JSON.parse(c.payload) as Record<string, unknown>)["clientCmd"]);
+        left();
+        assert.deepEqual(identities("QueueWorldCommand"), ["1"]);
         const capture = h.lastCall("DescribeWorld");
-        const timeout = [...h.timers].reverse().find((t) => t.delay === 2000);
-        assert.ok(timeout !== undefined, "capture timeout armed");
-        h.timers.splice(h.timers.indexOf(timeout as { delay: number; cb: () => void }), 1);
-        (timeout as { cb: () => void }).cb();
-        assert.ok(!h.calls.some((c) => c.method === "TakeCommandResult"), "timed-out capture collects no take yet");
-        // A newer press parks and its drain flies on the next event (the
-        // withheld queue rides the catchup after the timeout armed the
-        // observation-only lane); accepting it collects both the timed-out
-        // identity and the new one in clientCmd order.
-        h.handle?.requestFocus("right");
-        assert.equal(queueCalls(h).length, 2, "newer press files under its own identity");
+        expireDescribe(h);
+        right();
+        assert.deepEqual(identities("QueueWorldCommand"), ["1"], "newer press cannot file through an ambiguous cut");
+        assert.deepEqual(identities("TakeCommandResult"), [], "timeout itself incorporates nothing");
         h.runTimers();
-        const drained = h.lastCall("DescribeWorld");
-        assert.notEqual(drained, capture, "a follow-up capture flies after the timeout");
-        const body = JSON.parse(drained.payload) as Record<string, unknown>;
-        drained.callback(acceptedReply("gen-1", body["source"] as string, body["nativeInvalid"] as string, "1"));
-        const takes = h.calls.filter((c) => c.method === "TakeCommandResult");
-        assert.equal(takes.length, 2, "one take per outstanding identity, timed-out included");
-        assert.deepEqual(
-            takes.map((c) => (JSON.parse(c.payload) as Record<string, unknown>)["clientCmd"]),
-            [firstCmd, "2"],
-            "outstanding identities collected in order, never re-executed",
-        );
+        const replay = h.lastCall("DescribeWorld");
+        assert.notEqual(replay, capture, "the follow-up is a new send");
+        assert.equal(replay.payload, capture.payload, "the follow-up replays the exact Describe");
+        acceptLast(h, "1");
+        assert.deepEqual(identities("TakeCommandResult"), ["1"], "ready replay collects the original requester result");
+        // The mock Take replies pending. The next ready cut collects both
+        // outstanding identities without refiling the older command.
+        h.runTimers();
+        assert.deepEqual(identities("QueueWorldCommand"), ["1", "2"]);
+        assert.notEqual(requestOf(h)["source"], (JSON.parse(capture.payload) as Record<string, unknown>)["source"]);
+        acceptLast(h, "2");
+        assert.deepEqual(identities("TakeCommandResult"), ["1", "1", "2"]);
         h.handle?.stop();
     });
 });

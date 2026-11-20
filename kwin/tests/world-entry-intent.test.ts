@@ -727,12 +727,13 @@ describe("world entry retained intent desire", () => {
         assert.deepEqual((JSON.parse(write.payload) as Record<string, unknown>)["records"], []);
         write.callback(storedWriteReply(flow, 0));
         assert.equal(flow.appliedCount(), appliedBefore + 1);
-        // Follow-up reports no longer live-join the cleared window.
-        flow.pump(120);
-        const captures = flow.calls.filter((c) => c.method === "DescribeWorld");
-        assert.ok(captures.length >= 1);
-        // The retained null projection owes no further writes on the next accept.
+        // Request the command before pumping native follow-up timers. If a
+        // commandless observation goes out first, filing waits for its reply.
         const second = driveSecondCapture(flow, "gen-1");
+        assert.notEqual(second["source"], envelope["source"]);
+        const report = second["report"] as Record<string, unknown>;
+        assert.deepEqual(report["intentRecords"], [], "follow-up no longer live-joins the cleared row");
+        // The retained null projection owes no further writes on the next accept.
         const writesBefore = flow.writeCount();
         flow.lastCall("DescribeWorld").callback(acceptCapture("gen-1", second, [
             { win: "win-a", data: null },

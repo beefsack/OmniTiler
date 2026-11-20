@@ -13,6 +13,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { captureWorldObservation } from "../src/world-observe";
+import { FocusChangesTracker, MAX_FOCUS_CHANGES, type FocusChanges } from "../src/world-focus-changes";
 import { buildWorldReportV4InnerJson, deriveLocalFrameWitness, encodeV4String } from "../src/world-report";
 import { mapNativePid } from "../src/world-connection";
 
@@ -296,6 +297,7 @@ describe("v4 screen physical identity", () => {
                 screens: [{ ...obs.screens[0], manufacturer: bad }],
             };
             assert.equal(buildWorldReportV4InnerJson({
+                focusChanges: null,
                 observation: mutated as never,
                 creationAttempts: [],
                 frameAttempts: [],
@@ -309,9 +311,10 @@ describe("v4 screen physical identity", () => {
     });
 });
 
-function buildInner(surface: object) {
+function buildInner(surface: object, focusChanges: FocusChanges | null = null) {
     const obs = observe(surface);
     const json = buildWorldReportV4InnerJson({
+        focusChanges,
         observation: obs,
         creationAttempts: [],
         frameAttempts: [],
@@ -324,6 +327,68 @@ function buildInner(surface: object) {
     assert.ok(json !== null);
     return { obs, json, value: JSON.parse(json) as Record<string, unknown> };
 }
+
+describe("v4 focus-change intervals", () => {
+    it("encodes the three closed shapes and ordered mixed events", () => {
+        const surface = makeSurface([makeWin({})]);
+        assert.equal(buildInner(surface).value["focusChanges"], null);
+        assert.match(buildInner(surface, { after: "17", events: null }).json,
+            /"focusChanges":\{"after":"17","events":null\}/);
+        const events = [
+            { kind: "foreground", win: null },
+            { kind: "view", out: "out-1", native: "ws2" },
+            { kind: "foreground", win: "" },
+            { kind: "foreground", win: "win-d" },
+        ] as const;
+        assert.deepEqual(buildInner(surface, { after: null, events }).value["focusChanges"], { after: null, events });
+    });
+
+    it("keeps ordered unproved activity even when a later proved-own effect wins the readback", () => {
+        const obs = observe(makeSurface([makeWin({})]));
+        const tracker = new FocusChangesTracker();
+        tracker.incorporate(tracker.freeze(obs, tracker.mark()), "10");
+        const d = { kind: "foreground", win: "win-d" } as const;
+        tracker.record(d);
+        tracker.prove(tracker.record({ kind: "foreground", win: obs.focusedGlobal }));
+        const cut = tracker.freeze(obs, tracker.mark());
+        assert.deepEqual(cut.interval, { after: "10", events: [d] });
+        tracker.incorporate(cut, "11");
+        assert.deepEqual(tracker.freeze(obs, tracker.mark()).interval, { after: "11", events: [] });
+    });
+
+    it("bounds the prefix, carries overflow as a gap, and retains later events across acknowledgement", () => {
+        const obs = observe(makeSurface([makeWin({})]));
+        const tracker = new FocusChangesTracker();
+        const event = { kind: "foreground", win: obs.focusedGlobal } as const;
+        for (let i = 0; i < MAX_FOCUS_CHANGES; i += 1) {
+            tracker.record(event);
+        }
+        const full = tracker.freeze(obs, tracker.mark());
+        assert.equal(full.interval.events?.length, MAX_FOCUS_CHANGES);
+        tracker.record(event);
+        const overflow = tracker.freeze(obs, tracker.mark());
+        assert.deepEqual(overflow.interval, { after: null, events: null });
+        tracker.incorporate(full, "20");
+        assert.deepEqual(tracker.freeze(obs, tracker.mark()).interval, { after: "20", events: [event] });
+        tracker.record(event);
+        tracker.incorporate(overflow, "21");
+        assert.deepEqual(tracker.freeze(obs, tracker.mark()).interval, { after: "21", events: [event] });
+    });
+
+    it("reanchors after a gap, but interruption still refuses a continuity claim after reset", () => {
+        const obs = observe(makeSurface([makeWin({})]));
+        const tracker = new FocusChangesTracker();
+        tracker.incorporate(tracker.freeze(obs, tracker.mark()), "22");
+        const withoutSignal = { ...obs, foregroundKnown: true, focusedGlobal: "win-d" };
+        const gap = tracker.freeze(withoutSignal, tracker.mark());
+        assert.deepEqual(gap.interval, { after: "22", events: null });
+        tracker.incorporate(gap, "23");
+        assert.deepEqual(tracker.freeze(withoutSignal, tracker.mark()).interval, { after: "23", events: [] });
+        tracker.interrupt();
+        tracker.reset();
+        assert.deepEqual(tracker.freeze(withoutSignal, tracker.mark()).interval, { after: null, events: null });
+    });
+});
 
 describe("v4 canonical string writer", () => {
     it("escapes quote and backslash short, every C0 control as lowercase \\u00xx", () => {
@@ -366,6 +431,7 @@ describe("v4 inner report shape", () => {
         assert.deepEqual(Object.keys(value), [
             "v", "screens", "windows", "closed", "native", "focused",
             "foregroundKnown",
+            "focusChanges",
             "complete", "gesture", "cursor", "actionForeground",
             "actionCached", "actionOutputs", "presentation",
             "intentRecords", "propertyAttempts", "focusFeedback",
@@ -453,6 +519,7 @@ describe("v4 inner report shape", () => {
     it("fails closed on a closed id that overlaps a live lifetime", () => {
         const obs = observe(makeSurface([makeWin({})]));
         const json = buildWorldReportV4InnerJson({
+            focusChanges: null,
             observation: { ...obs, closed: ["win-a"] },
             creationAttempts: [],
             frameAttempts: [],
@@ -520,6 +587,7 @@ describe("v4 cursorHit scoping", () => {
         });
         assert.ok(obs !== null);
         const json = buildWorldReportV4InnerJson({
+            focusChanges: null,
             observation: obs,
             creationAttempts: [],
             frameAttempts: [],
@@ -570,6 +638,7 @@ describe("v4 cursorHit scoping", () => {
         const obs = observe(makeSurface([makeWin({})]));
         assert.equal(obs.cursorWindow, "win-a");
         const json = buildWorldReportV4InnerJson({
+            focusChanges: null,
             observation: { ...obs, cursor: null },
             creationAttempts: [],
             frameAttempts: [],
@@ -591,6 +660,7 @@ describe("v4 frame attempt lane", () => {
     function buildWithFrames(frames: Array<Record<string, unknown>>) {
         const obs = observe(makeSurface([makeWin({})]));
         const json = buildWorldReportV4InnerJson({
+            focusChanges: null,
             observation: obs,
             creationAttempts: [],
             frameAttempts: frames as never,
@@ -680,6 +750,7 @@ describe("v4 member/view attempt lanes", () => {
     ) {
         const obs = observe(makeSurface([makeWin({})]));
         const json = buildWorldReportV4InnerJson({
+            focusChanges: null,
             observation: obs,
             creationAttempts: [],
             frameAttempts: [],
@@ -826,6 +897,7 @@ describe("v4 local frame witness (adapter-local watermark)", () => {
 
     function innerWitness(obs: object) {
         const json = buildWorldReportV4InnerJson({
+            focusChanges: null,
             observation: obs as never,
             creationAttempts: [],
             frameAttempts: [],
@@ -934,6 +1006,7 @@ describe("v4 local frame witness (adapter-local watermark)", () => {
 describe("v4 foregroundKnown provenance bit", () => {
     function innerFor(obs: ReturnType<typeof observe>) {
         const json = buildWorldReportV4InnerJson({
+            focusChanges: null,
             observation: obs,
             creationAttempts: [],
             frameAttempts: [],

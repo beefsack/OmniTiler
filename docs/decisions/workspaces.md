@@ -172,7 +172,8 @@
 
 ### Workspace migration D5: source refill
 - Decision: Setting defaults to `last-remaining-workspace`, alternative `most-recently-used-workspace`; KDE `migrationSourceRefill`, Windows `core.migration_source_refill` schema-v1 missing defaults to last-remaining, no migration. Apply affects later migrations. MRU uses per-output history; snapshot previous stable ID before map mutation, eligible only if live, still assigned to source remaining ring and not migrated. Surviving empties qualify; missing/removed/migrated/out-of-scope falls back to last remaining. In both modes preserve a still-scoped live source current. Empty migration allowed, retaining its backing ID.
-- Decision (2026-11-20), pending user review: in supported v4, a retained paired source-refill view names its migration through required nullable `TransferTarget.parent`. Consumers match it to the migration's opaque `op`, never infer a parent from token spelling, and gate paired refill on migration arrival. An unparented view has no migration relation. The native-free binding in D6 is unchanged.
+- User decision (2026-11-20): in supported v4, a retained paired source-refill view names its migration through required nullable `TransferTarget.parent`. Consumers match it to the migration's opaque `op`, never infer a parent from token spelling, and gate paired refill on migration arrival. An unparented view has no migration relation. The native-free binding in D6 is unchanged.
+- User decision (2026-11-20): keep the eight active fixture updates for the explicit parent, leave frozen fixtures unchanged, and defer replacing the Windows `-refill` convention to the [typed Windows cutover](../backlog.md). See the [F3 evidence](../changes/archive/pre-kde-external-review-fixes.md#deferred-and-unchanged).
 - Why: not recorded.
 - Assumes / revisit if: native lifecycle timing remains user testing.
 - Status: active, 2026-10-10
@@ -187,7 +188,7 @@
 
 ### Workspace migration D7: floats and sticky windows
 - Decision: Carry workspace-bound intentional/automatic floats with class and origin preserved via native output remap. Sticky all-desktop windows remain on source output, belong to output, and are not migration members.
-- Decision (2026-11-20), pending user review: retained migration membership controls a carried member's `member_auth` at its destination independently of `frame_auth`. A carried float keeps untouched frame authority; a minimized member keeps its frame hold. Require controlled row membership with no membership hold before native output or membership writes. Already-homed live readback may prove arrival without a setter; an unhomed unauthorized member still blocks migration arrival and dependent view changes.
+- User decision (2026-11-20): retained migration membership controls a carried member's `member_auth` at its destination independently of `frame_auth`. A carried float keeps untouched frame authority; a minimized member keeps its frame hold. Require controlled row membership with no membership hold before native output or membership writes. Already-homed live readback may prove arrival without a setter; an unhomed unauthorized member still blocks migration arrival and dependent view changes.
 - Why: not recorded.
 - Assumes / revisit if: native carry acceptance remains pending; sticky is not converted to a workspace member.
 - Status: active, 2026-10-09

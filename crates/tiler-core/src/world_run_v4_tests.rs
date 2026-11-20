@@ -131,6 +131,7 @@ fn report_full(
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         visibility_attempts: Vec::new(),
+        focus_changes: None,
         focus_feedback: Vec::new(),
         presentation,
         intent_records: intent_data
@@ -202,7 +203,14 @@ fn run_with_settlements(
         .checked_add(1)
         .expect("test issuing");
     let (outcome, dispositions) = engine.tx(|tx| {
-        tx.run_accepted_v4_batched(report, &issue(report.request_seq), consumed, issuing, &[])
+        tx.run_accepted_v4_batched(
+            report,
+            &issue(report.request_seq),
+            consumed,
+            issuing,
+            issuing.checked_sub(1).filter(|prior| *prior != 0),
+            &[],
+        )
     });
     (
         outcome,
@@ -634,7 +642,9 @@ fn consumed_rerun_with_new_observation_reconciles_without_revalidation() {
         Some(stale),
         Vec::new(),
     );
-    match engine.tx(|tx| tx.run_accepted_v4_batched(&rerun, &issue(3), true, issuing, &[])) {
+    match engine.tx(|tx| {
+        tx.run_accepted_v4_batched(&rerun, &issue(3), true, issuing, Some(issuing - 1), &[])
+    }) {
         (V4RunOutcome::CommandConsumed(reply), settlements) => {
             assert!(reply.command_consumed);
             assert!(

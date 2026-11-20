@@ -615,6 +615,7 @@ fn send_to_output_refused_when_target_unknown_source_preserved() {
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         visibility_attempts: Vec::new(),
+        focus_changes: None,
         focus_feedback: Vec::new(),
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),

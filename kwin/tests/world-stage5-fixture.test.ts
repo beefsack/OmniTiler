@@ -1061,12 +1061,16 @@ describe("stage5 active boundary (new keys required, frozen history rejects)", (
         assert.ok(!frozen.includes("sharedNativeRoster"), "frozen stage5-v4 handshake predates the key");
     });
 
-    it("active envelope requires foregroundKnown, frozen history lacks it", () => {
+    it("active envelope proves foreground and carries a focus interval; frozen history lacks both", () => {
         const active = JSON.parse(activeFixture("full", "envelope-p5-0.json")) as Record<string, unknown>;
         const report = active["report"] as Record<string, unknown>;
         assert.equal(report["foregroundKnown"], true, "active capture proves bound foreground");
+        const changes = report["focusChanges"];
+        assert.ok(changes !== null && typeof changes === "object" && "after" in changes && "events" in changes,
+            "KWin reports continuity or a gap, not the snapshot-only null");
         const frozen = v4Fixture("full", "envelope-p5-0.json");
         assert.ok(!frozen.includes("foregroundKnown"), "frozen stage5-v4 envelope predates the bit");
+        assert.ok(!frozen.includes("focusChanges"), "frozen stage5-v4 envelope predates the interval");
     });
 
     it("active reply requires focusRequest, stripping it refuses the whole reply", () => {

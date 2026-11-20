@@ -67,6 +67,7 @@ fn report(seq: u64, complete: bool) -> WorldReportV4 {
         creation_attempts: Vec::new(),
         state_attempts: Vec::new(),
         visibility_attempts: Vec::new(),
+        focus_changes: None,
         focus_feedback: Vec::new(),
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         held_attempts: Vec::new(),

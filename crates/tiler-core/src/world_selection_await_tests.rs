@@ -211,6 +211,7 @@ fn report(
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         visibility_attempts: Vec::new(),
+        focus_changes: None,
         focus_feedback: feedback,
         presentation: PresentationRowV4::Valid(empty_ingress()),
         intent_records: Vec::new(),
@@ -2083,6 +2084,30 @@ fn selection_follow_send_home_invalidates_stale_hide() {
             .after_shown
             .is_some(),
         "follow focus waits until the destination is shown"
+    );
+    // The same freeze that projects the selection dependencies also
+    // freezes the post-layout destination as the activation scope: w2 was
+    // natively/staged home on `away` before this send, and the request
+    // must name `home`, never `away`.
+    let pending = followed
+        .focus_request
+        .as_ref()
+        .expect("retained focus request");
+    assert_eq!(
+        pending.workspace, home,
+        "follow freezes the destination as activation scope"
+    );
+    assert_ne!(
+        pending.workspace, away,
+        "never the pre-move home: {pending:?}"
+    );
+    let shown = pending.after_shown.as_ref().expect("projection");
+    assert!(
+        shown
+            .members
+            .iter()
+            .any(|member| member.win.0 == "w2" && member.out.0 == "out-a" && member.ws == home),
+        "afterShown member homes at the destination: {shown:?}"
     );
     assert!(
         engine.world.settlement.retained.iter().all(|r| {
@@ -7123,6 +7148,104 @@ fn host_proof_windows(visible: bool) -> Vec<WindowFact> {
     ]
 }
 
+fn activation_change(window: &str) -> crate::world_report::FocusChange {
+    crate::world_report::FocusChange::Foreground {
+        win: Some(WindowId(window.to_owned())),
+    }
+}
+
+#[test]
+fn departing_activation_does_not_cancel_but_earlier_destination_activation_does() {
+    use crate::world_report::FocusChanges;
+
+    for (events, retain) in [
+        (vec![activation_change("w0")], true),
+        (
+            vec![activation_change("w1"), activation_change("w0")],
+            false,
+        ),
+        // This client activated and disappeared before the snapshot;
+        // its missing home does not prove a departing-workspace click.
+        (
+            vec![activation_change("w-gone"), activation_change("w0")],
+            false,
+        ),
+    ] {
+        let (mut engine, _, issued) = host_focus_grant();
+        // The final source echo and foreground are identical in all
+        // branches. Retained selection decides known clients' eligibility.
+        let mut capture = host_native_report(4, host_proof_windows(false), "n0", None, None);
+        capture.focused_global = "w0".to_owned();
+        capture.foreground_known = true;
+        capture.focus_changes = Some(FocusChanges {
+            after: Some(issued.state_revision),
+            events: Some(events),
+        });
+        let first = accepted(&mut engine, &capture);
+        let expected = issued.focus_request.filter(|_| retain);
+        assert_eq!(first.focus_request, expected);
+        assert!(first.effects.is_empty());
+
+        let mut next = host_native_report(5, host_proof_windows(true), "n1", None, None);
+        next.focused_global = "w1".to_owned();
+        next.foreground_known = true;
+        next.focus_changes = Some(FocusChanges {
+            after: Some(first.state_revision),
+            events: Some(vec![]),
+        });
+        let arrived = accepted(&mut engine, &next);
+        assert_eq!(
+            arrived.focus_request, expected,
+            "own fallback must not resurrect T"
+        );
+        assert!(arrived.effects.is_empty());
+    }
+}
+
+#[test]
+fn only_target_hiding_selector_retires_with_unchanged_sticky_foreground() {
+    use crate::world_report::{FocusChange, FocusChanges};
+
+    let (mut engine, _, issued) = host_focus_grant();
+    let sticky_capture = |seq, current| {
+        let mut windows = host_proof_windows(current == "n1");
+        windows[0].sticky = Some(true);
+        let mut capture = host_native_report(seq, windows, current, None, None);
+        capture.focused_global = "w0".to_owned();
+        capture.foreground_known = true;
+        capture
+    };
+    let mut sticky_source = sticky_capture(4, "n0");
+    sticky_source.focus_changes = Some(FocusChanges {
+        after: Some(issued.state_revision),
+        events: Some(vec![]),
+    });
+    let seeded = accepted(&mut engine, &sticky_source);
+    assert_eq!(seeded.focus_request, issued.focus_request);
+    let mut prior = seeded.state_revision;
+    for (seq, out, selector, current, retain) in [
+        (5, "out-b", "n0", "n0", true),
+        (6, "out-a", "n1", "n1", true),
+        (7, "out-a", "n0", "n0", false),
+    ] {
+        let mut capture = sticky_capture(seq, current);
+        capture.focus_changes = Some(FocusChanges {
+            after: Some(prior),
+            events: Some(vec![FocusChange::View {
+                out: OutputId(out.to_owned()),
+                native: selector.to_owned(),
+            }]),
+        });
+        let reply = accepted(&mut engine, &capture);
+        assert_eq!(
+            reply.focus_request.as_ref(),
+            issued.focus_request.as_ref().filter(|_| retain)
+        );
+        assert!(reply.effects.is_empty());
+        prior = reply.state_revision;
+    }
+}
+
 #[test]
 fn host_owned_focus_bearing_native_arrival_and_selector_complete_proven() {
     let (mut engine, away, grant) = host_focus_grant();
@@ -9136,6 +9259,7 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
             held_attempts: Vec::new(),
             state_attempts: Vec::new(),
             visibility_attempts: Vec::new(),
+            focus_changes: None,
             focus_feedback: Vec::new(),
             presentation: crate::world_report::PresentationRowV4::Valid(
                 crate::world_report::PresentationIngressV4::default(),
@@ -10772,6 +10896,37 @@ fn host_owned_focus_bearing_freezes_sticky_focus_at_actual_home() {
     assert_eq!(
         frozen.home.workspace.0, home,
         "actual core home: {binding:?}"
+    );
+    // The retained focus request's activation scope must name the
+    // sticky's ACTUAL frozen per-member home, never the aggregate
+    // selected home (away). This strengthens the binding-member check
+    // above to the published scope the adapter acts on.
+    let focus_scope = reply
+        .focus_request
+        .as_ref()
+        .expect("retained focus request");
+    assert_eq!(
+        focus_scope.output, frozen.home.output,
+        "sticky focus scope names actual home output: {focus_scope:?}"
+    );
+    assert_eq!(
+        focus_scope.workspace, frozen.home.workspace.0,
+        "sticky focus scope names actual home workspace: {focus_scope:?}"
+    );
+    assert_eq!(
+        focus_scope.workspace, home,
+        "sticky focus scope names home, never selected: {focus_scope:?}"
+    );
+    assert_ne!(
+        focus_scope.workspace, away,
+        "never the aggregate selected home: {focus_scope:?}"
+    );
+    let shown = focus_scope.after_shown.as_ref().expect("projection");
+    assert!(
+        shown.members.iter().any(|member| member.win.0 == "ws"
+            && member.out == frozen.home.output
+            && member.ws == frozen.home.workspace.0),
+        "afterShown homes sticky at actual home: {shown:?}"
     );
     assert_eq!(
         binding.members.len(),

@@ -112,6 +112,7 @@ fn report(
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         visibility_attempts: Vec::new(),
+        focus_changes: None,
         focus_feedback: Vec::new(),
         presentation: PresentationRowV4::Valid(ingress(focused)),
         intent_records: Vec::new(),
@@ -2271,4 +2272,165 @@ fn rapid_input_single_command_float_and_unfloat_batches_unchanged() {
         !row_b_after.floating && row_b_after.allocation.is_some(),
         "{row_b_after:?}"
     );
+}
+
+fn cut_frame_roster() -> Vec<WindowFact> {
+    vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)]
+}
+
+#[test]
+fn cut_float_frame_comes_from_resolved_subject_until_its_float_state_changes() {
+    use crate::directional::WindowSubject;
+    use crate::geometry::Rect;
+    use crate::world_report::FocusChanges;
+
+    let retained = Rect {
+        x: 120,
+        y: 80,
+        w: 400,
+        h: 300,
+    };
+    let moved = Rect {
+        x: 170,
+        y: 90,
+        w: 440,
+        h: 320,
+    };
+    let explicit = Rect {
+        x: 190,
+        y: 100,
+        w: 460,
+        h: 340,
+    };
+    let roster = |frame| {
+        let mut b = fact("win-b", "out-a", 100);
+        b.rect = Some(frame);
+        vec![fact("win-a", "out-a", 0), b]
+    };
+    let with_frame = |frame| {
+        WorldCommand::Operation(CoreCommand::ToggleFloat {
+            window: WindowSubject::CurrentFocus,
+            float_rect: Some(frame),
+        })
+    };
+    for (case, sealed, fullscreen, toggles, expected) in [
+        ("cut", true, false, vec![implicit_toggle_float()], moved),
+        (
+            "snapshot only",
+            false,
+            false,
+            vec![implicit_toggle_float()],
+            retained,
+        ),
+        (
+            "explicit frame",
+            true,
+            false,
+            vec![with_frame(explicit)],
+            explicit,
+        ),
+        (
+            "fullscreen",
+            true,
+            true,
+            vec![implicit_toggle_float()],
+            retained,
+        ),
+        (
+            "already unfloated and re-floated",
+            true,
+            false,
+            vec![
+                implicit_toggle_float(),
+                with_frame(explicit),
+                implicit_toggle_float(),
+            ],
+            explicit,
+        ),
+    ] {
+        let mut engine = engine();
+        run_batched(&mut engine, &observe(1, cut_frame_roster(), "win-b"), &[]);
+        let (_, setup) = run_batched(
+            &mut engine,
+            &observe(2, cut_frame_roster(), "win-b"),
+            &[(1, with_frame(retained))],
+        );
+        assert_accepted(&setup, "initial float");
+        let foreground = if fullscreen { "win-b" } else { "win-a" };
+        let (arrived, _) = run_batched(&mut engine, &observe(3, roster(retained), foreground), &[]);
+        let mut cut = observe(4, roster(moved), foreground);
+        if fullscreen {
+            cut.windows[1].fullscreen = Some(true);
+            cut.windows[1].rect = Some(Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 600,
+            });
+        }
+        if sealed {
+            cut.focus_changes = Some(FocusChanges {
+                after: Some(arrived.state_revision),
+                events: Some(Vec::new()),
+            });
+        }
+        // In the ordinary legs the observed foreground is A, but the FIFO
+        // cursor advances to B before the first toggle.
+        let batch: Vec<_> = (!fullscreen)
+            .then(|| focus_cmd("win-b"))
+            .into_iter()
+            .chain(toggles)
+            .chain(std::iter::once(implicit_toggle_float()))
+            .zip(2..)
+            .map(|(command, seq)| (seq, command))
+            .collect();
+        let (reply, settled) = run_batched(&mut engine, &cut, &batch);
+        assert_accepted(&settled, case);
+        assert_eq!(
+            settled.last().unwrap().result,
+            Some(CommandResult::Float {
+                window: WindowId("win-b".to_owned()),
+                rect: Some(expected),
+                no_space: false,
+            }),
+            "{case}"
+        );
+        assert!(
+            reply
+                .windows
+                .iter()
+                .any(|row| row.lifetime.0 == "win-a" && !row.floating)
+        );
+    }
+}
+
+#[test]
+fn cut_tiled_frame_does_not_become_float_geometry_after_same_batch_float() {
+    use crate::world_report::FocusChanges;
+
+    let mut engine = engine();
+    let (boot, _) = run_batched(&mut engine, &observe(1, cut_frame_roster(), "win-a"), &[]);
+    let mut cut = observe(2, cut_frame_roster(), "win-a");
+    cut.focus_changes = Some(FocusChanges {
+        after: Some(boot.state_revision),
+        events: Some(Vec::new()),
+    });
+    let (_, settled) = run_batched(
+        &mut engine,
+        &cut,
+        &[
+            (1, implicit_toggle_float()),
+            (2, implicit_toggle_float()),
+            (3, implicit_toggle_float()),
+        ],
+    );
+    assert_accepted(&settled, "float, unfloat, re-float");
+    let Some(CommandResult::Float {
+        rect: Some(rect), ..
+    }) = settled[0].result
+    else {
+        panic!("expected initial float frame, got {:?}", settled[0].result);
+    };
+    assert_ne!(Some(rect), cut.windows[0].rect);
+    assert_eq!(settled[2].result, settled[0].result);
 }

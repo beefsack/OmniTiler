@@ -177,6 +177,7 @@ fn report(
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         visibility_attempts: Vec::new(),
+        focus_changes: None,
         focus_feedback: Vec::new(),
         presentation: tiler_core::world_report::PresentationRowV4::Valid(
             tiler_core::world_report::PresentationIngressV4::default(),
@@ -1895,6 +1896,7 @@ fn creation_triple_mismatch_is_invalid() {
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         visibility_attempts: Vec::new(),
+        focus_changes: None,
         focus_feedback: Vec::new(),
         presentation: tiler_core::world_report::PresentationRowV4::Valid(
             tiler_core::world_report::PresentationIngressV4::default(),

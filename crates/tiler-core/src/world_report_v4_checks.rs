@@ -166,6 +166,11 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
             .saturating_add(held_in_lane(report, AttemptLaneV4::Visibility))
             > MAX_WORLD_PROPERTY_ATTEMPTS
         || report.focus_feedback.len() > MAX_WORLD_FOCUS_FEEDBACK
+        || report
+            .focus_changes
+            .as_ref()
+            .and_then(|changes| changes.events.as_ref())
+            .is_some_and(|events| events.len() > crate::world_report::MAX_FOCUS_CHANGES)
         || report.intent_records.len() > MAX_INTENT_RECORDS
     {
         return Some("section-over-cap");
@@ -178,6 +183,21 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
         > MAX_ARRIVAL_BRACKETS_TOTAL
     {
         return Some("section-over-cap");
+    }
+    if let Some(events) = report
+        .focus_changes
+        .as_ref()
+        .and_then(|changes| changes.events.as_ref())
+        && events.iter().any(|event| match event {
+            crate::world_report::FocusChange::Foreground { win } => win
+                .as_ref()
+                .is_some_and(|win| !win.0.is_empty() && !is_opaque_id(&win.0)),
+            crate::world_report::FocusChange::View { out, native } => {
+                !is_opaque_id(&out.0) || !is_opaque_id(native)
+            }
+        })
+    {
+        return Some("focus-change-id-invalid");
     }
     if let Some((x, y)) = report.cursor
         && !valid_carried_point(x, y)
@@ -1219,6 +1239,7 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         cursor_hit,
         focused_global,
         foreground_known,
+        focus_changes,
         action_foreground,
         action_cached,
         action_outputs,
@@ -1647,6 +1668,38 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
     }
     for attempt in visibility_attempts {
         feed_visibility_attempt(&mut hash, attempt);
+    }
+    flag(&mut hash, focus_changes.is_some());
+    if let Some(changes) = focus_changes {
+        flag(&mut hash, changes.after.is_some());
+        if let Some(after) = changes.after {
+            feed(&mut hash, &after.to_string());
+            sep(&mut hash);
+        }
+        flag(&mut hash, changes.events.is_some());
+        if let Some(events) = &changes.events {
+            feed(&mut hash, &events.len().to_string());
+            sep(&mut hash);
+            for event in events {
+                match event {
+                    crate::world_report::FocusChange::Foreground { win } => {
+                        flag(&mut hash, false);
+                        flag(&mut hash, win.is_some());
+                        if let Some(win) = win {
+                            feed(&mut hash, &win.0);
+                            sep(&mut hash);
+                        }
+                    }
+                    crate::world_report::FocusChange::View { out, native } => {
+                        flag(&mut hash, true);
+                        feed(&mut hash, &out.0);
+                        sep(&mut hash);
+                        feed(&mut hash, native);
+                        sep(&mut hash);
+                    }
+                }
+            }
+        }
     }
     for row in focus_feedback {
         feed(&mut hash, &row.id);

@@ -341,6 +341,7 @@ describe("world state attempt report lane", () => {
     function buildInner(states: WorldStateAttempt[]) {
         const obs = observe(makeSurface([makeWin({})]));
         return buildWorldReportV4InnerJson({
+            focusChanges: null,
             observation: obs,
             creationAttempts: [],
             frameAttempts: [],
@@ -519,6 +520,7 @@ describe("world state attempt strict engine", () => {
             }
             const obs = observe(makeSurface([makeWin({})]));
             const inner = buildWorldReportV4InnerJson({
+                focusChanges: null,
                 observation: obs,
                 creationAttempts: [],
                 frameAttempts: [],

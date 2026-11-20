@@ -244,6 +244,7 @@ async function roundtrip(
     assert.ok(obs !== null, "capture stays non-null");
     assert.equal(obs.complete, true, "capture complete");
     const inner = buildWorldReportV4InnerJson({
+        focusChanges: null,
         observation: obs,
         creationAttempts: [],
         frameAttempts: [],

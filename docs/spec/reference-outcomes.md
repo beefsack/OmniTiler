@@ -19,6 +19,36 @@ New reference-WM findings use latest stable release tags and inline source-versi
 labels under the [reference source policy](../decisions/reference-and-shortcuts.md#reference-outcome-authority).
 Existing citation keys retain historical pins until relied on again; KDE policy is unchanged.
 
+### Retained focus supersession
+
+| ID | Given / When |
+| --- | --- |
+| `focus-intent-late-click` | Given visible eligible T and D, issue focus for T; before it settles, click D. |
+| `focus-intent-departing-click` | Given ordinary non-sticky S on A and T on B, accept a same-output A→B switch; click S while its old pixels may still show. |
+| `focus-intent-own-fallback` | Given T remembered on B and native fallback C on B, switch A→B and observe the host bring C forward. |
+
+| Then, per reference | `focus-intent-late-click` | `focus-intent-departing-click` | `focus-intent-own-fallback` |
+| --- | --- | --- | --- |
+| i3 | i3 4.25.1: a delivered X press resolves its event window/frame, activates D and renders from that logical focus (`src/click.c:158–162,261–277,361–386`; `src/con.c:250–262,292–295`). Exact delayed `WM_TAKE_FOCUS`/`FocusIn` interleaving TBD (`src/x.c:1404–1445`; `src/handlers.c:1062–1108`). | i3 4.25.1: an unmapped frame cannot receive a fresh hit; an event already addressed to S can show A and activate S. Exact X delivery in overlap TBD; acceptance is not unmap (`src/workspace.c:438–457`; `src/tree.c:452–465`; `src/x.c:1228,1459–1486`; `src/click.c:205–209,261–277,372–421`). | i3 4.25.1: switch selects B's focused descendant or stops at workspace/container; native focus is that client/frame or the EWMH support window without a usable target. Separately controlled C substitution TBD/no direct analogue (`src/workspace.c:483–522`; `src/con.c:1693–1699`; `src/x.c:1399–1415,1448–1456`). |
+| sway | sway 1.12: delivered default-seat press hit-tests the scene and focuses D before committing dirty layout; keyboard enter is direct when allowed. Exact result if hit or seat admission changes TBD (`sway/input/seatop_default.c:332–369,438–455`; `sway/input/seat.c:186–202,1130–1156,1177–1198,1255–1270`; `sway/desktop/transaction.c:756–765`). | sway 1.12: scene hit-testing at handling time may hit S before transaction application; inactive workspace trees and floaters cannot supply the hit afterward. Exact overlap TBD (`sway/commands/workspace.c:233–239`; `sway/input/cursor.c:39–57,73–96`; `sway/input/seatop_default.c:332–344`; `sway/desktop/transaction.c:578–596,622–626,756–765`). | sway 1.12: switch selects the most recent eligible seat node or the workspace; surface focus can differ through exclusive layer, session lock or gated keyboard enter. Split-host fallback TBD/no direct analogue (`sway/tree/workspace.c:731–742`; `sway/input/seat.c:1357–1371,186–202,1255–1270`). |
+| COSMIC | TBD | TBD | TBD |
+| Hyprland | TBD | TBD | TBD |
+| awesome | TBD | TBD | TBD |
+| qtile | TBD | TBD | TBD |
+| xmonad | TBD | TBD | TBD |
+| bspwm | TBD | TBD | TBD |
+| niri | TBD | TBD | TBD |
+| PaperWM | TBD | TBD | TBD |
+| karousel | TBD | TBD | TBD |
+| paneru | TBD | TBD | TBD |
+| Ours KDE | Proposed: D wins; no later T setter. Live TBD. | Proposed: S does not supersede; T wins if still eligible. Live TBD. | Proposed: proved-own C does not cancel T; at most one setter after readiness, zero if already T. [Unit 8](../changes/kde-rebuild-v4.md#unit-8-recovery-and-integrated-native-proof) retired `baseline-changed`; the [pre-fix Unit A leg](../changes/focus-intent-supersession.md#real-kde-selection-pre-fix-failures) retired `foreground-intent` after C activated. The [fixed Unit A leg](../changes/focus-intent-supersession.md#real-kde-selection-passed-after-the-qv4-fix) retained the same request across skipped applies and fallback C, called the T setter once, and settled `complete/proven`. |
+| Ours Windows | TBD | TBD | TBD |
+
+The [i3 4.25.1](https://github.com/i3/i3/tree/254879d291353aa36858379b6f87aaafa1bd0fe5)
+and [sway 1.12](https://github.com/swaywm/sway/tree/88869399f421d9180dd8b6ed0b5a1f4a3585d252)
+findings are source comparisons, not live tests, selected behavior, or
+evidence of a Tier 1 consensus.
+
 ### Retained settlement lifetime discriminators
 
 | Minimal action sequence | Selected OmniTiler outcome | Unsupported outcome |
@@ -190,6 +220,10 @@ Stable-tag source citations (paths/lines belong to these tags, not checkout HEAD
 | --- | --- | --- |
 | Focus A with neighbor B; enqueue directional focus to B, then resize with `win:{"currentFocus":true}`, without native focus settlement; compare an explicit resize of A | User 2026-11-08: core executes both in order and resizes B for the current-focus subject; explicit A still targets A. Empty directional-focus `win` remains genuinely no-focus, not implicit focus | End-to-end mixed-burst delivery, physical keys, perceived latency and equivalent reference-WM observations remain TBD; [decision](../decisions/commands.md#kde-rapid-input) |
 | Focus tiled B beside A; press Meta+G, then press Meta+G again while the first command is queued or its world capture is in flight; contrast a second press after settlement | User 2026-11-16: remove the KDE busy fence. Both presses queue FIFO; core floats then unfloats its execution-time subject, while the adapter applies only its latest world. Starting floating, unfloat then re-float likewise ends floating with retained placement. Adapter-free core and genuine broker regressions pass. [Platform-independent rule](../decisions/commands.md#ordered-core-commands-and-latest-world-application) | Tier 1 source outcomes below agree on sequential logical toggles. Native rapid-float even/odd checks, render/frame timing and other reference-WM counterparts remain TBD; no pixel/flicker or all-platform native acceptance inferred. |
+| Activate eligible D → press toggle-float → activate eligible T before Queue ACK | Toggle D only. Confirmed by the fixture-only physical Meta+G leg: D floated and T stayed focused and tiled. | Reference WMs and other hosts TBD. [KDE evidence](../changes/kde-shortcut-native-cuts.md#live-kde) |
+| Older focus-to-T pending → eligible D activates → proved-own T activates → press toggle-float | Toggle T; old request remains retired, with no compensating setter. | Exact native own-after-D reachability and other hosts TBD. |
+| Older focus-to-T pending → eligible D activates → press toggle-float → proved-own T activates → press toggle-float | Toggle D then T, once each. T's activation is absent from `focusChanges`; no compensating setter. | Exact native overlap and other hosts TBD. |
+| Focus-left chooses T → toggle-float without an intervening eligible activation | Toggle T before native arrival, including when a capture flight separates the commands. | Live KDE and reference outcomes for the float variant TBD. |
 
 Tier 1 source outcomes for the two-press float discriminator (eligible ordinary
 window; source evidence, not live frame/render acceptance):

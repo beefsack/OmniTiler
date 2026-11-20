@@ -15,9 +15,9 @@
 // #kde-rapid-input); reply placements are read from actual Engine replies
 // before choosing directions, never assumed from native rect order. A queued
 // native-signal invalidation still withholds the stale batch's real setters
-// (filings awaited first), and a timed-out capture still drains its batch on
-// the later on-next-event catchup (the next native signal, never an inline
-// retry). Included in `npm test`.
+// (filings awaited first), and a timed-out sealed capture drains its batch
+// by replaying exact bytes on the next event, never via an inline retry.
+// Included in `npm test`.
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
@@ -30,6 +30,8 @@ import {
     awaitDispatch,
     awaitQueueCount,
     describeCount,
+    describeEnvelopeAt,
+    deskById,
     discover,
     flushReads,
     frameOf,
@@ -38,8 +40,39 @@ import {
     replyFrames,
     takeReadys,
     winById,
+    type FakeDesktop,
     type FakeWindow,
+    type Harness,
 } from "./world-producer-harness";
+
+function press(h: Harness, key: string): void {
+    const callback = h.shortcuts.get(key);
+    assert.ok(callback, `registered shortcut ${key}`);
+    callback();
+}
+
+function activate(h: Harness, win: string): void {
+    h.activeRef = winById(h, win);
+    h.fire("windowActivated", h.activeRef);
+}
+
+function reportAt(h: Harness, index: number): Record<string, unknown> {
+    return describeEnvelopeAt(h, index)["report"] as Record<string, unknown>;
+}
+
+function assertFloats(reply: Record<string, unknown>, expected: Record<string, boolean>): void {
+    const rows = reply["windows"] as Array<Record<string, unknown>>;
+    for (const [id, floating] of Object.entries(expected)) {
+        assert.equal(rows.find((row) => row["win"] === id)?.["floating"], floating, `float state of ${id}`);
+    }
+}
+
+function floatSubjects(h: Harness): unknown[] {
+    return takeReadys(h).flatMap((take) => {
+        const result = take["result"] as Record<string, unknown> | null;
+        return result?.["op"] === "toggle-float" ? [result["win"]] : [];
+    });
+}
 describe("world entry rapid directional FIFO against the real Engine", () => {
     it("applies rapid left then right focus with exact native effects in order", async () => {
         const h = await makeHarness("win-a", ["win-a", "win-b", "win-c"]);
@@ -435,6 +468,7 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
         try {
             await discover(h);
             const mark = h.timers.length;
+            const beforeCapture = describeCount(h);
             // Read the actual Engine placement: B settles left of focused
             // win-a, so the first move-left swaps and the repeat meets the
             // settled boundary.
@@ -444,18 +478,15 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
                 "engine settles B left of focused win-a",
             );
             const nativeBefore = h.wins.map((w) => ({ ...frameOf(w) }));
-            // Same applicable direction twice: both file before either
-            // filing settles, and one capture carries the batch.
-            h.handle.requestMove("left");
-            h.handle.requestMove("left");
-            await awaitQueueCount(h, "move-directional", 2);
-            const moves = h.commandPayloads("move-directional");
-            assert.equal(moves.length, 2, "timed-out head plus queued tail file, nothing else");
-            // Await real filing and the batch dispatch first: the dispatch
-            // gate fires only after every parked Queue filing settles, and
-            // each settled filing cancels its own queue timeout. Expiring
-            // ONLY the capture flight afterwards never touches a queue.
+            // Same applicable direction twice, before either ACK: one cut.
+            press(h, "Meta+Shift+H");
+            press(h, "Meta+Shift+H");
+            // The first dispatched capture must already own the entire
+            // same-cut batch, regardless of how long its Queue ACKs took.
             const headIndex = await awaitDispatch(h);
+            assert.equal(h.commandPayloads("move-directional").length, 2,
+                "both moves file before the sealed capture dispatches");
+            // Expiring only the capture must not touch either filing.
             assert.ok(!h.logs.some((l) => l.includes("queue-timeout")), "real filings beat the queue timeouts");
             assert.ok(!h.answered.has(headIndex), "batch capture still in flight, no synthetic reply");
             for (let round = 0; round < 6; round += 1) {
@@ -466,33 +497,17 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             }
             assert.ok(h.logs.some((l) => l.includes("omnitiler:world:timeout recovery=on-next-event")), "capture flight expires");
             assert.ok(!h.logs.some((l) => l.includes("queue-timeout")), "only the capture expires, never a queue");
-            // Recovery is on-next-event (never an inline retry): the next
-            // native signal dispatches the catchup, which drains the filed
-            // batch server-side exactly once (world-entry.ts `timeout
-            // recovery=on-next-event`; the rapid batch decision files the
-            // whole parked batch before one fresh capture drains it). The
-            // timed-out capture itself is never forwarded, so it never
-            // replays.
-            h.fire("windowActivated");
-            h.runTimers();
-            let catchIndex = -1;
-            for (let round = 0; round < 200; round += 1) {
-                catchIndex = h.calls.findIndex((call, at) => at > headIndex && call.method === "DescribeWorld" && !h.answered.has(at));
-                if (catchIndex >= 0) {
-                    break;
-                }
-                h.runTimers();
-                await new Promise<void>((resolve) => setTimeout(resolve, 0));
-            }
-            assert.ok(catchIndex >= 0, "catchup dispatches after the timeout");
+            assert.equal(describeCount(h), beforeCapture + 1, "timeout does not retry inline");
+            // Model a dropped delivery: do not forward the expired attempt.
+            // A native signal wakes the producer but cannot replace its cut.
+            h.answered.add(headIndex);
+            activate(h, "win-a");
+            const catchIndex = await awaitDescribeFrom(h, headIndex + 1);
+            assert.equal(h.calls[catchIndex]?.payload, h.calls[headIndex]?.payload, "exact source and sealed bytes");
             const catchReply = JSON.parse(h.replies.get(await h.flushAt(catchIndex)) as string) as Record<string, unknown>;
             assert.equal(catchReply["outcome"] ?? "accepted", "accepted", "catchup drains the filed batch");
             assert.equal("result" in catchReply, false, "actuator lane never carries the terminal result");
-            appliedMatchesReply(h, catchReply);
-            assert.ok(
-                h.wins.some((w, i) => JSON.stringify(frameOf(w)) !== JSON.stringify(nativeBefore[i])),
-                "drained batch applies the Engine-planned swap",
-            );
+            assert.deepEqual(h.wins.map((w) => frameOf(w)), nativeBefore, "stale replay does not apply");
             // The filed batch settles on the take lane per command: the head
             // move swaps (move ops carry no separate result - the snapshot
             // IS the result - so its ready take resolves null), while the
@@ -521,30 +536,18 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             assert.equal(headTake["result"], null, "drained move resolves a null take result");
             assert.equal(tailTake["outcome"], "failed", "boundary repeat settles failed, never dropped");
             assert.equal(tailTake["kind"], "operation-refused", "boundary noop normalizes to the expected refusal kind");
-            // No-replay proof through production identities: the broker mints
-            // one globalCmd per filed command and each settles exactly once
-            // on the per-command take lane. The timed-out capture stays
-            // unanswered through the catchup: it never replays there.
-            assert.ok(!h.answered.has(headIndex), "timed-out capture never replays during catchup");
+            // A repeated Describe transport attempt never repeats commands.
             const globalCmds = batchTakes.map((t) => t["globalCmd"] as string);
             assert.equal(new Set(globalCmds).size, globalCmds.length, "sent commands never replay");
-            // Transport-drop model for the expired capture (explicit, not a
-            // silent late forward): the entry transmitted headIndex before
-            // its flight expired (transmitCapture sends, then the capture
-            // timeout settles the flight with recovery=on-next-event while
-            // the settled guard at world-entry.ts:5102 drops any late
-            // reply). The test transport never delivered that envelope to
-            // the broker, so it must never be evaluated late: mark it
-            // answered-without-send (no reply recorded) so settle() cannot
-            // forward the expired envelope after the catchup sourceSeq,
-            // which the broker would only refuse as stale-source
-            // (world_broker.rs:662-669). Either branch of the ambiguity
-            // (drop-before-execution here; or evaluate-once-and-hold-the-
-            // callback) keeps exactly-once execution; this test pins the
-            // drop branch: no later send, no replay.
-            h.answered.add(headIndex);
+            await h.settle();
+            const converged = lastDescribeReply(h);
+            appliedMatchesReply(h, converged);
+            assert.ok(
+                h.wins.some((w, i) => JSON.stringify(frameOf(w)) !== JSON.stringify(nativeBefore[i])),
+                "fresh catchup applies the Engine-planned swap",
+            );
             // A later observation-only round changes nothing further.
-            h.fire("windowActivated");
+            activate(h, "win-a");
             h.runTimers();
             const framesAfterCatchup = h.wins.map((w) => ({ ...frameOf(w) }));
             await h.settle();
@@ -743,6 +746,390 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
         }
     });
 
+    it("seals the admitted D press before T activates under the Queue ACK", async () => {
+        const h = await makeHarness("win-b", ["win-a", "win-b"]);
+        try {
+            await discover(h);
+            const initial = lastDescribeReply(h);
+            assertFloats(initial, { "win-a": false, "win-b": false });
+            const n0 = describeCount(h);
+            // Hold only delivery: the broker really admits the command before T.
+            const held: Array<{ reply: string; callback: (reply: unknown) => void }> = [];
+            h.deliverQueueAck = (reply, callback) => {
+                held.push({ reply, callback });
+            };
+            activate(h, "win-a");
+            press(h, "Meta+G");
+            await awaitQueueCount(h, "toggle-float", 1);
+            assert.equal(h.commandPayloads("toggle-float").length, 1);
+            for (let round = 0; held.length === 0 && round < 200; round += 1) {
+                await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            }
+            const ack = held.shift();
+            assert.ok(ack, "the real broker acknowledged admission");
+            assert.equal(JSON.parse(ack.reply)["outcome"], "queued");
+            h.deliverQueueAck = (reply, callback) => callback(reply);
+            activate(h, "win-b");
+            h.runTimers();
+            assert.equal(describeCount(h), n0, "no capture drains before Queue ACK");
+            ack.callback(ack.reply);
+            const index = await awaitDispatch(h);
+            const report = reportAt(h, index);
+            assert.equal(report["focused"], "win-a");
+            assert.deepEqual(report["focusChanges"], {
+                after: initial["rev"], events: [{ kind: "foreground", win: "win-a" }],
+            });
+            h.geometryWrites.length = 0;
+            await h.flushAt(index);
+            const drained = lastDescribeReply(h);
+            assert.equal(BigInt(drained["rev"] as string), BigInt(initial["rev"] as string) + 1n);
+            assertFloats(drained, { "win-a": true, "win-b": false });
+            assert.deepEqual(floatSubjects(h), ["win-a"]);
+            assert.deepEqual(h.geometryWrites, [], "the old cut settles without native writes");
+            await h.settle();
+            const settled = lastDescribeReply(h);
+            assertFloats(settled, { "win-a": true, "win-b": false });
+            assert.deepEqual(floatSubjects(h), ["win-a"], "catchup does not toggle again");
+            assert.equal(h.activeRef?.internalId, "win-b");
+            assert.deepEqual(h.focused, []);
+            appliedMatchesReply(h, settled);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    for (const boundary of ["change and return", "selector only", "focus-event overflow"] as const) {
+        it(`keeps the earlier float cut intact across ${boundary}`, async () => {
+            const selectorOnly = boundary === "selector only";
+            const overflow = boundary === "focus-event overflow";
+            const h = await makeHarness(selectorOnly ? "win-a" : "win-b", ["win-a", "win-b"],
+                selectorOnly ? { desktops: ["ws1", "ws2"] } : undefined);
+            try {
+                if (selectorOnly) {
+                    winById(h, "win-b").desktops = [deskById(h, "ws2")];
+                }
+                await discover(h);
+                const initial = lastDescribeReply(h);
+                const foregroundA = { kind: "foreground", win: "win-a" };
+                const foregroundB = { kind: "foreground", win: "win-b" };
+                if (!selectorOnly) {
+                    activate(h, "win-a");
+                }
+                press(h, "Meta+G");
+
+                let events: unknown;
+                if (selectorOnly) {
+                    const set = h.workspace["setCurrentDesktopForScreen"] as (desktop: FakeDesktop, out: { name: string }) => void;
+                    set(deskById(h, "ws2"), h.activeScreen);
+                    set(deskById(h, "ws1"), h.activeScreen);
+                    events = ["ws2", "ws1"].map((native) => ({ kind: "view", out: h.activeScreen.name, native }));
+                } else if (overflow) {
+                    for (let i = 0; i < 65; i += 1) {
+                        activate(h, i % 2 === 0 ? "win-b" : "win-a");
+                    }
+                    events = null;
+                } else {
+                    activate(h, "win-b");
+                    activate(h, "win-a");
+                    events = [foregroundB, foregroundA];
+                }
+                const secondSubject = overflow ? "win-b" : "win-a";
+                assert.equal(h.activeRef?.internalId, secondSubject);
+                press(h, "Meta+G");
+
+                const first = await awaitDispatch(h);
+                assert.equal(h.commandPayloads("toggle-float").length, 1, "boundary splits Queue filing");
+                const firstReport = reportAt(h, first);
+                assert.equal(firstReport["focused"], "win-a");
+                assert.deepEqual(firstReport["focusChanges"], {
+                    after: initial["rev"], events: selectorOnly ? [] : [foregroundA],
+                });
+                h.geometryWrites.length = 0;
+                await h.flushAt(first);
+                const firstReply = lastDescribeReply(h);
+                assertFloats(firstReply, { "win-a": true, "win-b": false });
+                assert.deepEqual(floatSubjects(h), ["win-a"]);
+                assert.deepEqual(h.geometryWrites, [], "even a return to the original subject fences apply");
+
+                const second = await awaitDescribeFrom(h, first + 1);
+                const secondReport = reportAt(h, second);
+                assert.equal(secondReport["focused"], secondSubject);
+                assert.deepEqual(secondReport["focusChanges"], { after: firstReply["rev"], events });
+                await h.flushAt(second);
+                await h.settle();
+                const settled = lastDescribeReply(h);
+                assertFloats(settled, { "win-a": overflow, "win-b": overflow });
+                assert.deepEqual(floatSubjects(h), ["win-a", secondSubject]);
+                appliedMatchesReply(h, settled);
+            } finally {
+                await h.stop();
+            }
+        });
+    }
+
+    it("refuses only the shortcut torn by a reentrant subject getter", async () => {
+        const h = await makeHarness("win-a", ["win-a", "win-b"]);
+        try {
+            await discover(h);
+            const initial = lastDescribeReply(h);
+            const active = Object.getOwnPropertyDescriptor(h.workspace, "activeWindow");
+            assert.ok(active?.get);
+            let reentered = false;
+            Object.defineProperty(h.workspace, "activeWindow", {
+                ...active,
+                get() {
+                    const old = h.activeRef;
+                    if (!reentered) {
+                        reentered = true;
+                        activate(h, "win-b");
+                    }
+                    return old;
+                },
+            });
+            press(h, "Meta+G");
+            Object.defineProperty(h.workspace, "activeWindow", active);
+            assert.ok(reentered, "the real registered callback read the torn subject");
+            assert.equal(h.commandPayloads("toggle-float").length, 0);
+            press(h, "Meta+G");
+            const index = await awaitDispatch(h);
+            const report = reportAt(h, index);
+            assert.equal(report["focused"], "win-b");
+            assert.deepEqual(report["focusChanges"], {
+                after: initial["rev"], events: [{ kind: "foreground", win: "win-b" }],
+            });
+            await h.flushAt(index);
+            await h.settle();
+            const settled = lastDescribeReply(h);
+            assert.equal(h.commandPayloads("toggle-float").length, 1);
+            assert.deepEqual(floatSubjects(h), ["win-b"]);
+            assertFloats(settled, { "win-a": false, "win-b": true });
+            appliedMatchesReply(h, settled);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("separates coherent D and T cuts across an unhooked activation", async () => {
+        const h = await makeHarness("win-a", ["win-a", "win-b"]);
+        try {
+            await discover(h);
+            // A fresh entry attaches to the same surface, but activation
+            // delivery is unavailable for the whole generation.
+            delete h.workspace["windowActivated"];
+            const restartAt = h.calls.length;
+            h.restart();
+            await discover(h, restartAt);
+            assert.equal(h.signals["windowActivated"]?.handlers.length, 0);
+            h.fire("screensChanged");
+            const predecessor = await awaitDispatch(h);
+            press(h, "Meta+G");
+            activate(h, "win-b"); // No attached handler observes this.
+            press(h, "Meta+G");
+
+            await h.flushAt(predecessor);
+            const priorReply = lastDescribeReply(h);
+            assert.deepEqual(floatSubjects(h), [], "the parked predecessor cannot drain the D or T press");
+            const first = await awaitDescribeFrom(h, predecessor + 1);
+            assert.equal(h.commandPayloads("toggle-float").length, 1);
+            const firstReport = reportAt(h, first);
+            assert.equal(firstReport["focused"], "win-a");
+            assert.deepEqual(firstReport["focusChanges"], { after: priorReply["rev"], events: null });
+            await h.flushAt(first);
+            const firstReply = lastDescribeReply(h);
+            assert.deepEqual(floatSubjects(h), ["win-a"]);
+            assertFloats(firstReply, { "win-a": true, "win-b": false });
+
+            const second = await awaitDescribeFrom(h, first + 1);
+            const secondReport = reportAt(h, second);
+            assert.equal(secondReport["focused"], "win-b");
+            assert.deepEqual(secondReport["focusChanges"], { after: firstReply["rev"], events: null });
+            await h.flushAt(second);
+            await h.settle();
+            const settled = lastDescribeReply(h);
+            assert.deepEqual(floatSubjects(h), ["win-a", "win-b"]);
+            assertFloats(settled, { "win-a": true, "win-b": true });
+            appliedMatchesReply(h, settled);
+        } finally {
+            await h.stop();
+        }
+    });
+
+    for (const [variant, title] of [
+        "separates D → float → proved-own T → float before the first drain",
+        "uses T after D → proved-own T → float without reviving the older request",
+        "keeps the nested T press and original activation when own-scope readback fails",
+    ].entries()) {
+        const pressBeforeOwn = variant === 0;
+        const failProof = variant === 2;
+        const subjects = pressBeforeOwn ? ["win-b", "win-c"] : failProof ? ["win-c", "win-a"] : ["win-c"];
+        it(title, async () => {
+            const h = await makeHarness("win-a", ["win-a", "win-b", "win-c"]);
+            try {
+                await discover(h);
+                const initial = lastDescribeReply(h);
+                assertFloats(initial, { "win-b": false, "win-c": false });
+                const frames = replyFrames(initial);
+                assert.ok(frames.get("win-c")!.x < frames.get("win-a")!.x);
+                assert.ok(frames.get("win-b")!.x < frames.get("win-c")!.x);
+
+                press(h, "Meta+H");
+                const issuingIndex = await awaitDispatch(h);
+                // Inject native signals inside the real focus setter call.
+                // The original fake setter and the producer's actual Unit A
+                // proof/readback run unchanged. D is external, T is its echo.
+                const active = Object.getOwnPropertyDescriptor(h.workspace, "activeWindow");
+                assert.ok(active?.set);
+                let injected = false;
+                Object.defineProperty(h.workspace, "activeWindow", {
+                    ...active,
+                    set(ref: unknown) {
+                        if (!injected && ref === winById(h, "win-c")) {
+                            injected = true;
+                            activate(h, "win-b");
+                            if (pressBeforeOwn) {
+                                press(h, "Meta+G");
+                            }
+                            active.set?.call(h.workspace, ref);
+                            h.fire("windowActivated", ref);
+                            press(h, "Meta+G");
+                            if (failProof) {
+                                // The echo was initially a valid own candidate,
+                                // but A wins before the wrapper's readback.
+                                activate(h, "win-a");
+                                press(h, "Meta+G");
+                            }
+                            return;
+                        }
+                        active.set?.call(h.workspace, ref);
+                    },
+                });
+                await h.flushAt(issuingIndex);
+                const issued = lastDescribeReply(h);
+                const request = issued["focusRequest"] as Record<string, unknown>;
+                assert.equal(request["target"], "win-c");
+                assert.ok(injected, "native inputs actually ran in the issuing setter");
+                assert.equal(h.activeRef?.internalId, failProof ? "win-a" : "win-c");
+                assert.deepEqual(h.focused, ["win-c"]);
+
+                const first = await awaitDescribeFrom(h, issuingIndex + 1);
+                const firstReport = reportAt(h, first);
+                assert.equal(firstReport["focused"], subjects[0]);
+                const firstEvents = [{ kind: "foreground", win: "win-b" }];
+                if (failProof) {
+                    firstEvents.push({ kind: "foreground", win: "win-c" });
+                }
+                assert.deepEqual(firstReport["focusChanges"], { after: issued["rev"], events: firstEvents });
+                assert.equal(h.commandPayloads("toggle-float").length, 1,
+                    "the later shortcut cannot file before the first cut incorporates");
+                h.geometryWrites.length = 0;
+                await h.flushAt(first);
+                const firstReply = lastDescribeReply(h);
+                assert.equal(BigInt(firstReply["rev"] as string), BigInt(issued["rev"] as string) + 1n);
+                assert.equal(firstReply["focusRequest"] ?? null, null);
+                assert.deepEqual(floatSubjects(h), subjects.slice(0, 1));
+                assertFloats(firstReply, { "win-a": false, "win-b": pressBeforeOwn, "win-c": !pressBeforeOwn });
+                if (subjects.length === 2) {
+                    assert.deepEqual(h.geometryWrites, [], "later focus transition fences old apply but not ACK");
+                    const second = await awaitDescribeFrom(h, first + 1);
+                    const secondReport = reportAt(h, second);
+                    assert.equal(secondReport["focused"], subjects[1]);
+                    assert.deepEqual(secondReport["focusChanges"], {
+                        after: firstReply["rev"],
+                        events: failProof ? [{ kind: "foreground", win: "win-a" }] : [],
+                    });
+                    await h.flushAt(second);
+                    const secondReply = lastDescribeReply(h);
+                    assert.equal(BigInt(secondReply["rev"] as string), BigInt(firstReply["rev"] as string) + 1n);
+                    assert.equal(secondReply["focusRequest"] ?? null, null);
+                    assertFloats(secondReply, { "win-a": failProof, "win-b": pressBeforeOwn, "win-c": true });
+                    assert.deepEqual(floatSubjects(h), subjects);
+                }
+                await h.settle();
+                const settled = lastDescribeReply(h);
+                assertFloats(settled, { "win-a": failProof, "win-b": pressBeforeOwn, "win-c": true });
+                assert.deepEqual(floatSubjects(h), subjects);
+                assert.equal(settled["focusRequest"] ?? null, null);
+                assert.deepEqual(h.focused, ["win-c"], "no compensating focus setter");
+                assert.equal(h.activeRef?.internalId, failProof ? "win-a" : "win-c");
+                appliedMatchesReply(h, settled);
+            } finally {
+                await h.stop();
+            }
+        });
+    }
+
+    for (const scenario of ["within one cut", "across a flight", "nested in the focus getter"]) {
+        const forcedFlight = scenario === "across a flight";
+        const nested = scenario === "nested in the focus getter";
+        it(`focus-left feeds float ${scenario} before native arrival`, async () => {
+            const h = await makeHarness("win-a", ["win-a", "win-b"]);
+            try {
+                await discover(h);
+                const initial = lastDescribeReply(h);
+                const frames = replyFrames(initial);
+                assert.ok(frames.get("win-b")!.x < frames.get("win-a")!.x);
+                const n0 = describeCount(h);
+                // Model a delayed native focus setter. Do not emit an
+                // activation or mutate the foreground between the cuts.
+                const active = Object.getOwnPropertyDescriptor(h.workspace, "activeWindow");
+                assert.ok(active?.set);
+                let reentered = false;
+                Object.defineProperty(h.workspace, "activeWindow", {
+                    ...active,
+                    get() {
+                        if (nested && !reentered) {
+                            reentered = true;
+                            press(h, "Meta+G");
+                        }
+                        return h.activeRef;
+                    },
+                    set(ref: FakeWindow) {
+                        h.focused.push(ref.internalId);
+                    },
+                });
+                press(h, "Meta+H");
+                const focusFlight = forcedFlight ? await awaitDispatch(h) : null;
+                assert.equal(h.activeRef?.internalId, "win-a");
+                if (nested) {
+                    assert.ok(reentered, "the nested shortcut ran in the outer focus callback");
+                } else {
+                    press(h, "Meta+G");
+                }
+                let predecessor = initial;
+                if (focusFlight !== null) {
+                    await h.flushAt(focusFlight);
+                    predecessor = lastDescribeReply(h);
+                    assert.equal((predecessor["focusRequest"] as Record<string, unknown>)["target"], "win-b");
+                    assertFloats(predecessor, { "win-a": false, "win-b": false });
+                    assert.deepEqual(floatSubjects(h), []);
+                    assert.equal(h.activeRef?.internalId, "win-a");
+                }
+                const floatFlight = await awaitDispatch(h);
+                const cut = reportAt(h, floatFlight);
+                assert.equal(cut["focused"], "win-a");
+                assert.deepEqual(cut["focusChanges"], { after: predecessor["rev"], events: [] });
+                assert.equal(describeCount(h), n0 + (forcedFlight ? 2 : 1));
+                await h.flushAt(floatFlight);
+                const drained = lastDescribeReply(h);
+                assert.equal(BigInt(drained["rev"] as string), BigInt(predecessor["rev"] as string) + 1n);
+                assert.equal(h.commandPayloads("toggle-float").length, 1, "float belongs to the dispatched cut");
+                assert.ok(h.commandPayloads("focus-directional")[0]!.index < h.commandPayloads("toggle-float")[0]!.index,
+                    "focus files before float, even when float reenters its getter");
+                assert.deepEqual(takeReadys(h).map((take) => take["globalCmd"]), ["1", "2"]);
+                assert.deepEqual(floatSubjects(h), ["win-b"]);
+                assertFloats(drained, { "win-a": false, "win-b": true });
+                Object.defineProperty(h.workspace, "activeWindow", active);
+                activate(h, "win-b");
+                await h.settle();
+                const settled = lastDescribeReply(h);
+                assertFloats(settled, { "win-a": false, "win-b": true });
+                appliedMatchesReply(h, settled);
+            } finally {
+                await h.stop();
+            }
+        });
+    }
+
     it("queues two rapid float presses while pending, executing float then unfloat FIFO with latest-only apply", async () => {
         const h = await makeHarness("win-a", ["win-a", "win-b"]);
         try {
@@ -754,14 +1141,14 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             h.geometryWrites.length = 0;
 
             const n0 = describeCount(h);
-            h.handle.requestFloat();
-            h.handle.requestFloat();
+            press(h, "Meta+G");
+            press(h, "Meta+G");
 
             assert.ok(!h.logs.some((l) => l.includes("native-fenced")), "no busy fence on rapid float");
             assert.ok(!h.logs.some((l) => l.includes("command-busy")), "no command-busy refusal");
             assert.ok(!h.logs.some((l) => l.includes("shortcut-failed")), "no shortcut failure");
 
-            await awaitQueueCount(h, "toggle-float", 2);
+            const batchIndex = await awaitDispatch(h);
             const payloads = h.commandPayloads("toggle-float");
             assert.equal(payloads.length, 2, "both rapid float presses file FIFO");
             for (const q of payloads) {
@@ -770,9 +1157,9 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
                     { currentFocus: true },
                     "toggle-float files explicit execution-time currentFocus marker",
                 );
+                assert.equal((q.body["command"] as Record<string, unknown>)["rect"], null);
             }
 
-            const batchIndex = await awaitDispatch(h);
             assert.equal(describeCount(h), n0 + 1, "one capture drains both parked float presses");
             const batchReply = JSON.parse(h.replies.get(await h.flushAt(batchIndex)) as string) as Record<string, unknown>;
             assert.notEqual(batchReply["outcome"], "rejected", "real Engine drains the float batch");
@@ -877,62 +1264,84 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
         try {
             await discover(h);
             // Float win-a (right) and win-b (left) with distinct native frames.
-            h.handle.requestFloat();
+            press(h, "Meta+G");
             await h.flush();
             h.runTimers();
             await h.settle();
+            // Commit D's own moved frame first so the final plan/native
+            // oracle does not compare an unrelated floating live drag
+            // against D's older retained frame. T's move stays native only.
             winById(h, "win-a").frameGeometry = { x: 1400, y: 77, width: 333, height: 222 };
+            for (let i = 0; i < 2; i += 1) {
+                press(h, "Meta+G");
+                await h.flush();
+                await h.settle();
+            }
 
-            h.activeRef = winById(h, "win-b");
-            h.fire("windowActivated");
+            activate(h, "win-b");
             h.runTimers();
             await h.settle();
-            h.handle.requestFloat();
+            press(h, "Meta+G");
             await h.flush();
             h.runTimers();
             await h.settle();
-            winById(h, "win-b").frameGeometry = { x: 200, y: 100, width: 300, height: 200 };
 
-            h.activeRef = winById(h, "win-a");
-            h.fire("windowActivated");
+            activate(h, "win-a");
             h.runTimers();
             await h.settle();
+            // Only the resolved subject may donate its still-uncommitted frame.
+            winById(h, "win-b").frameGeometry = { x: 200, y: 100, width: 300, height: 200 };
             h.geometryWrites.length = 0;
             h.focused.length = 0;
 
             // Queue focus-left (shifts execution-time focus from win-a to win-b).
-            h.handle.requestFocus("left");
+            press(h, "Meta+H");
             await awaitQueueCount(h, "focus-directional", 1);
             const focusFlightIndex = await awaitDispatch(h);
 
             // Press float while focus-left is in-flight (press-time active is win-a at [1400, 77, 333, 222]).
-            h.handle.requestFloat();
+            press(h, "Meta+G");
             const focusReply = JSON.parse(h.replies.get(await h.flushAt(focusFlightIndex)) as string) as Record<string, unknown>;
             assert.notEqual(focusReply["outcome"], "rejected");
             assert.deepEqual(h.focused, ["win-b"], "focus shifts from win-a to win-b");
 
-            await awaitQueueCount(h, "toggle-float", 3);
+            const floatFlightIndex = await awaitDispatch(h);
             const floatPayloads = h.commandPayloads("toggle-float");
-            assert.equal(floatPayloads.length, 3);
+            assert.equal(floatPayloads.length, 5);
             assert.deepEqual(
-                (floatPayloads[2]?.body["command"] as Record<string, unknown>)["win"],
+                (floatPayloads[4]?.body["command"] as Record<string, unknown>)["win"],
                 { currentFocus: true },
             );
             assert.equal(
-                (floatPayloads[2]?.body["command"] as Record<string, unknown>)["rect"],
+                (floatPayloads[4]?.body["command"] as Record<string, unknown>)["rect"],
                 null,
                 "press-time floating frame of win-a must not attach to execution-time subject win-b",
             );
 
-            const floatFlightIndex = await awaitDispatch(h);
+            const cut = reportAt(h, floatFlightIndex);
+            assert.equal(cut["focused"], "win-a");
+            const rows = cut["windows"] as Array<Record<string, unknown>>;
+            assert.deepEqual(rows.find((row) => row["win"] === "win-a")?.["rect"], [1400, 77, 333, 222]);
+            assert.deepEqual(rows.find((row) => row["win"] === "win-b")?.["rect"], [200, 100, 300, 200]);
             const floatReply = JSON.parse(h.replies.get(await h.flushAt(floatFlightIndex)) as string) as Record<string, unknown>;
             assert.notEqual(floatReply["outcome"], "rejected");
 
             const takes = takeReadys(h);
-            assert.equal(takes.length, 4);
-            const floatResult = takes[3]?.["result"] as Record<string, unknown>;
+            assert.equal(takes.length, 6);
+            const floatResult = takes[5]?.["result"] as Record<string, unknown>;
             assert.equal(floatResult["op"], "toggle-float");
             assert.equal(floatResult["win"], "win-b");
+            assertFloats(floatReply, { "win-a": true, "win-b": false });
+            await h.settle();
+            press(h, "Meta+G");
+            await h.flush();
+            await h.settle();
+            const settled = lastDescribeReply(h);
+            assert.deepEqual(floatSubjects(h), ["win-a", "win-a", "win-a", "win-b", "win-b", "win-b"]);
+            assertFloats(settled, { "win-a": true, "win-b": true });
+            assert.deepEqual(frameOf(winById(h, "win-b")), { x: 200, y: 100, w: 300, h: 200 });
+            assert.deepEqual(frameOf(winById(h, "win-a")), { x: 1400, y: 77, w: 333, h: 222 });
+            appliedMatchesReply(h, settled);
         } finally {
             await h.stop();
         }
@@ -1018,24 +1427,19 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             h.geometryWrites.length = 0;
 
             // Rapid double toggle: unfloat (captures moved rect) -> re-float (restores moved rect).
-            h.handle.requestFloat();
-            h.handle.requestFloat();
-
-            await awaitQueueCount(h, "toggle-float", 3);
-            const payloads = h.commandPayloads("toggle-float");
-            assert.equal(payloads.length, 3);
-            assert.deepEqual(
-                (payloads[1]?.body["command"] as Record<string, unknown>)["rect"],
-                [111, 77, 333, 222],
-                "first idle unfloat carries moved float rect",
-            );
-            assert.equal(
-                (payloads[2]?.body["command"] as Record<string, unknown>)["rect"],
-                null,
-                "second queued re-float carries rect:null so core restores retained placement",
-            );
+            press(h, "Meta+G");
+            press(h, "Meta+G");
 
             const batchIndex = await awaitDispatch(h);
+            const payloads = h.commandPayloads("toggle-float");
+            assert.equal(payloads.length, 3);
+            for (const q of payloads.slice(1)) {
+                assert.equal((q.body["command"] as Record<string, unknown>)["rect"], null,
+                    "the moved frame belongs in the native cut, not either implicit Queue command");
+            }
+
+            const cutWindows = reportAt(h, batchIndex)["windows"] as Array<Record<string, unknown>>;
+            assert.deepEqual(cutWindows.find((row) => row["win"] === "win-a")?.["rect"], [111, 77, 333, 222]);
             const batchReply = JSON.parse(h.replies.get(await h.flushAt(batchIndex)) as string) as Record<string, unknown>;
             assert.notEqual(batchReply["outcome"], "rejected");
             appliedMatchesReply(h, batchReply);
@@ -1043,9 +1447,7 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             const takes = takeReadys(h);
             assert.equal(takes.length, 3);
             assert.deepEqual(takes.slice(1).map((t) => t["globalCmd"]), ["2", "3"]);
-            const refloatResult = takes[2]?.["result"] as Record<string, unknown>;
-            assert.equal(refloatResult["op"], "toggle-float");
-            assert.equal(refloatResult["win"], "win-a");
+            assert.deepEqual(floatSubjects(h), ["win-a", "win-a", "win-a"]);
             const winRows = (batchReply["windows"] as Record<string, unknown>[]) ?? [];
             const rowA = winRows.find((r) => r["win"] === "win-a");
             assert.ok(rowA !== undefined && rowA["floating"] === true, "double toggle from floating leaves win-a floating");

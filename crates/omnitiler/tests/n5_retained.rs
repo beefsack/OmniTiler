@@ -161,7 +161,7 @@ fn inner_report(windows: &[String]) -> String {
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\"],\
           \"presentation\":{},\
-          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
+          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\
           \"rendererInput\":null}}",
         windows.join(","),
         presentation(),
@@ -192,7 +192,7 @@ fn two_output_inner(windows: &[String]) -> String {
           \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
           \"actionOutputs\":[\"DP-1\",\"DP-2\"],\
           \"presentation\":{},\
-          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
+          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\
           \"rendererInput\":null}}",
         windows.join(","),
         presentation(),

@@ -2433,6 +2433,7 @@ fn v4_writer_primary_key_order_follows_contract() {
         "native",
         "focused",
         "foregroundKnown",
+        "focusChanges",
         "complete",
         "gesture",
         "cursor",

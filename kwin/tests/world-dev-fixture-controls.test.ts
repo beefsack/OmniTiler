@@ -372,6 +372,8 @@ describe("dev fixture-only deterministic omission and preview-reply skip", () =>
                 assert.doesNotMatch(bundle, /noteFixtureDescribeReceipt/);
                 assert.doesNotMatch(bundle, /fixture-closed-sent/);
                 assert.doesNotMatch(bundle, /close-ack/);
+                assert.doesNotMatch(bundle, /creation-readback/);
+                assert.doesNotMatch(bundle, /fixture-focus-feedback-sent|fixture-arrival-sent|fixture-view-attempt-sent/);
             }
         } finally {
             rmSync(outDir, { recursive: true, force: true });
@@ -540,8 +542,11 @@ describe("dev fixture-only deterministic omission and preview-reply skip", () =>
             h.calls.length = 0;
             h.presentationCalls.length = 0;
 
-            // Queue a command + deliver a terminal gesture so we verify command-result collection
-            // and terminal settlement discharge are preserved on the skipped reply!
+            // Deliver the terminal before the press so the frozen command cut carries both.
+            // The skipped reply must still discharge settlement and collect the command result.
+            const waitGesture = h.gestureCalls.find((c) => c.method === "WaitGesture");
+            assert.ok(waitGesture !== undefined);
+            waitGesture.callback(gestureSnapshotJson({ phase: "released", serial: "9", revision: "4" }));
             const focusLeft = h.shortcuts.get("omnitiler-focus-left");
             assert.ok(focusLeft !== undefined);
             focusLeft.cb();
@@ -551,16 +556,17 @@ describe("dev fixture-only deterministic omission and preview-reply skip", () =>
             queueCall.callback(JSON.stringify({
                 v: 4, outcome: "queued", gen: "gen-1", client: qBody.client, clientCmd: qBody.clientCmd, globalCmd: "1",
             }));
-            h.calls.length = 0;
-
-            const waitGesture = h.gestureCalls.find((c) => c.method === "WaitGesture");
-            assert.ok(waitGesture !== undefined);
-            waitGesture.callback(gestureSnapshotJson({ phase: "released", serial: "9", revision: "4" }));
             h.runTimers();
 
             const previewCap = h.calls.find((c) => c.method === "DescribeWorld");
             assert.ok(previewCap !== undefined);
-            const previewReq = (JSON.parse(previewCap.payload) as { source: string }).source;
+            const previewBody = JSON.parse(previewCap.payload) as {
+                source: string;
+                report: { nativeGesture: { serial: string; phase: string } | null };
+            };
+            assert.equal(previewBody.report.nativeGesture?.serial, "9");
+            assert.equal(previewBody.report.nativeGesture?.phase, "released");
+            const previewReq = previewBody.source;
             previewCap.callback(h.nextReply(previewCap.payload, {
                 dragPreview: {
                     id: "1",
@@ -694,18 +700,17 @@ describe("dev fixture-only deterministic omission and preview-reply skip", () =>
             skipWorldAction.cb();
             assert.ok(h.logs.includes("omnitiler:world:trace ev=dev-skip-world-reply state=armed gen=gen-1"));
 
-            // Queue a command + deliver a terminal gesture so we verify command-result collection
-            // and terminal settlement discharge are preserved on the omitted world reply.
+            // The command cut must already contain the terminal before the press.
+            // Omission must preserve both command-result collection and terminal discharge.
+            const waitGesture = h.gestureCalls.find((c) => c.method === "WaitGesture");
+            assert.ok(waitGesture !== undefined);
+            waitGesture.callback(gestureSnapshotJson({ phase: "released", serial: "9", revision: "4" }));
             const focusLeft = h.shortcuts.get("omnitiler-focus-left");
             assert.ok(focusLeft !== undefined);
             focusLeft.cb();
             const queueCall = h.calls.find((c) => c.method === "QueueWorldCommand");
             assert.ok(queueCall !== undefined);
             const qBody = JSON.parse(queueCall.payload) as { client: string; clientCmd: string };
-            const waitGesture = h.gestureCalls.find((c) => c.method === "WaitGesture");
-            assert.ok(waitGesture !== undefined);
-            waitGesture.callback(gestureSnapshotJson({ phase: "released", serial: "9", revision: "4" }));
-            h.calls.length = 0;
             queueCall.callback(JSON.stringify({
                 v: 4, outcome: "queued", gen: "gen-1", client: qBody.client, clientCmd: qBody.clientCmd, globalCmd: "1",
             }));
@@ -713,7 +718,13 @@ describe("dev fixture-only deterministic omission and preview-reply skip", () =>
 
             const omittedCap = h.calls.find((c) => c.method === "DescribeWorld");
             assert.ok(omittedCap !== undefined);
-            const omittedReq = (JSON.parse(omittedCap.payload) as { source: string }).source;
+            const omittedBody = JSON.parse(omittedCap.payload) as {
+                source: string;
+                report: { nativeGesture: { serial: string; phase: string } | null };
+            };
+            assert.equal(omittedBody.report.nativeGesture?.serial, "9");
+            assert.equal(omittedBody.report.nativeGesture?.phase, "released");
+            const omittedReq = omittedBody.source;
             const retainedData = "{\"v\":1,\"float\":true,\"stickyPrior\":null}";
             omittedCap.callback(h.nextReply(omittedCap.payload, {
                 intentDesired: [{ win: "win-a", data: retainedData }],

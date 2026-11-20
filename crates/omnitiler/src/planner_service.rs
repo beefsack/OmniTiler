@@ -2829,7 +2829,7 @@ mod tests {
           \"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\
           \"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\
           \"foregroundOut\":null},\
-          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
+          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\
           \"rendererInput\":null}"
             .to_owned()
     }
@@ -3246,7 +3246,7 @@ mod tests {
             \"windows\":[{},{}],\"closed\":[],\"native\":[],\"focused\":\"{focused}\",\"foregroundKnown\":true,\"complete\":true,\"gesture\":false,\"cursor\":null,\
             \"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\
             \"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\
-            \"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null}},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null}},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\
             \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}}}",
             win_row("win-a", 0),
             win_row("win-b", 960),

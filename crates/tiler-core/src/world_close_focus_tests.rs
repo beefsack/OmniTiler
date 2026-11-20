@@ -125,6 +125,7 @@ fn report(
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         visibility_attempts: Vec::new(),
+        focus_changes: None,
         focus_feedback: Vec::new(),
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
@@ -686,42 +687,52 @@ fn consumed_sequence_report_supersedes_pending_request() {
 
 #[test]
 fn adopted_view_change_supersedes_pending_request() {
-    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    use crate::world_report::{NativeObservation, NativeOccupancy, NativeWorkspaceFact};
+
+    let mut engine = WorldEngine::new_test_host_owned("gen-1", "adapter-1").expect("generation");
+    let native_report = |seq, windows: Vec<WindowFact>, closed, focused, current: &str| {
+        let mut capture = report(seq, windows, closed, focused, true, None, None);
+        capture.screens.truncate(1);
+        for window in &mut capture.windows {
+            window.native_workspace = NativeWorkspaceFact::Value("n0".to_owned());
+            window.visibility.visible = Some(current == "n0");
+        }
+        capture.native = vec![NativeObservation {
+            output: OutputId("out-a".to_owned()),
+            native_order: vec!["n0".to_owned(), "n1".to_owned()],
+            current_native: Some(current.to_owned()),
+            occupancy: vec![
+                NativeOccupancy {
+                    native: "n0".to_owned(),
+                    count: None,
+                },
+                NativeOccupancy {
+                    native: "n1".to_owned(),
+                    count: None,
+                },
+            ],
+        }];
+        capture
+    };
     let windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
-    focus_sequence(&mut engine, 1, &windows, &["win-a", "win-b"]);
+    accepted(
+        &mut engine,
+        &native_report(1, windows.clone(), vec![], "win-a", "n0"),
+    );
+    accepted(
+        &mut engine,
+        &native_report(2, windows, vec![], "win-b", "n0"),
+    );
     let survivors = vec![fact("win-a", "out-a", 0)];
     let minted = accepted(
         &mut engine,
-        &report(3, survivors.clone(), vec!["win-b"], "", true, None, None),
+        &native_report(3, survivors.clone(), vec!["win-b"], "", "n0"),
     );
     assert!(minted.focus_request.is_some());
-    // A newly adopted core view (as a view transfer would confirm) retires
-    // the frozen source-domain request even with unchanged focus. The new
-    // view joins the mapping ring so lifecycle view sanity keeps it.
-    let mut ring = engine
-        .world
-        .workspace
-        .mapping
-        .get("out-a")
-        .cloned()
-        .unwrap_or_else(|| vec![view_of(&minted, "out-a")]);
-    if !ring.contains(&"ws-moved".to_owned()) {
-        ring.push("ws-moved".to_owned());
-    }
-    engine
-        .world
-        .workspace
-        .mapping
-        .insert("out-a".to_owned(), ring);
-    engine
-        .world
-        .workspace
-        .views
-        .insert("out-a".to_owned(), "ws-moved".to_owned());
-    let superseded = accepted(
-        &mut engine,
-        &report(4, survivors, vec![], "", true, None, None),
-    );
+    // A positively observed selector change hides the target with no
+    // change in foreground. Snapshot-only hosts use the two native reads.
+    let superseded = accepted(&mut engine, &native_report(4, survivors, vec![], "", "n1"));
+    assert_ne!(view_of(&minted, "out-a"), view_of(&superseded, "out-a"));
     assert_eq!(superseded.focus_request, None);
 }
 
@@ -1739,10 +1750,14 @@ fn mint_close_a(engine: &mut WorldEngine) -> crate::world_report::FocusRequest {
         fact("win-a", "out-a", 100),
         fact("win-d", "out-a", 200),
     ];
-    let closed = accepted(
-        engine,
-        &report(3, survivors, vec!["win-b"], "win-c", true, None, None),
-    );
+    let mut capture = report(3, survivors, vec!["win-b"], "win-c", true, None, None);
+    capture.focus_changes = Some(crate::world_report::FocusChanges {
+        after: Some(engine.state_revision()),
+        events: Some(vec![crate::world_report::FocusChange::Foreground {
+            win: Some(WindowId("win-c".to_owned())),
+        }]),
+    });
+    let closed = accepted(engine, &capture);
     closed.focus_request.clone().expect("close retains A")
 }
 
@@ -1760,15 +1775,8 @@ fn close_live_non_target_baseline_freezes_a_and_probes_act_from_a() {
     assert_eq!(issued.cause, FocusRequestCause::PositiveClose);
     assert_eq!(issued.id, "focus-3");
     assert_eq!(
-        engine
-            .world
-            .focus
-            .pending_focus
-            .as_ref()
-            .expect("pending")
-            .baseline_focused,
-        "win-c",
-        "freeze anchors on the live host fallback C"
+        engine.world.prior_context.prev_focused_global, "win-c",
+        "the accepted observation retains the truthful native fallback C"
     );
     assert_eq!(
         engine.tx(|tx| tx.execution_subject()),
@@ -2175,7 +2183,7 @@ fn trace_emits_retained_equality_and_terminal_retirements_for_admission_and_clos
         )
     );
 
-    // 8. baseline-changed retirement
+    // 8. Snapshot-only eligible foreground intent retires.
     let mut baseline_engine =
         WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     let baseline_req = mint_close_a(&mut baseline_engine);
@@ -2186,67 +2194,36 @@ fn trace_emits_retained_equality_and_terminal_retirements_for_admission_and_clos
         );
         assert_eq!(retired.focus_request, None);
     });
-    assert_eq!(baseline_lines.len(), 1);
+    let baseline_evals: Vec<_> = baseline_lines
+        .iter()
+        .filter(|line| line.contains(" ev=focus-eval "))
+        .collect();
+    assert_eq!(baseline_evals.len(), 1);
     assert_eq!(
-        baseline_lines[0],
-        format!(
-            "omnitiler:core:trace ev=focus-eval gen=gen-1 req=req-4 obs=4 rev=4 id={} target=win-a issuingRev={} cause=positive-close cmdSeq=- decision=no-call reason=baseline-changed",
+        baseline_evals[0],
+        &format!(
+            "omnitiler:core:trace ev=focus-eval gen=gen-1 req=req-4 obs=4 rev=4 id={} target=win-a issuingRev={} cause=positive-close cmdSeq=- decision=no-call reason=foreground-intent",
             baseline_req.id, baseline_req.issued_revision
         )
     );
 
-    // 9. view-drift retirement
-    let mut view_engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
-    let windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)];
-    focus_sequence(&mut view_engine, 1, &windows, &["win-a", "win-b"]);
-    let view_survivors = vec![fact("win-a", "out-a", 0)];
-    let minted = accepted(
-        &mut view_engine,
-        &report(
-            3,
-            view_survivors.clone(),
-            vec!["win-b"],
-            "",
-            true,
-            None,
-            None,
-        ),
-    );
-    let view_req = minted.focus_request.clone().expect("minted close");
-    let mut ring = view_engine
-        .world
-        .workspace
-        .mapping
-        .get("out-a")
-        .cloned()
-        .unwrap_or_else(|| vec![view_of(&minted, "out-a")]);
-    if !ring.contains(&"ws-moved".to_owned()) {
-        ring.push("ws-moved".to_owned());
-    }
-    view_engine
-        .world
-        .workspace
-        .mapping
-        .insert("out-a".to_owned(), ring);
-    view_engine
-        .world
-        .workspace
-        .views
-        .insert("out-a".to_owned(), "ws-moved".to_owned());
-    let view_lines = crate::world_engine::with_focus_trace_capture(|| {
-        let retired = accepted(
-            &mut view_engine,
-            &report(4, view_survivors, vec![], "", true, None, None),
-        );
-        assert_eq!(retired.focus_request, None);
+    // 9. A coverage gap retires without inventing a new request.
+    let mut gap_engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let gap_req = mint_close_a(&mut gap_engine);
+    let mut capture = report(4, survivors.clone(), vec![], "win-c", true, None, None);
+    capture.focus_changes = Some(crate::world_report::FocusChanges {
+        after: Some(gap_engine.state_revision()),
+        events: None,
     });
-    assert_eq!(view_lines.len(), 1);
+    let gap_lines = crate::world_engine::with_focus_trace_capture(|| {
+        assert!(accepted(&mut gap_engine, &capture).focus_request.is_none());
+    });
     assert_eq!(
-        view_lines[0],
-        format!(
-            "omnitiler:core:trace ev=focus-eval gen=gen-1 req=req-4 obs=4 rev=4 id={} target=win-a issuingRev={} cause=positive-close cmdSeq=- decision=no-call reason=view-drift",
-            view_req.id, view_req.issued_revision
-        )
+        gap_lines,
+        vec![format!(
+            "omnitiler:core:trace ev=focus-eval gen=gen-1 req=req-4 obs=4 rev=4 id={} target=win-a issuingRev={} cause=positive-close cmdSeq=- decision=no-call reason=focus-evidence-gap",
+            gap_req.id, gap_req.issued_revision
+        )]
     );
 
     // 10. Deterministic trace-off check (independent of external OMNITILER_TRACE env).

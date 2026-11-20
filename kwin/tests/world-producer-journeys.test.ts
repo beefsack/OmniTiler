@@ -959,16 +959,11 @@ describe("world genuine-producer workspace selection journeys", () => {
             assert.equal(takes[0]?.["result"], null, "take resolves null: queue/take is report-result delivery, not a switch receipt");
             const reply = lastDescribeReply(h);
             assert.equal("result" in reply, false, "actuator lane never carries the selection terminal");
-            // The fake has no `windowAt` shown/arrival witness, so the
-            // focus-bearing binding cannot prove focus (`selection_terminal`
-            // in world_selection.rs: complete needs no effect or proven
-            // focus); every frozen visibility member confirmed, so `failed`
-            // stays empty and no proven focus is ever fabricated.
-            assert.deepEqual(
-                reply["switchSettled"],
-                [{ out: "out", op: "op-1", outcome: "completed-with-failures", focus: "unproven", failed: [], fallback: false }],
-                "focus-bearing binding without feedback stays unproven",
-            );
+            // No shown/arrival witness: the own selector echo is not new
+            // intent, so focus stays unstarted instead of producing an
+            // unproven terminal row solely because the view switched.
+            assert.deepEqual(reply["switchSettled"], [], "focus-bearing binding without feedback stays pending");
+            assert.equal((reply["focusRequest"] as Record<string, unknown>)["id"], focusReq["id"], "view echo preserves the grant");
             const ids = ((reply["windows"] as Array<Record<string, unknown>>).map((w) => w["win"] as string)).sort();
             assert.deepEqual(ids, ["win-a", "win-b", "win-c", "win-d"], "published window set exact");
             appliedMatchesReply(h, reply);
@@ -984,11 +979,7 @@ describe("world genuine-producer workspace selection journeys", () => {
             assert.deepEqual(admIds, ["win-a", "win-b", "win-c", "win-d", "win-e"], "published window set exact after admission");
             const newcomer = (admitted["windows"] as Array<Record<string, unknown>>).find((w) => w["win"] === "win-e");
             assert.equal(newcomer?.["ws"], selectedLogical(admitted, "ws2"), "newcomer lands on the selected workspace");
-            assert.deepEqual(
-                admitted["switchSettled"],
-                [{ out: "out", op: "op-1", outcome: "completed-with-failures", focus: "unproven", failed: [], fallback: false }],
-                "retained switch outcome remains readable on later captures",
-            );
+            assert.deepEqual(admitted["switchSettled"], [], "ordinary admission does not settle the unwitnessed switch");
             appliedMatchesReply(h, admitted);
             const at = h.wins.findIndex((w) => w.internalId === "win-d");
             assert.ok(at >= 0, "win-d present before close");
@@ -999,11 +990,7 @@ describe("world genuine-producer workspace selection journeys", () => {
             const closed = lastDescribeReply(h);
             const closedIds = ((closed["windows"] as Array<Record<string, unknown>>).map((w) => w["win"] as string)).sort();
             assert.deepEqual(closedIds, ["win-a", "win-b", "win-c", "win-e"], "published window set exact after close");
-            assert.deepEqual(
-                closed["switchSettled"],
-                [{ out: "out", op: "op-1", outcome: "completed-with-failures", focus: "unproven", failed: [], fallback: false }],
-                "retained switch outcome remains readable after window close",
-            );
+            assert.deepEqual(closed["switchSettled"], [], "closing a sibling does not settle the unwitnessed switch");
             appliedMatchesReply(h, closed);
         } finally {
             await h.stop();

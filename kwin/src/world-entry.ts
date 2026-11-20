@@ -20,6 +20,7 @@ import { createNativePreimageStore, mapWorldStatePropertyToPreimage } from "./wo
 import { createNativeRecoveryCoordinator, type NativeRecoveryHost } from "./world-native-recovery";
 import { createNativeStateExecutor, createNativeStateHost } from "./world-native-state";
 import { createWorldApplyHost, createWorldNativeToggles } from "./world-native";
+import type { FocusChangesCut, FrozenFocusPrefix } from "./world-focus-changes";
 import {
     createWorldPresentationSubscriber,
     PRESENTATION_EFFECT_CLEAR_METHOD,
@@ -47,11 +48,52 @@ declare const __OMNITILER_SOURCE_REV__: string | undefined;
 // statically-false gate drops the single probe construction block below.
 declare const __OMNITILER_TRACE__: string | undefined;
 
+type FocusScopeTrace = {
+    kind: "view" | "focus";
+    out: string;
+    ws: string;
+    expectedView: string;
+    expectedWin: string | null;
+    liveView: string | null | undefined;
+    homeOut: string | undefined;
+    homeWs: string | undefined;
+    membership: boolean | undefined;
+    refId: string | null | undefined;
+    liveId: string | null | undefined;
+    viewSignal: string | null;
+    activationSignal: string | null;
+    invalidBefore: string;
+    invalid: string | undefined;
+    viewInvalid: boolean | undefined;
+    activationMatches: boolean | undefined;
+    views: ReadonlyArray<{ out: string; native: string }> | null | undefined;
+    activationInvalid: boolean | undefined;
+    viewsMatch: boolean | undefined;
+    viewCount: number;
+    activationCount: number;
+    viewProved: boolean;
+    activationProved: boolean;
+};
+
+interface TraceObservedWindow { win: string; out: string; ws: string; nativeWs: string | null }
+interface TraceObservation {
+    focusedGlobal: string;
+    closed: ReadonlyArray<string>;
+    screens: ReadonlyArray<{ out: string }>;
+    native: ReadonlyArray<{ out: string; current: string; order: string[] }>;
+    windowFacts: ReadonlyArray<Pick<WorldObservation["windowFacts"][number], "win" | "desktops" | "onAllDesktops">>;
+    domains: ReadonlyArray<{ windows: ReadonlyArray<TraceObservedWindow> }>;
+    minimized: ReadonlyArray<TraceObservedWindow>;
+}
+
 interface WorldTraceProbe {
+    noteFocusScope(exit: FocusScopeTrace): void;
+    noteFocusActivation(branch: "own" | "unproved", scope: "view" | "focus" | undefined, serial: number, argc: number, win: string | null): void;
+    noteFocusChangesSent(flight: CaptureFlight, replay: boolean): void;
     noteAdded(added: object): void;
     noteDebounceStart(): void;
     noteDebounceFire(): void;
-    noteSend(sourceToken: string, observation: WorldObservation | null): void;
+    noteSend(sourceToken: string, observation: TraceObservation | null): void;
     noteReply(sourceToken: string): void;
     // Bounded float/state-target diagnostics (trace builds only): submit
     // records the press/submitted basis per command; the apply pair
@@ -81,8 +123,13 @@ interface WorldTraceProbe {
     ): (ref: object, rect: { x: number; y: number; w: number; h: number }) => boolean;
     noteSettlementReceipt(parsed: WorldReply): void;
     noteFixtureDescribeReceipt(parsed: WorldReply): void;
-    noteFixtureClosedSent(sourceToken: string, gen: string, seq: string, observation: WorldObservation): void;
+    noteFixtureClosedSent(sourceToken: string, gen: string, seq: string, observation: TraceObservation): void;
+    noteFixtureArrivalSent(
+        sourceToken: string, gen: string, seq: string,
+        focus: ReadonlyArray<WorldFocusFeedback>, views: ReadonlyArray<WorldViewAttempt>,
+    ): void;
     noteSettlementApplied(parsed: WorldReply): void;
+    noteCreationReadback(parsed: WorldReply, op: string | null, ws: string | null, native: string): void;
     noteGestureSettlementDecision(
         path: "discharge" | "in-apply",
         parsed: WorldReply,
@@ -159,7 +206,11 @@ import {
     buildQueueRequest,
     buildTakeRequest,
     buildWaitRequest,
-    buildWorldReportV4InnerJson,
+    freezeWorldReportV4InnerJson,
+    incorporatedReportRows,
+    subtractIncorporatedAttempts,
+    type FrozenWorldReport,
+    type WorldAttemptLanes,
     cmdFocusDirectional,
     cmdMigrateDirectional,
     cmdMoveDirectional,
@@ -185,6 +236,9 @@ import {
     type WorldCommand,
     type WorldQueueReply,
     type WorldReply,
+    type WorldFocusFeedback,
+    type WorldViewAttempt,
+    type WorldVisibilitySample,
     type WorldReplyResult,
     type WorldTakeReply,
     type WorldWaitReply,
@@ -202,7 +256,7 @@ import {
     parseNativeGesture,
     type NativeGestureSnapshot,
 } from "./world-gesture";
-import { WorldAdapterState, type CaptureFlight, type QueuedIntent } from "./world-state";
+import { WorldAdapterState, type CaptureFlight, type QueuedIntent as QueueEntry } from "./world-state";
 import { applyWorldReply } from "./world-apply";
 import { decodeList } from "./qml-list";
 import { normalizeNativeId } from "./native-id";
@@ -514,6 +568,35 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // refuses as busy).
     // keepSubject is LOCAL routing only (float-origin fallback keeps its
     // press-time subject); it never rides the wire.
+    type Seal = {
+        guard: number;
+        watermark: string;
+        prefix: FrozenFocusPrefix;
+        report: FrozenWorldReport;
+        delivered: WorldAttemptLanes;
+        closed: ClosedEvidenceToken;
+        gesture: CaptureFlight["gesture"];
+        foreground: string;
+        subject: string | null;
+        torn: boolean;
+        trace: TraceObservation | null;
+        bytes: number;
+        started: boolean;
+        emptyFullDrained: boolean;
+    };
+    type QueuedIntent = QueueEntry & { seal?: Seal };
+    let subjectSignalsCovered = true;
+    let subjectGuard = 0;
+    let signalDepth = 0;
+    let ownScopeDepth = 0;
+    let registeredPress: { guard: number; gen: string | null; clientCmd?: string | null } | null = null;
+    let ownedSeal: Seal | null = null;
+    let captureReplay: { envelope: string; flight: CaptureFlight; headOp: string | null; exact: boolean } | null = null;
+    let sealResetRequired = false;
+    let rendererSealFence: { guard: number; watermark: string; torn: boolean } | null = null;
+    const rendererSealCurrent = (): boolean => rendererSealFence === null ||
+        (!rendererSealFence.torn && rendererSealFence.guard === subjectGuard && rendererSealFence.watermark === state.currentInvalid);
+    let sealQueueFull = false;
     const pendingQueue: QueuedIntent[] = [];
     let discCounter = 0;
     let sourceCounter = 0;
@@ -609,6 +692,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         // positively proven fixture before this capture; unknown ids
         // fail closed (never emitted). FIFO eviction bounds the set.
         const traceFixtureProven = new Set<string>();
+        const traceFixtureFocusParents = new Map<string, string>();
         const TRACE_FIXTURE_PROVEN_MAX = 256;
         // Trace value validators mirror the production wire contract
         // (isOpaqueId length and charset for identifiers), never a
@@ -919,6 +1003,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         const traceDiagStamp = (value: unknown): string => (
             typeof value === "string" && isCanonicalU64(value) ? value : "-"
         );
+        // Six fields in wire sample order; null stays unknown.
+        const traceArrivalSample = (sample: WorldVisibilitySample): string =>
+            `${traceDiagStamp(sample.obs)}/${traceDiagBool(sample.lifetimeMatched)}/${traceDiagBool(sample.visible)}/` +
+            `${traceDiagBool(sample.suppressionOwned)}/${traceDiagBool(sample.minimized)}/${traceDiagBool(sample.hostHidden)}`;
         // Join sanitized ids with an explicit omission count. Empty reads
         // "-" (never mistaken for one empty id); omission rides `+omit=N`
         // only when nonzero.
@@ -931,7 +1019,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         // Single-homed names the sanitized native id; all-desktops reads
         // `all` (never unknown); other multi-homed rides `multi:N`;
         // zero/unknown reads `unknown`.
-        const traceDiagObservedWins = (observation: WorldObservation): Array<{ win: string; out: string; ws: string; native: string }> => {
+        const traceDiagObservedWins = (observation: TraceObservation): Array<{ win: string; out: string; ws: string; native: string }> => {
             const rows: Array<{ win: string; out: string; ws: string; native: string }> = [];
             try {
                 const desktopsByWin = new Map<string, number>();
@@ -976,7 +1064,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return rows;
         };
         // SENT snapshot receipt, emitted at the send boundary only.
-        const traceDiagEmitSent = (observation: WorldObservation, sourceToken: string): void => {
+        const traceDiagEmitSent = (observation: TraceObservation, sourceToken: string): void => {
             let watermark = "-";
             try {
                 const live = state.inFlight;
@@ -1458,6 +1546,55 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             traceDiagEmitNewAttempts(`applySrc=${src}`);
         };
         worldTraceProbes.set(state, {
+            noteFocusScope: (exit) => {
+                const id = traceDiagId;
+                const bool = traceDiagBool;
+                const match = (actual: string | null | undefined, expected: string | null): string =>
+                    actual === undefined ? "-" : bool(actual === expected);
+                traceLogSafe(`omnitiler:world:trace ev=focus-scope-exit scope=${exit.kind} out=${id(exit.out)} ws=${id(exit.ws)} ` +
+                    `view=${match(exit.liveView, exit.expectedView)} expectedView=${id(exit.expectedView)} liveView=${id(exit.liveView)} ` +
+                    `membership=${bool(exit.membership)} homeOut=${id(exit.homeOut)} homeWs=${id(exit.homeWs)} ` +
+                    `expectedWin=${id(exit.expectedWin)} refMatch=${match(exit.refId, exit.expectedWin)} refId=${id(exit.refId)} ` +
+                    `liveMatch=${match(exit.liveId, exit.expectedWin)} liveId=${id(exit.liveId)} ` +
+                    `invalidBefore=${id(exit.invalidBefore)} invalid=${id(exit.invalid)} ` +
+                    `viewAt=${id(exit.viewSignal)} activationAt=${id(exit.activationSignal)} ` +
+                    `viewInvalidMatch=${bool(exit.viewInvalid)} activationInvalidMatch=${bool(exit.activationInvalid)} ` +
+                    `activationMatch=${bool(exit.activationMatches)} viewsReadable=${bool(exit.views === undefined ? undefined : exit.views !== null)} ` +
+                    `viewsMatch=${bool(exit.viewsMatch)} viewCount=${exit.viewCount} activationCount=${exit.activationCount} ` +
+                    `viewProved=${bool(exit.viewProved)} activationProved=${bool(exit.activationProved)}`);
+                if (exit.viewsMatch === false && exit.views !== null && exit.views !== undefined) {
+                    for (const view of exit.views) {
+                        if (view.native !== exit.expectedView) {
+                            traceLogSafe(`omnitiler:world:trace ev=focus-scope-view-mismatch out=${id(view.out)} ` +
+                                `expectedView=${id(exit.expectedView)} liveView=${id(view.native)}`);
+                        }
+                    }
+                }
+            },
+            noteFocusActivation: (branch, scope, serial, argc, win) => {
+                traceLogSafe(`omnitiler:world:trace ev=focus-activation branch=${branch} scope=${scope ?? "-"} ` +
+                    `serial=${serial} argc=${argc} win=${traceDiagId(win)}`);
+            },
+            noteFocusChangesSent: (flight, replay) => {
+                const interval = flight.focusChangesCut?.interval;
+                const events = interval?.events;
+                const source = traceDiagId(flight.source);
+                const send = replay ? "replay" : "fresh";
+                traceLogSafe(`omnitiler:world:trace ev=focus-changes-sent src=${source} send=${send} ` +
+                    `nwinv=${traceDiagId(flight.watermark)} interval=${interval === undefined ? "null" : "present"} ` +
+                    `after=${interval?.after === null ? "null" : traceDiagId(interval?.after)} ` +
+                    `gap=${traceDiagBool(events === undefined ? undefined : events === null)} ` +
+                    `count=${events?.length ?? "-"}`);
+                if (events != null) {
+                    events.forEach((event, index) => {
+                        const detail = event.kind === "foreground"
+                            ? `win=${traceDiagId(event.win)} winNull=${traceDiagBool(event.win === null)}`
+                            : `out=${traceDiagId(event.out)} native=${traceDiagId(event.native)}`;
+                        traceLogSafe(`omnitiler:world:trace ev=focus-change-sent src=${source} send=${send} ` +
+                            `index=${index} kind=${event.kind} ${detail}`);
+                    });
+                }
+            },
             noteAdded: (added) => {
                 try {
                     const id = normalizeNativeId(readProp(added, "internalId"));
@@ -1724,6 +1861,16 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             },
             noteFixtureDescribeReceipt: (parsed) => {
                 traceEmitFixtureDescribeReceipt(parsed);
+                const focus = parsed.focusRequest;
+                if (focus?.afterShown && traceFixtureProven.has(focus.target)) {
+                    if (!traceFixtureFocusParents.has(focus.id) && traceFixtureFocusParents.size >= TRACE_FIXTURE_PROVEN_MAX) {
+                        const oldest = traceFixtureFocusParents.keys().next();
+                        if (!oldest.done) {
+                            traceFixtureFocusParents.delete(oldest.value);
+                        }
+                    }
+                    traceFixtureFocusParents.set(focus.id, focus.afterShown.op);
+                }
             },
             noteFixtureClosedSent: (sourceToken, gen, seq, observation) => {
                 try {
@@ -1761,6 +1908,54 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 } catch (error) {
                     void error;
                 }
+            },
+            noteFixtureArrivalSent: (source, gen, seq, focus, views) => {
+                const capture = `gen=${traceDiagId(gen)} src=${traceDiagId(source)} seq=${traceDiagStamp(seq)}`;
+                let remaining = OBSERVE_MAX_MEMBERS;
+                for (const f of focus) {
+                    if (remaining === 0) break;
+                    if (!traceFixtureProven.has(f.target)) continue;
+                    remaining--;
+                    const key = `${capture} id=${traceDiagId(f.id)} op=${traceDiagId(traceFixtureFocusParents.get(f.id))} ` +
+                        `target=${traceDiagId(f.target)} issuingRev=${traceDiagStamp(f.rev)}`;
+                    const pre = f.pre !== null && traceFixtureProven.has(f.pre) ? traceDiagId(f.pre) : "-";
+                    const post = f.post !== null && traceFixtureProven.has(f.post) ? traceDiagId(f.post) : "-";
+                    traceLogSafe(
+                        `omnitiler:world:trace ev=fixture-focus-feedback-sent ${key} setter=${f.setter} ` +
+                        `reason=${traceDiagId(f.reason)} pre=${pre} post=${post} ` +
+                        `proven=${traceDiagBool(f.foregroundProven)} attemptMs=${traceDiagStamp(f.attemptMs)}`,
+                    );
+                    for (const b of f.arrival) {
+                        if (remaining === 0) break;
+                        if (!traceFixtureProven.has(b.win)) continue;
+                        remaining--;
+                        const home = b.home === null ? "-" : `${traceDiagId(b.home.out)}/${traceDiagId(b.home.ws)}`;
+                        traceLogSafe(
+                            `omnitiler:world:trace ev=fixture-arrival-sent ${key} win=${traceDiagId(b.win)} ` +
+                            `obs=${traceDiagStamp(b.obs)} before=${traceArrivalSample(b.before)} ` +
+                            `home=${home} frame=${traceDiagRect(b.frame)} after=${traceArrivalSample(b.after)}`,
+                        );
+                    }
+                }
+                // View attempts have no window subject; log only within
+                // the exact fixture scope after proving a fixture lifetime.
+                if (traceFixtureProven.size > 0) {
+                    for (const v of views.slice(0, OBSERVE_MAX_MEMBERS)) {
+                        traceLogSafe(
+                            `omnitiler:world:trace ev=fixture-view-attempt-sent ${capture} op=${traceDiagId(v.op)} ` +
+                            `out=${traceDiagId(v.out)} ws=${traceDiagId(v.ws)} setter=${traceDiagSetter(v.setter)} ` +
+                            `pre=${traceDiagMemberRef(v.pre)} post=${traceDiagMemberRef(v.post)} ` +
+                            `base=${traceDiagMemberRef(v.base)} attemptMs=${traceDiagStamp(v.attemptMs)}`,
+                        );
+                    }
+                }
+            },
+            noteCreationReadback: (parsed, op, ws, native) => {
+                traceLogSafe(
+                    `omnitiler:world:trace ev=creation-readback gen=${traceDiagId(parsed.gen)} req=${traceDiagId(parsed.req)} ` +
+                    `rev=${traceDiagStamp(parsed.rev)} obs=${traceDiagStamp(parsed.obs)} op=${traceDiagId(op)} ` +
+                    `ws=${traceDiagId(ws)} native=${traceDiagId(native)} basis=same-turn`,
+                );
             },
             noteSettlementApplied: (parsed) => {
                 traceEmitSettlementSnapshot("apply", parsed);
@@ -1924,6 +2119,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 // so a reused native identity from a dead lifetime can
                 // never inherit fixture standing.
                 traceFixtureProven.clear();
+                traceFixtureFocusParents.clear();
             },
             noteReplySkipped: (stage, gen, req, rev, obs, reason) => {
                 traceLogSafe(
@@ -2228,6 +2424,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         flight: CaptureFlight;
         resume: () => void;
     } | null = null;
+    let devHoldNextQueueAck = false;
+    let devHeldQueueAck: { entry: QueuedIntent; resume: () => void } | null = null;
     const diagOpaqueId = (value: unknown): string => (
         isOpaqueId(value) ? value as string : "-"
     );
@@ -2252,6 +2450,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             if (devHeldCaptureAck !== null) {
                 devHeldCaptureAck = null;
                 log(`omnitiler:world:trace ev=dev-hold-capture-ack state=cleared reason=${reason}`);
+            }
+            if (devHoldNextQueueAck || devHeldQueueAck !== null) {
+                devHoldNextQueueAck = false;
+                devHeldQueueAck = null;
+                log(`omnitiler:world:trace ev=dev-hold-queue-ack state=cleared reason=${reason}`);
             }
         }
     };
@@ -2675,10 +2878,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // early echo matched. An unexpected signal that already advanced the
     // fence is preserved as-is, never re-invalidated.
     type ViewFocusScope =
-        | { kind: "view"; out: string; ws: string; before: string; viewEchoed: boolean; activatedRef: object | null; activatedId: string | null }
-        | { kind: "focus"; win: string; ref: object; out: string; ws: string; viewBefore: string; activated: boolean };
+        | { kind: "view"; out: string; ws: string; before: string; legacyEcho: boolean; viewAt: string | null; viewEvidence: number[]; activatedRef: object | null; activatedId: string | null; activationAt: string | null; activationEvidence: number | null }
+        | { kind: "focus"; win: string; ref: object; out: string; ws: string; viewBefore: string; activationAt: string | null; activationEvidence: number | null };
     let viewFocusScope: ViewFocusScope | null = null;
-    let viewFocusDepth = 0;
     let deferredOwnViewFocus = false;
     const desktopIdOf = (value: unknown): string | null => {
         try {
@@ -2708,8 +2910,44 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
         return null;
     };
+    const readNativeViews = (): Array<{ out: string; native: string }> | null => {
+        try {
+            const screens = decodeList(readProp(surface, "screens"), 64);
+            if (screens === null || screens.length === 0) {
+                return null;
+            }
+            const views: Array<{ out: string; native: string }> = [];
+            for (const screen of screens) {
+                const out = outputNameOf(screen);
+                const native = out === null ? null : applyHostBase.readLiveView(out);
+                if (out === null || native === null) {
+                    return null;
+                }
+                views.push({ out, native });
+            }
+            return views;
+        } catch (error) {
+            void error;
+            return null;
+        }
+    };
+    const focusEvidenceId = (ref: unknown): string | null => {
+        if (ref === null) {
+            return "";
+        }
+        try {
+            if (typeof ref === "object" && applyHostBase.isStillListed(ref) &&
+                windowMatchesScopeClass(readProp, ref, scopeClass)) {
+                return applyHostBase.readWindowId?.(ref) ?? null;
+            }
+        } catch (error) {
+            void error;
+        }
+        return null;
+    };
+    let focusSignalSerial = 0;
     const isOwnViewEcho = (args: ReadonlyArray<unknown>): boolean => {
-        if (viewFocusDepth <= 0 || viewFocusScope === null || viewFocusScope.kind !== "view") {
+        if (viewFocusScope === null || viewFocusScope.kind !== "view") {
             return false;
         }
         const exp = viewFocusScope;
@@ -2740,7 +2978,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             if (live === null || live !== exp.ws) {
                 return false;
             }
-            exp.viewEchoed = true;
+            exp.viewAt = state.currentInvalid;
+            exp.legacyEcho = args.length === 1;
             return true;
         } catch (error) {
             void error;
@@ -2748,7 +2987,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
     };
     const isOwnViewActivation = (args: ReadonlyArray<unknown>): boolean => {
-        if (viewFocusDepth <= 0 || viewFocusScope === null || viewFocusScope.kind !== "view") {
+        if (viewFocusScope === null || viewFocusScope.kind !== "view") {
             return false;
         }
         const exp = viewFocusScope;
@@ -2764,11 +3003,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         // same-id clone is intentionally listed while a replaced lifetime
         // (changed canonical id, or none listed) fails here.
         try {
-            if (!applyHostBase.isStillListed(ref as object)) {
+            const id = focusEvidenceId(ref);
+            if (id === null) {
                 return false;
             }
-            const id = applyHostBase.readWindowId?.(ref as object) ?? null;
-            if (id === null) {
+            if (exp.activatedId !== null && exp.activatedId !== id) {
                 return false;
             }
             const home = applyHostBase.readLiveMembership(ref as object);
@@ -2785,6 +3024,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
             exp.activatedRef = ref as object;
             exp.activatedId = id;
+            exp.activationAt = state.currentInvalid;
             return true;
         } catch (error) {
             void error;
@@ -2792,7 +3032,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
     };
     const isOwnFocusActivation = (args: ReadonlyArray<unknown>): boolean => {
-        if (viewFocusDepth <= 0 || viewFocusScope === null || viewFocusScope.kind !== "focus") {
+        if (viewFocusScope === null || viewFocusScope.kind !== "focus") {
             return false;
         }
         const exp = viewFocusScope;
@@ -2827,25 +3067,31 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             if (fg === null || fg !== exp.win) {
                 return false;
             }
-            exp.activated = true;
+            exp.activationAt = state.currentInvalid;
             return true;
         } catch (error) {
             void error;
             return false;
         }
     };
+    // QV4 in Qt 6.12.0 can resume a pending return, break or continue early
+    // inside finally after a nested try/catch or for-of; pending throws are
+    // unaffected. Return after the scope cleanup.
     const withHomingSuppression = (ref: object, run: () => boolean): boolean => {
         homingSuppressDepth += 1;
         homingSuppressRef = ref;
+        let result: boolean;
         try {
-            return run();
+            result = run();
         } finally {
             homingSuppressDepth -= 1;
             if (homingSuppressDepth <= 0) {
                 homingSuppressDepth = 0;
                 homingSuppressRef = null;
+                if (pendingQueue.length > 0) scheduleDrain();
             }
         }
+        return result;
     };
     const withViewSuppression = (desktopRef: object, outRef: object, run: () => boolean): boolean => {
         let scope: Extract<ViewFocusScope, { kind: "view" }> | null = null;
@@ -2854,7 +3100,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             const ws = desktopIdOf(desktopRef);
             const before = out === null ? null : applyHostBase.readLiveView(out);
             if (out !== null && ws !== null && before !== null) {
-                scope = { kind: "view", out, ws, before, viewEchoed: false, activatedRef: null, activatedId: null };
+                scope = {
+                    kind: "view", out, ws, before, legacyEcho: false, viewAt: null, viewEvidence: [],
+                    activatedRef: null, activatedId: null, activationAt: null, activationEvidence: null,
+                };
             }
         } catch (error) {
             void error;
@@ -2864,94 +3113,148 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return run();
         }
         const prev = viewFocusScope;
-        const prevDepth = viewFocusDepth;
         viewFocusScope = scope;
-        viewFocusDepth = prevDepth + 1;
+        ownScopeDepth += 1;
         const invalidBefore = state.currentInvalid;
+        let result: boolean;
         try {
-            return run();
+            result = run();
         } finally {
-            try {
-                if (state.currentInvalid === invalidBefore && (scope.viewEchoed || scope.activatedRef !== null)) {
-                    let ok = true;
-                    try {
-                        if (applyHostBase.readLiveView(scope.out) !== scope.ws) {
-                            ok = false;
-                        } else if (scope.activatedRef !== null) {
-                            const ref = scope.activatedRef;
-                            const id = applyHostBase.readWindowId?.(ref) ?? null;
-                            if (id === null || id !== scope.activatedId || !applyHostBase.isStillListed(ref)) {
-                                ok = false;
-                            } else {
-                                const home = applyHostBase.readLiveMembership(ref);
-                                if (home === null || home.out !== scope.out || home.ws !== scope.ws) {
-                                    ok = false;
-                                } else if ((applyHostBase.readActiveWindowId?.() ?? null) !== scope.activatedId) {
-                                    ok = false;
-                                }
-                            }
-                        }
-                    } catch (error) {
-                        void error;
-                        ok = false;
+            viewFocusScope = prev;
+            let liveView: string | null | undefined;
+            let homeOut: string | undefined;
+            let homeWs: string | undefined;
+            let membership: boolean | undefined;
+            let refId: string | null | undefined;
+            let liveId: string | null | undefined;
+            let invalid: string | undefined;
+            let viewInvalid: boolean | undefined;
+            let activationInvalid: boolean | undefined;
+            let viewsMatch: boolean | undefined;
+            let views: Array<{ out: string; native: string }> | null | undefined;
+            let activationMatches: boolean | undefined;
+            let viewProved = false;
+            let activationProved = false;
+            if (scope.viewAt !== null || scope.activationAt !== null) {
+                views = null;
+                let viewMatches = false;
+                activationMatches = false;
+                try {
+                    views = scope.legacyEcho ? readNativeViews() : [{ out: scope.out, native: scope.ws }];
+                    viewMatches = (liveView = applyHostBase.readLiveView(scope.out)) === scope.ws;
+                    if (viewMatches && scope.activatedRef !== null) {
+                        const home = applyHostBase.readLiveMembership(scope.activatedRef);
+                        activationMatches = (membership = (homeOut = home?.out) === scope.out && (homeWs = home?.ws) === scope.ws) &&
+                            (refId = focusEvidenceId(scope.activatedRef)) === scope.activatedId &&
+                            (liveId = focusEvidenceId(readProp(surface, "activeWindow"))) === scope.activatedId;
                     }
-                    if (!ok) {
-                        onNativeInvalidation();
+                } catch (error) {
+                    void error;
+                }
+                invalid = state.currentInvalid;
+                let unproved = false;
+                if (scope.viewAt !== null) {
+                    if ((viewInvalid = invalid === scope.viewAt) && viewMatches && views !== null &&
+                        (viewsMatch = views.every(({ native }) => native === scope.ws))) {
+                        viewProved = true;
+                        for (const evidence of scope.viewEvidence) {
+                            state.focusChanges.prove(evidence);
+                        }
+                    } else {
+                        unproved = true;
                     }
                 }
-            } finally {
-                viewFocusScope = prev;
-                viewFocusDepth = prevDepth;
+                if (scope.activationAt !== null) {
+                    if ((activationInvalid = invalid === scope.activationAt) && activationMatches && scope.activationEvidence !== null) {
+                        activationProved = true;
+                        state.focusChanges.prove(scope.activationEvidence);
+                    } else {
+                        unproved = true;
+                    }
+                }
+                if (unproved && invalid === invalidBefore) {
+                    onNativeInvalidation();
+                }
             }
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                worldTraceProbes.get(state)?.noteFocusScope({
+                    kind: scope.kind, out: scope.out, ws: scope.ws, expectedView: scope.ws, expectedWin: scope.activatedId,
+                    liveView, homeOut, homeWs, membership, refId, liveId,
+                    viewSignal: scope.viewAt, activationSignal: scope.activationAt, invalidBefore, invalid,
+                    viewInvalid, activationInvalid, activationMatches, views, viewsMatch, viewCount: scope.viewEvidence.length,
+                    activationCount: scope.activationEvidence === null ? 0 : 1, viewProved, activationProved,
+                });
+            }
+            for (const serial of scope.viewEvidence) state.focusChanges.leaveUnproved(serial);
+            if (scope.activationEvidence !== null) state.focusChanges.leaveUnproved(scope.activationEvidence);
+            finishOwnScope();
         }
+        return result;
     };
-    const withFocusSuppression = (ref: object, run: () => boolean): boolean => {
-        let scope: Extract<ViewFocusScope, { kind: "focus" }> | null = null;
-        try {
-            const win = applyHostBase.readWindowId?.(ref) ?? null;
-            const home = win === null ? null : applyHostBase.readLiveMembership(ref);
-            const viewBefore = home === null ? null : applyHostBase.readLiveView(home.out);
-            if (win !== null && home !== null && viewBefore !== null) {
-                scope = { kind: "focus", win, ref, out: home.out, ws: home.ws, viewBefore, activated: false };
-            }
-        } catch (error) {
-            void error;
-            scope = null;
-        }
-        if (scope === null) {
-            return run();
-        }
+    const withFocusSuppression = (
+        ref: object, win: string, out: string, ws: string, viewBefore: string, run: () => boolean,
+    ): boolean => {
+        const scope: Extract<ViewFocusScope, { kind: "focus" }> = {
+            kind: "focus", win, ref, out, ws, viewBefore, activationAt: null, activationEvidence: null,
+        };
         const prev = viewFocusScope;
-        const prevDepth = viewFocusDepth;
         viewFocusScope = scope;
-        viewFocusDepth = prevDepth + 1;
+        ownScopeDepth += 1;
         const invalidBefore = state.currentInvalid;
+        let result: boolean;
         try {
-            return run();
+            result = run();
         } finally {
-            try {
-                if (state.currentInvalid === invalidBefore && scope.activated) {
-                    let ok = true;
-                    try {
-                        if ((applyHostBase.readActiveWindowId?.() ?? null) !== scope.win) {
-                            ok = false;
-                        } else if ((applyHostBase.readWindowId?.(scope.ref) ?? null) !== scope.win || !applyHostBase.isStillListed(scope.ref)) {
-                            ok = false;
-                        } else if (applyHostBase.readLiveView(scope.out) !== scope.viewBefore) {
-                            ok = false;
-                        }
-                    } catch (error) {
-                        void error;
-                        ok = false;
-                    }
-                    if (!ok) {
-                        onNativeInvalidation();
-                    }
+            viewFocusScope = prev;
+            let liveView: string | null | undefined;
+            let homeOut: string | undefined;
+            let homeWs: string | undefined;
+            let membership: boolean | undefined;
+            let refId: string | null | undefined;
+            let liveId: string | null | undefined;
+            let invalid: string | undefined;
+            let activationInvalid: boolean | undefined;
+            let ok: boolean | undefined;
+            let activationProved = false;
+            if (scope.activationAt !== null) {
+                ok = false;
+                try {
+                    const home = applyHostBase.readLiveMembership(ref);
+                    ok = (membership = (homeOut = home?.out) === out && (homeWs = home?.ws) === ws) &&
+                        (liveView = applyHostBase.readLiveView(out)) === viewBefore &&
+                        (refId = focusEvidenceId(ref)) === win &&
+                        (liveId = focusEvidenceId(readProp(surface, "activeWindow"))) === win;
+                } catch (error) {
+                    void error;
                 }
-            } finally {
-                viewFocusScope = prev;
-                viewFocusDepth = prevDepth;
+                if (ok && (activationInvalid = (invalid = state.currentInvalid) === scope.activationAt) && scope.activationEvidence !== null) {
+                    activationProved = true;
+                    state.focusChanges.prove(scope.activationEvidence);
+                } else if ((invalid = state.currentInvalid) === invalidBefore) {
+                    onNativeInvalidation();
+                }
             }
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                worldTraceProbes.get(state)?.noteFocusScope({
+                    kind: scope.kind, out, ws, expectedView: viewBefore, expectedWin: win,
+                    liveView, homeOut, homeWs, membership, refId, liveId,
+                    viewSignal: null, activationSignal: scope.activationAt, invalidBefore, invalid,
+                    viewInvalid: undefined, activationInvalid, activationMatches: ok,
+                    views: undefined, viewsMatch: undefined, viewCount: 0,
+                    activationCount: scope.activationEvidence === null ? 0 : 1, viewProved: false, activationProved,
+                });
+            }
+            if (scope.activationEvidence !== null) state.focusChanges.leaveUnproved(scope.activationEvidence);
+            finishOwnScope();
+        }
+        return result;
+    };
+
+    const finishOwnScope = (): void => {
+        ownScopeDepth -= 1;
+        if (ownScopeDepth === 0 && pendingQueue.length > 0) {
+            preemptDebounceForCommand();
+            scheduleDrain();
         }
     };
 
@@ -3009,7 +3312,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             log(`omnitiler:world:command-refused op=${token((command as { op?: unknown }).op)} reason=scope-class`);
             return false;
         }
-        if (pendingQueue.length > 0 || state.inFlight !== null) {
+        if (pendingQueue.length > 0 || state.inFlight !== null || captureReplay !== null ||
+            ownedSeal !== null || ownScopeDepth !== 0 || homingSuppressDepth !== 0 ||
+            registeredPress !== null || sealResetRequired) {
             // Distinct commands never silently coalesce: fail fast as busy.
             log(`omnitiler:world:command-busy op=${token((command as { op?: unknown }).op)}`);
             return false;
@@ -3086,21 +3391,37 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
         return { ...(command as object), win: { currentFocus: true } } as WorldCommand;
     };
-    // FIFO submit for every ordinary press: every accepted press parks in
-    // press order behind any debounce or flight instead of refusing as
-    // busy. Enqueueing never advances the native-invalidation watermark
-    // (only native changes invalidate), so a queued press cannot stale the
-    // in-flight batch; one fresh capture incorporates native once and
-    // drains all parked FIFO against post-prior core state. Returns true
-    // when the press is queued, false only on stop/undiscovered/scope/
-    // cmd-exhausted refusal.
+    const pressIsCurrent = (): boolean => registeredPress === null ||
+        (registeredPress.guard === subjectGuard && registeredPress.gen === state.boundGen && signalDepth === 0);
+    const runRegisteredPress = (callback: () => void): void => {
+        const previous = registeredPress;
+        const depth = pendingQueue.length;
+        registeredPress = { guard: subjectGuard, gen: state.boundGen };
+        // Reserve the older press's FIFO position before a nested
+        // callback can mint its own command identity.
+        if (previous !== null && previous.clientCmd === undefined && previous.gen === state.boundGen) {
+            previous.clientCmd = state.mintClientCmd();
+        }
+        try {
+            callback();
+        } finally {
+            registeredPress = previous;
+            if (previous === null && pendingQueue.length > depth && ownScopeDepth === 0 && homingSuppressDepth === 0) {
+                preemptDebounceForCommand();
+                dispatch(false);
+            }
+        }
+    };
+
+    // Registered presses carry a press-time report, not a press-time target.
+    // The core still resolves implicit subjects in its FIFO cursor.
     const submitCommand = (command: WorldCommand, label: string, keepSubject = false): boolean => {
         try {
             cancelPendingForNewerInput?.();
         } catch (error) {
             void error;
         }
-        if (stopped) {
+        if (stopped || sealResetRequired || !pressIsCurrent()) {
             return false;
         }
         if (state.boundGen === null) {
@@ -3114,12 +3435,25 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             log(`omnitiler:world:command-refused op=${token((command as { op?: unknown }).op)} reason=scope-class`);
             return false;
         }
-        const converted = toImplicitSubject(command, keepSubject);
+        const expected = !keepSubject && WINDOWED_IMPLICIT_OPS.has(command.op)
+            ? originalTarget ?? (command.op === "focus-directional" && command.win === "" ? "" : undefined)
+            : undefined;
+        const seal = registeredPress === null ? undefined : sealRegisteredPress(expected);
+        if (registeredPress !== null && (seal === undefined || !pressIsCurrent())) {
+            log("omnitiler:world:command-refused reason=unproven-shortcut-cut");
+            return false;
+        }
+        let converted = toImplicitSubject(command, keepSubject);
+        if (seal !== undefined && converted.op === "toggle-float" && !keepSubject) {
+            converted = { ...converted, rect: null };
+        }
         const gen = state.boundGen;
         if (gen === null) {
             return false;
         }
-        const clientCmd = state.mintClientCmd();
+        const clientCmd = registeredPress?.clientCmd === undefined
+            ? state.mintClientCmd() : registeredPress.clientCmd;
+        if (registeredPress !== null) registeredPress.clientCmd = clientCmd;
         if (clientCmd === null) {
             log(`omnitiler:world:command-refused op=${token((command as { op?: unknown }).op)} reason=cmd-exhausted`);
             return false;
@@ -3132,7 +3466,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             drainAfterFailure(false);
             return false;
         }
-        pendingQueue.push({ command: converted, keepSubject, clientCmd, payload, gen, filed: false, filing: false });
+        const entry: QueuedIntent = { command: converted, keepSubject, clientCmd, payload, gen, filed: false, filing: false,
+            ...(seal === undefined ? {} : { seal }) };
+        let position = pendingQueue.length;
+        while (position > 0 && compareU64(pendingQueue[position - 1]!.clientCmd, clientCmd) > 0) position -= 1;
+        pendingQueue.splice(position, 0, entry);
         if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
             const convertedRec = converted as unknown as Record<string, unknown>;
             const convertedWin = convertedRec["win"];
@@ -3145,17 +3483,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 press: originalTarget ?? (typeof convertedWin === "object" && convertedWin !== null &&
                     (convertedWin as Record<string, unknown>)["currentFocus"] === true ? "currentFocus" : "-"),
                 submitted,
-                focusPress: activeWindowId(),
+                focusPress: seal?.foreground ?? activeWindowId(),
                 rect: (converted as { rect?: unknown }).rect,
             });
         }
         log(`omnitiler:world:command op=${token((command as { op?: unknown }).op)} label=${token(label)} nwinv=${state.currentInvalid} depth=${pendingQueue.length}`);
-        // Park-first FIFO: the pump files the earliest unfiled entry only
-        // when no filing is outstanding, so a newer press never submits
-        // while an older Queue ACK is unresolved (the broker high-water
-        // refuses an older missing command once a later one is accepted).
-        // Synchronous ACKs still file the whole burst before one capture.
-        pumpQueueFiling();
+        if (registeredPress === null) {
+            pumpQueueFiling();
+            if (captureReplay !== null) scheduleDrain();
+        }
         return true;
     };
 
@@ -3670,20 +4006,20 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         // the native-invalidation instance plus counter from the latest
         // fetched effect facts, or null when unknown (fail closed: no
         // drawable coverage without proof).
-        getInvalidation: () => effectSnapshot === null
+        getInvalidation: () => effectSnapshot === null || !rendererSealCurrent()
             ? null
             : { instance: effectSnapshot.instance, counter: effectSnapshot.invalidation },
         // Live open native gesture identity for the subscriber's preview
         // gate: the mapped native lifecycle identity behind the current
         // snapshot, or null when no gesture is open (a terminal is not
         // open). Exact identity match, never epoch or geometry inference.
-        getGestureIdentity: () => gestureIdentityForPresentation(),
+        getGestureIdentity: () => rendererSealCurrent() ? gestureIdentityForPresentation() : null,
         isStopped: () => stopped,
         log,
         token,
         scheduleOnce,
         renderer: {
-            renderPresentation: (payload) => highlightCall(PRESENTATION_EFFECT_SET_METHOD, payload),
+            renderPresentation: (payload) => rendererSealCurrent() && highlightCall(PRESENTATION_EFFECT_SET_METHOD, payload),
             hidePresentation: () => {
                 highlightCall(PRESENTATION_EFFECT_HIDE_METHOD);
             },
@@ -4204,6 +4540,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         pendingQueue.length = 0;
         undecidedClientCmds.clear();
         flightBatches.clear();
+        ownedSeal = null;
+        captureReplay = null;
+        sealQueueFull = false;
+        sealResetRequired = false;
+        rendererSealFence = null;
+        subjectGuard += 1;
         if (dropped > 0) {
             log(`omnitiler:world:queue-dropped reason=generation-mismatch depth=${dropped}`);
         }
@@ -5366,6 +5708,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         const take = parsed as Extract<WorldTakeReply, { outcome: "ready" }>;
                         undecidedClientCmds.delete(clientCmd);
                         state.lastTakeResult = take.result;
+                        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1" && devFixtureControlsEnabled) {
+                            const subject = take.result !== null && "win" in take.result ? take.result.win : null;
+                            log(`omnitiler:world:trace ev=fixture-take-ready gen=${diagOpaqueId(takeGen)} ` +
+                                `clientCmd=${diagOpaqueId(clientCmd)} subject=${diagOpaqueId(subject)}`);
+                        }
                         done(take.result);
                         return;
                     }
@@ -5681,6 +6028,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         }
                     }
                     const runApply = (): void => {
+                    if (flight.subjectGuard !== null && flight.subjectGuard !== subjectGuard) {
+                        state.dirty = true;
+                        if (pendingQueue.length > 0) scheduleDrain(); else scheduleDispatch();
+                        return;
+                    }
                     // Startup native recovery: restore durable originals once
                     // per fresh accepted run (fenced inside; no-op when the
                     // store is degraded). After the opaque-intent persist
@@ -5874,6 +6226,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     let fresh = capture();
                     if (fresh === null) {
                         log("omnitiler:world:observe-invalid recovery=on-next-event");
+                        return;
+                    }
+                    if (flight.subjectGuard !== null && (flight.subjectGuard !== subjectGuard ||
+                        flight.watermark !== state.currentInvalid)) {
+                        state.dirty = true;
+                        if (pendingQueue.length > 0) scheduleDrain(); else scheduleDispatch();
                         return;
                     }
                     // Fresh readback for startup recovery: actual later
@@ -6131,6 +6489,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
                         worldTraceProbes.get(state)?.noteTraceApplyBegin(flight);
                     }
+                    const unboundForegroundSample = !fresh.foregroundKnown ? fresh.foregroundSample : undefined;
                     const applied = applyWorldReply({
                         state,
                         observation: fresh,
@@ -6139,6 +6498,32 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         takeResult,
                         log,
                         ...applyHostBase,
+                        readFocusEvidence: (view) => {
+                            const mark = state.focusChanges.mark();
+                            let win: string | null = null;
+                            try {
+                                win = focusEvidenceId(readProp(surface, "activeWindow"));
+                            } catch (error) {
+                                void error;
+                            }
+                            if (win === unboundForegroundSample) {
+                                win = null;
+                            }
+                            if (state.focusChanges.mark() !== mark || state.focusChanges.pending()) {
+                                return win;
+                            }
+                            const foregroundAccounted = state.focusChanges.checkForeground(win);
+                            const viewAccounted = view === undefined || state.focusChanges.checkView(view.out, view.native);
+                            if (!foregroundAccounted || !viewAccounted) {
+                                subjectGuard += 1;
+                                onNativeInvalidation();
+                            }
+                            return win;
+                        },
+                        ...(typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1" && devFixtureControlsEnabled
+                            ? { noteCreationReadback: (op: string | null, ws: string | null, native: string) =>
+                                worldTraceProbes.get(state)?.noteCreationReadback(parsed, op, ws, native) }
+                            : {}),
                         setGeometry: (ref, rect) =>
                             withHomingSuppression(ref, () => setGeometryBase(ref, rect)),
                         setMembership: (ref, wsNativeId, wsRef) =>
@@ -6147,8 +6532,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             withHomingSuppression(ref, () => applyHostBase.sendToOutput(ref, outRef)),
                         switchView: (desktopRef, outRef) =>
                             withViewSuppression(desktopRef, outRef, () => applyHostBase.switchView(desktopRef, outRef)),
-                        focusWindow: (ref) =>
-                            withFocusSuppression(ref, () => applyHostBase.focusWindow(ref)),
+                        focusWindow: (ref, target) => target === undefined
+                            ? applyHostBase.focusWindow(ref)
+                            : withFocusSuppression(ref, target.win, target.out, target.ws, target.view,
+                                () => applyHostBase.focusWindow(ref)),
                     });
                     // Core StateTarget actuation (atomic migration): the
                     // accepted reply's controlled state rows arm/store/flush
@@ -6321,6 +6708,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         envelope: string; source: string; watermark: string;
         gesture: { instance: string; serial: string; win: string };
         closedToken: ClosedEvidenceToken | null;
+        focusChangesCut: FocusChangesCut | null;
+        delivered: WorldAttemptLanes;
         attempts: number;
         timerCancel: (() => void) | null;
     } | null = null;
@@ -6345,10 +6734,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // stamps the drained queued command itself). Fresh-source correlation
     // and the CURRENT local watermark bind the envelope; the callback binds
     // generation/source/watermark before any setter.
-    const sendCapture = (observation: WorldObservation, headOp: string | null, clientCmds: string[]): boolean => {
-        if (state.boundGen === null) {
-            return false;
-        }
+    const freezeReport = (observation: WorldObservation): { report: FrozenWorldReport; delivered: WorldAttemptLanes } | null => {
         // Flush deferred creation evidence first: a spent desire whose
         // same-turn post-call readback was unavailable must not wait for
         // another apply. The first successful complete readback completes
@@ -6366,34 +6752,128 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 state.completeDeferredCreations(order.map((d) => d.id));
             }
         }
-        // v4 inner report: the commandless native-fact snapshot. The broker
-        // stamps the owned namespace (adapter/gen/obs/reqSeq/req/cmdSeq/
-        // command/monotonicMs) onto the envelope. intentRecords rides the
-        // live-joined opaque snapshot: only records whose subject is in the
-        // captured native set ride (exact native-id join, never PID/title
-        // inference); out-of-scope records stay stored for later reports.
-        // stateAttempts rides the retained native-state evidence drained
-        // from the actuator state (empty when nothing was spent); the
-        // lane is required so empty rides the literal empty array.
-        // focusFeedback rides the retained one-shot focus correlation
-        // drained from the actuator state (empty when nothing was spent).
-        const liveIntentWins = new Set<string>();
-        for (const fact of observation.windowFacts) {
-            liveIntentWins.add(fact.win);
-        }
-        const inner = buildWorldReportV4InnerJson({
+        const liveIntentWins = new Set(observation.windowFacts.map((fact) => fact.win));
+        const delivered: WorldAttemptLanes = {
+            frames: state.framesForReport(),
+            members: state.memberAttemptsForReport(),
+            views: state.viewAttemptsForReport(),
+            clears: state.clearAttemptsForReport(),
+            states: state.statesForReport(),
+            focus: state.focusFeedbacksForReport(),
+        };
+        const report = freezeWorldReportV4InnerJson({
             observation,
             creationAttempts: state.creationAttemptsForReport(),
-            frameAttempts: state.framesForReport(),
-            memberAttempts: state.memberAttemptsForReport(),
-            viewAttempts: state.viewAttemptsForReport(),
-            clearAttempts: state.clearAttemptsForReport(),
-            stateAttempts: state.statesForReport(),
-            focusFeedbacks: state.focusFeedbacksForReport(),
+            frameAttempts: delivered.frames,
+            memberAttempts: delivered.members,
+            viewAttempts: delivered.views,
+            clearAttempts: delivered.clears,
+            stateAttempts: delivered.states,
+            focusFeedbacks: delivered.focus,
             intentRecords: intentStore.recordsForReport(liveIntentWins),
         });
-        if (inner === null) {
+        return report === null ? null : { report, delivered };
+    };
+
+    const terminalOf = (observation: WorldObservation): CaptureFlight["gesture"] => {
+        const raw = observation.nativeGesture ?? null;
+        return raw !== null && raw.available && (raw.phase === "released" || raw.phase === "cancelled")
+            ? { instance: raw.instance, serial: raw.serial, win: raw.win } : null;
+    };
+
+    // A capacity drain can retain its unfiled tail only after a new
+    // complete observation proves this exact subject/selector roster.
+    const sealSubject = (observation: WorldObservation): string | null => {
+        if (observation.localInvalidWatermark === null || !observation.complete || !observation.foregroundKnown ||
+            observation.topology.some((view) => !view.complete)) return null;
+        return JSON.stringify([
+            observation.focusedGlobal, observation.actionForeground, observation.mode, observation.hostOwned,
+            observation.topology.map(({ out, order, current }) => [out, order, current]),
+            observation.windowFacts.map((win) => [win.win, win.out, win.desktops, win.minimized, win.hidden,
+                win.onAllDesktops, win.wantsInput, win.managed, win.deleted, win.normalWindow, win.transient,
+                win.transientFor, win.dialog, win.modal, win.fullScreen, win.maximizeMode]),
+        ]);
+    };
+
+    const proveCapacityTail = (seal: Seal): boolean => {
+        if (seal.subject === null || !subjectSignalsCovered || seal.prefix.interrupted || subjectGuard !== seal.guard ||
+            state.focusChanges.mark() !== seal.prefix.through) return false;
+        const originalGen = state.boundGen;
+        ownScopeDepth += 1; // Hold every file/send while proof getters can reenter.
+        try {
+            const fresh = capture();
+            return fresh !== null && state.boundGen === originalGen &&
+                subjectGuard === seal.guard && state.focusChanges.mark() === seal.prefix.through &&
+                sealSubject(fresh) === seal.subject;
+        } finally {
+            ownScopeDepth -= 1;
+        }
+    };
+
+    const sealRegisteredPress = (expected: string | undefined): Seal | undefined => {
+        const gen = state.boundGen;
+        if (gen === null || !pressIsCurrent()) return undefined;
+        const tail = pendingQueue[pendingQueue.length - 1]?.seal;
+        if (tail !== undefined && !tail.started && !tail.torn && tail.guard === subjectGuard &&
+            subjectSignalsCovered && !tail.prefix.interrupted &&
+            (expected === undefined || expected === tail.foreground) &&
+            tail.prefix.through === state.focusChanges.mark()) return tail;
+        const guard = subjectGuard;
+        const watermark = state.currentInvalid;
+        const focusStart = state.focusChanges.mark();
+        const observation = capture();
+        if (observation === null || !pressIsCurrent() || (expected !== undefined &&
+            (!observation.foregroundKnown || observation.focusedGlobal !== expected))) return undefined;
+        if (observation.localInvalidWatermark === null) observation.nativeInvalidWitness = null;
+        const prefix = state.focusChanges.snapshot(observation, focusStart);
+        const frozen = freezeReport(observation);
+        if (frozen === null || !pressIsCurrent()) return undefined;
+        // A predecessor ACK may remove a gap and expose these rows.
+        const events = prefix.rows.map(({ event }) => event);
+        const maxClock = "18446744073709551615";
+        const inner = frozen.report.encode({ events, after: maxClock });
+        if (inner === null) return undefined;
+        const bytes = utf8ByteLength(buildCaptureEnvelope(adapter, gen, "src-00000000000-0000000", maxClock, watermark, inner));
+        if (bytes > WORLD_MAX_REQUEST_BYTES) return undefined;
+        const subject = subjectSignalsCovered ? sealSubject(observation) : null;
+        const retainedBytes = bytes + (subject === null ? 0 : utf8ByteLength(subject));
+        const queuedSeals = new Set(pendingQueue.map((entry) => entry.seal));
+        let total = retainedBytes;
+        for (const queued of queuedSeals) total += queued?.bytes ?? 0;
+        if (total > 4 * WORLD_MAX_REQUEST_BYTES) return undefined;
+        let trace: TraceObservation | null = null;
+        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+            const window = ({ win, out, ws, nativeWs }: TraceObservedWindow): TraceObservedWindow =>
+                ({ win, out, ws, nativeWs });
+            trace = {
+                focusedGlobal: observation.focusedGlobal,
+                closed: [...observation.closed],
+                screens: observation.screens.map(({ out }) => ({ out })),
+                native: observation.native.map(({ out, current, order }) => ({ out, current, order: [...order] })),
+                windowFacts: observation.windowFacts.map(({ win, desktops, onAllDesktops }) =>
+                    ({ win, desktops: [...desktops], onAllDesktops })),
+                domains: observation.domains.map(({ windows }) => ({ windows: windows.map(window) })),
+                minimized: observation.minimized.map(window),
+            };
+        }
+        return {
+            guard, watermark, prefix, ...frozen, bytes: retainedBytes, started: false, emptyFullDrained: false,
+            closed: closeTracker.freezeToken(gen, "", observation.closed),
+            gesture: terminalOf(observation), foreground: observation.focusedGlobal, trace,
+            subject, torn: observation.localInvalidWatermark === null,
+        };
+    };
+
+    const sendCapture = (
+        observation: WorldObservation | null, focusChangesCut: FocusChangesCut, headOp: string | null,
+        clientCmds: string[], seal?: Seal, prefixLength = 0,
+    ): boolean => {
+        if (state.boundGen === null || ownScopeDepth !== 0 || homingSuppressDepth !== 0 || registeredPress !== null) return false;
+        const frozen = seal ?? (observation === null ? null : freezeReport(observation));
+        const inner = frozen?.report.encode(focusChangesCut.interval) ?? null;
+        if (inner === null || frozen === null) {
             log("omnitiler:world:report-invalid op=observe reason=encode-failed");
+            if (seal !== undefined) { resetIrrecoverableSeal(); return false; }
             state.noteRejectedOrTransportError();
             killPending("rejected");
             drainAfterFailure(clientCmds.length > 0);
@@ -6403,55 +6883,56 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         const seq = mintSourceSeq();
         if (seq === null) {
             log("omnitiler:world:command-refused op=observe reason=seq-exhausted");
+            if (seal !== undefined) resetIrrecoverableSeal();
             return false;
         }
         const boundGen = state.boundGen;
         if (boundGen === null) {
             return false;
         }
-        const envelope = buildCaptureEnvelope(adapter, boundGen, source, seq, state.currentInvalid, inner);
+        const watermark = seal?.watermark ?? state.currentInvalid;
+        const envelope = buildCaptureEnvelope(adapter, boundGen, source, seq, watermark, inner);
         if (utf8ByteLength(envelope) > WORLD_MAX_REQUEST_BYTES) {
             // Narrow overflow recovery: the previewed batch is NOT consumed
             // (never replayed once sent, but unsent here); it stays parked
             // with the observation dirty for a smaller scope on the next
             // event.
             log("omnitiler:world:request-oversize recovery=on-next-event");
+            if (seal !== undefined) { resetIrrecoverableSeal(); return false; }
             state.noteRejectedOrTransportError();
             killPending("rejected");
             drainAfterFailure(clientCmds.length > 0);
             return false;
         }
         const clientCmd = clientCmds.length > 0 ? (clientCmds[0] as string) : null;
-        const closedToken = closeTracker.freezeToken(boundGen, source, observation.closed);
-        const flight = state.beginCapture(source, clientCmd, closedToken);
+        const closedToken = seal === undefined
+            ? closeTracker.freezeToken(boundGen, source, observation?.closed ?? [])
+            : { ...seal.closed, source };
+        const flight = state.beginCapture(source, clientCmd, closedToken, focusChangesCut,
+            watermark, frozen.delivered, seal?.guard ?? null);
         if (flight === null) {
             return false;
         }
+        if (seal?.torn === true) flight.torn = true;
+        if (seal !== undefined) seal.started = true;
+        if (seal === undefined && prefixLength > 0) pendingQueue.splice(0, prefixLength);
         flightBatches.set(source, [...clientCmds]);
         if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
             worldTraceProbes.get(state)?.noteTraceSent(source, clientCmds);
         }
+        const traceObservation = observation ?? seal?.trace ?? null;
         if (
             typeof __OMNITILER_TRACE__ === "string" &&
             __OMNITILER_TRACE__ === "1" &&
             devFixtureControlsEnabled
         ) {
-            worldTraceProbes.get(state)?.noteFixtureClosedSent(source, boundGen, seq, observation);
+            if (traceObservation !== null) worldTraceProbes.get(state)?.noteFixtureClosedSent(source, boundGen, seq, traceObservation);
+            worldTraceProbes.get(state)?.noteFixtureArrivalSent(source, boundGen, seq, frozen.delivered.focus, frozen.delivered.views);
         }
         // Stamp the exact raw terminal identity this capture carries (if
         // any) for unresolved same-envelope recovery. Settlement discharge
         // instead matches the retained association to the pending FIFO head.
-        try {
-            const raw = observation.nativeGesture ?? null;
-            flight.gesture = (
-                raw !== null && raw.available &&
-                (raw.phase === "released" || raw.phase === "cancelled")
-            )
-                ? { instance: raw.instance, serial: raw.serial, win: raw.win }
-                : null;
-        } catch (error) {
-            void error;
-        }
+        flight.gesture = seal?.gesture ?? (observation === null ? null : terminalOf(observation));
         // A fresh terminal send supersedes any pending same-envelope retry
         // only for a NEW terminal: a same-identity re-carry keeps the
         // oldest unrecovered envelope owning exact-response recovery.
@@ -6466,7 +6947,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 clearTerminalCaptureRetry();
             }
         }
-        transmitCapture(envelope, flight, headOp, observation);
+        transmitCapture(envelope, flight, headOp, traceObservation);
         return true;
     };
 
@@ -6488,6 +6969,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             envelope: string; source: string; watermark: string;
             gesture: { instance: string; serial: string; win: string };
             closedToken: ClosedEvidenceToken | null;
+            focusChangesCut: FocusChangesCut | null;
+            delivered: WorldAttemptLanes;
             attempts: number;
         },
         cadenceMs: number,
@@ -6511,14 +6994,18 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             terminalCaptureRetry = null;
             return;
         }
-        if (state.inFlight !== null) {
+        if (state.inFlight !== null || ownedSeal !== null || sealResetRequired ||
+            ownScopeDepth !== 0 || registeredPress !== null ||
+            pendingQueue.some((entry) => entry.filing || entry.seal !== undefined)) {
             // Wire busy: re-arm the same cadence (count unchanged, at most
             // one timer) so the exact envelope is never silently dropped.
             // A newer fresh reply resolving this source still cancels below.
             clearTerminalCaptureRetry();
             terminalCaptureRetry = {
                 envelope: saved.envelope, source: saved.source, watermark: saved.watermark,
-                gesture: saved.gesture, closedToken: saved.closedToken, attempts: saved.attempts,
+                gesture: saved.gesture, closedToken: saved.closedToken,
+                focusChangesCut: saved.focusChangesCut, attempts: saved.attempts,
+                delivered: saved.delivered,
                 timerCancel: scheduleOnce(cadenceMs, () => {
                     const pending = terminalCaptureRetry;
                     if (pending === null || stopped) {
@@ -6528,7 +7015,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         {
                             envelope: pending.envelope, source: pending.source,
                             watermark: pending.watermark, gesture: pending.gesture,
-                            closedToken: pending.closedToken, attempts: pending.attempts,
+                            closedToken: pending.closedToken,
+                            focusChangesCut: pending.focusChangesCut, attempts: pending.attempts,
+                            delivered: pending.delivered,
                         },
                         cadenceMs,
                     );
@@ -6540,13 +7029,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         // preserves it so the redelivery's own failure increments.
         terminalCaptureRetry = {
             envelope: saved.envelope, source: saved.source, watermark: saved.watermark,
-            gesture: saved.gesture, closedToken: saved.closedToken, attempts: saved.attempts, timerCancel: null,
+            gesture: saved.gesture, closedToken: saved.closedToken, focusChangesCut: saved.focusChangesCut,
+            delivered: saved.delivered,
+            attempts: saved.attempts, timerCancel: null,
         };
         // The replay flight rebinds the ORIGINAL envelope watermark (the
         // bytes carry the old fence) and the ORIGINAL frozen close token:
         // beginCapture would stamp the current fence and fresh evidence instead,
         // which would weaken the source/gen/token binding proof.
-        const retryFlight = state.beginReplayCapture(saved.source, saved.watermark, null, saved.closedToken);
+        const retryFlight = state.beginReplayCapture(saved.source, saved.watermark, null, saved.closedToken, saved.focusChangesCut, saved.delivered);
         if (retryFlight === null) {
             // Wire raced busy after the guard: re-arm the same cadence so
             // the exact envelope is not silently dropped. The count is
@@ -6561,6 +7052,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         envelope: pending.envelope, source: pending.source,
                         watermark: pending.watermark, gesture: pending.gesture,
                         closedToken: pending.closedToken, attempts: pending.attempts,
+                        focusChangesCut: pending.focusChangesCut,
+                        delivered: pending.delivered,
                     },
                     cadenceMs,
                 );
@@ -6570,10 +7063,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         retryFlight.gesture = {
             instance: saved.gesture.instance, serial: saved.gesture.serial, win: saved.gesture.win,
         };
-        transmitCapture(saved.envelope, retryFlight, null, null);
+        transmitCapture(saved.envelope, retryFlight, null, null, true);
     };
     const maybeRetryTerminalCapture = (envelope: string, flight: CaptureFlight): void => {
-        if (stopped || flight.clientCmd !== null || flight.gesture === null) {
+        if (stopped || flight.subjectGuard !== null || flight.clientCmd !== null || flight.gesture === null) {
             return;
         }
         if (lastResolvedCaptureSource === flight.source) {
@@ -6621,6 +7114,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             const saved = {
                 envelope, source: flight.source, watermark: flight.watermark,
                 gesture, closedToken: flight.closedToken, attempts,
+                focusChangesCut: flight.focusChangesCut,
+                delivered: flight.delivered,
             };
             const timerCancel = scheduleOnce(WAIT_HOST_DEADLINE_MS, () => {
                 fireTerminalRetry(saved, WAIT_HOST_DEADLINE_MS);
@@ -6628,6 +7123,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             terminalCaptureRetry = {
                 envelope, source: flight.source, watermark: flight.watermark,
                 gesture, closedToken: flight.closedToken, attempts, timerCancel,
+                focusChangesCut: flight.focusChangesCut,
+                delivered: flight.delivered,
             };
             return;
         }
@@ -6636,6 +7133,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         const saved = {
             envelope, source: flight.source, watermark: flight.watermark,
             gesture, closedToken: flight.closedToken, attempts,
+            focusChangesCut: flight.focusChangesCut,
+            delivered: flight.delivered,
         };
         const timerCancel = scheduleOnce(WORLD_TIMEOUT_MS, () => {
             fireTerminalRetry(saved, WORLD_TIMEOUT_MS);
@@ -6643,6 +7142,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         terminalCaptureRetry = {
             envelope, source: flight.source, watermark: flight.watermark,
             gesture, closedToken: flight.closedToken, attempts, timerCancel,
+            focusChangesCut: flight.focusChangesCut,
+            delivered: flight.delivered,
         };
     };
 
@@ -6666,12 +7167,60 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         maybeRetryTerminalCapture(envelope, flight);
     };
 
+    const resetIrrecoverableSeal = (): void => {
+        if (sealResetRequired) return;
+        sealResetRequired = true;
+        state.inFlight = null;
+        captureReplay = null;
+        waitHoldForDiscovery = true;
+        wakePendingCapture = false;
+        log("omnitiler:world:seal-irrecoverable recovery=rediscover");
+        presentationSubscriber.notifyGeneration(null);
+        discover();
+    };
+
+    const parkAmbiguousCapture = (envelope: string, flight: CaptureFlight, headOp: string | null): boolean => {
+        if (state.inFlight !== flight) return true;
+        captureReplay = { envelope, flight, headOp, exact: true };
+        if (ownedSeal === null && !pendingQueue.some((entry) => entry.seal !== undefined)) return false;
+        state.releaseFlight(flight.source);
+        scheduleDispatch();
+        return true;
+    };
+
+    const retryNotRun = (envelope: string, flight: CaptureFlight, headOp: string | null): void => {
+        const gen = state.boundGen;
+        const seq = mintSourceSeq();
+        if (gen === null || seq === null) { resetIrrecoverableSeal(); return; }
+        const source = mintSource();
+        // Envelopes we build always place the complete raw report last.
+        const reportKey = ',"report":';
+        const inner = envelope.slice(envelope.indexOf(reportKey) + reportKey.length, -1);
+        const next = buildCaptureEnvelope(adapter, gen, source, seq, flight.watermark, inner);
+        if (utf8ByteLength(next) > WORLD_MAX_REQUEST_BYTES) { resetIrrecoverableSeal(); return; }
+        const commands = flightBatches.get(flight.source);
+        flightBatches.delete(flight.source);
+        if (commands !== undefined) flightBatches.set(source, commands);
+        captureReplay = {
+            envelope: next, headOp, exact: false,
+            flight: { ...flight, source, closedToken: flight.closedToken === null ? null : { ...flight.closedToken, source } },
+        };
+        state.releaseFlight(flight.source);
+        scheduleDispatch();
+    };
+
     // Transmit one capture envelope with its bound flight: timeout plus the
     // full DescribeWorld reply handling. Shared by fresh sends and by the
     // bounded same-envelope terminal retry above.
-    const transmitCapture = (envelope: string, flight: CaptureFlight, headOp: string | null, observation: WorldObservation | null): void => {
+    const transmitCapture = (
+        envelope: string, flight: CaptureFlight, headOp: string | null, observation: TraceObservation | null,
+        replay = false,
+    ): void => {
         if (stopped || state.boundGen === null) {
             return;
+        }
+        if (flight.subjectGuard !== null) {
+            rendererSealFence = { guard: flight.subjectGuard, watermark: flight.watermark, torn: flight.torn === true };
         }
         // A fresh capture consumes any owed wake: it drains at most one
         // head server-side (or observes when the queue is empty).
@@ -6685,6 +7234,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 // the scheduled catchup below, never on a blind retry. A
                 // lost commandless terminal redelivers its identical
                 // envelope on a bounded cadence instead.
+                if (parkAmbiguousCapture(envelope, flight, headOp)) return;
                 state.noteRejectedOrTransportError();
                 killPending("timeout");
                 drainAfterFailure(flight.clientCmd !== null);
@@ -6695,6 +7245,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         log(`omnitiler:world:dispatch src=${token(flight.source)} nwinv=${flight.watermark} cmd=${headOp === null ? "observe" : token(headOp)}`);
         if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
             worldTraceProbes.get(state)?.noteSend(token(flight.source), observation);
+            worldTraceProbes.get(state)?.noteFocusChangesSent(flight, replay);
         }
         try {
             (callDbus as NonNullable<WorldEntryOverrides["callDbus"]>)(
@@ -6705,11 +7256,13 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     settled = true;
                     timeoutCancel();
+                    if (state.inFlight !== flight || stopped) return;
                     if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
                         worldTraceProbes.get(state)?.noteReply(token(flight.source));
                     }
                     if (typeof reply !== "string") {
                         log("omnitiler:world:transport-error recovery=on-next-event");
+                        if (parkAmbiguousCapture(envelope, flight, headOp)) return;
                         state.noteRejectedOrTransportError();
                         killPending("transport");
                         drainAfterFailure(flight.clientCmd !== null);
@@ -6719,6 +7272,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     if (utf8ByteLength(reply) > WORLD_MAX_REPLY_BYTES) {
                         log("omnitiler:world:reply-oversize recovery=on-next-event");
+                        if (parkAmbiguousCapture(envelope, flight, headOp)) return;
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
                         drainAfterFailure(flight.clientCmd !== null);
@@ -6740,6 +7294,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             return;
                         }
                         log("omnitiler:world:reply-malformed recovery=on-next-event");
+                        if (parkAmbiguousCapture(envelope, flight, headOp)) return;
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
                         drainAfterFailure(flight.clientCmd !== null);
@@ -6754,6 +7309,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // timeout for a resolved source never re-arms. Wrong-lane
                     // and binding-mismatch replies below resolve nothing.
                     if (isWorldRejection(parsed)) {
+                        if ((ownedSeal !== null || pendingQueue.some((entry) => entry.seal !== undefined)) &&
+                            (parsed.source !== flight.source || parsed.nativeInvalid !== flight.watermark ||
+                                (parsed.kind !== "generation-mismatch" && parsed.gen !== state.boundGen))) {
+                            parkAmbiguousCapture(envelope, flight, headOp);
+                            return;
+                        }
                         // An in-band rejection is a definitive broker verdict
                         // for this source: the capture was refused (never
                         // processed), so a fresh re-carry can still settle
@@ -6776,6 +7337,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             return;
                         }
                         if (parsed.kind === "busy" || parsed.kind === "unavailable") {
+                            if (ownedSeal !== null || pendingQueue.some((entry) => entry.seal !== undefined)) {
+                                retryNotRun(envelope, flight, headOp);
+                                return;
+                            }
                             state.noteRejectedOrTransportError();
                             killPending("busy");
                             drainAfterFailure(flight.clientCmd !== null);
@@ -6783,6 +7348,23 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             return;
                         }
                         log(`omnitiler:world:rejected kind=${token(parsed.kind)} msg=${token(parsed.message)} recovery=on-next-event`);
+                        if (ownedSeal !== null || pendingQueue.some((entry) => entry.seal !== undefined)) {
+                            // Take can recover requester results, but neither
+                            // reconstructs a report revision nor cancels pending work.
+                            takeResultsForUndecided(() => {});
+                            if (ownedSeal === null && flight.clientCmd === null) {
+                                for (let i = pendingQueue.length - 1; i >= 0; i -= 1) {
+                                    if (pendingQueue[i]?.seal !== undefined) pendingQueue.splice(i, 1);
+                                }
+                                log("omnitiler:world:command-dropped reason=unrecoverable-predecessor");
+                                captureReplay = null;
+                                state.noteRejectedOrTransportError();
+                                scheduleDrain();
+                                return;
+                            }
+                            resetIrrecoverableSeal();
+                            return;
+                        }
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
                         drainAfterFailure(flight.clientCmd !== null);
@@ -6796,6 +7378,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         // actuation). The same terminal stays owed and the
                         // bounded same-envelope cadence still recovers it.
                         log("omnitiler:world:reply-malformed recovery=on-next-event");
+                        if (parkAmbiguousCapture(envelope, flight, headOp)) return;
                         state.noteRejectedOrTransportError();
                         killPending("rejected");
                         drainAfterFailure(flight.clientCmd !== null);
@@ -6813,8 +7396,25 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // in adapter state; the core owns admitted-lifetime
                     // tracking across generation rebinds.
                     const processCoreReply = (): void => {
+                    if (state.inFlight !== flight) return;
+                    if (ownedSeal !== null || pendingQueue.some((entry) => entry.seal !== undefined)) {
+                        if (parsed.gen !== state.boundGen || parsed.adapter !== state.adapter ||
+                            parsed.source !== flight.source || parsed.req !== flight.source ||
+                            parsed.nativeInvalid !== flight.watermark) {
+                            parkAmbiguousCapture(envelope, flight, headOp);
+                            return;
+                        }
+                        if (!parsed.ready) {
+                            retryNotRun(envelope, flight, headOp);
+                            return;
+                        }
+                    }
                     const verdict = state.acceptReply(parsed, flight.source, flight.watermark);
                     if (!verdict.applied) {
+                        if (ownedSeal !== null) {
+                            resetIrrecoverableSeal();
+                            return;
+                        }
                         if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
                             worldTraceProbes.get(state)?.noteReplySkipped("accept", parsed.gen, parsed.req, parsed.rev, parsed.obs, verdict.reason);
                         }
@@ -6841,10 +7441,23 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         wakeFollowup();
                         return;
                     }
-                    // Retire ONLY the exact frozen close token bound to this
-                    // lifetime, generation, and source at validated bound ready
-                    // incorporation, BEFORE requester Take, intent persistence,
-                    // or native apply, including when watermark skips apply.
+                    captureReplay = null;
+                    if (flight.subjectGuard === null && state.currentInvalid === flight.watermark) rendererSealFence = null;
+                    if (ownedSeal !== null) {
+                        const incorporated = ownedSeal;
+                        let count = 0;
+                        while (pendingQueue[count]?.seal === incorporated && pendingQueue[count]?.filed) count += 1;
+                        pendingQueue.splice(0, count);
+                        if (sealQueueFull && pendingQueue[0]?.seal === incorporated && !proveCapacityTail(incorporated)) {
+                            if (parsed.gen !== state.boundGen || stopped) return;
+                            while (pendingQueue[0]?.seal === incorporated) pendingQueue.shift();
+                            log("omnitiler:world:command-dropped reason=queue-full-discontinuous-cut");
+                        }
+                        sealQueueFull = false;
+                        ownedSeal = null;
+                    }
+                    // Retire exact frozen close evidence before Take or
+                    // apply, even when freshness suppresses setters.
                     if (flight.closedToken !== null) {
                         const retiredClosed = closeTracker.retireToken(
                             flight.closedToken,
@@ -6864,6 +7477,23 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             );
                         }
                     }
+                    const parkedSeals = new Set(pendingQueue.map((entry) => entry.seal));
+                    parkedSeals.delete(undefined);
+                    if (parkedSeals.size > 0) {
+                        const closed = flight.closedToken?.closed ?? [];
+                        const incorporated = incorporatedReportRows(closed, flight.delivered);
+                        const closedIds = new Set(closed);
+                        for (const seal of parkedSeals) {
+                            if (seal === undefined) continue;
+                            seal.report.subtract(incorporated);
+                            seal.delivered = subtractIncorporatedAttempts(seal.delivered, incorporated);
+                            if (closedIds.size > 0) {
+                                seal.closed = { ...seal.closed, closed: seal.closed.closed.filter((id) => !closedIds.has(id)) };
+                            }
+                            if (seal.trace !== null) seal.trace.closed = seal.closed.closed;
+                        }
+                        scheduleDrain();
+                    }
                     // Ack-only settlement discharge before the freshness
                     // split: a bound reply carrying the exact settlement for
                     // the pending terminal retires the native FIFO even when
@@ -6874,7 +7504,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // retained outcome has not discharged the obligation.
                     const discharged = tryDischargeTerminalSettlement(parsed, flight);
                     resolveTerminalRetryAfterReply(discharged, envelope, flight);
-                    const supersededDuringFlight = state.currentInvalid !== flight.watermark;
+                    const sealMoved = flight.subjectGuard !== null && (flight.subjectGuard !== subjectGuard || flight.torn === true);
+                    if (sealMoved) state.dirty = true;
+                    const supersededDuringFlight = state.currentInvalid !== flight.watermark || sealMoved;
                     const devSkipWorldReply = !supersededDuringFlight &&
                         typeof __OMNITILER_TRACE__ === "string" &&
                         __OMNITILER_TRACE__ === "1" &&
@@ -6963,7 +7595,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         // touch. Actuation stays strict: no setters run on
                         // this path either way.
                         try {
-                            presentationSubscriber.notifyInvalidated();
+                            if (!sealMoved) presentationSubscriber.notifyInvalidated();
                         } catch (error) {
                             void error;
                         }
@@ -7032,6 +7664,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         } catch (error) {
             void error;
             timeoutCancel();
+            if (parkAmbiguousCapture(envelope, flight, headOp)) return;
             state.noteRejectedOrTransportError();
             killPending("transport");
             drainAfterFailure(flight.clientCmd !== null);
@@ -7098,16 +7731,26 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // a filing owns the wire.
     const pumpQueueFiling = (): boolean => {
         while (true) {
-            if (stopped || state.boundGen === null || discoverOutstanding) {
-                return pendingQueue.some((entry) => entry.filing);
+            if (stopped || state.boundGen === null || discoverOutstanding || sealResetRequired ||
+                registeredPress !== null || ownScopeDepth !== 0 || homingSuppressDepth !== 0 || signalDepth !== 0 ||
+                captureReplay !== null || sealQueueFull) {
+                return false;
             }
             if (pendingQueue.some((entry) => entry.filing)) {
                 return true;
             }
-            const head = pendingQueue.find((entry) => !entry.filed);
+            const seal = pendingQueue[0]?.seal;
+            if (state.inFlight !== null && (seal !== undefined ||
+                state.inFlight.subjectGuard !== null || pendingQueue.some((entry) => entry.seal !== undefined))) return false;
+            let head: QueuedIntent | undefined;
+            for (const entry of pendingQueue) {
+                if (entry.seal !== seal) break;
+                if (!entry.filed) { head = entry; break; }
+            }
             if (head === undefined) {
                 return false;
             }
+            if (ownedSeal !== null && head.seal !== ownedSeal) return false;
             fileSend(head);
             if (head.filing) {
                 return true;
@@ -7139,6 +7782,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (settingsAcceptedGen !== state.boundGen || !intentStore.isHydrated(state.boundGen)) {
             kickAfterFile();
             return;
+        }
+        if (entry.seal !== undefined) {
+            ownedSeal = entry.seal;
         }
         entry.filing = true;
         const clientCmd = entry.clientCmd;
@@ -7179,6 +7825,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     qsettled = true;
                     qtimeoutCancel();
+                    if (stopped || entry.gen !== state.boundGen || !pendingQueue.includes(entry)) {
+                        entry.filing = false;
+                        log("omnitiler:world:queue-stale recovery=on-next-event");
+                        return;
+                    }
                     if (typeof reply !== "string") {
                         if (entry.gen !== state.boundGen || !pendingQueue.includes(entry)) {
                             entry.filing = false;
@@ -7248,6 +7899,22 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             log("omnitiler:world:queue-stale recovery=on-next-event");
                             return;
                         }
+                        if (entry.seal !== undefined && parsed.kind === "queue-full") {
+                            entry.filing = false;
+                            const seal = entry.seal;
+                            const hasFiledPrefix = pendingQueue[0]?.seal === seal && pendingQueue[0]?.filed === true;
+                            if (!hasFiledPrefix && seal.emptyFullDrained) {
+                                while (pendingQueue[0]?.seal === seal) pendingQueue.shift();
+                                ownedSeal = null;
+                                log("omnitiler:world:command-dropped reason=queue-full");
+                                if (pendingQueue.length > 0) scheduleDrain();
+                                return;
+                            }
+                            if (!hasFiledPrefix) seal.emptyFullDrained = true;
+                            sealQueueFull = true;
+                            kickAfterFile();
+                            return;
+                        }
                         // In-band refusal proves the command never filed.
                         // A shape refusal is permanent: drop this entry
                         // narrowly so later commands can proceed instead of
@@ -7260,6 +7927,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             if (at >= 0) {
                                 pendingQueue.splice(at, 1);
                             }
+                            if (ownedSeal !== null && pendingQueue[0]?.seal !== ownedSeal) ownedSeal = null;
                             undecidedClientCmds.delete(clientCmd);
                             log(`omnitiler:world:command-dropped kind=${token(parsed.kind)} msg=${token(parsed.message)} recovery=on-next-event`);
                             state.noteRejectedOrTransportError();
@@ -7298,12 +7966,23 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         entry.filing = false;
                         entry.filed = false;
                         log("omnitiler:world:queue-stale recovery=on-next-event");
+                        if (entry.seal !== undefined) kickDeferred();
                         return;
                     }
-                    entry.filing = false;
-                    entry.filed = true;
-                    undecidedClientCmds.add(clientCmd);
-                    kickAfterFile();
+                    const acceptQueueAck = (): void => {
+                        entry.filing = false;
+                        entry.filed = true;
+                        undecidedClientCmds.add(clientCmd);
+                        kickAfterFile();
+                    };
+                    if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1" &&
+                        devFixtureControlsEnabled && devHoldNextQueueAck) {
+                        devHoldNextQueueAck = false;
+                        devHeldQueueAck = { entry, resume: acceptQueueAck };
+                        log(`omnitiler:world:trace ev=dev-hold-queue-ack state=held gen=${diagOpaqueId(filedGen)} clientCmd=${diagOpaqueId(clientCmd)}`);
+                        return;
+                    }
+                    acceptQueueAck();
                 },
             );
         } catch (error) {
@@ -7325,9 +8004,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (stopped || state.boundGen === null || discoverOutstanding) {
             return;
         }
-        if (state.inFlight !== null) {
-            return;
-        }
+        if (sealResetRequired) { discover(); return; }
+        if (state.inFlight !== null || ownScopeDepth !== 0 || homingSuppressDepth !== 0 ||
+            registeredPress !== null || signalDepth !== 0) return;
         if (dispatchActive) {
             scheduleDispatch();
             return;
@@ -7376,52 +8055,60 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         } catch (error) {
             void error;
         }
-        // Observation-only catchup withholds the queue without dropping it:
-        // unsent intents stay queued and file after the catchup report is
-        // accepted.
-        if (state.observationOnlyCatchup) {
+        const hasSeal = pendingQueue.some((entry) => entry.seal !== undefined);
+        if (captureReplay !== null) {
+            const saved = captureReplay;
+            if (ownedSeal !== null || hasSeal) {
+                const original = saved.flight;
+                const replay = state.beginReplayCapture(original.source, original.watermark, original.clientCmd,
+                    original.closedToken, original.focusChangesCut, original.delivered, original.subjectGuard);
+                if (replay !== null) {
+                    replay.gesture = original.gesture;
+                    if (original.torn === true) replay.torn = true;
+                    transmitCapture(saved.envelope, replay, saved.headOp, saved.exact ? null : ownedSeal?.trace ?? null, saved.exact);
+                }
+                return;
+            }
+            captureReplay = null;
+        }
+        if (state.observationOnlyCatchup && ownedSeal === null && !hasSeal) {
+            const focusStart = state.focusChanges.mark();
             const catchupObservation = capture();
             if (catchupObservation === null) {
                 log("omnitiler:world:observe-invalid recovery=on-next-event");
                 return;
             }
-            sendCapture(catchupObservation, null, []);
+            sendCapture(catchupObservation, state.focusChanges.freeze(catchupObservation, focusStart), null, []);
             return;
         }
-        // File the FIFO pump BEFORE capturing: the capture must be fresh
-        // after all filings settle (never a stale pre-filing observation),
-        // and native invalidation while a Queue ACK is outstanding is
-        // incorporated here rather than raced. A filing still in flight
-        // owns the kick and this dispatch returns without capturing.
         pumpQueueFiling();
-        if (pendingQueue.some((entry) => entry.filing)) {
+        if (state.inFlight !== null || discoverOutstanding || sealResetRequired) return;
+        const seal = ownedSeal ?? pendingQueue[0]?.seal;
+        const preview: QueuedIntent[] = [];
+        for (const entry of pendingQueue) {
+            if (entry.seal !== seal) break;
+            if (entry.filing || (!entry.filed && !sealQueueFull)) return;
+            if (!entry.filed) break;
+            preview.push(entry);
+        }
+        const clientCmds = preview.map((entry) => entry.clientCmd);
+        const headOp = preview[0]?.command.op ?? null;
+        if (seal !== undefined) {
+            sendCapture(null, state.focusChanges.cut(seal.prefix), headOp, clientCmds, seal);
             return;
         }
-        // Never drain unfiled presses: a gated, refused, or lost-ACK entry
-        // stays parked for its own redelivery instead of being silently
-        // consumed by a capture that cannot execute it.
-        if (pendingQueue.some((entry) => !entry.filed)) {
-            return;
-        }
-        // Fresh observation after the filings settle: one capture
-        // incorporates native once and drains ALL already-parked FIFO
-        // against post-prior core state; presses arriving mid-flight park
-        // the next batch. The batch splices only after the capture flight
-        // is secured below, so local encode/size/mint failure never
-        // discards filed presses.
+        const focusStart = state.focusChanges.mark();
         const observation = capture();
         if (observation === null) {
             log("omnitiler:world:observe-invalid recovery=on-next-event");
             return;
         }
-        const preview = [...pendingQueue];
-        const clientCmds = preview.map((entry) => entry.clientCmd);
-        const headOp = preview.length > 0
-            ? ((preview[0] as QueuedIntent).command as { op?: unknown }).op
-            : null;
-        if (sendCapture(observation, typeof headOp === "string" ? headOp : null, clientCmds)) {
-            pendingQueue.splice(0, preview.length);
+        if (preview.length === 0 && pendingQueue.length > 0) {
+            scheduleDrain();
+            return;
         }
+        const focusCut = state.focusChanges.freeze(observation, focusStart);
+        sendCapture(observation, focusCut, headOp, clientCmds, undefined, preview.length);
         } finally {
             dispatchActive = false;
         }
@@ -7720,11 +8407,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // window's closure/unsafe/disappearance still invalidates
     // immediately. Legacy workspace routes untouched.
     const windowHomingDetaches = new Map<object, Array<() => void>>();
-    const onWindowHoming = (ref: object): (() => void) => {
+    const onWindowHoming = (ref: object, subjectRelevant: boolean): (() => void) => {
         return (): void => {
             if (stopped) {
                 return;
             }
+            if (subjectRelevant) subjectGuard += 1;
             if (homingSuppressDepth > 0 && homingSuppressRef === ref) {
                 // Same-flight own echo: closure/disappearance/unsafe
                 // still invalidates immediately and stops apply; only
@@ -7761,9 +8449,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return;
         }
         const detachesForWindow: Array<() => void> = [];
-        for (const signalName of ["outputChanged", "desktopsChanged", "hiddenChanged", "frameGeometryChanged"] as const) {
+        for (const signalName of ["outputChanged", "desktopsChanged", "hiddenChanged", "minimizedChanged", "frameGeometryChanged"] as const) {
             try {
-                const detach = connectSignal(readSignal(ref, signalName), onWindowHoming(ref));
+                const detach = connectSignal(readSignal(ref, signalName), onWindowHoming(ref, signalName !== "frameGeometryChanged"));
                 if (detach !== null) {
                     detachesForWindow.push(detach);
                 }
@@ -7820,60 +8508,94 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             const detach = connectSignal(readSignal(surface, name), handler);
             if (detach !== null) {
                 detaches.push(detach);
+                return;
             }
         } catch (error) {
             void error;
         }
+        subjectSignalsCovered = false;
+        subjectGuard += 1;
     };
     const attachVariadic = (name: string, handler: (...args: Array<unknown>) => void): void => {
         try {
             const detach = connectSignal(readSignal(surface, name), handler as (payload?: unknown) => void);
             if (detach !== null) {
                 detaches.push(detach);
+                return;
             }
         } catch (error) {
             void error;
         }
+        subjectSignalsCovered = false;
+        state.focusChanges.interrupt();
+        subjectGuard += 1;
     };
     const onCurrentDesktopChanged = (...args: Array<unknown>): void => {
         if (stopped) {
             return;
         }
-        if (viewFocusDepth > 0 && viewFocusScope !== null) {
-            if (viewFocusScope.kind !== "view") {
-                onNativeInvalidation();
-                return;
-            }
-            if (isOwnViewEcho(args)) {
+        subjectGuard += 1;
+        signalDepth += 1;
+        try {
+        const serial = ++focusSignalSerial;
+        const scope = viewFocusScope;
+        if (scope?.kind === "view" && isOwnViewEcho(args)) {
+            const views = scope.legacyEcho ? readNativeViews() : [{ out: scope.out, native: scope.ws }];
+            if (serial === focusSignalSerial && views !== null) {
+                for (const evidence of scope.viewEvidence) state.focusChanges.leaveUnproved(evidence);
+                scope.viewEvidence = views.map((view) => state.focusChanges.record({ kind: "view", ...view }, true));
                 deferredOwnViewFocus = true;
                 return;
             }
-            onNativeInvalidation();
-            return;
+        }
+        const out = args.length === 3 ? outputNameOf(args[2]) : null;
+        const native = args.length === 3 ? desktopIdOf(args[1]) : null;
+        const views = out !== null && native !== null ? [{ out, native }]
+            : args.length === 1 ? readNativeViews() : null;
+        if (views === null || serial !== focusSignalSerial) {
+            state.focusChanges.gap();
+        } else {
+            for (const view of views) {
+                state.focusChanges.record({ kind: "view", ...view });
+            }
         }
         onNativeInvalidation();
+        } finally {
+            signalDepth -= 1;
+        }
     };
     const onWindowActivated = (...args: Array<unknown>): void => {
         if (stopped) {
             return;
         }
-        if (viewFocusDepth > 0 && viewFocusScope !== null) {
-            if (viewFocusScope.kind === "focus") {
-                if (isOwnFocusActivation(args)) {
-                    deferredOwnViewFocus = true;
-                    return;
-                }
-                onNativeInvalidation();
-                return;
+        subjectGuard += 1;
+        signalDepth += 1;
+        try {
+        const serial = ++focusSignalSerial;
+        const scope = viewFocusScope;
+        if (scope !== null && (isOwnFocusActivation(args) || isOwnViewActivation(args)) && serial === focusSignalSerial) {
+            const win = scope.kind === "view" ? scope.activatedId : scope.win;
+            if (scope.activationEvidence !== null) state.focusChanges.leaveUnproved(scope.activationEvidence);
+            scope.activationEvidence = state.focusChanges.record({ kind: "foreground", win }, true);
+            deferredOwnViewFocus = true;
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                worldTraceProbes.get(state)?.noteFocusActivation("own", scope.kind, serial, args.length, win);
             }
-            if (isOwnViewActivation(args)) {
-                deferredOwnViewFocus = true;
-                return;
-            }
-            onNativeInvalidation();
             return;
         }
+        const win = focusEvidenceId(args[0]);
+        if (serial !== focusSignalSerial) {
+            state.focusChanges.gap();
+        } else {
+            state.focusChanges.record({ kind: "foreground", win });
+        }
+        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+            worldTraceProbes.get(state)?.noteFocusActivation("unproved", scope?.kind, serial, args.length, win);
+        }
         onNativeInvalidation();
+        } finally {
+            signalDepth -= 1;
+        }
     };
     for (const name of ["windowAdded", "desktopsChanged", "screensChanged", "activeScreenChanged"] as const) {
         if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1" && name === "windowAdded") {
@@ -7882,13 +8604,17 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             // (and its real debounce arm) runs. No synthetic start is
             // emitted here; only actual scheduleDispatch arms log start.
             attach(name, (added) => {
+                subjectGuard += 1;
                 if (typeof added === "object" && added !== null) {
                     worldTraceProbes.get(state)?.noteAdded(added);
                 }
                 onNativeInvalidation();
             });
         } else {
-            attach(name, onNativeInvalidation);
+            attach(name, () => {
+                subjectGuard += 1;
+                onNativeInvalidation();
+            });
         }
     }
     attachVariadic("windowActivated", onWindowActivated);
@@ -7902,6 +8628,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // never close). Unreadable inventories still invalidate; they never fabricate ids.
     try {
         const detach = connectSignal(readSignal(surface, "windowRemoved"), (removed) => {
+            subjectGuard += 1;
             // Detach by object identity only; never read the payload's
             // properties (its QObject may be dead).
             if (typeof removed === "object" && removed !== null) {
@@ -7916,9 +8643,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         });
         if (detach !== null) {
             detaches.push(detach);
+        } else {
+            subjectSignalsCovered = false;
         }
     } catch (error) {
         void error;
+        subjectSignalsCovered = false;
     }
     // New windows attach homing on arrival (idempotent per object
     // identity); the workspace windowAdded invalidation above still
@@ -7934,9 +8664,12 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         });
         if (detach !== null) {
             detaches.push(detach);
+        } else {
+            subjectSignalsCovered = false;
         }
     } catch (error) {
         void error;
+        subjectSignalsCovered = false;
     }
     reconcileWindowHomingAttach();
     try {
@@ -8085,7 +8818,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             state.invalidate();
         },
         scheduleDispatch,
-        isWorldBusy: () => state.inFlight !== null || pendingQueue.length > 0,
+        isWorldBusy: () => state.inFlight !== null || pendingQueue.length > 0 ||
+            captureReplay !== null || ownedSeal !== null || ownScopeDepth !== 0 || sealResetRequired,
+        pressIsCurrent,
+        useSealedFloat: () => registeredPress !== null,
         isFloating: (win) => floatingIds.has(win),
         activeWindowId,
         activeWindowRef,
@@ -8125,6 +8861,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         isDirection,
         shortcutFailed,
         submitCommand,
+        runRegisteredPress,
         submitCatalogMove,
         submitOutputSend,
         submitMigration,
@@ -8180,6 +8917,24 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 }
                 devSkipNextWorldReply = true;
                 log(`omnitiler:world:trace ev=dev-skip-world-reply state=armed gen=${diagOpaqueId(state.boundGen)}`);
+            });
+            tryRegisterDev("omnitiler-dev-hold-next-queue-ack", "Dev: Hold next queue ACK", () => {
+                if (stopped || devHeldQueueAck !== null) return;
+                devHoldNextQueueAck = true;
+                log(`omnitiler:world:trace ev=dev-hold-queue-ack state=armed gen=${diagOpaqueId(state.boundGen)}`);
+            });
+            tryRegisterDev("omnitiler-dev-release-queue-ack", "Dev: Release held queue ACK", () => {
+                if (stopped) return;
+                const held = devHeldQueueAck;
+                devHeldQueueAck = null;
+                if (held === null) {
+                    log(`omnitiler:world:trace ev=dev-hold-queue-ack state=release-empty gen=${diagOpaqueId(state.boundGen)}`);
+                    return;
+                }
+                const valid = held.entry.gen === state.boundGen && held.entry.filing && pendingQueue.includes(held.entry);
+                log(`omnitiler:world:trace ev=dev-hold-queue-ack state=${valid ? "released" : "release-stale"} ` +
+                    `gen=${diagOpaqueId(held.entry.gen)} clientCmd=${diagOpaqueId(held.entry.clientCmd)}`);
+                if (valid) held.resume();
             });
             tryRegisterDev("omnitiler-dev-hold-next-capture-ack", "Dev: Hold next capture ACK", () => {
                 if (stopped) {
@@ -8321,7 +9076,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             deferredOwnHoming = false;
             deferredOwnViewFocus = false;
             viewFocusScope = null;
-            viewFocusDepth = 0;
             if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
                 worldTraceProbes.get(state)?.stop();
                 worldTraceProbes.delete(state);
@@ -8331,6 +9085,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             pendingQueue.length = 0;
             undecidedClientCmds.clear();
             flightBatches.clear();
+            ownedSeal = null;
+            captureReplay = null;
             if (drainTimerCancel !== null) {
                 try {
                     drainTimerCancel();

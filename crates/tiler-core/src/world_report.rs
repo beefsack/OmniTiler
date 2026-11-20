@@ -1464,6 +1464,8 @@ pub struct WorldReportV4 {
     /// unbound, foreign). Only a fresh native read proves either known
     /// state; retained focus absence never proves no-client.
     pub foreground_known: bool,
+    /// `None` is snapshot-only; a present interval can assert coverage or a gap.
+    pub focus_changes: Option<FocusChanges>,
     /// Neutral migration/control action foreground (`None` unknown).
     pub action_foreground: Option<OutputId>,
     /// Neutral migration/control action cache (`None` empty/unmapped).
@@ -1515,6 +1517,26 @@ pub struct WorldReportV4 {
     /// command present); `None` means no renderer input (observation-only
     /// reports and commands without a renderer both carry `None`).
     pub renderer_input: Option<RendererInput>,
+}
+
+/// Maximum number of ordered focus changes carried in one report.
+pub const MAX_FOCUS_CHANGES: usize = 64;
+
+/// Changes not positively attributed to applying core decisions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FocusChanges {
+    /// Previous fully incorporated reply revision in this generation.
+    pub after: Option<u64>,
+    /// Ordered evidence; `None` means a coverage gap.
+    pub events: Option<Vec<FocusChange>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FocusChange {
+    /// `None` is an unreadable or unbound activation; an empty ID is known no-client.
+    Foreground { win: Option<WindowId> },
+    /// A native selector changed on this output.
+    View { out: OutputId, native: String },
 }
 
 /// One screen observation: the stable output id, the FULL native output

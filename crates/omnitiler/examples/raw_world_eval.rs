@@ -18,7 +18,7 @@
 //! KWin classification (`predicate`/`hostOwned` adapter verdicts) has no v4
 //! translation, so raw rows are no longer normalized here. Callers must
 //! supply genuine v4 facts (screens with scale plus raw window attributes,
-//! `presentation` plus `rendererInput`, no `views` or settings keys).
+//! `presentation`, `rendererInput`, and `focusChanges`, no `views` or settings keys).
 //! There is deliberately no `_legacy` conversion path.
 
 use std::io::{BufRead, Write};

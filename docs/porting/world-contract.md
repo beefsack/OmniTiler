@@ -401,6 +401,7 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 | `native` | NativeObservation[] | no | Empty without hostOwned. |
 | `focused` | WindowId | empty | Adapter-observed foreground lifetime across outputs; empty when no lifetime is observed/bound, never a membership or focus-success verdict. |
 | `foregroundKnown` | bool | no | True with nonempty focused proves bound foreground; true with empty focused proves no client; false requires empty focused and means unknown/unreadable/unbound/foreign. |
+| `focusChanges` | FocusChanges | required nullable | Ordered foreground and native selector changes not positively proved own, or snapshot-only. |
 | `complete` | bool | no | Inventory completeness, not a hard capability. |
 | `gesture` | bool | no | Existing gesture write barrier. |
 | `cursor` | Point | yes | Native cursor in common coordinate space. |
@@ -434,6 +435,34 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
   with genuine AX NoValue on both focused and main legs proves windowless;
   main-window fallback is not no-client evidence. Do not fabricate foreground
   from desired focus, setter success or retained membership absence.
+
+- `focusChanges:null` is snapshot-only, for hosts without continuous
+  capture. Otherwise use the closed object `{after,events}`. `after` is
+  the quoted-decimal `rev` of the previous fully incorporated reply in
+  this generation, or null if none. `events` is an array of at most 64
+  records in platform capture order, or null for a gap. An empty array
+  asserts continuous coverage and no unproved change; a gap asserts
+  neither. Overflow or interrupted tracking produces a gap, not
+  snapshot-only. The cap bounds memory and bytes, not host transitions.
+- Event objects are closed: `{kind:"foreground",win}` uses a bound
+  WindowId, `""` for positively known no-client, or null for an observed
+  unbound/unreadable activation. `{kind:"view",out,native}` uses an
+  OutputId and native desktop Id. All keys are required; recurring
+  activations or selectors are allowed. Cover changes after the anchor
+  through the snapshot capture cut. Omit a transition only if native
+  evidence establishes that our call applying a core decision caused
+  it; setter return, matching readback alone and timing are not proof.
+  If the snapshot exposes a change the interval cannot account for, send
+  a gap. A later proved-own change does not erase earlier unproved events.
+  An empty array does not permit merging cuts across proved-own transitions.
+- Freeze the interval with the capture. Only its exact bound
+  incorporation acknowledgement retires that prefix, even when apply is
+  skipped; a rejection or bootstrap reply does not. Events received
+  during flight remain. Exact replay uses identical bytes and never
+  consumes the prefix twice. A mismatched predecessor is adjudicated as
+  a gap; the next acknowledged incorporation re-anchors capture. Reset
+  on generation change. Malformed shapes and over-cap arrays are codec
+  errors; a producer that overflows sends `events:null`.
 
 ### ScreenReport
 
@@ -805,13 +834,21 @@ acceptance or adopt the separate close-focus amendment.
   `{"v":4,"gen":G,"client":C,"clientCmd":"N","command":{...}}`.
   The subject distinction belongs to the command's `win`, not a second queue
   envelope field. Existing explicit command bytes remain unchanged.
-- Queueing parks each command in FIFO order and fires the existing wake. One
-  fresh capture incorporates native observation evidence once, then drains
-  the whole parked batch against core state without waiting for native
-  application or a separate capture per action. Commands arriving during the
-  capture park for the next batch. No old observation evidence is restamped
-  or replayed between actions, and no queue-time execution or new transport
-  is required.
+- Queueing parks each command in FIFO order and fires the existing wake. For
+  KDE shortcut ingress, KWin takes a native cut as it handles the shortcut,
+  before filing. Commands may share an unsent cut only with continuous
+  subject-relevant native state. Foreground or selector transitions, including
+  proved-own ones, and gaps split the cut. Commands do not wait for batching.
+- From the first filing of a shortcut segment until ready incorporation, the
+  actuator sends only that segment's frozen cut or its exact replay, and
+  files no later segment. Exact replay acknowledges the original cut without
+  draining again. A coherent cut with a gap uses the conservative focus rule;
+  an unprovable cut never falls back to later native focus. An irrecoverable
+  filed cut requires generation reset, which also drops parked external work.
+- The broker still drains the whole parked FIFO on fresh incorporation;
+  external senders have no physical-key ordering promise. Commands arriving
+  during capture park for the next batch. There is no queue-time execution
+  or restamping of old evidence, and no wait for native application.
 - KDE keys issuer command high-water marks and results by the authenticated
   unique D-Bus sender and client in the serving generation. At most 1,024
   live sender/client namespaces are retained; result eviction does not
@@ -858,7 +895,7 @@ acceptance or adopt the separate close-focus amendment.
 | `send-directional` | `win`: WindowId or current-focus object; `direction`: Direction; `follow`: bool | no | Core resolves destination. |
 | `migrate-directional` | `direction`: Direction | no | Action source, no retained-window-home source. |
 | `toggle-maximize` | `win`: WindowId or current-focus object | no | Existing command and result kept. |
-| `toggle-float` | `win`: WindowId or current-focus object; `rect`: Rect | rect nullable | Promoted live operation; rect is genuine input placement only. |
+| `toggle-float` | `win`: WindowId or current-focus object; `rect`: Rect | rect nullable | Explicit placement stays input-carried. KDE sealed implicit toggles carry `rect:null`; ordinary unfloat can save only the resolved lifetime's eligible cut frame (already settled floating, known nonfullscreen, and unchanged by earlier batch commands), otherwise retaining the saved placement. |
 | `toggle-orientation` | `win`: WindowId or current-focus object | no | Promoted live operation. |
 | `resize` | `win`: WindowId or current-focus object; `direction`: Direction; `mode`: resize token; `press`: integer | no | Existing promoted payload, no resize-policy change. |
 | `set-fullscreen`, `set-sticky` | `win`: WindowId or current-focus object; `value`: bool | no | New neutral on/off state intent. |
@@ -1246,20 +1283,39 @@ acceptance or adopt the separate close-focus amendment.
 - Same-report candidates resolve explicit-command, then automatic-admission,
   then positive-close, then focus-follows-cursor: a positive close selecting
   MRU survivor C plus an ordinary newcomer N in one report retains N only.
-- Target equality satisfies first, including native fallback already at the
-  winner, with no setter. A different eligible same-domain tiled survivor in
+- For a new positive-close request, native fallback already at the target
+  satisfies immediately with no setter. A different eligible same-domain tiled survivor in
   the close report is attributed to close fallback and permits one correction;
   positively known no-client also permits it. Unknown/foreign foreground does
-  not. A later incorporated focus decision of any cause, an observed user focus
-  change, or a view/output change or target loss making the target ineligible
-  retires the old request, plus satisfaction/refusal settlement. Non-focus
-  commands never cancel pending focus in any batch, including refused
-  commands without a focus decision. This amends the earlier rule under which
-  newer commands superseded. Cause-appropriate fences still apply: close and
-  ordinary automatic focus get no alternate target search, unhide, unminimize,
-  Space switch or retry; explicit focus and send-follow keep their
-  automatic-focus exemptions and existing selection/send-follow view authority,
-  with independent native identity/session/game safety still applying.
+  not. That same-report close correction determines the origin of a
+  request, not attribution of a setter. Once issued, close requests use
+  the shared later supersession and pre-setter rules.
+- Only evidence after the issuing report can supersede. Before running
+  segment commands, adjudicate the cut's ordered interval against the older
+  request and core-retained state. Resolve each implicit subject after prior
+  commands from retained execution state, using eligible native foreground
+  at the cut when there is no applicable retained choice. A later cut cannot
+  retarget an earlier command. Proved-own transitions do not supersede or
+  resurrect retired requests. An eligible unproved activation supersedes;
+  an ineligible activation on a departing workspace cannot. Unproved
+  no-client or unbound activation conservatively supersedes without
+  inventing a target. A positive unproved native selector event
+  supersedes if its destination hides the target, even if foreground
+  is unchanged. Same-desired-view confirmation and unrelated-output
+  drift do not supersede. In snapshot-only mode, an observed foreground
+  change is unknown-cause intent: judge a bound client against retained
+  eligibility and use positive native observations for relevant selector
+  changes. A gap conservatively retires the older unspent request
+  without inventing a replacement.
+- A newer accepted focus decision can replace an older one; executing
+  or refusing a non-focus command does not itself supersede. Superseded
+  requests cannot resurrect or grant a compensating setter. Target
+  equality satisfies without a setter but cannot erase earlier eligible
+  intent. Preserve terminal refusal, target loss and cause-specific
+  safety and arrival gates: close and ordinary automatic focus get no
+  alternate target, unhide, unminimize, Space switch or retry. Explicit
+  focus and send-follow keep their existing exemptions and view
+  authority, subject to native identity, session and game safety.
 - Every publication retains the identical id/target/issuing revision/cause
   until satisfied, superseded, ineligible or refused. Core ingests reports even
   when adapters skip publications. Adapters need only apply the latest
@@ -1267,14 +1323,23 @@ acceptance or adopt the separate close-focus amendment.
   its request acted on from a later retained snapshot. No fabricated command,
   awaitShown, transfer or raise/stack authority is attached; only an explicit
   command carries its originating cmdSeq, never the currently applying ticket.
-- After nonactivating geometry, validate current bound reply, target lifetime,
-  frozen scope home/shown native view, visibility, foreground baseline and
-  existing safety fences. Already-target is zero setters. Otherwise spend before
-  at most one native attempt or safety no-call per `(adapter,gen,id)`, even if
-  feedback is lost. Null/newer requests cancel queued unstarted old work;
-  stale envelopes and late callbacks cannot reactivate it. Retain bounded
-  current-record plus retired-revision accounting, not an unbounded spent-id
-  set. Transport loss retaining context retains accounting; losing accounting
+- After nonactivating geometry, revalidate the latest eligible bound
+  reply, target lifetime, frozen home and shown native view, visibility,
+  foreground and existing safety fences. Compare live evidence to the
+  incorporated capture that produced the reply. A foreground difference
+  may pass only with causal proof of our own effect and no outstanding
+  unproved evidence. Equality means zero setters, not adjudication of
+  newer intent. After the last potentially reentrant read, recheck the
+  reply, native invalidation and evidence cut; no reentrant work may
+  intervene before spending and calling the setter.
+- Fresh unproved evidence needing core adjudication defers unspent in
+  both ordinary apply and stopped-mid-apply. Obtain a later eligible
+  publication by observation, never polling. Spend exactly once per
+  `(adapter,gen,id)` on a native attempt or terminal safety no-call,
+  even if feedback is lost; never retry a spend. Null or newer requests
+  cancel unstarted work; stale envelopes and late callbacks cannot
+  reactivate it. Keep bounded current and retired-revision accounting.
+  Transport loss retaining context retains accounting; losing accounting
   requires a fresh handshake, which cannot replay old intent.
 - Core keeps an execution-time logical focus cursor separate from observed
   foreground and per-workspace history. Same-capture admission enters the
@@ -1285,12 +1350,13 @@ acceptance or adopt the separate close-focus amendment.
   close choosing C while hover enters D retains C as the implicit subject.
   A new
   implicit command resolves its subject from the cursor before the older
-  request is retired for a newer focus decision. A still-live retained request
-  preserves its target across unchanged-baseline reports and stale observed
-  foreground must not overwrite it. Non-focus commands never retire the
-  cursor's pending choice. After refusal or ineligibility, use current eligible
-   observed focus, never the abandoned target; never fabricate native
-   foreground.
+  request is retired for a newer focus decision. A still-live eligible
+  request owns the cursor through own-caused or ineligible changes,
+  keeping its id, target, issuing revision and dependencies. The cursor
+  may differ from eligible native foreground only while core has its
+  own unsettled focus choice, including an earlier accepted choice in
+  the current batch. After retirement use eligible observed foreground;
+  never invent an execution subject from an ineligible observation.
 - User decision 2026-11-12, amended 2026-11-13: when the execution cursor is empty and no
   pending retained request owns the subject, an implicit command uses the
   host-reported foreground if core knows it as a live, bound window of the
@@ -1306,9 +1372,10 @@ acceptance or adopt the separate close-focus amendment.
   report. Core compares accepted report order with the request's issuing revision,
   not elapsed time or an assumed host apply order. Otherwise the rule never
   overrides or outlives a logical focus decision or a pending retained request.
-  A nonempty cursor wins over different observed
-  foreground exactly as before; the separate macOS suppressed-admission outcome
-  is not amended. Automatic guard withholding stays spent, not retried.
+  A nonempty logical cursor from an unsettled focus decision takes
+  precedence over a different observed foreground. The separate macOS
+  suppressed-admission outcome is not amended; automatic guard withholding
+  stays spent, not retried.
 - The winning request is frozen once per accepted publication with a
   generation-scoped revision-derived opaque id. Re-emission never changes
   id/target/issuing revision/cause/command correlation/frozen dependencies.
@@ -1483,6 +1550,10 @@ acceptance or adopt the separate close-focus amendment.
   asynchronous observation is not itself a completion signal. Lost acknowledgements
   redeliver the original stamps idempotently. [Settlement baseline](world-contract-v3.md#5-raw-attempts-and-settlement),
   [rename/consolidation](../changes/core-interface-review.md#original-backlog-lines-159-186).
+
+- Property-attempt fields and meaning are unchanged. Attempt disposition,
+  old attempt rows and matching property readback are not foreground
+  attribution. Attribution does not prove property settlement or focus arrival.
 
 | Record | Key | Type | Null/absence | Meaning |
 | --- | --- | --- | --- | --- |

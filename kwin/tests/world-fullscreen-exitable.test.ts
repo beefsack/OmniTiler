@@ -77,6 +77,7 @@ function windowRow(surface: object) {
     });
     assert.ok(obs !== null);
     const json = buildWorldReportV4InnerJson({
+        focusChanges: null,
         observation: obs,
         creationAttempts: [],
         frameAttempts: [],

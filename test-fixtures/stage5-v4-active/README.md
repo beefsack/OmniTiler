@@ -21,6 +21,10 @@ New keys versus frozen `../stage5-v4` (all producer-genuine, never patched):
 - Handshake request carries the required `sharedNativeRoster` capability
   (`true` for this shared-native KDE route).
 - Every capture report carries the required `foregroundKnown` bit.
+- Every capture report carries `focusChanges` with an empty event list, ordered
+  from the previous incorporated reply revision (`after: null` at genesis).
+  The focus-lane refresh retains the existing capture nonce after recording so
+  unchanged bound reply vectors continue to match.
 - Every capture reply carries the required nullable `focusRequest` lane
   (`null` here: no close intent rides these chains) and the required nullable
   `dragPreview` lane, and omits `result` (command outcomes ride issuing

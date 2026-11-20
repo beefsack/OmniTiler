@@ -309,22 +309,24 @@ async function mintFour(h: Harness, dispatch: number): Promise<Minted> {
     const rawReplies: string[] = [];
     rawReplies.push(await h.bridge.send("DescribeWorld", issuing));
     for (let i = 1; i <= 3; i += 1) {
+        const predecessor = JSON.parse(rawReplies[i - 1]!) as { rev: string };
+        const report = envelope["report"] as Record<string, unknown>;
         const clone = {
             ...(envelope as object),
             source: `${envelope["source"] as string}-r${String(i + 1)}`,
             sourceSeq: String(seqBase + i),
+            report: { ...report, focusChanges: { after: predecessor.rev, events: [] } },
         };
         const payload = JSON.stringify(clone);
         requests.push(payload);
         rawReplies.push(await h.bridge.send("DescribeWorld", payload));
     }
-    // All four requests are identical except the correlation-only
-    // source/sourceSeq increments; the raw report facts never change.
+    // The interval advances to each incorporation without replaying the
+    // issuing events. The native snapshot itself never changes.
     const stripped = requests.map((payload) => {
-        const body = JSON.parse(payload) as Record<string, unknown>;
-        const { source, sourceSeq, ...rest } = body;
-        void source;
-        void sourceSeq;
+        const body = (JSON.parse(payload) as { report: Record<string, unknown> }).report;
+        const { focusChanges, ...rest } = body;
+        void focusChanges;
         return JSON.stringify(rest);
     });
     assert.equal(stripped[1], stripped[0], "first re-emission request identical");
@@ -641,6 +643,7 @@ async function proveLatestOnly(h: Harness, dispatch: number, minted: Minted, opt
     assert.equal(settleObs.focusedGlobal, issued.target, "truthful target observation reaches the core");
     assert.equal(settleObs.foregroundKnown, true, "settlement proves the foreground");
     const inner = buildWorldReportV4InnerJson({
+        focusChanges: null,
         observation: settleObs,
         creationAttempts: [],
         frameAttempts: [],
@@ -708,11 +711,11 @@ describe("world retained focus requests genuine producer", () => {
             // Focus history win-a -> win-c -> win-b, so the MRU survivor
             // excluding the closed win-b is win-c.
             h.activeRef = winById(h, "win-c");
-            h.fire("windowActivated");
+            h.fire("windowActivated", h.activeRef);
             h.runTimers();
             await h.settle();
             h.activeRef = winById(h, "win-b");
-            h.fire("windowActivated");
+            h.fire("windowActivated", h.activeRef);
             h.runTimers();
             await h.settle();
             // Positive close of the focused lifetime with the host fallback
@@ -723,7 +726,7 @@ describe("world retained focus requests genuine producer", () => {
             h.activeRef = winById(h, "win-a");
             const from = h.calls.length;
             h.fire("windowRemoved", removed);
-            h.fire("windowActivated");
+            h.fire("windowActivated", h.activeRef);
             h.runTimers();
             const dispatch = await awaitDispatch(h, from);
             assert.equal(h.activeRef?.internalId, "win-a", "close capture carries the win-a fallback");
@@ -841,8 +844,7 @@ describe("world retained focus requests genuine producer", () => {
                 });
             try {
                 const from = h.calls.length;
-                h.activeRef = winById(h, "win-a");
-                h.fire("windowActivated");
+                h.fire("desktopsChanged");
                 h.runTimers();
                 const dispatch = await awaitDispatch(h, from);
                 const minted = await mintFour(h, dispatch);

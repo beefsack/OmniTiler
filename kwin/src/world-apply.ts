@@ -91,6 +91,9 @@ export interface ApplyEnv {
     // null when unreadable/absent (unknown, never a guess). Optional only
     // for offline doubles (unknown); production always provides it.
     readActiveWindowId?: () => string | null;
+    // Production exact foreground sample also reconciles the continuous
+    // capture evidence. A mismatch records a gap and invalidates the reply.
+    readFocusEvidence?: (view?: { out: string; native: string | null }) => string | null;
     // Fresh exact native id for one live ref (the internalId CONSTANT
     // source, normalized), or null when unreadable. Optional only for
     // offline doubles; production always provides it. Lets arrival
@@ -134,6 +137,7 @@ export interface ApplyEnv {
     // successful later readback completing a deferred receipt,
     // uncorrelated - never a return value.
     createDesktop: (position: number, name: string) => void;
+    noteCreationReadback?: (op: string | null, ws: string | null, native: string) => void;
     // Fresh complete native inventory for creation proof (id plus native
     // name per desktop). Null when unreadable or incomplete: hold, never
     // guess. Optional only for offline doubles; production always
@@ -148,7 +152,7 @@ export interface ApplyEnv {
     // doubles; production always provides it.
     renameDesktop?: (nativeId: string, name: string) => boolean;
     removeDesktop: (nativeId: string) => boolean;
-    focusWindow: (ref: object) => boolean;
+    focusWindow: (ref: object, target?: { win: string; out: string; ws: string; view: string }) => boolean;
     // Exact KWin nonactivating maximize clear (`setMaximize(false, false)`
     // through the Q_INVOKABLE, never a fake `maximized` property): returns
     // the native boolean; throws propagate so the apply loop records the
@@ -206,6 +210,10 @@ function replyFresh(env: ApplyEnv, reply: WorldReply, entryObs: string): boolean
     return true;
 }
 
+function focusPublicationCurrent(state: WorldAdapterState, reply: WorldReply): boolean {
+    return state.boundGen === reply.gen && (!state.hasAccepted || state.lastAcceptedRev === reply.rev);
+}
+
 function midApplyStopped(env: ApplyEnv, entryObs: string): boolean {
     return env.state.observationOnlyCatchup || env.state.currentInvalid !== entryObs;
 }
@@ -224,6 +232,7 @@ function preSetterOk(
     observed: ObservedWindow,
     needGeometry: boolean,
     expectLive?: { out: string; ws: string },
+    needFocus = false,
 ): boolean {
     const { state, observation } = env;
     if (!replyFresh(env, reply, entryObs)) {
@@ -255,6 +264,9 @@ function preSetterOk(
         return false;
     }
     if (safety === null) {
+        return false;
+    }
+    if (needFocus && safety.minimized !== false) {
         return false;
     }
     if (safety.minimized === true && !observed.minimized) {
@@ -1620,6 +1632,9 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                 attemptMs: stamp,
             });
             if (created !== null) {
+                if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                    env.noteCreationReadback?.(op, logical, created);
+                }
                 renameProvenDesktop(env, after, logical, created);
                 result.creations += 1;
             } else {
@@ -1698,6 +1713,9 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             }
             result.creations += 1;
             liveDesktopIds.add(delta[0] as string);
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                env.noteCreationReadback?.(null, null, delta[0] as string);
+            }
             if (midApplyStopped(env, entryObs)) {
                 result.stoppedMidApply = true;
                 break;
@@ -2683,7 +2701,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
     };
     // Narrow pre-setter failure reason: a listing/homing mismatch names
     // identity-stale; anything else (unreadable safety) names unreadable.
-    const preSetterReason = (target: ObservedWindow): FocusReason => {
+    const preSetterReason = (target: ObservedWindow, expected: { out: string; ws: string }): FocusReason => {
         try {
             if (!env.isStillListed(target.ref)) {
                 return "identity-stale";
@@ -2694,7 +2712,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         }
         try {
             const live = env.readLiveMembership(target.ref);
-            if (live === null || live.out !== target.out || live.ws !== target.ws) {
+            if (live === null || live.out !== expected.out || live.ws !== expected.ws) {
                 return "identity-stale";
             }
         } catch (error) {
@@ -2730,10 +2748,21 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             focusTraceLast.delete(state);
         }
     } else if (state.observeFocusEnvelope(focusReq, reply.gen) === "fresh") {
-        // Selection readiness BEFORE the spend: a request carrying frozen
-        // afterShown dependencies proves its frozen arrival set first. A
-        // not-ready verdict returns unspent with no row; a moved fence
-        // spends as a truthful superseded no-call.
+        const readFocusPre = (view?: { out: string; native: string | null }): string | null =>
+            env.readFocusEvidence === undefined ? readFgNow() : env.readFocusEvidence(view) || null;
+        const deferFocus = (): boolean => {
+            if (!state.focusChanges.pending()) {
+                return false;
+            }
+            result.stoppedMidApply = true;
+            return true;
+        };
+        const spend = (): boolean => focusPublicationCurrent(state, reply) && state.spendFocus(focusReq.id);
+        if (deferFocus()) {
+            return result;
+        }
+        // Readiness remains independent of intent. Only a terminal
+        // mechanical stop without new intent evidence spends.
         let preArrival: WorldArrivalBracket[] | null = null;
         if (focusReq.afterShown !== null) {
             const ready = checkSelectionReady(focusReq.afterShown);
@@ -2744,8 +2773,11 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                 return result;
             }
             if (ready.status === "stopped") {
-                state.spendFocus(focusReq.id);
-                const stoppedFg = readFgNow();
+                const stoppedFg = readFocusPre();
+                if (deferFocus() || !spend()) {
+                    result.stoppedMidApply = true;
+                    return result;
+                }
                 state.recordFocusFeedback({
                     id: focusReq.id,
                     target: focusReq.target,
@@ -2767,9 +2799,6 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             }
             preArrival = ready.arrival;
         }
-        // Spend before the attempt-or-no-call fork: exactly once per bound
-        // id, so reentrant native input can never double-dispatch.
-        state.spendFocus(focusReq.id);
         const recordFocusRow = (
             setter: FocusSetter,
             reason: FocusReason,
@@ -2803,36 +2832,50 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                 traceFocusEval(env, focusReq, decision, traceReason);
             }
         };
+        const terminalNoCall = (
+            reason: FocusReason, pre: string | null, post: string | null,
+            proven = false, arrival: WorldArrivalBracket[] = [],
+        ): void => {
+            if (!deferFocus() && spend()) {
+                recordFocusRow("not-called", reason, pre, post, proven, arrival);
+            }
+        };
         const focusTarget = byWin.get(focusReq.target);
-        // Frozen source domain: the target must still home where the
-        // request froze it. Observed homing speaks NATIVE desktop ids
-        // while the request row names the stable core LOGICAL scope, so
-        // the comparison translates through the accepted reply's own
-        // workspace bindings (never native string equality or ordinal
-        // guesses). An unbound or unknown target fails closed as a stale
-        // identity, never a guess at a new home.
+        // Activation scope is frozen by the core. The observation supplies
+        // the subject's lifetime, not its current home: an earlier setter in
+        // this apply may have moved it. Translate the request's own scope
+        // through the accepted reply and check that exact home live.
+        // The captured home must still name the request scope, except when
+        // this evaluation's positively proven arrival bracket already names
+        // that exact target at that exact resolved native destination (a
+        // same-apply transfer that landed before focus). Direct and
+        // positive-close requests without arrival never bypass the
+        // captured-home check, and the live home check below stays
+        // mandatory even for a bracketed target.
         const focusNative = nativeWsOf(reply, focusReq.out, focusReq.ws);
-        const focusHomed = focusTarget !== undefined && focusNative !== null &&
+        const capturedHomed = focusTarget !== undefined && focusNative !== null &&
             focusTarget.out === focusReq.out && focusTarget.ws === focusNative;
-        if (focusTarget === undefined || focusNative === null || !focusHomed) {
-            const fg = readFgNow();
-            recordFocusRow("not-called", "identity-stale", fg, fg, false, []);
+        const arrivalProvesDestination = preArrival !== null && preArrival.some((b) =>
+            b.win === focusReq.target && b.home !== null &&
+            b.home.out === focusReq.out && b.home.ws === focusNative);
+        if (focusTarget === undefined || focusNative === null || (!capturedHomed && !arrivalProvesDestination)) {
+            const fg = readFocusPre();
+            terminalNoCall("identity-stale", fg, fg);
             result.held += 1;
         } else if (observation.gesture || !replyFresh(env, reply, entryObs)) {
             if (midApplyStopped(env, entryObs) || observation.gesture) {
                 // A moved local fence supersedes (foreground stamps the
                 // fresh live read); a gesture barrier holds the scope.
                 const moved = midApplyStopped(env, entryObs) && !observation.gesture;
-                const fg = readFgNow();
-                recordFocusRow("not-called", moved ? "superseded" : "scope-held", fg, fg, false, []);
+                const fg = readFocusPre();
+                terminalNoCall(moved ? "superseded" : "scope-held", fg, fg);
                 result.held += 1;
             } else {
-                const fg = readFgNow();
-                recordFocusRow("not-called", "superseded", fg, fg, false, []);
+                const fg = readFocusPre();
+                terminalNoCall("superseded", fg, fg);
                 result.stoppedMidApply = true;
             }
         } else {
-            const pre = readFgNow();
             // Arrival brackets sampled BEFORE the spend from the frozen
             // afterShown members only (never rebuilt from later rows);
             // every other focus rides empty. Brackets are factual
@@ -2846,12 +2889,24 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             // behind external input. A subject-id mismatch against the
             // ref's actual lifetime fails the same way as a stale identity.
             const arrival = preArrival ?? [];
+            const expected = { out: focusReq.out, ws: focusNative };
+            const view = env.readLiveView(focusReq.out);
+            const pre = readFocusPre({ out: focusReq.out, native: view });
             const selfId = readWinIdNow(focusTarget.ref);
-            const lifetimeOk = selfId === null || selfId === focusTarget.win;
-            if (midApplyStopped(env, entryObs) || !replyFresh(env, reply, entryObs) ||
-                !lifetimeOk || !preSetterOk(env, reply, entryObs, focusTarget, false)) {
+            const lifetimeOk = selfId === focusTarget.win || (selfId === null && env.readWindowId === undefined);
+            const safe = preSetterOk(env, reply, entryObs, focusTarget, false, expected, env.readFocusEvidence !== undefined);
+            const finalView = env.readFocusEvidence === undefined ? view : env.readLiveView(focusReq.out);
+            const equal = pre === focusReq.target && selfId === focusTarget.win && safe;
+            // Reads above can emit native input synchronously, including
+            // the final foreground/lifetime read. No native work after this
+            // fence until the one-shot focus call.
+            if (deferFocus()) {
+                return result;
+            }
+            if (!lifetimeOk || !safe || (env.readFocusEvidence !== undefined &&
+                (view !== focusNative || finalView !== focusNative)) || !replyFresh(env, reply, entryObs)) {
                 const moved = midApplyStopped(env, entryObs);
-                const fg = readFgNow();
+                const fg = readFocusPre({ out: focusReq.out, native: finalView });
                 // A moved fence supersedes; a replaced lifetime under a
                 // still-current fence names the stale identity; anything
                 // else rides the narrow listing/homing/safety reason.
@@ -2859,42 +2914,42 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                     ? "superseded" as const
                     : !lifetimeOk
                         ? "identity-stale" as const
-                        : preSetterReason(focusTarget);
-                recordFocusRow("not-called", reason, pre, fg, false, arrival);
+                        : preSetterReason(focusTarget, expected);
+                terminalNoCall(reason, pre, fg, false, arrival);
                 result.stoppedMidApply = true;
-            } else if (pre === focusReq.target && fgProvenFor(pre, focusTarget)) {
+            } else if (equal) {
                 // Native fallback already at the winner: zero setters, the
                 // target equality satisfies first. The sampled arrival
                 // still rides: the core settles the frozen arrival set
                 // from factual brackets, never from setter disposition.
-                recordFocusRow("not-called", "", pre, pre, true, arrival);
+                terminalNoCall("", pre, pre, true, arrival);
             } else if (focusReq.cause === "positive-close" && pre === null) {
                 // Positive-close only: unknown foreground never dispatches
                 // blind. Informative safety no-call, spent, never retried.
                 // Admission and hover keep no unknown-foreground verdict
                 // (the core retires only the close lane on it), so they
                 // rely on the live mechanical gates instead.
-                recordFocusRow("not-called", "focus-unproven", pre, pre, false, arrival);
+                terminalNoCall("focus-unproven", pre, pre, false, arrival);
                 result.held += 1;
             } else if (focusReq.cause === "positive-close" && observation.foregroundKnown !== true) {
                 // Positive-close only: the dispatch observation never
                 // proved a foreground, so a stable-looking fresh read proves
                 // nothing. Informative safety no-call, spent, never retried.
-                recordFocusRow("not-called", "focus-unproven", pre, pre, false, arrival);
+                terminalNoCall("focus-unproven", pre, pre, false, arrival);
                 result.held += 1;
-            } else if (focusReq.cause === "positive-close" && pre !== observation.focusedGlobal) {
+            } else if (focusReq.cause === "positive-close" && env.readFocusEvidence === undefined &&
+                pre !== observation.focusedGlobal) {
                 // Positive-close only: the fresh read moved since the
                 // captured baseline, so newer native input intervened.
                 // Never steal focus back; informative safety no-call,
                 // spent, never retried.
-                recordFocusRow("not-called", "foreground-changed", pre, pre, false, arrival);
+                terminalNoCall("foreground-changed", pre, pre, false, arrival);
                 result.held += 1;
-            } else {
-                env.log(`omnitiler:world:focus-request-attempt req=${reply.req} rev=${reply.rev} target=${focusReq.target} reason=${focusReq.cause}`);
+            } else if (spend()) {
                 let ok = false;
                 let threw = false;
                 try {
-                    ok = env.focusWindow(focusTarget.ref);
+                    ok = env.focusWindow(focusTarget.ref, { win: focusReq.target, ...expected, view: view ?? focusNative });
                 } catch (error) {
                     void error;
                     threw = true;
@@ -2903,6 +2958,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                 // from the setter disposition; unknown post never proves.
                 const post = readFgNow();
                 const proven = fgProvenFor(post, focusTarget);
+                env.log(`omnitiler:world:focus-request-attempt req=${reply.req} rev=${reply.rev} target=${focusReq.target} reason=${focusReq.cause}`);
                 env.log(`omnitiler:world:focus-request-result req=${reply.req} rev=${reply.rev} target=${focusReq.target} reason=${focusReq.cause} outcome=${threw ? "threw" : ok ? "setter-accepted" : "setter-refused"} proven=${proven ? "true" : "false"}`);
                 if (!threw && ok && proven) {
                     recordFocusRow("accepted", "", pre, post, true, arrival);
@@ -2928,11 +2984,9 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
     return result;
 }
 
-// Single completion point for every pre-focus early return and mid-focus
-// break: spend the still-unspent retained focus request with one factual
-// superseded no-call row (fresh foreground, never proven, empty arrival).
-// The stamp is captured before reentrant native work, never re-read after
-// it.
+// Complete a pre-focus stop with a terminal safety no-call only when no
+// new evidence needs core adjudication. The stamp is captured before
+// reentrant native work.
 export function applyWorldReply(env: ApplyEnv): ApplyResult {
     // Original broker dispatch-clock reading, never wall-clock; "0" means
     // unreported. Captured before native setters can reenter and move it.
@@ -2952,9 +3006,15 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
         }
     };
     const focusReq = reply.focusRequest;
-    if (focusReq !== null && state.observeFocusEnvelope(focusReq, reply.gen) === "fresh") {
-        state.spendFocus(focusReq.id);
-        const fg = readFgNow();
+    if (focusReq !== null && focusPublicationCurrent(state, reply) &&
+        state.observeFocusEnvelope(focusReq, reply.gen) === "fresh") {
+        if (state.focusChanges.pending()) {
+            return result;
+        }
+        const fg = env.readFocusEvidence === undefined ? readFgNow() : env.readFocusEvidence() || null;
+        if (state.focusChanges.pending() || !focusPublicationCurrent(state, reply) || !state.spendFocus(focusReq.id)) {
+            return result;
+        }
         state.recordFocusFeedback({
             id: focusReq.id,
             target: focusReq.target,

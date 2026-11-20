@@ -99,6 +99,7 @@ export interface WorldShortcutsEnv {
     activeWindowRef: () => object | null;
     currentScopeId: () => string;
     registerShortcutFn?: WorldShortcutRegisterFn;
+    runRegisteredPress?: (callback: () => void) => void;
     readSameAxisMove?: () => string;
     // Structural membership/focus signature for the resize key-repeat
     // counter (legacy fingerprint parity): the entry supplies its fresh
@@ -125,7 +126,8 @@ export function registerWorldShortcuts(env: WorldShortcutsEnv): void {
     if (register !== undefined) {
         const tryRegister = (name: string, text: string, sequence: string, callback: () => void): void => {
             try {
-                (register as NonNullable<WorldShortcutRegisterFn>)(name, text, sequence, callback);
+                (register as NonNullable<WorldShortcutRegisterFn>)(name, text, sequence,
+                    env.runRegisteredPress === undefined ? callback : () => env.runRegisteredPress?.(callback));
             } catch (error) {
                 void error;
             }

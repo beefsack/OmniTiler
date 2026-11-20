@@ -42,8 +42,10 @@ Retained input sequence (mirrors the historical README):
 Current-shape lanes (never patched): every reply carries the required
 `intentDesired` lane (`[]` here, no intent writes ride this scenario)
 and the required nullable `focusRequest` lane (`null` here, no close
-intent rides this scenario). The report carries the required
-`foregroundKnown` bit.
+intent rides this scenario). Each capture report carries the required
+`foregroundKnown` bit and `focusChanges`. The scripted desktop surface has
+no complete focus interval: `events` is null at genesis and at the drain,
+with `after` respectively null and `"3"`.
 Bound replies also carry required nullable `gestureSettledAssoc` (null:
 the MiniBroker strips native gesture ingress and fabricates no association).
 

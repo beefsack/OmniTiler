@@ -113,6 +113,7 @@ fn test_report() -> WorldReportV4 {
         creation_attempts: Vec::new(),
         state_attempts: Vec::new(),
         visibility_attempts: Vec::new(),
+        focus_changes: None,
         focus_feedback: Vec::new(),
         held_attempts: Vec::new(),
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),

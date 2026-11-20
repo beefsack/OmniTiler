@@ -1,9 +1,8 @@
 //! Execution-time logical focus cursor (retained-focus Q1): the cursor is
 //! separate from native observed foreground and per-workspace history.
 //! Accepted focus choices advance it immediately in FIFO order; a live
-//! retained request preserves its target across unchanged-baseline
-//! reports; a newer observed focus supersedes it; refusal resets it to
-//! the eligible observed focus; non-focus and refused commands never
+//! retained request owns the cursor until adjudicated; without one, the
+//! eligible observed foreground owns it. Non-focus and refused commands never
 //! erase it. Implicit subjects resolve from the cursor before a newer
 //! focus decision retires the older authority.
 
@@ -102,6 +101,7 @@ fn report(
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
         visibility_attempts: Vec::new(),
+        focus_changes: None,
         focus_feedback: Vec::new(),
         presentation: PresentationRowV4::Valid(ingress(focused)),
         intent_records: Vec::new(),
@@ -165,6 +165,332 @@ fn assert_maximize_on(result: &Option<CommandResult>, expected: &str, what: &str
 
 fn windows() -> Vec<WindowFact> {
     vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)]
+}
+
+fn interval(after: Option<u64>, windows: &[&str]) -> crate::world_report::FocusChanges {
+    use crate::world_report::{FocusChange, FocusChanges};
+
+    FocusChanges {
+        after,
+        events: Some(
+            windows
+                .iter()
+                .map(|win| FocusChange::Foreground {
+                    win: Some(WindowId((*win).to_owned())),
+                })
+                .collect(),
+        ),
+    }
+}
+
+fn toggle_current_float() -> WorldCommand {
+    WorldCommand::Operation(crate::boundary::CoreCommand::ToggleFloat {
+        window: crate::directional::WindowSubject::CurrentFocus,
+        float_rect: None,
+    })
+}
+
+#[test]
+fn foreground_round_trip_supersedes_even_when_snapshot_matches_previous() {
+    let mut engine = engine();
+    let roster = || {
+        let mut roster = windows();
+        roster.push(fact("win-d", "out-a", 200));
+        roster
+    };
+    let (boot, _) = run_batched(&mut engine, &observe(1, roster(), "win-a"), &[]);
+    let (issued, _) = run_batched(
+        &mut engine,
+        &report(2, roster(), "win-a", Some(1), Some(focus_cmd("win-b"))),
+        &[],
+    );
+    assert!(issued.focus_request.is_some());
+    let mut capture = observe(3, roster(), "win-a");
+    capture.focus_changes = Some(interval(Some(issued.state_revision), &["win-d", "win-a"]));
+    let (reply, _) = run_batched(&mut engine, &capture, &[]);
+    assert!(reply.focus_request.is_none());
+    assert!(reply.effects.is_empty());
+    assert_ne!(boot.state_revision, issued.state_revision);
+    assert_eq!(
+        engine.tx(|tx| tx.execution_subject()),
+        Some(WindowId("win-a".to_owned()))
+    );
+}
+
+#[test]
+fn exact_incorporation_revision_anchors_even_when_observation_does_not_advance() {
+    let mut engine = engine();
+    let mut init = observe(1, windows(), "win-a");
+    init.observation_seq = 42;
+    init.focus_changes = Some(interval(None, &[]));
+    let (boot, _) = run_batched(&mut engine, &init, &[]);
+    let mut command = report(2, windows(), "win-a", Some(1), Some(focus_cmd("win-b")));
+    command.observation_seq = 42;
+    command.focus_changes = Some(interval(Some(boot.state_revision), &[]));
+    let (issued, _) = run_batched(&mut engine, &command, &[]);
+    let mut capture = observe(3, windows(), "win-a");
+    capture.observation_seq = 42;
+    capture.focus_changes = Some(interval(Some(issued.state_revision), &[]));
+    let (held, _) = run_batched(&mut engine, &capture, &[]);
+    assert!(held.focus_request.is_some());
+    assert_eq!(issued.focus_request, held.focus_request);
+
+    // A previously valid anchor is now stale despite identical obs.
+    let mut stale = observe(4, windows(), "win-a");
+    stale.observation_seq = 42;
+    stale.focus_changes = capture.focus_changes;
+    let (retired, _) = run_batched(&mut engine, &stale, &[]);
+    assert!(retired.focus_request.is_none());
+    assert!(retired.effects.is_empty());
+}
+
+#[test]
+fn earlier_destination_intent_then_own_target_uses_observed_target_for_toggle_float() {
+    let mut engine = engine();
+    let roster = || {
+        let mut roster = windows();
+        roster.push(fact("win-d", "out-a", 200));
+        roster
+    };
+    run_batched(&mut engine, &observe(1, roster(), "win-a"), &[]);
+    let (issued, _) = run_batched(
+        &mut engine,
+        &report(2, roster(), "win-a", Some(1), Some(focus_cmd("win-b"))),
+        &[],
+    );
+    let request = issued.focus_request.as_ref().expect("retained focus");
+    assert_eq!(request.target.0, "win-b");
+    let mut capture = observe(3, roster(), "win-b");
+    capture.focus_changes = Some(interval(Some(issued.state_revision), &["win-d"]));
+    capture.focus_feedback.push(FocusFeedback {
+        id: request.id.clone(),
+        target: request.target.clone(),
+        revision: request.issued_revision,
+        setter: VisibilitySetter::Accepted,
+        reason: VisibilityReason::Empty,
+        pre: Some(WindowId("win-a".to_owned())),
+        post: Some(request.target.clone()),
+        foreground_proven: true,
+        attempt_ms: 0,
+        arrival: Vec::new(),
+    });
+    let trace = crate::world_engine::with_focus_trace_capture(|| {
+        let (reply, settled) = run_batched(&mut engine, &capture, &[(2, toggle_current_float())]);
+        assert_not_rejected(&settled[0].result, "implicit float");
+        assert!(reply.focus_request.is_none());
+        assert!(reply.effects.is_empty());
+        assert!(
+            reply
+                .windows
+                .iter()
+                .any(|row| row.lifetime.0 == "win-b" && row.floating)
+        );
+        assert!(
+            reply
+                .windows
+                .iter()
+                .any(|row| row.lifetime.0 == "win-d" && !row.floating)
+        );
+    });
+    let evals: Vec<_> = trace
+        .iter()
+        .filter(|line| line.contains(" ev=focus-eval "))
+        .collect();
+    assert_eq!(evals.len(), 1);
+    assert!(evals[0].ends_with("decision=no-call reason=foreground-intent"));
+}
+
+#[test]
+fn first_decisive_foreground_event_classifies_retirement() {
+    for (events, reason, foreground_index) in [
+        (
+            ["win-b", "win-a"],
+            "decision=equality reason=already-target",
+            None,
+        ),
+        (
+            ["win-a", "win-b"],
+            "decision=no-call reason=foreground-intent",
+            Some(0),
+        ),
+    ] {
+        let mut engine = engine();
+        run_batched(&mut engine, &observe(1, windows(), "win-a"), &[]);
+        let (issued, _) = run_batched(
+            &mut engine,
+            &report(2, windows(), "win-a", Some(1), Some(focus_cmd("win-b"))),
+            &[],
+        );
+        assert!(issued.focus_request.is_some());
+        let mut capture = observe(3, windows(), events[1]);
+        capture.focus_changes = Some(interval(Some(issued.state_revision), &events));
+        let trace = crate::world_engine::with_focus_trace_capture(|| {
+            let (settled, _) = run_batched(&mut engine, &capture, &[]);
+            assert!(settled.focus_request.is_none());
+            assert!(settled.effects.is_empty());
+            assert_eq!(
+                engine.tx(|tx| tx.execution_subject()),
+                Some(WindowId(events[1].to_owned()))
+            );
+        });
+        let evals: Vec<_> = trace
+            .iter()
+            .filter(|line| line.contains(" ev=focus-eval "))
+            .collect();
+        assert_eq!(evals.len(), 1);
+        assert!(evals[0].ends_with(reason));
+        let foreground: Vec<_> = trace
+            .iter()
+            .filter(|line| line.contains(" ev=focus-foreground-intent "))
+            .collect();
+        if let Some(index) = foreground_index {
+            assert_eq!(foreground.len(), 1);
+            assert!(foreground[0].ends_with(&format!(" eventIndex={index} win={}", events[index])));
+        } else {
+            assert!(foreground.is_empty());
+        }
+    }
+}
+
+#[test]
+fn directional_then_toggle_float_uses_new_fifo_target_without_native_activation() {
+    let mut engine = engine();
+    // The startup layout puts B to the left of A.
+    let (boot, _) = run_batched(&mut engine, &observe(1, windows(), "win-a"), &[]);
+    let mut capture = observe(2, windows(), "win-a");
+    capture.focus_changes = Some(interval(Some(boot.state_revision), &[]));
+    let (reply, settled) = run_batched(
+        &mut engine,
+        &capture,
+        &[(1, implicit_focus_dir("left")), (2, toggle_current_float())],
+    );
+    assert_not_rejected(&settled[0].result, "directional focus");
+    assert_not_rejected(&settled[1].result, "implicit float");
+    assert_eq!(reply.focus_request.as_ref().unwrap().target.0, "win-b");
+    assert!(
+        reply
+            .windows
+            .iter()
+            .any(|row| row.lifetime.0 == "win-b" && row.floating)
+    );
+    assert!(
+        reply
+            .windows
+            .iter()
+            .any(|row| row.lifetime.0 == "win-a" && !row.floating)
+    );
+    assert!(reply.effects.is_empty());
+}
+
+#[test]
+fn focus_interval_is_structurally_bounded_and_part_of_exact_replay() {
+    use crate::world_report::{FocusChange, FocusChanges, MAX_FOCUS_CHANGES};
+    use crate::world_report_v4_checks::{report_digest_v4, validate_report_v4_reason};
+
+    let mut engine = engine();
+    let mut capture = observe(1, windows(), "win-a");
+    let unknown = FocusChange::Foreground { win: None };
+    let known_none = FocusChange::Foreground {
+        win: Some(WindowId(String::new())),
+    };
+    capture.focus_changes = Some(FocusChanges {
+        after: None,
+        events: Some(vec![unknown.clone(), known_none.clone()]),
+    });
+    let first = run_batched(&mut engine, &capture, &[]).0;
+    let replay = |engine: &mut WorldEngine, capture: &WorldReportV4| {
+        engine
+            .handle_report_v4_batched(capture, &issue_for(capture), &[])
+            .0
+    };
+    assert!(matches!(
+        replay(&mut engine, &capture),
+        V4RunOutcome::Duplicate(reply) if reply == first
+    ));
+
+    let mut changed = capture.clone();
+    let evidence = changed.focus_changes.as_mut().unwrap();
+    evidence.events.as_mut().unwrap().reverse();
+    assert_ne!(report_digest_v4(&capture), report_digest_v4(&changed));
+    assert!(matches!(
+        replay(&mut engine, &changed),
+        V4RunOutcome::Rejected {
+            kind: crate::world_engine::KIND_REUSED,
+            ..
+        }
+    ));
+
+    let variants = [
+        None,
+        Some(FocusChanges {
+            after: None,
+            events: None,
+        }),
+        Some(interval(None, &[])),
+        Some(interval(Some(0), &[])),
+        Some(FocusChanges {
+            after: None,
+            events: Some(vec![unknown.clone()]),
+        }),
+        Some(FocusChanges {
+            after: None,
+            events: Some(vec![known_none]),
+        }),
+    ];
+    let digests: std::collections::BTreeSet<_> = variants
+        .into_iter()
+        .map(|proof| {
+            changed.focus_changes = proof;
+            report_digest_v4(&changed)
+        })
+        .collect();
+    assert_eq!(digests.len(), 6);
+
+    changed.focus_changes = Some(FocusChanges {
+        after: None,
+        events: Some(vec![unknown; MAX_FOCUS_CHANGES + 1]),
+    });
+    assert_eq!(
+        validate_report_v4_reason(&changed),
+        Some("section-over-cap")
+    );
+    for event in [
+        FocusChange::Foreground {
+            win: Some(WindowId("x".repeat(crate::bounds::MAX_OPAQUE_ID_LEN + 1))),
+        },
+        FocusChange::View {
+            out: OutputId(String::new()),
+            native: "n1".to_owned(),
+        },
+        FocusChange::View {
+            out: OutputId("out-a".to_owned()),
+            native: String::new(),
+        },
+    ] {
+        changed.focus_changes.as_mut().unwrap().events = Some(vec![event]);
+        assert_eq!(
+            validate_report_v4_reason(&changed),
+            Some("focus-change-id-invalid")
+        );
+    }
+}
+
+#[test]
+fn complete_focus_interval_does_not_mask_positive_target_loss() {
+    let mut engine = engine();
+    run_batched(&mut engine, &observe(1, windows(), "win-a"), &[]);
+    let (issued, _) = run_batched(
+        &mut engine,
+        &report(2, windows(), "win-a", Some(1), Some(focus_cmd("win-b"))),
+        &[],
+    );
+    assert!(issued.focus_request.is_some());
+    let mut capture = observe(3, vec![fact("win-a", "out-a", 0)], "win-a");
+    capture.closed.push(WindowId("win-b".to_owned()));
+    capture.focus_changes = Some(interval(Some(issued.state_revision), &[]));
+    let (reply, _) = run_batched(&mut engine, &capture, &[]);
+    assert!(reply.focus_request.is_none());
+    assert!(reply.effects.is_empty());
 }
 
 /// Focus B, then a non-focus command in the same batch, then a later
@@ -357,14 +683,12 @@ fn cursor_refused_pending_resets_to_observed_not_abandoned() {
     );
 }
 
-/// USER DECISION 2026-11-12 (empty-cursor rule), discriminator 1: a
-/// restart-shaped first capture (no home for A) establishes no execution
-/// subject, the commandless recovery adopts the restored sticky foreground
-/// A without minting anything, and an implicit no-target sticky-off then
-/// acts on A. The fallback mints no focus request and writes neither
-/// canonical memory nor session state.
+/// A restart-shaped first capture (no home for A) establishes no execution
+/// subject. Commandless recovery adopts the restored sticky foreground A
+/// without minting a request, and implicit sticky-off then acts on A
+/// without changing canonical memory or session state.
 #[test]
-fn empty_cursor_implicit_acts_on_restored_sticky_foreground() {
+fn implicit_acts_on_restored_sticky_foreground() {
     let mut engine = engine();
     // No home for A yet: the host reports it focused, but nothing is
     // recordable, so no subject is established.
@@ -383,8 +707,8 @@ fn empty_cursor_implicit_acts_on_restored_sticky_foreground() {
         },
         fact("win-b", "out-a", 100),
     ];
-    // Commandless recovery adopts A with identity unchanged; the withheld
-    // automatic sticky lane mints nothing, so the cursor stays empty.
+    // Commandless recovery adopts A with identity unchanged. The sticky
+    // lane mints nothing; the recovered observation now owns the cursor.
     let (recovered, _) = run_batched(&mut engine, &observe(2, windows.clone(), "win-a"), &[]);
     assert!(
         recovered.focus_request.is_none(),
@@ -392,13 +716,14 @@ fn empty_cursor_implicit_acts_on_restored_sticky_foreground() {
         recovered.focus_request
     );
     assert_eq!(
-        engine.world.focus.logical_focus_cursor, None,
-        "recovery adopts A but sets no cursor slot"
+        engine.world.focus.logical_focus_cursor,
+        Some(WindowId("win-a".to_owned())),
+        "recovery seeds the cursor from live A, not a new focus decision"
     );
     assert_eq!(
         engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-a".to_owned())),
-        "empty cursor now observes live A as the implicit subject"
+        "live A is the implicit subject"
     );
     let before = engine.world.focus.last_active_window.clone();
     let toggle = WorldCommand::ToggleSticky {
@@ -894,8 +1219,9 @@ fn gap_prefix(engine: &mut WorldEngine) -> WorldReplyV4 {
         recovered.focus_request
     );
     assert_eq!(
-        engine.world.focus.logical_focus_cursor, None,
-        "no focus decision ever ran, so the cursor slot stays empty"
+        engine.world.focus.logical_focus_cursor,
+        Some(WindowId("win-b".to_owned())),
+        "without a pending focus decision, the recovered observation owns the cursor"
     );
     assert_eq!(
         engine.tx(|tx| tx.execution_subject()),
@@ -1086,13 +1412,14 @@ fn held_live_baseline_newcomer_restores_cursor_and_probes_act_from_it() {
         changed.scopes
     );
     assert_eq!(
-        engine.world.focus.logical_focus_cursor, None,
-        "no focus decision ran, so the cursor slot stays empty"
+        engine.world.focus.logical_focus_cursor,
+        Some(WindowId("win-c".to_owned())),
+        "held scope does not invent focus or mask the live bound observation"
     );
     assert_eq!(
         engine.tx(|tx| tx.execution_subject()),
         Some(WindowId("win-c".to_owned())),
-        "empty-cursor fallback observes live C under held change"
+        "live C is the subject; individual commands still apply their own hold guards"
     );
     // Explicit focus on the live held-domain newcomer N mints a row.
     let mut held_mint = report(3, live.clone(), "win-c", Some(1), Some(focus_cmd("win-n")));

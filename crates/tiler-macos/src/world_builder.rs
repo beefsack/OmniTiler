@@ -659,6 +659,7 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReportV4 {
         cursor_hit: None,
         focused_global: input.focused_global.to_owned(),
         foreground_known: input.foreground_known,
+        focus_changes: None,
         action_foreground: None,
         action_cached: None,
         action_outputs: Vec::new(),

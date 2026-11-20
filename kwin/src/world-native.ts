@@ -45,6 +45,8 @@ export interface WorldNativeEnv {
     // used to keep B9 pollPendingUnfloat single-flight and to avoid
     // press-time native reads/mutations when queueing FIFO behind prior work.
     isWorldBusy: () => boolean;
+    pressIsCurrent?: () => boolean;
+    useSealedFloat?: () => boolean;
     isFloating: (win: string) => boolean;
     activeWindowId: () => string | null;
     activeWindowRef: () => object | null;
@@ -396,6 +398,10 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
         const fullscreen = readFullscreen(readProp, ref);
         const floating = env.isFloating(w);
         const maximized = readMaximized(readProp, ref);
+        if (env.pressIsCurrent?.() === false) {
+            env.shortcutFailed(label);
+            return false;
+        }
         if (floating && maximized === true && fullscreen === false) {
             if (pendingUnfloat !== null) {
                 cancelPendingSilent("newer-input-superseded");
@@ -434,7 +440,7 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
         // retained float frame); float carries no rect (session retained
         // placement wins, never a recomputed center).
         let rect: [number, number, number, number] | null = null;
-        if (floating && fullscreen !== true) {
+        if (floating && fullscreen !== true && env.useSealedFloat?.() !== true) {
             let live: { x: number; y: number; w: number; h: number } | null = null;
             try {
                 live = env.readLiveRect(ref);

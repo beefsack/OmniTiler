@@ -816,16 +816,9 @@ describe("world trace diagnostics (rapid float and sticky)", () => {
 });
 
 describe("world trace subject-basis display caps", () => {
-    // Sticky uses the ordinary submitCommand park-first FIFO path (the same
-    // toImplicitSubject marker conversion as float); float itself cannot
-    // batch same-tick because native.submitFloat fail-fast fences while a
-    // command is parked or a flight is outstanding.
-    //
-    // Batching pattern: the first press sends its own flight; presses parked
-    // while that flight is outstanding drain in ONE follow-up capture.
-    // Takes are staged only on the batched flight's reply: the earlier
-    // accept collects pending (retaining undecided identities), so the
-    // batched accept resolves every take exactly once.
+    // Direct-handle sticky commands are unsealed: later presses file while
+    // the first flight is outstanding, then share its follow-up capture.
+    // Stage takes on the batch's reply so each attribution is observed there.
     it("batched eight-command flight emits at most eight combined subject rows", () => {
         const h = makeHarness();
         discover(h);
@@ -838,9 +831,8 @@ describe("world trace subject-basis display caps", () => {
         }
         h.runTimers();
         const queues = h.calls.filter((c) => c.method === "QueueWorldCommand");
-        assert.equal(queues.length, 9, `all nine presses filed while the first flight was outstanding`);
-        // Answer the first flight commandless-neutral; its take collection
-        // stays pending so every identity survives for the batched flight.
+        assert.equal(queues.length, 9, "all nine presses file while the first flight is outstanding");
+        // Takes stay pending until the batched flight.
         const firstReq = JSON.parse(h.calls.filter((c) => c.method === "DescribeWorld")[1]!.payload) as Record<string, unknown>;
         answerDescribe(h, firstReq, "1", {
             windows: [
@@ -892,13 +884,13 @@ describe("world trace subject-basis display caps", () => {
         h.handle.requestSticky();
         h.runTimers();
         assert.equal(h.calls.filter((c) => c.method === "DescribeWorld").length - 1, 1, `first press sends its own flight`);
-        // Production queue path: park both presses while the first flight
-        // is outstanding so one follow-up capture carries both commands.
+        // File both direct-handle commands while the first flight is
+        // outstanding so one follow-up capture carries both.
         h.handle.requestSticky();
         h.handle.requestSticky();
         h.runTimers();
         const queues = h.calls.filter((c) => c.method === "QueueWorldCommand");
-        assert.equal(queues.length, 3, `all three presses filed while the first flight was outstanding`);
+        assert.equal(queues.length, 3, "all three presses file while the first flight is outstanding");
         const firstReq = JSON.parse(h.calls.filter((c) => c.method === "DescribeWorld")[1]!.payload) as Record<string, unknown>;
         answerDescribe(h, firstReq, "1", {
             windows: [

@@ -786,9 +786,20 @@ impl WorldEngine {
             .as_ref()
             .map(|replay| replay.reply.transfers.as_slice())
             .unwrap_or(&[]);
+        let predecessor = self
+            .replay
+            .as_ref()
+            .map(|replay| replay.reply.state_revision);
         let (outcome, dispositions) =
             WorldTransaction::new(&self.connection, prev_transfers, &mut staged)
-                .run_accepted_v4_batched(report, issue, consumed, next_revision, queued);
+                .run_accepted_v4_batched(
+                    report,
+                    issue,
+                    consumed,
+                    next_revision,
+                    predecessor,
+                    queued,
+                );
         match outcome {
             V4RunOutcome::Accepted(reply) | V4RunOutcome::CommandConsumed(reply) => {
                 let consumed_reply = reply.command_consumed;

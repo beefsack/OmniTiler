@@ -86,6 +86,7 @@ describe("capacity settings connection carriage", () => {
         // The v4 production encoder carries no capacity settings: the
         // inner report omits every retired settings/policy key.
         const json = buildWorldReportV4InnerJson({
+            focusChanges: null,
             observation: v4Observation(),
             creationAttempts: [],
             frameAttempts: [],

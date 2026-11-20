@@ -270,6 +270,12 @@ describe("native gesture broker cutover", () => {
         return JSON.parse(payload).report as Record<string, unknown>;
     }
 
+    function focusEvents(payload: string): unknown {
+        const changes = rawReport(payload)["focusChanges"];
+        assert.ok(changes !== null && typeof changes === "object" && "events" in changes);
+        return changes.events;
+    }
+
     function startCutoverHarness(opts: {
         useGlobalCallDbus?: boolean;
         settledHook?: (report: Record<string, unknown>, assoc: { instance: string; serial: string; coreId: string } | null) => { id: string; committed: boolean } | null;
@@ -280,6 +286,7 @@ describe("native gesture broker cutover", () => {
         fireDelay: (delay: number) => void;
         fireScriptStart: () => void;
         fireNativeInvalidation: () => void;
+        fireActivation: () => void;
         globalCalls: Array<{ method: string; payload: string }>;
         heldDescribes: Array<{ payload: string; callback: (reply: unknown) => void }>;
         answerHeld: (index?: number) => void;
@@ -293,12 +300,13 @@ describe("native gesture broker cutover", () => {
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
             clientGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws1],
-            minimized: false, fullscreen: false, fullScreen: false, maximized: false, maximizeMode: 0,
+            minimized: false, hidden: false, fullscreen: false, fullScreen: false, maximized: false, maximizeMode: 0,
             sticky: false, onAllDesktops: false, minSize: null, maxSize: null,
             interactiveMoveResizeStarted: { connect: () => undefined, disconnect: () => undefined },
             interactiveMoveResizeFinished: { connect: () => undefined, disconnect: () => undefined },
         };
         const invalidateHandlers: Array<() => void> = [];
+        const activationHandlers: Array<(ref: object) => void> = [];
         const surface = {
             windowList: () => [fakeWin],
             screens: [{ name: "out-1", geometry: { x: 0, y: 0, width: 1920, height: 1080 } }],
@@ -319,6 +327,11 @@ describe("native gesture broker cutover", () => {
                 disconnect: () => undefined,
             },
             windowRemoved: { connect: () => undefined, disconnect: () => undefined },
+            windowActivated: {
+                connect: (handler: (ref: object) => void) => { activationHandlers.push(handler); },
+                disconnect: () => undefined,
+            },
+            currentDesktopChanged: { connect: () => undefined, disconnect: () => undefined },
         };
         const calls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }> = [];
         const gestureCalls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }> = [];
@@ -452,6 +465,11 @@ describe("native gesture broker cutover", () => {
         fireNativeInvalidation: () => {
                 for (const handler of [...invalidateHandlers]) {
                     handler();
+                }
+            },
+            fireActivation: () => {
+                for (const handler of [...activationHandlers]) {
+                    handler(fakeWin);
                 }
             },
         fireScriptStart: () => {
@@ -1270,7 +1288,7 @@ describe("native gesture broker cutover", () => {
         gestureCalls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }>;
         fireDelay: (delay: number) => void;
         heldDescribes: Array<{ payload: string; callback: (reply: unknown) => void }>;
-    }, answer: (index: number) => void): string {
+    }, answer: (index: number) => void, beforeTerminal?: () => void): string {
         const wait = h.gestureCalls.find((c) => c.method === "WaitGesture");
         assert.ok(wait !== undefined);
         wait.callback(gestureSnapshot({ serial: "1", revision: "1", phase: "started" }));
@@ -1281,6 +1299,7 @@ describe("native gesture broker cutover", () => {
         h.fireDelay(120);
         const wait2 = last(h.gestureCalls.filter((c) => c.method === "WaitGesture"));
         assert.ok(wait2 !== undefined);
+        beforeTerminal?.();
         wait2.callback(gestureSnapshot({ serial: "1", revision: "2", phase: "released", cursor: [30, 30] }));
         h.fireDelay(120);
         assert.equal(h.heldDescribes.length, 1, "terminal capture held");
@@ -1326,7 +1345,9 @@ describe("native gesture broker cutover", () => {
             held.callback(broker.replyFor(held.payload));
         };
         try {
-            const firstBytes = driveOpenToTerminal(h, answerFaithful);
+            const event = { kind: "foreground", win: "win-a" };
+            const firstBytes = driveOpenToTerminal(h, answerFaithful, h.fireActivation);
+            assert.deepEqual(focusEvents(firstBytes), [event]);
             const first = h.heldDescribes[0];
             assert.ok(first !== undefined);
             // The broker settles the terminal but the response is lost on
@@ -1336,7 +1357,7 @@ describe("native gesture broker cutover", () => {
             assert.ok(settledParsed["gestureSettled"] !== null, "broker settled the terminal");
             // Native input lands while the original capture is outstanding:
             // the watermark advances under the pending retry.
-            h.fireNativeInvalidation();
+            h.fireActivation();
             h.fireDelay(120);
             assert.equal(h.heldDescribes.length, 1, "no fresh send while the terminal flight is out");
             // Lose the original flight: the timeout arms the same-envelope
@@ -1355,6 +1376,7 @@ describe("native gesture broker cutover", () => {
             const firstEnv = JSON.parse(firstBytes) as { source: string; nativeInvalid: string };
             const freshEnv = JSON.parse(freshBytes) as { source: string; nativeInvalid: string };
             assert.notEqual(firstEnv.nativeInvalid, freshEnv.nativeInvalid, "original watermark differs from current native watermark");
+            assert.deepEqual(focusEvents(freshBytes), [event, event]);
             // Separate synthetic refusal seam: the entry receives a
             // non-discharging busy rejection on the fresh capture (without the
             // faithful broker processing it), so the pending retry stays owed.
@@ -1383,7 +1405,13 @@ describe("native gesture broker cutover", () => {
             const acks = h.gestureCalls.filter((c) => c.method === "AckGesture");
             assert.equal(acks.length, 1, "cached settlement acks exactly once");
             assert.deepEqual(JSON.parse(acks[0]?.payload as string), { instance: "gesture-1", serial: "1" });
+            const callsBeforeFollowup = h.calls.length;
             answerIdleAck(h, answerFaithful);
+            const followup = h.calls.slice(callsBeforeFollowup).find((call) => call.method === "DescribeWorld");
+            assert.ok(followup !== undefined, "post-replay capture sent");
+            assert.deepEqual(rawReport(followup.payload)["focusChanges"], {
+                after: settledParsed["rev"], events: [event],
+            }, "skipped replay retires only its incorporated prefix");
         } finally {
             h.stop();
         }

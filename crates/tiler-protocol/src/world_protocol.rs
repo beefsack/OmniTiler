@@ -83,22 +83,23 @@ use tiler_core::world_presentation::{
 use tiler_core::world_report::{
     ActivationPolicy, AfterShown, AfterShownMember, AfterShownScope, ArrivalBracket,
     ArrivalLocation, AttemptLaneV4, AuthorityScope, BorderHideReasonV4, BorderPresentationV4,
-    CommandRejectKind, DragPreviewV4, EffectKind, FloatOrigin, FocusDirectionalSubject,
-    FocusFeedback, FocusRequest, FocusRequestCause, FrameWitness, FullscreenOwner, HeldAttemptRow,
-    HeldNativeRow, HeldPresentationRow, HeldScreenRow, HeldWindowRow, HoldReason, IntentDesire,
-    IntentRecord, MAX_FOCUS_DEPARTING, MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED, MAX_FOCUS_VIEWS,
-    MAX_INTENT_DESIRED, MAX_INTENT_RECORDS, MAX_REPLY_DIAGNOSTICS, MAX_REPLY_EFFECTS,
-    MAX_REPLY_NATIVE_CREATIONS, MAX_REPLY_OPERATIONS, MAX_REPLY_OUTPUTS, MAX_REPLY_SCOPES,
-    MAX_REPLY_SWITCH_EVENTS, MAX_REPLY_TRANSFERS, MAX_REPLY_WINDOWS, MAX_REPLY_WORKSPACES,
-    MAX_STATE_TARGETS_PER_WINDOW, NativeCreationDesire, NativeObservation, NativeWorkspaceFact,
-    OneShotEffect, OperationEvent, OperationKind, OperationOutcome, OutputDesire, OutputIdentity,
-    PresentationIngressV4, PresentationPagerFrameV4, PresentationRowV4, RenderTarget,
-    RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority,
-    ScopeStatus, ScreenReport, StateProperty, StateTarget, SwitchEvent, SwitchFocus, SwitchOutcome,
-    TilingMode, TransferKind, TransferTargetV4, VisibilityFact, VisibilityReason, VisibilitySample,
-    VisibilitySetter, VisibilityTarget, WindowDesire, WindowFact, WindowType, WorkspaceDesire,
-    WorkspaceRef, WorldCommand, WorldPresentationV4, WorldReplyV4, WorldReportV4,
-    check_screen_structure, check_window_structure,
+    CommandRejectKind, DragPreviewV4, EffectKind, FloatOrigin, FocusChange, FocusChanges,
+    FocusDirectionalSubject, FocusFeedback, FocusRequest, FocusRequestCause, FrameWitness,
+    FullscreenOwner, HeldAttemptRow, HeldNativeRow, HeldPresentationRow, HeldScreenRow,
+    HeldWindowRow, HoldReason, IntentDesire, IntentRecord, MAX_FOCUS_CHANGES, MAX_FOCUS_DEPARTING,
+    MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED, MAX_FOCUS_VIEWS, MAX_INTENT_DESIRED, MAX_INTENT_RECORDS,
+    MAX_REPLY_DIAGNOSTICS, MAX_REPLY_EFFECTS, MAX_REPLY_NATIVE_CREATIONS, MAX_REPLY_OPERATIONS,
+    MAX_REPLY_OUTPUTS, MAX_REPLY_SCOPES, MAX_REPLY_SWITCH_EVENTS, MAX_REPLY_TRANSFERS,
+    MAX_REPLY_WINDOWS, MAX_REPLY_WORKSPACES, MAX_STATE_TARGETS_PER_WINDOW, NativeCreationDesire,
+    NativeObservation, NativeWorkspaceFact, OneShotEffect, OperationEvent, OperationKind,
+    OperationOutcome, OutputDesire, OutputIdentity, PresentationIngressV4,
+    PresentationPagerFrameV4, PresentationRowV4, RenderTarget, RendererInput, RowDiagnostic,
+    RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScopeStatus, ScreenReport, StateProperty,
+    StateTarget, SwitchEvent, SwitchFocus, SwitchOutcome, TilingMode, TransferKind,
+    TransferTargetV4, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
+    VisibilityTarget, WindowDesire, WindowFact, WindowType, WorkspaceDesire, WorkspaceRef,
+    WorldCommand, WorldPresentationV4, WorldReplyV4, WorldReportV4, check_screen_structure,
+    check_window_structure,
 };
 
 pub use crate::world_property_attempts::{
@@ -1671,6 +1672,50 @@ fn req_empty_or_id(map: &serde_json::Map<String, serde_json::Value>, key: &str) 
         return Err(unknown_value());
     }
     Ok(text.to_owned())
+}
+
+fn decode_focus_changes(value: &serde_json::Value) -> Result<Option<FocusChanges>> {
+    if value.is_null() {
+        return Ok(None);
+    }
+    let map = as_object(value)?;
+    check_keys(map, &["after", "events"])?;
+    let after = opt_u64_or_null(map, "after")?;
+    let events = match &map["events"] {
+        serde_json::Value::Null => None,
+        serde_json::Value::Array(items) => {
+            if items.len() > MAX_FOCUS_CHANGES {
+                return Err(snapshot_invalid("section-over-cap"));
+            }
+            let mut events = Vec::with_capacity(items.len());
+            for item in items {
+                let row = as_object(item)?;
+                let event = match req_str(row, "kind")? {
+                    "foreground" => {
+                        check_keys(row, &["kind", "win"])?;
+                        let win = if row["win"].is_null() {
+                            None
+                        } else {
+                            Some(WindowId(req_empty_or_id(row, "win")?))
+                        };
+                        FocusChange::Foreground { win }
+                    }
+                    "view" => {
+                        check_keys(row, &["kind", "out", "native"])?;
+                        FocusChange::View {
+                            out: OutputId(req_id(row, "out")?),
+                            native: req_id(row, "native")?,
+                        }
+                    }
+                    _ => return Err(unknown_value()),
+                };
+                events.push(event);
+            }
+            Some(events)
+        }
+        _ => return Err(malformed()),
+    };
+    Ok(Some(FocusChanges { after, events }))
 }
 
 /// Strict shape decode of one staged v4 presentation-ingress object value.
@@ -3952,6 +3997,7 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
             "native",
             "focused",
             "foregroundKnown",
+            "focusChanges",
             "complete",
             "gesture",
             "cursor",
@@ -4379,6 +4425,7 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
             text.to_owned()
         },
         foreground_known: req_bool(map, "foregroundKnown")?,
+        focus_changes: decode_focus_changes(&map["focusChanges"])?,
         inventory_complete: req_bool(map, "complete")?,
         gesture_barrier: req_bool(map, "gesture")?,
         gesture,
@@ -6166,6 +6213,50 @@ fn push_opt_window(out: &mut String, value: &Option<WindowId>) {
     }
 }
 
+fn push_focus_changes(out: &mut String, changes: Option<&FocusChanges>) {
+    use std::fmt::Write;
+
+    let Some(changes) = changes else {
+        out.push_str("null");
+        return;
+    };
+    out.push_str("{\"after\":");
+    match changes.after {
+        None => out.push_str("null"),
+        Some(after) => write!(out, "\"{after}\"").expect("writing to a String cannot fail"),
+    }
+    out.push_str(",\"events\":");
+    match &changes.events {
+        None => out.push_str("null"),
+        Some(events) => {
+            out.push('[');
+            for (i, event) in events.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                match event {
+                    FocusChange::Foreground { win } => {
+                        out.push_str("{\"kind\":\"foreground\",\"win\":");
+                        push_opt_window(out, win);
+                    }
+                    FocusChange::View {
+                        out: output,
+                        native,
+                    } => {
+                        out.push_str("{\"kind\":\"view\",\"out\":");
+                        push_json_string(out, &output.0);
+                        out.push_str(",\"native\":");
+                        push_json_string(out, native);
+                    }
+                }
+                out.push('}');
+            }
+            out.push(']');
+        }
+    }
+    out.push('}');
+}
+
 /// Canonical encode of one nullable output id.
 fn push_opt_output(out: &mut String, value: &Option<OutputId>) {
     match value {
@@ -6843,6 +6934,8 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
     } else {
         "false"
     });
+    out.push_str(",\"focusChanges\":");
+    push_focus_changes(&mut out, report.focus_changes.as_ref());
     out.push_str(",\"complete\":");
     out.push_str(if report.inventory_complete {
         "true"
@@ -7243,7 +7336,8 @@ mod tests {
             "{{\"v\":4,\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\"obs\":\"1\",\
               \"reqSeq\":\"1\",\"req\":\"req-1\",\"monotonicMs\":\"1\",\"cmdSeq\":\"1\",\
               \"command\":{command_json},\"screens\":[],\"windows\":[],\"closed\":[],\
-              \"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\
+              \"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"focusChanges\":null,\
+              \"complete\":true,\"gesture\":false,\
               \"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\
               \"actionOutputs\":[],\
               \"presentation\":{{\"foreground\":\"\",\"minimized\":null,\

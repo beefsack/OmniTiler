@@ -23,6 +23,12 @@ use super::topology::{collect_leaves, validate_domain_topology};
 use super::tree_edit::{admission_placement_for, remove_leaf_from_tree};
 
 impl WorldLayout {
+    pub(crate) fn is_ordinary_float(&self, key: &DomainKey, subject: &WindowId) -> bool {
+        self.domain(key)
+            .and_then(|domain| domain.exceptions.get(subject))
+            .is_some_and(|record| record.flags == floating_exception_flags())
+    }
+
     /// Toggle intentional float/unfloat for `subject` in the converged domain
     /// `key`.
     ///

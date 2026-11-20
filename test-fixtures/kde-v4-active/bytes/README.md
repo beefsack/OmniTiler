@@ -10,6 +10,8 @@ Boundary vs the preserved historical `test-fixtures/kde-v4/bytes` family:
   (`kwin/src/world-connection.ts`, `tiler-protocol` connection family).
 - Every `report-*.json` carries the `foregroundKnown` provenance bit
   (`kwin/src/world-observe.ts`).
+- Every report also carries `focusChanges`, with ordered evidence or an
+  explicit gap, anchored to the last incorporated reply revision.
 - `reply-observe.json` carries the required nullable `focusRequest` lane
   (`kwin/src/world-report.ts`) and required nullable `dragPreview` lane (`null`
   on this non-gesture path), with no `result` field (command outcomes ride

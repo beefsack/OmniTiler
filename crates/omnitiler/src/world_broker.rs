@@ -48,10 +48,10 @@
 //!            "nativeInvalid":"N","report":{...}}
 //!   `report` is the full normalized v4 observation (see
 //!   `tiler_protocol::world_protocol::decode_report_v4` for the exact
-//!   required/optional keys, including `rendererInput`) WITHOUT the broker-owned
-//!   keys (owner, adapter, gen, obs, reqSeq, req, cmdSeq, command,
-//!   monotonicMs): carrying any of them refuses as unknown-field, so there
-//!   is exactly one sequencing namespace. `adapter` is the producer capture
+//!   required/optional keys, including `rendererInput` and `focusChanges`)
+//!   without broker-owned keys (`owner`, `adapter`, `gen`, `obs`, `reqSeq`,
+//!   `req`, `cmdSeq`, `command`, `monotonicMs`): carrying any of them refuses
+//!   as unknown-field. `adapter` is the producer capture
 //!   lifetime bound at discovery (undiscovered lifetimes refuse, and only
 //!   one lifetime is ever bound); `gen` must equal the serving generation
 //!   (stale generations refuse without applying). `source` is the
@@ -862,6 +862,9 @@ impl WorldBroker {
         // invalidation-witness lanes below are capture-only strips that stay
         // v4-compatible (absent keys pass through, present keys strip before
         // decode).
+        // `focusChanges` is a core report lane, not a capture-only strip.
+        // Its `after` names an incorporated core revision, never the
+        // broker-stamped observation sequence or transport watermark.
         let ParsedCapture {
             adapter,
             generation,
@@ -3814,7 +3817,7 @@ mod tests {
             \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
             \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
             \"witness\":null,\"foregroundOut\":null}},\
-            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\
             \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}"
         );
         let seed_env = format!(
@@ -3836,7 +3839,7 @@ mod tests {
             \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
             \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
             \"witness\":null,\"foregroundOut\":null}},\
-            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\
             \"gestureIngress\":null,\
             \"nativeGesture\":{{\"v\":1,\"instance\":\"gesture-1\",\"serial\":\"1\",\"revision\":\"1\",\
             \"phase\":\"started\",\"win\":\"win-a\",\"kind\":\"move\",\"startRect\":[0,0,200,200],\
@@ -3982,7 +3985,7 @@ mod tests {
             \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
             \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\
             \"witness\":null,\"foregroundOut\":null}},\
-            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\
             \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\
             \"nativeInvalidWitness\":null}}}}"
         );
@@ -4044,7 +4047,7 @@ mod tests {
             \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\",\"win-b\"],\
             \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,400,600]}},{{\"win\":\"win-b\",\"live\":[400,0,400,600]}}],\
             \"witness\":null,\"foregroundOut\":\"DP-1\"}},\
-            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\
             \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}}}"
         );
         let absent = with_broker_trace_capture(|| {
@@ -4072,7 +4075,7 @@ mod tests {
             \"chordHeld\":false,\"moveWindow\":\"win-a\",\"pagerOrder\":[\"win-a\",\"win-b\"],\
             \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,400,600]}},{{\"win\":\"win-b\",\"live\":[400,0,400,600]}}],\
             \"witness\":null,\"foregroundOut\":\"DP-1\"}},\
-            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\
             \"gestureIngress\":null,\
             \"nativeGesture\":{{\"v\":1,\"instance\":\"g-1\",\"serial\":\"1\",\"revision\":\"1\",\
             \"phase\":\"started\",\"win\":\"win-a\",\"kind\":\"move\",\"startRect\":[0,0,400,600],\
@@ -4095,7 +4098,7 @@ mod tests {
             \"chordHeld\":false,\"moveWindow\":\"win-a\",\"pagerOrder\":[\"win-a\",\"win-b\"],\
             \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,400,600]}},{{\"win\":\"win-b\",\"live\":[400,0,400,600]}}],\
             \"witness\":null,\"foregroundOut\":\"DP-1\"}},\
-            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\
             \"gestureIngress\":null,\
             \"nativeGesture\":{{\"v\":1,\"instance\":\"g-1\",\"serial\":\"2\",\"revision\":\"2\",\
             \"phase\":\"updated\",\"win\":\"win-a\",\"kind\":\"move\",\"startRect\":[0,0,400,600],\
@@ -4270,7 +4273,7 @@ mod tests {
             \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
             \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
             \"witness\":null,\"foregroundOut\":null}},\
-            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\
             \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}"
         );
         let cap1 = format!(
@@ -4360,7 +4363,7 @@ mod tests {
             \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
             \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
             \"witness\":null,\"foregroundOut\":null}},\
-            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\
             \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}"
         );
         let cap1 = format!(
@@ -4483,7 +4486,7 @@ mod tests {
             \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
             \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
             \"witness\":null,\"foregroundOut\":null}},\
-            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\
             \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\
             \"nativeInvalidWitness\":{{\"instance\":\"inst-1\",\"counter\":\"5\"}}}}"
         );
@@ -4630,7 +4633,7 @@ mod tests {
             \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
             \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
             \"witness\":null,\"foregroundOut\":null}},\
-            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\
+            \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\
             \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}"
         );
         let cap1 = format!(
@@ -4882,7 +4885,7 @@ mod tests {
                 \"actionForeground\":\"DP-1\",\"actionCached\":\"DP-1\",\"actionOutputs\":[\"DP-1\"],\"presentation\":{{\"foreground\":\"{win}\",\"minimized\":false,\
                 \"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":[0,0,400,400],\"chordHeld\":false,\"moveWindow\":\"\",\
                 \"pagerOrder\":[\"{win}\"],\"pagerFrames\":[{{\"win\":\"{win}\",\"live\":[0,0,400,400]}}],\"witness\":null,\"foregroundOut\":\"DP-1\"}},\
-                \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\
+                \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\
                 \"cursorWindow\":null,\"nativeInvalidWitness\":null}}"
             )
         };
@@ -5059,7 +5062,7 @@ mod tests {
                 \"actionForeground\":\"DP-1\",\"actionCached\":\"DP-1\",\"actionOutputs\":[\"DP-1\"],\"presentation\":{{\"foreground\":\"w-{seq}-0\",\"minimized\":false,\
                 \"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":[0,0,100,100],\"chordHeld\":false,\"moveWindow\":\"\",\
                 \"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":\"DP-1\"}},\
-                \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\
+                \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\
                 \"cursorWindow\":null,\"nativeInvalidWitness\":null}}}}"
             )
         };
@@ -5451,7 +5454,7 @@ mod tests {
               \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
               \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\
               \"witness\":null,\"foregroundOut\":null}},\
-              \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"rendererInput\":null}}}}"
+              \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null}}}}"
         );
         let cap_rep: serde_json::Value =
             serde_json::from_str(&broker.dispatch_capture(&cap_env).expect("capture"))

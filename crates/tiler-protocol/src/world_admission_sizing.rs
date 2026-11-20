@@ -5,7 +5,8 @@ use std::collections::BTreeSet;
 
 use tiler_core::boundary::CoreCommand;
 use tiler_core::world_report::{
-    NativeWorkspaceFact, WorldCommand, WorldReportV4, is_intent_save_command_v4,
+    FocusChange, FocusChanges, NativeWorkspaceFact, WorldCommand, WorldReportV4,
+    is_intent_save_command_v4,
 };
 
 use crate::world_admission_rows::{
@@ -91,6 +92,8 @@ pub fn report_estimate_v4_with_residual(
         + json_string_len(&report.focused_global)
         + 19
         + bool_len(report.foreground_known)
+        + ",\"focusChanges\":".len()
+        + focus_changes_len(report.focus_changes.as_ref())
         + bool_len(report.inventory_complete)
         + bool_len(report.gesture_barrier)
         + presentation_row_v4_estimate(&report.presentation)
@@ -298,6 +301,36 @@ pub fn report_estimate_v4_with_residual(
     }
     bytes += 17 + renderer_input_estimate(&report.renderer_input);
     bytes
+}
+
+fn focus_changes_len(changes: Option<&FocusChanges>) -> usize {
+    let Some(changes) = changes else {
+        return "null".len();
+    };
+    let events_len = match &changes.events {
+        None => "null".len(),
+        Some(events) => {
+            "[]".len()
+                + events.len().saturating_sub(1)
+                + events
+                    .iter()
+                    .map(|event| match event {
+                        FocusChange::Foreground { win } => {
+                            "{\"kind\":\"foreground\",\"win\":}".len()
+                                + win.as_ref().map_or(4, |win| json_string_len(&win.0))
+                        }
+                        FocusChange::View { out, native } => {
+                            "{\"kind\":\"view\",\"out\":,\"native\":}".len()
+                                + json_string_len(&out.0)
+                                + json_string_len(native)
+                        }
+                    })
+                    .sum::<usize>()
+        }
+    };
+    "{\"after\":,\"events\":}".len()
+        + changes.after.map_or(4, |after| 2 + u64_len(after))
+        + events_len
 }
 
 #[must_use]

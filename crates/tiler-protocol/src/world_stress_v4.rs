@@ -209,6 +209,7 @@ fn build_report_v4(
         // managed window can hold it. Never the command subject.
         focused_global: sim.foreground.clone().unwrap_or_default(),
         foreground_known: true,
+        focus_changes: None,
         action_foreground: None,
         action_cached: None,
         action_outputs: vec![],

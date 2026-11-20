@@ -261,6 +261,10 @@ export interface WorldObservation {
     // no client, false (always with empty focus) means unknown. Set only by
     // the typed activeWindow sample above, never by plans or setter success.
     foregroundKnown: boolean;
+    // Local raw sample before the inventory join, never serialized. It
+    // lets the last-moment apply read keep the same unknown projection
+    // when the same native client remains outside the observed inventory.
+    foregroundSample?: string | null;
     // Raw KWin-shaped classification facts (Stage 4 broker-classified
     // lane). The broker normalizes these into projected v4 facts via the
     // shared Rust predicates; the adapter never preselects verdicts here.
@@ -1677,6 +1681,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         }
     })();
     const visibleCurrents = new Set(screenEntries.map((s) => s.current).filter((c) => c !== ""));
+    const foregroundSample = foregroundKnown ? activeId : null;
     const fgRecord = activeId !== "" ? liveById.get(activeId) ?? null : null;
     if (activeId !== "" && fgRecord === null) {
         // Named but unbound: no live lifetime proves the foreground, so the
@@ -1818,6 +1823,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
             : null,
         focusedGlobal: activeId,
         foregroundKnown,
+        foregroundSample,
         screens: screenFacts, windowFacts, views, closed, hostOwned, equalCount, native,
         floatIntent: floatIntentDeduped, tileIntent: tileIntentDeduped,
         cursor, cursorWindow, actionForeground: activeName, actionCached: null,

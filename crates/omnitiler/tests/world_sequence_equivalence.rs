@@ -375,7 +375,7 @@ fn inner_report_json(focused: &str) -> String {
           \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\
           \"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\
           \"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null}},\
-          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\
+          \"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\
           \"rendererInput\":null}}",
         windows.join(","),
         !focused.is_empty()
@@ -494,6 +494,7 @@ fn typed_report(generation: &str, seq: u64, focused: &str) -> WorldReportV4 {
         state_attempts: Vec::new(),
         visibility_attempts: Vec::new(),
         focus_feedback: Vec::new(),
+        focus_changes: None,
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
         renderer_input: None,
