@@ -22,7 +22,11 @@ how, not extra gates.
   retested in the real session.
 - No separate verdict-audit agent, no exhaustive process inventory, no
   readiness re-checks between legs. Verdicts cite raw log lines.
-- Teardown: copy dev logs, `just dev-off`, stop what the run started.
+- Teardown: copy dev logs, `just dev-off`, stop what the run started, and
+  confirm `just dev-status` reports `dev mode: DOWN`. `just dev-off` stops
+  only this worktree's recorded Planner; a Planner started from another
+  build (temporary snapshot or worktree) must be stopped by the run that
+  started it, or the user's next `just dev` refuses.
 
 ## Fixture-First Live Tests
 

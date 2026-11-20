@@ -1119,6 +1119,20 @@ assert_calls_missing "cargo " "dev up no cargo"
 assert_calls_missing "npm " "dev up no npm"
 assert_calls_missing "cmake " "dev up no cmake"
 
+# dev: a Planner from another build is named, never stopped.
+reset_state
+make_planner_proc 4250 404040 "$WORK/other-build/omnitiler"
+set_planner_owned 4250
+set_controller false
+run_just dev
+check_exit 1 "dev foreign refuse exit"
+assert_contains "did not verify as worktree" "dev foreign status"
+assert_contains "owned by pid 4250" "dev foreign hint pid"
+assert_contains "will not stop it" "dev foreign hint dev-off"
+assert_calls_missing "kill" "dev foreign no kill"
+assert_calls_missing "start-test start" "dev foreign no start"
+assert_calls_missing "cargo " "dev foreign no cargo"
+
 # dev: refuses SPLIT planner-up/controller-down without launching.
 reset_state
 make_planner_proc 4243 222222

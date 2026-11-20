@@ -1325,6 +1325,13 @@ dev-kde *args:
       *"dev mode:"*)
         echo "error: just dev: refusing: dev mode is not DOWN; this foreground session never adopts UP/SPLIT" >&2
         echo "hint: run 'just dev-status' to inspect, 'just dev-off' to teardown pre-existing, 'just dev-on' for detached bring-up/recovery" >&2
+        # dev-off only stops this worktree's recorded Planner. Name a foreign
+        # owner (another checkout or a temporary build) instead of touching it.
+        if [[ "$DEV_STATUS" == *"did not verify as worktree"* ]]; then
+          FOREIGN_PID="$(printf '%s\n' "$DEV_STATUS" | sed -n 's/^owner pid: \([0-9][0-9]*\)$/\1/p' | head -n 1)"
+          FOREIGN_EXE="$(printf '%s\n' "$DEV_STATUS" | sed -n 's/^owner exe: //p' | head -n 1)"
+          echo "hint: com.omnitiler.Planner is owned by pid ${FOREIGN_PID:-unknown} (${FOREIGN_EXE:-unknown exe}), not this worktree's build, so 'just dev-off' will not stop it; if it is a leftover from another checkout or temporary build, stop that process (kill ${FOREIGN_PID:-<pid>}) and rerun" >&2
+        fi
         exit 1
         ;;
       *)
