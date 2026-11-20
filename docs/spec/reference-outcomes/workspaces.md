@@ -157,7 +157,7 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
 - Observe (column leg): reuse of the existing empty vs another creation; focus.
 
 - Then COSMIC: Reuses the existing trailing empty (B lands sole; refresh then ensures a fresh trailing empty); `SendToLastWorkspace` leaves focus (falls back to A), `MoveToLastWorkspace` follows with B; numeric `0` is a separate binding (index 9), not the trailing-empty action; `S(S-cos-send)` + `S(S-cos-focusfix)`
-- Then Hyprland/Dwindle: Unsupported action parameter here: no trailing-empty shortcut exists in source (workspaces are explicit find-or-create; numeric `0` is an invalid workspace ID, so the `0` send resolves invalid and the move errors with no transfer: tree and focus unchanged). The only empty-related resolver is first-empty `empty`, never trailing-empty. `S(S-hyp-movews)` + `S(S-hyp-ws)`
+- Then Hyprland/Dwindle: No exact trailing-empty verb. Numeric `0` is an invalid workspace ID; plain `empty` finds the first empty ID, and `emptyn` finds the first vacant or nonexistent numbered ID **above** the active workspace. `emptyn` can therefore move a sole member forward repeatedly without keeping or replenishing a trailing spare. See [v0.57.2 resolver](https://github.com/hyprwm/Hyprland/blob/v0.57.2/src/state/workspace/Resolver.cpp#L151-L200) and `S(S-hyp-movews)` + `S(S-hyp-ws)`.
 - Then bspwm: Unsupported action parameter here: no trailing-empty shortcut in source (desktops are explicit-only with explicit `desktop -r` removal), so the trailing-empty/`0` send has no built-in equivalent and never runs (no applicable journey); `S(S-bsp-send)` + `S(S-bsp-ws)`
 - Then i3: Unsupported action parameter here: no trailing-empty shortcut in source (`move to workspace number` targets explicit workspaces via `workspace_get` create-on-demand; explicit `0` names workspace `0`, a different target out of scope for reuse, never the trailing empty); the trailing-empty send has no applicable journey and never runs; `S(S-i3-movews)` + `S(S-i3-ws)`
 - Then xmonad/Tall+Navigation2D: Unsupported action parameter here: no trailing-empty shortcut in source (workspaces explicit; `shiftWin` to a non-member tag returns the input unchanged, so the trailing-empty/`0` send never runs); `S(S-xmo-shift)`
@@ -176,6 +176,22 @@ Part of the [outcome matrix index](../reference-outcomes.md). Notation, profiles
 - Then Ours KDE: KDE mapping TBD
 - Then Ours Windows: Reuse trailing empty; per-output-local mapping; `D(D-dec-win)` (2026-10-02)
 - Variant hook: V-WS-FOLLOW.
+
+| Minimal action sequence | Selected outcome |
+| --- | --- |
+| `[B*, E]`: B is the sole ordinary member of the penultimate local workspace; E is the empty final spare. Repeat Append with follow, then with stay. Also run on two outputs sharing native backing, with an ordinary member on the other output. | User 2026-11-20: no move, view change, focus change, retirement, or creation. The other output's member on the same native is not a local member. If held or unreadable evidence obscures local occupancy, use the ordinary send path. |
+| `[B*, A, E]`: an occupied workspace intervenes; Append B into E. | Reuse E and send B; the guard is adjacency-specific, not a sole-member ban. User 2026-11-20. |
+
+COSMIC `epoch-1.11.0` binds `Super+Shift+0` to `MoveToLastWorkspace`. The
+last-workspace action attempts the existing last cell; the move routine
+refuses the sole member's move into an adjacent final empty, with no
+fallback. An intervening workspace allows the move. See
+[binding](https://github.com/pop-os/cosmic-comp/blob/epoch-1.11.0/data/keybindings.ron#L47-L64),
+[last-action dispatch](https://github.com/pop-os/cosmic-comp/blob/epoch-1.11.0/src/input/actions.rs#L322-L349),
+[move guard](https://github.com/pop-os/cosmic-comp/blob/epoch-1.11.0/src/shell/mod.rs#L3332-L3354)
+and [trailing-workspace refresh](https://github.com/pop-os/cosmic-comp/blob/epoch-1.11.0/src/shell/mod.rs#L668-L719).
+COSMIC's relative navigation fallback does not apply to OmniTiler Append;
+OmniTiler's relative next continues to fill the spare (REQ-WS-14).
 
 <a id="r-ws-04-backfill-memory-invalidation-scrolling"></a>
 ### R-WS-04: memory invalidation

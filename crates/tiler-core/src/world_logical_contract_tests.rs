@@ -2028,7 +2028,7 @@ fn numbered_send_trailing_path_creates_and_commits_immediately() {
             1,
             1,
             two_screens(),
-            vec![fact("win-a", "out-a", 0)],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
             vec![],
             vec![],
             "",
@@ -2038,14 +2038,14 @@ fn numbered_send_trailing_path_creates_and_commits_immediately() {
             false,
         ),
     );
-    // Index 0 reuses the live trailing empty with an ordinary transfer.
+    // With another source member, index 0 sends into the live trailing empty.
     let reply = accepted(
         &mut engine,
         &report(
             2,
             2,
             two_screens(),
-            vec![fact("win-a", "out-a", 0)],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
             vec![],
             vec![],
             "win-a",
@@ -2280,7 +2280,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
             1,
             1,
             two_screens(),
-            vec![fact("win-a", "out-a", 0)],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
             vec![],
             vec![],
             "",
@@ -2294,7 +2294,7 @@ fn implicit_send_source_freezes_pre_observation_home() {
         &mut engine,
         &staged(
             2,
-            vec![fact("win-a", "out-a", 0)],
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
             "win-a",
             Some((810, 10)),
             Some("out-b"),

@@ -1476,7 +1476,9 @@ fn implicit_send_numbered_home() -> WorldCommand {
     WorldCommand::SendNumbered {
         window: crate::directional::WindowSubject::CurrentFocus,
         source: SendSource::HomeThenAction,
-        index: 0,
+        // Use an explicit ordinal so sole-member Append policy cannot
+        // mask the implicit subject/source routing under test.
+        index: 2,
         follow: false,
     }
 }

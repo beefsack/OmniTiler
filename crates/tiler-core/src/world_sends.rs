@@ -800,11 +800,116 @@ impl WorldTransaction<'_> {
         }
     }
 
+    /// Append must not replace a sole member's workspace with its adjacent
+    /// spare. Require positive local evidence; uncertainty leaves the
+    /// regular send path (and its existing safety fences) in charge.
+    fn append_would_replace_source(
+        &self,
+        window: &WindowId,
+        source: &DomainKey,
+        spare: &str,
+    ) -> bool {
+        let stage = &self.world.staged;
+        let output = &source.output;
+        let mover = self.derived_for(window);
+        if !stage.observation.inventory_complete
+            || self.screen_complete(output) != Some(true)
+            || stage.homing.get(window) != Some(source)
+            || mover.sticky
+            || mover.hold
+        {
+            return false;
+        }
+        let native = if self.connection.host_owned_workspace_domains() {
+            let Some(row) = stage
+                .observation
+                .native
+                .iter()
+                .find(|row| row.output == *output)
+            else {
+                return false;
+            };
+            let binding = |id: &str| {
+                self.world
+                    .settlement
+                    .native_map
+                    .iter()
+                    .find(|((out, _), logical)| out == &output.0 && logical.as_str() == id)
+                    .map(|((_, native), _)| native.as_str())
+            };
+            let known = |native: &str, occupied: bool| {
+                row.native_order.iter().any(|id| id == native)
+                    && row.occupancy.iter().any(|occupancy| {
+                        occupancy.native == native
+                            && occupancy.count.is_some_and(|count| !occupied || count > 0)
+                    })
+            };
+            let Some(from) = binding(&source.workspace.0).filter(|native| known(native, true))
+            else {
+                return false;
+            };
+            // An unbound logical spare has no native occupancy yet. If
+            // it is bound, unreadable occupancy cannot prove this guard.
+            let to = binding(spare);
+            if to.is_some_and(|native| !known(native, false)) {
+                return false;
+            }
+            Some((row, from, to))
+        } else {
+            None
+        };
+        if stage.held_windows.iter().any(|held| {
+            held.output.as_ref().is_none_or(|out| out == output)
+                || self
+                    .core_homing(&held.window)
+                    .is_some_and(|home| home.output == *output)
+        }) {
+            return false;
+        }
+        for (candidate, fact) in &stage.facts {
+            let home = stage.homing.get(candidate);
+            if home.is_none_or(|home| home.output != *output)
+                && fact.output.as_ref().is_some_and(|out| out != output)
+            {
+                continue;
+            }
+            let shape = self.derived_for(candidate);
+            if shape.sticky && !shape.hold {
+                continue;
+            }
+            if shape.hold {
+                return false;
+            }
+            let Some(home) = home else { return false };
+            if let Some((row, from, to)) = native {
+                let Some(receipt) = fact.native_workspace.as_deref() else {
+                    return false;
+                };
+                let wrong_cell = if candidate == window {
+                    receipt != from
+                } else {
+                    receipt == from
+                        || Some(receipt) == to
+                        || !row.native_order.iter().any(|id| id == receipt)
+                };
+                if fact.output.as_ref() != Some(output) || wrong_cell {
+                    return false;
+                }
+            }
+            if home.output == *output
+                && (home.workspace.0 == spare || (home == source && candidate != window))
+            {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Numbered send over the scoped ring for `output`: positional
     /// `1..=9`, or `0` for the trailing path (reuse the live trailing
-    /// empty, else mint the trailing workspace immediately, exactly like
-    /// lifecycle). Commits an ordinary transfer; follow additionally selects
-    /// the target view while stays never view-switch.
+    /// empty, else mint the trailing workspace immediately). Append to an
+    /// adjacent empty spare is a no-op for a proven sole ordinary member;
+    /// otherwise follow selects the target view and stay never switches.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_numbered_send(
         &mut self,
@@ -889,6 +994,12 @@ impl WorldTransaction<'_> {
             let selection = resolve_trailing(&ring, &occupied);
             match selection {
                 TrailingSelection::Reuse(target) => {
+                    if matches!(ring.as_slice(), [.., source, _] if source == &source_key.workspace.0)
+                        && self.append_would_replace_source(window, &source_key, &target)
+                    {
+                        self.note_command(command_seq);
+                        return CommandApplied::NoEffect;
+                    }
                     let operation_id = format!("op-{command_seq}");
                     let result = self.execute_send(
                         issue,

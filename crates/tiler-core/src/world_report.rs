@@ -2144,11 +2144,10 @@ pub enum WorldCommand {
     },
     /// Numbered send: positional `0..=9` over the scoped send ring for the
     /// resolved source (`0` is the trailing path: reuse the live trailing
-    /// empty or create the trailing workspace immediately, exactly like
-    /// lifecycle). Commits an ordinary transfer; follow additionally selects
-    /// the same-output target view while `follow=false` stays never move
-    /// any view. Source resolution as above; explicit outputs bypass
-    /// unchanged.
+    /// empty or create a trailing workspace). Index `0` does nothing when
+    /// a proven sole ordinary member would fill its adjacent local spare.
+    /// Otherwise follow selects the same-output target view; stay never
+    /// switches views. Explicit source outputs bypass source resolution.
     SendNumbered {
         window: WindowSubject,
         source: SendSource,

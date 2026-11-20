@@ -1238,6 +1238,116 @@ fn shared_mode_unified_retire_and_reselect() {
     );
 }
 
+fn append_command(window: &str, follow: bool) -> WorldCommand {
+    WorldCommand::SendNumbered {
+        window: WindowSubject::Window(WindowId(window.to_owned())),
+        source: SendSource::HomeThenAction,
+        index: 0,
+        follow,
+    }
+}
+
+fn single_output_append_report(seq: u64, middle: bool, spare_count: Option<u32>) -> WorldReportV4 {
+    let mut windows = vec![hfact("wb", "out-a", "n0", 0, true)];
+    let mut counts = vec![("n0", Some(1))];
+    if middle {
+        windows.push(hfact("wa", "out-a", "n1", 100, false));
+        counts.push(("n1", Some(1)));
+    }
+    counts.push(("spare", spare_count));
+    let order = counts.iter().map(|(native, _)| *native).collect();
+    let mut report = report_host(
+        seq,
+        vec![screen("out-a", 0)],
+        windows,
+        vec![obs("out-a", order, "n0", counts)],
+    );
+    report.focused_global = "wb".to_owned();
+    report.foreground_known = true;
+    report
+}
+
+#[test]
+fn repeated_adjacent_sole_append_is_noop_for_follow_and_stay() {
+    let mut engine = engine_host_pipeline(WorkspaceMode::PerOutputLocal);
+    let boot = accepted(&mut engine, &single_output_append_report(1, false, Some(0)));
+    let home = binding_for(&boot, "out-a", "n0").expect("source bound");
+    let creation_counter = engine.world.workspace.creation_counter;
+    let original = ring_ids_live(&engine, "out-a");
+    for (index, follow) in [true, true, false, false].into_iter().enumerate() {
+        let cmd = index as u64 + 1;
+        let mut report = single_output_append_report(cmd + 1, false, Some(0));
+        report.command_seq = Some(cmd);
+        report.command = Some(append_command("wb", follow));
+        let reply = accepted(&mut engine, &report);
+        assert_eq!(engine.world.command_highwater, Some(cmd));
+        assert_eq!(step_counts(&reply), (0, 0, 0));
+        assert!(reply.focus_request.is_none());
+        assert!(reply.effects.is_empty());
+        assert_eq!(ring_ids_live(&engine, "out-a"), original);
+        assert_eq!(engine.world.workspace.creation_counter, creation_counter);
+        assert_eq!(engine.world.workspace.views["out-a"], home);
+        assert_eq!(
+            engine.world.workspace.members[&WindowId("wb".to_owned())]
+                .home
+                .workspace
+                .0,
+            home
+        );
+    }
+}
+
+#[test]
+fn append_moves_sole_member_into_nonadjacent_spare() {
+    let mut engine = engine_host_pipeline(WorkspaceMode::PerOutputLocal);
+    let boot = accepted(&mut engine, &single_output_append_report(1, true, Some(0)));
+    let spare = binding_for(&boot, "out-a", "spare").expect("spare bound");
+    let mut report = single_output_append_report(2, true, Some(0));
+    report.command_seq = Some(1);
+    report.command = Some(append_command("wb", true));
+    let reply = accepted(&mut engine, &report);
+    assert!(reply.transfers.iter().any(|transfer| {
+        transfer.kind == TransferKind::Window(WindowId("wb".to_owned()))
+            && transfer.target_workspace == spare
+    }));
+}
+
+#[test]
+fn adjacent_append_keeps_normal_send_when_spare_occupancy_is_unknown() {
+    let mut engine = engine_host_pipeline(WorkspaceMode::PerOutputLocal);
+    let boot = accepted(&mut engine, &single_output_append_report(1, false, None));
+    let spare = binding_for(&boot, "out-a", "spare").expect("spare bound");
+    let mut report = single_output_append_report(2, false, None);
+    report.command_seq = Some(1);
+    report.command = Some(append_command("wb", true));
+    let reply = accepted(&mut engine, &report);
+    assert!(reply.transfers.iter().any(|transfer| {
+        transfer.kind == TransferKind::Window(WindowId("wb".to_owned()))
+            && transfer.target_workspace == spare
+    }));
+}
+
+#[test]
+fn adjacent_sole_append_does_not_spend_unbound_spare() {
+    let mut engine = engine_host_pipeline(WorkspaceMode::PerOutputLocal);
+    let mut report = single_output_append_report(1, false, None);
+    report.native[0].native_order.pop();
+    report.native[0].occupancy.pop();
+    let boot = accepted(&mut engine, &report);
+    assert_eq!(boot.native_creations.len(), 1, "ordinary spare backing");
+    let original = ring_ids_live(&engine, "out-a");
+    report.request_id = "req-2".to_owned();
+    report.request_seq = 2;
+    report.observation_seq = 2;
+    report.command_seq = Some(1);
+    report.command = Some(append_command("wb", true));
+    let reply = accepted(&mut engine, &report);
+    assert!(reply.transfers.is_empty());
+    assert!(reply.focus_request.is_none());
+    assert_eq!(reply.native_creations, boot.native_creations);
+    assert_eq!(ring_ids_live(&engine, "out-a"), original);
+}
+
 enum SharedSpareFill {
     Relative,
     RelativeAfterDivergence,
@@ -1323,26 +1433,30 @@ fn exercise_shared_roster_spare_fills(fill: SharedSpareFill) {
     let boot = accepted(&mut engine, &report(1, &order, &order, "n0"));
     assert_eq!(step_counts(&boot), (0, 0, 0));
     check_live(&boot, &engine, &order, "n0");
+    if matches!(fill, SharedSpareFill::Append) {
+        for (command_seq, follow) in [(1, true), (2, true), (3, false), (4, false)] {
+            let mut send = report(command_seq + 1, &order, &order, "n0");
+            send.command_seq = Some(command_seq);
+            send.command = Some(append_command("wb", follow));
+            let sent = accepted(&mut engine, &send);
+            assert_eq!(engine.world.command_highwater, Some(command_seq));
+            assert_eq!(step_counts(&sent), (0, 0, 0));
+            assert!(sent.focus_request.is_none());
+            assert!(sent.effects.is_empty());
+            check_live(&sent, &engine, &order, "n0");
+        }
+        return;
+    }
     let mut seq = 1;
     for (command_seq, from, to, created) in [(1, "n0", "n1", "n2"), (2, "n1", "n2", "n3")] {
         seq += 1;
         let mut send = report(seq, &order, &order, from);
         send.command_seq = Some(command_seq);
-        let window = WindowSubject::Window(WindowId("wb".to_owned()));
-        send.command = Some(if matches!(fill, SharedSpareFill::Append) {
-            WorldCommand::SendNumbered {
-                window,
-                source: SendSource::HomeThenAction,
-                index: 0,
-                follow: true,
-            }
-        } else {
-            WorldCommand::SendRelative {
-                window,
-                source: SendSource::HomeThenAction,
-                delta: 1,
-                follow: true,
-            }
+        send.command = Some(WorldCommand::SendRelative {
+            window: WindowSubject::Window(WindowId("wb".to_owned())),
+            source: SendSource::HomeThenAction,
+            delta: 1,
+            follow: true,
         });
         let sent = accepted(&mut engine, &send);
         let target = binding_for(&sent, "out-b", to).expect("send fills the already-backed spare");
@@ -1438,7 +1552,7 @@ fn shared_roster_divergent_readback_holds_retirement_and_spare_backing() {
 }
 
 #[test]
-fn shared_roster_repeated_append_creates_one_native_per_fill() {
+fn shared_roster_repeated_adjacent_sole_append_leaves_both_rings_unchanged() {
     exercise_shared_roster_spare_fills(SharedSpareFill::Append);
 }
 
