@@ -719,6 +719,60 @@ function settleFollowView(
     }
 }
 
+function readFrame(env: ApplyEnv, ref: object): { x: number; y: number; w: number; h: number } | null {
+    try {
+        return env.readLiveRect(ref);
+    } catch (error) {
+        void error;
+        return null;
+    }
+}
+
+// False means the fresh setter fence failed, not that KWin refused the frame.
+function applyTiledFrame(
+    env: ApplyEnv,
+    entryObs: string,
+    observed: ObservedWindow,
+    target: NonNullable<WorldReplyWindow["frame"]>,
+    stamp: string,
+    result: ApplyResult,
+    expectLive?: { out: string; ws: string },
+): boolean {
+    const live = readFrame(env, observed.ref);
+    if (live === null) {
+        result.held += 1;
+        return true;
+    }
+    if (sameRect(live, target)) {
+        return true;
+    }
+    if (!preSetterOk(env, env.reply, entryObs, observed, true, expectLive)) {
+        return false;
+    }
+    let setter: FrameSetter;
+    try {
+        setter = env.setGeometry(observed.ref, { x: target[0], y: target[1], w: target[2], h: target[3] })
+            ? "accepted" : "refused";
+    } catch (error) {
+        void error;
+        setter = "threw";
+    }
+    const readback = readFrame(env, observed.ref);
+    // Core owns clamp/suppression from this mechanical attempt plus the
+    // next observed facts. A setter boolean is not proof of convergence.
+    env.state.recordFrameAttempt({
+        win: observed.win, target: [target[0], target[1], target[2], target[3]], setter,
+        readback: readback === null ? null : [readback.x, readback.y, readback.w, readback.h],
+        dpiBefore: null, dpiAfter: null, attemptMs: stamp, op: "", pre: null,
+    });
+    if (setter === "accepted") {
+        result.geometryWrites += 1;
+    } else if (readback === null || !sameRect(readback, target)) {
+        result.held += 1;
+    }
+    return true;
+}
+
 function runApply(env: ApplyEnv, stamp: string): ApplyResult {
     const { state, observation, reply } = env;
     const result: ApplyResult = {
@@ -751,14 +805,35 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             liveDesktopIds.add(id);
         }
     }
-    // 1. Window rows: per-property diff. Frame writes need controlled frame
-    // authority; membership writes need a retained core window transfer with
-    // its stable operation identity plus controlled membership authority.
-    // Untouched/held rows authorize nothing. Floats never take frame writes
-    // from a send: membership only. Rows under an outstanding window
-    // transfer with a different desired homing defer frames until
-    // membership proof (see the arrival gate below).
-    for (const row of reply.windows as WorldReplyWindow[]) {
+    // Give a commanded ordinary tiled crossing its native output send and
+    // final placement before reflowing siblings. Keep other rows in order;
+    // commandless transfers (including drag arrival) keep their old path.
+    let crossings: Set<WorldReplyWindow> | undefined;
+    if (!observation.gesture) {
+        for (const transfer of reply.transfers) {
+            if (transfer.kind !== "window" || transfer.cmdSeq === null || transfer.held || state.isDispatched(transfer.op)) {
+                continue;
+            }
+            const observed = byWin.get(transfer.win);
+            if (observed === undefined || observed.out === transfer.out || observed.minimized ||
+                observed.fullscreen || observed.maximized || observed.sticky ||
+                nativeWsOf(reply, transfer.out, transfer.ws) === null) {
+                continue;
+            }
+            const row = reply.windows.find((w) => w.win === transfer.win);
+            if (row !== undefined && row.out === transfer.out && row.ws === transfer.ws &&
+                !row.floating && row.frame_op === "" && row.clear_op === "" && row.state.length === 0 &&
+                row.frame_auth === "controlled" && row.frame_hold === "" &&
+                row.member_auth === "controlled" && row.member_hold === "" &&
+                (row.frame ?? row.alloc) !== null) {
+                (crossings ??= new Set()).add(row);
+            }
+        }
+    }
+    const rows = crossings === undefined
+        ? reply.windows
+        : [...crossings, ...reply.windows.filter((row) => !crossings?.has(row))];
+    for (const row of rows) {
         if (midApplyStopped(env, entryObs)) {
             result.stoppedMidApply = true;
             break;
@@ -775,107 +850,17 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         const frameControlled = row.frame_auth === "controlled" && row.frame_hold === "";
         const memberControlled = row.member_auth === "controlled" && row.member_hold === "";
         const targetFrame = row.frame ?? row.alloc;
-        // Arrival gate: a row under an outstanding window transfer whose
-        // desired homing differs from the observed homing takes no frame
-        // write until membership proof arrives. The target frame belongs
-        // to the destination output; writing it pre-move would place
-        // foreign geometry on the source. Membership actuates below;
-        // frames converge on the reports after arrival.
-        const arrivalTransfer = reply.transfers.find((t) =>
-            t.kind === "window" && t.win === row.win,
-        );
-        // Translate the logical transfer target through the reply bindings
-        // before comparing against the native observed homing (native
-        // setters, live reads, and observed homing all speak native ids).
-        // An unbound or unknown target keeps the gate pending, never a
-        // guess; the membership path below holds truthfully instead.
-        const arrivalNative = arrivalTransfer === undefined
-            ? null
-            : nativeWsOf(reply, arrivalTransfer.out, arrivalTransfer.ws);
-        const arrivalPending = arrivalTransfer !== undefined &&
-            (arrivalNative === null ||
-                arrivalTransfer.out !== observed.out || arrivalNative !== observed.ws);
+        const transfer = reply.transfers.find((t) => t.kind === "window" && t.win === row.win);
+        const targetNative = transfer === undefined ? null : nativeWsOf(reply, transfer.out, transfer.ws);
+        const arrivalPending = transfer !== undefined &&
+            (transfer.out !== observed.out || targetNative === null || targetNative !== observed.ws);
         if (arrivalPending) {
-            // Fall through to the membership path below without a frame
-            // write; never hold-count a correctly deferred frame.
+            // The destination frame must never be written at the source.
+            // The same-flight crossing below requires fresh arrival proof.
         } else if (targetFrame !== null && frameControlled && !safetyGuarded && !coreFloating) {
-            let liveRect: { x: number; y: number; w: number; h: number } | null = null;
-            try {
-                liveRect = env.readLiveRect(observed.ref);
-            } catch (error) {
-                void error;
-                liveRect = null;
-            }
-            if (liveRect !== null && !sameRect(liveRect, targetFrame)) {
-                if (!preSetterOk(env, reply, entryObs, observed, true)) {
-                    result.stoppedMidApply = true;
-                    break;
-                }
-                let ok = false;
-                let threw = false;
-                try {
-                    ok = env.setGeometry(observed.ref, { x: targetFrame[0], y: targetFrame[1], w: targetFrame[2], h: targetFrame[3] });
-                } catch (error) {
-                    void error;
-                    threw = true;
-                }
-                if (!threw && ok) {
-                    result.geometryWrites += 1;
-                    // The core owns clamp/transient suppression over the
-                    // mechanical fact below plus the fresh staged facts:
-                    // a still-mismatched pair suppresses the next desire
-                    // core-side, and any genuine change re-arms it. The
-                    // adapter keeps no local retry budget; every
-                    // core-authorized Controlled mismatch writes once per
-                    // apply and the attempt row tells the core.
-                    let converged: { x: number; y: number; w: number; h: number } | null = null;
-                    try {
-                        converged = env.readLiveRect(observed.ref);
-                    } catch (error) {
-                        void error;
-                        converged = null;
-                    }
-                    state.recordFrameAttempt({
-                        win: row.win, target: [targetFrame[0], targetFrame[1], targetFrame[2], targetFrame[3]],
-                        setter: "accepted", readback: converged === null ? null : [converged.x, converged.y, converged.w, converged.h],
-                        dpiBefore: null, dpiAfter: null, attemptMs: stamp, op: "", pre: null,
-                    });
-                } else {
-                        // Setter booleans are not proof: a false that already
-                        // converged counts as converged; a throw (or a false
-                        // with no convergence) stays a narrow hold, never a
-                        // false proven refusal.
-                        let proof: { x: number; y: number; w: number; h: number } | null = null;
-                        try {
-                            proof = env.readLiveRect(observed.ref);
-                        } catch (error) {
-                            void error;
-                            proof = null;
-                        }
-                        // A setter ran, so its disposition plus the immediate
-                        // readback rides the next report (refused or threw,
-                        // never a verdict).
-                        const sweepSetter: FrameSetter = threw ? "threw" : "refused";
-                        state.recordFrameAttempt({
-                            win: row.win, target: [targetFrame[0], targetFrame[1], targetFrame[2], targetFrame[3]],
-                            setter: sweepSetter, readback: proof === null ? null : [proof.x, proof.y, proof.w, proof.h],
-                            dpiBefore: null, dpiAfter: null, attemptMs: stamp, op: "", pre: null,
-                        });
-                        // Setter booleans are not proof: a false that already
-                        // converged needs nothing further; anything else
-                        // holds narrowly while the recorded attempt plus
-                        // staged facts let the core suppress or resume.
-                        // No local retry budget.
-                        if (proof === null || !sameRect(proof, targetFrame)) {
-                            result.held += 1;
-                        }
-                    }
-            } else if (liveRect !== null) {
-                // Converged: live already matches the target, so no write
-                // and no hold. Suppression, when the core wants it, arrives
-                // as a held scope on a later reply.
-            } else {
-                result.held += 1;
+            if (!applyTiledFrame(env, entryObs, observed, targetFrame, stamp, result)) {
+                result.stoppedMidApply = true;
+                break;
             }
         } else if (targetFrame !== null && frameControlled && (safetyGuarded || coreFloating)) {
             result.held += 1;
@@ -885,7 +870,6 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         // authorizes no move here. Read-back confirmation proceeds even for
         // held/dispatched operations; only unconfirmed ones hold without
         // repeating.
-        const transfer = reply.transfers.find((t) => t.kind === "window" && t.win === row.win);
         if (!memberControlled || transfer === undefined) {
             continue;
         }
@@ -895,7 +879,6 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         // Native target for every setter, live comparison, and read-back
         // below (the reply row names the logical workspace). Unbound or
         // unknown targets hold with no attempt recorded.
-        const targetNative = nativeWsOf(reply, targetOut, targetWs);
         if (targetNative === null) {
             result.held += 1;
             continue;
@@ -1062,6 +1045,12 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                     attemptMs: stamp,
                 });
             }
+            // Keep KWin's native send semantics (output rules, focus, transients
+            // and restore geometry). Once it proves exact homing, request only
+            // the published final rectangle; never write a remapped size.
+            if (outAttempted && outOk && targetFrame !== null && crossings?.has(row)) {
+                applyTiledFrame(env, entryObs, observed, targetFrame, stamp, result, midHome);
+            }
             settleFollowView(env, reply, entryObs, transfer, row.win, result);
             continue;
         }
@@ -1130,6 +1119,12 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             });
         }
         if (proof !== null && proof.out === targetOut && proof.ws === targetNative) {
+            // The native send may first land on the target output's current
+            // workspace. Only the exact post-desktop-set home permits the
+            // final rectangle here; async/ambiguous arrivals use a later capture.
+            if (outAttempted && outOk && !threw && wsOk && targetFrame !== null && crossings?.has(row)) {
+                applyTiledFrame(env, entryObs, observed, targetFrame, stamp, result, proof);
+            }
             settleFollowView(env, reply, entryObs, transfer, row.win, result);
         } else if (!threw && (!outAttempted || !outOk) && (!wsAttempted || !wsOk) && proof !== null && proof.out === observed.out && proof.ws === observed.ws) {
             // Fresh proof nothing happened plus explicit native refusal on

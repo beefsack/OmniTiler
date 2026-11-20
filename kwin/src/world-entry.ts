@@ -6546,6 +6546,28 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         worldTraceProbes.get(state)?.noteTraceApplyBegin(flight);
                     }
                     const unboundForegroundSample = !fresh.foregroundKnown ? fresh.foregroundSample : undefined;
+                    // The journal supplies a shared monotonic clock for setter, signal and capture traces.
+                    const traceActuator = typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1"
+                        ? (ref: object, setter: string, request: string, write: () => boolean): boolean => {
+                            const note = (phase: "pre" | "post"): void => {
+                                try {
+                                    const win = focusEvidenceId(ref);
+                                    const out = outputNameOf(readProp(ref, "output"));
+                                    const frame = applyHostBase.readLiveRect(ref);
+                                    log(`omnitiler:world:trace ev=actuator-${phase} src=${token(flight.source)} ` +
+                                        `win=${win ?? "-"} setter=${setter} req=${request} out=${out ?? "-"} ` +
+                                        `frame=${frame === null ? "-" : `${frame.x},${frame.y},${frame.w},${frame.h}`}`);
+                                } catch (error) {
+                                    void error;
+                                }
+                            };
+                            note("pre");
+                            try {
+                                return write();
+                            } finally {
+                                note("post");
+                            }
+                        } : null;
                     const applied = applyWorldReply({
                         state,
                         observation: fresh,
@@ -6580,12 +6602,16 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             ? { noteCreationReadback: (op: string | null, ws: string | null, native: string) =>
                                 worldTraceProbes.get(state)?.noteCreationReadback(parsed, op, ws, native) }
                             : {}),
-                        setGeometry: (ref, rect) =>
-                            withHomingSuppression(ref, () => setGeometryBase(ref, rect)),
-                        setMembership: (ref, wsNativeId, wsRef) =>
-                            withHomingSuppression(ref, () => applyHostBase.setMembership(ref, wsNativeId, wsRef)),
-                        sendToOutput: (ref, outRef) =>
-                            withHomingSuppression(ref, () => applyHostBase.sendToOutput(ref, outRef)),
+                        setGeometry: (ref, rect) => withHomingSuppression(ref, () =>
+                            typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1" && traceActuator !== null
+                                ? traceActuator(ref, "frame", `${rect.x},${rect.y},${rect.w},${rect.h}`, () => setGeometryBase(ref, rect))
+                                : setGeometryBase(ref, rect)),
+                        setMembership: (ref, wsNativeId, wsRef) => withHomingSuppression(ref, () =>
+                            applyHostBase.setMembership(ref, wsNativeId, wsRef)),
+                        sendToOutput: (ref, outRef) => withHomingSuppression(ref, () =>
+                            typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1" && traceActuator !== null
+                                ? traceActuator(ref, "output", outputNameOf(outRef) ?? "-", () => applyHostBase.sendToOutput(ref, outRef))
+                                : applyHostBase.sendToOutput(ref, outRef)),
                         switchView: (desktopRef, outRef) =>
                             withViewSuppression(desktopRef, outRef, () => applyHostBase.switchView(desktopRef, outRef)),
                         focusWindow: (ref, target) => target === undefined
@@ -8471,6 +8497,18 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 return;
             }
             if (signalName !== "frameGeometryChanged") subjectGuard += 1;
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1" &&
+                (signalName === "frameGeometryChanged" || signalName === "outputChanged")) {
+                try {
+                    const win = focusEvidenceId(ref);
+                    const frame = applyHostBase.readLiveRect(ref);
+                    log(`omnitiler:world:trace ev=native-window-change win=${win ?? "-"} signal=${signalName} ` +
+                        `out=${outputNameOf(readProp(ref, "output")) ?? "-"} ` +
+                        `frame=${frame === null ? "-" : `${frame.x},${frame.y},${frame.w},${frame.h}`}`);
+                } catch (error) {
+                    void error;
+                }
+            }
             const membershipChange = signalName === "desktopsChanged";
             if (homingSuppressDepth > 0 && homingSuppressRef === ref) {
                 // Same-flight own echo: closure/disappearance/unsafe

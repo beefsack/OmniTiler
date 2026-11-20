@@ -277,13 +277,13 @@ describe("world raw mechanical attempts", () => {
                     { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [10, 10, 100, 100], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
             });
-            // Round 2: one tiled frame correction (win-b), one member move
-            // with follow (win-a to out-2, target view unproven), one
-            // standalone view (out-1 back to d1), one explicit float
-            // placement (win-c), one clear token on an already-clear
-            // window (win-b, spends with no row), and one clear token on
-            // a maximized window (win-d, actuates through the native
-            // nonactivating setter with fresh pre/post proof).
+            // Round 2: a member move with follow (win-a to out-2, target
+            // view unproven) and its final tiled frame after exact homing,
+            // one sibling frame correction (win-b), one standalone view
+            // (out-1 back to d1), one explicit float placement (win-c),
+            // one clear token on an already-clear window (win-b, spends
+            // with no row), and one on a maximized window (win-d,
+            // actuates through the native nonactivating setter with fresh pre/post proof).
             // The round-1 apply may leave no dirty work, so drive the next
             // flight explicitly through a native invalidation.
             flow.fire("desktopsChanged");
@@ -300,7 +300,7 @@ describe("world raw mechanical attempts", () => {
                     { win: "win-d", out: "out-1", ws: "w1", alloc: [100, 100, 50, 50], frame: [100, 100, 50, 50], frame_auth: "untouched", frame_hold: "", member_auth: "untouched", member_hold: "", frame_op: "", clear_op: "op-clear-2", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
                 reply["transfers"] = [
-                    { op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false, cmdSeq: null, parent: null },
+                    { op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false, cmdSeq: "9", parent: null },
                     { op: "op-10", kind: "view", win: "", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null },
                 ];
             });
@@ -320,7 +320,7 @@ describe("world raw mechanical attempts", () => {
             const views = propAttempts.filter((r) => r["kind"] === "view");
             const clears = propAttempts.filter((r) => r["kind"] === "clear");
             const diag = `logs=${JSON.stringify(flow.logs)} wins=${JSON.stringify(inner["windows"])}`;
-            assert.ok(Array.isArray(frames) && frames.length === 2, `two frame attempts ride, got ${JSON.stringify(frames)} ${diag}`);
+            assert.ok(Array.isArray(frames) && frames.length === 3, `three frame attempts ride, got ${JSON.stringify(frames)} ${diag}`);
             assert.ok(Array.isArray(members) && members.length === 1, `one member attempt rides, got ${JSON.stringify(members)}`);
             assert.ok(Array.isArray(views) && views.length === 2, `two view attempts ride, got ${JSON.stringify(views)}`);
             assert.ok(Array.isArray(clears) && clears.length === 1, `one clear attempt rides, got ${JSON.stringify(clears)} ${diag}`);
@@ -331,10 +331,15 @@ describe("world raw mechanical attempts", () => {
             );
             // Tiled sweep: ordinary write (empty op, no prewrite), real
             // target plus immediate readback, nullable DPI, write stamp.
-            const sweep = frames.find((f) => f["op"] === "");
+            const sweep = frames.find((f) => f["win"] === "win-b");
             assert.deepEqual(
                 sweep,
                 { kind: "frame", win: "win-b", target: [800, 0, 400, 300], setter: "accepted", readback: [800, 0, 400, 300], dpiBefore: null, dpiAfter: null, attemptMs: "1", op: "", pre: null },
+            );
+            assert.deepEqual(
+                frames.find((f) => f["win"] === "win-a"),
+                { kind: "frame", win: "win-a", target: [800, 0, 200, 200], setter: "accepted", readback: [800, 0, 200, 200], dpiBefore: null, dpiAfter: null, attemptMs: "1", op: "", pre: null },
+                "the final tiled frame and its exact membership proof ride the same capture",
             );
             // Explicit float placement: stable op correlation plus the live
             // pre-write frame; the setter alone never proves completion.

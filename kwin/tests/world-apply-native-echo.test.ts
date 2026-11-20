@@ -295,6 +295,123 @@ function applyThroughHost(
     return applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: MIGRATE_TAKE, ...host, state, observation, reply, log: () => undefined });
 }
 
+function tiledCrossingReply(follow: boolean): WorldReply {
+    return {
+        ...migrationReply(),
+        scopes: [],
+        windows: [
+            { ...windowRow("win-b", DP, D6), frame: [8, 8, 784, 584] },
+            { ...windowRow("win-a", HDMI, DY), frame: [808, 8, 784, 584] },
+        ],
+        transfers: [
+            { op: "op-1", kind: "window", win: "win-a", out: HDMI, ws: DY, follow, held: false, cmdSeq: "1", parent: null },
+        ],
+    };
+}
+
+function trackFrameWrites(surf: ReturnType<typeof makeSurface>, calls: string[]): void {
+    for (const win of surf.wins) {
+        let geometry = win.frameGeometry;
+        Object.defineProperty(win, "frameGeometry", {
+            get: () => geometry,
+            set: (next: FakeWin["frameGeometry"]) => {
+                calls.push(`${win.internalId} frame ${next.x},${next.y},${next.width},${next.height} on ${win.output.name}/${win.desktops[0]?.id}`);
+                geometry = next;
+            },
+        });
+    }
+}
+
+describe("ordinary tiled crossing placement", () => {
+    for (const follow of [true, false]) {
+        it(`sends then requests only the final frame before sibling reflow (${follow ? "follow" : "stay"})`, () => {
+            const calls: string[] = [];
+            const surf = makeSurface({
+                onSend: (id) => {
+                    calls.push(`${id} output`);
+                    // Simulate KWin's internal remap without an adapter
+                    // frame setter; the final tile differs in position.
+                    const mover = surf.wins[0];
+                    assert.ok(mover !== undefined);
+                    Object.assign(mover.frameGeometry, { x: 960, y: 40 });
+                },
+            });
+            if (!follow) {
+                // Exercise both native echo paths: stay arrives on the
+                // target current directly, follow sets the desktop first.
+                surf.currents.set(HDMI, desk(DY));
+            }
+            trackFrameWrites(surf, calls);
+            const reply = tiledCrossingReply(follow);
+            if (!follow) {
+                // Equal-size crossing: the final position changes, not size.
+                const row = reply.windows.find((w) => w.win === "win-a");
+                assert.ok(row !== undefined);
+                row.frame = [808, 8, 200, 200];
+            }
+            const state = freshState(reply);
+            const first = applyThroughHost(surf, state, reply, observe(surf));
+            assert.deepEqual(calls, [
+                "win-a output",
+                `win-a frame 808,8,${follow ? "784,584" : "200,200"} on ${HDMI}/${DY}`,
+                `win-b frame 8,8,784,584 on ${DP}/${D6}`,
+            ]);
+            assert.equal(first.geometryWrites, 2);
+            assert.equal(first.membershipWrites, 1);
+            assert.equal(first.held, 0);
+            assert.deepEqual(surf.viewCalls, follow ? [`${HDMI}->${DY}`] : []);
+            assert.equal(state.isDispatched("op-1"), true);
+            assert.equal(state.framesForReport().filter((f) => f.win === "win-a").length, 1);
+        });
+    }
+
+    it("defers the mover frame and follow during output lag without replaying the send", () => {
+        const calls: string[] = [];
+        const surf = makeSurface({ lagOutput: true, onSend: (id) => calls.push(`${id} output`) });
+        trackFrameWrites(surf, calls);
+        const reply = tiledCrossingReply(true);
+        const state = freshState(reply);
+        const first = applyThroughHost(surf, state, reply, observe(surf));
+        assert.deepEqual(calls, ["win-a output", `win-b frame 8,8,784,584 on ${DP}/${D6}`]);
+        assert.equal(first.geometryWrites, 1);
+        assert.equal(first.held, 1);
+        assert.deepEqual(surf.viewCalls, []);
+        const mover = surf.wins[0];
+        assert.ok(mover !== undefined);
+        mover.output = { name: HDMI };
+        const second = applyThroughHost(surf, state, reply, observe(surf));
+        assert.equal(second.geometryWrites, 1);
+        assert.deepEqual(calls, [
+            "win-a output",
+            `win-b frame 8,8,784,584 on ${DP}/${D6}`,
+            `win-a frame 808,8,784,584 on ${HDMI}/${DY}`,
+        ]);
+        assert.deepEqual(surf.viewCalls, [`${HDMI}->${DY}`]);
+    });
+
+    it("does not place the mover when native homing is unproven", () => {
+        const calls: string[] = [];
+        const surf = makeSurface({
+            onSend: (id) => {
+                calls.push(`${id} output`);
+                const mover = surf.wins[0];
+                assert.ok(mover !== undefined);
+                mover.desktops = [desk(DX)];
+            },
+        });
+        trackFrameWrites(surf, calls);
+        const reply = tiledCrossingReply(true);
+        const state = freshState(reply);
+        const first = applyThroughHost(surf, state, reply, observe(surf));
+        assert.deepEqual(calls, ["win-a output", `win-b frame 8,8,784,584 on ${DP}/${D6}`]);
+        assert.equal(first.geometryWrites, 1);
+        assert.equal(first.held, 1);
+        assert.deepEqual(surf.viewCalls, []);
+        assert.equal(state.isDispatched("op-1"), true);
+        assert.equal(state.appliedWindowTarget.has("win-a"), false);
+    });
+});
+
 describe("world native output echo", () => {
     it("migrates both members through the pinned echo to the original workspace", () => {
         const surf = makeSurface();

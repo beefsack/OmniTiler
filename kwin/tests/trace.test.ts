@@ -139,6 +139,8 @@ describe("world entry probe compile-time stripping", () => {
             "traceIntentMeta",
             "traceEmitSettlementSnapshot",
             "traceLogSafe",
+            "actuator-pre",
+            "native-window-change",
         ]) {
             assert.ok(!bundle.includes(marker), `${label} bundle must not carry probe identifier ${marker}`);
         }
