@@ -95,15 +95,16 @@ struct Stage5HostView {
     bool trackedFrameKnown = false;
     qreal outputScale = 0.0;
     bool outputScaleKnown = false;
+    std::optional<BorderWorkspaceFacts> borderWorkspace;
+    bool borderAlreadyVisible = false;
 };
 
 // Decided visibility per surface, from the held accepted paint plus one
 // injected host view. Drawn underlay requires held coverage equal to the
 // actual latest witness; the drawn preview requires coverage at or past
 // the structural floor instead (same instance). The drawn border needs its
-// anchor chain current (router-owned, advanced only on delivered
-// same-anchor frame or lifecycle-boundary events with live proof) plus
-// live vetoes and valid live geometry
+// anchor chain current (router-owned, advanced only on delivered events
+// with live anchor proof) plus live vetoes and valid live geometry
 // (outer from live frame plus held outsets, inner inset by held width,
 // held radius for the ring); unknown frame/subject/eligibility/scale hides
 // only the border.
@@ -137,7 +138,7 @@ public:
     // (the member handler skips the tracked window on the same emission),
     // member-frame, fullscreen-mode, layout, visibility, and gesture
     // boundaries bump their scope plus the structural tick, then refresh
-    // all surfaces so no stale item remains visible. The mover-motion
+    // all surfaces except a border proved unchanged. The mover-motion
     // route is the exception: it bumps monotonically with the union scope
     // but WITHOUT the structural tick (the valid same-gesture preview
     // persists) and refreshes only its dirtied border/underlay surfaces;
@@ -149,11 +150,13 @@ public:
     // The gesture-boundary route takes the same optional same-anchor facts:
     // same-window proof advances the chain by the same one-bump rule,
     // unknown or mismatched facts clear it with no new join.
+    // Member frames and unrelated layout events may retain the displayed
+    // border only with unchanged native workspace and anchor facts.
     Stage5Refresh onActivation();
     Stage5Refresh onTrackedFrame(const Stage5HostView &host = Stage5HostView{});
-    Stage5Refresh onMemberFrame();
+    Stage5Refresh onMemberFrame(const Stage5HostView &host = {});
     Stage5Refresh onMotionFrame(bool tracked, const Stage5HostView &host = Stage5HostView{});
-    Stage5Refresh onLayoutChanged();
+    Stage5Refresh onLayoutChanged(const Stage5HostView &host = {});
     // Member visibility route (minimize/restore, hide/show): union scope
     // plus the structural tick, unconditionally, then border/underlay/
     // preview refresh; the anchor still remaps only for held members via

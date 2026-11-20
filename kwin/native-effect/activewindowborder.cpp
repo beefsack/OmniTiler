@@ -19,6 +19,7 @@
 #include <options.h>
 #include <scene/workspacescene.h>
 #include <scene/windowitem.h>
+#include <virtualdesktops.h>
 #include <window.h>
 #include <workspace.h>
 
@@ -475,13 +476,13 @@ ActiveWindowBorderEffect::ActiveWindowBorderEffect()
     });
     // Workspace-structure changes with no per-window signal: outputs and
     // desktops gained or lost, the active desktop switched, show-desktop
-    // toggled, or output geometry changed. The union scope plus the
-    // structural tick hide held shapes until the covering capture lands;
-    // rendering stays OpenGL-gated while the witness advances regardless.
+    // toggled, or output geometry changed. Only roster changes can retain
+    // an existing border with an unchanged native anchor. All signals
+    // still advance the original union scope and structural tick.
     connect(effects, &EffectsHandler::screenAdded, this, [this]() { onWorkspaceStructureChanged(); });
     connect(effects, &EffectsHandler::screenRemoved, this, [this]() { onWorkspaceStructureChanged(); });
-    connect(effects, &EffectsHandler::desktopAdded, this, [this]() { onWorkspaceStructureChanged(); });
-    connect(effects, &EffectsHandler::desktopRemoved, this, [this]() { onWorkspaceStructureChanged(); });
+    connect(effects, &EffectsHandler::desktopAdded, this, [this]() { onWorkspaceStructureChanged(true); });
+    connect(effects, &EffectsHandler::desktopRemoved, this, [this]() { onWorkspaceStructureChanged(true); });
     connect(effects, &EffectsHandler::desktopChanged, this, [this]() { onWorkspaceStructureChanged(); });
     connect(effects, &EffectsHandler::showingDesktopChanged, this, [this]() { onWorkspaceStructureChanged(); });
     connect(effects, &EffectsHandler::virtualScreenGeometryChanged, this, [this]() { onWorkspaceStructureChanged(); });
@@ -816,12 +817,12 @@ void ActiveWindowBorderEffect::subscribeMaximize(EffectWindow *window)
             // before entering maximize, but defer restoration until the
             // changed signal so the border uses the restored frame.
             if (horizontal || vertical) {
-                updateMaximizedState(changed, true);
+                updateMaximizedState(changed, true, false);
             }
         });
     connect(window, &EffectWindow::windowMaximizedStateChanged, this,
         [this](EffectWindow *changed, bool horizontal, bool vertical) {
-            updateMaximizedState(changed, horizontal || vertical);
+            updateMaximizedState(changed, horizontal || vertical, true);
         });
     // Direct-read seed from the native committed maximizeMode(): until a
     // Wayland client acknowledges its maximize configure it stays rendered
@@ -917,8 +918,9 @@ void ActiveWindowBorderEffect::onGroupMemberFrameChanged(EffectWindow *window)
     // Genuine mover motion (live gesture identity plus the interactive
     // flag) takes the monotonic-only route; every other subscribed frame
     // is structural.
+    const auto host = m_borderItem.isVisible() ? currentHostView(true) : Stage5HostView{};
     const Stage5Refresh refresh =
-        isGenuineMoverFrame(window) ? m_stage.onMotionFrame(false) : m_stage.onMemberFrame();
+        isGenuineMoverFrame(window) ? m_stage.onMotionFrame(false, host) : m_stage.onMemberFrame(host);
     if (!m_isOpenGL) {
         return;
     }
@@ -978,7 +980,8 @@ void ActiveWindowBorderEffect::onGroupMemberDesktopsChanged(EffectWindow *window
     // behind the underlay and the drop target set with no frame signal:
     // union scope plus the structural tick, published so the next actual
     // facts capture covers it.
-    const Stage5Refresh refresh = m_stage.onLayoutChanged();
+    const bool mayPreserve = window != m_trackedWindow && m_borderItem.isVisible();
+    const Stage5Refresh refresh = mayPreserve ? m_stage.onLayoutChanged(currentHostView(true)) : m_stage.onLayoutChanged();
     if (!m_isOpenGL) {
         return;
     }
@@ -986,15 +989,11 @@ void ActiveWindowBorderEffect::onGroupMemberDesktopsChanged(EffectWindow *window
     emitPresentationTransitionDiag();
 }
 
-void ActiveWindowBorderEffect::onWorkspaceStructureChanged()
+void ActiveWindowBorderEffect::onWorkspaceStructureChanged(bool rosterOnly)
 {
-    // Outputs or desktops gained/lost, active desktop switched,
-    // show-desktop toggled, or output geometry changed: the held shapes
-    // were computed for the previous workspace structure, so the union
-    // scope plus the structural tick hide them until the covering capture
-    // lands. The witness advances even without OpenGL (facts truth for
-    // captures); rendering stays OpenGL-gated.
-    const Stage5Refresh refresh = m_stage.onLayoutChanged();
+    // The witness advances even without OpenGL (facts truth for captures).
+    const bool mayPreserve = rosterOnly && m_borderItem.isVisible();
+    const Stage5Refresh refresh = mayPreserve ? m_stage.onLayoutChanged(currentHostView(true)) : m_stage.onLayoutChanged();
     if (!m_isOpenGL) {
         return;
     }
@@ -1327,7 +1326,7 @@ void ActiveWindowBorderEffect::onTrackedFullscreenChanged()
     emitPresentationTransitionDiag();
 }
 
-void ActiveWindowBorderEffect::updateMaximizedState(EffectWindow *window, bool maximized)
+void ActiveWindowBorderEffect::updateMaximizedState(EffectWindow *window, bool maximized, bool committed)
 {
     if (window == nullptr) {
         return;
@@ -1338,20 +1337,20 @@ void ActiveWindowBorderEffect::updateMaximizedState(EffectWindow *window, bool m
     } else {
         m_maximizedWindows.remove(window);
     }
-    if (m_trackedWindow == window) {
-        if (changed) {
-            // Maximize transitions change the held shapes' validity with no
-            // guaranteed frame signal: run the structural route so the
-            // anchor chain clears and coverage requires fresh paint. Without
-            // this a maximize/restore pair with no frame event would leave
-            // a stale eligible chain armed across the veto flap and the old
-            // paint would show on restore with no covering capture.
-            const Stage5Refresh refresh = m_stage.onLayoutChanged();
-            if (m_isOpenGL) {
-                applyStageRefresh(refresh);
-                emitPresentationTransitionDiag();
-            }
+    // A committed axes change (including partial to full) may change core
+    // border eligibility without moving the frame or changing focus.
+    // An early entry veto and the later commit are distinct native events.
+    LogicalOutput *anchorOutput = liveTrackedOutput(m_trackedWindow);
+    LogicalOutput *changedOutput = liveTrackedOutput(window);
+    if ((changed || committed) && (window == m_trackedWindow
+            || (m_trackedWindow && (!anchorOutput || !changedOutput || anchorOutput == changedOutput)))) {
+        const Stage5Refresh refresh = m_stage.onLayoutChanged();
+        if (m_isOpenGL) {
+            applyStageRefresh(refresh);
+            emitPresentationTransitionDiag();
         }
+    }
+    if (m_trackedWindow == window) {
         updateBorder();
         // A displayed paint must hide immediately on maximize and may only
         // return on the restore transition; the live veto below keeps a
@@ -1696,7 +1695,7 @@ bool ActiveWindowBorderEffect::isLiveEligibleNow() const
     return true;
 }
 
-Stage5HostView ActiveWindowBorderEffect::currentHostView()
+Stage5HostView ActiveWindowBorderEffect::currentHostView(bool readWorkspace)
 {
     // One injected host view for the extracted Stage 5 visibility
     // decision. Every field is a live read: endpoint, foreground match,
@@ -1707,6 +1706,7 @@ Stage5HostView ActiveWindowBorderEffect::currentHostView()
     // stay opaque strings/flags; no derivation happens here.
     Stage5HostView host;
     host.endpointAvailable = m_groupDbusAvailable;
+    host.borderAlreadyVisible = readWorkspace && m_borderItem.isVisible();
     host.foregroundMatches = foregroundMatchesNow();
     host.liveEligible = isLiveEligibleNow();
     host.liveEligibleKnown = true;
@@ -1749,6 +1749,34 @@ Stage5HostView ActiveWindowBorderEffect::currentHostView()
                 host.outputScaleKnown = true;
             }
         } catch (...) {
+        }
+        if (readWorkspace) {
+            EffectWindow *tracked = m_trackedWindow;
+            if (tracked == effects->activeWindow() && host.liveEligible && tracked->windowItem()
+                && tracked->windowItem()->isVisible() && !Workspace::self()->showingDesktop()) {
+                // KWin 6.6 only has shared desktops; newer versions can
+                // report the selected desktop for this exact output.
+                const auto currentOnOutput = []<typename Handler>(Handler *handler, LogicalOutput *output) {
+                    if constexpr (requires { handler->currentDesktop(output); }) {
+                        return handler->currentDesktop(output);
+                    } else {
+                        return handler->currentDesktop();
+                    }
+                };
+                if (auto *desktop = currentOnOutput(effects, liveOutput);
+                    desktop && !desktop->id().isEmpty() && tracked->isOnDesktop(desktop)) {
+                    BorderWorkspaceFacts workspace{tracked, liveOutput, desktop->id(), {}};
+                    const auto nativeHome = tracked->desktops();
+                    workspace.home.reserve(nativeHome.size());
+                    for (auto *member : nativeHome) {
+                        if (!member || member->id().isEmpty()) {
+                            return host;
+                        }
+                        workspace.home.append(member->id());
+                    }
+                    host.borderWorkspace = std::move(workspace);
+                }
+            }
         }
     }
     return host;
@@ -1857,7 +1885,7 @@ void ActiveWindowBorderEffect::applyPresentation(const QString &payload)
         liveGestureSerial = m_gestureSource->openSerial();
     }
     const PresentationStage5::EndpointResult result =
-        m_stage.applyEndpoint(payload, liveGestureInstance, liveGestureSerial, currentHostView());
+        m_stage.applyEndpoint(payload, liveGestureInstance, liveGestureSerial, currentHostView(true));
     if (result.apply == PresentationApply::StaleIgnored) {
         // Older revision, no live source, or coverage that is not exactly
         // the live source plus counter: ignored without touching the newer

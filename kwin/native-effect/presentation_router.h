@@ -28,16 +28,30 @@
 
 #include <QRect>
 #include <QString>
+#include <QPointer>
+#include <QStringList>
+
+#include <optional>
 
 namespace KWin
 {
+
+// Native facts needed only to hold an existing border across events that
+// do not belong to its anchor. Empty home means native all-desktops.
+struct BorderWorkspaceFacts {
+    QPointer<QObject> lifetime;
+    QPointer<QObject> output;
+    QString currentDesktop;
+    QStringList home;
+    bool operator==(const BorderWorkspaceFacts &) const = default;
+};
 
 // Live border-anchor facts for one endpoint/event (Qt-only seam input):
 // the actual live tracked/active/output identity plus the quantized live
 // frame, eligibility, and output scale observed around the delivered
 // event. Unknown by default (which clears the chain); the router
 // re-proves every field against the held descriptor on each use and
-// stores only the output identity/scale captured at arm time.
+// retains the proven output and workspace anchor at arm time.
 struct BorderAnchorFacts {
     bool known = false;
     QString trackedId;
@@ -49,6 +63,8 @@ struct BorderAnchorFacts {
     bool liveEligibleKnown = false;
     qreal outputScale = 0.0;
     bool outputScaleKnown = false;
+    std::optional<BorderWorkspaceFacts> workspace;
+    bool alreadyVisible = false;
 };
 
 class PresentationRouter
@@ -103,6 +119,8 @@ public:
     QString borderOutputId;
     qreal borderOutputScale = 0.0;
     bool borderOutputScaleKnown = false;
+    std::optional<BorderWorkspaceFacts> borderWorkspace;
+    QRect borderProvenFrame;
 
     // Seed (or re-seed on proven replacement) the witness namespace from
     // the live facts object. A changed instance restarts the epoch
@@ -115,6 +133,7 @@ public:
         borderChain = CoverWitness{};
         borderOutputId.clear();
         borderOutputScaleKnown = false;
+        borderWorkspace.reset();
     }
 
     bool borderChainCurrent() const
@@ -214,33 +233,32 @@ public:
     // and the structural tick, regardless of held display state (relevance
     // is observed facts, not visible paint: hidden members and
     // pre-first-paint geometry count).
-    void onMemberFrame(const QString &inst)
+    void onMemberFrame(const QString &inst, const BorderAnchorFacts &facts = {})
     {
-        clearBorderChain();
-        invalidate(InvalidationScope::Underlay, inst);
-        tickStructural();
+        onUnrelatedEvent(InvalidationScope::Underlay, inst, facts, true);
     }
 
     // Active-gesture mover-motion route: the genuine live interactive
     // mover's own frame tracks the pointer. Exactly one monotonic bump
     // with the union scope (All for the tracked mover, Underlay for a
-    // subscribed member mover) so strict border/underlay hide until fresh
-    // covering paint; the structural floor is untouched, so the valid
-    // same-gesture preview persists. The caller classifies genuine motion
+    // subscribed member mover). The structural floor is untouched, so the
+    // valid same-gesture preview persists. The caller classifies genuine motion
     // by live gesture identity plus the interactive-move flag (never
     // timing, geometry, or cursor matching); anything else takes the
     // structural routes above. Publishes through the stage like every
-    // other bump. Member motion (tracked false) never advances the border
-    // chain; tracked motion advances it only with live anchor facts under
-    // the same gap/identity/eligibility/scale rules as the structural
-    // route above.
+    // other bump. Tracked motion uses the same live proof as the structural
+    // route above; other-window motion uses the unrelated-event proof.
     void onMotionFrame(bool tracked, const QString &inst, const BorderAnchorFacts &facts = BorderAnchorFacts{})
     {
+        if (!tracked) {
+            onUnrelatedEvent(InvalidationScope::Underlay, inst, facts, false);
+            return;
+        }
         const CoverWitness preChain = borderChain;
         const QString preInstance = instance;
         const quint64 preCounter = counter;
-        invalidate(tracked ? InvalidationScope::All : InvalidationScope::Underlay, inst);
-        if (!tracked || !facts.known) {
+        invalidate(InvalidationScope::All, inst);
+        if (!facts.known) {
             clearBorderChain();
             return;
         }
@@ -293,11 +311,9 @@ public:
     // witness advances across all scopes plus the structural tick. The
     // open gesture (if any) still owns the preview through its producer
     // match, but pre-event coverage hides immediately with no repaint.
-    void onLayoutChanged(const QString &inst)
+    void onLayoutChanged(const QString &inst, const BorderAnchorFacts &facts = {})
     {
-        clearBorderChain();
-        invalidate(InvalidationScope::All, inst);
-        tickStructural();
+        onUnrelatedEvent(InvalidationScope::All, inst, facts, true);
     }
 
     // Production gesture-boundary route: drop the held drop-preview latch
@@ -346,7 +362,7 @@ public:
     // BORDER-ONLY arm: called by the stage after a newly accepted v2
     // endpoint with the live anchor facts for the same endpoint path.
     // Reuses the held descriptor (no duplicate descriptor fields) and
-    // stores only the proven output identity/scale. Re-arms only on exact
+    // retains the proven output and workspace anchor. Re-arms only on exact
     // current coverage (clearing first); a structurally accepted paint
     // with older coverage is handled inside applyEndpointPaint below
     // (retention by prior event proof), so this safely no-ops there.
@@ -381,6 +397,8 @@ public:
         borderOutputId = facts.outputId;
         borderOutputScale = facts.outputScale;
         borderOutputScaleKnown = true;
+        borderWorkspace = facts.workspace;
+        borderProvenFrame = facts.liveFrame;
         return true;
     }
 
@@ -438,6 +456,25 @@ public:
     }
 
 private:
+    void onUnrelatedEvent(InvalidationScope scope, const QString &inst, const BorderAnchorFacts &facts, bool structural)
+    {
+        const bool preserve = facts.alreadyVisible && facts.workspace && borderWorkspace
+            && facts.workspace->lifetime && facts.workspace->output && !facts.workspace->currentDesktop.isEmpty()
+            && *facts.workspace == *borderWorkspace && facts.liveFrame == borderProvenFrame;
+        const CoverWitness preChain = borderChain;
+        const QString preInstance = instance;
+        const quint64 preCounter = counter;
+        invalidate(scope, inst);
+        if (structural) {
+            tickStructural();
+        }
+        if (preserve) {
+            advanceBorderChain(preChain, preInstance, preCounter, facts);
+        } else {
+            clearBorderChain();
+        }
+    }
+
     // Same-anchor predicate for structural retention (witness obs/frame
     // excluded: the new witness authorizes nothing and is restored to the
     // held values by the caller). All other border anchor inputs must match
@@ -539,6 +576,7 @@ private:
             return false;
         }
         borderChain = paint.latest;
+        borderProvenFrame = facts.liveFrame;
         return true;
     }
 };

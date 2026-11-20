@@ -223,12 +223,13 @@ describe("presentation native static contract", () => {
             assert.match(trackedStage, /refresh\.preview = true/);
             assert.match(trackedStage, /publishInvalidation\(\)/);
             const memberBody = extractBody(effectImpl, "void ActiveWindowBorderEffect::onGroupMemberFrameChanged(EffectWindow");
-            assert.match(memberBody, /m_stage\.onMemberFrame\(\)/);
+            assert.match(memberBody, /m_borderItem\.isVisible\(\) \? currentHostView\(true\)/);
+            assert.match(memberBody, /m_stage\.onMotionFrame\(false, host\) : m_stage\.onMemberFrame\(host\)/);
             assert.match(memberBody, /applyStageRefresh\(refresh\)/);
             assert.doesNotMatch(memberBody, /m_router\.onMemberFrame\(/);
             assert.doesNotMatch(memberBody, /!m_presentation\.has/);
-            const memberStage = extractBody(stageImpl, "Stage5Refresh PresentationStage5::onMemberFrame()");
-            assert.match(memberStage, /refresh\.border = true/);
+            const memberStage = extractBody(stageImpl, "Stage5Refresh PresentationStage5::onMemberFrame(const Stage5HostView");
+            assert.match(memberStage, /refresh\.border = !m_router->borderChainCurrent\(\)/);
             assert.match(memberStage, /refresh\.anchor = true/);
             assert.match(memberStage, /refresh\.underlay = true/);
             assert.match(memberStage, /refresh\.preview = true/);
@@ -253,18 +254,20 @@ describe("presentation native static contract", () => {
             assert.match(memberFullscreen, /m_stage\.onFullscreenChanged\(\)/);
             assert.match(memberFullscreen, /applyStageRefresh\(refresh\)/);
             const memberDesktops = extractBody(effectImpl, "void ActiveWindowBorderEffect::onGroupMemberDesktopsChanged(EffectWindow");
-            assert.match(memberDesktops, /m_stage\.onLayoutChanged\(\)/);
+            assert.match(memberDesktops, /window != m_trackedWindow && m_borderItem\.isVisible\(\)/);
+            assert.match(memberDesktops, /mayPreserve \? m_stage\.onLayoutChanged\(currentHostView\(true\)\) : m_stage\.onLayoutChanged\(\)/);
             assert.match(memberDesktops, /applyStageRefresh\(refresh\)/);
-            const workspaceStructure = extractBody(effectImpl, "void ActiveWindowBorderEffect::onWorkspaceStructureChanged()");
-            assert.match(workspaceStructure, /m_stage\.onLayoutChanged\(\)/);
+            const workspaceStructure = extractBody(effectImpl, "void ActiveWindowBorderEffect::onWorkspaceStructureChanged(bool rosterOnly)");
+            assert.match(workspaceStructure, /rosterOnly && m_borderItem\.isVisible\(\)/);
+            assert.match(workspaceStructure, /mayPreserve \? m_stage\.onLayoutChanged\(currentHostView\(true\)\) : m_stage\.onLayoutChanged\(\)/);
             assert.match(workspaceStructure, /applyStageRefresh\(refresh\)/);
             for (const hook of [
                 /windowFullScreenChanged, this, &ActiveWindowBorderEffect::onGroupMemberFullscreenChanged/,
                 /windowDesktopsChanged, this, &ActiveWindowBorderEffect::onGroupMemberDesktopsChanged/,
                 /screenAdded, this, \[this\]\(\) \{ onWorkspaceStructureChanged\(\); \}/,
                 /screenRemoved, this, \[this\]\(\) \{ onWorkspaceStructureChanged\(\); \}/,
-                /desktopAdded, this, \[this\]\(\) \{ onWorkspaceStructureChanged\(\); \}/,
-                /desktopRemoved, this, \[this\]\(\) \{ onWorkspaceStructureChanged\(\); \}/,
+                /desktopAdded, this, \[this\]\(\) \{ onWorkspaceStructureChanged\(true\); \}/,
+                /desktopRemoved, this, \[this\]\(\) \{ onWorkspaceStructureChanged\(true\); \}/,
                 /desktopChanged, this, \[this\]\(\) \{ onWorkspaceStructureChanged\(\); \}/,
                 /showingDesktopChanged, this, \[this\]\(\) \{ onWorkspaceStructureChanged\(\); \}/,
                 /virtualScreenGeometryChanged, this, \[this\]\(\) \{ onWorkspaceStructureChanged\(\); \}/,

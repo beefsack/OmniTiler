@@ -119,7 +119,7 @@ private:
     // Live interactive-move liveness for the drop preview: a non-deleted
     // tracked move window exists. No identity or policy decision.
     bool groupMoveLiveNow() const;
-    void updateMaximizedState(EffectWindow *window, bool maximized);
+    void updateMaximizedState(EffectWindow *window, bool maximized, bool committed);
     // Native geometry-freshness vetoes (findings F/G): the tracked frame
     // changing dirties the border paint, and any held member frame changing
     // dirties the underlay paint (the underlay depends on ALL members, not
@@ -142,7 +142,7 @@ private:
     // Workspace-structure route for output/desktop/show-desktop/geometry
     // changes with no per-window signal: union scope plus the structural
     // tick, then a full refresh.
-    void onWorkspaceStructureChanged();
+    void onWorkspaceStructureChanged(bool rosterOnly = false);
     // Genuine mover-motion identity (exact, never timing, geometry, cursor
     // position, or pointer matching): the changed window names the live
     // open gesture window and its inner window holds an interactive move.
@@ -201,7 +201,7 @@ private:
     // One injected host view for the extracted Stage 5 visibility
     // decision: endpoint, foreground match, liveness, anchor, move, and
     // the live open gesture identity, all read live here.
-    Stage5HostView currentHostView();
+    Stage5HostView currentHostView(bool readWorkspace = false);
     // Applies one extracted refresh set: remaps the anchor, re-evaluates
     // the gated surfaces, and repaints only. Final item states commute,
     // so the fixed order below carries no policy.

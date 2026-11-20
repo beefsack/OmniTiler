@@ -704,6 +704,108 @@ int main()
         CHECK(boundaryClears(same, true));
     }
 
+    // Unrelated native events retain only an already displayed, fully
+    // proved anchor. The same Stage 5 routes still age the other surfaces.
+    {
+        QObject lifetime;
+        QObject output;
+        auto shown = anchorHost();
+        shown.borderWorkspace = KWin::BorderWorkspaceFacts{
+            &lifetime, &output, QStringLiteral("ws-1"), {QStringLiteral("ws-1"), QStringLiteral("ws-2")}};
+        shown.anchorOk = true;
+        shown.moveLive = true;
+        shown.liveGestureInstance = QStringLiteral("g-1");
+        shown.liveGestureSerial = QStringLiteral("7");
+
+        auto arm = [&](KWin::PresentationRouter &held, KWin::PresentationStage5 &render) {
+            held.setSourceInstance(QStringLiteral("inst-1"));
+            for (int i = 0; i < 7; ++i) {
+                render.onLayoutChanged();
+            }
+            const auto result = render.applyEndpoint(
+                QString::fromStdString(chainStructuralPayload("4", "9", 404, true)),
+                shown.liveGestureInstance, shown.liveGestureSerial, shown);
+            CHECK(result.apply == KWin::PresentationApply::Accepted);
+            const auto before = render.decide(shown);
+            CHECK(before.border && before.underlay && before.preview);
+        };
+        KWin::PresentationRouter held;
+        KWin::PresentationStage5 render(held);
+        arm(held, render);
+        shown.borderAlreadyVisible = true;
+        CHECK(!render.onMotionFrame(false, shown).border);
+        CHECK(render.decide(shown).preview && !render.decide(shown).underlay);
+        render.onMemberFrame(shown);
+        CHECK(!render.decide(shown).preview && !render.decide(shown).underlay);
+        render.onLayoutChanged(shown); // another window's membership
+        render.onLayoutChanged(shown); // desktop added
+        render.onLayoutChanged(shown); // desktop removed
+        CHECK(held.counter == 12 && held.borderChain.counter == 12 && held.structuralFloor == 12);
+        CHECK(render.decide(shown).border && held.paint.covered.counter == 7);
+        CHECK(held.paint.borderWidth == 3 && held.paint.borderRadius == 6
+            && held.paint.witnessObsValue == 7 && held.paint.witnessFrame == shown.trackedFrame);
+
+        const auto hidden = render.applyEndpoint(QStringLiteral(
+            R"({"v":2,"gen":"gen-1","rev":"5","obs":"10","coveredInstance":"inst-1","coveredInvalid":"12","foreground":"win-1","border":{"visible":false,"reason":"no-target","subject":null,"outsets":null,"width":null,"radius":null,"witness":null},"underlay":{"status":"hidden"},"preview":null})"),
+            shown.liveGestureInstance, shown.liveGestureSerial, shown);
+        CHECK(hidden.apply == KWin::PresentationApply::Accepted);
+        CHECK(!render.decide(shown).border && !held.borderChainCurrent());
+        render.onLayoutChanged(shown);
+        CHECK(!render.decide(shown).border);
+
+        const auto breaksContinuity = [&](auto event) {
+            KWin::PresentationRouter next;
+            KWin::PresentationStage5 candidate(next);
+            arm(next, candidate);
+            auto changed = shown;
+            event(candidate, changed);
+            CHECK(!next.borderChainCurrent() && !candidate.decide(shown).border);
+            candidate.onMemberFrame(shown);
+            CHECK(!candidate.decide(shown).border);
+        };
+        breaksContinuity([](auto &candidate, auto &changed) {
+            changed.borderWorkspace->currentDesktop = QStringLiteral("ws-2");
+            candidate.onLayoutChanged(changed);
+        });
+        breaksContinuity([](auto &candidate, auto &changed) {
+            changed.borderWorkspace->home.removeLast();
+            candidate.onLayoutChanged(changed);
+        });
+        breaksContinuity([](auto &candidate, auto &changed) {
+            changed.liveActiveId = QStringLiteral("win-2");
+            candidate.onMemberFrame(changed);
+        });
+        breaksContinuity([](auto &candidate, auto &changed) {
+            changed.outputScale = 2.0;
+            candidate.onMemberFrame(changed);
+        });
+        breaksContinuity([](auto &candidate, auto &changed) {
+            changed.borderWorkspace.reset();
+            candidate.onMemberFrame(changed);
+        });
+        breaksContinuity([](auto &candidate, auto &changed) {
+            QObject differentLifetime;
+            changed.borderWorkspace->lifetime = &differentLifetime;
+            candidate.onMemberFrame(changed);
+        });
+        breaksContinuity([](auto &candidate, auto &changed) {
+            changed.trackedFrame.translate(1, 0);
+            candidate.onMemberFrame(changed);
+        });
+        breaksContinuity([](auto &candidate, auto &changed) {
+            changed.borderAlreadyVisible = false;
+            candidate.onMemberFrame(changed);
+        });
+        breaksContinuity([](auto &candidate, auto &) {
+            // Same-output member fullscreen: production takes the strict
+            // route even though the foreground's own facts did not change.
+            candidate.onFullscreenChanged();
+        });
+        breaksContinuity([](auto &candidate, auto &) {
+            candidate.onLayoutChanged(); // same-output member maximize
+        });
+    }
+
     if (failures == 0) {
         std::printf("borderchain: all checks passed\n");
         return EXIT_SUCCESS;

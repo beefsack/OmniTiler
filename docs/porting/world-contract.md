@@ -1945,6 +1945,24 @@ acceptance or adopt the separate close-focus amendment.
   native-witness-join-evidence remains OPEN. macOS suppresses paint for unwatched
   subjects beyond its watch cap and for stale/unknown eligibility, until causal
   coverage is established; a reread or timestamp is not a substitute.
+  A native renderer may keep an **already visible, causally current** border
+  across only these unrelated native events: another window's frame change,
+  desktop roster addition/removal, or another window's desktop membership
+  change. The native effect must prove at the event that the same foreground
+  lifetime remains eligible and visible, its native desktop membership and
+  output's current desktop are unchanged, and its output identity and scale
+  still match the accepted anchor. It must compare with retained proven
+  anchor facts and advance only across the exact next native invalidation.
+  Core still owns eligibility and the descriptor; the effect neither
+  reclassifies a window nor arms, retargets, or replaces a descriptor here.
+  A foreground/lifetime, eligibility, view, home, output or scale change,
+  a fullscreen/maximize transition of any window on the anchor's output
+  (even without a focus change), or unknown, divergent or missed evidence
+  breaks continuity and requires a fresh covering core projection. Retention
+  lasts only until the next covering core projection; it remains authoritative
+  and hides the border if it says `bvis=0`. An unrelated event cannot restore
+  a hidden border. This exception is border-only; new paint acceptance and
+  underlay/preview freshness retain their existing rules.
   Underlay remains group-defined absolute; its baseRev is projection
   provenance, not another input freshness rule. When the computed underlay
   `outer` rect overflows or fails `bounds::valid_carried_rect` (such as an

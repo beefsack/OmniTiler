@@ -24,6 +24,8 @@ KWin::BorderAnchorFacts anchorFactsFromHost(const KWin::Stage5HostView &host)
     facts.liveEligibleKnown = host.liveEligibleKnown;
     facts.outputScale = host.outputScale;
     facts.outputScaleKnown = host.outputScaleKnown;
+    facts.workspace = host.borderWorkspace;
+    facts.alreadyVisible = host.borderAlreadyVisible && host.endpointAvailable && host.foregroundMatches;
     return facts;
 }
 
@@ -106,17 +108,17 @@ Stage5Refresh PresentationStage5::onTrackedFrame(const Stage5HostView &host)
     return refresh;
 }
 
-Stage5Refresh PresentationStage5::onMemberFrame()
+Stage5Refresh PresentationStage5::onMemberFrame(const Stage5HostView &host)
 {
     // Any subscribed non-tracked window frame change bumps the causal
     // witness plus the structural tick: the published outer depends on
     // every member, so relevance is observed facts, never held display
     // state. Publish so the next actual facts capture covers it. The
     // caller remaps the anchor and re-evaluates every surface.
-    m_router->onMemberFrame(factsInstance());
+    m_router->onMemberFrame(factsInstance(), anchorFactsFromHost(host));
     publishInvalidation();
     Stage5Refresh refresh;
-    refresh.border = true;
+    refresh.border = !m_router->borderChainCurrent();
     refresh.anchor = true;
     refresh.underlay = true;
     refresh.preview = true;
@@ -130,20 +132,19 @@ Stage5Refresh PresentationStage5::onMotionFrame(bool tracked, const Stage5HostVi
     // with the union scope, published so the next actual facts capture
     // covers it, WITHOUT the structural tick. With live anchor facts the
     // tracked motion advances the border chain by the same event proof as
-    // the structural route; member motion never advances it, and unknown
-    // facts clear it. Strict underlay hides until fresh covering paint
-    // while the valid same-gesture preview stays structurally covered.
+    // the structural route; non-tracked motion requires additional proof
+    // that it is unrelated to an already visible anchor.
     // Refresh only the dirtied surfaces; the preview is never refreshed
     // here (it stays visible).
     m_router->onMotionFrame(tracked, factsInstance(), anchorFactsFromHost(host));
     publishInvalidation();
     Stage5Refresh refresh;
-    refresh.border = tracked;
+    refresh.border = tracked || (host.borderAlreadyVisible && !m_router->borderChainCurrent());
     refresh.underlay = true;
     return refresh;
 }
 
-Stage5Refresh PresentationStage5::onLayoutChanged()
+Stage5Refresh PresentationStage5::onLayoutChanged(const Stage5HostView &host)
 {
     // Independent layout add/remove: membership behind the underlay and
     // the drop target behind the preview may have changed with no frame
@@ -151,10 +152,10 @@ Stage5Refresh PresentationStage5::onLayoutChanged()
     // structural tick, published so the next actual facts capture covers
     // it; pre-event coverage hides immediately with no repaint. The caller
     // refreshes every surface.
-    m_router->onLayoutChanged(factsInstance());
+    m_router->onLayoutChanged(factsInstance(), anchorFactsFromHost(host));
     publishInvalidation();
     Stage5Refresh refresh;
-    refresh.border = true;
+    refresh.border = !m_router->borderChainCurrent();
     refresh.anchor = true;
     refresh.underlay = true;
     refresh.preview = true;
