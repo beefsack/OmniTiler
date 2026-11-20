@@ -8,8 +8,9 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { startWorldAdapterEntry } from "../src/world-entry";
-import { EFFECT_FACTS_LEASE_MS } from "../src/world-entry";
+import { EFFECT_FACTS_LEASE_MS, WORLD_DEBOUNCE_MS } from "../src/world-entry";
 import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
+import { makeSignal } from "./world-producer-harness";
 import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 interface CapturedCall {
@@ -44,10 +45,16 @@ const WITNESS_A = { instance: "effect-1", counter: "7" };
 
 function makeHarness() {
     const ws1 = { id: "ws-1", name: "Workspace 1" };
+    const activation = makeSignal();
+    const roster = makeSignal();
+    const view = makeSignal();
+    const membership = makeSignal();
+    const geometry = makeSignal();
     const wins: Array<Record<string, unknown>> = [
         {
             internalId: "win-a", normalWindow: true, managed: true, deleted: false, transient: false, transientFor: null, dialog: false, modal: false, wantsInput: true,
             frameGeometry: { x: 0, y: 0, width: 200, height: 200 },
+            frameGeometryChanged: geometry.signal, desktopsChanged: membership.signal,
             clientGeometry: { x: 0, y: 0, width: 200, height: 200 },
             output: { name: "out-1" }, desktops: [ws1],
             minimized: false, fullscreen: false, maximized: false, sticky: false,
@@ -65,6 +72,9 @@ function makeHarness() {
         windowList: () => wins,
         screens: world.screens,
         desktops: world.desktops,
+        windowActivated: activation.signal,
+        desktopsChanged: roster.signal,
+        currentDesktopChanged: view.signal,
         activeScreen: world.activeScreen,
         cursorPos: { x: 2, y: 100 },
         get activeWindow() {
@@ -230,6 +240,7 @@ function makeHarness() {
     };
     return {
         handle, calls, timers, logs, effectCalls, runTimers, lastReport, describeCount,
+        activation, roster, view, membership, geometry, world, ws1, wins,
         fireLastHostTimer, answerEffect,
         setEffectBehavior: (fn: (call: CapturedCall) => void): void => {
             effectBehavior = fn;
@@ -261,6 +272,89 @@ function makeHarness() {
     };
 }
 
+function primePresentationFacts() {
+    const h = makeHarness();
+    h.answerEffect(0, factsReply({ ...SNAP_A, changed: 1 }));
+    h.runTimers();
+    return h;
+}
+
+describe("presentation observation scheduling", () => {
+    it("captures an activation on the next turn after the post-event effect sample, without debounce", () => {
+        const h = primePresentationFacts();
+        const before = h.describeCount();
+        for (const handler of h.activation.handlers) handler(h.wins[0]);
+        h.runTimers(0);
+        assert.deepEqual(h.effectRequest(2), { instance: "", rev: "", leaseMs: EFFECT_FACTS_LEASE_MS });
+        assert.equal(h.describeCount(), before);
+        // A previously held reply can arrive now but cannot prove activation.
+        h.answerEffect(1, factsReply({ ...SNAP_A, changed: 1, rev: "4", invalidation: "8" }));
+        h.runTimers(WORLD_DEBOUNCE_MS - 1);
+        assert.equal(h.describeCount(), before);
+        h.answerEffect(2, factsReply({ ...SNAP_A, changed: 1, rev: "5", invalidation: "9" }));
+        h.runTimers(0);
+        assert.equal(h.describeCount(), before + 1);
+        assert.deepEqual(h.lastReport()["nativeInvalidWitness"], { instance: "effect-1", counter: "9" });
+        h.runTimers();
+        assert.equal(h.describeCount(), before + 1, "the replaced debounce cannot dispatch a trailing capture");
+        h.handle.stop();
+    });
+
+    it("coalesces completed membership, current-desktop and roster signals behind the newest sample", () => {
+        const h = primePresentationFacts();
+        const before = h.describeCount();
+        const ws2 = { id: "ws-2", name: "Workspace 2" };
+        h.world.desktops.push(ws2);
+        for (const handler of h.roster.handlers) handler();
+        h.runTimers(0);
+        assert.equal(h.effectCalls.length, 3);
+        // The first sample cannot cover later native writes, even if its
+        // callback happens to land after those signals.
+        h.wins[0]!.desktops = [ws2];
+        for (const handler of h.membership.handlers) handler();
+        h.world.currentByOut.set("out-1", ws2);
+        for (const handler of h.view.handlers) handler(h.ws1);
+        h.world.desktops.shift();
+        for (const handler of h.roster.handlers) handler();
+        h.answerEffect(2, factsReply({ ...SNAP_A, changed: 1, rev: "4", invalidation: "8" }));
+        h.runTimers(0);
+        assert.equal(h.effectCalls.length, 4, "one replacement sample for the entire burst");
+        assert.equal(h.describeCount(), before, "the first sample cannot release the newer changes");
+        h.answerEffect(3, factsReply({ ...SNAP_A, changed: 1, rev: "5", invalidation: "11" }));
+        h.runTimers(0);
+        assert.equal(h.describeCount(), before + 1);
+        assert.deepEqual(h.lastReport()["nativeInvalidWitness"], { instance: "effect-1", counter: "11" });
+        h.handle.stop();
+    });
+
+    it("debounces a burst of raw frame changes even when the held effect facts arrive", () => {
+        const h = primePresentationFacts();
+        const before = h.describeCount();
+        for (const x of [20, 40, 60]) {
+            h.wins[0]!.frameGeometry = { x, y: 0, width: 200, height: 200 };
+            for (const handler of h.geometry.handlers) handler();
+        }
+        h.answerEffect(1, factsReply({ ...SNAP_A, changed: 1, rev: "4", invalidation: "10" }));
+        h.runTimers(WORLD_DEBOUNCE_MS - 1);
+        assert.equal(h.describeCount(), before);
+        assert.deepEqual(h.effectRequest(2), { instance: "effect-1", rev: "4", leaseMs: EFFECT_FACTS_LEASE_MS });
+        h.runTimers(WORLD_DEBOUNCE_MS);
+        assert.equal(h.describeCount(), before + 1);
+        assert.deepEqual(h.lastReport()["nativeInvalidWitness"], { instance: "effect-1", counter: "10" });
+        h.handle.stop();
+    });
+
+    it("keeps ordinary observation available when the expedited sample does not answer", () => {
+        const h = primePresentationFacts();
+        const before = h.describeCount();
+        for (const handler of h.activation.handlers) handler(h.wins[0]);
+        h.runTimers(0);
+        h.runTimers(WORLD_DEBOUNCE_MS);
+        assert.equal(h.describeCount(), before + 1, "slow or unavailable presentation must not stall world observation");
+        assert.deepEqual(h.lastReport()["nativeInvalidWitness"], WITNESS_A, "only the prior observed coverage is reported");
+        h.handle.stop();
+    });
+});
 describe("native effect presentation-facts waiter", () => {
     it("arms one held waiter per generation with an empty identity", () => {
         const h = makeHarness();

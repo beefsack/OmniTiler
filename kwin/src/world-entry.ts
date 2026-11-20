@@ -555,6 +555,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // ms timer, and the epoch below retires its callback (cancel is
     // best-effort) so the stale fire never dispatches a trailing capture.
     let debounceEpoch = 0;
+    let presentationDispatchReady = false;
     // No DescribeWorld round may start while a DiscoverWorld round is
     // outstanding: the generation it would carry is known-stale (rebind
     // window) or absent (startup, already gated by boundGen).
@@ -2547,10 +2548,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         })(),
         isFloating: (win) => floatingIds.has(win),
         isTileOverride: (win) => tileIds.has(win),
-        // Latest native-effect facts snapshot for this generation (a
-        // snapshot or null when unknown): the held waiter keeps it fresh
-        // and invalidates on change, so every capture carries facts that
-        // precede their observation.
+        // Latest observed effect facts; the effect still independently
+        // fences stale coverage on the renderer side.
         presentationFacts: effectSnapshot,
         ...(isolatedSettings !== null
             ? { readFixedPredicate: settings.readPredicateLive }
@@ -2619,36 +2618,39 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         return failure !== null && failure.kind === "generation-mismatch";
     };
 
-    // Event-driven scheduling only: synchronous invalidation first, then one
-    // debounced dispatch. No idle polling anywhere.
+    // A proven presentation refresh can preempt the ordinary native-event
+    // debounce. Keep it pending when the existing capture flight owns the wire.
     const scheduleDispatch = (): void => {
         if (stopped || debounceArmed) {
             return;
         }
+        const expedited = presentationDispatchReady;
+        if (expedited && state.inFlight !== null) return;
         debounceArmed = true;
         const epoch = (debounceEpoch += 1);
-        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+        if (!expedited && typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
             worldTraceProbes.get(state)?.noteDebounceStart();
         }
-        dispatchTimerCancel = scheduleOnce(WORLD_DEBOUNCE_MS, () => {
+        dispatchTimerCancel = scheduleOnce(expedited ? 0 : WORLD_DEBOUNCE_MS, () => {
             if (epoch !== debounceEpoch) {
                 return;
             }
             debounceArmed = false;
             dispatchTimerCancel = null;
-            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+            if (expedited && !presentationDispatchReady) {
+                scheduleDispatch();
+                return;
+            }
+            if (!expedited && typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
                 worldTraceProbes.get(state)?.noteDebounceFire();
             }
             void dispatch(false);
         });
     };
 
-    // Command preemption over the native debounce: a filed user command
-    // cancels the armed 120 ms native timer (epoch-retired, best-effort
-    // cancel) so the command drains on the zero-delay path below instead
-    // of waiting behind native bursts. Native-only events keep the full
-    // debounce: only command paths call this.
-    const preemptDebounceForCommand = (): void => {
+    // A filed command or a proven presentation refresh can preempt the
+    // native debounce. Epoch-retire the timer even if cancellation fails.
+    const cancelScheduledDispatch = (): void => {
         if (!debounceArmed) {
             return;
         }
@@ -2675,7 +2677,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (stopped || drainTimerCancel !== null) {
             return;
         }
-        preemptDebounceForCommand();
+        cancelScheduledDispatch();
         drainTimerCancel = scheduleOnce(0, () => {
             drainTimerCancel = null;
             void dispatch(false);
@@ -3253,7 +3255,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     const finishOwnScope = (): void => {
         ownScopeDepth -= 1;
         if (ownScopeDepth === 0 && pendingQueue.length > 0) {
-            preemptDebounceForCommand();
+            cancelScheduledDispatch();
             scheduleDrain();
         }
     };
@@ -3355,7 +3357,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         // Settled-continuation commands preempt an armed native debounce
         // the same way filed FIFO commands do: the busy refusal above is
         // unchanged, only the 120 ms wait is removed.
-        preemptDebounceForCommand();
+        cancelScheduledDispatch();
         void dispatch(false);
         return true;
     };
@@ -3407,7 +3409,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         } finally {
             registeredPress = previous;
             if (previous === null && pendingQueue.length > depth && ownScopeDepth === 0 && homingSuppressDepth === 0) {
-                preemptDebounceForCommand();
+                cancelScheduledDispatch();
                 dispatch(false);
             }
         }
@@ -4631,6 +4633,38 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     let effectWaiterGen: string | null = null;
     let effectWatchdogCancel: (() => void) | null = null;
     let effectRetryCancel: (() => void) | null = null;
+    let presentationProof: "none" | "queued" | "sampling" | "resample" = "none";
+    let presentationProbeCancel: (() => void) | null = null;
+
+    const queuePresentationProof = (): void => {
+        presentationProof = "queued";
+        presentationProbeCancel = scheduleOnce(0, () => {
+            presentationProbeCancel = null;
+            if (stopped || presentationProof !== "queued") return;
+            if (discoverOutstanding) {
+                presentationProof = "none";
+                return;
+            }
+            presentationProof = "sampling";
+            // Retire the old held callback: its reply may have been sent
+            // before this native event, even if delivered after it. The
+            // empty cursor samples the effect in the next native turn,
+            // after all slots for this event have run.
+            effectWaiterOutstanding = false;
+            effectWaiterGen = null;
+            cancelEffectRecovery();
+            effectWatchdogCancel?.();
+            effectWatchdogCancel = null;
+            armEffectWaiter(true);
+        });
+    };
+
+    const requestPresentationProof = (): void => {
+        if (effectSnapshot === null || state.boundGen === null || discoverOutstanding) return;
+        presentationDispatchReady = false;
+        if (presentationProof === "none") queuePresentationProof();
+        else if (presentationProof === "sampling") presentationProof = "resample";
+    };
 
     // Presentation renderer reset/reseed event (finding H, Stage 5): the
     // raw presentation-facts instance/availability is already read every
@@ -4651,6 +4685,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     const setEffectSnapshot = (next: PresentationSnapshot | null): void => {
         effectSnapshot = next;
         if (next === null) {
+            presentationProof = "none";
+            presentationDispatchReady = false;
+            presentationProbeCancel?.();
+            presentationProbeCancel = null;
             // Unknown facts (unavailable/malformed/timeout/teardown, or a
             // generation rotation whose reset rides the generation lane):
             // hide display-only. Unknown is not a proven stream
@@ -4754,7 +4792,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // a killed call to unknown (hide) and re-arms with the same identity,
     // so an enabled-later effect is adopted without polling and a
     // removed effect hides without wedging the capture lane.
-    const armEffectWaiter = (): void => {
+    const armEffectWaiter = (samplePresentation = false): void => {
         if (stopped || effectWaiterOutstanding) {
             return;
         }
@@ -4774,8 +4812,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         effectWaiterGen = gen;
         effectWaiterOutstanding = true;
         const request = JSON.stringify({
-            instance: effectSnapshot?.instance ?? "",
-            rev: effectSnapshot?.rev ?? "",
+            instance: samplePresentation ? "" : effectSnapshot?.instance ?? "",
+            rev: samplePresentation ? "" : effectSnapshot?.rev ?? "",
             leaseMs: EFFECT_FACTS_LEASE_MS,
         });
         let settled = false;
@@ -4827,7 +4865,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     } catch (error) {
                         void error;
                     }
-                    onEffectFactsReply(nonce, gen, reply);
+                    onEffectFactsReply(nonce, gen, reply, samplePresentation);
                 },
             );
         } catch (error) {
@@ -4866,7 +4904,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // follow-up capture) and then stands down the same way: a persistently
     // malformed effect yields one call per host deadline, never a hot
     // re-arm loop over a stale snapshot.
-    const onEffectFactsReply = (nonce: number, gen: string, reply: unknown): void => {
+    const onEffectFactsReply = (nonce: number, gen: string, reply: unknown, samplePresentation: boolean): void => {
         if (stopped) {
             return;
         }
@@ -4919,6 +4957,13 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return;
         }
         if (parsed.superseded) {
+            if (samplePresentation) {
+                // The immediate sample cannot be parked or superseded by
+                // a waiter. An unexpected reply cannot prove current facts.
+                setEffectSnapshot(null);
+                state.invalidate();
+                scheduleDispatch();
+            }
             // Replaced by a newer waiter: stand down to the host deadline
             // instead of ping-ponging an immediate re-arm. The snapshot is
             // kept: supersession is transport, never newer facts.
@@ -4932,7 +4977,16 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             borderGap: parsed.borderGap, borderWidth: parsed.borderWidth,
             underlayExtension: parsed.underlayExtension,
         });
-        armEffectWaiter();
+        if (samplePresentation && presentationProof === "resample") {
+            queuePresentationProof();
+        } else {
+            if (samplePresentation) {
+                presentationProof = "none";
+                presentationDispatchReady = true;
+                cancelScheduledDispatch();
+            }
+            armEffectWaiter();
+        }
         if (parsed.changed) {
             // Content-gated like the gesture lane: per-frame invalidation
             // bumps stay silent while regime transitions (effect restart,
@@ -4945,6 +4999,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 lastEffectChangedLog = effectChangeKey;
                 log(`omnitiler:world:effect-facts-changed instance=${token(parsed.instance)} rev=${token(parsed.rev)}`);
             }
+        }
+        if (parsed.changed || samplePresentation) {
             state.invalidate();
             scheduleDispatch();
         }
@@ -7704,7 +7760,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 // Ordering is unchanged: a filing still in flight owns the
                 // kick (dispatch returns without capturing) and an
                 // in-flight capture still fences dispatch below.
-                preemptDebounceForCommand();
+                cancelScheduledDispatch();
                 scheduleDrain();
             } else {
                 void dispatch(false);
@@ -8073,6 +8129,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
         if (state.observationOnlyCatchup && ownedSeal === null && !hasSeal) {
             const focusStart = state.focusChanges.mark();
+            presentationDispatchReady = false;
             const catchupObservation = capture();
             if (catchupObservation === null) {
                 log("omnitiler:world:observe-invalid recovery=on-next-event");
@@ -8098,6 +8155,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return;
         }
         const focusStart = state.focusChanges.mark();
+        presentationDispatchReady = false;
         const observation = capture();
         if (observation === null) {
             log("omnitiler:world:observe-invalid recovery=on-next-event");
@@ -8407,12 +8465,13 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // window's closure/unsafe/disappearance still invalidates
     // immediately. Legacy workspace routes untouched.
     const windowHomingDetaches = new Map<object, Array<() => void>>();
-    const onWindowHoming = (ref: object, subjectRelevant: boolean): (() => void) => {
+    const onWindowHoming = (ref: object, signalName: string): (() => void) => {
         return (): void => {
             if (stopped) {
                 return;
             }
-            if (subjectRelevant) subjectGuard += 1;
+            if (signalName !== "frameGeometryChanged") subjectGuard += 1;
+            const membershipChange = signalName === "desktopsChanged";
             if (homingSuppressDepth > 0 && homingSuppressRef === ref) {
                 // Same-flight own echo: closure/disappearance/unsafe
                 // still invalidates immediately and stops apply; only
@@ -8439,8 +8498,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     return;
                 }
                 deferredOwnHoming = true;
+                if (membershipChange) requestPresentationProof();
                 return;
             }
+            if (membershipChange) requestPresentationProof();
             onNativeInvalidation();
         };
     };
@@ -8451,7 +8512,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         const detachesForWindow: Array<() => void> = [];
         for (const signalName of ["outputChanged", "desktopsChanged", "hiddenChanged", "minimizedChanged", "frameGeometryChanged"] as const) {
             try {
-                const detach = connectSignal(readSignal(ref, signalName), onWindowHoming(ref, signalName !== "frameGeometryChanged"));
+                const detach = connectSignal(readSignal(ref, signalName), onWindowHoming(ref, signalName));
                 if (detach !== null) {
                     detachesForWindow.push(detach);
                 }
@@ -8545,6 +8606,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 for (const evidence of scope.viewEvidence) state.focusChanges.leaveUnproved(evidence);
                 scope.viewEvidence = views.map((view) => state.focusChanges.record({ kind: "view", ...view }, true));
                 deferredOwnViewFocus = true;
+                requestPresentationProof();
                 return;
             }
         }
@@ -8559,6 +8621,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 state.focusChanges.record({ kind: "view", ...view });
             }
         }
+        requestPresentationProof();
         onNativeInvalidation();
         } finally {
             signalDepth -= 1;
@@ -8578,6 +8641,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             if (scope.activationEvidence !== null) state.focusChanges.leaveUnproved(scope.activationEvidence);
             scope.activationEvidence = state.focusChanges.record({ kind: "foreground", win }, true);
             deferredOwnViewFocus = true;
+            requestPresentationProof();
             if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
                 worldTraceProbes.get(state)?.noteFocusActivation("own", scope.kind, serial, args.length, win);
             }
@@ -8592,6 +8656,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
             worldTraceProbes.get(state)?.noteFocusActivation("unproved", scope?.kind, serial, args.length, win);
         }
+        requestPresentationProof();
         onNativeInvalidation();
         } finally {
             signalDepth -= 1;
@@ -8613,6 +8678,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         } else {
             attach(name, () => {
                 subjectGuard += 1;
+                if (name === "desktopsChanged") requestPresentationProof();
                 onNativeInvalidation();
             });
         }
