@@ -553,12 +553,13 @@ int main(int argc, char **argv)
     // no terminal: the snapshot reads idle.
     f.steps.push_back([&]() {
         const quint64 serial = f.source->gestureStarted(QStringLiteral("win-7"), QStringLiteral("move"),
-            QRect(0, 0, 80, 80), true, QPoint(2, 2), true);
+            QRect(32688, 0, 80, 80), true, QPoint(2, 2), true);
         TCHECK(&f, serial != 0);
-        // Refused (out-of-bound frame): no state change, no revision mint.
+        // The first frame ends at 32768; shifting it one pixel right must
+        // be refused without changing state or minting a revision.
         const QString beforeAbort = currentRevision(f.source);
         TCHECK(&f, f.source->gestureStarted(QStringLiteral("win-7"), QStringLiteral("move"),
-                                            QRect(20000, 0, 10, 10), false, QPoint(), false) == 0);
+                                            QRect(32689, 0, 80, 80), false, QPoint(), false) == 0);
         TCHECK(&f, currentRevision(f.source) == beforeAbort);
         TCHECK(&f, f.source->hasOpen());
         // Effect wiring drops the older same-window open without a
