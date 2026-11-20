@@ -212,6 +212,10 @@ interface Harness {
     readonly timers: Timer[];
     readonly logs: string[];
     readonly workspaceFires: string[];
+    deferOutput: boolean;
+    gesture: boolean;
+    readonly outputRequests: FakeWindow[];
+    readonly captureWrappers: Map<FakeWindow, FakeWindow>;
     activeScreen: { name: string };
     activeRef: FakeWindow | null;
     readonly handle: NonNullable<ReturnType<typeof startWorldAdapterEntry>>;
@@ -328,6 +332,10 @@ async function makeHarness(): Promise<Harness> {
         currents,
         calls: [],
         answered: new Set<number>(),
+        deferOutput: false,
+        gesture: false,
+        outputRequests: [],
+        captureWrappers: new Map(),
         replies: new Map<number, string>(),
         takeReplies: [],
         timers: [],
@@ -419,7 +427,7 @@ async function makeHarness(): Promise<Harness> {
         return found as { name: string; geometry: Record<string, number> };
     };
     const surface: Record<string, unknown> = {
-        windowList: (): FakeWindow[] => [...harness.wins],
+        windowList: (): FakeWindow[] => harness.wins.map(win => harness.captureWrappers.get(win) ?? win),
         screens: harness.screens,
         desktops: harness.desktops,
         get activeScreen(): { name: string } {
@@ -471,6 +479,8 @@ async function makeHarness(): Promise<Harness> {
             const win = mover as FakeWindow;
             const name = (out as { name: string }).name;
             const from = win.output.name;
+            harness.outputRequests.push(win);
+            if (harness.deferOutput) return;
             win.output = { name };
             harness.fireWindow(win, "outputChanged");
             if (win.desktops.length === 1) {
@@ -537,7 +547,7 @@ async function makeHarness(): Promise<Harness> {
         log: (message: string): void => {
             harness.logs.push(message);
         },
-        gestureActive: () => false,
+        gestureActive: () => harness.gesture,
         registerShortcutFn: () => true,
         readWorkspaceModeFn: () => "per-output-local",
         readDefaultTiledFn: () => true,
@@ -646,6 +656,128 @@ function externalNativeOutputMove(h: Harness, winId: string, targetOut: string):
 }
 
 describe("world native homing", () => {
+    for (const arrivalSignal of ["outputChanged", "desktopsChanged", "frameGeometryChanged"] as const) {
+        it(`expedites an asynchronous tiled crossing on the mover's exact ${arrivalSignal} proof`, async () => {
+            const h = await makeHarness();
+            try {
+                h.currents.set(RIGHT, "ws-1");
+                await discover(h);
+                const mover = h.wins[0] as FakeWindow;
+                const sibling = h.wins[2] as FakeWindow;
+                const fromFrame = { ...mover.frameGeometry };
+                // QML enumeration and signal subscriptions need not expose
+                // the same JS wrapper for a native window lifetime.
+                const applyRef = arrivalSignal === "outputChanged" ? new Proxy(mover, {}) : mover;
+                h.captureWrappers.set(mover, applyRef);
+                h.deferOutput = true;
+                h.handle.requestSendToOutput("left", true);
+                h.runTimers(0);
+                await h.flushAll();
+                assert.deepEqual(h.outputRequests, [applyRef]);
+                assert.equal(h.outputRequests[0], applyRef);
+                assert.equal(mover.output.name, RIGHT, "setter returns before output changes");
+                assert.deepEqual(mover.frameGeometry, fromFrame, "no final frame on the source");
+                assert.ok(h.timers.some(t => t.delayMs === WORLD_DEBOUNCE_MS && !t.cancelled && !t.fired));
+                const before = h.calls.length;
+
+                // No exact homing yet, even though the mover's output changed.
+                mover.desktops = [h.desktops[1] as FakeDesktop];
+                mover.output = { name: LEFT };
+                h.fireWindow(mover, "outputChanged");
+                h.runTimers(0);
+                assert.equal(h.calls.length, before, "target output alone cannot promote capture");
+                const unreadable: FakeDesktop[] = [h.desktops[0] as FakeDesktop];
+                Object.defineProperty(unreadable, 0, { get: () => { throw new Error("native desktop unreadable"); } });
+                Object.defineProperty(mover, "desktops", { value: unreadable, configurable: true });
+                h.fireWindow(mover, arrivalSignal);
+                h.runTimers(0);
+                assert.equal(h.calls.length, before, "unreadable proof does not expedite or throw");
+                // Set the exact native desktop independently of the signal;
+                // an unrelated window must not use the mover's proof.
+                Object.defineProperty(mover, "desktops", { value: [h.desktops[0]], configurable: true });
+                h.fireWindow(sibling, "outputChanged");
+                h.runTimers(0);
+                assert.equal(h.calls.length, before);
+
+                h.fireWindow(mover, arrivalSignal);
+                assert.equal(h.timers.filter(t => t.delayMs === 0 && !t.cancelled && !t.fired).length, 1,
+                    `the ${arrivalSignal} signal itself schedules the early capture`);
+                h.fireWindow(mover, "frameGeometryChanged");
+                h.runTimers(0);
+                assert.equal(h.calls.length, before + 1, "mover proof preempts the 120 ms timer exactly once");
+                assert.deepEqual(homingOf(h, before, mover.internalId), { out: LEFT, ws: "ws-1" });
+                assert.deepEqual(mover.frameGeometry, fromFrame, "the signal is not a geometry writer");
+                await h.flushAll();
+                const target = (lastReply(h)["windows"] as Array<Record<string, unknown>>).find(w => w["win"] === mover.internalId);
+                const [x, y, width, height] = (target?.["frame"] ?? target?.["alloc"]) as number[];
+                assert.deepEqual(mover.frameGeometry, { x, y, width, height }, "the expedited reply sets the final tile");
+                assert.notDeepEqual(mover.frameGeometry, fromFrame);
+                assert.deepEqual(h.outputRequests, [applyRef], "no repeat of the dispatched transfer");
+
+                const spent = h.calls.length;
+                h.fireWindow(mover, "outputChanged");
+                h.runTimers(0);
+                assert.equal(h.calls.length, spent, "late duplicate after spend uses ordinary debounce");
+                await h.settle();
+                assert.deepEqual(transfersOf(lastReply(h)), []);
+            } finally {
+                await h.stop();
+            }
+        });
+    }
+
+    it("keeps a qualifying arrival on ordinary debounce during a gesture", async () => {
+        const h = await makeHarness();
+        try {
+            h.currents.set(RIGHT, "ws-1");
+            await discover(h);
+            const mover = h.wins[0] as FakeWindow;
+            h.deferOutput = true;
+            h.handle.requestSendToOutput("left", true);
+            h.runTimers(0);
+            await h.flushAll();
+            assert.deepEqual(h.outputRequests, [mover]);
+            const before = h.calls.length;
+            const fromFrame = { ...mover.frameGeometry };
+            h.gesture = true;
+            mover.output = { name: LEFT };
+            h.fireWindow(mover, "outputChanged");
+            h.runTimers(0);
+            assert.equal(h.calls.length, before);
+            assert.deepEqual(mover.frameGeometry, fromFrame);
+            h.runTimers();
+            assert.equal(h.calls.length, before + 1, "ordinary observation remains scheduled");
+            await h.flushAll();
+            assert.deepEqual(mover.frameGeometry, fromFrame, "gesture still blocks the frame");
+        } finally {
+            await h.stop();
+        }
+    });
+
+    it("keeps synchronous commanded crossings on the existing same-apply frame path", async () => {
+        const h = await makeHarness();
+        try {
+            h.currents.set(RIGHT, "ws-1");
+            await discover(h);
+            const mover = h.wins[0] as FakeWindow;
+            const fromFrame = { ...mover.frameGeometry };
+            const before = h.calls.length;
+            h.handle.requestSendToOutput("left", true);
+            h.runTimers(0);
+            await h.flushAll();
+            assert.deepEqual(h.outputRequests, [mover]);
+            assert.equal(mover.output.name, LEFT);
+            assert.notDeepEqual(mover.frameGeometry, fromFrame, "final tile writes in the command apply");
+            const afterApply = h.calls.length;
+            assert.equal(h.calls.slice(before).filter(c => c.method === "DescribeWorld").length, 1);
+            h.fireWindow(mover, "outputChanged");
+            h.runTimers(0);
+            assert.equal(h.calls.length, afterApply, "synchronous echo and duplicate do not expedite");
+        } finally {
+            await h.stop();
+        }
+    });
+
     it("external output moves both directions plus same-output desktop change converge with no workspace signal", { timeout: 240000 }, async () => {
         const h = await makeHarness();
         try {
@@ -660,6 +792,8 @@ describe("world native homing", () => {
             const callsBefore1 = h.calls.length;
             externalNativeOutputMove(h, "win-a", LEFT);
             assert.equal(h.workspaceFires.length, firesBefore1, "external move fires no workspace signal");
+            h.runTimers(0);
+            assert.equal(h.calls.length, callsBefore1, "commandless output changes do not expedite");
             // The production debounce alone must queue the report: no
             // explicit workspace signal or timer oracle shortcut.
             h.runTimers();

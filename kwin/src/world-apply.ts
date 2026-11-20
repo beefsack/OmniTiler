@@ -67,6 +67,14 @@ function traceFocusEval(
     }
 }
 
+export interface AwaitingCrossingArrival {
+    readonly win: string;
+    readonly op: string;
+    readonly out: string;
+    readonly ws: string;
+    readonly native: string;
+}
+
 export interface ApplyEnv {
     state: WorldAdapterState;
     observation: WorldObservation;
@@ -127,6 +135,9 @@ export interface ApplyEnv {
     setGeometry: (ref: object, rect: { x: number; y: number; w: number; h: number }) => boolean;
     setMembership: (ref: object, wsNativeId: string, wsRef: object | null) => boolean;
     sendToOutput: (ref: object, outRef: object | null) => boolean;
+    // A scheduling hint, never an actuation grant: the native output
+    // setter accepted an ordinary commanded crossing that has not arrived.
+    awaitCrossingArrival?: (arrival: AwaitingCrossingArrival) => void;
     resolveOutput: (out: string) => object | null;
     resolveDesktop: (ws: string) => object | null;
     switchView: (desktopRef: object, outRef: object) => boolean;
@@ -1141,6 +1152,15 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         if (midApplyStopped(env, entryObs)) {
             result.stoppedMidApply = true;
             break;
+        }
+        if (outAttempted && outOk && !threw && wsOk && crossings?.has(row) &&
+            (proof === null ||
+                ((proof.out === observed.out || proof.out === targetOut) &&
+                    (proof.ws === observed.ws || proof.ws === targetNative) &&
+                    (proof.out !== targetOut || proof.ws !== targetNative)))) {
+            env.awaitCrossingArrival?.({
+                win: row.win, op, out: targetOut, ws: targetWs, native: targetNative,
+            });
         }
     }
     if (result.stoppedMidApply) {

@@ -154,6 +154,11 @@
 - Status: active, 2026-10-14
 - Evidence: [R4 correction and verification](../changes/kde-dual-output-live.md#rightward-r4-defect-correction-and-re-verification).
 
+### KDE asynchronous crossing capture
+- Decision: after an accepted ordinary tiled cross-output send returns without exact arrival, allow one fresh capture ahead of debounce when a signal from the exact native window lifetime proves the dispatched output and single native desktop. The hint does not authorize a setter; the normal apply guards, stale reply handling and synchronous same-apply path still govern writes.
+- Why: the native send can return while the window is still on its source. The next reported arrival should not wait for unrelated debounce once exact proof is available.
+- Evidence: [Asynchronous crossing comparison](../changes/archive/async-crossing-capture.md).
+
 ### MVP directional path
 - Decision: COSMIC-style tiling and directional movement are MVP. Once promoted, directional path replaces legacy path; no legacy fallback remains.
 - Why: not recorded.

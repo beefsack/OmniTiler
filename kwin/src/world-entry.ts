@@ -257,7 +257,7 @@ import {
     type NativeGestureSnapshot,
 } from "./world-gesture";
 import { WorldAdapterState, type CaptureFlight, type QueuedIntent as QueueEntry } from "./world-state";
-import { applyWorldReply } from "./world-apply";
+import { applyWorldReply, type AwaitingCrossingArrival } from "./world-apply";
 import { decodeList } from "./qml-list";
 import { normalizeNativeId } from "./native-id";
 import { createWorldCloseTracker, type ClosedEvidenceToken } from "./world-close-tracker";
@@ -556,6 +556,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // best-effort) so the stale fire never dispatches a trailing capture.
     let debounceEpoch = 0;
     let presentationDispatchReady = false;
+    // A successful native send without exact arrival can arm a scheduling
+    // hint by native lifetime id, not by the transient scripting wrapper.
+    const crossingArrivals = new Map<string, AwaitingCrossingArrival & { readyRef: object | null }>();
     // No DescribeWorld round may start while a DiscoverWorld round is
     // outstanding: the generation it would carry is known-stale (rebind
     // window) or absent (startup, already gated by boundGen).
@@ -2618,13 +2621,61 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         return failure !== null && failure.kind === "generation-mismatch";
     };
 
-    // A proven presentation refresh can preempt the ordinary native-event
-    // debounce. Keep it pending when the existing capture flight owns the wire.
+    const provesCrossingArrival = (ref: object, arrival: AwaitingCrossingArrival): boolean => {
+        try {
+            if (!applyHostBase.isStillListed(ref) || applyHostBase.readWindowId?.(ref) !== arrival.win) return false;
+            const desktops = decodeList(readProp(ref, "desktops"), 1);
+            if (desktops?.length !== 1 || desktopIdOf(desktops[0]) !== arrival.native ||
+                outputNameOf(readProp(ref, "output")) !== arrival.out) return false;
+            const safety = applyHostBase.readLiveSafety(ref);
+            return safety?.minimized === false && safety.fullscreen === false &&
+                safety.maximized === false && safety.sticky === false;
+        } catch (error) {
+            void error;
+            // An unreadable hint never interferes with ordinary invalidation.
+            return false;
+        }
+    };
+
+    const crossingDispatchReady = (): boolean => {
+        if (ownedSeal !== null || pendingQueue[0]?.seal !== undefined) return false;
+        let ready = false;
+        for (const [win, arrival] of crossingArrivals) {
+            if (arrival.readyRef === null) continue;
+            if (gestureActive() || !provesCrossingArrival(arrival.readyRef, arrival)) crossingArrivals.delete(win);
+            else ready = true;
+        }
+        return ready;
+    };
+
+    const captureForDispatch = (): WorldObservation | null => {
+        // The one expedited opportunity is spent on the next live capture,
+        // even if a filed command drained it first. A normal capture that
+        // already saw exact arrival also leaves nothing to expedite.
+        for (const [win, arrival] of crossingArrivals) {
+            if (arrival.readyRef !== null) crossingArrivals.delete(win);
+        }
+        const observation = capture();
+        if (observation !== null && crossingArrivals.size > 0) {
+            for (const domain of observation.domains) {
+                for (const win of domain.windows) {
+                    const arrival = crossingArrivals.get(win.win);
+                    if (arrival !== undefined && arrival.out === win.out && arrival.native === win.nativeWs) {
+                        crossingArrivals.delete(win.win);
+                    }
+                }
+            }
+        }
+        return observation;
+    };
+
+    // Proven scoped arrivals and presentation refreshes can preempt the
+    // ordinary native-event debounce, but never the existing capture flight.
     const scheduleDispatch = (): void => {
         if (stopped || debounceArmed) {
             return;
         }
-        const expedited = presentationDispatchReady;
+        const expedited = presentationDispatchReady || crossingDispatchReady();
         if (expedited && state.inFlight !== null) return;
         debounceArmed = true;
         const epoch = (debounceEpoch += 1);
@@ -2637,7 +2688,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
             debounceArmed = false;
             dispatchTimerCancel = null;
-            if (expedited && !presentationDispatchReady) {
+            if (expedited && !presentationDispatchReady && !crossingDispatchReady()) {
                 scheduleDispatch();
                 return;
             }
@@ -2648,8 +2699,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         });
     };
 
-    // A filed command or a proven presentation refresh can preempt the
-    // native debounce. Epoch-retire the timer even if cancellation fails.
+    // A filed command or proven scoped refresh can preempt the native
+    // debounce. Epoch-retire the timer even if cancellation fails.
     const cancelScheduledDispatch = (): void => {
         if (!debounceArmed) {
             return;
@@ -4181,6 +4232,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             void error;
                         }
                         lastAcceptedReply = null;
+                        crossingArrivals.clear();
                         // New generation: queued intents belong to the dead
                         // generation and drop with one diagnostic; the
                         // binding snapshot and one-shot native effects
@@ -6608,6 +6660,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                                 : setGeometryBase(ref, rect)),
                         setMembership: (ref, wsNativeId, wsRef) => withHomingSuppression(ref, () =>
                             applyHostBase.setMembership(ref, wsNativeId, wsRef)),
+                        awaitCrossingArrival: (arrival) => {
+                            crossingArrivals.set(arrival.win, { ...arrival, readyRef: null });
+                        },
                         sendToOutput: (ref, outRef) => withHomingSuppression(ref, () =>
                             typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1" && traceActuator !== null
                                 ? traceActuator(ref, "output", outputNameOf(outRef) ?? "-", () => applyHostBase.sendToOutput(ref, outRef))
@@ -7525,6 +7580,13 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     captureReplay = null;
                     if (flight.subjectGuard === null && state.currentInvalid === flight.watermark) rendererSealFence = null;
+                    for (const [win, arrival] of crossingArrivals) {
+                        if (!parsed.transfers.some(t => t.kind === "window" && t.op === arrival.op &&
+                            t.win === arrival.win && t.out === arrival.out && t.ws === arrival.ws && t.cmdSeq !== null) ||
+                            !parsed.workspaces.some(w => w.out === arrival.out && w.id === arrival.ws && w.bind === arrival.native)) {
+                            crossingArrivals.delete(win);
+                        }
+                    }
                     if (ownedSeal !== null) {
                         const incorporated = ownedSeal;
                         let count = 0;
@@ -8156,7 +8218,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (state.observationOnlyCatchup && ownedSeal === null && !hasSeal) {
             const focusStart = state.focusChanges.mark();
             presentationDispatchReady = false;
-            const catchupObservation = capture();
+            const catchupObservation = captureForDispatch();
             if (catchupObservation === null) {
                 log("omnitiler:world:observe-invalid recovery=on-next-event");
                 return;
@@ -8182,7 +8244,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
         const focusStart = state.focusChanges.mark();
         presentationDispatchReady = false;
-        const observation = capture();
+        const observation = captureForDispatch();
         if (observation === null) {
             log("omnitiler:world:observe-invalid recovery=on-next-event");
             return;
@@ -8203,7 +8265,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // flight owns the wire anymore; sendCapture consumes the flag on start
     // (exactly one follow-up capture per owed wake, never a retry storm).
     const wakeFollowup = (): void => {
-        if (wakePendingCapture && !stopped && state.inFlight === null) {
+        if (!stopped && state.inFlight === null && (wakePendingCapture || crossingDispatchReady())) {
             wakePendingCapture = false;
             scheduleDispatch();
         }
@@ -8540,6 +8602,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 return;
             }
             if (membershipChange) requestPresentationProof();
+            if (crossingArrivals.size > 0 &&
+                (signalName === "outputChanged" || membershipChange || signalName === "frameGeometryChanged")) {
+                const win = applyHostBase.readWindowId?.(ref);
+                const arrival = win == null ? undefined : crossingArrivals.get(win);
+                if (arrival?.readyRef === null && !gestureActive() && provesCrossingArrival(ref, arrival)) {
+                    arrival.readyRef = ref;
+                    if (ownedSeal === null && pendingQueue[0]?.seal === undefined) cancelScheduledDispatch();
+                }
+            }
             onNativeInvalidation();
         };
     };
@@ -9177,6 +9248,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 }
             }
             windowHomingDetaches.clear();
+            crossingArrivals.clear();
             deferredOwnHoming = false;
             deferredOwnViewFocus = false;
             viewFocusScope = null;
