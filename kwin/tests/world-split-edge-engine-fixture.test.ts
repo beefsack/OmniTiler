@@ -213,6 +213,7 @@ interface Harness {
     readonly wins: FakeWindow[];
     readonly mover: FakeWindow;
     readonly currentByOutput: Map<string, FakeDesktop>;
+    readonly namesProvedAt: Map<string, number>;
     readonly calls: CapturedCall[];
     readonly answered: Set<number>;
     readonly replies: Map<number, string>;
@@ -339,6 +340,7 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
         wins,
         mover,
         currentByOutput,
+        namesProvedAt: new Map(),
         calls: [],
         answered: new Set<number>(),
         replies: new Map<number, string>(),
@@ -518,7 +520,18 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
             }
             const id = `native-${liveDesktops.length + 1}`;
             const at = Math.max(0, Math.min(args[0] as number, liveDesktops.length));
-            liveDesktops.splice(at, 0, { id, name: args[1] as string });
+            let name = args[1] as string;
+            const desktop: FakeDesktop = {
+                id,
+                get name() { return name; },
+                set name(value: string) {
+                    const ordinal = liveDesktops.indexOf(desktop) + 1;
+                    assert.ok(ordinal > 0, "rename targets a live desktop");
+                    harness.namesProvedAt.set(id, ordinal);
+                    name = value;
+                },
+            };
+            liveDesktops.splice(at, 0, desktop);
             harness.fire("desktopsChanged");
         },
         removeDesktop: (ref: unknown): void => {
@@ -929,17 +942,18 @@ describe("world split-edge selection through the production entry (real Engine)"
             }
             const topView = h.currentByOutput.get(h.screens.top.name);
             assert.equal(topView?.id, refillBacking, "source refills to the refill backing");
-            // Friendly position name derives from the proven native order
-            // (never hardcoded): the refill backing's 1-based index among
-            // the live natives names its Desktop label, not the token.
-            const nativeOrderPost = ([...(h.workspace["desktops"] as Array<{ id: string }>)].map((d) => d.id));
-            const refillOrdinal = nativeOrderPost.indexOf(refillBacking) + 1;
-            assert.ok(refillOrdinal > 0, "refill backing is a live native after migration");
+            // world-apply fixes the friendly name at binding proof, not
+            // the ordinal after a later removal shifts the native roster.
+            const refillOrdinal = h.namesProvedAt.get(refillBacking);
+            assert.ok(refillOrdinal !== undefined, "the refill backing received a proof-time name");
             assert.equal(topView?.name, `Desktop ${refillOrdinal}`, "the proven spare carries its friendly position name, not the token");
-            // The existing ws-a desktop still backs its own cells (never
-            // cannibalized for the migration).
             const wsARows = rows.filter((b) => b["bind"] === "ws-a");
-            assert.ok(wsARows.length > 0 && wsARows.every((b) => b["id"] !== migratedLogical), "existing desktop keeps its own logical");
+            assert.deepEqual(wsARows.map((row) => row["out"]).sort(),
+                ["out-bottom", "out-bottom-right", "out-top"], "the vacated native retires on every output");
+            assert.ok(wsARows.every((row) => row["exist"] === false && row["id"] !== migratedLogical),
+                "all projections are tombstones, never backing for the migrated logical");
+            assert.ok(!(h.workspace["desktops"] as FakeDesktop[]).some((desktop) => desktop.id === "ws-a"),
+                "the jointly retired desktop is removed from the native roster");
             assert.deepEqual(
                 h.viewSwitches.slice(0, 2),
                 [`out-bottom-right->${targetBacking}`, `out-top->${refillBacking}`],

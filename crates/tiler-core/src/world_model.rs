@@ -144,7 +144,7 @@ impl WorldTransaction<'_> {
         let shared = self.connection.workspace_mode_setting()
             == crate::workspace_scope::WorkspaceMode::Shared;
         let shared_native_roster = self.connection.shared_native_roster();
-        let mut joint_native_plan = false;
+        let mut pad_shared_spare = false;
         if shared {
             // Union occupancy over logical ids across all live outputs.
             let mut occupied_ids: BTreeSet<String> = BTreeSet::new();
@@ -357,7 +357,13 @@ impl WorldTransaction<'_> {
             }
             if shared_native_roster {
                 if let Some(mut global) = self.shared_global_prunable_natives() {
-                    joint_native_plan = true;
+                    // Share only this turn's new spare demand on aligned
+                    // rings. A shorter ring during migration or hotplug is
+                    // not a spare request: backing count padding adds a
+                    // native to the longer ring too, preserving the gap.
+                    pad_shared_spare = plans.values().next().is_some_and(|(first, _)| {
+                        plans.values().all(|(ring, _)| ring.len() == first.len())
+                    });
                     // A globally eligible native may still be kept by a
                     // local trailing plan. Only remove groups every plan
                     // would remove, before padding any spare demand.
@@ -450,10 +456,8 @@ impl WorldTransaction<'_> {
                 }
             }
         }
-        // Equal-count parity: pad shorter rings to the longest (never
-        // remove for parity; per-screen lifecycle already cleaned).
-        // After joint retirement, padding projects one successor spare
-        // onto all aligned outputs; native creation elects one coordinator.
+        // Equal-count parity for independent rosters, or one coordinated
+        // spare group on a shared roster. Pad only; never remove for parity.
         // Host-owned padding needs readable inventories, screens, and
         // native orders: an incomplete list or a missing/empty native row
         // proves no count, so padding waits for a complete re-read.
@@ -465,10 +469,9 @@ impl WorldTransaction<'_> {
             || live
                 .iter()
                 .all(|output| native_nonempty.contains(output.as_str()));
-        if (self.connection.equal_workspace_count() || joint_native_plan)
-            && inventories_readable
-            && native_orders_known
-        {
+        let pad_equal_count =
+            (!shared_native_roster || shared) && self.connection.equal_workspace_count();
+        if (pad_equal_count || pad_shared_spare) && inventories_readable && native_orders_known {
             let max_len = live
                 .iter()
                 .filter_map(|output| self.world.workspace.mapping.get(output).map(Vec::len))
