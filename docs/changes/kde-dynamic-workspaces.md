@@ -32,7 +32,7 @@ Implement the 2026-11-10 [dynamic lifecycle decision](../decisions/workspaces.md
   elects one pure-spare creation coordinator and fans backing out to waiting
   spares. Migration still requires fresh backing and after-current insertion;
   native reordering remains observable. No aligned-grid replacement returns.
-- KWin `1f543de908`, `src/virtualdesktops.cpp:577-615,990-1003`, keeps one
+- KWin v6.8.1, `src/virtualdesktops.cpp:577-615,990-1003`, keeps one
   `m_desktops` roster in both selector modes. The per-output flag changes
   `m_currentDesktops` selection, not desktop identity ownership. KDE therefore
   declares true independently of native selector coupling.
@@ -136,7 +136,7 @@ Implement the 2026-11-10 [dynamic lifecycle decision](../decisions/workspaces.md
   evidence that a displayed native should be deleted or a setter retried.
 - Earlier global-current staging is not the immediate trigger: the later
   output-local sequence had aligned native/logical views before activation.
-  KWin at `1f543de908`, `src/scripting/workspace_wrapper.cpp:260-263` and
+  KWin v6.8.1, `src/scripting/workspace_wrapper.cpp:260-263` and
   `src/activation.cpp:294-317`, routes the helper through ordinary activation;
   its switch-to-other-desktop branch changes the window's output-local current.
   The native-activation class is user-reachable. The exact physical step-8
@@ -311,7 +311,7 @@ reinterpreted here.
 | Eager backing for each logical spare | Additional native creation for an unbound spare rather than waiting for selection; not measured | Makes spare visible to native pager, potentially creates padding on other outputs; needs coalescing and anti-oscillation verification |
 | Compact native positions by moving occupants | Membership writes proportional to affected occupants; not measured | Risks the reported cross-output churn; unnecessary for logical compaction and not recommended |
 
-KWin @ `1f543de908`, `src/virtualdesktops.cpp:448-480,492-519`, inserts/removes
+KWin v6.8.1, `src/virtualdesktops.cpp:448-480,492-519`, inserts/removes
 global objects and renumbers subsequent native ordinal positions. Removal
 retains surviving object IDs; ordinal changes are not themselves membership
 moves. Its native floor is one (`494-496`), so minimum-two is not a KWin API

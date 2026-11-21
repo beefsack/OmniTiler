@@ -23,6 +23,15 @@ set -euo pipefail
 state="${FAKE_STATE_DIR:?}"
 case "$*" in
   *"GetNameOwner s com.omnitiler.Planner"*)
+    # On a real bus the name disappears once the old owner exits, whereas fake
+    # proc state stays behind; during a real-PID handoff (next-owner-pid set),
+    # do not advertise a dead owner before fake setsid promotes the replacement.
+    if [[ -f "$state/next-owner-pid" ]]; then
+      owner_pid="$(cat "$state/owner-pid" 2>/dev/null || true)"
+      if [[ "$owner_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$owner_pid" 2>/dev/null; then
+        exit 1
+      fi
+    fi
     if [[ -f "$state/planner-owned" ]]; then
       printf 's ":1.50"\n'
       exit 0
@@ -202,8 +211,7 @@ printf 'setsid %s\n' "$*" >> "${FAKE_CALL_LOG:?}"
 printf 'setsid-env TRACE=%s\n' "${OMNITILER_TRACE:-0}" >> "${FAKE_CALL_LOG:?}"
 printf 'setsid-runtime XDG_RUNTIME_DIR=%s DBUS_SESSION_BUS_ADDRESS=%s\n' "${XDG_RUNTIME_DIR:-}" "${DBUS_SESSION_BUS_ADDRESS:-}" >> "${FAKE_CALL_LOG:?}"
 if [[ -f "${FAKE_STATE_DIR:?}/next-owner-pid" ]]; then
-  cp -- "${FAKE_STATE_DIR:?}/next-owner-pid" "${FAKE_STATE_DIR:?}/owner-pid"
-  rm -f -- "${FAKE_STATE_DIR:?}/next-owner-pid"
+  mv -f -- "${FAKE_STATE_DIR:?}/next-owner-pid" "${FAKE_STATE_DIR:?}/owner-pid"
 fi
 exit 0
 EOF
@@ -2305,6 +2313,7 @@ unset DBUS_SESSION_BUS_ADDRESS 2>/dev/null || true
 run_just reload
 check_exit 0 "intent-root reload exit"
 assert_calls_contain "setsid-runtime XDG_RUNTIME_DIR=$ISO_GOOD DBUS_SESSION_BUS_ADDRESS=$ORIG_DBUS_ADDR" "intent-root reload preserves isolated env"
+if [[ "$(cat "$WORK/runtime/omnitiler-dev/planner-pid" 2>/dev/null)" == "$ISO_NEW_PID" ]]; then PASS=$((PASS + 1)); else echo "FAIL [intent-root reload did not record ISO_NEW_PID]" >&2; FAIL=$((FAIL + 1)); fi
 kill "$ISO_OLD_PID" 2>/dev/null || true
 wait "$ISO_OLD_PID" 2>/dev/null || true
 
@@ -2320,6 +2329,7 @@ chmod 700 "$ISO_GOOD"
 run_just dev-off
 check_exit 0 "intent-root dev-off exit"
 if [[ ! -e "$WORK/runtime/omnitiler-dev/planner-intent-root" && ! -e "$WORK/runtime/omnitiler-dev/planner-dbus-address" ]]; then PASS=$((PASS + 1)); else echo "FAIL [dev-off left isolated state files]" >&2; FAIL=$((FAIL + 1)); fi
+if ! kill -0 "$ISO_NEW_PID" 2>/dev/null; then PASS=$((PASS + 1)); else echo "FAIL [intent-root dev-off did not stop ISO_NEW_PID]" >&2; FAIL=$((FAIL + 1)); fi
 kill "$ISO_NEW_PID" 2>/dev/null || true
 wait "$ISO_NEW_PID" 2>/dev/null || true
 

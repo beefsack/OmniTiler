@@ -112,10 +112,11 @@
   whose D-Bus path still addressed the already-running helper. Its no-op `run`
   produced no controller evaluation, while plugin-name lookup still reported
   the new controller loaded. A later helper at ID 4 evaluated normally.
-- KWin at `1f543de908`, `Script::run`/`slotScriptLoadedFromFile`, delays a fresh
-  D-Bus reply until after evaluation. The earlier interpretation that it replies
-  before evaluation was incorrect. `Scripting::loadScript` uses current list
-  size, `scriptDestroyed` removes without renumbering, and `AbstractScript`
+- In KWin v6.8.1's `src/scripting/scripting.cpp`, `Script::run` and
+  `slotScriptLoadedFromFile` delay a fresh D-Bus reply until after evaluation.
+  The earlier interpretation that it replies before evaluation was incorrect.
+  `Scripting::loadScript` uses current list size, `scriptDestroyed` removes
+  without renumbering, and `AbstractScript`
   ignores duplicate-path registration failure; an already-running `run` exits
   before the delayed-reply path. This explains why lifecycle receipts were
   collision-blind. The exact helper plugin/source receipt and the raw D-Bus

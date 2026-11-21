@@ -13,6 +13,14 @@ retained as delivery evidence and planning history.
 - Decisions cited here remain in [decisions](decisions.md); nothing in this
   archive re-decides them.
 
+## KDE source citation correction (closed 2026-11-22)
+
+- P2 | KDE source citation correction | The live-testing guide, dynamic
+  workspace and restart records, and visibility probe now cite KWin v6.8.1
+  instead of the unreleased `1f543de908`. The revised pin has byte-identical
+  `src/scripting/scripting.cpp` and `src/virtualdesktops.cpp`; the
+  [KDE source policy](decisions/kde.md#kde-support-floor) is unchanged.
+
 ## KDE rebuild on the supported v4 interface (closed 2026-11-21)
 
 - P0 | KDE rebuild on the supported v4 interface | Closed the eight rebuild

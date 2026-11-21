@@ -9,7 +9,7 @@
 // - no window property writes, no setData(), no refWindow/unrefWindow
 // - never logs caption/title or any foreign-window data
 //
-// KWin source pins (sibling clone, 1f543de908 = v6.7.4):
+// KWin source references (v6.8.1):
 // - visible semantics: src/effect/effectwindow.h:241,
 //   src/effect/effectwindow.cpp:193-199
 //   (visible = !minimized && !hidden && onCurrentDesktop && onCurrentActivity)
@@ -17,7 +17,7 @@
 //   windowClass = resourceName + ' ' + resourceClass
 //   (effectwindow.h:64, effectwindow.cpp:331-334); the resourceClass token is
 //   the LAST token. Case is client-verbatim at every setResourceClass call
-//   site (window.cpp:175-179, x11window.cpp:2964, xdgshellwindow.cpp:857,
+//   site (window.cpp:175-179, x11window.cpp:2967, xdgshellwindow.cpp:857,
 //   waylandwindow.cpp:167) despite the "always lowercase" comment in
 //   window.h, so the match is case-insensitive but position-strict.
 //   internalId() (effectwindow.h:652) and windowId() (effectwindow.h:643)
@@ -38,7 +38,7 @@
 // - enumeration/signals: effects.stackingOrder + activeWindow
 //   (effecthandler.h:129,146), windowAdded/windowClosed/windowDeleted/
 //   windowActivated/stackingOrderChanged/desktopChanged/
-//   currentActivityChanged (effecthandler.h:824-969),
+//   currentActivityChanged (effecthandler.h:774-969),
 //   minimizedChanged/windowHiddenChanged/windowDesktopsChanged/
 //   windowFrameGeometryChanged (effectwindow.h:767,746,823,828).
 // - load/unload D-Bus: Q_CLASSINFO org.kde.kwin.Effects (effecthandler.h:121),

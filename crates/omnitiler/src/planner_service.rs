@@ -1886,22 +1886,72 @@ mod tests {
         }
     }
 
-    fn fresh_intent_root() -> Option<std::path::PathBuf> {
+    fn fresh_intent_root_with_nanos(nanos: u128) -> std::io::Result<std::path::PathBuf> {
+        static NEXT_INTENT_ROOT_SEQ: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT_INTENT_ROOT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
-            "omnitiler-test-intent-root-{}-{}",
+            "omnitiler-test-intent-root-{}-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|elapsed| elapsed.as_nanos())
-                .unwrap_or_default()
+            nanos,
+            seq
         ));
         let mut builder = std::fs::DirBuilder::new();
         {
             use std::os::unix::fs::DirBuilderExt;
             builder.mode(0o700);
         }
-        builder.create(&root).ok()?;
-        Some(root)
+        builder.create(&root)?;
+        Ok(root)
+    }
+
+    fn fresh_intent_root() -> std::io::Result<std::path::PathBuf> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default();
+        fresh_intent_root_with_nanos(nanos)
+    }
+
+    #[test]
+    fn fresh_intent_root_same_clock_is_unique_and_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const THREADS: usize = 8;
+        const PER_THREAD: usize = 200;
+        let fixed_nanos: u128 = 1_700_000_000_000_000_000;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+        let mut handles = Vec::with_capacity(THREADS);
+        for _ in 0..THREADS {
+            let b = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                b.wait();
+                let mut created = Vec::with_capacity(PER_THREAD);
+                for _ in 0..PER_THREAD {
+                    let path = fresh_intent_root_with_nanos(fixed_nanos)
+                        .expect("same-clock fresh_intent_root_with_nanos must succeed");
+                    let mode = std::fs::metadata(&path)
+                        .expect("created intent root metadata")
+                        .permissions()
+                        .mode()
+                        & 0o777;
+                    assert_eq!(
+                        mode, 0o700,
+                        "intent root must have private 0700 permissions"
+                    );
+                    created.push(path);
+                }
+                created
+            }));
+        }
+        let mut seen = std::collections::HashSet::with_capacity(THREADS * PER_THREAD);
+        for handle in handles {
+            for path in handle.join().expect("stress worker thread panicked") {
+                assert!(seen.insert(path.clone()), "duplicate intent root: {path:?}");
+                let _ = std::fs::remove_dir_all(&path);
+            }
+        }
+        assert_eq!(seen.len(), THREADS * PER_THREAD);
     }
 
     fn serve_intent_endpoint(server: &Connection, endpoint: PlannerEndpoint) {
@@ -1937,9 +1987,12 @@ mod tests {
             eprintln!("SKIP: private bus daemon never listened");
             return;
         };
-        let Some(root) = fresh_intent_root() else {
-            eprintln!("SKIP: temp dir unavailable for hermetic intent test");
-            return;
+        let root = match fresh_intent_root() {
+            Ok(root) => root,
+            Err(err) => {
+                eprintln!("SKIP: temp dir unavailable for hermetic intent test: {err}");
+                return;
+            }
         };
         serve_intent_endpoint(&server, PlannerEndpoint::with_intent_root(root.clone()));
         let Some(client) = bus.session() else {
@@ -1987,9 +2040,12 @@ mod tests {
             eprintln!("SKIP: private bus daemon never listened");
             return;
         };
-        let Some(root) = fresh_intent_root() else {
-            eprintln!("SKIP: temp dir unavailable for hermetic intent test");
-            return;
+        let root = match fresh_intent_root() {
+            Ok(root) => root,
+            Err(err) => {
+                eprintln!("SKIP: temp dir unavailable for hermetic intent test: {err}");
+                return;
+            }
         };
         serve_intent_endpoint(&server, PlannerEndpoint::with_intent_root(root.clone()));
         let Some(client) = bus.session() else {
@@ -2116,9 +2172,12 @@ mod tests {
             eprintln!("SKIP: private bus daemon never listened");
             return;
         };
-        let Some(root) = fresh_intent_root() else {
-            eprintln!("SKIP: temp dir unavailable for hermetic intent test");
-            return;
+        let root = match fresh_intent_root() {
+            Ok(root) => root,
+            Err(err) => {
+                eprintln!("SKIP: temp dir unavailable for hermetic intent test: {err}");
+                return;
+            }
         };
         serve_intent_endpoint(&server, PlannerEndpoint::with_intent_root(root.clone()));
         let Some(client) = bus.session() else {
@@ -2197,9 +2256,12 @@ mod tests {
             eprintln!("SKIP: private bus daemon never listened");
             return;
         };
-        let Some(root) = fresh_intent_root() else {
-            eprintln!("SKIP: temp dir unavailable for hermetic intent test");
-            return;
+        let root = match fresh_intent_root() {
+            Ok(root) => root,
+            Err(err) => {
+                eprintln!("SKIP: temp dir unavailable for hermetic intent test: {err}");
+                return;
+            }
         };
         let endpoint = PlannerEndpoint::with_intent_root(root.clone());
         // Simulate an in-flight world call holding the world single-flight
@@ -2241,9 +2303,9 @@ mod tests {
         let Some(server) = bus.session() else {
             panic!("private bus daemon never listened");
         };
-        let Some(root) = fresh_intent_root() else {
-            panic!("temp dir unavailable for hermetic cross-store test");
-        };
+        let root = fresh_intent_root().unwrap_or_else(|err| {
+            panic!("temp dir unavailable for hermetic cross-store test: {err}")
+        });
         let endpoint = PlannerEndpoint::with_intent_root(root.clone());
         // Simulate one in-flight intent read holding its single-flight
         // guard across the endpoint authorization await: a second read on
@@ -2358,9 +2420,8 @@ mod tests {
         let Some(server) = bus.session() else {
             panic!("private bus daemon never listened");
         };
-        let Some(root) = fresh_intent_root() else {
-            panic!("temp dir unavailable for hermetic preimage test");
-        };
+        let root = fresh_intent_root()
+            .unwrap_or_else(|err| panic!("temp dir unavailable for hermetic preimage test: {err}"));
         serve_intent_endpoint(&server, PlannerEndpoint::with_intent_root(root.clone()));
         let Some(client) = bus.session() else {
             panic!("private bus daemon dropped the second connection");
@@ -2409,9 +2470,8 @@ mod tests {
         let Some(server) = bus.session() else {
             panic!("private bus daemon never listened");
         };
-        let Some(root) = fresh_intent_root() else {
-            panic!("temp dir unavailable for hermetic preimage test");
-        };
+        let root = fresh_intent_root()
+            .unwrap_or_else(|err| panic!("temp dir unavailable for hermetic preimage test: {err}"));
         serve_intent_endpoint(&server, PlannerEndpoint::with_intent_root(root.clone()));
         let Some(client) = bus.session() else {
             panic!("private bus daemon dropped the second connection");
@@ -2650,9 +2710,8 @@ mod tests {
         let Some(server) = bus.session() else {
             panic!("private bus daemon never listened");
         };
-        let Some(root) = fresh_intent_root() else {
-            panic!("temp dir unavailable for hermetic preimage test");
-        };
+        let root = fresh_intent_root()
+            .unwrap_or_else(|err| panic!("temp dir unavailable for hermetic preimage test: {err}"));
         serve_intent_endpoint(&server, PlannerEndpoint::with_intent_root(root.clone()));
         let Some(first) = bus.session() else {
             panic!("private bus daemon dropped the second connection");
@@ -2723,9 +2782,8 @@ mod tests {
         let Some(server) = bus.session() else {
             panic!("private bus daemon never listened");
         };
-        let Some(root) = fresh_intent_root() else {
-            panic!("temp dir unavailable for hermetic preimage test");
-        };
+        let root = fresh_intent_root()
+            .unwrap_or_else(|err| panic!("temp dir unavailable for hermetic preimage test: {err}"));
         serve_intent_endpoint(&server, PlannerEndpoint::with_intent_root(root.clone()));
         let Some(client) = bus.session() else {
             panic!("private bus daemon dropped the second connection");
