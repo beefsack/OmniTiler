@@ -2255,6 +2255,24 @@ Pinned evidence (source rules, not executed reference journeys):
   the regression pins retention and subsequent pruning after longest-ring shrink.
   [Current evidence and gaps](../../changes/kde-dynamic-workspaces.md).
 
+## Shared native roster slot discriminators
+
+Proposed outcomes for the [approved slot design](../../decisions/workspaces.md#dynamic-workspace-lifecycle-and-kde-pager-backing),
+not yet implemented or natively verified. D1–D4 name native desktops, and `*`
+marks the focused member. Both KDE outputs start on D1 with per-output
+selection enabled and complete, controllable occupancy evidence.
+
+| Given | Action | Proposed DP-6 outcome | Proposed HDMI and native writes |
+| --- | --- | --- | --- |
+| Shared `[D1,D2,D3]`; DP-6 `[A*],[B],[spare]`; HDMI shows C on D1 | `Meta+Shift+0` send-and-follow A | Prune the old source logical row. B keeps its logical row, now backed by D1. A arrives at D2, which is then shown, with A focused. D3 backs the new real spare. | C, HDMI current, members and history unchanged. B→D1, A→D2, switch only DP-6 to D2: 2 membership writes, 1 view write, 0 creates/removes/reorders; native IDs and order unchanged. Clean path targets one publication and one apply. |
+| Same, except a second ordinary member stays on DP-6 D1 | Same | No source prune; the stayer keeps D1, B keeps D2, A alone moves to D3, shown and focused. | HDMI current, members and history unchanged; switch only DP-6 to D3. Append one slot for the spare unless an eligible slot already exists; no removes or reorders. |
+
+Native flicker and focus acceptance and external reference-WM counterparts
+are TBD. The [acceptance gate](../../changes/kde-shared-roster-slots.md#acceptance)
+includes independent rosters, the API-present/setting-off control, and partial
+apply. The 2026-11-10 matrix above is historical evidence, not a slot-route
+oracle.
+
 ## KDE aligned-grid discriminators (2026-10-18 decisions; evidence 2026-10-19)
 
 Retired, 2026-11-08: the aligned-only rows below are historical discriminators,

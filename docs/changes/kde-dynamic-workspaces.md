@@ -1,5 +1,11 @@
 # KDE dynamic workspace lifecycle
 
+The shared-route lifecycle and migration-backing choices below are historical.
+The approved [shared-roster slot design](kde-shared-roster-slots.md) supersedes
+them only for separate modes with an independently writable per-output
+selector on a host-owned shared roster. Independent-roster rationale and
+recorded evidence are unchanged.
+
 ## Goal and scope
 
 Implement the 2026-11-10 [dynamic lifecycle decision](../decisions/workspaces.md#dynamic-workspace-lifecycle-and-kde-pager-backing): immediately back each trailing spare in KDE, prune ordinary unshown empty logical rows except required equal-count padding, and keep native deletion safety and the minimum-two native floor separate from portable core lifecycle. Preserve displaced/held units, stable native IDs and zero membership writes for gap cleanup.
@@ -358,6 +364,10 @@ Use internal per-output `(output, native id)` retirement markers, not logical bi
 
 Global native occupancy never clears a local marker: the producer can repeat the same global counts on every output, so only output-local current/window evidence proves re-adoption. Core fake-host tests cover shared-global and independent per-output native identities. Platform minimums and native ordinal renumbering remain adapter concerns.
 
+This remains the independent-roster rationale. The shared-roster slot route
+uses [settled and desired slot projections](../porting/world-contract.md#shared-native-roster-slot-plans)
+instead of local markers, sibling-binding arbitration and spare fan-out.
+
 ### Native retirement authority amendment (User 2026-11-10)
 
 The [approved generic amendment](../decisions/contract.md#native-only-retirement-intent) extends the existing host-owned native-desktop capability to native-only absence records. Core publishes existing `exist:false` rows for each retired output/native pair until deletion or re-adoption. The removed logical ID is correlation only; these rows are not live ring/spare/occupancy members. No new wire key, format or platform selector is introduced.
@@ -365,6 +375,11 @@ The [approved generic amendment](../decisions/contract.md#native-only-retirement
 The [world contract](../porting/world-contract.md#native-only-retirement-with-per-output-rings) keeps core `exist:false` as the sole native-removal authority. Adapters never delete autonomously or from omission; they apply fresh global occupancy, any-output visibility, protection, completeness and minimum-count vetoes. Native-only intents also protect backing still live on another output.
 
 KWin retains `minDesktops: 2` and adds floor bootstrap creation from fresh native enumeration. Ordinary spare backing still needs explicit core creation desires. Existing source refill backing is preserved for the same source logical spare when eager backing predates migration; target migration backing still requires its own fresh creation, with anti-cannibalization assertions retained.
+
+On the slot route only, the explicit roster plan replaces native-only
+`exist:false` removal and covers floor and spare backing. Migration uses the
+assigned existing slot when present, not a mandatory fresh desktop. Fresh
+occupancy, visibility, protection, completeness and floor vetoes still apply.
 
 ## Independent review and remaining blockers
 

@@ -217,8 +217,8 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 | | `gen` | generation string | yes | Core-minted on accepted handshake; null on refusal. |
 | | `ready` | bool | no | False: no world writes/effects authorized. |
 | | `kind` | `""` or ProtocolKind | empty | Empty on acceptance; refusal kind otherwise. |
-| `HostCapabilities` | `hostOwned,equalCount,birthClear` | bool | no | Existing native-domain/equal-count/automatic-birth-clear mechanisms. |
-| | `sharedNativeRoster` | bool | no | One native desktop identity roster across outputs; ignored when hostOwned=false. Independent of equal logical counts and view-selector coupling. |
+| `HostCapabilities` | `hostOwned,equalCount,birthClear` | bool | no | Existing native-domain/equal-count/automatic-birth-clear mechanisms. `equalCount` ordinarily applies to logical lengths; on the slot route it applies to pager projection lengths. |
+| | `sharedNativeRoster` | bool | no | One native desktop identity roster across outputs; ignored when hostOwned=false. Independent of `equalCount` and view-selector coupling. Does not alone enable the slot route. |
 | | `nativeSelectorScope` | `per-output/all-outputs` | no | Effective native view selector coupling, not just API availability; ignored when hostOwned=false. |
 | | `windowSuppression` | bool | no | Independent recoverable per-window hide mechanism. |
 | | `maximize,fullscreen,nativeSticky,above,warp` | bool | no | Native state/stacking/cursor actuation support, not semantic command support or permission. |
@@ -718,35 +718,27 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
   contradictory order holds, not adapter merging. Stable logical ids survive
   migration; only positive arrival/close/newer off-output proof releases source
   binding. Existing native creation/ambiguity/released-source rules remain.
-   Core `exist:false` is the sole native removal authority, not an instruction
-   to remove despite fresh occupancy/pin/minimum/completeness vetoes. Unknown
-   occupancy is not zero; incomplete evidence holds. Adapters never remove a
-   native desktop autonomously, from omitted desires, or from local creation
-   ownership. No native-removal capability is added.
+  Core is the sole native-removal authority: `exist:false` under the
+  [existing retirement rules](#native-only-retirement-with-per-output-rings),
+  explicit removals on the [slot route](#shared-native-roster-slot-plans).
+  Unknown occupancy is not zero; incomplete evidence holds. Adapters never
+  delete autonomously, from omitted desires, or from local creation ownership.
+  Fresh occupancy, visibility, pin, minimum and completeness vetoes apply on
+  both routes. No native-removal capability is added.
    [R19](../decisions/layout-and-admission.md#native-workspace-adoption-and-r19),
    [G2](../changes/v4-migration.md#b-reconciliations-and-open-points).
 
 #### Native-only retirement with per-output rings
 
-For the existing `hostOwned` native-desktop capability, native identities may
-be shared across outputs even when core maintains independent per-output rings;
-output-local native identities use the same rules. Logical ring removal and
-native deletion are separate operations. A native desktop can remain on the
-host after its empty, unshown logical workspace has left one output's ring.
-Hosts declaring `equalCount` keep equal logical ring lengths as an explicit
-ordinary-empty pruning exception; eligible padding prunes when the longest ring
-shrinks. This is distinct from the adapter's native minimum-count floor.
-
-Hosts additionally declaring `sharedNativeRoster:true` reconcile live padding
-and retirement by native identity across outputs, not independent removal
-counts. A native retained by one projection stays represented by the other
-projections; globally eligible empty/unshown identities retire jointly. Pure
-trailing-spare backing is coordinated so one creation serves the shared need.
-Incomplete or contradictory shared-roster evidence cannot authorize independent
-pruning or duplicate spare creation. Migration backing still requires fresh
-creation, and migration inserts after destination current rather than replacing
-an aligned cell. No occupant moves merely to compact gaps. False preserves the
-independent-roster behavior; `equalCount` alone never declares identity sharing.
+Outside the slot route below, keep existing backing and `exist:false`
+retirement authority, including for linked `shared` on a native shared
+roster and effective `shared` with an all-output-only selector.
+For independent host-owned rosters, logical ring removal and native deletion
+are separate operations. A native desktop can remain on the host after its
+empty, unshown logical workspace leaves the ring. `equalCount` keeps equal
+logical ring lengths as an ordinary-empty pruning exception; eligible padding
+prunes when the longest ring shrinks. This says nothing about shared native
+identity or the adapter's native minimum-count floor.
 
 KDE declares true in both native selector modes. Output-local macOS Spaces and
 the tiler-owned Windows workspace route declare false. This required connection
@@ -781,6 +773,58 @@ acceptance or adopt the separate close-focus amendment.
   migration-release adoption and displaced-workspace handling are unchanged.
 
 [User decision 2026-11-10](../decisions/contract.md#native-only-retirement-intent).
+
+#### Shared native roster slot plans
+
+Approved design (2026-11-21), not yet implemented or natively verified.
+Applies only with `hostOwned:true`, `sharedNativeRoster:true`, an independently
+writable per-output selector and effective `per-output-local` or
+`global-unique`. Linked `shared` and all-output selectors do not run this plan;
+see [scope and portability](../decisions/workspaces.md#workspace-scope-vocabulary).
+
+- Core retains a settled epoch with the ordered native IDs and each output's
+  real-row or tail-padding projections. A desired plan is separate until proved.
+  Padding is not a `WorkspaceDesire` logical row, spare or occupancy owner.
+  Core computes the plan before publication using accepted projected membership
+  and views for lifecycle; unproved native facts remain preconditions, not
+  predicted arrivals. The [slot decision](../decisions/workspaces.md#dynamic-workspace-lifecycle-and-kde-pager-backing)
+  governs the count, append-only growth and order-preserving shrink.
+- A retained plan binds a stable operation and stable step identities to its
+  settled epoch and issuing generation/revision. It names the exact baseline
+  roster/order and selector currents, desired projections, explicit append slots
+  and removal IDs, exact window lifetimes and native membership/view preimages
+  and targets, and the dependencies between steps. A dependent target in a
+  newly appended slot resolves only from exact correlated creation proof,
+  never a guessed ID by number or name. No per-output tombstones or spare
+  fan-out authorize native mutations on this route.
+- Preflight requires complete, exact raw occupancy evidence on affected
+  source, target and removal slots, including unmanaged occupants. Counts
+  alone do not identify the windows. Require a complete native occupant
+  witness or readable, deduplicated memberships that reconcile exactly with
+  the occupancy totals; residual or unknown occupancy holds.
+  Apply the [occupancy fences](../decisions/workspaces.md#dynamic-workspace-lifecycle-and-kde-pager-backing)
+  to affected steps, not to a proven unchanged sibling occupant. Recheck
+  generation, freshness, lifetime, writable scopes and native preconditions
+  before setters; remove only above the floor with live global emptiness,
+  no current selector showing that desktop and no protection.
+- One publication and one apply is the clean synchronous target: append any
+  required slots with exact creation proof, perform the authorized final member
+  changes and verify arrival, switch only planned selectors and verify current
+  before authorized focus, then remove proved-safe surplus and verify absence.
+  Frame writes keep their independent authority and arrival gate. Separate
+  setters are not a compositor transaction; final visibility and focus are
+  the guarantee, not uninterrupted visibility. No dual-membership bridge.
+  Arm correlated feedback and spend each step before native dispatch.
+  Expected echoes do not waive freshness or external-input fences.
+- Async arrival, refusal, ambiguity or external input stops dependent work.
+  The adapter reports the actual prefix and readbacks, without substitution,
+  rollback or autonomous recovery. Core correlates attempts against the
+  pending plan and its settled baseline rather than translating intermediate
+  facts through desired bindings. Advance the affected epoch only with exact
+  native order, same-lifetime membership and view proof. A failed or unproved
+  step does not release a migration source or reinterpret a window through the
+  desired mapping. A settled replay emits no mutations; unchanged publications
+  never renew spent or possibly executed steps.
 
 ## Commands and results
 
@@ -1064,7 +1108,7 @@ acceptance or adopt the separate close-focus amendment.
 | `dragPreview` | DragPreviewV4 | yes | Required nullable retained identity-bound drag-preview overlay state (`{id,rev,domainOut,domainWs,sourceOut,sourceWs,rect,hover,win}` on the wire; Rust `WorldReplyV4.drag_preview`). |
 | `gestureSettled` | GestureSettled | yes | Retained latest core mutation outcome, not native completion. |
 | `operationSettled` | OperationEvent[] | no | Complete retained latest clear/float outcomes keyed by `(win,kind)`. |
-| `nativeCreations` | NativeCreationDesire[] | no | Only authorization for native desktop creation. |
+| `nativeCreations` | NativeCreationDesire[] | no | Explicit native creation authority on the existing route; the approved slot route authorizes appends through its retained plan. |
 | `warpCursor` | Point | yes | Core-decided cursor target. |
 | `presentation` | WorldPresentation | no | Full accepted rendering publication. |
 | `intentDesired` | IntentDesire[] | no | Complete retained per-window storage targets, including explicit clears. |
@@ -1089,6 +1133,11 @@ acceptance or adopt the separate close-focus amendment.
   [Desired-state baseline](world-contract-v3.md#4-desired-world-state-what-the-reply-authorizes),
   [state-centric decision](../decisions/contract.md#state-centric-contract).
 
+- The approved [slot-plan authority](#shared-native-roster-slot-plans) is
+  retained with the desired publication, not derived from workspace rows or
+  a reply omission. This section specifies its semantics, not a new wire key
+  or an implemented codec shape.
+
 - Occupants of a floating-mode workspace, including minimized occupants,
   publish `floating:true` with empty `float_origin`. This describes the scope's
   classification, not per-window float intent or frame/membership write
@@ -1103,7 +1152,7 @@ acceptance or adopt the separate close-focus amendment.
 | `ScopeStatus` | `scope` | AuthorityScope | no | Typed authority target. |
 | | `auth,reason` | ScopeAuthority token, HoldReason | reason empty outside hold | Existing flattened encoding. |
 | `WorkspaceDesire` | `id,out` | WorkspaceId, OutputId | no | Logical identity and owner. |
-| | `bind` | NativeWorkspaceId | empty | Existing unbound sentinel. |
+| | `bind` | NativeWorkspaceId | empty | Existing unbound sentinel. On the slot route, a published target binding is descriptive only, not settled evidence or setter authority. |
 | | `scope` | AuthorityScope | no | Typed owning scope. |
 | | `order,mode,exist,hold` | integer, TilingMode, bool, HoldReason | hold empty if none | Existing ring order/mode/removal eligibility. |
 | | `trailing` | true | omit unless true | Existing explicit spare designation. |
@@ -1132,6 +1181,13 @@ acceptance or adopt the separate close-focus amendment.
   repeating the same pair refuses with `duplicate-workspace`. This preserves
   the shared ring without relabel/dedup; reference/native external row-identity
   counterparts remain TBD. [Decision](../decisions/workspaces.md#workspace-scope-vocabulary).
+
+- On the slot route, native member and view steps require explicit plan/step
+  correlation and exact native preimages and targets. Existing transfer
+  correlations still identify the logical command, when there is one; a
+  membership step relocating an existing occupant for backing alone is
+  commandless, not a fabricated logical send or `cmdSeq`. A selector step can
+  change native target even when its logical view is unchanged.
 
 - StateTarget is native actuation only: maximized requires maximize=true, and
   sticky requires nativeSticky=true. Core-composed maximize uses the existing
@@ -1566,9 +1622,10 @@ acceptance or adopt the separate close-focus amendment.
   redeliver the original stamps idempotently. [Settlement baseline](world-contract-v3.md#5-raw-attempts-and-settlement),
   [rename/consolidation](../changes/core-interface-review.md#original-backlog-lines-159-186).
 
-- Property-attempt fields and meaning are unchanged. Attempt disposition,
-  old attempt rows and matching property readback are not foreground
-  attribution. Attribution does not prove property settlement or focus arrival.
+- Existing property-attempt fields and meaning are unchanged outside the slot
+  route. Attempt disposition, old rows and matching property readback are
+  not foreground attribution. Attribution does not prove property settlement
+  or focus arrival.
 
 | Record | Key | Type | Null/absence | Meaning |
 | --- | --- | --- | --- | --- |
@@ -1643,13 +1700,20 @@ acceptance or adopt the separate close-focus amendment.
   prewrite and pre/post-maximized fields in `propertyAttempts`. Native
   creation remains separate, retaining its before/after and correlated-created
   identity fields.
-  Creation needs explicit `nativeCreations` authorization, spent before call;
-  an unbound spare is not permission. Unknown/ambiguous created identity holds
-  without recreation. A causal receipt is not available on every route: without
-  causal proof, macOS `created` stays null and binding holds even if same-call or
+  Outside slot plans, ordinary creation needs explicit `nativeCreations`
+  authorization, spent before call; an unbound spare is not permission.
+  Unknown/ambiguous created identity holds without recreation. Without causal
+  proof, macOS `created` stays null and binding holds even if same-call or
   later native-list deltas contain one new id. Preserve the original spent
   attempt; no later-delta attribution or retry.
   [Creation rules](world-contract-v3.md#host-owned-adoption-amendment-tentative-2026-10-25).
+
+- Slot-plan feedback identifies the plan operation, epoch and exact step.
+  Member/view attempts report raw native before/after facts and call or
+  no-call disposition, tied to the exact lifetime or selector; append/remove
+  feedback carries correlated native roster readback. Attempt reports do not
+  commit desired bindings or infer success for the rest of a partial apply.
+  Preserve original evidence on redelivery without reissuing writes.
 
 ## Visibility and focus ordering
 
