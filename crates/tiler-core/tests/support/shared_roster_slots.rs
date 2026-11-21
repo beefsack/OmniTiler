@@ -1018,3 +1018,171 @@ fn stale_request_and_mismatched_feedback_cannot_advance_a_pending_epoch() {
     assert_no_legacy_roster_mutations(&reply);
     assert!(engine.desired_shared_roster_plan().is_none());
 }
+
+#[test]
+fn managed_unchanged_maximized_sibling_does_not_fence_stayer_append() {
+    let mut engine = slot_engine();
+    let make_capture = |seq: u64| {
+        let mut cap = capture(
+            seq,
+            ORDER,
+            ["d1", "d1"],
+            &[
+                ("a", DP, "d1"),
+                ("stayer", DP, "d1"),
+                ("b", DP, "d2"),
+                ("c", HDMI, "d1"),
+                ("sib-max", HDMI, "d1"),
+            ],
+        );
+        cap.windows
+            .iter_mut()
+            .find(|fact| fact.window.0 == "sib-max")
+            .expect("sib-max")
+            .maximized = Some(true);
+        cap
+    };
+    let boot = accepted(&mut engine, &make_capture(1));
+    assert_no_legacy_roster_mutations(&boot);
+    assert!(engine.desired_shared_roster_plan().is_none());
+
+    let mut send = make_capture(2);
+    send_append(&mut send, 0, true);
+    let issued = accepted(&mut engine, &send);
+    assert_no_legacy_roster_mutations(&issued);
+    assert_sibling_unchanged(&boot, &issued);
+    assert_eq!(
+        member_workspace(&issued, "sib-max"),
+        member_workspace(&boot, "sib-max")
+    );
+    let plan = engine
+        .desired_shared_roster_plan()
+        .expect("unchanged maximized sibling must not fence stayer append")
+        .clone();
+    assert_eq!(plan.slots.len(), 4);
+    assert_eq!(plan.slots[0], RosterSlot::Existing("d1".to_owned()));
+    assert_eq!(plan.slots[1], RosterSlot::Existing("d2".to_owned()));
+    assert_eq!(plan.slots[2], RosterSlot::Existing("d3".to_owned()));
+    assert!(matches!(plan.slots[3], RosterSlot::Append(_)));
+    assert!(plan.removals.is_empty());
+    assert_eq!(plan.members.len(), 1);
+    assert_eq!(plan.members[0].window.0, "a");
+    assert_eq!(
+        plan.members[0].target,
+        RosterSlot::Existing("d3".to_owned())
+    );
+    assert_eq!(plan.views.len(), 1);
+    assert_eq!(plan.views[0].output, output(DP));
+    assert_eq!(plan.views[0].target, RosterSlot::Existing("d3".to_owned()));
+    assert_eq!(
+        plan.projections[&output(HDMI)],
+        plan.baseline.projections[&output(HDMI)]
+    );
+}
+
+#[test]
+fn managed_unchanged_maximized_sibling_does_not_fence_sole_mover_compaction() {
+    let mut engine = slot_engine();
+    let make_capture = |seq: u64| {
+        let mut cap = capture(
+            seq,
+            ORDER,
+            ["d1", "d1"],
+            &[
+                ("a", DP, "d1"),
+                ("b", DP, "d2"),
+                ("c", HDMI, "d1"),
+                ("sib-max", HDMI, "d1"),
+            ],
+        );
+        cap.windows
+            .iter_mut()
+            .find(|fact| fact.window.0 == "sib-max")
+            .expect("sib-max")
+            .maximized = Some(true);
+        cap
+    };
+    let boot = accepted(&mut engine, &make_capture(1));
+    assert_no_legacy_roster_mutations(&boot);
+
+    let mut send = make_capture(2);
+    send_append(&mut send, 0, true);
+    let issued = accepted(&mut engine, &send);
+    assert_no_legacy_roster_mutations(&issued);
+    assert_sibling_unchanged(&boot, &issued);
+    assert_eq!(
+        member_workspace(&issued, "sib-max"),
+        member_workspace(&boot, "sib-max")
+    );
+    let plan = engine
+        .desired_shared_roster_plan()
+        .expect("unchanged maximized sibling must not fence sole-mover compaction")
+        .clone();
+    assert_eq!(plan.slots.len(), 3);
+    assert!(plan.removals.is_empty());
+    assert_eq!(plan.members.len(), 2);
+    assert_eq!(plan.views.len(), 1);
+    assert_eq!(plan.views[0].output, output(DP));
+    assert_eq!(plan.views[0].target, RosterSlot::Existing("d2".to_owned()));
+    assert_eq!(
+        plan.projections[&output(HDMI)],
+        plan.baseline.projections[&output(HDMI)]
+    );
+}
+
+#[test]
+fn affected_output_maximized_occupant_still_fences_stayer_append() {
+    let mut engine = slot_engine();
+    let make_capture = |seq: u64| {
+        let mut cap = reference_capture(seq, true);
+        cap.windows
+            .iter_mut()
+            .find(|fact| fact.window.0 == "stayer")
+            .expect("stayer")
+            .maximized = Some(true);
+        cap
+    };
+    accepted(&mut engine, &make_capture(1));
+    let mut send = make_capture(2);
+    send_append(&mut send, 0, true);
+    let issued = accepted(&mut engine, &send);
+    assert_no_legacy_roster_mutations(&issued);
+    assert!(
+        engine.desired_shared_roster_plan().is_none(),
+        "maximized occupant on affected source output must remain fenced"
+    );
+}
+
+#[test]
+fn unmanaged_sibling_occupant_still_fences_stayer_append() {
+    let mut engine = slot_engine();
+    let make_capture = |seq: u64| {
+        let mut cap = capture(
+            seq,
+            ORDER,
+            ["d1", "d1"],
+            &[
+                ("a", DP, "d1"),
+                ("stayer", DP, "d1"),
+                ("b", DP, "d2"),
+                ("c", HDMI, "d1"),
+                ("sib-unmanaged", HDMI, "d1"),
+            ],
+        );
+        cap.windows
+            .iter_mut()
+            .find(|fact| fact.window.0 == "sib-unmanaged")
+            .expect("sib-unmanaged")
+            .managed = Some(false);
+        cap
+    };
+    accepted(&mut engine, &make_capture(1));
+    let mut send = make_capture(2);
+    send_append(&mut send, 0, true);
+    let issued = accepted(&mut engine, &send);
+    assert_no_legacy_roster_mutations(&issued);
+    assert!(
+        engine.desired_shared_roster_plan().is_none(),
+        "unmanaged sibling occupant must remain fenced"
+    );
+}

@@ -142,6 +142,7 @@ struct ProjectedMember<'a> {
     fact: &'a WindowFact,
     before: Option<NativeHome>,
     home: DomainKey,
+    managed: bool,
     writes_allowed: bool,
 }
 
@@ -557,7 +558,12 @@ impl WorldTransaction<'_> {
                 .or_else(|| self.core_homing(&fact.window));
             let Some(home) = home else { continue };
             let classified = self.derived_for(&fact.window);
-            let writes_allowed = fact.managed != Some(false)
+            let managed = fact.managed != Some(false)
+                && !classified.excluded
+                && !classified.own_excluded
+                && !classified.hold
+                && self.world.staged.facts.contains_key(&fact.window);
+            let writes_allowed = managed
                 && fact.sticky == Some(false)
                 && fact.minimized == Some(false)
                 && fact.fullscreen == Some(false)
@@ -566,16 +572,13 @@ impl WorldTransaction<'_> {
                 && fact.modal != Some(true)
                 && fact.transient != Some(true)
                 && fact.owned != Some(true)
-                && !classified.excluded
-                && !classified.own_excluded
-                && !classified.hold
-                && self.world.staged.facts.contains_key(&fact.window)
                 && !held.contains(&home)
                 && actual.as_ref().is_none_or(|actual| !held.contains(actual));
             members.push(ProjectedMember {
                 fact,
                 before,
                 home,
+                managed,
                 writes_allowed,
             });
         }
@@ -680,19 +683,34 @@ impl WorldTransaction<'_> {
                     })
             })
             .collect();
-        let protected: Vec<bool> = order
-            .iter()
-            .map(|native| {
-                let unsafe_occupant = observations.raw_windows.iter().any(|fact| {
-                    fact.native_workspace.as_deref() == Some(native)
-                        && fact.sticky != Some(true)
-                        && (fact.output.is_none()
-                            || !members.iter().any(|member| {
-                                member.fact.window == fact.window && member.writes_allowed
-                            }))
-                });
-                unsafe_occupant
-                    || baseline.projections.keys().any(|out| {
+        let mut protected = vec![false; order.len()];
+        let mut output_unwritable: Vec<BTreeSet<OutputId>> = vec![BTreeSet::new(); order.len()];
+        for (index, native) in order.iter().enumerate() {
+            let mut global_fence = false;
+            for fact in &observations.raw_windows {
+                if fact.native_workspace.as_deref() != Some(native) || fact.sticky == Some(true) {
+                    continue;
+                }
+                let Some(out) = fact.output.as_ref() else {
+                    global_fence = true;
+                    continue;
+                };
+                match members
+                    .iter()
+                    .find(|member| member.fact.window == fact.window)
+                {
+                    Some(member) if member.writes_allowed => {}
+                    Some(member) if member.managed => {
+                        output_unwritable[index].insert(out.clone());
+                    }
+                    _ => {
+                        global_fence = true;
+                    }
+                }
+            }
+            if !global_fence {
+                global_fence =
+                    baseline.projections.keys().any(|out| {
                         let Some(logical) = baseline.logical(out, native) else {
                             return false;
                         };
@@ -704,9 +722,10 @@ impl WorldTransaction<'_> {
                             || self.world.staged.homing.iter().any(|(window, home)| {
                                 home == &key && self.derived_for(window).sticky
                             })
-                    })
-            })
-            .collect();
+                    });
+            }
+            protected[index] = global_fence;
+        }
         // Topology owns these logical units until their original output
         // returns. Their backing is not surplus, but a retained displaced
         // workspace remains selectable and can receive an explicit send.
@@ -743,7 +762,11 @@ impl WorldTransaction<'_> {
             })
             .collect();
         let index_of = |native: &str| order.iter().position(|id| id == native);
-        let available = |index: usize| known[index] && !protected[index];
+        let available_for = |out: &OutputId, index: usize| {
+            known[index] && !protected[index] && !output_unwritable[index].contains(out)
+        };
+        let available =
+            |index: usize| known[index] && !protected[index] && output_unwritable[index].is_empty();
         let cost = |slot: usize, native: Option<usize>| -> Option<(usize, usize)> {
             let mut member_writes = 0;
             let mut view_writes = 0;
@@ -757,8 +780,8 @@ impl WorldTransaction<'_> {
                     continue;
                 }
                 if !member.writes_allowed
-                    || !available(old)
-                    || native.is_some_and(|index| !available(index))
+                    || !available_for(&before.output, old)
+                    || native.is_some_and(|index| !available_for(&member.home.output, index))
                 {
                     return None;
                 }
@@ -772,17 +795,21 @@ impl WorldTransaction<'_> {
                 if Some(old) == native {
                     continue;
                 }
-                if !available(old) || native.is_some_and(|index| !available(index)) {
+                if !available_for(out, old)
+                    || native.is_some_and(|index| !available_for(out, index))
+                {
                     return None;
                 }
                 view_writes += 1;
             }
 
             // A fenced slot cannot be relabelled even if no setter is needed.
-            if let Some(native) = native
-                && (!available(native) || displaced[native])
-            {
+            if let Some(native) = native {
+                let global_relabel_fence = !known[native] || protected[native] || displaced[native];
                 for (out, ring) in &rings {
+                    if !global_relabel_fence && !output_unwritable[native].contains(out) {
+                        continue;
+                    }
                     let desired = ring.get(slot).map(String::as_str);
                     if ring.len() == slot && append_spares.contains(out) {
                         return None;

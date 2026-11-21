@@ -42,4 +42,40 @@ writable per-output selectors take this path. Keep the other routes unchanged.
 
 Core planning, typed wire proof and KWin apply are implemented together.
 The active KDE recordings exercise the new plan; frozen wire fixtures remain
-unchanged. Native KWin acceptance, including flicker and focus, is pending.
+unchanged.
+
+## Native KDE evidence — `90391310` plus sibling-fence fix
+
+Real Plasma, shared roster, per-output desktop selection enabled. The
+send-and-follow callback was invoked through KGlobalAccel, not a physical key.
+
+| Leg | Result and native readback |
+| --- | --- |
+| Sole mover, occupied prefix | **Pass.** Staged A alone on source D2, B on D3 and a real spare on D4. One plan moved B to D2, then A to D3, then switched the source selector to D3. Counts: 2 membership, 1 view, 0 creates/removes/reorders; exact roster `[D1,D2,D3,D4]` unchanged. A ended visible and focused; B ended off-view. |
+| Stayer starting on D1 | **Pass after the fix.** With A and the stayer on source D1, one plan appended D4, moved only A to D3 and selected D3 on the source. Counts: 1 membership, 1 view, 1 create, 0 removes/reorders; exact prefix `[D1,D2,D3]` unchanged. A ended visible and focused; B stayed on D2 and the stayer on D1, both off-view. |
+
+Both final reruns left the sibling selector, logical membership and previous
+workspace unchanged; C stayed visible on sibling D1. `TakeCommandResult`
+acknowledged command 1 in both runs; the roster feedback proved all three
+planned steps, and the following publication settled the switch with focus
+proved. The native signal timeline showed B briefly on-view (~7 ms) and A
+briefly off-view (~4 ms) during the sole move. In the stayer move B never came
+on-view and A was briefly off-view (~4 ms). Neither leg recorded a loss of
+focus from A; these are state intervals, not rendered flicker measurements.
+
+Before the fix, the D1 stayer command reached core (`cmdSeq=1`) and retained
+A's follow transfer, but an unchanged managed maximized sibling occupant
+fenced the shared native slot globally. Core emitted an `unreadable` hold
+and no roster plan; KWin had no roster writes to apply. This was neither the
+adjacent-spare no-op nor an adapter refusal. The aggregate apply counter
+`held=1` preceded the command and does not identify the cause. The fix
+scopes that occupant's fence to its own output while preserving complete
+occupancy proof and global deletion checks. The focused regression failed
+before the fix; afterward the 64 native retirement tests, 2,470 core library
+tests, strict core test-target Clippy, and the workspace Rust formatting
+check passed. Frozen fixtures remained unchanged.
+
+For every attempted leg, the fixture and helpers were stopped, dev mode was
+confirmed DOWN, both outputs were reset to workspace 1, and operator-terminal
+focus was confirmed. The independent-roster and per-output-setting-off
+controls remain pending user testing; partial apply is covered offline.
