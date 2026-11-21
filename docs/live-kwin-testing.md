@@ -11,8 +11,15 @@ how, not extra gates.
 - Test in the real desktop session. Optimise for outcomes: efficient,
   effective, pragmatic. Add a gate only if it prevents real harm to user data
   or the session; a check that only adds procedure is dropped.
-- Standing authorization: fixture-scoped live testing in the real session is
-  authorized. User windows may be tiled or moved; no restoration is required.
+- Standing authorization: live testing in the real session is authorized.
+  User windows may be tiled or moved and existing desktops used, created or
+  removed by the tiler; no restoration is required.
+- Use fixture windows as the test subjects because they can be controlled and
+  queried, but never add procedure to avoid the current KDE/KWin environment,
+  existing windows or existing desktops (no roster inventories, no appending
+  test workspaces past the existing roster, no isolation workarounds). Scope
+  dev mode to the fixture class only when a leg needs foreign windows
+  unmanaged; otherwise run it unscoped.
 - Hard limits: never close or kill user windows; no display configuration
   changes; no writes to the user's stored tiler settings.
 - Physical input through `ydotool`/`ydotoold` is allowed; stop a daemon the
@@ -33,12 +40,14 @@ how, not extra gates.
 First live run (from the repo root inside the devenv shell):
 
 1. Start the fixture in a terminal: `cargo run --locked -p tiler-live-fixture -- serve`
-2. Start the tiler scoped to fixture windows: `just dev-on --scope-class OmniTilerTestWindow`
+2. Start the tiler: `just dev-on` (add `--scope-class OmniTilerTestWindow` only when the leg needs foreign windows unmanaged)
 3. Drive windows with `tiler-live-fixture send` (or `scripts/kde-scenarios.mjs`).
 4. Teardown: copy dev logs, run `just dev-off`, and stop anything the run started (fixture server, any `ydotool` daemon).
 
-- Append the test workspace beyond the whole existing roster (`>n` by construction, where `n` is the highest occupied workspace ordinal; no routine occupancy inventory needed). Otherwise inventory occupancy fresh (including sticky windows) and use workspaces `>n`.
-- Foreign windows stay unmanaged by the `--scope-class` filter; sticky foreign windows on an appended workspace remain unmanaged. Foreign apps are only for app-specific investigations after trying the fixture, with approved scope naming them.
+- Fixture windows may share workspaces and desktops with user windows; no
+  occupancy inventory or dedicated test workspace is required.
+- With `--scope-class`, foreign windows stay unmanaged. Foreign apps are only
+  for app-specific investigations after trying the fixture.
 - Full fixture protocol, flags, and `observed`/`unsupported` semantics: [fixture README](../crates/tiler-live-fixture/README.md).
 
 ## Live Tooling (User 2026-11-17)

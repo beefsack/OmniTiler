@@ -22,7 +22,7 @@
   fixture-scoped authorization, minimal gates, optimise for efficiency and
   effectiveness. Do not add nested KWin, audit or accounting gates it does not
   require.
-- Agent live legs use the live fixture scoped fixture-only; see the
+- Agent live legs use live fixture windows as test subjects without avoiding the current session, existing windows or desktops; see the
   [fixture reference](crates/tiler-live-fixture/README.md) and the
   [KDE fixture-first rules](docs/live-kwin-testing.md#fixture-first-live-tests).
 
