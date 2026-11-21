@@ -51,6 +51,7 @@ function isFixedSizeWindow(
 }
 import {
     readDesktopForOutput,
+    isSeparateWorkspaceMode,
     resolveEffectiveWorkspaceMode,
     type WorkspaceMode,
 } from "./workspace-native";
@@ -636,6 +637,8 @@ function decodeListCapped(value: unknown, maxLength: number): { items: ReadonlyA
 export interface ObserveEnv {
     workspace: unknown;
     readMode: () => unknown;
+    // Immutable selector capability of the bound world connection.
+    nativePerOutput?: boolean;
     readGap: () => number;
     readOuterGap: () => number;
     gestureActive: () => boolean;
@@ -746,7 +749,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         rawMode === "global-unique" || rawMode === "shared" || rawMode === "per-output-local"
             ? rawMode
             : "per-output-local";
-    const mode = resolveEffectiveWorkspaceMode(requested, target);
+    const mode = resolveEffectiveWorkspaceMode(requested, env.nativePerOutput === true);
     const screensCapped = decodeListCapped(readProp(target, "screens"), MAX_SCREENS);
     const desktopsCapped = decodeListCapped(readProp(target, "desktops"), MAX_DESKTOPS_TOTAL);
     const winListCapped = decodeListCapped(
@@ -1418,7 +1421,7 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
     // only mapped cells emit (unmapped cells mint core-side). The
     // disjoint mode keeps one row per native as before.
     const bindings: WorldObservation["bindings"] = [];
-    if (env.replicateBindingsPerOutput === true) {
+    if (env.replicateBindingsPerOutput ?? isSeparateWorkspaceMode(mode)) {
         // Desktop-major order (all outputs per native) keeps the wire
         // byte-stable with the disjoint single-row order: one row per
         // native becomes one row per (output, native) in place.

@@ -470,11 +470,15 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
 // through. Minimal injected context is the live surface plus the reflective
 // reader; lifecycle state and flight ordering stay owned by the entry, which
 // spreads this host into its single applyWorldReply call. No copied state.
-export type WorldApplyHost = Omit<ApplyEnv, "state" | "observation" | "reply" | "dispatchWatermark" | "takeResult" | "log">;
+export type WorldApplyHost = Omit<ApplyEnv, "state" | "observation" | "reply" | "dispatchWatermark" | "takeResult" | "log" | "switchView"> & {
+    switchView: (desktopRef: object, outRef: object, nativePerOutput?: boolean) => boolean;
+};
 
 export function createWorldApplyHost(
     surface: object,
     readProp: (value: object, property: string) => unknown,
+    optionsSource?: unknown,
+    log?: (line: string) => void,
 ): WorldApplyHost {
     return {
         isStillListed: (ref) => {
@@ -727,9 +731,9 @@ export function createWorldApplyHost(
                 return null;
             }
         },
-        switchView: (desktopRef, outRef) => {
+        switchView: (desktopRef, outRef, nativePerOutput) => {
             try {
-                return writeDesktopForOutput(surface, desktopRef, outRef);
+                return writeDesktopForOutput(surface, desktopRef, outRef, nativePerOutput, optionsSource, log);
             } catch (error) {
                 void error;
                 return false;

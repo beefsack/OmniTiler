@@ -102,6 +102,7 @@ function makeTwoOutput(opts: { throwOnce?: boolean; freezeCreated?: boolean } = 
         removeDesktop: () => undefined,
     };
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface,
         owner: "owner-a",
         adapter: "test-adapter",

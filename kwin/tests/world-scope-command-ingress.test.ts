@@ -104,6 +104,7 @@ function makeScopedHarness(foreign: FakeWindow, domestic: FakeWindow): Harness {
         removeDesktop: () => false,
     };
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface,
         owner: "owner-a",
         adapter: "test-adapter",

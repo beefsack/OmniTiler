@@ -169,6 +169,7 @@ type W = ReturnType<typeof makeWorld>;
 
 function observe(w: W): WorldObservation | null {
     return captureWorldObservation({
+        nativePerOutput: true,
         workspace: w.surface as never,
         readMode: () => "per-output-local",
         readGap: () => 8,

@@ -124,6 +124,7 @@ function makeHarness() {
         activeScreenChanged: (signals.activeScreenChanged as { signal: unknown }).signal,
     };
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface,
         owner: "owner-a",
         adapter: "test-adapter",

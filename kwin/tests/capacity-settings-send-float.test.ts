@@ -52,6 +52,7 @@ function v4Observation() {
         currentDesktopForScreen: () => ({ id: "native-a" }),
     };
     const obs = captureWorldObservation({
+        nativePerOutput: true,
         workspace: surface,
         readMode: () => "per-output-local",
         readGap: () => 8,

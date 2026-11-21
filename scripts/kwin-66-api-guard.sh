@@ -6,7 +6,7 @@
 # Audited baseline (2026-10-11, KWin v6.6.4 headers): every runtime
 # workspace/window/output/options symbol in kwin/src exists on 6.6 EXCEPT
 #   - workspace.currentDesktopForScreen / setCurrentDesktopForScreen
-#   - options.perOutputVirtualDesktops (migration-only)
+#   - options.perOutputVirtualDesktops and its perOutputVirtualDesktopsChanged notify
 #   - workspace.virtualDesktopNavigationWrapsAround (marked \since 6.7)
 # Those live only in kwin/src/workspace-native.ts (feature detection plus
 # shared fallbacks) and kwin/src/kwin-globals.d.ts (type declarations).
@@ -65,7 +65,7 @@ ALLOW=(
     interactiveMoveResizeStarted interactiveMoveResizeStepped internalId
     keepAbove keepBelow length managed maximizedChanged maximizeMode maxSize
     minimized minSize move name normalWindow onAllDesktops output outputChanged
-    perOutputVirtualDesktops removeDesktop resize resizeable resourceClass
+    perOutputVirtualDesktops perOutputVirtualDesktopsChanged removeDesktop resize resizeable resourceClass
     screens screensChanged sendClientToScreen setCurrentDesktopForScreen
     setMaximize slotSwitchToAboveScreen slotSwitchToBelowScreen
     slotSwitchToLeftScreen slotSwitchToRightScreen stackingOrder transient transientFor

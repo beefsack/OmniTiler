@@ -100,6 +100,7 @@ function makeHarness() {
     let describeBehavior: ((call: CapturedCall) => void) | null = null;
     let effectBehavior: (call: CapturedCall) => void = () => undefined;
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface,
         owner: "owner-a",
         adapter: "test-adapter",

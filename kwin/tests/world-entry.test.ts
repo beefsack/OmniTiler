@@ -67,6 +67,8 @@ interface FakeWorld {
     focused: string[];
     membershipWrites: string[];
     geometryWrites: string[];
+    sharedDesktopWrites: string[];
+    outputDesktopWrites: string[];
 }
 interface CapturedCall {
     method: string;
@@ -123,6 +125,8 @@ function makeWorld(): FakeWorld {
         focused: [],
         membershipWrites: [],
         geometryWrites: [],
+        sharedDesktopWrites: [],
+        outputDesktopWrites: [],
     };
 }
 
@@ -235,6 +239,7 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
         set currentDesktop(ref: unknown) {
             const found = world.desktops.find((d) => (d as unknown) === ref);
             if (found) {
+                world.sharedDesktopWrites.push(found.id);
                 world.currentDesktop = found;
             }
         },
@@ -245,6 +250,7 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
             const oldDesk = world.currentDesktop;
             const found = world.desktops.find((d) => (d as unknown) === deskRef);
             if (found) {
+                world.outputDesktopWrites.push(found.id);
                 world.currentDesktop = found;
             }
             const mode = (world as unknown as Record<string, unknown>)["__syncViewEcho"];
@@ -456,7 +462,7 @@ function makeHarness(mode: unknown = "per-output-local", gesture = false, defaul
         readWorkspaceModeFn: () => mode,
         readDefaultTiledFn: () => defaultTiled,
         ...(refillFn !== undefined ? { readMigrationSourceRefillFn: refillFn } : {}),
-        ...(optionsValue !== undefined ? { options: optionsValue } : {}),
+        options: optionsValue === undefined ? (perOutputSeam ? { perOutputVirtualDesktops: true } : {}) : optionsValue,
         ...(floatIntentSeam ? { floatIntent: true } : {}),
         ...(scopeClass !== undefined ? { scopeClass } : {}),
     });
@@ -2069,6 +2075,8 @@ describe("world entry all-mode native coverage", () => {
             focused: [] as string[],
             membershipWrites: [] as string[],
             geometryWrites: [] as string[],
+            sharedDesktopWrites: [] as string[],
+            outputDesktopWrites: [] as string[],
         };
         const calls: CapturedCall[] = [];
         const timers: Array<{ delay: number; cb: () => void }> = [];
@@ -2111,6 +2119,7 @@ describe("world entry all-mode native coverage", () => {
             set currentDesktop(ref: unknown) {
                 const found = world.desktops.find((d) => (d as unknown) === ref);
                 if (found) {
+                    world.sharedDesktopWrites.push(found.id);
                     world.currentDesktop = found;
                 }
             },
@@ -2118,6 +2127,7 @@ describe("world entry all-mode native coverage", () => {
             ...(perOutputSeam ? {
                 currentDesktopForScreen: (screen: { name: string }) => sharedDesk(currents.get(screen.name) ?? ""),
                 setCurrentDesktopForScreen: (deskRef: unknown, screen: { name: string }) => {
+                    world.outputDesktopWrites.push((deskRef as FakeDesktop).id);
                     currents.set(screen.name, (deskRef as FakeDesktop).id);
                 },
             } : {}),
@@ -2168,7 +2178,7 @@ describe("world entry all-mode native coverage", () => {
             },
             readWorkspaceModeFn: () => mode,
             readDefaultTiledFn: () => true,
-            ...(opts.optionsValue !== undefined ? { options: opts.optionsValue } : {}),
+            options: opts.optionsValue === undefined ? (perOutputSeam ? { perOutputVirtualDesktops: true } : {}) : opts.optionsValue,
         });
         assert.ok(handle !== null);
         const runTimers = (maxDelay = 120): void => {
@@ -2292,6 +2302,7 @@ describe("world entry all-mode native coverage", () => {
         const h = makeTwoOutputHarness("global-unique");
         const surface = (h as unknown as { surface: unknown }).surface;
         const obs = captureWorldObservation({
+            nativePerOutput: true,
             workspace: surface,
             readMode: () => "global-unique",
             readGap: () => 8,
@@ -2306,6 +2317,7 @@ describe("world entry all-mode native coverage", () => {
         // Binding replication emits one row per (output, native) with a
         // distinct logical each over the four-native list.
         const withBind = captureWorldObservation({
+            nativePerOutput: true,
             workspace: surface,
             readMode: () => "global-unique",
             readGap: () => 8,
@@ -2349,6 +2361,107 @@ describe("world entry all-mode native coverage", () => {
         h.handle?.stop();
     });
 
+    it("advertises per-output only with a readable strict-true option and the read method", () => {
+        for (const [options, hasMethod, expected] of [
+            [{ perOutputVirtualDesktops: true }, true, "per-output"],
+            [{ perOutputVirtualDesktops: false }, true, "all-outputs"],
+            [{}, true, "all-outputs"],
+            [{ perOutputVirtualDesktops: "true" }, true, "all-outputs"],
+            [{ get perOutputVirtualDesktops(): never { throw new Error("unreadable"); } }, true, "all-outputs"],
+            [{ perOutputVirtualDesktops: true }, false, "all-outputs"],
+        ] as const) {
+            const h = makeHarness("per-output-local", false, true, undefined, options, hasMethod);
+            try {
+                assert.equal((handshakeBody(h)["capabilities"] as Record<string, unknown>)["nativeSelectorScope"], expected);
+            } finally {
+                h.handle?.stop();
+            }
+        }
+    });
+
+    it("refuses a planned one-output write if the option flips before apply, then rediscovers", () => {
+        const changed = fakeSignal();
+        const options = { perOutputVirtualDesktops: true, perOutputVirtualDesktopsChanged: changed.signal };
+        const h = makeHarness("per-output-local", false, true, undefined, options);
+        try {
+            discover(h);
+            h.handle?.requestWorkspaceRelative(1);
+            h.runTimers();
+            const req = requestOf(h);
+            const flight = h.lastCall("DescribeWorld");
+            // The flag is already off but notification has not arrived at the
+            // adapter. Readback after either setter would be too late.
+            options.perOutputVirtualDesktops = false;
+            flight.callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+                workspaces: [
+                    { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                    { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
+                ],
+                outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
+                transfers: [{ op: "op-view-option-race", kind: "view", win: "", out: "out", ws: "wl-2", follow: false, held: false, cmdSeq: null, parent: null }],
+            }));
+            assert.equal(h.world.currentDesktop.id, "ws1");
+            assert.deepEqual(h.world.outputDesktopWrites, []);
+            assert.deepEqual(h.world.sharedDesktopWrites, []);
+            assert.ok(h.logs.includes("omnitiler:world:per-output-unavailable stage=pre-setter reason=kwin-per-output-off"));
+            assert.equal(changed.handlers.length, 1);
+            for (const handler of [...changed.handlers]) {
+                handler();
+            }
+            h.runTimers();
+            assert.equal(handshakeCount(h), 2);
+            assert.equal((handshakeBody(h)["capabilities"] as Record<string, unknown>)["nativeSelectorScope"], "all-outputs");
+            answerHandshake(h, "gen-2");
+            assert.equal(settingsValues(h)["mode"], "per-output-local", "never rewrite the requested mode");
+        } finally {
+            h.handle?.stop();
+        }
+        assert.deepEqual(changed.handlers, [], "stop disconnects the KWin options signal");
+    });
+
+    for (const rediscovery of ["notify", "wait-mismatch"] as const) {
+    it(`fences a flight from the old selector scope when rediscovery starts (${rediscovery})`, () => {
+        const changed = fakeSignal();
+        const options = { perOutputVirtualDesktops: false, perOutputVirtualDesktopsChanged: changed.signal };
+        const h = makeHarness("per-output-local", false, true, undefined, options);
+        try {
+            discover(h);
+            h.handle?.requestWorkspaceRelative(1);
+            h.runTimers();
+            const req = requestOf(h);
+            const flight = h.lastCall("DescribeWorld");
+            options.perOutputVirtualDesktops = true;
+            if (rediscovery === "wait-mismatch") {
+                h.lastCall("WaitWorldWake").callback(JSON.stringify({
+                    v: 4, outcome: "rejected", kind: "generation-mismatch", message: "stale",
+                    gen: "gen-2", source: "", nativeInvalid: "0", clock: "1",
+                    gestureAssoc: null, gestureSettledAssoc: null,
+                }));
+                assert.equal(handshakeCount(h), 2, "ordinary rediscovery picked up the new option before notify");
+            }
+            for (const handler of [...changed.handlers]) {
+                handler(true);
+            }
+            flight.callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+                windows: [{
+                    win: "win-a", out: "out", ws: "ws1",
+                    alloc: [10, 10, 300, 300], frame: [10, 10, 300, 300],
+                    frame_auth: "controlled", frame_hold: "",
+                    member_auth: "controlled", member_hold: "",
+                    frame_op: "", clear_op: "",
+                    floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
+                }],
+            }));
+            assert.deepEqual(h.world.geometryWrites, [], "even unrelated world writes require a fresh handshake");
+            h.runTimers();
+            assert.equal(handshakeCount(h), 2);
+            assert.equal((handshakeBody(h)["capabilities"] as Record<string, unknown>)["nativeSelectorScope"], "per-output");
+        } finally {
+            h.handle?.stop();
+        }
+    });
+    }
+
     it("warns change-gated only for separate modes with the flag off", () => {
         // Off + separate warns once on the discovery capture with the mode.
         const off = makeHarness("per-output-local", false, true, undefined, { perOutputVirtualDesktops: false });
@@ -2362,12 +2475,10 @@ describe("world entry all-mode native coverage", () => {
         for (const [mode, options] of [
             ["per-output-local", { perOutputVirtualDesktops: true }],
             ["global-unique", { perOutputVirtualDesktops: true }],
-            ["per-output-local", undefined],
+            ["per-output-local", {}],
             ["shared", { perOutputVirtualDesktops: false }],
         ] as const) {
-            const h = options === undefined
-                ? makeHarness(mode)
-                : makeHarness(mode, false, true, undefined, { ...options });
+            const h = makeHarness(mode, false, true, undefined, { ...options });
             discover(h);
             captureRound(h, "1");
             assert.deepEqual(warnsOf(h), [], `silent for mode=${String(mode)} flag=${JSON.stringify(options)}`);
@@ -2384,6 +2495,7 @@ describe("world entry all-mode native coverage", () => {
         discover(legacy);
         captureRound(legacy, "1");
         assert.deepEqual(warnsOf(legacy), []);
+        assert.equal((handshakeBody(legacy)["capabilities"] as Record<string, unknown>)["nativeSelectorScope"], "all-outputs");
         // A 6.6 host degrades to linked shared currents on the native lane.
         const legacyNative = reportOf(legacy)["native"] as Array<Record<string, unknown>>;
         assert.ok(legacyNative.length >= 1);
@@ -2393,22 +2505,32 @@ describe("world entry all-mode native coverage", () => {
     });
 
     it("re-warns only on a new off transition", () => {
-        const flags = { perOutputVirtualDesktops: false };
+        const changed = fakeSignal();
+        const flags = { perOutputVirtualDesktops: false, perOutputVirtualDesktopsChanged: changed.signal };
+        const notify = (): void => {
+            for (const handler of [...changed.handlers]) {
+                handler(flags.perOutputVirtualDesktops);
+            }
+        };
         const h = makeHarness("per-output-local", false, true, undefined, flags);
         discover(h);
         assert.equal(warnsOf(h).length, 1);
-        // Off flips on: silent, but the gate key advances on capture.
+        // Off flips on: silent under the new capability.
         flags.perOutputVirtualDesktops = true;
-        captureRound(h, "1");
+        notify();
+        discover(h, "gen-2");
         assert.equal(warnsOf(h).length, 1);
         // Stays on: still gated.
-        captureRound(h, "2");
+        notify();
+        assert.equal(handshakeCount(h), 2);
         assert.equal(warnsOf(h).length, 1);
         // Flips off again: a new transition warns once more.
         flags.perOutputVirtualDesktops = false;
-        captureRound(h, "3");
+        notify();
+        discover(h, "gen-3");
         assert.equal(warnsOf(h).length, 2);
-        captureRound(h, "4");
+        notify();
+        assert.equal(handshakeCount(h), 3);
         assert.equal(warnsOf(h).length, 2);
         h.handle?.stop();
     });
@@ -2610,6 +2732,7 @@ describe("world entry restart float-intent preservation", () => {
         };
         const handle = startWorldAdapterEntry({
             workspace: surface,
+            options: { perOutputVirtualDesktops: true },
             owner: "owner-a",
             adapter: "test-adapter",
             floatIntent: true,
@@ -3121,6 +3244,7 @@ describe("world entry script-restart sequence handover", () => {
             };
             const handle = startWorldAdapterEntry({
                 workspace: surface,
+                options: { perOutputVirtualDesktops: true },
                 owner: "owner-a",
                 adapter,
                 floatIntent: true,
@@ -3628,6 +3752,7 @@ describe("world entry float-intent reconcile controls", () => {
         };
         const handle = startWorldAdapterEntry({
             workspace: surface,
+            options: { perOutputVirtualDesktops: true },
             owner: "owner-a",
             adapter: "test-adapter",
             floatIntent: true,
@@ -4602,6 +4727,7 @@ describe("world entry focus feedback production regression", () => {
         }
         const handle = startWorldAdapterEntry({
             workspace: surface,
+            options: { perOutputVirtualDesktops: true },
             owner: "owner-a",
             adapter: "test-adapter",
             callDbus: (_service, _path, _iface, method, payload, callback) => {

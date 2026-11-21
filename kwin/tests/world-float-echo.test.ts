@@ -109,6 +109,7 @@ function setup(stored: Array<{ win: string; data: string }>): Harness {
     const writes: string[] = [];
     const store = { records: stored.map((r) => ({ ...r })) };
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface,
         owner: "owner-a",
         adapter: "test-adapter",

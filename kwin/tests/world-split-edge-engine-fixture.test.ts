@@ -583,6 +583,7 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
     }
     harness.workspace = surface;
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface,
         owner: "owner-a",
         adapter: "test-adapter",

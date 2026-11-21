@@ -138,6 +138,7 @@ type Flow = ReturnType<typeof makeSurface> & {
 function startFlow(): Flow {
     const base = makeSurface();
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: base.surface,
         owner: "owner-a",
         adapter: "test-adapter",

@@ -140,7 +140,9 @@ export interface ApplyEnv {
     awaitCrossingArrival?: (arrival: AwaitingCrossingArrival) => void;
     resolveOutput: (out: string) => object | null;
     resolveDesktop: (ws: string) => object | null;
-    switchView: (desktopRef: object, outRef: object) => boolean;
+    // Migration/refill views require output-specific actuation even if a
+    // reply is inconsistent with the connection's selector capability.
+    switchView: (desktopRef: object, outRef: object, requiresPerOutput?: boolean) => boolean;
     // KWin 6.7 void creation (workspace_wrapper.h, virtualdesktops.cpp):
     // required zero-based position in [0, count] plus name, returns
     // nothing. Proof comes only from fresh complete enumeration
@@ -622,6 +624,7 @@ function actuateViewForTransfer(
     // baseline is the entry observation's current for the target output.
     const viewPre = readViewRefNow(env, transfer.out);
     const viewBase = observationViewRef(env.observation, transfer.out);
+    if (!replyFresh(env, reply, entryObs)) return false;
     let threw = false;
     let ok = false;
     try {
@@ -631,6 +634,7 @@ function actuateViewForTransfer(
         threw = true;
     }
     const viewPost = readViewRefNow(env, transfer.out);
+    if (state.boundGen !== reply.gen) return false;
     // One native view write ran: the mechanical disposition rides the next
     // report under the owning phase identity (the window follow parent or
     // the migration parent). The exact live native currents ride pre/post
@@ -667,18 +671,19 @@ interface SameFlightView {
 
 function actuateViewSameFlightNative(
     env: ApplyEnv,
+    gen: string,
     out: string,
     nativeWs: string,
 ): SameFlightView {
     const wsRef = safeResolve(() => env.desktopById(nativeWs));
     const outRef = safeResolve(() => env.resolveOutput(out));
-    if (wsRef === null || outRef === null) {
+    if (wsRef === null || outRef === null || env.state.boundGen !== gen) {
         return { proven: false, setter: null };
     }
     let threw = false;
     let ok = false;
     try {
-        ok = env.switchView(wsRef, outRef);
+        ok = env.switchView(wsRef, outRef, true);
     } catch (error) {
         void error;
         threw = true;
@@ -698,7 +703,7 @@ function actuateViewSameFlight(
     if (targetNative === null) {
         return { proven: false, setter: null };
     }
-    return actuateViewSameFlightNative(env, transfer.out, targetNative);
+    return actuateViewSameFlightNative(env, reply.gen, transfer.out, targetNative);
 }
 
 // Shared follow-view handling for one window transfer whose membership
@@ -1904,20 +1909,28 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             result.held += 1;
             continue;
         }
-        state.markDispatched(t.op);
         // Fresh same-turn native currents around the write; the baseline
         // is the entry observation's current for the target output.
         const viewPre = readViewRefNow(env, t.out);
         const viewBase = observationViewRef(observation, t.out);
+        if (!replyFresh(env, reply, entryObs)) {
+            result.stoppedMidApply = true;
+            break;
+        }
+        state.markDispatched(t.op);
         let threw = false;
         let ok = false;
         try {
-            ok = env.switchView(wsRef, outRef);
+            ok = env.switchView(wsRef, outRef, t.parent === null ? undefined : true);
         } catch (error) {
             void error;
             threw = true;
         }
         const viewPost = readViewRefNow(env, t.out);
+        if (state.boundGen !== reply.gen) {
+            result.stoppedMidApply = true;
+            break;
+        }
         // One native view write ran: the mechanical disposition rides the
         // next report under the owning view identity. The exact live
         // native currents ride pre/post with the observation-time
@@ -2400,6 +2413,10 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                 const targetPre = readViewRefNow(env, t.out);
                 const targetBase = observationViewRef(observation, t.out);
                 const targetView = actuateViewSameFlight(env, reply, t);
+                if (state.boundGen !== reply.gen) {
+                    result.stoppedMidApply = true;
+                    break;
+                }
                 if (targetView.setter !== null) {
                     // One native target-view write ran under the stable
                     // migration identity: mechanical fact only. The exact
@@ -2433,6 +2450,10 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                     const refillPre = readViewRefNow(env, sourceOut);
                     const refillBase = observationViewRef(observation, sourceOut);
                     const refillView = actuateViewSameFlight(env, reply, { ...refillChild, follow: false });
+                    if (state.boundGen !== reply.gen) {
+                        result.stoppedMidApply = true;
+                        break;
+                    }
                     if (refillView.setter !== null) {
                         state.recordViewAttempt({
                             op: refillOp, out: refillChild.out, ws: refillChild.ws,

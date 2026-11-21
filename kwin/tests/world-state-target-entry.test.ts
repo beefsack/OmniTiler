@@ -110,6 +110,7 @@ function makeHarness(opts: { scopeClass?: string | readonly string[]; seedRecord
     const seedRecords = opts.seedRecords ?? [];
     const autoSeed = opts.autoSeed ?? true;
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface, owner: "owner-a", adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback) => {
             const call: CapturedCall = { method, payload, callback, answered: false };

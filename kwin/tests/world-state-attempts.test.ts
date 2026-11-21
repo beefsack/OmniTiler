@@ -94,6 +94,7 @@ function makeSurface(wins: Array<Record<string, unknown>>) {
 
 function observe(surface: object) {
     const obs = captureWorldObservation({
+        nativePerOutput: true,
         workspace: surface,
         readMode: () => "per-output-local",
         readGap: () => 8,

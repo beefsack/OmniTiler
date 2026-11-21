@@ -58,7 +58,7 @@
 - Decision: hosts declare hard capabilities/limitations, fixed per connection and named by capability, not platform; core derives behavior. A change starts a new handshake. Settings are separate, revisioned and changeable at any time. Before adding capability, test whether host mechanisms can honor existing core policy. Wire includes one version/capability handshake, startup/change settings message and report envelope with facts, command, attempt feedback and renderer input.
 - Why: per-report capability flags invite flips; platform-named opt-ins became behavior profiles.
 - Rejected: per-report capabilities and platform behavior opt-ins.
-- Assumes / revisit if: no hard capability changes often while running; if one does, report it as a fact. Output-shared workspace is capability example, not KDE option.
+- Assumes / revisit if: no hard capability changes often while running; if one does, report it as a fact. Native selector coupling is a host capability, not an OmniTiler setting; a KWin option can change the mechanism and triggers a new handshake.
 - Status: active, 2026-10-30
 - Evidence: [review F1, F12, F19, P4](../changes/core-interface-review.md).
 

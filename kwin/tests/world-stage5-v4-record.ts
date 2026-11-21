@@ -902,6 +902,7 @@ export async function recordStage5V4Chain(options: Stage5V4RecordOptions): Promi
     };
 
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface,
         owner: "owner-a",
         adapter: STAGE5_V4_ADAPTER,

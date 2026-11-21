@@ -236,6 +236,7 @@ describe("world outer-gap regression", () => {
             removeDesktop: () => false,
         };
         const handle = startWorldAdapterEntry({
+            options: { perOutputVirtualDesktops: true },
             workspace: surface,
             owner: "owner-a",
             adapter: "test-adapter",

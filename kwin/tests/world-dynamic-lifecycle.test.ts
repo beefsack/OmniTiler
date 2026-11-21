@@ -506,6 +506,7 @@ async function makeLifecycleHarness(opts: MakeOpts = {}): Promise<Harness> {
         },
     };
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface,
         owner: "owner-a",
         adapter: "test-adapter",

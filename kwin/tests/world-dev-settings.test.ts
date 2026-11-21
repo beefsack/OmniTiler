@@ -82,6 +82,7 @@ function makeHarness(opts: {
     let handle: ReturnType<typeof startWorldAdapterEntry> = null;
     try {
         handle = startWorldAdapterEntry({
+            options: { perOutputVirtualDesktops: true },
             workspace: surface,
             owner: "test-owner",
             adapter: "test-adapter",

@@ -338,7 +338,7 @@ describe("world startup conversion actuation", () => {
         const surf = makeSurface();
         const reply = conversionCreationReply();
         const state = freshState(reply);
-        const host = createWorldApplyHost(surf.surface, readProp);
+        const host = createWorldApplyHost(surf.surface, readProp, { perOutputVirtualDesktops: true });
         const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...host, state, observation: observe(surf), reply, log: () => undefined });
         // Exactly one void creation flight runs for the explicit desire; the
         // same-turn fresh-id delta proves the created desktop, which then
@@ -360,7 +360,7 @@ describe("world startup conversion actuation", () => {
         (surf.surface["desktops"] as FakeDesk[]).push(desk(WS_NEW, TOKEN));
         const reply = conversionMoveReply();
         const state = freshState(reply);
-        const host = createWorldApplyHost(surf.surface, readProp);
+        const host = createWorldApplyHost(surf.surface, readProp, { perOutputVirtualDesktops: true });
         const framesBefore = surf.wins.map((w) => JSON.stringify(w.frameGeometry));
         const out = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null, ...host, state, observation: observe(surf), reply, log: () => undefined });
         // Membership-only: no output send, members stay on their output.

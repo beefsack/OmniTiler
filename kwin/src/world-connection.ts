@@ -115,13 +115,15 @@ export interface KwinHostCapabilities {
     readonly unavailableFacts: ReadonlyArray<string>;
 }
 
+// The caller samples the host option at discovery. The negotiated scope is
+// immutable until the next handshake; it is not the user's workspace mode.
 export function defaultKwinCapabilities(nativePerOutput: boolean = false): KwinHostCapabilities {
     return {
         hostOwned: true,
         equalCount: true,
         sharedNativeRoster: true,
         birthClear: true,
-        nativeSelectorScope: nativePerOutput ? "per-output" : "all-outputs",
+        nativeSelectorScope: nativePerOutput === true ? "per-output" : "all-outputs",
         windowSuppression: false,
         maximize: true,
         fullscreen: true,

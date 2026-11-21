@@ -291,6 +291,7 @@ function startFlow() {
     const calls: Call[] = [];
     const timers: Array<{ delay: number; cb: () => void }> = [];
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface,
         owner: "owner-a",
         adapter: "test-adapter",

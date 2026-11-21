@@ -132,6 +132,7 @@ function startFlow() {
     const timers: FakeTimer[] = [];
     const logs: string[] = [];
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface,
         owner: "owner-a",
         adapter: "test-adapter",

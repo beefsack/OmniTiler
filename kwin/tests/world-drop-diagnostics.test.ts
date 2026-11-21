@@ -142,6 +142,7 @@ function setup(): Harness {
         windowRow({ alloc: [11, 21, 300, 380], frame: [11, 21, 300, 380] }),
     ];
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: {
             windowList: () => wins,
             screens: [out1],

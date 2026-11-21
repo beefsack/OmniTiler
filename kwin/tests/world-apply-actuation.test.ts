@@ -315,6 +315,7 @@ function makeHarness(mode: unknown = "per-output-local"): Harness {
         });
     }
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface,
         owner: "owner-a",
         adapter: "test-adapter",

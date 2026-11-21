@@ -42,6 +42,7 @@ function makeInventory(desktopCount: number, windowCount: number, screenCount: n
 
 function observe(surface: object) {
     return captureWorldObservation({
+        nativePerOutput: true,
         workspace: surface,
         readMode: () => "per-output-local",
         readGap: () => 8,
@@ -185,6 +186,7 @@ describe("world observation per-output binding replication", () => {
     it("emits one binding per (output, native) with distinct logicals", () => {
         const { surface } = makeInventory(3, 3, 2);
         const obs = captureWorldObservation({
+            nativePerOutput: true,
             workspace: surface,
             readMode: () => "per-output-local",
             readGap: () => 8,
@@ -220,6 +222,7 @@ describe("world observation per-output binding replication", () => {
     it("omits unmapped cells so the core mints them", () => {
         const { surface } = makeInventory(2, 0, 2);
         const obs = captureWorldObservation({
+            nativePerOutput: true,
             workspace: surface,
             readMode: () => "per-output-local",
             readGap: () => 8,
@@ -237,10 +240,11 @@ describe("world observation per-output binding replication", () => {
         assert.equal(obs.bindings.length, 1);
     });
 
-    it("keeps single-row bindings without the replication flag", () => {
+    it("keeps single-row bindings when the negotiated selector is all-outputs", () => {
         const { surface } = makeInventory(2, 0, 2);
         const seen: string[] = [];
         const obs = captureWorldObservation({
+            nativePerOutput: false,
             workspace: surface,
             readMode: () => "per-output-local",
             readGap: () => 8,
@@ -254,6 +258,7 @@ describe("world observation per-output binding replication", () => {
             isFloating: () => false,
         });
         assert.ok(obs !== null);
+        assert.equal(obs.mode, "shared");
         assert.equal(obs.bindings.length, 2);
         // Bindings invoke once per native; views invoke once per output
         // current (same natives here), so the spy sees bindings + views.

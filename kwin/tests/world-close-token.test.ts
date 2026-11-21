@@ -189,6 +189,7 @@ describe("Unit 5 close-token retirement", () => {
         // Serialized cap invariant: tracked closes ride first, lifecycle-only
         // deletes append after them, so overflow cuts the lifecycle tail.
         const obs = captureWorldObservation({
+            nativePerOutput: true,
             workspace: makeMinimalSurface(["win-0", "deleted-extra-1", "deleted-extra-2"], { deletedIds: ["deleted-extra-1", "deleted-extra-2"] }),
             readMode: () => "vertical",
             readGap: () => 0,
@@ -402,6 +403,7 @@ describe("Unit 5 close-token retirement", () => {
             virtualDesktopsChanged: { connect: () => {}, disconnect: () => {} },
         };
         const handle = startWorldAdapterEntry({
+            options: { perOutputVirtualDesktops: true },
             workspace: surface,
             owner: "test-owner",
             adapter: "test-adapter",

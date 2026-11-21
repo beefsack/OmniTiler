@@ -104,6 +104,7 @@ function startFlow(bus?: {
     let gap = liveSettings?.gap ?? 8;
     let configHandler: (() => void) | null = null;
     const fakeOptions = {
+        perOutputVirtualDesktops: true,
         configChanged: {
             connect: (h: () => void): void => {
                 configHandler = h;

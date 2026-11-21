@@ -8,6 +8,8 @@
 // and the world entry owns observation plus safe actuation through public
 // KWin state only.
 
+import { connectSignal, readSignal, type SignalDetach, type SignalHandler } from "./signal-capability";
+
 export type WorkspaceMode = "per-output-local" | "global-unique" | "shared";
 
 export const DEFAULT_WORKSPACE_MODE: WorkspaceMode = "per-output-local";
@@ -426,33 +428,18 @@ function readDesktopId(desktop: object): string | null {
 // on every output. This is the single feature-detection owner: every other
 // module must use these helpers and never read the 6.7-only symbols
 // directly, so the API guard can confine them here.
-export function supportsPerOutputDesktops(surface: unknown): boolean {
+function hasPerOutputDesktopRead(surface: unknown): boolean {
     if (typeof surface !== "object" || surface === null) {
         return false;
     }
-    // The read method defines the capability. Real hosts always expose both
-    // methods together; write sites still guard the setter individually and
-    // keep their existing fail-closed behavior for partial shapes.
+    // The read method identifies the modern API; write sites separately
+    // check the live flag and setter.
     return typeof readProp(surface as object, "currentDesktopForScreen") === "function";
 }
 
 export interface OutputDesktopRead {
     readonly ref: object;
     readonly id: string;
-}
-
-// Full per-output switch pair (read and write methods). Legacy-shared hosts
-// expose neither; partial shapes keep their historical fail-closed refusals
-// at the call sites below.
-export function hasPerOutputSwitch(surface: unknown): boolean {
-    if (typeof surface !== "object" || surface === null) {
-        return false;
-    }
-    const target = surface as object;
-    return (
-        typeof readProp(target, "currentDesktopForScreen") === "function" &&
-        typeof readProp(target, "setCurrentDesktopForScreen") === "function"
-    );
 }
 
 function readSharedDesktop(surface: object): OutputDesktopRead | null {
@@ -496,17 +483,32 @@ export function readDesktopForOutput(surface: unknown, output: object): OutputDe
     return readSharedDesktop(target);
 }
 
-// Switch one output to a desktop: the per-output setter on 6.7+, else the
-// shared currentDesktop write on legacy-shared hosts where one desktop is
-// current everywhere. A present read method with a missing setter keeps the
-// historical fail-closed false; only the full legacy shape falls back.
-export function writeDesktopForOutput(surface: unknown, desktop: object, output: object): boolean {
+// The connection selects the setter path. An output-specific write never
+// falls back to the shared setter, even if the live option changed.
+export function writeDesktopForOutput(
+    surface: unknown,
+    desktop: object,
+    output: object,
+    nativePerOutput = hasPerOutputDesktopRead(surface),
+    optionsSource?: unknown,
+    log?: (line: string) => void,
+): boolean {
     if (typeof surface !== "object" || surface === null) {
         return false;
     }
     const target = surface as object;
-    const fn = readProp(target, "setCurrentDesktopForScreen");
-    if (typeof fn === "function") {
+    if (nativePerOutput) {
+        const fn = readProp(target, "setCurrentDesktopForScreen");
+        const status = perOutputDesktopStatus(target, optionsSource);
+        if (status !== "enabled") {
+            const reason = status === "disabled" ? "kwin-per-output-off"
+                : status === "unreadable" ? "kwin-per-output-unreadable" : "kwin-per-output-unsupported";
+            log?.(`omnitiler:world:per-output-unavailable stage=pre-setter reason=${reason}`);
+            return false;
+        }
+        if (typeof fn !== "function") {
+            return false;
+        }
         try {
             Reflect.apply(fn as (...args: ReadonlyArray<never>) => unknown, target, [desktop, output]);
             return true;
@@ -515,7 +517,12 @@ export function writeDesktopForOutput(surface: unknown, desktop: object, output:
             return false;
         }
     }
-    if (supportsPerOutputDesktops(target)) {
+    // With an unreadable modern option we cannot prove the shared setter
+    // will reach all outputs; KWin may switch only the active output.
+    const status = perOutputDesktopStatus(target, optionsSource);
+    if (status === "enabled" || status === "unreadable") {
+        const reason = status === "enabled" ? "kwin-per-output-on" : "kwin-per-output-unreadable";
+        log?.(`omnitiler:world:per-output-unavailable stage=pre-setter reason=${reason}`);
         return false;
     }
     try {
@@ -529,43 +536,50 @@ export function writeDesktopForOutput(surface: unknown, desktop: object, output:
 }
 
 // Separate workspace modes replicate one native binding per output with a
-// distinct logical each; shared (and any invalid value) keeps one row per
-// native. The observer validates the effective mode separately (6.6 hosts
-// degrade per-output requests to shared).
+// distinct logical each; shared keeps one row per native.
 export function isSeparateWorkspaceMode(mode: unknown): boolean {
     return mode === "per-output-local" || mode === "global-unique";
 }
 
-// Effective workspace mode for a requested mode on a live surface: a saved
-// or requested per-output mode degrades predictably to shared where the
-// per-output API is unavailable. Shared passes through unchanged.
-export function resolveEffectiveWorkspaceMode(mode: WorkspaceMode, surface: unknown): WorkspaceMode {
-    if (mode === "shared") {
-        return mode;
-    }
-    return supportsPerOutputDesktops(surface) ? mode : "shared";
+// Workspace-mode observations follow the negotiated capability, not a
+// second live probe or changes to the requested core setting.
+export function resolveEffectiveWorkspaceMode(mode: WorkspaceMode, nativePerOutput: boolean): WorkspaceMode {
+    return nativePerOutput === true ? mode : "shared";
 }
 
-// Migration-only strict options gate source. Missing/unreadable stays null
-// so 6.7 callers keep their exact disabled/unreadable refusal; 6.6 callers
-// refuse earlier on the unsupported API and never consult this property.
+// Strict options gate: a missing, unreadable, or non-boolean value is
+// distinct from false for diagnostics but does not authorize selection.
 export function readPerOutputVirtualDesktopsFlag(source: unknown): boolean | null {
-    try {
-        if (typeof source !== "object" || source === null) {
-            return null;
-        }
-        const raw = readProp(source as object, "perOutputVirtualDesktops");
-        if (raw === true) {
-            return true;
-        }
-        if (raw === false) {
-            return false;
-        }
-        return null;
-    } catch (error) {
-        void error;
+    if (typeof source !== "object" || source === null) {
         return null;
     }
+    const raw = readProp(source, "perOutputVirtualDesktops");
+    return typeof raw === "boolean" ? raw : null;
+}
+
+export type PerOutputDesktopStatus = "unsupported" | "enabled" | "disabled" | "unreadable";
+
+export function perOutputDesktopStatus(
+    surface: unknown, source: unknown,
+): PerOutputDesktopStatus {
+    if (!hasPerOutputDesktopRead(surface)) {
+        return "unsupported";
+    }
+    const flag = readPerOutputVirtualDesktopsFlag(source);
+    return flag === true ? "enabled" : flag === false ? "disabled" : "unreadable";
+}
+
+export function supportsPerOutputDesktops(surface: unknown, source?: unknown): boolean {
+    return perOutputDesktopStatus(surface, source) === "enabled";
+}
+
+export function connectPerOutputDesktopNotify(
+    surface: unknown, source: unknown, handler: SignalHandler,
+): SignalDetach | null {
+    if (!hasPerOutputDesktopRead(surface) || typeof source !== "object" || source === null) {
+        return null;
+    }
+    return connectSignal(readSignal(source, "perOutputVirtualDesktopsChanged"), handler);
 }
 
 export function orderedDesktopEntries(entries: ReadonlyArray<DesktopEntry>): ReadonlyArray<DesktopEntry> {

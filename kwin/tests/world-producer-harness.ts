@@ -228,6 +228,7 @@ export interface Harness {
     // Native view (current-desktop) writes, one entry per applied switch.
     // Recorded only; the shared single-desktop default never writes.
     readonly viewWrites: string[];
+    readonly sharedViewWrites: string[];
     readonly focused: string[];
     activeScreen: { name: string };
     activeRef: FakeWindow | null;
@@ -443,6 +444,7 @@ export async function makeHarness(focusId: string, ids: string[], opts?: { withE
         outputWrites: [],
         echoWrites: [],
         viewWrites: [],
+        sharedViewWrites: [],
         focused,
         activeScreen: { name: (liveScreens[0] as Record<string, unknown>)["name"] as string },
         activeRef: null,
@@ -718,7 +720,8 @@ export async function makeHarness(focusId: string, ids: string[], opts?: { withE
             return (currentByOutput.get((harness.activeScreen as { name: string }).name) as FakeDesktop | undefined) ?? (liveDesktops[0] as FakeDesktop);
         },
         set currentDesktop(ref: unknown) {
-            // Legacy shared write (KWin 6.6 shape): current everywhere.
+            // The shared selector chooses the desktop on every output.
+            harness.sharedViewWrites.push((ref as FakeDesktop).id);
             for (const screen of liveScreens) {
                 currentByOutput.set(screen["name"] as string, ref as FakeDesktop);
             }
@@ -1007,7 +1010,7 @@ export async function makeHarness(focusId: string, ids: string[], opts?: { withE
         readDefaultTiledFn: () => true,
         ...(opts?.scopeClass !== undefined ? { readScopeClassFn: () => opts.scopeClass } : {}),
         ...(opts?.devSettingsJson !== undefined ? { devSettingsJson: opts.devSettingsJson } : {}),
-        ...(opts?.options !== undefined ? { options: opts.options } : {}),
+        options: opts?.options === undefined ? { perOutputVirtualDesktops: true } : opts.options,
         highlightCallDbus: (_service: string, _path: string, _iface: string, method: string, ...args: ReadonlyArray<unknown>): void => {
             const [payload] = args;
             harness.renders.push({ method, payload: typeof payload === "string" ? payload : "" });
@@ -1066,6 +1069,7 @@ export async function discover(h: Harness, from = 0): Promise<string> {
     assert.equal(setReply["gen"], gen, "settings reply binds the serving generation");
     assert.equal(setReply["req"], setBody["req"], "settings reply echoes the request correlation");
     assert.equal(setReply["rev"], "1", "settings reply binds the sent revision");
+    h.replies.set(setIndex, setReplyText);
     (h.calls[setIndex] as CapturedCall).callback(setReplyText);
     assert.deepEqual(
         h.calls.slice(from, setIndex + 1).map((call) => call.method),

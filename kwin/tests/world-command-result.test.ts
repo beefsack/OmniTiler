@@ -141,6 +141,7 @@ function setup(wins: FakeWindow[], currents: Map<string, string>, floatIntent = 
         removeDesktop: () => undefined,
     };
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface,
         owner: "owner-a",
         adapter: "test-adapter",

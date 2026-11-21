@@ -107,6 +107,7 @@ function makeHarness(scopeClass?: string | readonly string[], opts: { floatInten
     let obs = 0;
 
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface,
         owner: "test-owner",
         adapter: "test-adapter",

@@ -98,6 +98,7 @@ function makeSurfaceWithScreens(
 
 function observe(surface: object) {
     const obs = captureWorldObservation({
+        nativePerOutput: true,
         workspace: surface,
         readMode: () => "per-output-local",
         readGap: () => 8,
@@ -575,6 +576,7 @@ describe("v4 cursorHit scoping", () => {
             currentDesktopForScreen: () => desktops[0],
         };
         const obs = captureWorldObservation({
+            nativePerOutput: true,
             workspace: surface,
             readMode: () => "per-output-local",
             readGap: () => 8,
@@ -874,6 +876,7 @@ describe("v4 local frame witness (adapter-local watermark)", () => {
         watermark: string | null,
     ) {
         const obs = captureWorldObservation({
+            nativePerOutput: true,
             workspace: surface,
             readMode: () => "per-output-local",
             readGap: () => 8,

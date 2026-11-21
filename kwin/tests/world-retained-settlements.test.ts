@@ -198,6 +198,7 @@ function setupEntryHarness(opts: {
         }
     };
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: workspace as never,
         owner: "owner-a",
         adapter: "test-adapter",
@@ -712,6 +713,7 @@ describe("genuine broker_world_eval -> production entry retained gesture journey
         const heldReplies: Array<{ replyText: string; callback: (reply: unknown) => void }> = [];
         const inflight: Promise<void>[] = [];
         const handle = startWorldAdapterEntry({
+            options: { perOutputVirtualDesktops: true },
             workspace: workspace as never,
             owner: "owner-a",
             adapter: "test-adapter",

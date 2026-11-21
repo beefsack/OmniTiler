@@ -617,6 +617,7 @@ async function proveLatestOnly(h: Harness, dispatch: number, minted: Minted, opt
         }
     }
     const settleObs = captureWorldObservation({
+        nativePerOutput: true,
         workspace: h.workspace,
         readMode: () => "per-output-local",
         readGap: () => 8,

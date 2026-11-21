@@ -226,6 +226,7 @@ function start(surface: object) {
     const calls: Call[] = [];
     const timers: Array<{ delay: number; cb: () => void }> = [];
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface,
         owner: "owner-a",
         adapter: "test-adapter",
@@ -326,6 +327,7 @@ describe("world overlay safety", () => {
         // the gate could not distinguish the flip).
         const { surface, world } = makeSurface();
         const stale = captureWorldObservation({
+            nativePerOutput: true,
             workspace: surface as never,
             readMode: () => "per-output-local",
             readGap: () => 8,
@@ -395,6 +397,7 @@ describe("world overlay safety", () => {
         const { surface, world } = makeSurface();
         (world.wins[0] as { minimized: boolean }).minimized = true;
         const fresh = captureWorldObservation({
+            nativePerOutput: true,
             workspace: surface as never,
             readMode: () => "per-output-local",
             readGap: () => 8,
@@ -459,6 +462,7 @@ describe("world overlay safety", () => {
         // (hidden into minimized) fences the setter.
         const { surface, world } = makeSurface();
         const stale = captureWorldObservation({
+            nativePerOutput: true,
             workspace: surface as never,
             readMode: () => "per-output-local",
             readGap: () => 8,
@@ -522,6 +526,7 @@ describe("world overlay safety", () => {
     it("refuses focus when hidden flips before the retained request", () => {
         const { surface, world } = makeSurface();
         const stale = captureWorldObservation({
+            nativePerOutput: true,
             workspace: surface as never,
             readMode: () => "per-output-local",
             readGap: () => 8,

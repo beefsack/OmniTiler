@@ -112,6 +112,7 @@ function makeHarness(extraDesktops: readonly string[] = []): Harness {
         activeScreenChanged: signals["activeScreenChanged"]!.signal,
     };
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface, owner: "owner-a", adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback) => {
             const call = { method, payload, callback, answered: false };

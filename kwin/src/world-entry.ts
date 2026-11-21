@@ -261,7 +261,9 @@ import { applyWorldReply, type AwaitingCrossingArrival } from "./world-apply";
 import { decodeList } from "./qml-list";
 import { normalizeNativeId } from "./native-id";
 import { createWorldCloseTracker, type ClosedEvidenceToken } from "./world-close-tracker";
-import { isSeparateWorkspaceMode, readPerOutputVirtualDesktopsFlag, supportsPerOutputDesktops } from "./workspace-native";
+import {
+    connectPerOutputDesktopNotify, isSeparateWorkspaceMode, perOutputDesktopStatus, type PerOutputDesktopStatus,
+} from "./workspace-native";
 import { createWorldCommandContext } from "./world-command-context";
 import {
     createWorldSettingsLive,
@@ -2219,11 +2221,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // event-gated difference (see world-close-tracker). The removal payload
     // is never read; core treats bare absence as minimize, never close.
     const closeTracker = createWorldCloseTracker();
-    // Startup-consumed workspace mode passes through verbatim: all three
-    // catalog tokens (per-output-local, global-unique, shared) ride the
-    // world route; the observer validates, and 6.6 hosts degrade
-    // per-output modes to shared predictably.
-    const readModePassthrough = (): unknown => {
+    // Preserve the user's startup preference for core settings. Observation
+    // uses the scope that was accepted for this connection.
+    const readRequestedMode = (): unknown => {
         try {
             return settings.readMode();
         } catch (error) {
@@ -2231,41 +2231,22 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return "per-output-local";
         }
     };
-    // Change-gated separate-mode host warning (no polling): when a
-    // separate mode is requested but KWin's per-output desktops are off,
-    // log once per transition. Unknown (unreadable flag, e.g. 6.6) and
-    // shared stay silent.
+    const optionsSource: unknown = overrides.options !== undefined ? overrides.options : (() => {
+        try {
+            return options;
+        } catch (error) {
+            void error;
+            return null;
+        }
+    })();
+    let offeredNativePerOutput: boolean | null = null;
+    let boundNativePerOutput = false;
     let lastPerOutputWarnKey = "";
-    const maybeLogPerOutputWarning = (): void => {
-        let requested: unknown = "per-output-local";
-        try {
-            requested = readModePassthrough();
-        } catch (error) {
-            void error;
-        }
-        if (!isSeparateWorkspaceMode(requested)) {
-            lastPerOutputWarnKey = `shared|${String(requested)}`;
-            return;
-        }
-        let flag: boolean | null = null;
-        try {
-            const source: unknown = overrides.options !== undefined ? overrides.options : (() => {
-                try {
-                    const candidate: unknown = options;
-                    return typeof candidate === "object" && candidate !== null ? candidate : null;
-                } catch (error) {
-                    void error;
-                    return null;
-                }
-            })();
-            flag = readPerOutputVirtualDesktopsFlag(source);
-        } catch (error) {
-            void error;
-            flag = null;
-        }
-        const key = `${String(requested)}|${flag === null ? "unknown" : flag ? "on" : "off"}`;
-        if (flag === false && key !== lastPerOutputWarnKey) {
-            log(`omnitiler:world:per-output-unavailable mode=${token(String(requested))} reason=kwin-per-output-off`);
+    const notePerOutputStatus = (status: PerOutputDesktopStatus): void => {
+        const requested = readRequestedMode();
+        const key = status === "disabled" && isSeparateWorkspaceMode(requested) ? requested as string : "";
+        if (key !== "" && key !== lastPerOutputWarnKey) {
+            log(`omnitiler:world:per-output-unavailable mode=${token(key)} reason=kwin-per-output-off`);
         }
         lastPerOutputWarnKey = key;
     };
@@ -2491,13 +2472,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         // send-time state.currentInvalid may already have advanced past it.
         const startInvalid = state.currentInvalid;
         const startGen = state.boundGen;
+        const nativePerOutput = boundNativePerOutput;
         const startEffectInstance = effectSnapshot?.instance ?? null;
         const startEffectInvalid = effectSnapshot?.invalidation ?? null;
-        try {
-            maybeLogPerOutputWarning();
-        } catch (error) {
-            void error;
-        }
         try {
             closeTracker.syncLive(surface);
         } catch (error) {
@@ -2505,7 +2482,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
         const observation = captureWorldObservation({
         workspace: surface,
-        readMode: readModePassthrough,
+        readMode: readRequestedMode,
+        nativePerOutput,
         readGap: () => settings.readGapLive(),
         readOuterGap: () => settings.readOuterGapLive(),
         gestureActive,
@@ -2536,20 +2514,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 pin: route.pinRetained(nativeId), disp: false, managed: true,
             };
         },
-        // Binding replication follows the requested workspace mode: both
-        // separate modes (per-output-local, global-unique) bind one
-        // native once per output with a distinct logical each, while
-        // shared (unchanged) keeps one row per native. Any other value
-        // (unreadable or invalid) stays single-row; the observer validates
-        // the effective mode separately (6.6 degrades to shared).
-        replicateBindingsPerOutput: (() => {
-            try {
-                return isSeparateWorkspaceMode(readModePassthrough());
-            } catch (error) {
-                void error;
-                return false;
-            }
-        })(),
         isFloating: (win) => floatingIds.has(win),
         isTileOverride: (win) => tileIds.has(win),
         // Latest observed effect facts; the effect still independently
@@ -2590,12 +2554,13 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
         const endInvalid = state.currentInvalid;
         const endGen = state.boundGen;
+        if (startGen !== endGen) return null;
         const endEffectInstance = effectSnapshot?.instance ?? null;
         const endEffectInvalid = effectSnapshot?.invalidation ?? null;
         let watermark: string | null = startInvalid;
         if (
             endInvalid !== startInvalid ||
-            startGen === null || endGen === null || startGen !== endGen ||
+            startGen === null ||
             startEffectInstance !== endEffectInstance || startEffectInvalid !== endEffectInvalid
         ) {
             watermark = null;
@@ -2917,7 +2882,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     let homingSuppressDepth = 0;
     let homingSuppressRef: object | null = null;
     let deferredOwnHoming = false;
-    const applyHostBase = createWorldApplyHost(surface, readProp);
+    const applyHostBase = createWorldApplyHost(surface, readProp, optionsSource, log);
     // Scoped view/focus echo guard (healthy KDE populated switch): the
     // synchronous `windowActivated` then `currentDesktopChanged` echoes of
     // our own `switchView`/`focusWindow` setters defer to one post-apply
@@ -4119,13 +4084,40 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // re-observes and command issuers re-establish with fresh per-client
     // command ids. The handshake and the settings snapshot share the
     // discovery method, dispatched by type server-side; no second route.
-    const discover = (): void => {
+    const discover = (status = perOutputDesktopStatus(surface, optionsSource)): void => {
         if (stopped) {
             return;
         }
-        discCounter += 1;
-        const reqId = `disc-${discCounter}`;
-        const payload = buildHandshakeRequest(adapter, reqId, ownApplicationIdentity(), defaultKwinCapabilities(supportsPerOutputDesktops(surface)));
+        const round = ++discCounter;
+        const reqId = `disc-${round}`;
+        const nativePerOutput = status === "enabled";
+        if (state.boundGen !== null && boundNativePerOutput !== nativePerOutput) {
+            // Fence the old contract before offering a different selector
+            // scope, regardless of what triggered this discovery.
+            state.boundGen = null;
+            boundNativePerOutput = false;
+            state.inFlight = null;
+            state.invalidate();
+            intentPendingApply = null;
+            clearTerminalCaptureRetry();
+            dropDeadGenerationIntents();
+            killPending("native-selector-changed");
+            waitHoldForDiscovery = true;
+            wakePendingCapture = false;
+            waitOutstanding = false;
+            waitNonce = "";
+            try {
+                waitWatchdogCancel?.();
+            } catch (error) {
+                void error;
+            }
+            waitWatchdogCancel = null;
+            cancelWaitRecovery();
+            log("omnitiler:world:stale reason=native-selector-changed recovery=rediscover");
+        }
+        offeredNativePerOutput = nativePerOutput;
+        notePerOutputStatus(status);
+        const payload = buildHandshakeRequest(adapter, reqId, ownApplicationIdentity(), defaultKwinCapabilities(nativePerOutput));
         if (payload === null) {
             log("omnitiler:world:discover-invalid recovery=rearm");
             cancelDiscoverChain();
@@ -4136,7 +4128,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         discoverOutstanding = true;
         discoverChainActive = true;
         const timeoutCancel = scheduleOnce(WORLD_TIMEOUT_MS, () => {
-            if (!settled) {
+            if (!settled && !stopped && round === discCounter) {
                 settled = true;
                 discoverOutstanding = false;
                 log("omnitiler:world:discover-timeout recovery=on-next-event");
@@ -4156,10 +4148,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             void error;
         }
         discoverHostCancel = scheduleOnce(WAIT_HOST_DEADLINE_MS, () => {
-            discoverHostCancel = null;
-            if (stopped || !discoverChainActive) {
+            if (stopped || round !== discCounter || !discoverChainActive) {
                 return;
             }
+            discoverHostCancel = null;
             log("omnitiler:world:discover-host-timeout recovery=rediscover");
             discover();
         });
@@ -4171,8 +4163,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         return;
                     }
                     settled = true;
-                    discoverOutstanding = false;
                     timeoutCancel();
+                    if (stopped || round !== discCounter) {
+                        return;
+                    }
+                    discoverOutstanding = false;
                     if (typeof reply !== "string") {
                         log("omnitiler:world:discover-transport recovery=rearm");
                         cancelDiscoverChain();
@@ -4212,6 +4207,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         return;
                     }
                     const changed = state.onDiscovery(parsed.gen, adapter, parsed.req, reqId);
+                    boundNativePerOutput = nativePerOutput;
                     if (changed) {
                         // New generation owns a fresh intent snapshot: reseed
                         // the map before the post-discovery dispatch so the
@@ -4351,6 +4347,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         } catch (error) {
             void error;
             timeoutCancel();
+            if (stopped || round !== discCounter) {
+                return;
+            }
             cancelDiscoverChain();
             discoverOutstanding = false;
             log("omnitiler:world:discover-transport recovery=on-next-event");
@@ -6138,6 +6137,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         }
                     }
                     const runApply = (): void => {
+                    if (stopped || state.boundGen !== parsed.gen) return;
+                    const nativePerOutput = boundNativePerOutput;
                     if (flight.subjectGuard !== null && flight.subjectGuard !== subjectGuard) {
                         state.dirty = true;
                         if (pendingQueue.length > 0) scheduleDrain(); else scheduleDispatch();
@@ -6669,13 +6670,16 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1" && traceActuator !== null
                                 ? traceActuator(ref, "output", outputNameOf(outRef) ?? "-", () => applyHostBase.sendToOutput(ref, outRef))
                                 : applyHostBase.sendToOutput(ref, outRef)),
-                        switchView: (desktopRef, outRef) =>
-                            withViewSuppression(desktopRef, outRef, () => applyHostBase.switchView(desktopRef, outRef)),
+                        switchView: (desktopRef, outRef, requiresPerOutput) =>
+                            (!requiresPerOutput || nativePerOutput) &&
+                            withViewSuppression(desktopRef, outRef, () =>
+                                state.boundGen === parsed.gen && applyHostBase.switchView(desktopRef, outRef, nativePerOutput)),
                         focusWindow: (ref, target) => target === undefined
                             ? applyHostBase.focusWindow(ref)
                             : withFocusSuppression(ref, target.win, target.out, target.ws, target.view,
                                 () => applyHostBase.focusWindow(ref)),
                     });
+                    if (stopped || state.boundGen !== parsed.gen) return;
                     // Core StateTarget actuation (atomic migration): the
                     // accepted reply's controlled state rows arm/store/flush
                     // through the preimage executor (persist-before-write,
@@ -7375,6 +7379,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         const timeoutCancel = scheduleOnce(WORLD_TIMEOUT_MS, () => {
             if (!settled) {
                 settled = true;
+                if (stopped || state.inFlight !== flight) return;
                 log("omnitiler:world:timeout recovery=on-next-event");
                 // The filed head is never replayed; queued tails drain on
                 // the scheduled catchup below, never on a blind retry. A
@@ -8371,7 +8376,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             (callDbus as NonNullable<WorldEntryOverrides["callDbus"]>)(
                 WORLD_DBUS_SERVICE, WORLD_DBUS_OBJECT, WORLD_DBUS_INTERFACE,
                 WORLD_WAIT_METHOD, payload, (reply: unknown) => {
-                    if (settled) {
+                    if (settled || stopped || nonce !== waitNonce) {
                         return;
                     }
                     settled = true;
@@ -8873,16 +8878,17 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     }
     reconcileWindowHomingAttach();
     try {
-        const optionsGlobal: unknown = overrides.options !== undefined ? overrides.options : (() => {
-            try {
-                const candidate: unknown = options;
-                return typeof candidate === "object" && candidate !== null ? candidate : null;
-            } catch (error) {
-                void error;
-                return null;
+        const detachPerOutput = connectPerOutputDesktopNotify(surface, optionsSource, () => {
+            if (stopped || offeredNativePerOutput === null) return;
+            const status = perOutputDesktopStatus(surface, optionsSource);
+            if ((status === "enabled") === offeredNativePerOutput) {
+                notePerOutputStatus(status);
+                return;
             }
-        })();
-        if (typeof optionsGlobal === "object" && optionsGlobal !== null) {
+            discover(status);
+        });
+        if (detachPerOutput !== null) detaches.push(detachPerOutput);
+        if (typeof optionsSource === "object" && optionsSource !== null) {
             // Startup-consumed drift note: workspaceMode and
             // shortcutProfile never re-read for behavior here. Drift is
             // restart-required, never adopted; live settings (gaps,
@@ -8908,7 +8914,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 }
                 onNativeInvalidation();
             };
-            const detach = connectSignal(readSignal(optionsGlobal as object, "configChanged"), onConfigChanged);
+            const detach = connectSignal(readSignal(optionsSource, "configChanged"), onConfigChanged);
             if (detach !== null) {
                 detaches.push(detach);
             }

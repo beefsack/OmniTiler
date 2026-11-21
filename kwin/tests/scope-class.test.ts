@@ -49,6 +49,7 @@ function observe(scope: string | readonly string[] | undefined, wins: Array<{ id
         currentDesktopForScreen: () => desktops[0],
     };
     return captureWorldObservation({
+        nativePerOutput: true,
         workspace: surface,
         readMode: () => "per-output-local",
         readGap: () => 8,
@@ -212,6 +213,7 @@ describe("scope-class world observation", () => {
             onAllDesktops: false, minSize: null, maxSize: null,
         };
         const env = {
+            nativePerOutput: true,
             workspace: null as unknown as object,
             readMode: () => "per-output-local",
             readGap: () => 8,

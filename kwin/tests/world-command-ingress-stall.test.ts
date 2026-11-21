@@ -146,6 +146,7 @@ describe("kde command ingress stall", () => {
         const bridge = WorldBridge.start();
         const broker = createMiniBroker();
         const handle = startWorldAdapterEntry({
+            options: { perOutputVirtualDesktops: true },
             workspace: surface,
             owner: "owner-a",
             adapter: "test-adapter",

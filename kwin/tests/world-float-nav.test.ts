@@ -175,6 +175,7 @@ function makeHarness(
     }
     const intentRecords = (opts?.floatIntentMembers ?? []).map((win) => ({ win, data: INTENT_FLOAT_DATA }));
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface,
         owner: "owner-a",
         adapter: "test-adapter",

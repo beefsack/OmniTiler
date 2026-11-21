@@ -109,6 +109,7 @@ function makeHarness(wins: FakeWindow[], screens: Array<{ name: string; geometry
         removeDesktop: () => false,
     };
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface,
         owner: "owner-a",
         adapter: "test-adapter",
@@ -406,6 +407,7 @@ describe("world directional intent (core-owned crossing)", () => {
             removeDesktop: () => false,
         };
         const handle = startWorldAdapterEntry({
+            options: { perOutputVirtualDesktops: true },
             workspace: surface,
             owner: "owner-a",
             adapter: "test-adapter",

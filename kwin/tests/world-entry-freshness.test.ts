@@ -254,6 +254,7 @@ function setup(onLog?: (message: string) => void): Harness {
         call.callback(text);
     };
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: {
             windowList: () => wins,
             screens: [out1],

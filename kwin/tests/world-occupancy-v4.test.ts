@@ -90,6 +90,7 @@ function observe(wins: FakeWin[]): WorldObservation | null {
         currentDesktopForScreen: () => desktops[0],
     };
     return captureWorldObservation({
+        nativePerOutput: true,
         workspace: surface,
         readMode: () => "per-output-local",
         readGap: () => 8,

@@ -219,7 +219,7 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 | | `kind` | `""` or ProtocolKind | empty | Empty on acceptance; refusal kind otherwise. |
 | `HostCapabilities` | `hostOwned,equalCount,birthClear` | bool | no | Existing native-domain/equal-count/automatic-birth-clear mechanisms. |
 | | `sharedNativeRoster` | bool | no | One native desktop identity roster across outputs; ignored when hostOwned=false. Independent of equal logical counts and view-selector coupling. |
-| | `nativeSelectorScope` | `per-output/all-outputs` | no | Native view selector coupling; ignored when hostOwned=false. |
+| | `nativeSelectorScope` | `per-output/all-outputs` | no | Effective native view selector coupling, not just API availability; ignored when hostOwned=false. |
 | | `windowSuppression` | bool | no | Independent recoverable per-window hide mechanism. |
 | | `maximize,fullscreen,nativeSticky,above,warp` | bool | no | Native state/stacking/cursor actuation support, not semantic command support or permission. |
 | | `tiledFloatTransfer` | bool | no | Tiled source can become a float while crossing outputs without unsupported remap. |
@@ -242,6 +242,14 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
   requested mode and diagnose an incompatible separate-output mode; adapters
   never substitute settings or select policy. A native coupling option change
   requires reconnect/new handshake before further world writes.
+  KWin advertises `per-output` only when `currentDesktopForScreen` exists
+  and `options.perOutputVirtualDesktops` is strictly `true`. Otherwise it
+  advertises `all-outputs`, including on KWin 6.6. KWin option notifications
+  trigger a new handshake; a one-output write also rechecks the live option
+  just before the setter and never falls back to a global switch.
+  On newer KWin, shared actuation also requires a readable `false`; an
+  unreadable option does not prove a global switch. The 6.6 shared setter
+  remains available without the option.
 - `above:false` forbids persistent project stacking targets; `warp:false`
   forbids non-null `warpCursor`, even when cursorWarp is requested. Read-only
   stacking observations are independent of actuation support. K1-K4 are

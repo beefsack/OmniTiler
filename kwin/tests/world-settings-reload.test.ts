@@ -171,7 +171,7 @@ function makeHarness(): Harness {
     };
     const handle = startWorldAdapterEntry({
         workspace: surface,
-        options: { configChanged: configChanged.signal },
+        options: { perOutputVirtualDesktops: true, configChanged: configChanged.signal },
         owner: "owner-a",
         adapter: "test-adapter",
         callDbus: (_service, _path, _iface, method, payload, callback) => {
@@ -697,7 +697,7 @@ describe("world workspace mode startup", () => {
         };
         const handle = startWorldAdapterEntry({
             workspace: surface,
-            options: { configChanged: configChanged.signal },
+            options: { perOutputVirtualDesktops: true, configChanged: configChanged.signal },
             owner: "owner-a",
             adapter: "test-adapter",
             callDbus: (_service, _path, _iface, method, payload, callback) => {
@@ -857,7 +857,7 @@ describe("world shortcut profile startup", () => {
             createDesktop: () => null as unknown as object,
             removeDesktop: () => undefined,
         };
-        const options = { configChanged: configChanged.signal };
+        const options = { perOutputVirtualDesktops: true, configChanged: configChanged.signal };
         const handle = startWorldAdapterEntry({
             workspace: surface,
             options,

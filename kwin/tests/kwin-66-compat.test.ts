@@ -13,7 +13,6 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
-    hasPerOutputSwitch,
     readDesktopForOutput,
     readPerOutputVirtualDesktopsFlag,
     resolveEffectiveWorkspaceMode,
@@ -147,27 +146,28 @@ function world67(): Fixture66 {
 }
 
 describe("kwin 6.6 legacy-shared capability seam", () => {
-    it("detects per-output support by the read method only", () => {
+    it("requires both the read method and a strictly enabled option for per-output support", () => {
+        const enabled = { perOutputVirtualDesktops: true };
         const legacy = world66();
-        assert.equal(supportsPerOutputDesktops(legacy.workspace), false);
-        assert.equal(hasPerOutputSwitch(legacy.workspace), false);
+        assert.equal(supportsPerOutputDesktops(legacy.workspace, enabled), false);
         const modern = world67();
-        assert.equal(supportsPerOutputDesktops(modern.workspace), true);
-        assert.equal(hasPerOutputSwitch(modern.workspace), true);
-        assert.equal(supportsPerOutputDesktops(null), false);
+        assert.equal(supportsPerOutputDesktops(modern.workspace, enabled), true);
+        assert.equal(supportsPerOutputDesktops(modern.workspace, { perOutputVirtualDesktops: false }), false);
+        assert.equal(supportsPerOutputDesktops(modern.workspace, {}), false);
+        assert.equal(supportsPerOutputDesktops(null, enabled), false);
     });
 
     it("degrades requested per-output modes to shared on legacy hosts", () => {
-        const legacy = world66();
-        assert.equal(resolveEffectiveWorkspaceMode("per-output-local", legacy.workspace), "shared");
-        assert.equal(resolveEffectiveWorkspaceMode("global-unique", legacy.workspace), "shared");
-        assert.equal(resolveEffectiveWorkspaceMode("shared", legacy.workspace), "shared");
-        const modern = world67();
-        assert.equal(resolveEffectiveWorkspaceMode("per-output-local", modern.workspace), "per-output-local");
-        assert.equal(resolveEffectiveWorkspaceMode("global-unique", modern.workspace), "global-unique");
+        const legacySupport = supportsPerOutputDesktops(world66().workspace, {});
+        assert.equal(resolveEffectiveWorkspaceMode("per-output-local", legacySupport), "shared");
+        assert.equal(resolveEffectiveWorkspaceMode("global-unique", legacySupport), "shared");
+        assert.equal(resolveEffectiveWorkspaceMode("shared", legacySupport), "shared");
+        const modernSupport = supportsPerOutputDesktops(world67().workspace, { perOutputVirtualDesktops: true });
+        assert.equal(resolveEffectiveWorkspaceMode("per-output-local", modernSupport), "per-output-local");
+        assert.equal(resolveEffectiveWorkspaceMode("global-unique", modernSupport), "global-unique");
     });
 
-    it("reports the absent migration-only options property as null", () => {
+    it("reports the absent options property as null", () => {
         assert.equal(readPerOutputVirtualDesktopsFlag({}), null);
         assert.equal(readPerOutputVirtualDesktopsFlag({ perOutputVirtualDesktops: true }), true);
         assert.equal(readPerOutputVirtualDesktopsFlag({ perOutputVirtualDesktops: false }), false);
@@ -192,8 +192,16 @@ describe("kwin 6.6 legacy-shared capability seam", () => {
         // historical fail-closed refusal: no shared write is attempted.
         const partial = world67();
         delete partial.workspace["setCurrentDesktopForScreen"];
-        assert.equal(supportsPerOutputDesktops(partial.workspace), true);
-        assert.equal(writeDesktopForOutput(partial.workspace, world.desktops[1] as object, world.outputs[0] as object), false);
+        const options = { perOutputVirtualDesktops: true };
+        assert.equal(supportsPerOutputDesktops(partial.workspace, options), true);
+        assert.equal(writeDesktopForOutput(partial.workspace, partial.desktops[1] as object, partial.outputs[0] as object, true, options), false);
+        assert.equal(partial.workspace["currentDesktop"], partial.desktops[0]);
+    });
+
+    it("does not use the shared setter on a modern host whose coupling is unreadable", () => {
+        const modern = world67();
+        assert.equal(writeDesktopForOutput(modern.workspace, modern.desktops[1] as object, modern.outputs[0] as object, false, {}), false);
+        assert.equal(modern.workspace["currentDesktop"], modern.desktops[0]);
     });
 
     it("reflects a refused shared write instead of claiming success", () => {

@@ -304,6 +304,7 @@ function startFlow(surface: object, opts: { gap?: number; outer?: number } = {})
     const timers: Flow["timers"] = [];
     const logs: string[] = [];
     const handle = startWorldAdapterEntry({
+        options: { perOutputVirtualDesktops: true },
         workspace: surface,
         owner: "owner-a",
         adapter: "test-adapter",

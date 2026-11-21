@@ -65,6 +65,7 @@ describe("world binding retention flags", () => {
         const calls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }> = [];
         const timers: Array<{ delay: number; cb: () => void }> = [];
         const handle = startWorldAdapterEntry({
+            options: { perOutputVirtualDesktops: true },
             workspace: surface,
             owner: "owner-a",
             adapter: "test-adapter",

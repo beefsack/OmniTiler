@@ -291,7 +291,7 @@ function applyThroughHost(
     reply: WorldReply,
     observation: WorldObservation,
 ) {
-    const host = createWorldApplyHost(surf.surface as object, readProp);
+    const host = createWorldApplyHost(surf.surface as object, readProp, { perOutputVirtualDesktops: true });
     return applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: MIGRATE_TAKE, ...host, state, observation, reply, log: () => undefined });
 }
 

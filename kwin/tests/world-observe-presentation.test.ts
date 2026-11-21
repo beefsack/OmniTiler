@@ -77,6 +77,7 @@ function makeSurface(opts: {
 
 function observe(surface: Record<string, unknown>, facts: PresentationSnapshot | null | undefined) {
     return captureWorldObservation({
+        nativePerOutput: true,
         workspace: surface,
         readMode: () => "per-output-local",
         readGap: () => 8,
@@ -445,6 +446,7 @@ describe("world observation presentation ingress", () => {
         const min = win("win-min", { minimized: true });
         const { surface } = makeSurface({ wins: [tiled, floated, min], active: tiled });
         const obs = captureWorldObservation({
+            nativePerOutput: true,
             workspace: surface,
             readMode: () => "per-output-local",
             readGap: () => 8,
@@ -587,6 +589,7 @@ describe("world observation cursor and windowAt producer-shaped capture", () => 
 
     function observeCursor(surface: Record<string, unknown>) {
         return captureWorldObservation({
+            nativePerOutput: true,
             workspace: surface,
             readMode: () => "per-output-local",
             readGap: () => 8,

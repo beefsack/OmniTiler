@@ -110,6 +110,7 @@ describe("native gesture lifecycle transport", () => {
         const timers: Array<{ delay: number; cb: () => void }> = [];
         let describeRev = 0;
         const handle = startWorldAdapterEntry({
+            options: { perOutputVirtualDesktops: true },
             workspace: surface,
             owner: "owner-a",
             adapter: "test-adapter",
@@ -409,6 +410,7 @@ describe("native gesture broker cutover", () => {
             };
         }
         const handle = startWorldAdapterEntry({
+            options: { perOutputVirtualDesktops: true },
             workspace: surface,
             owner: "owner-a",
             adapter: "test-adapter",
