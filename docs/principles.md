@@ -96,6 +96,12 @@ this model):
     compatibility paths.
   - One mechanism per job: store each fact once and give each kind of work
     one path. Extend the existing mechanism before adding a parallel one.
+  - Prefer one general rule over a set of special cases: before adding a
+    guard or branch for one situation, look for the rule that makes the
+    situation fall out. Record why where a special case remains, and delete
+    special cases once a general rule covers them.
+  - Keep removing: code, guards and recovery paths with no live trigger are
+    deleted, not kept as insurance.
 - Yields to: the requirements themselves. Never simplify away authenticity,
   consistency, reliability or the `absolute` parts of
   [Gaming Compatibility](#gaming-compatibility).
@@ -128,7 +134,10 @@ this model):
     a per-platform behavior.
   - Unavoidable host differences are documented, naming the host limitation
     behind each. Parity is proven by shared conformance fixtures
-    ([Testing](#testing)).
+    ([Testing](#testing)). A host difference counts as unavoidable only
+    after a binding or mapping that hides it
+    ([Layering](#layering)) was considered and rejected, with the reason
+    recorded.
 - Yields to: unavoidable host limitations (documented as above) and the
   `absolute` parts of [Gaming Compatibility](#gaming-compatibility).
 
@@ -158,8 +167,25 @@ this model):
     platform cannot or must not apply is a declared platform-neutral capability
     or a contract-listed exception, never a silent local policy; the next report
     shows the real host state and core continues from it.
+  - Apply each publication as one pass: compute the smallest set of host
+    changes from current host state to the published state and issue them
+    together, concurrently wherever the host allows. The published state is
+    the unit of work, not a sequence of commands. Where the host forces
+    steps into sequence, state the host reason, and end each wait on the
+    host event that proves the previous step.
+  - Core states what is correct in platform-neutral terms; each platform owns
+    the host-specific mechanics of realising it. Core decides which logical
+    workspace each native object backs and authorizes any moves that
+    realising it needs; the platform resolves native handles, performs those
+    writes and reports what happened. Re-pointing native backing and moving
+    contents is preferred over creating or destroying native structure
+    wherever that reaches the same result. Choosing what to move is policy,
+    not an adapter optimization: membership, visibility, order and focus stay
+    core decisions, and reports show what the host actually does.
   - Push shared logic down into core or a shared library; keep host-coupled
-    code (scripts, effects, settings modules, OS hooks) thin.
+    code (scripts, effects, settings modules, OS hooks) thin. Logic more than
+    one platform needs belongs in core behind a platform-neutral capability
+    (or a shared library) rather than in drifting copies.
   - A platform acts without a core round trip only where the round trip would cause visible jank, a performance cost or an unsafe effect. Such an exception is limited to mechanical safety vetoes or applying a core decision in the same turn, never policy, and each is listed in the contract document.
 - Yields to: Simplicity and host-native behavior when pushing code down; the
   `absolute` parts of [Gaming Compatibility](#gaming-compatibility).
@@ -214,7 +240,9 @@ this model):
   - Core cost per report stays within a stated latency budget, guarded by a
     regression check; input that has not changed costs little.
   - User input is never delayed for batching: a command reaches core as soon
-    as it is captured. Debounce only bursts of host events.
+    as it is captured. Debounce only bursts of host events that prove
+    nothing yet; once an event proves the state being waited for, act on it
+    without waiting out the debounce.
 - Yields to: authenticity, consistency and reliability
   ([Priorities](#priorities)), except the performance guarantee in
   [Gaming Compatibility](#gaming-compatibility), which is `absolute`.
@@ -229,6 +257,9 @@ this model):
   - Keep a documented route as the automatic fallback when the undocumented
     route is unavailable; where no documented route exists, degrade
     truthfully.
+  - Where a better approach is blocked only by a missing host interface,
+    record what the host would need to expose and the revisit condition
+    with the decision, so it can be raised upstream and reopened.
   - Make the route user-configurable where its breakage risk is real, and
     state that risk where the route is defined.
 - Yields to: [Simplicity](#simplicity) when the gain is small; the
@@ -261,6 +292,9 @@ this model):
   - Platform code cites the host ordering guarantees it relies on, and tests
     cover the interleavings that matter, including those only some hosts
     produce.
+  - Changes made for latency or jank are measured on a real host before and
+    after, with timings taken from host events; small samples are recorded
+    as weak evidence.
 - Yields to: [Focus and Return on Investment](#focus-and-return-on-investment),
   for how far to take each test.
 
