@@ -122,6 +122,7 @@ fn hidden_border(reason: BorderHideReasonV4) -> BorderPresentationV4 {
 
 pub fn base_bootstrap() -> DecodedReplyV4 {
     DecodedReplyV4 {
+        roster_plan: None,
         reply: WorldReplyV4 {
             contract_version: 4,
             adapter_incarnation: "adapter-a".to_owned(),
@@ -166,6 +167,7 @@ pub fn base_bootstrap() -> DecodedReplyV4 {
 
 pub fn base_observe() -> DecodedReplyV4 {
     DecodedReplyV4 {
+        roster_plan: None,
         reply: WorldReplyV4 {
             contract_version: 4,
             adapter_incarnation: "adapter-a".to_owned(),

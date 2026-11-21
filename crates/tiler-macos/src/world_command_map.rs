@@ -815,6 +815,7 @@ mod directional_codec_tests {
         // The typed refusal survives the genuine reply codec.
         let suspended = reply.presentation.suspended_output.is_some();
         let wire = encode_reply_v4(&DecodedReplyV4 {
+            roster_plan: None,
             reply,
             wire: ReplyWireOptionals {
                 suspended_output_present: suspended,

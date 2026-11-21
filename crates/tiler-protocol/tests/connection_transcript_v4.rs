@@ -112,6 +112,7 @@ impl Driver {
             | WorldOutcome::Duplicate(reply)
             | WorldOutcome::CommandConsumed(reply) => {
                 let bytes = encode_reply(&DecodedReplyV4 {
+                    roster_plan: None,
                     wire: ReplyWireOptionals {
                         suspended_output_present: reply.presentation.suspended_output.is_some(),
                     },

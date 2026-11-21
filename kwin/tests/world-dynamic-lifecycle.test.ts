@@ -233,6 +233,7 @@ interface Harness {
 }
 
 interface MakeOpts {
+    readonly sharedNativeRoster?: false;
     readonly mode?: string;
     readonly desktops?: string[];
     readonly outputs?: string[];
@@ -467,9 +468,10 @@ async function makeLifecycleHarness(opts: MakeOpts = {}): Promise<Harness> {
         setCurrentDesktopForScreen: (deskRef: unknown, screen: { name: string }): void => {
             const id = (deskRef as FakeDesktop).id;
             assert.ok(byId.has(id) || harness.desktops.some((d) => d.id === id), `desktop ${id} exists`);
+            const previous = desktopById(harness.currents.get(screen.name) ?? "");
             harness.currents.set(screen.name, id);
             harness.viewWrites.push(`${screen.name}->${id}`);
-            harness.fire("currentDesktopChanged");
+            harness.fire("currentDesktopChanged", previous);
         },
         sendClientToScreen: (mover: unknown, out: unknown): void => {
             const win = mover as FakeWindow;
@@ -507,6 +509,7 @@ async function makeLifecycleHarness(opts: MakeOpts = {}): Promise<Harness> {
     };
     const handle = startWorldAdapterEntry({
         options: { perOutputVirtualDesktops: true },
+        ...(opts.sharedNativeRoster === false ? { sharedNativeRoster: false } : {}),
         workspace: surface,
         owner: "owner-a",
         adapter: "test-adapter",
@@ -593,7 +596,7 @@ async function discoverAndSettleAs(h: Harness, shared: boolean): Promise<void> {
     assert.ok(hsIndex >= 0, "entry discovers on start");
     const hsBody = JSON.parse((h.calls[hsIndex] as CapturedCall).payload) as Record<string, unknown>;
     assert.equal(hsBody["type"], "handshake", "first discovery is the handshake");
-    assert.equal((hsBody["capabilities"] as Record<string, unknown>)["sharedNativeRoster"], true, "production handshake carries sharedNativeRoster:true");
+    assert.equal((hsBody["capabilities"] as Record<string, unknown>)["sharedNativeRoster"], shared);
     const hsPayload = shared ? (h.calls[hsIndex] as CapturedCall).payload : JSON.stringify({ ...hsBody, capabilities: { ...(hsBody["capabilities"] as Record<string, unknown>), sharedNativeRoster: false } });
     const hsReplyText = await h.bridge.send("DiscoverWorld", hsPayload);
     const hsReply = JSON.parse(hsReplyText) as Record<string, unknown>;
@@ -943,6 +946,7 @@ describe("world dynamic lifecycle", () => {
         // adoption lands before an occupied trailing and no new spare is
         // needed until the next fill.
         const h = await makeLifecycleHarness({
+            sharedNativeRoster: false,
             desktops: ["ws-1", "ws-2", "ws-3", "ws-4"],
             outputs: ["out-left", "out-right"],
             currents: { "out-left": "ws-1", "out-right": "ws-2" },
@@ -1078,51 +1082,55 @@ describe("world dynamic lifecycle", () => {
         }
     });
 
-    it("shared roster keeps globally occupied natives live with one pure-spare backing (genuine KWin)", { timeout: 240000 }, async () => {
-        // Genuine shared policy (production handshake untouched): every
-        // native is occupied or shown somewhere, so nothing retires
-        // locally on either output. Both rings mirror the four natives
-        // plus the one eagerly-backed pure trailing spare (a single shared
-        // native trails both rings), every row stays bound, and a further
-        // settle is quiescent (no churn).
+    it("shared roster appends only the longest ring's spare, with sibling tail padding (genuine KWin)", { timeout: 240000 }, async () => {
         const h = await makeLifecycleHarness({
             desktops: ["ws-1", "ws-2", "ws-3", "ws-4"],
             outputs: ["out-left", "out-right"],
             currents: { "out-left": "ws-1", "out-right": "ws-2" },
             wins: [
                 { id: "win-a", out: "out-left", ws: "ws-1" },
-                { id: "win-b", out: "out-right", ws: "ws-2" },
-                { id: "win-d", out: "out-right", ws: "ws-3" },
+                { id: "win-b", out: "out-right", ws: "ws-1" },
+                { id: "win-d", out: "out-left", ws: "ws-2" },
+                { id: "win-e", out: "out-left", ws: "ws-3" },
                 { id: "win-c", out: "out-left", ws: "ws-4" },
             ],
         });
         try {
+            const initialOrder = h.desktops.map((desktop) => desktop.id);
+            const initialCurrents = [...h.currents];
+            const nativeMembers = () => h.wins.map((win) => [
+                win.internalId, win.output.name, win.desktops.map((desktop) => desktop.id),
+            ]);
+            const initialMembers = nativeMembers();
             await discoverAndSettle(h);
+            assert.equal(h.creations.length, 1, "only the longest ring needs a backing append");
+            const appended = h.creations[0];
+            assert.ok(appended !== undefined && !initialOrder.includes(appended));
+            assert.deepEqual(h.desktops.map((desktop) => desktop.id), [...initialOrder, appended]);
+            assert.deepEqual(h.removals, [], "the existing occupied backings survive in order");
+            assert.deepEqual(h.memberWrites, [], "backing-only adoption does not move windows");
+            assert.deepEqual(nativeMembers(), initialMembers);
+            assert.deepEqual(h.viewWrites, [], "commandless append does not select anything");
+            assert.deepEqual([...h.currents], initialCurrents);
             const reply = lastReply(h);
-            // No local retire anywhere: globally occupied/shown natives
-            // stay live on both outputs (independent local retire invalid).
-            assert.deepEqual(tombstonesOf(reply, "out-left"), [], `no left absence intent under the shared roster, got ${JSON.stringify(workspacesOf(reply))}`);
-            assert.deepEqual(tombstonesOf(reply, "out-right"), [], `no right absence intent under the shared roster, got ${JSON.stringify(workspacesOf(reply))}`);
-            const liveLeft = workspacesOf(reply).filter((row) => row["out"] === "out-left" && row["exist"] !== false);
-            const liveRight = workspacesOf(reply).filter((row) => row["out"] === "out-right" && row["exist"] !== false);
-            assert.ok(liveLeft.some((row) => row["bind"] === "ws-3"), "occupied ws-3 stays live on the left");
-            assert.ok(liveRight.some((row) => row["bind"] === "ws-3"), "occupied ws-3 stays live on the right");
-            assert.ok(
-                workspacesOf(reply).every((row) => (row["bind"] as string) !== ""),
-                "every shared row carries its native bind (no unbound logicals)",
+            assert.equal(reply["rosterPlan"], undefined, "native append feedback settles the plan");
+            const rows = workspacesOf(reply);
+            assert.deepEqual(
+                rows.filter((row) => row["out"] === "out-left")
+                    .sort((a, b) => Number(a["order"]) - Number(b["order"])).map((row) => row["bind"]),
+                [...initialOrder, appended],
+                "the longest ring owns the new spare",
             );
-            // One pure-spare backing: a single shared trailing native backs
-            // both rings and no member moved to mint it.
-            const trailLeft = liveLeft[liveLeft.length - 1]?.["bind"] as string;
-            const trailRight = liveRight[liveRight.length - 1]?.["bind"] as string;
-            assert.equal(trailLeft, trailRight, `one shared native trails both rings, got left=${trailLeft} right=${trailRight}`);
-            assert.ok(!["ws-1", "ws-2", "ws-3", "ws-4"].includes(trailLeft), `trailing spare is fresh backing, got ${trailLeft}`);
-            assert.ok(h.desktops.some((d) => d.id === trailLeft), "trailing backing exists natively");
-            assert.equal(h.memberWrites.length, 0, `spare backing moves no windows, got ${JSON.stringify(h.memberWrites)}`);
-            // Quiescence: a further settle creates, removes, and moves nothing.
+            assert.deepEqual(
+                rows.filter((row) => row["out"] === "out-right")
+                    .sort((a, b) => Number(a["order"]) - Number(b["order"])).map((row) => row["bind"]),
+                ["ws-1", "ws-2"],
+                "the shorter ring has its own backed spare followed by padding, not replicated rows",
+            );
             const base = counters(h);
+            h.fire("desktopsChanged");
             await h.settle();
-            assert.deepEqual(counters(h), base, `shared lifecycle does not oscillate, got creations=${JSON.stringify(h.creations)} removals=${JSON.stringify(h.removals)}`);
+            assert.deepEqual(counters(h), base, "settled append does not replay on a fresh capture");
         } finally {
             await h.stop();
         }

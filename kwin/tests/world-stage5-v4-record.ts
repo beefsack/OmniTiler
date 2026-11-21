@@ -20,9 +20,8 @@
 //   node "$RECORDER_JS" --out-dir "$OUT_DIR" --chain both --bridge-binary "$BRIDGE_BIN"
 // BRIDGE_BIN follows Cargo's configured target directory. Existing per-chain
 // output directories refuse instead of overwriting. Scheduling-only seam: the
-// first capture send waits one bounded 100ms so the broker-epoch creation
-// receipt stamps solidly positive (see the pump seam note); every byte stays
-// genuine.
+// first capture send waits one bounded 100ms so native frame attempts
+// stamp solidly positive in the broker epoch; every byte stays genuine.
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -593,12 +592,8 @@ export async function recordStage5V4Chain(options: Stage5V4RecordOptions): Promi
         // Truthful fulfilling fake (host fidelity, not product/oracle
         // behavior): KWin's void `createDesktop(position, name)` makes one
         // synchronously visible desktop carrying the passed name and fires
-        // `desktopsChanged` in the same turn. The entry's post-call
-        // id-delta readback then proves the created id (deterministic
-        // `native-N` over the live list) and the later rename to the
-        // friendly position name lands through the writable `name`
-        // property, so the correctly issued eager spare desire settles
-        // instead of riding forever ambiguous with epoch stamps.
+        // `desktopsChanged` in the same turn. The exact tail delta proves
+        // the shared-slot append and its deterministic `native-N` ID.
         createDesktop: (...args: ReadonlyArray<unknown>): void => {
             if (args.length !== 2 || typeof args[0] !== "number" || typeof args[1] !== "string" || (args[1] as string) === "") {
                 throw new Error("Insufficient arguments");
@@ -752,10 +747,9 @@ export async function recordStage5V4Chain(options: Stage5V4RecordOptions): Promi
     // Scheduling-only seam (no byte changes, no synthetic clocks): the first
     // capture send waits one bounded 100ms so the serving broker clock is
     // safely positive when genesis-0 evaluates. The entry learns the broker
-    // epoch from the reply clock and stamps its native-creation fulfillment
-    // receipt with it, so the genesis-1 receipt carries a solidly positive
-    // stamp that the mint-before-receipt replay order can rely on without
-    // sub-ms luck. Genuine report ingestion, only later.
+    // epoch from the reply clock and stamps the same-apply frame attempts.
+    // The append proof is correlated by operation/step and exact roster
+    // readback, without using this clock. Genuine report ingestion, only later.
     let describedWorld = false;
     const pumpBridge = async (): Promise<boolean> => {
         let progressed = false;

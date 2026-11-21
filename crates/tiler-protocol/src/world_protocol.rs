@@ -60,6 +60,7 @@
 //! empty sections. Bounded errors reuse
 //! `{v:4,outcome:"rejected",kind,message,gen}`.
 
+use crate::world_roster_wire::{self, RosterFeedbackWire};
 use tiler_core::active_group::ActiveGroupMember;
 use tiler_core::boundary::CoreCommand;
 use tiler_core::bounds::{is_opaque_id, valid_carried_rect};
@@ -101,6 +102,7 @@ use tiler_core::world_report::{
     WorldCommand, WorldPresentationV4, WorldReplyV4, WorldReportV4, check_screen_structure,
     check_window_structure,
 };
+use tiler_core::world_roster::SharedRosterPlan;
 
 pub use crate::world_property_attempts::{
     decode_member_attempt, decode_state_attempt, decode_view_attempt,
@@ -2605,12 +2607,17 @@ pub struct DecodedReportV4 {
     /// Creation-receipt spellings aligned to [`WorldReportV4::creation_attempts`]
     /// in order (one entry per valid row).
     pub creation_receipts: Vec<CreationReceiptWire>,
-    /// Protocol-owned residual evidence (retained raw fields for held
-    /// `screens` rows, held `windows` rows, held `native` rows, held
-    /// attempt rows, and a held `presentation` singleton) for lossless
-    /// re-encoding, sizing, and exact replay discrimination. `None` when
-    /// no held-row residual is carried.
+    /// Protocol-owned residual evidence: raw held-row fields and shared roster
+    /// setter readbacks. Retained for lossless re-encoding, sizing and exact
+    /// replay discrimination; absent when neither kind of evidence is carried.
     pub residual: Option<std::sync::Arc<crate::world_report_residual::WorldReportResidual>>,
+}
+
+impl DecodedReportV4 {
+    /// Checked native setter readbacks and their derived core proofs.
+    pub fn roster_feedback(&self) -> Option<&RosterFeedbackWire> {
+        self.residual.as_ref()?.roster_feedback.as_ref()
+    }
 }
 
 /// Staged v4 attempt-row outcome: either a usable row or an identifiable
@@ -4016,6 +4023,7 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
             "primary",
             "creationAttempts",
             "gestureIngress",
+            "rosterFeedback",
         ],
     )?;
     let version = map
@@ -4504,11 +4512,16 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
             Some(_) => GestureIngressWire::Present,
         },
     };
+    let roster_feedback = map
+        .get("rosterFeedback")
+        .map(world_roster_wire::decode_feedback)
+        .transpose()?;
     let residual = if held_screen_fields.is_empty()
         && held_window_fields.is_empty()
         && held_native_fields.is_empty()
         && held_attempt_fields.is_empty()
         && held_presentation_fields.is_none()
+        && roster_feedback.is_none()
     {
         None
     } else {
@@ -4519,6 +4532,7 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
                 held_native_fields,
                 held_attempt_fields,
                 held_presentation_fields,
+                roster_feedback,
             },
         ))
     };
@@ -4544,6 +4558,9 @@ pub fn decode_report_v4_for_host(
     host_owned: bool,
 ) -> std::result::Result<DecodedReportV4, WorldProtocolError> {
     let decoded = decode_report_v4(json)?;
+    if !host_owned && decoded.roster_feedback().is_some() {
+        return Err(snapshot_invalid("roster-host-mismatch"));
+    }
     let mismatch = decoded.report.focus_feedback.iter().any(|row| {
         row.arrival
             .iter()
@@ -5029,7 +5046,7 @@ fn decode_after_shown(value: &serde_json::Value) -> Result<Option<AfterShown>> {
     }
 }
 
-fn decode_focus_request(value: &serde_json::Value) -> Result<Option<FocusRequest>> {
+pub(crate) fn decode_focus_request(value: &serde_json::Value) -> Result<Option<FocusRequest>> {
     match value {
         serde_json::Value::Null => Ok(None),
         serde_json::Value::Object(map) => {
@@ -5562,6 +5579,7 @@ pub struct ReplyWireOptionals {
 pub struct DecodedReplyV4 {
     pub reply: WorldReplyV4,
     pub wire: ReplyWireOptionals,
+    pub roster_plan: Option<SharedRosterPlan>,
 }
 
 /// Strict shape decode of one staged v4 whole-reply object. Enforces the
@@ -5587,7 +5605,7 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
             }
         })?;
     let map = as_object(&value)?;
-    check_keys(
+    check_keys_with_optional(
         map,
         &[
             "v",
@@ -5615,6 +5633,7 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
             "switchSettled",
             "diagnostics",
         ],
+        &["rosterPlan"],
     )?;
     let version = map
         .get("v")
@@ -5800,15 +5819,29 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
     let adapter = req_id(map, "adapter")?;
     let generation = req_bounded(map, "gen", MAX_GENERATION_LEN, is_generation_text)?;
     let request = req_bounded(map, "req", MAX_CORRELATION_LEN, is_correlation_text)?;
+    let roster_plan = map
+        .get("rosterPlan")
+        .map(world_roster_wire::decode_plan)
+        .transpose()?;
+    let observation_seq = req_u64_str(map, "obs")?;
+    let revision = req_u64_str(map, "rev")?;
+    let ready = req_bool(map, "ready")?;
+    world_roster_wire::check_publication(
+        roster_plan.as_ref(),
+        &generation,
+        revision,
+        observation_seq,
+        ready,
+    )?;
     Ok(DecodedReplyV4 {
         reply: WorldReplyV4 {
             contract_version: WORLD_PROTOCOL_VERSION_V4,
             adapter_incarnation: adapter,
             core_generation: generation,
             request_id: request,
-            based_on_observation_seq: req_u64_str(map, "obs")?,
-            state_revision: req_u64_str(map, "rev")?,
-            ready: req_bool(map, "ready")?,
+            based_on_observation_seq: observation_seq,
+            state_revision: revision,
+            ready,
             command_consumed: req_bool(map, "consumed")?,
             scopes,
             workspaces,
@@ -5828,6 +5861,7 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
             diagnostics,
         },
         wire,
+        roster_plan,
     })
 }
 
@@ -5843,6 +5877,9 @@ pub fn decode_reply_v4_for_host(
     host: &HostCapabilities,
 ) -> std::result::Result<DecodedReplyV4, WorldProtocolError> {
     let decoded = decode_reply_v4(json)?;
+    if decoded.roster_plan.is_some() && !world_roster_wire::supports_roster(host) {
+        return Err(reply_snapshot("roster-host-mismatch"));
+    }
     if !host.above
         && decoded
             .reply
@@ -5896,7 +5933,11 @@ pub use crate::world_report_rows::{
 /// wire metadata and unspellable typed values instead of emitting
 /// non-wire bytes.
 pub fn encode_reply_v4(decoded: &DecodedReplyV4) -> Result<String> {
-    crate::world_reply_write::write_reply_v4(&decoded.reply, &decoded.wire)
+    crate::world_reply_write::write_reply_v4_with_plan(
+        &decoded.reply,
+        &decoded.wire,
+        decoded.roster_plan.as_ref(),
+    )
 }
 
 // -- Staged canonical v4 report writer --
@@ -7089,6 +7130,10 @@ pub fn encode_report_v4(decoded: &DecodedReportV4) -> Result<String> {
         None => out.push_str("null"),
         Some(input) => out.push_str(&encode_renderer_input(input)?),
     }
+    if let Some(feedback) = decoded.roster_feedback() {
+        out.push_str(",\"rosterFeedback\":");
+        feedback.write(&mut crate::world_reply_sink::StringSink(&mut out))?;
+    }
     out.push('}');
     let back = match decode_report_v4(&out) {
         Ok(back) => back,
@@ -7289,6 +7334,7 @@ mod tests {
         };
         let decoded = DecodedReplyV4 {
             reply,
+            roster_plan: None,
             wire: ReplyWireOptionals {
                 suspended_output_present: false,
             },

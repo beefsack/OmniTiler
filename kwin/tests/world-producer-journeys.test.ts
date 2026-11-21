@@ -912,12 +912,20 @@ describe("world genuine-producer workspace selection journeys", () => {
     }
 
     it("selects a populated workspace through the production numbered route and continues tiling on it", async () => {
-        const h = await makeHarness("win-a", ["win-a", "win-b", "win-c", "win-d"], { desktops: ["ws1", "ws2"] });
+        // The two populated cells need a third, empty native spare before a command can drain.
+        const h = await makeHarness("win-a", ["win-a", "win-b", "win-c", "win-d"], { desktops: ["ws1", "ws2", "ws3"] });
         try {
             winById(h, "win-c").desktops = [deskById(h, "ws2")];
             winById(h, "win-d").desktops = [deskById(h, "ws2")];
             await discover(h);
             await h.settle();
+            assert.equal(lastDescribeReply(h)["rosterPlan"], undefined, "startup roster is settled before selection");
+            assert.deepEqual(
+                (h.workspace["desktops"] as FakeDesktop[]).map((desktop) => desktop.id),
+                ["ws1", "ws2", "ws3"],
+                "startup keeps both populated desktops and their trailing spare in native order",
+            );
+            assert.equal(nativeCurrent(h), "ws1", "startup stays on the origin");
             // Production numbered route: ring position 2 is the ws2 native
             // cell in native order; the command stays neutral (`out: null`)
             // for cursor-first output resolution.

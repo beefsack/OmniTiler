@@ -20,6 +20,8 @@ import { createNativePreimageStore, mapWorldStatePropertyToPreimage } from "./wo
 import { createNativeRecoveryCoordinator, type NativeRecoveryHost } from "./world-native-recovery";
 import { createNativeStateExecutor, createNativeStateHost } from "./world-native-state";
 import { createWorldApplyHost, createWorldNativeToggles } from "./world-native";
+import { applyWorldRoster, createWorldRosterSpendState } from "./world-roster";
+import type { WorldRosterFeedback } from "./world-report";
 import type { FocusChangesCut, FrozenFocusPrefix } from "./world-focus-changes";
 import {
     createWorldPresentationSubscriber,
@@ -407,6 +409,9 @@ export interface WorldEntryOverrides {
     // `resourceClass` identities, validated once at startup. Offline tests
     // pass `scopeClass` directly.
     readonly scopeClass?: string | readonly string[];
+    // Offline generic-host fixtures alone can simulate an independent
+    // roster. KWin never exposes this value as a user setting.
+    readonly sharedNativeRoster?: false;
     readonly readScopeClassFn?: () => unknown;
     readonly devSettingsJson?: string;
     // Compatibility seams accepted from the production entry: generation is
@@ -2241,6 +2246,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     })();
     let offeredNativePerOutput: boolean | null = null;
     let boundNativePerOutput = false;
+    const sharedNativeRoster = overrides.sharedNativeRoster !== false;
+    let rosterSpend = createWorldRosterSpendState();
+    let rosterFeedback: WorldRosterFeedback | undefined;
     let lastPerOutputWarnKey = "";
     const notePerOutputStatus = (status: PerOutputDesktopStatus): void => {
         const requested = readRequestedMode();
@@ -2883,6 +2891,32 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     let homingSuppressRef: object | null = null;
     let deferredOwnHoming = false;
     const applyHostBase = createWorldApplyHost(surface, readProp, optionsSource, log);
+    let ownRosterChange: { before: readonly string[]; remove: string | null } | null = null;
+    const ownRosterEcho = (): boolean => {
+        if (ownRosterChange === null) return false;
+        const order = applyHostBase.listDesktops?.()?.map((desktop) => desktop.id);
+        if (order === undefined) return false;
+        const { before, remove } = ownRosterChange;
+        if (remove !== null) {
+            const expected = before.filter((native) => native !== remove);
+            return order.length === expected.length && expected.every((native, i) => native === order[i]);
+        }
+        const tail = order[before.length];
+        return order.length === before.length + 1 && tail !== undefined && !before.includes(tail) &&
+            before.every((native, i) => native === order[i]);
+    };
+    const changeRosterOrder = (remove: string | null): boolean => {
+        const before = applyHostBase.listDesktops?.()?.map((desktop) => desktop.id);
+        if (before === undefined || (remove !== null && !before.includes(remove))) return false;
+        ownRosterChange = { before, remove };
+        try {
+            if (remove !== null) return applyHostBase.removeDesktop(remove);
+            applyHostBase.createDesktop(before.length, `Desktop ${before.length + 1}`);
+            return true;
+        } finally {
+            ownRosterChange = null;
+        }
+    };
     // Scoped view/focus echo guard (healthy KDE populated switch): the
     // synchronous `windowActivated` then `currentDesktopChanged` echoes of
     // our own `switchView`/`focusWindow` setters defer to one post-apply
@@ -4117,7 +4151,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
         offeredNativePerOutput = nativePerOutput;
         notePerOutputStatus(status);
-        const payload = buildHandshakeRequest(adapter, reqId, ownApplicationIdentity(), defaultKwinCapabilities(nativePerOutput));
+        const payload = buildHandshakeRequest(adapter, reqId, ownApplicationIdentity(), {
+            ...defaultKwinCapabilities(nativePerOutput), sharedNativeRoster,
+        });
         if (payload === null) {
             log("omnitiler:world:discover-invalid recovery=rearm");
             cancelDiscoverChain();
@@ -4209,6 +4245,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     const changed = state.onDiscovery(parsed.gen, adapter, parsed.req, reqId);
                     boundNativePerOutput = nativePerOutput;
                     if (changed) {
+                        rosterSpend = createWorldRosterSpendState();
+                        rosterFeedback = undefined;
                         // New generation owns a fresh intent snapshot: reseed
                         // the map before the post-discovery dispatch so the
                         // first admissible report carries it. The superseded
@@ -6623,6 +6661,25 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                                 note("post");
                             }
                         } : null;
+                    const rosterRoute = fresh.hostOwned && sharedNativeRoster && nativePerOutput &&
+                        isSeparateWorkspaceMode(fresh.mode);
+                    const plan = rosterRoute ? parsed.rosterPlan : undefined;
+                    if (plan === undefined || (rosterFeedback !== undefined && rosterFeedback.op !== plan.op)) {
+                        rosterFeedback = undefined;
+                    }
+                    let rosterSelectorHeld = false;
+                    const rosterFresh = (): boolean => {
+                        if (stopped || fresh.gesture || state.observationOnlyCatchup || state.focusChanges.pending() ||
+                            state.boundGen !== parsed.gen || state.lastAcceptedRev !== parsed.rev ||
+                            state.currentInvalid !== flight.watermark || rosterSelectorHeld) return false;
+                        const status = perOutputDesktopStatus(surface, optionsSource);
+                        if (status === "enabled") return true;
+                        rosterSelectorHeld = true;
+                        const reason = status === "disabled" ? "kwin-per-output-off"
+                            : status === "unreadable" ? "kwin-per-output-unreadable" : "kwin-per-output-unsupported";
+                        log(`omnitiler:world:per-output-unavailable stage=pre-setter reason=${reason}`);
+                        return false;
+                    };
                     const applied = applyWorldReply({
                         state,
                         observation: fresh,
@@ -6631,6 +6688,94 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         takeResult,
                         log,
                         ...applyHostBase,
+                        ...(rosterRoute ? { runRoster: (focus, memberArrived, result) => {
+                            if (plan === undefined) return;
+                            const settled = applyWorldRoster(plan, {
+                                fresh: rosterFresh,
+                                read: applyHostBase.readRosterWitness,
+                                memberHome: (win) => {
+                                    const ref = applyHostBase.resolveRosterWindow(win);
+                                    return ref === null ? null : applyHostBase.readRosterHome(ref);
+                                },
+                                canAffect: (win) => {
+                                    const ref = applyHostBase.resolveRosterWindow(win);
+                                    return ref !== null && applyHostBase.rosterMemberWritable(ref);
+                                },
+                                canWrite: (out) => applyHostBase.resolveOutput(out) !== null && rosterFresh(),
+                                canRemove: (native) => fresh.complete &&
+                                    !fresh.bindings.some((binding) => binding.native === native && binding.pin) &&
+                                    applyHostBase.resolveDesktop(native) !== null,
+                                append: () => rosterFresh() && changeRosterOrder(null),
+                                move: (win, out, native) => {
+                                    const ref = applyHostBase.resolveRosterWindow(win);
+                                    const outRef = applyHostBase.resolveOutput(out);
+                                    const desktop = applyHostBase.resolveDesktop(native);
+                                    if (ref === null || outRef === null || desktop === null ||
+                                        !applyHostBase.rosterMemberWritable(ref)) return false;
+                                    const before = applyHostBase.readRosterHome(ref);
+                                    if (before === null || !rosterFresh()) return false;
+                                    const sourceView = before.out !== out ? applyHostBase.readLiveView(before.out) : null;
+                                    const targetView = before.out !== out ? applyHostBase.readLiveView(out) : null;
+                                    if (!rosterFresh()) return false;
+                                    return withHomingSuppression(ref, () => {
+                                        if (before.out !== out) {
+                                            const send = () => applyHostBase.sendToOutput(ref, outRef);
+                                            const sent = traceActuator === null ? send() : traceActuator(ref, "output", out, send);
+                                            if (!sent) return false;
+                                        }
+                                        const mid = applyHostBase.readRosterHome(ref);
+                                        const echoed = mid?.out === out && before.out !== out &&
+                                            before.native === sourceView && mid.native === targetView;
+                                        if (mid === null || (mid.out !== out && mid.out !== before.out) ||
+                                            (mid.native !== native && mid.native !== before.native && !echoed) ||
+                                            !applyHostBase.rosterMemberWritable(ref) || !rosterFresh()) return false;
+                                        return mid.native === native || applyHostBase.setMembership(ref, native, desktop);
+                                    });
+                                },
+                                select: (out, native) => {
+                                    const outRef = applyHostBase.resolveOutput(out);
+                                    const desktop = applyHostBase.resolveDesktop(native);
+                                    return outRef !== null && desktop !== null && withViewSuppression(desktop, outRef, () =>
+                                        rosterFresh() && applyHostBase.switchView(desktop, outRef, true));
+                                },
+                                remove: (native) => rosterFresh() && changeRosterOrder(native),
+                                memberArrived,
+                                focus,
+                            }, rosterSpend);
+                            const feedback = settled.feedback;
+                            if (feedback != null) {
+                                const oldCount = rosterFeedback?.steps.length ?? 0;
+                                for (const row of feedback.steps.slice(oldCount)) {
+                                    if (row.status === "refused") result.held += 1;
+                                    else if (row.status === "appended") {
+                                        result.creations += 1;
+                                        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1" &&
+                                            devFixtureControlsEnabled && row.after?.kind === "order") {
+                                            const native = row.after.order[row.after.order.length - 1];
+                                            if (native !== undefined) {
+                                                worldTraceProbes.get(state)?.noteCreationReadback(parsed, row.step, null, native);
+                                            }
+                                        }
+                                    }
+                                    else if (plan.members.some((step) => step.step === row.step)) result.membershipWrites += 1;
+                                    else if (plan.views.some((step) => step.step === row.step)) result.viewWrites += 1;
+                                    else if (plan.removals.some((step) => step.step === row.step)) result.removals += 1;
+                                }
+                                if (feedback.steps.length > oldCount) {
+                                    rosterFeedback = feedback;
+                                    state.noteFollowup();
+                                }
+                            }
+                            const pending = settled.pendingMember;
+                            if (pending !== null && crossingArrivals.get(pending.win)?.op !== pending.step) {
+                                crossingArrivals.set(pending.win, {
+                                    op: pending.step, win: pending.win, out: pending.out, ws: "",
+                                    native: pending.native, readyRef: null,
+                                });
+                                state.noteFollowup();
+                            }
+                            if (settled.stopped !== null && !rosterFresh()) result.stoppedMidApply = true;
+                        } } : {}),
                         readFocusEvidence: (view) => {
                             const mark = state.focusChanges.mark();
                             let win: string | null = null;
@@ -6913,6 +7058,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             clearAttempts: delivered.clears,
             stateAttempts: delivered.states,
             focusFeedbacks: delivered.focus,
+            ...(rosterFeedback?.gen === state.boundGen ? { rosterFeedback } : {}),
             intentRecords: intentStore.recordsForReport(liveIntentWins),
         });
         return report === null ? null : { report, delivered };
@@ -7595,9 +7741,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     captureReplay = null;
                     if (flight.subjectGuard === null && state.currentInvalid === flight.watermark) rendererSealFence = null;
                     for (const [win, arrival] of crossingArrivals) {
-                        if (!parsed.transfers.some(t => t.kind === "window" && t.op === arrival.op &&
+                        const rosterOwns = arrival.ws === "" && parsed.rosterPlan?.members.some((step) =>
+                            step.step === arrival.op && step.win === win && step.out === arrival.out) === true;
+                        if (!rosterOwns && (!parsed.transfers.some(t => t.kind === "window" && t.op === arrival.op &&
                             t.win === arrival.win && t.out === arrival.out && t.ws === arrival.ws && t.cmdSeq !== null) ||
-                            !parsed.workspaces.some(w => w.out === arrival.out && w.id === arrival.ws && w.bind === arrival.native)) {
+                            !parsed.workspaces.some(w => w.out === arrival.out && w.id === arrival.ws && w.bind === arrival.native))) {
                             crossingArrivals.delete(win);
                         }
                     }
@@ -8816,6 +8964,10 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             });
         } else {
             attach(name, () => {
+                if (name === "desktopsChanged" && ownRosterEcho()) {
+                    requestPresentationProof();
+                    return;
+                }
                 subjectGuard += 1;
                 if (name === "desktopsChanged") requestPresentationProof();
                 onNativeInvalidation();

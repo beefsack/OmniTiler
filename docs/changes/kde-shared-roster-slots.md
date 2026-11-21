@@ -40,4 +40,6 @@ writable per-output selectors take this path. Keep the other routes unchanged.
   no dependent view switch or destructive step, and neither window is
   reinterpreted under the unproved mapping.
 
-Design approved; implementation and native acceptance are pending.
+Core planning, typed wire proof and KWin apply are implemented together.
+The active KDE recordings exercise the new plan; frozen wire fixtures remain
+unchanged. Native KWin acceptance, including flicker and focus, is pending.

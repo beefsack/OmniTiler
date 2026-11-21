@@ -1138,16 +1138,30 @@ impl WorldTransaction<'_> {
         windows: &[WindowDesire],
     ) -> Vec<FrozenArrivalMember> {
         let mut members: Vec<FrozenArrivalMember> = Vec::new();
+        // Shared-slot migration retains old logical homing until exact
+        // proof. Freeze arrival at the committed destination instead,
+        // using the migration's exact members, not the old staged home.
+        let migration = if self.connection.shared_roster_slots() {
+            self.world.settlement.retained.iter().find(|flight| {
+                flight.target.kind == TransferKind::Migration
+                    && flight.target.operation_id == pending.parent_op
+            })
+        } else {
+            None
+        };
         for row in windows {
-            if row.output != pending.focus_home.output
-                || row.workspace != pending.focus_home.workspace.0
+            let migrating = migration.is_some_and(|flight| flight.members.contains(&row.lifetime));
+            if !migrating
+                && (row.output != pending.focus_home.output
+                    || row.workspace != pending.focus_home.workspace.0)
             {
                 continue;
             }
             // No frame gate: every eligible required member freezes,
             // frameless rows included (null desired waives equality,
             // never the need for a readable live frame).
-            if self.staged_homing(&row.lifetime).as_ref() != Some(&pending.focus_home) {
+            if !migrating && self.staged_homing(&row.lifetime).as_ref() != Some(&pending.focus_home)
+            {
                 continue;
             }
             if self.is_held_window(&row.lifetime) || self.is_excluded_window(&row.lifetime) {
@@ -1563,14 +1577,22 @@ impl WorldTransaction<'_> {
             .map(|(window, home)| (window.clone(), home.clone()))
             .collect();
         let report_obs = self.world.staged.observation.observation_seq;
-        // Minimal native binding context for the arrival proof: the
-        // host-owned flag selects the Native arm and the map translates
-        // the observed native home through this engine's own bindings.
-        // Cloned once per report ahead of the per-binding mutable borrow.
+        // The bracket is an independently observed native home. Translate
+        // it only through the proved epoch on the shared slot route.
         let host_owned = self.connection.host_owned_workspace_domains();
-        let native_map = self.world.settlement.native_map.clone();
+        let settlement = &mut self.world.settlement;
+        let matches_native = |output: &OutputId, native: &str, logical: &str| {
+            if self.connection.shared_roster_slots() {
+                settlement.shared_roster.settled_logical(output, native) == Some(logical)
+            } else {
+                settlement
+                    .native_map
+                    .get(&(output.0.clone(), native.to_owned()))
+                    .is_some_and(|mapped| mapped == logical)
+            }
+        };
         let attempts = &self.world.staged.observation.property_attempts;
-        for binding in self.world.settlement.retained_selection.values_mut() {
+        for binding in settlement.retained_selection.values_mut() {
             // First exact-correlated canonical view evidence per obligated
             // output latches here (same pre-rollback position as feedback and
             // LastWrite): the sequencer pending map forgets acknowledged
@@ -1623,7 +1645,7 @@ impl WorldTransaction<'_> {
                         binding.obs,
                         report_obs,
                         host_owned,
-                        &native_map,
+                        matches_native,
                     );
                     // Host-owned invariant: the minted focus target always
                     // freezes with its actual staged home, so a binding that
@@ -2370,7 +2392,7 @@ fn prove_selection_arrival(
     issuing_obs: u64,
     report_obs: u64,
     host_owned: bool,
-    native_map: &BTreeMap<(String, String), String>,
+    matches_native: impl Fn(&OutputId, &str, &str) -> bool,
 ) -> bool {
     if members.is_empty() {
         return false;
@@ -2403,9 +2425,7 @@ fn prove_selection_arrival(
                 if output != &member.home.output {
                     return false;
                 }
-                if native_map.get(&(output.0.clone(), workspace.as_str().to_owned()))
-                    != Some(&member.home.workspace.0)
-                {
+                if !matches_native(output, workspace.as_str(), &member.home.workspace.0) {
                     return false;
                 }
             } else {

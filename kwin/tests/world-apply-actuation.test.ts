@@ -24,7 +24,7 @@ import assert from "node:assert/strict";
 import { startWorldAdapterEntry } from "../src/world-entry";
 import { applyWorldReply, type ApplyEnv } from "../src/world-apply";
 import { WorldAdapterState } from "../src/world-state";
-import { parseWorldReply, isCoreWorldReply } from "../src/world-report";
+import { parseWorldReply, isCoreWorldReply, type WorldRosterPlan } from "../src/world-report";
 import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 interface FakeDesktop {
@@ -46,7 +46,7 @@ interface FakeWindow {
     desktops: FakeDesktop[];
     minimized: boolean;
     hidden: boolean;
-    fullscreen: boolean;
+    fullScreen: boolean;
     maximized: boolean;
     sticky: boolean;
     readonly onAllDesktops: boolean;
@@ -73,12 +73,14 @@ interface FakeWorld {
     activeScreen: { name: string };
     activeWindow: FakeWindow | null;
     currentDesktop: FakeDesktop;
+    currentByOutput: Map<string, FakeDesktop>;
     created: string[];
     createCalls: number;
     createArgs: unknown[][];
     removed: string[];
     focused: string[];
     viewSwitches: string[];
+    viewTargets: string[];
     membershipCalls: string[];
     membershipWrites: string[];
     geometryWrites: string[];
@@ -135,7 +137,7 @@ const win = (id: string, out: string, ws: FakeDesktop, x = 0): FakeWindow => ({
     desktops: [ws],
     minimized: false,
     hidden: false,
-    fullscreen: false,
+    fullScreen: false,
     maximized: false,
     sticky: false,
     get onAllDesktops() { return this.sticky; },
@@ -145,7 +147,9 @@ const win = (id: string, out: string, ws: FakeDesktop, x = 0): FakeWindow => ({
     maxSize: null,
 });
 
-function makeHarness(mode: unknown = "per-output-local"): Harness {
+// Scripted legacy lanes exercise linked shared mode. Separate logical
+// modes keep the same native roster and must submit typed slot plans.
+function makeHarness(mode: "shared" | "per-output-local" | "global-unique" = "shared"): Harness {
     const faults: Faults = { deferMembership: false, throwMembership: null, createFaults: {}, signalOnCreate: false, geometryEchoSignal: false, corruptAfterCreate: false };
     const pendingMembership = new Map<string, FakeDesktop[]>();
     const rawApplyMembership = new Map<string, (refs: FakeDesktop[]) => void>();
@@ -161,12 +165,14 @@ function makeHarness(mode: unknown = "per-output-local"): Harness {
         activeScreen: { name: "out" },
         activeWindow: w1,
         currentDesktop: ws1,
+        currentByOutput: new Map(),
         created: [],
         createCalls: 0,
         createArgs: [],
         removed: [],
         focused: [],
         viewSwitches: [],
+        viewTargets: [],
         membershipCalls: [],
         membershipWrites: [],
         geometryWrites: [],
@@ -191,9 +197,10 @@ function makeHarness(mode: unknown = "per-output-local"): Harness {
     };
     const surface = {
         windowList: () => world.wins,
-        screens: world.screens,
-        desktops: world.desktops,
-        activeScreen: world.activeScreen,
+        get screens() { return world.screens; },
+        get desktops() { return world.desktops; },
+        get activeScreen() { return world.activeScreen; },
+        set activeScreen(screen: { name: string }) { world.activeScreen = screen; },
         cursorPos: { x: 2, y: 100 },
         windowAdded: (signals.windowAdded as FakeSignal).signal,
         windowRemoved: (signals.windowRemoved as FakeSignal).signal,
@@ -222,12 +229,15 @@ function makeHarness(mode: unknown = "per-output-local"): Harness {
             }
         },
         clientArea: (_area: number, _out: unknown, _desk: unknown) => ({ x: 0, y: 0, width: 800, height: 600 }),
-        currentDesktopForScreen: (_screen: unknown) => world.currentDesktop,
-        setCurrentDesktopForScreen: (deskRef: unknown, _screen: unknown) => {
+        currentDesktopForScreen: (screen: { name: string }) =>
+            world.currentByOutput.get(screen.name) ?? world.currentDesktop,
+        setCurrentDesktopForScreen: (deskRef: unknown, screen: { name: string }) => {
             const found = world.desktops.find((d) => (d as unknown) === deskRef);
             if (found) {
-                world.currentDesktop = found;
+                if (mode === "shared") world.currentDesktop = found;
+                else world.currentByOutput.set(screen.name, found);
                 world.viewSwitches.push(found.id);
+                world.viewTargets.push(`${screen.name}=>${found.id}`);
             }
         },
         sendClientToScreen: (mover: unknown, out: unknown) => {
@@ -1626,8 +1636,21 @@ describe("world hotplug displacement production", () => {
         state: [],
     });
 
-    for (const mode of ["per-output-local", "global-unique", "shared"]) {
-        it(`remove/re-add actuates natively in ${mode} without duplication`, () => {
+    const order = ["ws1", "ws2", "ws3"];
+    const existing = (native: string) => ({ kind: "existing" as const, native });
+    const plan = (op: string, rev: number, rows: Pick<WorldRosterPlan, "currents" | "occupants" | "projections" | "members" | "views">): WorldRosterPlan => ({
+        op, gen: "gen-1", rev: String(rev), obs: String(rev),
+        baseline: { epoch: String(rev), order, projections: rows.projections },
+        slots: order.map(existing), removals: [], focus: null,
+        ...rows,
+    });
+
+    for (const mode of ["per-output-local", "global-unique", "shared"] as const) {
+        const displaced = mode !== "shared";
+        const title = displaced
+            ? `remove/re-add proves slot-native displacement and return in ${mode} without duplication`
+            : "remove/re-add actuates natively in shared without duplication";
+        it(title, () => {
             const h = makeHarness(mode);
             // Two-output native start: win-b lives on out-2/ws2.
             h.world.screens.push({ name: "out-2", geometry: { x: 1920, y: 0, width: 1920, height: 1080 } });
@@ -1635,9 +1658,9 @@ describe("world hotplug displacement production", () => {
             winB.output = { name: "out-2" };
             h.world.activeWindow = winB;
             h.world.activeScreen = { name: "out-2" };
+            if (displaced) h.world.currentByOutput.set("out-2", h.world.desktops[1]!);
             discover(h);
             const rev = { n: 0 };
-            const displaced = mode !== "shared";
             // Native unplug: out-2 gone, KWin rehomes the window output,
             // the desktop persists, focus stays native.
             h.world.screens = h.world.screens.filter((s) => s.name !== "out-2");
@@ -1647,26 +1670,27 @@ describe("world hotplug displacement production", () => {
             const membershipBefore = h.world.membershipCalls.length;
             const viewsBefore = h.world.viewSwitches.length;
             if (displaced) {
-                // Core displacement reply shape: survivor rows for both
-                // workspaces, untouched floating-free scopes, one policy
-                // view plus member transfers only for lagged members.
-                // win-b already shows the survivor homing, so membership
-                // confirms while the hidden view actuates.
-                dispatchAndReply(h, rev, {
-                    scopes: [scopeRow("out/ws1", "controlled"), scopeRow("out/ws2", "controlled")],
-                    workspaces: [wsRow("ws1", "out", 0), wsRow("ws2", "out", 1)],
-                    outputs: [outRow("out", "ws2")],
-                    windows: [memberRow("win-b", "out", "ws2")],
-                    transfers: [
-                        { op: "op-disp-out-ws2", kind: "view", win: "", out: "out", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null },
+                // The native unplug already rehomed win-b; only the
+                // survivor's selector needs a slot step.
+                const rosterPlan = plan("op-displace", rev.n + 1, {
+                    currents: [{ out: "out", native: "ws1" }],
+                    occupants: [
+                        { native: "ws1", windows: [{ win: "win-a", out: "out" }] },
+                        { native: "ws2", windows: [{ win: "win-b", out: "out" }] },
+                        { native: "ws3", windows: [] },
                     ],
+                    projections: [{ out: "out", rows: ["a", "b"] }],
+                    members: [],
+                    views: [{ step: "displaced-view", out: "out", before: "ws1", target: existing("ws2"), deps: [] }],
                 });
-                assert.deepEqual(h.world.viewSwitches.slice(viewsBefore), ["ws2"], "displaced view actuates natively");
+                dispatchAndReply(h, rev, { rosterPlan });
+                assert.deepEqual(h.world.viewTargets, ["out=>ws2"], "selector addresses the surviving output");
                 assert.equal(h.world.membershipCalls.length, membershipBefore, "already-homed member issues no setter");
                 assert.equal(h.world.geometryWrites.length, 0, "no float geometry anywhere");
                 h.runTimers();
                 // View proof settles on the same flight (one switch above);
                 // verdict transport is deleted.
+                assert.equal(h.world.outputWrites.length, 0, "unplug sends no already-homed window");
                 noInventedQueueOps(h);
                 drain(h, rev);
             } else {
@@ -1688,6 +1712,7 @@ describe("world hotplug displacement production", () => {
             // (win-a dragged to ws3 natively) is never pulled back: the
             // core reply below names no transfer for it.
             h.world.screens.push({ name: "out-2", geometry: { x: 1920, y: 0, width: 1920, height: 1080 } });
+            if (displaced) h.world.currentByOutput.set("out-2", h.world.desktops[2]!);
             h.fire("screensChanged");
             const winA = h.world.wins.find((w) => w.internalId === "win-a") as FakeWindow;
             const ws3 = h.world.desktops.find((d) => d.id === "ws3") as FakeDesktop;
@@ -1696,20 +1721,25 @@ describe("world hotplug displacement production", () => {
             const outputBefore = h.world.outputWrites.length;
             const focusedBefore = [...h.world.focused];
             if (displaced) {
-                dispatchAndReply(h, rev, {
-                    scopes: [scopeRow("out/ws1", "controlled"), scopeRow("out-2/ws2", "controlled")],
-                    workspaces: [wsRow("ws1", "out", 0), wsRow("ws2", "out-2", 0)],
-                    outputs: [outRow("out", "ws1"), outRow("out-2", "ws2")],
-                    windows: [memberRow("win-b", "out-2", "ws2")],
-                    transfers: [
-                        { op: "op-hp-win-b", kind: "window", win: "win-b", out: "out-2", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null },
-                        { op: "op-disp-out-2-ws2", kind: "view", win: "", out: "out-2", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null },
+                const rosterPlan = plan("op-return", rev.n + 1, {
+                    currents: [{ out: "out", native: "ws2" }, { out: "out-2", native: "ws3" }],
+                    occupants: [
+                        { native: "ws1", windows: [] },
+                        { native: "ws2", windows: [{ win: "win-b", out: "out" }] },
+                        { native: "ws3", windows: [{ win: "win-a", out: "out" }] },
+                    ],
+                    projections: [{ out: "out", rows: ["a", "b-displaced", "c"] }, { out: "out-2", rows: ["d", "b", "e"] }],
+                    members: [{
+                        step: "return-member", win: "win-b", before: { out: "out", native: "ws2" },
+                        out: "out-2", target: existing("ws2"), deps: [],
+                    }],
+                    views: [
+                        { step: "survivor-view", out: "out", before: "ws2", target: existing("ws1"), deps: ["return-member"] },
+                        { step: "return-view", out: "out-2", before: "ws3", target: existing("ws2"), deps: ["return-member"] },
                     ],
                 });
-                assert.ok(
-                    h.world.outputWrites.slice(outputBefore).some((w) => w === "win-b=>out-2"),
-                    "return moves the member output natively",
-                );
+                const first = dispatchAndReply(h, rev, { rosterPlan });
+                assert.deepEqual(h.world.outputWrites.slice(outputBefore), ["win-b=>out-2"], "one native send returns the lagged member");
                 // The desktop needs no rewrite: KWin preserves it across
                 // the unplug, so only the output send actuates. A redundant
                 // desktop write here would be a bug.
@@ -1717,7 +1747,10 @@ describe("world hotplug displacement production", () => {
                     !h.world.membershipWrites.some((w) => w.startsWith("win-b->")),
                     "no redundant desktop rewrite when already homed",
                 );
-                assert.ok(h.world.viewSwitches.includes("ws2"), "return shows the workspace natively");
+                assert.equal(h.world.membershipCalls.length, memberBefore, "neither desktop membership needs rewriting");
+                assert.deepEqual(h.world.viewTargets, ["out=>ws2", "out=>ws1", "out-2=>ws2"], "return selects divergent outputs independently");
+                assert.equal(h.world.currentByOutput.get("out")?.id, "ws1");
+                assert.equal(h.world.currentByOutput.get("out-2")?.id, "ws2");
                 assert.equal(h.world.geometryWrites.length, 0, "return writes no frames");
                 assert.ok(
                     !h.world.membershipCalls.slice(memberBefore).some((c) => c.startsWith("win-a->")),
@@ -1729,21 +1762,33 @@ describe("world hotplug displacement production", () => {
                     "policy return never steals focus",
                 );
                 h.runTimers();
-                // Member proof settles on the same flight (moves above);
-                // verdict transport is deleted.
+                // Receipt must carry both selector preimages and the
+                // returned member's exact native homing.
                 noInventedQueueOps(h);
                 // An identical repeated reply never re-actuates.
                 const callsAfter = h.world.membershipCalls.length;
                 const outsAfter = h.world.outputWrites.length;
                 const viewsAfter = h.world.viewSwitches.length;
-                dispatchAndReply(h, rev, {
-                    scopes: [scopeRow("out/ws1", "controlled"), scopeRow("out-2/ws2", "controlled")],
-                    workspaces: [wsRow("ws1", "out", 0), wsRow("ws2", "out-2", 0)],
-                    outputs: [outRow("out", "ws1"), outRow("out-2", "ws2")],
-                    windows: [memberRow("win-b", "out-2", "ws2")],
-                    transfers: [
-                        { op: "op-hp-win-b", kind: "window", win: "win-b", out: "out-2", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null },
-                        { op: "op-disp-out-2-ws2", kind: "view", win: "", out: "out-2", ws: "ws2", follow: false, held: false, cmdSeq: null, parent: null },
+                const replay = dispatchAndReply(h, rev, { rosterPlan });
+                assert.notEqual(replay["source"], first["source"], "redelivery answers a fresh report flight");
+                const report = replay["report"] as Record<string, unknown>;
+                assert.deepEqual(report["rosterFeedback"], {
+                    op: rosterPlan.op, gen: rosterPlan.gen, rev: rosterPlan.rev, steps: [
+                        {
+                            step: "return-member", status: "applied",
+                            before: { kind: "home", out: "out", native: "ws2" },
+                            after: { kind: "home", out: "out-2", native: "ws2" },
+                        },
+                        {
+                            step: "survivor-view", status: "applied",
+                            before: { kind: "current", native: "ws2" },
+                            after: { kind: "current", native: "ws1" },
+                        },
+                        {
+                            step: "return-view", status: "applied",
+                            before: { kind: "current", native: "ws3" },
+                            after: { kind: "current", native: "ws2" },
+                        },
                     ],
                 });
                 assert.equal(h.world.membershipCalls.length, callsAfter, "confirmed member never repeats");
@@ -1753,7 +1798,7 @@ describe("world hotplug displacement production", () => {
                 dispatchAndReply(h, rev, {
                     scopes: [scopeRow("out/ws1", "controlled"), scopeRow("out-2/ws2", "controlled")],
                     workspaces: [wsRow("ws1", "out", 0), wsRow("ws2", "out-2", 0)],
-                    outputs: [outRow("out", "ws1"), outRow("out-2", "ws2")],
+                    outputs: [outRow("out", "ws1"), outRow("out-2", "ws1")],
                     windows: [memberRow("win-b", "out-2", "ws2")],
                     transfers: [],
                 });

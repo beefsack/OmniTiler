@@ -50,6 +50,7 @@ use crate::world_report::{BatchSettlement, CommandResult};
 use crate::world_report_v4_checks::{
     graded_effective_v4, report_digest_v4, validate_batch_v4_reason, validate_report_v4_reason,
 };
+use crate::world_roster::RosterFeedback;
 use crate::world_run_v4::V4RunOutcome;
 use crate::world_transaction::WorldTransaction;
 
@@ -370,6 +371,7 @@ impl WorldEngine {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn handle_report_v4_batched_with_gate_and_prepare<
         E,
         G: CoreAdmissionGate + ?Sized,
@@ -379,6 +381,19 @@ impl WorldEngine {
         issue: &EventIssue,
         queued: &[(u64, WorldCommand)],
         gate: &G,
+        prepare: impl FnOnce(PreparedCandidate<'_>) -> Result<(), E>,
+    ) -> Result<TransitionResult, E> {
+        self.admit_report_v4_with_roster_feedback(report, issue, queued, gate, None, prepare)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_report_v4_with_roster_feedback<E, G: CoreAdmissionGate + ?Sized>(
+        &mut self,
+        report: &WorldReportV4,
+        issue: &EventIssue,
+        queued: &[(u64, WorldCommand)],
+        gate: &G,
+        feedback: Option<&RosterFeedback>,
         prepare: impl FnOnce(PreparedCandidate<'_>) -> Result<(), E>,
     ) -> Result<TransitionResult, E> {
         // Internal admitted-envelope defense: the bound adapter, generation,
@@ -498,8 +513,9 @@ impl WorldEngine {
         let digest = report_digest_v4(report);
         if let Some(replay) = &self.replay {
             // Fast digest pre-check first; full typed input equality
-            let reports_equal =
-                replay.report == *report && gate.residual_matches(replay.residual.as_ref());
+            let reports_equal = replay.report == *report
+                && replay.roster_feedback.as_ref() == feedback
+                && gate.residual_matches(replay.residual.as_ref());
             match classify_replay_v4(
                 report.request_seq,
                 digest,
@@ -757,6 +773,7 @@ impl WorldEngine {
                 reply: ValidatedReply::new_validated(&reply),
                 active_gesture_id,
                 dispositions: &bootstrap_dispositions,
+                shared_roster_plan: None,
             };
             prepare(candidate)?;
             self.world.emit_published_settlement_trace(
@@ -799,17 +816,19 @@ impl WorldEngine {
                     next_revision,
                     predecessor,
                     queued,
+                    feedback,
                 );
         match outcome {
             V4RunOutcome::Accepted(reply) | V4RunOutcome::CommandConsumed(reply) => {
                 let consumed_reply = reply.command_consumed;
-                match self.finalize_v4_candidate_with_gate_and_prepare(
+                match self.finalize_v4_candidate_with_roster_feedback(
                     staged,
                     report,
                     digest,
                     reply,
                     &dispositions,
                     gate,
+                    feedback,
                     prepare,
                 )? {
                     V4RunOutcome::Accepted(reply) => {
@@ -927,8 +946,32 @@ impl WorldEngine {
         .unwrap_or_else(|e| match e {})
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn finalize_v4_candidate_with_gate_and_prepare<E, G: CoreAdmissionGate + ?Sized>(
+        &mut self,
+        staged: WorldState,
+        report: &WorldReportV4,
+        digest: u64,
+        reply: WorldReplyV4,
+        dispositions: &[BatchDisposition],
+        gate: &G,
+        prepare: impl FnOnce(PreparedCandidate<'_>) -> Result<(), E>,
+    ) -> Result<V4RunOutcome, E> {
+        self.finalize_v4_candidate_with_roster_feedback(
+            staged,
+            report,
+            digest,
+            reply,
+            dispositions,
+            gate,
+            None,
+            prepare,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finalize_v4_candidate_with_roster_feedback<E, G: CoreAdmissionGate + ?Sized>(
         &mut self,
         mut staged: WorldState,
         report: &WorldReportV4,
@@ -936,6 +979,7 @@ impl WorldEngine {
         reply: WorldReplyV4,
         dispositions: &[BatchDisposition],
         gate: &G,
+        feedback: Option<&RosterFeedback>,
         prepare: impl FnOnce(PreparedCandidate<'_>) -> Result<(), E>,
     ) -> Result<V4RunOutcome, E> {
         if staged.workspace.members.len() > crate::world_report::MAX_RETAINED_MEMBERSHIPS {
@@ -1004,6 +1048,7 @@ impl WorldEngine {
             reply: ValidatedReply::new_validated(&reply),
             active_gesture_id,
             dispositions,
+            shared_roster_plan: staged.settlement.shared_roster.plan(),
         };
         prepare(candidate)?;
         staged
@@ -1029,6 +1074,7 @@ impl WorldEngine {
             observation_seq,
             report: report.clone(),
             residual: gate.capture_residual(),
+            roster_feedback: feedback.cloned(),
             reply: reply.clone(),
         });
         if consumed_reply {

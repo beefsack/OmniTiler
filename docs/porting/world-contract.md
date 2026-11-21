@@ -425,6 +425,7 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 | `propertyAttempts` | PropertyAttempt[] | no | Required even when empty. Closed tagged union: `frame`, `member`, `view`, `clear`, `state`, `visibility`. Caps count all carried rows, including held rows: 1,024 per kind except 10,000 for `visibility`, 15,120 total. |
 | `focusFeedback` | FocusFeedback[] | no | Correlated native evidence for the retained focus request. |
 | `rendererInput` | RendererInput | yes | One exact core-drawn target per command. |
+| `rosterFeedback` | SharedRosterFeedback | omit, never null | Exact native setter evidence for the retained shared-roster plan; absent on all other routes. |
 
 - Removed report keys: `owner,mode,views,hostOwned,equalCount,birthClear,predicate,refill,defaultTiled,switchTarget,freshPlacement,focusFollowsCursor,cursorWarp,anchorFallback,noSpaceResult,bornMaximized`.
   Capability/settings keys move, not alias. `ScreenView` is removed. Logical
@@ -776,7 +777,6 @@ acceptance or adopt the separate close-focus amendment.
 
 #### Shared native roster slot plans
 
-Approved design (2026-11-21), not yet implemented or natively verified.
 Applies only with `hostOwned:true`, `sharedNativeRoster:true`, an independently
 writable per-output selector and effective `per-output-local` or
 `global-unique`. Linked `shared` and all-output selectors do not run this plan;
@@ -825,6 +825,39 @@ see [scope and portability](../decisions/workspaces.md#workspace-scope-vocabular
   step does not release a migration source or reinterpret a window through the
   desired mapping. A settled replay emits no mutations; unchanged publications
   never renew spent or possibly executed steps.
+
+The optional v4 `rosterPlan` and `rosterFeedback` envelope keys are absent
+when unused. A present value is a strict object, not `null`. All objects
+below have exactly the indicated keys; counters are canonical quoted u64
+decimals. `op` and `step` identify correlated authority; other IDs use
+the usual v4 scalar validators.
+
+| DTO | Exact shape |
+| --- | --- |
+| Plan | `{op,gen,rev,obs,baseline,currents,occupants,projections,slots,members,views,removals,focus}` |
+| Baseline | `{epoch,order,projections}` |
+| Projection | `{out,rows}`; `rows` contains logical IDs in a real-row prefix. |
+| Current / home | `{out,native}` |
+| Occupants | `{native,windows:[{win,out}]}` |
+| Slot | `{kind:"existing",native}` or `{kind:"append",step}` |
+| Member step | `{step,win,before:{out,native},out,target:Slot,deps:[step]}` |
+| View step | `{step,out,before:native,target:Slot,deps:[step]}` |
+| Removal step | `{step,native,deps:[step]}` |
+| Focus | The existing `FocusRequest` object or `null`. |
+| Feedback | `{op,gen,rev,steps:[{step,status,before,after}]}` |
+| Readback (`before` / `after`) | `null`, `{kind:"order",order:[native]}`, `{kind:"home",out,native}`, or `{kind:"current",native}` |
+
+`currents`, `occupants`, `projections`, `slots`, `members`, `views` and
+`removals` are arrays. Native orders and slots cap at 25; output arrays
+cap at 16, member steps and total occupant lifetimes at 10,000, and step
+ID arrays at 10,066. Existing request/reply byte bounds also apply.
+Readbacks preserve the setter's actual pre/post snapshots. `appended`
+requires two orders whose only change is one fresh tail ID. `applied`
+requires matching non-null readback kinds and either a changed home, a
+changed current, or an order with exactly one deletion and preserved
+survivor order. `refused` may carry `null` for an unavailable readback.
+Core receives the resulting status (including the derived appended ID)
+and separately checks the report's observed native facts.
 
 ## Commands and results
 
@@ -1114,6 +1147,7 @@ see [scope and portability](../decisions/workspaces.md#workspace-scope-vocabular
 | `intentDesired` | IntentDesire[] | no | Complete retained per-window storage targets, including explicit clears. |
 | `switchSettled` | SwitchEvent[] | no | Complete retained latest transfer/view parent outcomes keyed by `out`. |
 | `diagnostics` | RowDiagnostic[] | no | Narrow held-row errors. |
+| `rosterPlan` | SharedRosterPlan | omit, never null | Retained authority to mutate the shared native roster, only on the slot route. |
 
 - Within each projected tiled `(out, ws)` domain, rows are in bytewise `win`
   order. Domain traversal and the interleaving of other lanes are unchanged.

@@ -24,16 +24,11 @@
 //! (the served `gen` is stamped by the broker and normalized back for the
 //! byte comparison).
 //!
-//! Clock-epoch replay seam: the broker's foreign-epoch guard requires every
-//! recorded `attemptMs` to fit the dispatch clock, and the trailing spare
-//! creation is minted at genesis-0 against the handshake-reset clock while
-//! its fulfillment receipt rides genesis-1 with the recorded stamp (the
-//! recorder holds the first capture send one bounded 100ms, so both chains
-//! stamp ~=100+: a postdated mint latches `ambiguous-creation`
-//! permanently). The record run was slower than a fresh replay, so the test pre-reads every replay byte before discovery, feeds
-//! genesis-0 immediately on the fresh clock, then settles one bounded sleep
-//! past the maximum recorded stamp before feeding genesis-1 on. Attempt
-//! bytes and the clock oracle are untouched; only replay timing adapts.
+//! Clock-epoch replay seam: original mechanical frame attempts keep their
+//! recorded `attemptMs` and must fit the live broker's dispatch clock. The
+//! test pre-reads the chain, feeds genesis-0, then uses one bounded wait
+//! past the latest frame stamp. The append proof has its own exact
+//! generation/revision, step and before/after readbacks, not a clock stamp.
 //!
 //! A third test pins the chain join on the same v4 bytes: each recorded
 //! envelope's witness lane equals the covered witness of the projection it
@@ -102,32 +97,39 @@ fn discovered(chain: &str, rec_gen: &str) -> (WorldService, String) {
     (service, generation)
 }
 
-/// Recorded creation-receipt margin: every `creationAttempts` stamp in the
-/// replay must clear 100ms. The recorder holds the first capture send one
-/// bounded 100ms so the genuine receipt stamps solidly positive; this pins
-/// that seam (a zero-stamp receipt would need a sub-ms mint to settle).
-fn assert_creation_receipt_margin(chain: &str, replay: &[(&str, String)]) {
-    let mut count = 0;
-    for (envelope, body) in replay {
-        let value: serde_json::Value = serde_json::from_str(body).expect("envelope is JSON");
-        if let Some(items) = value["report"]["creationAttempts"].as_array() {
-            for item in items {
-                let stamp = item["attemptMs"]
-                    .as_str()
-                    .expect("creation receipt stamps attemptMs");
-                let ms: u64 = stamp.parse().expect("creation stamp is u64");
-                assert!(
-                    ms >= 100,
-                    "{chain}/{envelope}: creation receipt stamp {ms}ms lacks the positive-stamp margin"
-                );
-                count += 1;
-            }
-        }
-    }
-    assert!(
-        count > 0,
-        "{chain}: replay carries no creation receipt to settle"
+fn assert_recorded_append(chain: &str, initial: &serde_json::Value, followup: &str) {
+    let plan = &initial["rosterPlan"];
+    let next: serde_json::Value =
+        serde_json::from_str(followup).expect("recorded successor is JSON");
+    let feedback = &next["report"]["rosterFeedback"];
+    assert_eq!(
+        feedback["op"], plan["op"],
+        "{chain}: correlated append operation"
     );
+    assert_eq!(
+        feedback["rev"], plan["rev"],
+        "{chain}: correlated append revision"
+    );
+    let slots = plan["slots"].as_array().expect("issued slots");
+    let append = slots.last().expect("planned append");
+    assert_eq!(append["kind"], "append");
+    let steps = feedback["steps"]
+        .as_array()
+        .expect("recorded append feedback");
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0]["step"], append["step"]);
+    assert_eq!(steps[0]["status"], "appended");
+    assert_eq!(steps[0]["before"]["order"], plan["baseline"]["order"]);
+    let after = &steps[0]["after"]["order"];
+    assert_eq!(after, &next["report"]["native"][0]["order"]);
+    let before = plan["baseline"]["order"]
+        .as_array()
+        .expect("baseline order");
+    let after = after.as_array().expect("appended order");
+    assert_eq!(after.len(), before.len() + 1);
+    assert_eq!(&after[..before.len()], before);
+    assert!(!before.contains(after.last().expect("new tail id")));
+    assert!(next["report"]["creationAttempts"].is_null());
 }
 
 /// Maximum recorded `attemptMs` over pre-read replay bodies across the
@@ -306,11 +308,8 @@ fn read_step(
 }
 
 fn run_chain(chain: &str, genesis: &[&str], steps: &[Step], post_discovery_delay_ms: u64) {
-    // Every replay byte is pre-read before discovery: the handshake resets
-    // the broker clock, genesis-0 mints the trailing spare creation against
-    // it, and the recorded receipt in genesis-1 must postdate that mint.
-    // The recorded receipts clear 100ms (recorder seam), so even a
-    // double-digit mint holds with wide margin; no sub-ms race is required.
+    // Pre-read the chain before discovery; replay the real first publication
+    // and correlate the next capture with the actual plan issued here.
     let mut replay: Vec<(&str, String)> = Vec::new();
     for &name in genesis {
         replay.push((name, read_fixture(chain, name)));
@@ -321,27 +320,26 @@ fn run_chain(chain: &str, genesis: &[&str], steps: &[Step], post_discovery_delay
         }
     }
     let settle = clock_settle_ms(chain, &replay);
-    assert_creation_receipt_margin(chain, &replay);
     let rec_gen = recorded_gen(chain);
     let (service, generation) = discovered(chain, &rec_gen);
     if post_discovery_delay_ms > 0 {
         std::thread::sleep(std::time::Duration::from_millis(post_discovery_delay_ms));
     }
     let mut cursor = 0;
-    // Mint on the fresh clock: no file IO or sleep may sit between the
-    // handshake reset and this feed.
-    {
-        let entry: &(&str, String) = &replay[cursor];
-        feed_raw(&service, &rec_gen, &generation, entry.0, &entry.1);
-        cursor += 1;
-    }
-    // Settle one bounded sleep past the maximum recorded attempt stamp so
-    // the foreign-epoch guard and the mint-before-receipt order both hold
-    // for the receipt in genesis-1 and every later capture.
+    let first = &replay[cursor];
+    let initial = feed_raw(&service, &rec_gen, &generation, first.0, &first.1);
+    cursor += 1;
+    assert_recorded_append(chain, &initial, &replay[cursor].1);
+    // Leave all raw attempt stamps intact; wait for the live broker clock
+    // to accept the recorded frame sample.
     std::thread::sleep(std::time::Duration::from_millis(settle));
     for _ in 1..genesis.len() {
-        let entry: &(&str, String) = &replay[cursor];
-        feed_raw(&service, &rec_gen, &generation, entry.0, &entry.1);
+        let entry = &replay[cursor];
+        let settled = feed_raw(&service, &rec_gen, &generation, entry.0, &entry.1);
+        assert!(
+            settled["rosterPlan"].is_null(),
+            "{chain}: exact readback settles once"
+        );
         cursor += 1;
     }
     for step in steps {
@@ -356,7 +354,7 @@ fn run_chain(chain: &str, genesis: &[&str], steps: &[Step], post_discovery_delay
     }
 }
 
-/// Full chain: three genesis captures (initial, attempt, settled), then P5,
+/// Full chain: startup plan and a proved append capture, then P5,
 /// pre-move P6, the covering capture, the proven A preview, the cover2 double
 /// capture (one omits the idle gesture lane), the still-open-A drain, the
 /// inv3 drain, and the valid B repaint from a new B instance.
@@ -374,24 +372,15 @@ fn stage5_fixture_route_same_source_serial_b() {
     run_chain("s2", GENESIS, &s2_steps(), 0);
 }
 
-/// Delayed-discovery replay regression: both chains replayed with a bounded
-/// 10ms hold between discovery and genesis-0 still settle the recorded
-/// creation exactly. This permanently guards the recorder's positive-stamp
-/// seam: double-digit mints precede the >=100 receipts with wide margin, so
-/// no sub-ms handshake-to-genesis race is required. Against the old
-/// zero-stamp bytes this delay goes deterministically red (a ~10ms mint
-/// postdates receipt 0 and latches), never timeout-flaky.
+/// A bounded hold before genesis must not affect the exact append join or
+/// cause frame stamps from the real recording to be rewritten.
 #[test]
 fn stage5_fixture_delayed_discovery_replay_settles() {
     run_chain("full", GENESIS, &full_steps(), 10);
     run_chain("s2", GENESIS, &s2_steps(), 10);
 }
 
-const GENESIS: &[&str] = &[
-    "envelope-genesis-0.json",
-    "envelope-genesis-1.json",
-    "envelope-genesis-2.json",
-];
+const GENESIS: &[&str] = &["envelope-genesis-0.json", "envelope-genesis-1.json"];
 
 fn full_steps() -> Vec<Step> {
     vec![

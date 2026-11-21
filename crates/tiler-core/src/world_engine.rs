@@ -222,6 +222,8 @@ pub struct PreparedCandidate<'a> {
     pub reply: ValidatedReply<'a>,
     pub active_gesture_id: Option<u64>,
     pub dispositions: &'a [crate::world_report::BatchDisposition],
+    /// Pending native roster plan, if the candidate authorizes this route.
+    pub shared_roster_plan: Option<&'a crate::world_roster::SharedRosterPlan>,
 }
 
 /// Single-transition return contract: deliverable publication outcome,
@@ -299,6 +301,7 @@ pub(crate) struct AdmittedReplayV4 {
     pub(crate) observation_seq: u64,
     pub(crate) report: WorldReportV4,
     pub(crate) residual: Option<RetainedResidual>,
+    pub(crate) roster_feedback: Option<crate::world_roster::RosterFeedback>,
     pub(crate) reply: WorldReplyV4,
 }
 
@@ -978,13 +981,44 @@ impl WorldEngine {
         ))
     }
 
-    /// Sole production report transition taking an explicit
-    /// [`CoreAdmissionGate`] alongside the final `prepare` callback.
+    /// Prepared report transition without typed native roster feedback.
     pub fn handle_report_with_gate_and_prepare<E, G: CoreAdmissionGate + ?Sized>(
         &mut self,
         report: &WorldReportV4,
         queued: &[(u64, WorldCommand)],
         gate: &G,
+        prepare: impl FnOnce(PreparedCandidate<'_>) -> Result<(), E>,
+    ) -> Result<TransitionResult, E> {
+        self.handle_report_with_optional_roster_feedback(report, queued, gate, None, prepare)
+    }
+
+    /// Prepared report transition carrying correlated native roster feedback.
+    ///
+    /// Feedback is part of typed request identity and is incorporated only
+    /// when the fresh report's candidate is adopted.
+    pub fn handle_report_with_roster_feedback_and_prepare<E, G: CoreAdmissionGate + ?Sized>(
+        &mut self,
+        report: &WorldReportV4,
+        queued: &[(u64, WorldCommand)],
+        gate: &G,
+        feedback: &crate::world_roster::RosterFeedback,
+        prepare: impl FnOnce(PreparedCandidate<'_>) -> Result<(), E>,
+    ) -> Result<TransitionResult, E> {
+        self.handle_report_with_optional_roster_feedback(
+            report,
+            queued,
+            gate,
+            Some(feedback),
+            prepare,
+        )
+    }
+
+    fn handle_report_with_optional_roster_feedback<E, G: CoreAdmissionGate + ?Sized>(
+        &mut self,
+        report: &WorldReportV4,
+        queued: &[(u64, WorldCommand)],
+        gate: &G,
+        feedback: Option<&crate::world_roster::RosterFeedback>,
         prepare: impl FnOnce(PreparedCandidate<'_>) -> Result<(), E>,
     ) -> Result<TransitionResult, E> {
         let Some(owner) = self.connection.connection_owner.clone() else {
@@ -1010,11 +1044,12 @@ impl WorldEngine {
                 });
             }
         };
-        self.handle_report_v4_batched_with_gate_and_prepare(
+        self.admit_report_v4_with_roster_feedback(
             report,
             &EventIssue { owner, correlation },
             queued,
             gate,
+            feedback,
             prepare,
         )
     }

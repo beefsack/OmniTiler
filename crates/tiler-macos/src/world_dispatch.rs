@@ -166,6 +166,7 @@ pub(crate) fn codec_transact(
         WorldOutcome::Accepted(reply) => {
             let suspended = reply.presentation.suspended_output.is_some();
             let decoded = DecodedReplyV4 {
+                roster_plan: None,
                 reply,
                 wire: ReplyWireOptionals {
                     suspended_output_present: suspended,
@@ -181,6 +182,7 @@ pub(crate) fn codec_transact(
         WorldOutcome::CommandConsumed(reply) => {
             let suspended = reply.presentation.suspended_output.is_some();
             let decoded = DecodedReplyV4 {
+                roster_plan: None,
                 reply,
                 wire: ReplyWireOptionals {
                     suspended_output_present: suspended,
@@ -196,6 +198,7 @@ pub(crate) fn codec_transact(
         WorldOutcome::Duplicate(reply) => {
             let suspended = reply.presentation.suspended_output.is_some();
             let decoded = DecodedReplyV4 {
+                roster_plan: None,
                 reply,
                 wire: ReplyWireOptionals {
                     suspended_output_present: suspended,
@@ -4551,6 +4554,7 @@ mod tests {
             });
         tainted.cursor_warp = Some((4, 4));
         let wire = encode_reply_v4(&DecodedReplyV4 {
+            roster_plan: None,
             reply: tainted,
             wire: ReplyWireOptionals {
                 suspended_output_present: false,
@@ -4569,6 +4573,7 @@ mod tests {
         let mut warp_only = empty_reply();
         warp_only.cursor_warp = Some((4, 4));
         let warp_wire = encode_reply_v4(&DecodedReplyV4 {
+            roster_plan: None,
             reply: warp_only,
             wire: ReplyWireOptionals {
                 suspended_output_present: false,
@@ -4605,6 +4610,7 @@ mod tests {
                 }],
             });
         let sticky_wire = encode_reply_v4(&DecodedReplyV4 {
+            roster_plan: None,
             reply: sticky_only,
             wire: ReplyWireOptionals {
                 suspended_output_present: false,
@@ -4620,6 +4626,7 @@ mod tests {
         // `ordinary_save_free_reply_not_held_and_dispatches` dispatching
         // through the real `codec_transact`).
         let clean_wire = encode_reply_v4(&DecodedReplyV4 {
+            roster_plan: None,
             reply: empty_reply(),
             wire: ReplyWireOptionals {
                 suspended_output_present: false,
@@ -10039,6 +10046,7 @@ mod tests {
         // Real v4 byte-codec round-trip of the latest reply.
         let wire = tiler_protocol::world_protocol::encode_reply_v4(
             &tiler_protocol::world_protocol::DecodedReplyV4 {
+                roster_plan: None,
                 reply: closed.clone(),
                 wire: tiler_protocol::world_protocol::ReplyWireOptionals {
                     suspended_output_present: false,
@@ -10390,6 +10398,7 @@ mod tests {
         assert_eq!(latest.based_on_observation_seq, 10);
         let wire = tiler_protocol::world_protocol::encode_reply_v4(
             &tiler_protocol::world_protocol::DecodedReplyV4 {
+                roster_plan: None,
                 reply: latest.clone(),
                 wire: tiler_protocol::world_protocol::ReplyWireOptionals {
                     suspended_output_present: false,
@@ -10614,6 +10623,7 @@ mod tests {
         assert_eq!(req2.target.0, "4242_9");
         let wire2 = tiler_protocol::world_protocol::encode_reply_v4(
             &tiler_protocol::world_protocol::DecodedReplyV4 {
+                roster_plan: None,
                 reply: closed2.clone(),
                 wire: tiler_protocol::world_protocol::ReplyWireOptionals {
                     suspended_output_present: false,
@@ -11252,6 +11262,7 @@ mod tests {
         assert_eq!(latest.based_on_observation_seq, 5);
         let wire = tiler_protocol::world_protocol::encode_reply_v4(
             &tiler_protocol::world_protocol::DecodedReplyV4 {
+                roster_plan: None,
                 reply: latest.clone(),
                 wire: tiler_protocol::world_protocol::ReplyWireOptionals {
                     suspended_output_present: false,
@@ -11597,6 +11608,7 @@ mod tests {
         assert_eq!(latest.based_on_observation_seq, 5);
         let wire = tiler_protocol::world_protocol::encode_reply_v4(
             &tiler_protocol::world_protocol::DecodedReplyV4 {
+                roster_plan: None,
                 reply: latest.clone(),
                 wire: tiler_protocol::world_protocol::ReplyWireOptionals {
                     suspended_output_present: false,
@@ -11965,6 +11977,7 @@ mod tests {
         assert_eq!(latest.based_on_observation_seq, 5);
         let wire = tiler_protocol::world_protocol::encode_reply_v4(
             &tiler_protocol::world_protocol::DecodedReplyV4 {
+                roster_plan: None,
                 reply: latest.clone(),
                 wire: tiler_protocol::world_protocol::ReplyWireOptionals {
                     suspended_output_present: false,

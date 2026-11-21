@@ -17,10 +17,12 @@
 use std::io::{BufRead, Write};
 
 use tiler_protocol::connection_protocol::route_connection_request;
+use tiler_protocol::world_admission::ProtocolAdmissionGate;
 use tiler_protocol::world_protocol::{
-    DecodedReplyV4, ReplyWireOptionals, WorldEngine, WorldOutcome, decode_request, encode_error,
-    encode_reply,
+    ReplyWireOptionals, WorldEngine, WorldOutcome, WorldProtocolError, decode_request_with_wire,
+    encode_error,
 };
+use tiler_protocol::world_reply_write::write_reply_v4_with_plan;
 
 fn generation_seed() -> String {
     "world-eval-0".to_owned()
@@ -40,21 +42,36 @@ fn serving_generation(engine: &Option<WorldEngine>, seed: &str) -> String {
 }
 
 fn submit_report(engine: &mut WorldEngine, body: &str, generation: &str) -> String {
-    let report = match decode_request(body) {
-        Ok(report) => report,
+    let decoded = match decode_request_with_wire(body) {
+        Ok(decoded) => decoded,
         Err(error) => return encode_error(error.kind, error.message, generation),
     };
-    match tiler_protocol::world_admission::handle_report_checked(engine, &report, &[]).outcome {
-        WorldOutcome::Accepted(reply)
-        | WorldOutcome::Duplicate(reply)
-        | WorldOutcome::CommandConsumed(reply) => {
-            let suspended_output_present = reply.presentation.suspended_output.is_some();
-            match encode_reply(&DecodedReplyV4 {
-                wire: ReplyWireOptionals {
-                    suspended_output_present,
-                },
-                reply,
-            }) {
+    let gate = ProtocolAdmissionGate::with_residual(decoded.residual.as_ref());
+    let mut prepared = None;
+    let transition = match gate.dispatch_with_prepare(engine, &decoded.report, &[], |candidate| {
+        let reply = candidate.reply.reply();
+        let wire = ReplyWireOptionals {
+            suspended_output_present: reply.presentation.suspended_output.is_some(),
+        };
+        prepared = Some(write_reply_v4_with_plan(
+            reply,
+            &wire,
+            candidate.shared_roster_plan,
+        )?);
+        Ok::<(), WorldProtocolError>(())
+    }) {
+        Ok(result) => result,
+        Err(error) => return encode_error(error.kind, error.message, generation),
+    };
+    match transition.outcome {
+        WorldOutcome::Accepted(_) | WorldOutcome::CommandConsumed(_) => {
+            prepared.expect("accepted candidate was prepared")
+        }
+        WorldOutcome::Duplicate(reply) => {
+            let wire = ReplyWireOptionals {
+                suspended_output_present: reply.presentation.suspended_output.is_some(),
+            };
+            match write_reply_v4_with_plan(&reply, &wire, engine.desired_shared_roster_plan()) {
                 Ok(bytes) => bytes,
                 Err(error) => encode_error(error.kind, error.message, generation),
             }

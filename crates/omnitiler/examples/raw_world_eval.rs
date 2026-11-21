@@ -28,9 +28,9 @@ use tiler_protocol::connection_protocol::route_connection_request;
 use tiler_protocol::world_admission::ProtocolAdmissionGate;
 use tiler_protocol::world_command_result::encode_command_result;
 use tiler_protocol::world_protocol::{
-    DecodedReplyV4, ReplyWireOptionals, WorldEngine, WorldOutcome, decode_request_with_wire,
-    encode_error, encode_reply,
+    ReplyWireOptionals, WorldEngine, WorldOutcome, decode_request_with_wire, encode_error,
 };
+use tiler_protocol::world_reply_write::write_reply_v4_with_plan;
 
 fn generation_seed() -> String {
     "world-eval-0".to_owned()
@@ -64,22 +64,38 @@ fn submit_report_with_settlements(
         }
     };
     let gate = ProtocolAdmissionGate::with_residual(decoded.residual.as_ref());
-    let transition = engine
-        .handle_report_with_gate_and_prepare(&decoded.report, &[], &gate, |_| {
-            Ok::<(), std::convert::Infallible>(())
-        })
-        .unwrap_or_else(|e| match e {});
+    let mut prepared = None;
+    let transition = match gate.dispatch_with_prepare(engine, &decoded.report, &[], |candidate| {
+        let reply = candidate.reply.reply();
+        let wire = ReplyWireOptionals {
+            suspended_output_present: reply.presentation.suspended_output.is_some(),
+        };
+        prepared = Some(write_reply_v4_with_plan(
+            reply,
+            &wire,
+            candidate.shared_roster_plan,
+        )?);
+        Ok(())
+    }) {
+        Ok(result) => result,
+        Err(error) => {
+            let error: tiler_protocol::world_protocol::WorldProtocolError = error;
+            return (
+                encode_error(error.kind, error.message, generation),
+                Vec::new(),
+            );
+        }
+    };
     match transition.outcome {
-        WorldOutcome::Accepted(reply)
-        | WorldOutcome::Duplicate(reply)
-        | WorldOutcome::CommandConsumed(reply) => {
-            let suspended_output_present = reply.presentation.suspended_output.is_some();
-            match encode_reply(&DecodedReplyV4 {
-                wire: ReplyWireOptionals {
-                    suspended_output_present,
-                },
-                reply,
-            }) {
+        WorldOutcome::Accepted(_) | WorldOutcome::CommandConsumed(_) => (
+            prepared.expect("accepted candidate was prepared"),
+            transition.dispositions,
+        ),
+        WorldOutcome::Duplicate(reply) => {
+            let wire = ReplyWireOptionals {
+                suspended_output_present: reply.presentation.suspended_output.is_some(),
+            };
+            match write_reply_v4_with_plan(&reply, &wire, engine.desired_shared_roster_plan()) {
                 Ok(bytes) => (bytes, transition.dispositions),
                 Err(error) => (
                     encode_error(error.kind, error.message, generation),
@@ -177,4 +193,81 @@ fn main() {
         out.write_all(b"\n").expect("stdout is writable");
     }
     out.flush().ok();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+    use tiler_protocol::world_protocol::decode_reply_v4;
+
+    #[test]
+    fn shared_roster_publication_and_feedback_pass_through_raw_evaluator() {
+        let mut engine = WorldEngine::new("world-eval-0").unwrap();
+        let handshake = include_str!(
+            "../../../test-fixtures/stage5-v4-active/full/discovery-handshake.request.json"
+        );
+        route_connection_request(&mut engine, handshake).expect("handshake");
+        let generation = engine.core_generation().to_owned();
+        let mut settings: Value = serde_json::from_str(include_str!(
+            "../../../test-fixtures/stage5-v4-active/full/discovery-settings.request.json"
+        ))
+        .unwrap();
+        settings["gen"] = json!(generation);
+        route_connection_request(&mut engine, &settings.to_string()).expect("settings");
+        let mut envelope: Value = serde_json::from_str(include_str!(
+            "../../../test-fixtures/stage5-v4-active/full/envelope-genesis-0.json"
+        ))
+        .unwrap();
+        let adapter = envelope["adapter"].clone();
+        let mut report = envelope["report"].take();
+        let map = report.as_object_mut().expect("report object");
+        for broker_only in ["nativeGesture", "cursorWindow", "nativeInvalidWitness"] {
+            map.remove(broker_only);
+        }
+        map.insert("adapter".to_owned(), adapter);
+        map.insert("gen".to_owned(), json!(generation));
+        map.insert("obs".to_owned(), json!("1"));
+        map.insert("reqSeq".to_owned(), json!("1"));
+        map.insert("req".to_owned(), json!("request-a"));
+        map.insert("cmdSeq".to_owned(), Value::Null);
+        map.insert("command".to_owned(), Value::Null);
+        let initial_desktop = report["native"][0]["order"][0]
+            .as_str()
+            .expect("initial native desktop")
+            .to_owned();
+        let first = report.to_string();
+        let reply = submit_report(&mut engine, &first, &generation);
+        let plan = decode_reply_v4(&reply)
+            .unwrap_or_else(|err| {
+                panic!("decode_reply_v4 failed on first reply: {err:?}; raw reply: {reply}")
+            })
+            .roster_plan
+            .expect("append plan");
+        assert_eq!(submit_report(&mut engine, &first, &generation), reply);
+        let [_, tiler_core::world_roster::RosterSlot::Append(step)] = plan.slots.as_slice() else {
+            panic!("expected startup append: {plan:?}");
+        };
+        report["obs"] = json!("2");
+        report["reqSeq"] = json!("2");
+        report["req"] = json!("request-b");
+        report["native"][0]["order"] = json!([initial_desktop, "desktop-b"]);
+        report["native"][0]["occupancy"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"native":"desktop-b","count":0}));
+        report["rosterFeedback"] = json!({
+            "op":plan.operation_id,"gen":plan.generation,"rev":plan.revision.to_string(),
+            "steps":[{"step":step,"status":"appended",
+                "before":{"kind":"order","order":[initial_desktop]},
+                "after":{"kind":"order","order":[initial_desktop,"desktop-b"]}}]
+        });
+        let second = report.to_string();
+        let reply = submit_report(&mut engine, &second, &generation);
+        let settled = decode_reply_v4(&reply).unwrap_or_else(|err| {
+            panic!("decode_reply_v4 failed on second reply: {err:?}; raw reply: {reply}")
+        });
+        assert!(settled.roster_plan.is_none());
+        assert_eq!(submit_report(&mut engine, &second, &generation), reply);
+    }
 }

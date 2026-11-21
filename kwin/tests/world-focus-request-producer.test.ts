@@ -45,11 +45,14 @@ import {
     buildWorldReportV4InnerJson,
     isCoreWorldReply,
     parseWorldReply,
+    type WorldRosterFeedback,
 } from "../src/world-report";
+import { applyWorldRoster, createWorldRosterSpendState } from "../src/world-roster";
 import {
     awaitQueueCount,
     deskById,
     discover,
+    lastDescribeReply,
     makeHarness,
     truthfulClientFor,
     winById,
@@ -436,10 +439,8 @@ async function proveLatestOnly(h: Harness, dispatch: number, minted: Minted, opt
             refs.set(w.win, w.ref);
         }
     }
-    // Stateful env: live home/rect/view maps seeded genuine, truthful
-    // mutations, focus records and flips the foreground, visibility reads
-    // the positive hit-test shape (the exact listed lifetime among all
-    // matches, mirroring real-KWin `windowAt` with a negative count).
+    // Homes and frames start from the genuine report. The selector uses
+    // the live fake surface, while focus updates the mock foreground.
     const fg: { current: string | null } = { current: report.focused };
     const focusCalls: string[] = [];
     const appliedRevs: string[] = [];
@@ -449,20 +450,28 @@ async function proveLatestOnly(h: Harness, dispatch: number, minted: Minted, opt
         liveHome.set(w.win, { out: w.out, ws: w.nativeWs as string });
         liveRect.set(w.win, { x: w.rect[0], y: w.rect[1], w: w.rect[2], h: w.rect[3] });
     }
-    const liveView = new Map<string, string>();
-    for (const n of report.native) {
-        liveView.set(n.out, n.current);
-    }
-    const desks = new Map<string, object>();
-    const outs = new Map<string, object>();
-    for (const n of report.native) {
-        outs.set(n.out, {});
-        for (const id of n.order) {
-            if (!desks.has(id)) {
-                desks.set(id, {});
-            }
-        }
-    }
+    const surface = h.workspace as {
+        desktops: FakeDesktop[];
+        currentDesktopForScreen: (screen: { name: string }) => FakeDesktop;
+        setCurrentDesktopForScreen: (desk: FakeDesktop, screen: { name: string }) => void;
+    };
+    const outs = new Map(report.native.map(({ out }) => [out, { name: out }]));
+    const desktop = (native: string): FakeDesktop | null =>
+        surface.desktops.find((desk) => desk.id === native) ?? null;
+    const current = (out: string): string | null => {
+        const screen = outs.get(out);
+        return screen === undefined ? null : surface.currentDesktopForScreen(screen).id;
+    };
+    const select = (out: string, native: string): boolean => {
+        const screen = outs.get(out);
+        const desk = desktop(native);
+        if (screen === undefined || desk === null) return false;
+        surface.setCurrentDesktopForScreen(desk, screen);
+        return true;
+    };
+    const rosterSpend = createWorldRosterSpendState();
+    const roster: { feedback?: WorldRosterFeedback } = {};
+    const watermark = state.currentInvalid;
     const idOf = (ref: object): string | null => {
         for (const [id, r] of refs) {
             if (r === ref) {
@@ -472,12 +481,13 @@ async function proveLatestOnly(h: Harness, dispatch: number, minted: Minted, opt
         return null;
     };
     const countingApply = (reply: ApplyEnv["reply"]): ReturnType<typeof applyWorldReply> => {
+        const plan = reply.rosterPlan;
         appliedRevs.push(reply.rev);
         return applyWorldReply({
             state,
             observation,
             reply,
-            dispatchWatermark: state.currentInvalid,
+            dispatchWatermark: watermark,
             takeResult: null,
             log: () => undefined,
             isStillListed: (ref) => idOf(ref) !== null,
@@ -505,26 +515,49 @@ async function proveLatestOnly(h: Harness, dispatch: number, minted: Minted, opt
             setMembership: () => { throw new Error("no membership here"); },
             sendToOutput: () => { throw new Error("no send here"); },
             resolveOutput: (out) => outs.get(out) ?? null,
-            resolveDesktop: (ws) => desks.get(ws) ?? null,
-            switchView: (desktopRef, outRef) => {
-                let native: string | null = null;
-                let out: string | null = null;
-                for (const [id, r] of desks) {
-                    if (r === desktopRef) {
-                        native = id;
-                    }
-                }
-                for (const [name, r] of outs) {
-                    if (r === outRef) {
-                        out = name;
-                    }
-                }
-                if (native === null || out === null) {
-                    return false;
-                }
-                liveView.set(out, native);
-                return true;
+            resolveDesktop: desktop,
+            switchView: (deskRef, outRef) => {
+                const desk = surface.desktops.find((candidate) => candidate === deskRef);
+                const screen = [...outs.values()].find((candidate) => candidate === outRef);
+                return desk !== undefined && screen !== undefined && select(screen.name, desk.id);
             },
+            ...(plan === undefined ? {} : { runRoster: (focus, memberArrived) => {
+                const settled = applyWorldRoster(plan, {
+                    fresh: () => state.boundGen === reply.gen && state.lastAcceptedRev === reply.rev &&
+                        state.currentInvalid === watermark && !observation.gesture,
+                    read: () => {
+                        const order = surface.desktops.map((desk) => desk.id);
+                        const currents = new Map<string, string>();
+                        for (const out of outs.keys()) {
+                            const native = current(out);
+                            if (native === null) return null;
+                            currents.set(out, native);
+                        }
+                        const occupants = new Map(order.map((native) => [native, new Map<string, string>()]));
+                        for (const win of h.wins) {
+                            for (const desk of win.desktops) occupants.get(desk.id)?.set(win.internalId, win.output.name);
+                        }
+                        return { order, currents, occupants };
+                    },
+                    memberHome: (id) => {
+                        const win = h.wins.find((candidate) => candidate.internalId === id);
+                        return win?.desktops.length === 1
+                            ? { out: win.output.name, native: win.desktops[0]!.id } : null;
+                    },
+                    canAffect: (win) => refs.has(win),
+                    canWrite: (out) => outs.has(out),
+                    // This plan only changes the selector; any other roster mutation cannot settle.
+                    canRemove: () => false,
+                    append: () => false,
+                    move: () => false,
+                    select,
+                    remove: () => false,
+                    memberArrived,
+                    focus,
+                }, rosterSpend);
+                assert.equal(settled.stopped, null, "genuine roster plan settles synchronously");
+                if (settled.feedback !== null) roster.feedback = settled.feedback;
+            } }),
             createDesktop: () => null,
             removeDesktop: () => false,
             focusWindow: (ref) => {
@@ -537,15 +570,16 @@ async function proveLatestOnly(h: Harness, dispatch: number, minted: Minted, opt
                 return true;
             },
             desktopOccupants: () => ({ total: 0, readable: true }),
-            desktopVisible: (id) => [...liveView.values()].includes(id),
-            readLiveView: (out) => liveView.get(out) ?? null,
-            desktopById: (id) => desks.get(id) ?? null,
+            desktopVisible: (id) => [...outs.keys()].some((out) => current(out) === id),
+            readLiveView: current,
+            desktopById: desktop,
             minDesktops: 2,
         });
     };
     // SKIP by construction: the issuing and both intermediate replies
     // (indices 0, 1, 2) are never passed to applyWorldReply; only the
     // latest (index 3) applies.
+    const viewWritesBefore = h.viewWrites.length;
     const first = countingApply(latest);
     assert.equal(first.effects, 1, "latest publication dispatches exactly once");
     assert.deepEqual(focusCalls, [issued.target], "one native setter names the frozen target");
@@ -564,6 +598,17 @@ async function proveLatestOnly(h: Harness, dispatch: number, minted: Minted, opt
     if (opts.expectArrival) {
         const members = (issued.afterShown as { members: Array<{ win: string }> }).members.map((m) => m.win);
         assert.deepEqual((rows[0]?.arrival ?? []).map((b) => b.win), members, "arrival samples exactly the frozen members");
+        assert.deepEqual(h.viewWrites.slice(viewWritesBefore), ["out->ws2"], "latest plan selects the native target once");
+        const plan = latest.rosterPlan;
+        assert.ok(plan !== undefined, "populated selection publishes a roster plan");
+        assert.equal(roster.feedback?.op, plan.op, "selector feedback names the genuine roster operation");
+        assert.equal(roster.feedback?.rev, plan.rev, "selector feedback names the applied roster publication");
+        assert.deepEqual(roster.feedback?.steps, [{
+            step: plan.views[0]?.step,
+            status: "applied",
+            before: { kind: "current", native: "ws1" },
+            after: { kind: "current", native: "ws2" },
+        }], "roster feedback proves the live selector transition");
         for (const b of rows[0]?.arrival ?? []) {
             assert.equal(b.obs, latest.obs, "bracket obs is the latest reply obs");
         }
@@ -577,6 +622,7 @@ async function proveLatestOnly(h: Harness, dispatch: number, minted: Minted, opt
     assert.equal(third.effects, 0, "second redelivery is duplicate-spent");
     assert.deepEqual(focusCalls, [issued.target], "still exactly one native setter overall");
     assert.equal(state.focusFeedbacksForReport().length, 1, "still one feedback row");
+    assert.equal(h.viewWrites.length, viewWritesBefore + Number(opts.expectArrival), "redeliveries never rewrite the selector");
     // Null envelope retires through the actual accounting path. The
     // retained feedback rows survive retirement (they ride until the core
     // incorporates them).
@@ -584,25 +630,13 @@ async function proveLatestOnly(h: Harness, dispatch: number, minted: Minted, opt
     assert.ok(!state.isCurrentFocusRequest(issued, latest.gen), "retired record no longer current");
     const actualFeedback = state.focusFeedbacksForReport();
     assert.equal(actualFeedback.length, 1, "settlement carries the actual feedback row");
-    // Sync the genuine fake native to the mock setter results so the
-    // settlement capture truthfully observes the post-setter facts. This
-    // is an honest capture of the mock setter result, never an invented
-    // outcome: the foreground names the spent target and the view names
-    // the accepted reply's own native binding.
+    // Sync the genuine fake foreground to the mock focus result. The roster
+    // selector already changed the live surface inside the same apply.
     try {
         (h.workspace as { activeWindow: unknown }).activeWindow = winById(h, issued.target);
     } catch (error) {
         void error;
         h.activeRef = winById(h, issued.target);
-    }
-    const native = nativeOf(latest, issued.out, issued.ws);
-    if (native !== null) {
-        try {
-            (h.workspace as { setCurrentDesktopForScreen: (desk: unknown, screen: unknown) => void })
-                .setCurrentDesktopForScreen(deskById(h, native), { name: issued.out });
-        } catch (error) {
-            void error;
-        }
     }
     assert.equal(h.activeRef?.internalId, issued.target, "fake native foreground names the spent target");
     // Same-consumer settle: a fresh report built via the genuine
@@ -654,9 +688,11 @@ async function proveLatestOnly(h: Harness, dispatch: number, minted: Minted, opt
         stateAttempts: [],
         focusFeedbacks: actualFeedback,
         intentRecords: [],
+        ...(roster.feedback === undefined ? {} : { rosterFeedback: roster.feedback }),
     });
     assert.ok(inner !== null, "genuine production encoder spells the settlement report");
     const innerValue = JSON.parse(inner) as Record<string, unknown>;
+    assert.deepEqual(innerValue["rosterFeedback"], roster.feedback, "settlement carries the actual roster feedback");
     assert.equal(innerValue["focused"], issued.target, "settlement bytes carry the truthful target");
     assert.equal(
         innerValue["cursorHit"] ?? null,
@@ -703,12 +739,21 @@ async function proveLatestOnly(h: Harness, dispatch: number, minted: Minted, opt
     assert.deepEqual(focusCalls, [issued.target], "still exactly one native setter overall");
 }
 
+async function settleSinglePopulatedDesktop(h: Harness): Promise<string> {
+    const gen = await discover(h);
+    await h.settle();
+    assert.equal(lastDescribeReply(h)["rosterPlan"], undefined, "the seeded native spare settles startup");
+    const desktops = h.workspace["desktops"] as FakeDesktop[];
+    assert.deepEqual(desktops.map((desktop) => desktop.id), ["ws1", "ws2"], "startup preserves the KDE floor");
+    assert.deepEqual(h.viewWrites, [], "startup does not switch away from the populated desktop");
+    return gen;
+}
+
 describe("world retained focus requests genuine producer", () => {
     it("skips the issuing and intermediate positive-close publications; latest applies once with the issuing rev", async () => {
-        const h = await makeHarness("win-a", ["win-a", "win-b", "win-c"]);
+        const h = await makeHarness("win-a", ["win-a", "win-b", "win-c"], { desktops: ["ws1", "ws2"] });
         try {
-            await discover(h);
-            await h.settle();
+            await settleSinglePopulatedDesktop(h);
             // Focus history win-a -> win-c -> win-b, so the MRU survivor
             // excluding the closed win-b is win-c.
             h.activeRef = winById(h, "win-c");
@@ -744,10 +789,9 @@ describe("world retained focus requests genuine producer", () => {
     });
 
     it("skips the issuing and intermediate automatic-admission publications; latest applies once with the issuing rev", async () => {
-        const h = await makeHarness("win-a", ["win-a", "win-b"]);
+        const h = await makeHarness("win-a", ["win-a", "win-b"], { desktops: ["ws1", "ws2"] });
         try {
-            await discover(h);
-            await h.settle();
+            await settleSinglePopulatedDesktop(h);
             const fresh = attachWindow(h, "win-new", { x: 600, y: 0, width: 200, height: 200 });
             const from = h.calls.length;
             h.fire("windowAdded", fresh);
@@ -766,12 +810,20 @@ describe("world retained focus requests genuine producer", () => {
     });
 
     it("skips the issuing and intermediate explicit-command publications; latest applies once with the issuing rev", async () => {
-        const h = await makeHarness("win-a", ["win-a", "win-b", "win-c", "win-d"], { desktops: ["ws1", "ws2"] });
+        // The two populated cells need a third, empty native spare before a command can drain.
+        const h = await makeHarness("win-a", ["win-a", "win-b", "win-c", "win-d"], { desktops: ["ws1", "ws2", "ws3"] });
         try {
             winById(h, "win-c").desktops = [deskById(h, "ws2")];
             winById(h, "win-d").desktops = [deskById(h, "ws2")];
             await discover(h);
             await h.settle();
+            assert.equal(lastDescribeReply(h)["rosterPlan"], undefined, "startup roster is settled before selection");
+            assert.deepEqual(
+                (h.workspace["desktops"] as FakeDesktop[]).map((desktop) => desktop.id),
+                ["ws1", "ws2", "ws3"],
+                "startup keeps both populated desktops and their trailing spare in native order",
+            );
+            assert.deepEqual(h.viewWrites, [], "startup does not switch away from the origin");
             const from = h.calls.length;
             h.handle.requestWorkspaceSelect(2);
             await awaitQueueCount(h, "select-numbered", 1);
@@ -815,10 +867,9 @@ describe("world retained focus requests genuine producer", () => {
     });
 
     it("skips the issuing and intermediate focus-follows-cursor publications; latest applies once with the issuing rev", async () => {
-        const h = await makeHarness("win-a", ["win-a", "win-b"]);
+        const h = await makeHarness("win-a", ["win-a", "win-b"], { desktops: ["ws1", "ws2"] });
         try {
-            const gen = await discover(h);
-            await h.settle();
+            const gen = await settleSinglePopulatedDesktop(h);
             // Observation-side enablement only: the settings revision rides
             // the genuine DiscoverWorld settings lane and the pointer
             // facts ride the genuine fake native (cursorPos plus a
@@ -831,13 +882,11 @@ describe("world retained focus requests genuine producer", () => {
             });
             const settingsReply = JSON.parse(await h.bridge.send("DiscoverWorld", settings)) as Record<string, unknown>;
             assert.equal(settingsReply["status"], "accepted", "core accepts the focus-follows-cursor settings");
-            // Genuine fake-native pointer facts: the cursor names win-b's
-            // seed centre (400, 100) and windowAt hit-tests the live
-            // lifetimes, so the genuine capture carries cursor [400,100]
-            // with cursorWindow win-b and the encoder mirrors cursorHit
-            // win-b. Installed before the dispatch fires and kept through
-            // settlement; removed after the leg.
-            (h.workspace as Record<string, unknown>)["cursorPos"] = { x: 400, y: 100 };
+            // Point at win-b's settled frame, not its pre-layout seed.
+            // Keep the native hit test installed from dispatch through settlement.
+            const target = winById(h, "win-b").frameGeometry;
+            const cursor = { x: target.x + Math.floor(target.width / 2), y: target.y + Math.floor(target.height / 2) };
+            h.workspace["cursorPos"] = cursor;
             (h.workspace as Record<string, unknown>)["windowAt"] = (point: { x: number; y: number }) =>
                 h.wins.filter((w) => {
                     const f = w.frameGeometry as { x: number; y: number; width: number; height: number };
@@ -848,6 +897,10 @@ describe("world retained focus requests genuine producer", () => {
                 h.fire("desktopsChanged");
                 h.runTimers();
                 const dispatch = await awaitDispatch(h, from);
+                const envelope = JSON.parse(h.calls[dispatch]!.payload) as { report: Record<string, unknown> };
+                assert.deepEqual(envelope.report["cursor"], [cursor.x, cursor.y], "capture carries the live target point");
+                assert.equal(envelope.report["cursorWindow"], "win-b", "capture hit-tests the live win-b lifetime");
+                assert.equal(envelope.report["cursorHit"], "win-b", "wire mirrors that same hit into the core");
                 const minted = await mintFour(h, dispatch);
                 await proveLatestOnly(h, dispatch, minted, {
                     cause: "focus-follows-cursor",

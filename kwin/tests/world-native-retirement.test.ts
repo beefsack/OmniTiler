@@ -1,20 +1,11 @@
-// Native retirement producer->core->apply->readback (offline, genuine v4
-// producer bytes + retained real core via raw_world_eval + mechanical
-// apply). Adopted empty unviewed middle desktops publish existence:false while rows/bindings persist;
-// mechanical apply removes only explicit authorized natives; the next
-// complete capture without the native clears the binding and deletes or
-// validly recycles the row with stable survivors and compact ordinals.
-// Fresh occupant/visibility/pin/floor vetoes after the captured desire hold
-// removal; logical spares never mint creations. Fails if the core
-// retirement helper is disabled (all existence:true).
+// Genuine producer capture -> checked broker -> retained core plan ->
+// native runner -> correlated feedback and complete native readback.
 
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { describe, it } from "node:test";
 import { captureWorldObservation, type WorldObservation } from "../src/world-observe";
-import { applyWorldReply, type ApplyEnv } from "../src/world-apply";
-import { WorldAdapterState } from "../src/world-state";
 import {
     buildHandshakeRequest,
     buildSettingsRequest,
@@ -26,9 +17,12 @@ import {
     buildWorldReportV4InnerJson,
     isCoreWorldReply,
     parseWorldReply,
+    type WorldRosterFeedback,
+    type WorldRosterPlan,
 } from "../src/world-report";
-import { createMiniBroker, parseRawEvalWithSettlements } from "./world-wire-harness";
-import { createWorldApplyHost, type WorldApplyHost } from "../src/world-native";
+import { createMiniBroker, parseRawEvalWithSettlements, type MiniBroker } from "./world-wire-harness";
+import { createWorldApplyHost } from "../src/world-native";
+import { applyWorldRoster, createWorldRosterSpendState } from "../src/world-roster";
 
 class WorldBridge {
     private readonly proc: ChildProcess;
@@ -132,11 +126,35 @@ interface Win {
     frameGeometry: { x: number; y: number; width: number; height: number };
 }
 
+function makeWindow(id: string, desktop: Desk, managed = true): Win {
+    return {
+        internalId: id,
+        desktops: [desktop],
+        output: { name: "out-1" },
+        onAllDesktops: false,
+        managed,
+        deleted: false,
+        minimized: false,
+        hidden: false,
+        normalWindow: true,
+        dialog: false,
+        fullScreen: false,
+        maximizeMode: 0,
+        transient: false,
+        transientFor: null,
+        modal: false,
+        wantsInput: true,
+        minSize: null,
+        maxSize: null,
+        frameGeometry: { x: 100, y: 100, width: 400, height: 300 },
+    };
+}
+
 function makeWorld() {
     const desktops: Desk[] = ["d1", "d2", "d3", "d4"].map((id) => ({ id, name: id }));
     const screens = [{ name: "out-1", geometry: { x: 0, y: 0, width: 1920, height: 1080 } }];
-    const currents = new Map([["out-1", "d1"]]);
-    const wins: Win[] = [];
+    const currents = new Map([["out-1", "d4"]]);
+    const wins = [makeWindow("win-a", desktops[0] as Desk)];
     const bindings = new Map<string, string>();
     const removed: string[] = [];
     const surface = {
@@ -188,7 +206,7 @@ function observe(w: W): WorldObservation | null {
 
 async function connectBridge(
     bridge: WorldBridge,
-    broker: ReturnType<typeof createMiniBroker>,
+    broker: MiniBroker,
 ): Promise<string> {
     // Authentic v4 connection pump: the handshake binds the producer
     // adapter lifetime and mints the serving generation; the revisioned
@@ -236,11 +254,12 @@ async function connectBridge(
 
 async function roundtrip(
     bridge: WorldBridge,
-    broker: ReturnType<typeof createMiniBroker>,
+    broker: MiniBroker,
     w: W,
     src: string,
     gen: string,
-): Promise<{ obs: WorldObservation; bound: string }> {
+    feedback?: WorldRosterFeedback,
+): Promise<string> {
     const obs = observe(w);
     assert.ok(obs !== null, "capture stays non-null");
     assert.equal(obs.complete, true, "capture complete");
@@ -254,6 +273,7 @@ async function roundtrip(
         clearAttempts: [],
         stateAttempts: [],
         intentRecords: [],
+        ...(feedback === undefined ? {} : { rosterFeedback: feedback }),
     });
     assert.ok(inner !== null, "genuine v4 producer bytes encode");
     const envelope = JSON.stringify({ v: 4, adapter: "test-adapter", gen, source: src, nativeInvalid: "0", report: JSON.parse(inner) });
@@ -272,140 +292,92 @@ async function roundtrip(
             w.bindings.set(row.bind, row.id);
         }
     }
-    return { obs, bound };
+    return bound;
 }
 
-function workspacesOf(bound: string): Array<{ id: string; out: string; bind: string; exist: boolean; order: number }> {
-    const body = JSON.parse(bound) as {
-        workspaces: Array<{ id: string; out: string; bind: string; exist: boolean; order: number }>;
-    };
-    return body.workspaces.filter((r) => r.out === "out-1");
+function replyOf(bound: string) {
+    const reply = parseWorldReply(bound);
+    assert.ok(reply !== null && isCoreWorldReply(reply), "bound reply parses as core");
+    return reply;
 }
 
-function applyWith(
-    obs: WorldObservation,
-    bound: string,
-    opts: {
-        occupants?: (nativeId: string) => { total: number; readable: boolean };
-        visible?: (nativeId: string) => boolean | null;
-        removed: string[];
-        minDesktops?: number;
-        complete?: boolean;
-        pinned?: Set<string>;
-        wins?: Win[];
-        currents?: Map<string, string>;
-        desktops?: Desk[];
-        nativeHost?: WorldApplyHost;
-    },
-): ReturnType<typeof applyWorldReply> {
-    const parsed = parseWorldReply(bound);
-    assert.ok(parsed !== null && isCoreWorldReply(parsed), "bound reply parses as core");
-    const state = new WorldAdapterState("test-adapter", "owner-a");
-    assert.equal(state.onDiscovery(parsed.gen, "test-adapter"), true);
-    const flight = state.beginCapture(parsed.source, null);
-    assert.ok(flight !== null);
-    const verdict = state.acceptReply(parsed, parsed.source, (flight as { watermark: string }).watermark);
-    assert.deepEqual(verdict, { applied: true, reason: "accepted" });
-    const pinned = opts.pinned ?? new Set<string>();
-    const observation: WorldObservation =
-        opts.complete === false ? { ...obs, complete: false } : pinned.size === 0 ? obs : {
-            ...obs,
-            bindings: [...obs.bindings, ...[...pinned].map((native) => ({ logical: "pinned", native, out: "out-1", pin: true, disp: false, managed: true }))],
-        };
-    const env: ApplyEnv = {
-        state,
-        observation,
-        reply: parsed,
-        dispatchWatermark: state.currentInvalid,
-        takeResult: null,
-        log: () => undefined,
-        isStillListed: () => true,
-        readLiveRect: () => ({ x: 0, y: 0, w: 100, h: 100 }),
-        readLiveMembership: () => ({ out: "out-1", ws: "d1" }),
-        readLiveSafety: () => ({ minimized: false, fullscreen: false, maximized: false, sticky: false }),
-        setGeometry: () => true,
-        setMembership: () => true,
-        sendToOutput: () => true,
-        resolveOutput: () => ({}),
-        resolveDesktop: () => ({}),
-        switchView: () => true,
-        createDesktop: () => undefined,
-        removeDesktop: (nativeId: string) => {
-            opts.removed.push(nativeId);
-            const list = opts.desktops;
-            if (list !== undefined) {
-                const at = list.findIndex((d) => d.id === nativeId);
-                if (at >= 0) {
-                    list.splice(at, 1);
-                }
-            }
-            return true;
+function removalPlan(bound: string, survivors: string[], removals: string[]): WorldRosterPlan {
+    const reply = replyOf(bound);
+    const plan = reply.rosterPlan;
+    assert.ok(plan !== undefined, "broker publishes a native slot plan");
+    assert.deepEqual(plan.baseline.order, ["d1", "d2", "d3", "d4"]);
+    assert.deepEqual(plan.slots, survivors.map((native) => ({ kind: "existing", native })));
+    assert.deepEqual(plan.removals.map((step) => step.native), removals);
+    assert.deepEqual(plan.members, []);
+    assert.deepEqual(plan.views, []);
+    assert.equal(plan.focus, null);
+    assert.deepEqual(reply.nativeCreations, [], "no legacy spare creation");
+    return plan;
+}
+
+function nativeRunner(w: W, opts: { surface?: object; complete?: boolean; protected?: ReadonlySet<string> } = {}) {
+    const native = createWorldApplyHost(opts.surface ?? w.surface, (value, prop) => Reflect.get(value, prop));
+    const spend = createWorldRosterSpendState();
+    return (plan: WorldRosterPlan) => applyWorldRoster(plan, {
+        fresh: () => true,
+        read: () => opts.complete === false ? null : native.readRosterWitness(),
+        canRemove: (id) => opts.protected?.has(id) !== true && native.resolveDesktop(id) !== null,
+        canWrite: (out) => native.resolveOutput(out) !== null,
+        canAffect: (win) => {
+            const ref = native.resolveRosterWindow(win);
+            return ref !== null && native.rosterMemberWritable(ref);
         },
-        focusWindow: () => true,
-        desktopOccupants: opts.occupants ?? (() => ({ total: 0, readable: true })),
-        desktopVisible: opts.visible ??
-            ((nativeId: string) => {
-                const cur = opts.currents?.get("out-1") ?? "d1";
-                return nativeId === cur;
-            }),
-        readLiveView: (out: string) => opts.currents?.get(out) ?? "d1",
-        desktopById: (id: string) => {
-            const list = opts.desktops ?? [];
-            return (list.find((d) => d.id === id) ?? null) as unknown as object | null;
+        memberHome: (win) => {
+            const ref = native.resolveRosterWindow(win);
+            return ref === null ? null : native.readRosterHome(ref);
         },
-        ...(opts.nativeHost ?? {}),
-        minDesktops: opts.minDesktops ?? 2,
-    };
-    return applyWorldReply(env);
+        append: () => assert.fail("shrink may not append"),
+        move: () => assert.fail("shrink may not move"),
+        select: () => assert.fail("shrink may not switch views"),
+        focus: () => assert.fail("shrink may not focus"),
+        remove: native.removeDesktop,
+    }, spend);
+}
+
+async function captureMiddleRemoval(bridge: WorldBridge, broker: MiniBroker, w: W) {
+    const gen = await connectBridge(bridge, broker);
+    await roundtrip(bridge, broker, w, "src-1", gen);
+    const bound = await roundtrip(bridge, broker, w, "src-2", gen);
+    return { gen, plan: removalPlan(bound, ["d1", "d4"], ["d2", "d3"]) };
 }
 
 describe("world native retirement", () => {
-    it("adopted empty middle retires, apply removes only authorized, absence settles with stable survivors", { timeout: 240000 }, async () => {
+    it("removes only authorized middle slots and settles absence with ordered survivors and no replay", { timeout: 240000 }, async () => {
         const bridge = WorldBridge.start();
         const broker = createMiniBroker();
         try {
             const w = makeWorld();
-            const gen = await connectBridge(bridge, broker);
-            await roundtrip(bridge, broker, w, "src-1", gen);
-            const second = await roundtrip(bridge, broker, w, "src-2", gen);
-            const rows = workspacesOf(second.bound);
-            assert.equal(rows.length, 4, `four rows persist, got ${JSON.stringify(rows)}`);
-            const byBind = new Map(rows.map((r) => [r.bind, r]));
-            // d1 viewed, d4 trailing spare: stay. Middle empties retire.
-            assert.equal(byBind.get("d1")?.exist, true, `view vetoes: ${second.bound.slice(0, 500)}`);
-            assert.equal(byBind.get("d4")?.exist, true, `trailing vetoes: ${second.bound.slice(0, 500)}`);
-            assert.equal(byBind.get("d2")?.exist, false, `empty middle retires: ${second.bound.slice(0, 500)}`);
-            assert.equal(byBind.get("d3")?.exist, false, `empty middle retires: ${second.bound.slice(0, 500)}`);
-            // Discriminates the new core eligibility: without it every row
-            // would read existence:true.
-            assert.ok(rows.some((r) => r.exist === false), "at least one retirement authorized");
-            const parsed = JSON.parse(second.bound) as { nativeCreations: unknown[] };
-            assert.deepEqual(parsed.nativeCreations, [], "logical spare mints no creation");
-
-            // Mechanical apply removes only the explicit authorized natives.
-            const removed = w.removed;
-            const result = applyWith(second.obs, second.bound, {
-                removed,
-                currents: w.currents,
-                desktops: w.desktops,
-                nativeHost: createWorldApplyHost(w.surface, (v, p) => Reflect.get(v, p)),
-            });
-            assert.ok(removed.includes("d2") && removed.includes("d3"), `both middles removed, got ${JSON.stringify(removed)}`);
-            assert.ok(!removed.includes("d1") && !removed.includes("d4"), `view/trailing never removed, got ${JSON.stringify(removed)}`);
-            assert.equal(result.removals, removed.length);
-
-            // Next complete capture without the natives clears bindings and
-            // settles rows with stable survivors and compact ordinals.
-            const third = await roundtrip(bridge, broker, w, "src-3", gen);
-            const next = workspacesOf(third.bound);
-            assert.ok(!next.some((r) => r.bind === "d2" || r.bind === "d3"), `bindings cleared: ${JSON.stringify(next)}`);
-            const l1 = byBind.get("d1")?.id;
-            const l4 = byBind.get("d4")?.id;
-            const ids = next.map((r) => r.id);
-            assert.ok(ids.includes(l1 as string) && ids.includes(l4 as string), `survivors stable: ${JSON.stringify(next)}`);
-            next.forEach((r, index) => assert.equal(r.order, index, `compact ordinals: ${JSON.stringify(r)}`));
-            const thirdParsed = JSON.parse(third.bound) as { nativeCreations: unknown[] };
-            assert.deepEqual(thirdParsed.nativeCreations, [], "absence never recreates");
+            const { gen, plan } = await captureMiddleRemoval(bridge, broker, w);
+            const run = nativeRunner(w);
+            const result = run(plan);
+            assert.equal(result.complete, true, `clean removal stopped at ${result.stopped}`);
+            assert.deepEqual(w.removed, ["d2", "d3"]);
+            assert.deepEqual(w.desktops.map((d) => d.id), ["d1", "d4"], "host stops at its floor without reordering");
+            assert.equal(w.currents.get("out-1"), "d4");
+            assert.deepEqual(w.wins[0]?.desktops.map((d) => d.id), ["d1"]);
+            assert.ok(result.feedback !== null);
+            assert.deepEqual(result.feedback.steps.map((step) => step.step), plan.removals.map((step) => step.step));
+            assert.deepEqual(result.feedback.steps.map(({ status, before, after }) => [status, before, after]), [
+                ["applied", { kind: "order", order: ["d1", "d2", "d3", "d4"] }, { kind: "order", order: ["d1", "d3", "d4"] }],
+                ["applied", { kind: "order", order: ["d1", "d3", "d4"] }, { kind: "order", order: ["d1", "d4"] }],
+            ]);
+            const settled = replyOf(await roundtrip(bridge, broker, w, "src-3", gen, result.feedback));
+            assert.equal(settled.rosterPlan, undefined, "complete native absence settles the operation");
+            const rows = settled.workspaces.filter((row) => row.out === "out-1");
+            assert.deepEqual(rows.map((r) => r.bind), ["d1", "d4"]);
+            const baseline = plan.baseline.projections.find((row) => row.out === "out-1")?.rows;
+            assert.ok(baseline !== undefined);
+            assert.deepEqual(rows.map((r) => r.id), [baseline[0], baseline[3]], "ordered survivor IDs are unchanged");
+            assert.deepEqual(rows.map((r) => r.order), [0, 1]);
+            assert.deepEqual(settled.nativeCreations, [], "absence does not recreate retired natives");
+            assert.equal(run(plan).complete, true, "replayed operation consumes no step again");
+            assert.equal(replyOf(await roundtrip(bridge, broker, w, "src-4", gen)).rosterPlan, undefined);
+            assert.deepEqual(w.removed, ["d2", "d3"]);
         } finally {
             await bridge.close();
         }
@@ -416,197 +388,105 @@ describe("world native retirement", () => {
         const broker = createMiniBroker();
         try {
             const w = makeWorld();
-            const tiled: Win = {
-                internalId: "win-s",
-                desktops: [{ id: "d2", name: "d2" }],
-                output: { name: "out-1" },
-                onAllDesktops: false,
-                managed: true,
-                deleted: false,
-                minimized: false,
-                hidden: false,
-                normalWindow: true,
-                dialog: false,
-                fullScreen: false,
-                maximizeMode: 0,
-                transient: false,
-                transientFor: null,
-                modal: false,
-                wantsInput: true,
-                minSize: null,
-                maxSize: null,
-                frameGeometry: { x: 100, y: 100, width: 400, height: 300 },
-            };
-            w.wins.push(tiled);
+            const sticky = makeWindow("win-s", w.desktops[1] as Desk);
+            // Keep the middle occupied initially, so shrink is first issued
+            // after the sticky transition and the other middle becomes empty.
+            w.wins.push(sticky, makeWindow("win-leaves", w.desktops[2] as Desk));
             const gen = await connectBridge(bridge, broker);
-            await roundtrip(bridge, broker, w, "src-1", gen);
-            // User pins the managed window to all desktops through KWin
-            // (no core command): empty membership with the sticky flag.
-            tiled.onAllDesktops = true;
-            tiled.desktops = [];
-            const second = await roundtrip(bridge, broker, w, "src-2", gen);
-            const rows = workspacesOf(second.bound);
-            const byBind = new Map(rows.map((r) => [r.bind, r]));
-            assert.equal(byBind.get("d2")?.exist, true, `sticky retained home never retires: ${second.bound.slice(0, 500)}`);
-            assert.equal(byBind.get("d3")?.exist, false, `empty middle still retires: ${second.bound.slice(0, 500)}`);
-            // Mechanical apply with the real production host: the sticky
-            // window proves no occupancy anywhere, so the empty middle is
-            // removed while the sticky-homed desktop is kept.
-            const live = makeWorld();
-            live.wins.push(tiled);
-            const host = createWorldApplyHost(live.surface, (v, p) => Reflect.get(v, p));
-            const result = applyWith(second.obs, second.bound, { removed: live.removed, nativeHost: host });
-            assert.equal(result.removals, 1, `exactly one removal, got ${JSON.stringify(live.removed)}`);
-            assert.deepEqual(live.removed, ["d3"]);
+            const initial = replyOf(await roundtrip(bridge, broker, w, "src-1", gen));
+            const home = initial.workspaces.find((row) => row.out === "out-1" && row.bind === "d2")?.id;
+            assert.ok(home, "managed window starts at a real logical home on d2");
+            sticky.onAllDesktops = true;
+            sticky.desktops = [];
+            w.wins.pop();
+            const bound = await roundtrip(bridge, broker, w, "src-2", gen);
+            const plan = removalPlan(bound, ["d1", "d2", "d4"], ["d3"]);
+            const result = nativeRunner(w)(plan);
+            assert.equal(result.complete, true, `sticky-safe removal stopped at ${result.stopped}`);
+            assert.ok(result.feedback !== null);
+            assert.deepEqual(w.removed, ["d3"]);
+            assert.deepEqual(w.desktops.map((d) => d.id), ["d1", "d2", "d4"]);
+            assert.deepEqual(sticky.desktops, [], "sticky membership was not rewritten");
+            assert.equal(sticky.onAllDesktops, true);
+            const settled = replyOf(await roundtrip(bridge, broker, w, "src-3", gen, result.feedback));
+            assert.equal(settled.rosterPlan, undefined);
+            assert.equal(settled.workspaces.find((row) => row.id === home)?.bind, "d2", "sticky home keeps its native");
         } finally {
             await bridge.close();
         }
     });
 
-    it("fresh occupant, visibility, pin, floor, and incomplete vetoes hold removal", { timeout: 240000 }, async () => {
+    it("fresh occupant, visibility, protection and incomplete evidence veto a captured removal", { timeout: 240000 }, async () => {
         const bridge = WorldBridge.start();
         const broker = createMiniBroker();
         try {
             const w = makeWorld();
-            const gen = await connectBridge(bridge, broker);
-            await roundtrip(bridge, broker, w, "src-1", gen);
-            const second = await roundtrip(bridge, broker, w, "src-2", gen);
-            const rows = workspacesOf(second.bound);
-            assert.ok(rows.some((r) => r.exist === false), "desire captured before vetoes");
-
-            // Fresh unmanaged occupant race on both candidates.
-            {
-                const removed: string[] = [];
-                const result = applyWith(second.obs, second.bound, {
-                    removed,
-                    currents: w.currents,
-                    desktops: w.desktops,
-                    occupants: () => ({ total: 1, readable: true }),
-                });
-                assert.equal(removed.length, 0, "occupant race holds every removal");
-                assert.ok(result.held > 0);
+            const { gen, plan } = await captureMiddleRemoval(bridge, broker, w);
+            for (const [label, change, opts] of [
+                ["unmanaged occupant", (live: W) => live.wins.push(makeWindow("fresh", live.desktops[1] as Desk, false)), {}],
+                ["visible", (live: W) => live.currents.set("out-1", "d2"), {}],
+                ["protected", () => undefined, { protected: new Set(["d2", "d3"]) }],
+                ["incomplete", () => undefined, { complete: false }],
+            ] as const) {
+                const live = makeWorld();
+                change(live);
+                const result = nativeRunner(live, opts)(plan);
+                assert.equal(result.complete, false, label);
+                assert.equal(result.feedback, null, label);
+                assert.deepEqual(live.removed, [], label);
+                assert.deepEqual(live.desktops.map((d) => d.id), plan.baseline.order, label);
             }
-            // Unreadable occupancy holds too (never blind removal).
-            {
-                const removed: string[] = [];
-                const result = applyWith(second.obs, second.bound, {
-                    removed,
-                    currents: w.currents,
-                    desktops: w.desktops,
-                    occupants: () => ({ total: 0, readable: false }),
-                });
-                assert.equal(removed.length, 0, "unknown occupancy holds");
-                assert.ok(result.held > 0);
-            }
-            // Fresh visibility race on the candidates.
-            {
-                const removed: string[] = [];
-                const result = applyWith(second.obs, second.bound, {
-                    removed,
-                    currents: w.currents,
-                    desktops: w.desktops,
-                    visible: () => true,
-                });
-                assert.equal(removed.length, 0, "visible race holds");
-                assert.ok(result.held > 0);
-            }
-            // Fresh pin on the candidates.
-            {
-                const removed: string[] = [];
-                applyWith(second.obs, second.bound, {
-                    removed,
-                    currents: w.currents,
-                    desktops: w.desktops,
-                    pinned: new Set(["d2", "d3"]),
-                });
-                assert.ok(!removed.includes("d2") && !removed.includes("d3"), `pinned natives kept, got ${JSON.stringify(removed)}`);
-            }
-            // Minimum floor: live count at the floor authorizes nothing.
-            {
-                const removed: string[] = [];
-                const result = applyWith(second.obs, second.bound, {
-                    removed,
-                    currents: w.currents,
-                    desktops: w.desktops,
-                    minDesktops: 4,
-                });
-                assert.equal(removed.length, 0, "floor holds");
-                assert.ok(result.held > 0);
-            }
-            // Incomplete observation never authorizes blind removal.
-            {
-                const removed: string[] = [];
-                applyWith(second.obs, second.bound, {
-                    removed,
-                    currents: w.currents,
-                    desktops: w.desktops,
-                    complete: false,
-                });
-                assert.equal(removed.length, 0, "incomplete capture holds");
-            }
-            // Row plus binding survive held vetoes until complete evidence:
-            // the same desire still publishes with rows and bindings intact.
-            const again = await roundtrip(bridge, broker, w, "src-3", gen);
-            const againRows = workspacesOf(again.bound);
-            assert.equal(againRows.length, 4, "rows persist through held vetoes");
-            assert.equal(againRows.filter((r) => r.bind !== "").length, 4, "bindings persist through held vetoes");
+            const pending = replyOf(await roundtrip(bridge, broker, w, "src-3", gen)).rosterPlan;
+            assert.deepEqual(pending, plan, "held operation does not become a new authorization");
         } finally {
             await bridge.close();
         }
     });
 
-    it("production host fresh malformed, visibility and floor reads veto captured desires", { timeout: 240000 }, async () => {
+    it("production host malformed occupants, unknown selectors and fresh floor hold captured removals", { timeout: 240000 }, async () => {
         const bridge = WorldBridge.start();
         const broker = createMiniBroker();
         try {
-            const captured = makeWorld();
-            const gen = await connectBridge(bridge, broker);
-            await roundtrip(bridge, broker, captured, "src-1", gen);
-            const second = await roundtrip(bridge, broker, captured, "src-2", gen);
-            for (const windows of [
-                [{ onAllDesktops: false, desktops: [] }],
-                [{ onAllDesktops: false, desktops: [null] }],
-                [{ onAllDesktops: false, desktops: [{ id: "" }] }],
-                [{ onAllDesktops: "unknown", desktops: [{ id: "d1" }] }],
-                [{ onAllDesktops: false, desktops: [{ id: "d2" }, { id: "d3" }] }],
-                [{ get desktops(): never { throw new Error("unreadable"); } }],
+            const { plan } = await captureMiddleRemoval(bridge, broker, makeWorld());
+            const occupant = { internalId: "fresh", output: { name: "out-1" }, managed: false };
+            for (const window of [
+                { ...occupant, onAllDesktops: false, desktops: [] },
+                { ...occupant, onAllDesktops: false, desktops: [null] },
+                { ...occupant, onAllDesktops: false, desktops: [{ id: "" }] },
+                { ...occupant, onAllDesktops: "unknown", desktops: [{ id: "d1" }] },
+                { ...occupant, onAllDesktops: false, desktops: [{ id: "d2" }, { id: "d3" }] },
+                { ...occupant, onAllDesktops: false, get desktops(): never { throw new Error("unreadable"); } },
             ]) {
                 const live = makeWorld();
-                const host = createWorldApplyHost({ ...live.surface, windowList: () => windows }, (v, p) => Reflect.get(v, p));
-                const result = applyWith(second.obs, second.bound, { removed: live.removed, nativeHost: host });
-                assert.equal(result.removals, 0, "fresh all-native window evidence holds removal");
+                const surface = { ...live.surface, windowList: () => [...live.wins, window] };
+                const result = nativeRunner(live, { surface })(plan);
+                assert.equal(result.complete, false, "unknown occupancy or a real subset occupant vetoes");
+                assert.equal(result.feedback, null);
                 assert.deepEqual(live.removed, []);
             }
             {
                 const live = makeWorld();
                 live.screens.push({ name: "out-unknown", geometry: { x: 1920, y: 0, width: 1920, height: 1080 } });
-                const host = createWorldApplyHost(live.surface, (v, p) => Reflect.get(v, p));
-                assert.equal(applyWith(second.obs, second.bound, { removed: live.removed, nativeHost: host }).removals, 0);
+                assert.equal(nativeRunner(live)(plan).complete, false);
                 assert.deepEqual(live.removed, [], "unknown current on any live output holds");
             }
             {
                 const live = makeWorld();
-                const host = createWorldApplyHost(live.surface, (v, p) => Reflect.get(v, p));
-                assert.equal(applyWith(second.obs, second.bound, { removed: live.removed, nativeHost: host, minDesktops: 3 }).removals, 1);
-                assert.equal(live.desktops.length, 3, "floor re-read limits multiple removals");
-            }
-            {
-                const removed: string[] = [];
-                assert.equal(applyWith(second.obs, second.bound, { removed, minDesktops: 3 }).removals, 1);
-                assert.equal(removed.length, 1, "snapshot-only host also consumes the floor budget");
+                live.desktops.splice(2, 2);
+                live.currents.set("out-1", "d1");
+                assert.equal(nativeRunner(live)(plan).complete, false);
+                assert.deepEqual(live.removed, [], "external shrink to the KDE floor cannot be followed by a stale removal");
+                assert.deepEqual(live.desktops.map((d) => d.id), ["d1", "d2"], "pending candidate remains present at the floor");
             }
             {
                 const live = makeWorld();
-                live.desktops.splice(2, 1);
-                const host = createWorldApplyHost(live.surface, (v, p) => Reflect.get(v, p));
-                assert.equal(applyWith(second.obs, second.bound, { removed: live.removed, nativeHost: host, minDesktops: 3 }).removals, 0);
-                assert.equal(live.desktops.length, 3, "external removal after capture cannot defeat fresh floor");
-            }
-            {
-                const live = makeWorld();
-                const host = createWorldApplyHost({ ...live.surface, removeDesktop: (desktop: Desk) => live.removed.push(desktop.id) }, (v, p) => Reflect.get(v, p));
-                assert.equal(applyWith(second.obs, second.bound, { removed: live.removed, nativeHost: host, minDesktops: 3 }).removals, 1);
-                assert.equal(live.removed.length, 1, "accepted but deferred removal still consumes floor budget");
+                const surface = { ...live.surface, removeDesktop: (desktop: Desk) => live.removed.push(desktop.id) };
+                const run = nativeRunner(live, { surface });
+                const result = run(plan);
+                assert.equal(result.complete, false, "accepted setter does not prove absence");
+                assert.deepEqual(live.desktops.map((d) => d.id), plan.baseline.order);
+                assert.equal(run(plan).complete, false, "replay does not manufacture absence");
+                assert.deepEqual(live.removed, ["d2"], "deferred removal neither permits the next step nor replays");
             }
         } finally {
             await bridge.close();

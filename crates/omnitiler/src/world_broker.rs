@@ -1021,10 +1021,10 @@ impl WorldBroker {
         .with_wake_precheck(&wake_precheck);
         let settled = &self.settled;
         let retired = &self.retired;
-        let transition = match self.engine.handle_report_with_gate_and_prepare(
+        let transition = match gate.dispatch_with_prepare(
+            &mut self.engine,
             &plain_decoded.report,
             &batch,
-            &gate,
             |candidate| {
                 for disp in candidate.dispositions {
                     if matches!(
@@ -1062,8 +1062,7 @@ impl WorldBroker {
                     }
                 }
                 prepared = Some(prepare_capture_reply(
-                    candidate.reply,
-                    candidate.active_gesture_id,
+                    candidate,
                     true,
                     max_reply_bytes,
                     &parsed,
@@ -1200,8 +1199,15 @@ impl WorldBroker {
                     gesture_assoc: None,
                     gesture_settled_assoc: None,
                 };
-                let bound =
-                    write_bound_reply_v4(&reply, &wire, &bind).map_err(map_protocol_reply_error)?;
+                // Defensive core replay is for the latest adopted candidate;
+                // its retained roster plan is still the one published with it.
+                let bound = write_bound_reply_v4(
+                    &reply,
+                    &wire,
+                    self.engine.desired_shared_roster_plan(),
+                    &bind,
+                )
+                .map_err(map_protocol_reply_error)?;
                 if bound.len() > self.final_reply_max_bytes() {
                     return Err(BrokerError::Oversized);
                 }
@@ -2274,8 +2280,7 @@ fn to_broker_assoc(assoc: &crate::kde_gesture::GestureAssoc) -> BrokerGestureAss
 /// oversize (the caller never serves a partial reply).
 #[allow(clippy::too_many_arguments)]
 fn prepare_capture_reply(
-    validated: tiler_core::world_engine::ValidatedReply<'_>,
-    active_gesture_id: Option<u64>,
+    candidate: tiler_core::world_engine::PreparedCandidate<'_>,
     reconcile_pins: bool,
     max_reply_bytes: usize,
     parsed: &ParsedCapture,
@@ -2283,12 +2288,13 @@ fn prepare_capture_reply(
     staged_gesture_map: &mut crate::kde_gesture::KdeGestureMap,
     gesture_assoc: Option<&crate::kde_gesture::GestureAssoc>,
 ) -> Result<PreparedCapture, BrokerError> {
+    let validated = candidate.reply;
     let reply = validated.reply();
     let trace_meta = BrokerPreviewTraceMeta::from_reply(reply);
     let preview_id = reply.drag_preview.as_ref().map(|preview| preview.id);
     if reconcile_pins {
         staged_gesture_map.reconcile_pins(
-            active_gesture_id,
+            candidate.active_gesture_id,
             reply.gesture_settled.map(|settled| settled.id),
             gesture_assoc,
         );
@@ -2306,8 +2312,9 @@ fn prepare_capture_reply(
         gesture_assoc: gesture_assoc.map(to_broker_assoc),
         gesture_settled_assoc: settled_assoc.as_ref().map(to_broker_assoc),
     };
-    let bound = write_bound_reply_v4_prevalidated(validated, &wire, &bind)
-        .map_err(map_protocol_reply_error)?;
+    let bound =
+        write_bound_reply_v4_prevalidated(validated, &wire, candidate.shared_roster_plan, &bind)
+            .map_err(map_protocol_reply_error)?;
     if bound.len() > max_reply_bytes {
         return Err(BrokerError::Oversized);
     }
@@ -2371,7 +2378,8 @@ fn prepare_capture_reply_checked(
         gesture_assoc: gesture_assoc.map(to_broker_assoc),
         gesture_settled_assoc: settled_assoc.as_ref().map(to_broker_assoc),
     };
-    let bound = write_bound_reply_v4(reply, &wire, &bind).map_err(map_protocol_reply_error)?;
+    let bound =
+        write_bound_reply_v4(reply, &wire, None, &bind).map_err(map_protocol_reply_error)?;
     if bound.len() > max_reply_bytes {
         return Err(BrokerError::Oversized);
     }
@@ -4683,7 +4691,7 @@ mod tests {
             gesture_settled_assoc: None,
         };
         let err = map_protocol_reply_error(
-            tiler_protocol::world_reply_write::write_bound_reply_v4(&bad_rect, &wire, &bind)
+            tiler_protocol::world_reply_write::write_bound_reply_v4(&bad_rect, &wire, None, &bind)
                 .expect_err("bad warp must fail"),
         );
         assert_eq!(err, BrokerError::InvalidReply("unknown-value"));
@@ -4702,8 +4710,13 @@ mod tests {
                 await_shown: false,
             });
         let err = map_protocol_reply_error(
-            tiler_protocol::world_reply_write::write_bound_reply_v4(&bad_semantic, &wire, &bind)
-                .expect_err("effect-focus-removed must fail"),
+            tiler_protocol::world_reply_write::write_bound_reply_v4(
+                &bad_semantic,
+                &wire,
+                None,
+                &bind,
+            )
+            .expect_err("effect-focus-removed must fail"),
         );
         assert_eq!(err, BrokerError::InvalidReply("effect-focus-removed"));
 

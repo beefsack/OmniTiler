@@ -274,7 +274,8 @@ impl WorldTransaction<'_> {
         // drop authorizations that no longer need backing (e.g. minted
         // against a stale view that fresh evidence rehomed): stale state
         // never recreates. Ambiguous rows persist for their visible hold.
-        if self.connection.host_owned_workspace_domains() {
+        if self.connection.host_owned_workspace_domains() && !self.connection.shared_roster_slots()
+        {
             if self.connection.workspace_mode_setting()
                 == crate::workspace_scope::WorkspaceMode::Shared
             {
@@ -1669,19 +1670,34 @@ impl WorldTransaction<'_> {
         let mut outputs: Vec<String> = self.world.workspace.mapping.keys().cloned().collect();
         outputs.sort();
         let staged = self.world.staged.clone();
-        let doomed = self.retirement_deletion_set();
+        let slots = self.connection.shared_roster_slots();
+        let doomed = if slots {
+            BTreeSet::new()
+        } else {
+            self.retirement_deletion_set()
+        };
         let mut rows = Vec::new();
         for output in outputs {
-            let Some(ring) = self.world.workspace.mapping.get(&output).cloned() else {
-                continue;
+            let ring = if let Some(plan) = self.world.settlement.shared_roster.plan() {
+                plan.projections.get(&OutputId(output.clone()))
+            } else if slots && self.shared_slot_transition_unproved() {
+                self.world
+                    .settlement
+                    .shared_roster
+                    .settled_ring(&OutputId(output.clone()))
+            } else {
+                self.world.workspace.mapping.get(&output)
             };
+            let Some(ring) = ring else { continue };
             let marked = self.trailing_marked_id(&output);
             let held = !staged
                 .screens
                 .iter()
                 .any(|screen| screen.output.0 == output && screen.complete);
             for (index, id) in ring.iter().enumerate() {
-                let native_binding = if self.connection.host_owned_workspace_domains() {
+                let native_binding = if slots {
+                    self.shared_desired_binding(&output, id)
+                } else if self.connection.host_owned_workspace_domains() {
                     self.native_binding_for(&output, id)
                 } else {
                     None
@@ -1727,7 +1743,7 @@ impl WorldTransaction<'_> {
         // No new wire field: the adapter re-enumerates occupants,
         // visibility and its own floor before deleting, and omission alone
         // never removes.
-        if self.connection.host_owned_workspace_domains() {
+        if self.connection.host_owned_workspace_domains() && !slots {
             let mut per_output_index: BTreeMap<String, usize> = BTreeMap::new();
             let retired: Vec<((String, String), String)> = self
                 .world

@@ -119,22 +119,22 @@ class WorldBridge {
 }
 
 interface FakeSignal {
-    readonly handlers: Array<(payload?: unknown) => void>;
+    readonly handlers: Array<(...args: unknown[]) => void>;
     readonly signal: {
-        connect: (handler: (payload?: unknown) => void) => void;
-        disconnect: (handler: (payload?: unknown) => void) => void;
+        connect: (handler: (...args: unknown[]) => void) => void;
+        disconnect: (handler: (...args: unknown[]) => void) => void;
     };
 }
 
 function makeSignal(): FakeSignal {
-    const handlers: Array<(payload?: unknown) => void> = [];
+    const handlers: Array<(...args: unknown[]) => void> = [];
     return {
         handlers,
         signal: {
-            connect: (handler: (payload?: unknown) => void): void => {
+            connect: (handler: (...args: unknown[]) => void): void => {
                 handlers.push(handler);
             },
-            disconnect: (handler: (payload?: unknown) => void): void => {
+            disconnect: (handler: (...args: unknown[]) => void): void => {
                 const index = handlers.indexOf(handler);
                 if (index >= 0) {
                     handlers.splice(index, 1);
@@ -215,12 +215,14 @@ interface Harness {
     deferOutput: boolean;
     gesture: boolean;
     readonly outputRequests: FakeWindow[];
+    readonly rosterWrites: string[];
     readonly captureWrappers: Map<FakeWindow, FakeWindow>;
     activeScreen: { name: string };
     activeRef: FakeWindow | null;
     readonly handle: NonNullable<ReturnType<typeof startWorldAdapterEntry>>;
-    fire: (name: string, payload?: unknown) => void;
+    fire: (name: string, ...args: unknown[]) => void;
     fireWindow: (win: FakeWindow, name: "outputChanged" | "desktopsChanged" | "hiddenChanged" | "frameGeometryChanged") => void;
+    selectDesktop: (out: string, native: string) => void;
     runTimers: (maxDelay?: number) => void;
     flush: () => Promise<number>;
     flushAll: () => Promise<void>;
@@ -248,6 +250,7 @@ function truthfulClientFor(f: { x: number; y: number; width: number; height: num
 async function makeHarness(): Promise<Harness> {
     const desktops: FakeDesktop[] = ["ws-1", "ws-2", "ws-3", "ws-4"].map((id) => ({ id, name: id }));
     const byId = new Map(desktops.map((d) => [d.id, d]));
+    let nextDesktopId = desktops.length + 1;
     const screens = [
         { name: LEFT, geometry: { x: 0, y: 0, width: 1000, height: 800 } },
         { name: RIGHT, geometry: { x: 1000, y: 50, width: 900, height: 700 } },
@@ -335,6 +338,7 @@ async function makeHarness(): Promise<Harness> {
         deferOutput: false,
         gesture: false,
         outputRequests: [],
+        rosterWrites: [],
         captureWrappers: new Map(),
         replies: new Map<number, string>(),
         takeReplies: [],
@@ -344,10 +348,10 @@ async function makeHarness(): Promise<Harness> {
         activeScreen: { name: RIGHT },
         activeRef: wins[0] as FakeWindow,
         handle: null as unknown as NonNullable<ReturnType<typeof startWorldAdapterEntry>>,
-        fire: (name: string, payload?: unknown): void => {
+        fire: (name: string, ...args: unknown[]): void => {
             harness.workspaceFires.push(name);
             for (const handler of [...(signals[name] as FakeSignal).handlers]) {
-                handler(payload);
+                handler(...args);
             }
         },
         fireWindow: (win: FakeWindow, name: "outputChanged" | "desktopsChanged" | "hiddenChanged" | "frameGeometryChanged"): void => {
@@ -356,6 +360,15 @@ async function makeHarness(): Promise<Harness> {
             for (const handler of [...sig.handlers]) {
                 handler();
             }
+        },
+        selectDesktop: (out, native): void => {
+            const screen = screenByName(out);
+            const desktop = desktopById(native);
+            const previous = desktopById(currents.get(out) ?? "");
+            if (previous === desktop) return;
+            currents.set(out, native);
+            harness.rosterWrites.push(`view:${out}->${native}`);
+            harness.fire("currentDesktopChanged", previous, desktop, screen);
         },
         runTimers: (maxDelay = WORLD_DEBOUNCE_MS): void => {
             for (let i = 0; i < harness.timers.length; i += 1) {
@@ -453,10 +466,10 @@ async function makeHarness(): Promise<Harness> {
             return harness.activeRef;
         },
         set activeWindow(ref: unknown) {
-            const found = harness.wins.find((win) => (win as unknown) === ref);
+            const found = harness.wins.find(win => win === ref || harness.captureWrappers.get(win) === ref);
             if (found !== undefined && harness.activeRef !== found) {
                 harness.activeRef = found;
-                harness.fire("windowActivated");
+                harness.fire("windowActivated", found);
             }
         },
         clientArea: (_kind: unknown, outRef: unknown, _deskRef: unknown): Record<string, number> => {
@@ -468,10 +481,9 @@ async function makeHarness(): Promise<Harness> {
             return desktopById(harness.currents.get(screen.name) ?? "");
         },
         setCurrentDesktopForScreen: (deskRef: unknown, screen: { name: string }): void => {
-            const id = (deskRef as FakeDesktop).id;
-            assert.ok(byId.has(id), `desktop ${id} exists`);
-            harness.currents.set(screen.name, id);
-            harness.fire("currentDesktopChanged");
+            const desktop = deskRef as FakeDesktop;
+            assert.equal(byId.get(desktop.id), desktop, `desktop ${desktop.id} is live`);
+            harness.selectDesktop(screen.name, desktop.id);
         },
         // Faithful pinned `sendClientToScreen` echo with window-level
         // signals only (no workspace signal).
@@ -492,20 +504,31 @@ async function makeHarness(): Promise<Harness> {
                 }
             }
         },
-        // Production void creation: synchronously append one native
-        // desktop carrying the logical token as its name. Same-turn
-        // before/after enumeration proves the created id causally.
+        // KWin's void API inserts the requested name at the supplied
+        // zero-based position; list readback sees it before the signal.
         createDesktop: (position: unknown, name: unknown): void => {
             assert.equal(typeof position, "number", "creation carries a numeric position");
             assert.equal(typeof name, "string", "creation carries a logical token name");
-            const id = `ws-${harness.desktops.length + 1}`;
+            assert.ok(Number.isInteger(position) && (position as number) >= 0 && (position as number) <= desktops.length);
+            const id = `ws-${nextDesktopId++}`;
             const desk: FakeDesktop = { id, name: name as string };
-            const at = Math.max(0, Math.min(position as number, harness.desktops.length));
-            harness.desktops.splice(at, 0, desk);
+            desktops.splice(position as number, 0, desk);
             byId.set(id, desk);
+            harness.rosterWrites.push(`create:${id}`);
             harness.fire("desktopsChanged");
         },
-        removeDesktop: (): boolean => false,
+        removeDesktop: (desktop: FakeDesktop): void => {
+            const index = desktops.indexOf(desktop);
+            if (index < 0 || desktops.length === 1) return;
+            // These journeys only authorize deleting a globally vacant,
+            // unshown desktop. A native fallback would mask a bad plan.
+            assert.ok(![...currents.values()].includes(desktop.id), "removed desktop is not shown");
+            assert.ok(!wins.some(win => !win.onAllDesktops && win.desktops.includes(desktop)), "removed desktop is vacant");
+            desktops.splice(index, 1);
+            byId.delete(desktop.id);
+            harness.rosterWrites.push(`remove:${desktop.id}`);
+            harness.fire("desktopsChanged");
+        },
     };
     for (const win of wins) {
         let desks = win.desktops;
@@ -513,7 +536,9 @@ async function makeHarness(): Promise<Harness> {
             configurable: true,
             get: (): FakeDesktop[] => desks,
             set: (refs: FakeDesktop[]) => {
+                if (refs.length === desks.length && refs.every((ref, index) => ref === desks[index])) return;
                 desks = refs;
+                harness.rosterWrites.push(`member:${win.internalId}->${refs.map(ref => ref.id).join(",")}`);
                 for (const handler of [...(win.__signals?.desktopsChanged.handlers ?? [])]) {
                     handler();
                 }
@@ -602,6 +627,10 @@ async function discover(h: Harness): Promise<string> {
         "no report precedes the accepted settings",
     );
     await h.settle();
+    assert.deepEqual(h.desktops.map(d => d.id), ["ws-1", "ws-2", "ws-3"], "startup retains the two occupied desktops and right spare");
+    assert.deepEqual(h.rosterWrites, ["remove:ws-4"], "startup compacts once without rewriting member or view homes");
+    assert.deepEqual(h.outputRequests, [], "startup performs no output sends");
+    assert.equal(lastReply(h)["rosterPlan"], undefined, "startup removal readback settles the native plan without replay");
     return gen;
 }
 
@@ -671,11 +700,12 @@ describe("world native homing", () => {
                 const applyRef = arrivalSignal === "outputChanged" ? new Proxy(mover, {}) : mover;
                 h.captureWrappers.set(mover, applyRef);
                 h.deferOutput = true;
+                const outputBefore = h.outputRequests.length;
                 h.handle.requestSendToOutput("left", true);
                 h.runTimers(0);
                 await h.flushAll();
-                assert.deepEqual(h.outputRequests, [applyRef]);
-                assert.equal(h.outputRequests[0], applyRef);
+                assert.deepEqual(h.outputRequests.slice(outputBefore), [applyRef]);
+                assert.equal(h.outputRequests[outputBefore], applyRef);
                 assert.equal(mover.output.name, RIGHT, "setter returns before output changes");
                 assert.deepEqual(mover.frameGeometry, fromFrame, "no final frame on the source");
                 assert.ok(h.timers.some(t => t.delayMs === WORLD_DEBOUNCE_MS && !t.cancelled && !t.fired));
@@ -713,7 +743,7 @@ describe("world native homing", () => {
                 const [x, y, width, height] = (target?.["frame"] ?? target?.["alloc"]) as number[];
                 assert.deepEqual(mover.frameGeometry, { x, y, width, height }, "the expedited reply sets the final tile");
                 assert.notDeepEqual(mover.frameGeometry, fromFrame);
-                assert.deepEqual(h.outputRequests, [applyRef], "no repeat of the dispatched transfer");
+                assert.deepEqual(h.outputRequests.slice(outputBefore), [applyRef], "no repeat of the dispatched transfer");
 
                 const spent = h.calls.length;
                 h.fireWindow(mover, "outputChanged");
@@ -721,6 +751,7 @@ describe("world native homing", () => {
                 assert.equal(h.calls.length, spent, "late duplicate after spend uses ordinary debounce");
                 await h.settle();
                 assert.deepEqual(transfersOf(lastReply(h)), []);
+                assert.deepEqual(h.outputRequests.slice(outputBefore), [applyRef], "ordinary duplicate observation does not replay the send");
             } finally {
                 await h.stop();
             }
@@ -737,10 +768,11 @@ describe("world native homing", () => {
                 const sibling = h.wins[2] as FakeWindow;
                 const fromFrame = { ...mover.frameGeometry };
                 h.deferOutput = true;
+                const outputBefore = h.outputRequests.length;
                 h.handle.requestSendToOutput("left", true);
                 h.runTimers(0);
                 await h.flushAll();
-                assert.deepEqual(h.outputRequests, [mover]);
+                assert.deepEqual(h.outputRequests.slice(outputBefore), [mover]);
 
                 const arrival = h.calls.length;
                 mover.output = { name: LEFT };
@@ -779,7 +811,7 @@ describe("world native homing", () => {
                 if (intervening !== "leaves target") {
                     assert.notDeepEqual(mover.frameGeometry, fromFrame, "only a fresh reply writes the final tile");
                 }
-                assert.deepEqual(h.outputRequests, [mover], "catch-up never resends the crossing command");
+                assert.deepEqual(h.outputRequests.slice(outputBefore), [mover], "catch-up never resends the crossing command");
             } finally {
                 await h.stop();
             }
@@ -793,10 +825,11 @@ describe("world native homing", () => {
             await discover(h);
             const mover = h.wins[0] as FakeWindow;
             h.deferOutput = true;
+            const outputBefore = h.outputRequests.length;
             h.handle.requestSendToOutput("left", true);
             h.runTimers(0);
             await h.flushAll();
-            assert.deepEqual(h.outputRequests, [mover]);
+            assert.deepEqual(h.outputRequests.slice(outputBefore), [mover]);
             const before = h.calls.length;
             const fromFrame = { ...mover.frameGeometry };
             h.gesture = true;
@@ -822,10 +855,11 @@ describe("world native homing", () => {
             const mover = h.wins[0] as FakeWindow;
             const fromFrame = { ...mover.frameGeometry };
             const before = h.calls.length;
+            const outputBefore = h.outputRequests.length;
             h.handle.requestSendToOutput("left", true);
             h.runTimers(0);
             await h.flushAll();
-            assert.deepEqual(h.outputRequests, [mover]);
+            assert.deepEqual(h.outputRequests.slice(outputBefore), [mover]);
             assert.equal(mover.output.name, LEFT);
             assert.notDeepEqual(mover.frameGeometry, fromFrame, "final tile writes in the command apply");
             const afterApply = h.calls.length;
@@ -845,6 +879,7 @@ describe("world native homing", () => {
             h.fire("desktopsChanged");
             await h.settle();
             assert.deepEqual(transfersOf(lastReply(h)), [], "no transfers before external input");
+            assert.deepEqual(h.rosterWrites, ["remove:ws-4"], "a fresh unchanged observation does not replay startup compaction");
 
             // Leg 1: external drag win-a RIGHT(ws-1) -> LEFT. LEFT current
             // is ws-1 so no echo; homing becomes LEFT/ws-1.
@@ -863,9 +898,20 @@ describe("world native homing", () => {
             assert.deepEqual(transfersOf(leg1), [], "leg 1 settles with no retained transfers");
             assert.deepEqual(homingOf(h, h.calls.length - 1, "win-a"), { out: LEFT, ws: "ws-1" }, "leg 1 homing converges");
 
-            // Leg 2: external drag win-a back LEFT -> RIGHT. RIGHT
-            // current is ws-2 while win-a sits on ws-1 (LEFT current),
-            // so the pinned echo re-homes to ws-2.
+            // Leg 1 empties the first right slot: compaction moves win-b
+            // and the right current to ws-1. Select the now-empty right
+            // spare before arming the return leg so the native echo must
+            // really change win-a's desktop, not merely its output.
+            const winB = h.wins.find((w) => w.internalId === "win-b") as FakeWindow;
+            assert.deepEqual(winB.desktops.map(d => d.id), ["ws-1"]);
+            assert.equal(h.currents.get(RIGHT), "ws-1");
+            h.selectDesktop(RIGHT, "ws-2");
+            await h.settle();
+            assert.equal(h.currents.get(LEFT), "ws-1");
+            assert.equal(h.currents.get(RIGHT), "ws-2");
+
+            // Leg 2: external drag win-a back LEFT -> RIGHT, including
+            // the pinned source-current to destination-current echo.
             const firesBefore2 = h.workspaceFires.length;
             const callsBefore2 = h.calls.length;
             externalNativeOutputMove(h, "win-a", RIGHT);
@@ -876,24 +922,33 @@ describe("world native homing", () => {
             assert.deepEqual(transfersOf(lastReply(h)), [], "leg 2 settles with no retained transfers");
             assert.deepEqual(homingOf(h, h.calls.length - 1, "win-a"), { out: RIGHT, ws: "ws-2" }, "leg 2 echo homing converges");
 
-            // Leg 3: external same-output desktop change (win-b
-            // RIGHT/ws-2 -> RIGHT/ws-1) with only a window signal.
-            const winB = h.wins.find((w) => w.internalId === "win-b") as FakeWindow;
+            // Leg 3: win-b now moves RIGHT/ws-1 -> RIGHT/ws-2. Keep the
+            // vacated local slot shown so that this leg tests adoption of
+            // the desktop change, not a second slot compaction.
+            h.selectDesktop(RIGHT, "ws-1");
+            await h.settle();
+            assert.deepEqual(winB.desktops.map(d => d.id), ["ws-1"]);
             const firesBefore3 = h.workspaceFires.length;
             const callsBefore3 = h.calls.length;
-            const ws1 = h.desktops.find((d) => d.id === "ws-1") as FakeDesktop;
-            winB.desktops = [ws1];
+            const ws2 = h.desktops.find(d => d.id === "ws-2");
+            assert.ok(ws2);
+            winB.desktops = [ws2];
             assert.equal(h.workspaceFires.length, firesBefore3, "same-output change fires no workspace signal");
             h.runTimers();
             assert.ok(h.calls.length > callsBefore3, "same-output desktop change autonomously dispatches");
             await h.settle();
             assert.deepEqual(transfersOf(lastReply(h)), [], "leg 3 settles with no retained transfers");
-            assert.deepEqual(homingOf(h, h.calls.length - 1, "win-b"), { out: RIGHT, ws: "ws-1" }, "leg 3 homing converges");
+            assert.deepEqual(homingOf(h, h.calls.length - 1, "win-b"), { out: RIGHT, ws: "ws-2" }, "leg 3 homing converges");
 
             // Leg 4: own window send still settles exactly once (no
             // loop/replay/stall from the new subscriptions).
             // v2 command lane: presses file QueueWorldCommand; DescribeWorld
             // envelopes carry no inline command.
+            h.activeScreen = { name: RIGHT };
+            h.activeRef = winB;
+            h.selectDesktop(RIGHT, "ws-2");
+            h.fire("windowActivated", winB);
+            await h.settle();
             const sendsBefore = h.calls.filter((c) => {
                 if (c.method !== "QueueWorldCommand") {
                     return false;
@@ -904,13 +959,7 @@ describe("world native homing", () => {
                     return false;
                 }
             }).length;
-            h.activeScreen = { name: RIGHT };
-            h.activeRef = h.wins.find((w) => w.internalId === "win-b") as FakeWindow;
-            // Focus legibility: win-b sits on RIGHT/ws-1 after leg 3,
-            // so show that cell before the own send.
-            h.currents.set(RIGHT, "ws-1");
-            h.fire("currentDesktopChanged");
-            await h.settle();
+            const outputBefore = h.outputRequests.length;
             h.handle.requestSendToOutput("left", true);
             await h.settle();
             const sendsAfter = h.calls.filter((c) => {
@@ -924,6 +973,8 @@ describe("world native homing", () => {
                 }
             }).length;
             assert.equal(sendsAfter - sendsBefore, 1, "own window send dispatches exactly once");
+            assert.deepEqual(h.outputRequests.slice(outputBefore), [winB], "own send performs one native output write");
+            assert.equal(winB.output.name, LEFT, "own send crosses to the destination output");
             assert.deepEqual(transfersOf(lastReply(h)), [], "own send settles with no retained transfers");
             assert.ok(!h.logs.some((l) => l.includes("command-busy")), "no busy loops");
         } finally {
@@ -942,10 +993,10 @@ describe("world native homing", () => {
             // leg 1 shape): select the win-a cell, then migrate left
             // exactly once with no replay and no stall from the new
             // per-window subscriptions.
-            h.currents.set(RIGHT, "ws-1");
             h.activeScreen = { name: RIGHT };
             h.activeRef = h.wins.find((w) => w.internalId === "win-a") as FakeWindow;
-            h.fire("currentDesktopChanged");
+            h.selectDesktop(RIGHT, "ws-1");
+            h.fire("windowActivated", h.activeRef);
             await h.settle();
             const migrateBefore = h.calls.filter((c) => {
                 if (c.method !== "QueueWorldCommand") {
@@ -957,6 +1008,7 @@ describe("world native homing", () => {
                     return false;
                 }
             }).length;
+            const outputBefore = h.outputRequests.length;
             h.handle.requestWorkspaceMigrate("left");
             await h.settle();
             const migrateAfter = h.calls.filter((c) => {
@@ -970,6 +1022,7 @@ describe("world native homing", () => {
                 }
             }).length;
             assert.equal(migrateAfter - migrateBefore, 1, "own migration dispatches exactly once");
+            assert.deepEqual(h.outputRequests.slice(outputBefore).map(win => win.internalId), ["win-a"], "migration crosses once without replay");
             assert.deepEqual(transfersOf(lastReply(h)), [], "migration settles with no retained transfers");
 
             // Attach: a new window arrives with its payload; its later

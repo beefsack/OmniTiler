@@ -147,6 +147,20 @@ impl WorldConnectionState {
         self.settings.workspace_mode
     }
 
+    pub(crate) fn shared_roster_slots(&self) -> bool {
+        use crate::connection::NativeSelectorScope;
+        use crate::workspace_scope::WorkspaceMode;
+
+        self.capabilities().is_some_and(|caps| {
+            caps.host_owned
+                && caps.shared_native_roster
+                && caps.native_selector_scope == NativeSelectorScope::PerOutput
+        }) && matches!(
+            self.workspace_mode_setting(),
+            WorkspaceMode::PerOutputLocal | WorkspaceMode::GlobalUnique
+        )
+    }
+
     #[must_use]
     pub(crate) fn fixed_size_predicate_setting(&self) -> crate::size_hints::FixedSizePredicate {
         self.settings.fixed_size_predicate

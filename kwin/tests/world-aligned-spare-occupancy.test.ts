@@ -317,7 +317,7 @@ function creationReceipts(h: Harness): Array<Record<string, unknown>> {
     return out;
 }
 
-async function makeSpareHarness(): Promise<Harness> {
+async function makeSpareHarness(shared = true): Promise<Harness> {
     const desktops: FakeDesktop[] = ["ws-1", "ws-2", "ws-3", "ws-4"].map((id) => ({ id, name: id }));
     const byId = new Map(desktops.map((d) => [d.id, d]));
     // Monotonic native ids: removals shrink the list, so `length + 1` would
@@ -578,6 +578,7 @@ async function makeSpareHarness(): Promise<Harness> {
     };
     const handle = startWorldAdapterEntry({
         options: { perOutputVirtualDesktops: true },
+        ...(shared ? {} : { sharedNativeRoster: false }),
         workspace: surface,
         owner: "owner-a",
         adapter: "test-adapter",
@@ -644,7 +645,7 @@ function deadRows(reply: Record<string, unknown>, out: string): Array<Record<str
 
 describe("world spare eager-backing", () => {
     it("showing empty ends creates no spare on either output, forward next wraps, occupancy still extends (GENERIC INDEPENDENT variant)", { timeout: 240000 }, async () => {
-        const h = await makeSpareHarness();
+        const h = await makeSpareHarness(false);
         try {
             // Authentic v4 connection pump: the handshake binds the producer
             // adapter lifetime and mints the serving generation; the
@@ -654,12 +655,8 @@ describe("world spare eager-backing", () => {
             const hsBody = JSON.parse((h.calls[hsIndex] as CapturedCall).payload) as Record<string, unknown>;
             assert.equal(hsBody["type"], "handshake", "first discovery is the handshake");
             assert.equal(hsBody["adapter"], "test-adapter", "handshake carries the producer adapter");
-            // GENERIC INDEPENDENT variant seam: the production handshake
-            // always carries sharedNativeRoster:true (asserted so a
-            // production change fails loudly); this journey rewrites the
-            // bit to false before the engine binds, exercising the
-            // explicit independent-roster path only, never genuine KDE.
-            assert.equal((hsBody["capabilities"] as Record<string, unknown>)["sharedNativeRoster"], true, "production handshake carries sharedNativeRoster:true");
+            // This existing independent host setup opts out on both ends.
+            assert.equal((hsBody["capabilities"] as Record<string, unknown>)["sharedNativeRoster"], false);
             (hsBody["capabilities"] as Record<string, unknown>)["sharedNativeRoster"] = false;
             const hsReplyText = await h.bridge.send("DiscoverWorld", JSON.stringify(hsBody));
             const hsReply = JSON.parse(hsReplyText) as Record<string, unknown>;
@@ -1071,16 +1068,28 @@ describe("world spare eager-backing", () => {
         }
     });
 
-    it("shared roster mirrors every occupied/shown native on both outputs with no local retire (genuine KWin)", { timeout: 240000 }, async () => {
-        // Genuine shared policy (production handshake untouched): the
-        // shared roster represents every native occupied or shown anywhere
-        // on every output, so the unmanaged-occupied ws-3 never retires
-        // locally. Both rings mirror the full four-native order with
-        // distinct logicals per cell, every row stays bound, wrap and
-        // selection switch views with no spare churn (no creations,
-        // removals, member moves, or retained transfers).
+    it("Next materializes shared pager padding without changing the sibling view or members (genuine KWin)", { timeout: 240000 }, async () => {
         const h = await makeSpareHarness();
         try {
+            const [first, second, third, fourth] = h.desktops as [FakeDesktop, FakeDesktop, FakeDesktop, FakeDesktop];
+            const [left, right, unmanaged] = h.wins as [FakeWindow, FakeWindow, FakeWindow];
+            // Left needs all four physical positions. Right shows its
+            // spare at ws-2 and has two positions of tail padding.
+            right.desktops = [first];
+            // Keep the unmanaged subset outside the two slots involved
+            // in the right-side view change.
+            unmanaged.desktops = [first, fourth];
+            for (const desktop of [second, third]) {
+                const occupant = { ...left, internalId: `left-${desktop.id}`, desktops: [desktop] };
+                trackWin(h, occupant);
+                h.wins.push(occupant);
+            }
+            const setupMemberWrites = h.memberWrites.length;
+            const nativeMembers = () => h.wins.map((win) => [
+                win.internalId, win.output.name, win.desktops.map((desktop) => desktop.id),
+            ]);
+            const initialMembers = nativeMembers();
+            const order = ["ws-1", "ws-2", "ws-3", "ws-4"];
             const hsIndex = h.calls.findIndex((call) => call.method === "DiscoverWorld");
             assert.ok(hsIndex >= 0, "entry discovers on start");
             const hsBody = JSON.parse((h.calls[hsIndex] as CapturedCall).payload) as Record<string, unknown>;
@@ -1096,51 +1105,51 @@ describe("world spare eager-backing", () => {
             const setReplyText = await h.bridge.send("DiscoverWorld", (h.calls[setIndex] as CapturedCall).payload);
             (h.calls[setIndex] as CapturedCall).callback(setReplyText);
             await h.settle();
-            assert.equal(h.desktops.length, 4, "no native appended while showing empty ends");
-            assert.deepEqual(h.creations, [], "showing ends creates no native");
-            assert.deepEqual(h.removals, [], "showing ends removes no native");
+            assert.deepEqual(h.desktops.map((d) => d.id), order, "shared pager keeps its exact native order");
+            assert.deepEqual(h.creations, [], "the shown spare needs no append");
+            assert.deepEqual(h.removals, [], "the left ring needs every existing position");
+            assert.deepEqual(h.memberWrites.slice(setupMemberWrites), []);
+            assert.deepEqual(h.viewWrites, []);
+            assert.deepEqual(nativeMembers(), initialMembers);
             let reply = lastReply(h);
-            // Shared mirror: every native on every output with replicated
-            // bindings (distinct logical per cell), all rows bound, and no
-            // local-retire tombstone anywhere (ws-3 stays live on both).
-            assert.equal(liveRows(reply, LEFT).length, 4, `left ring mirrors all four natives, got ${JSON.stringify(liveRows(reply, LEFT))}`);
-            assert.equal(liveRows(reply, RIGHT).length, 4, `right ring mirrors all four natives, got ${JSON.stringify(liveRows(reply, RIGHT))}`);
-            assert.deepEqual(liveRows(reply, LEFT).map((row) => row["bind"]), ["ws-1", "ws-2", "ws-3", "ws-4"], "left bindings replicate the shared order");
-            assert.deepEqual(liveRows(reply, RIGHT).map((row) => row["bind"]), ["ws-1", "ws-2", "ws-3", "ws-4"], "right bindings replicate the shared order");
-            assert.ok(workspacesOf(reply).every((row) => (row["bind"] as string) !== ""), "no unbound spare rows");
-            assert.deepEqual(deadRows(reply, LEFT), [], "no local retire on the left under the shared roster");
-            assert.deepEqual(deadRows(reply, RIGHT), [], "no local retire on the right under the shared roster");
-            assert.ok(liveRows(reply, LEFT).some((row) => (row["bind"] as string) === "ws-3"), "occupied ws-3 stays live on the left");
-            assert.ok(liveRows(reply, RIGHT).some((row) => (row["bind"] as string) === "ws-3"), "occupied ws-3 stays live on the right");
-            // Wrap still works with the opposite view unchanged and no moves.
-            const wrapBase = counters(h);
-            h.activeScreen = { name: LEFT };
-            h.activeRef = h.wins[0] as FakeWindow;
+            const leftRows = liveRows(reply, LEFT);
+            const rightRows = liveRows(reply, RIGHT);
+            assert.deepEqual(leftRows.map((row) => row["bind"]), order);
+            assert.deepEqual(rightRows.map((row) => row["bind"]), ["ws-1", "ws-2"], "padding is not a logical row");
+            h.activeScreen = { name: RIGHT };
+            h.activeRef = null;
             h.handle.requestWorkspaceRelative(1);
             h.runTimers();
             await h.settle();
             reply = lastReply(h);
-            assert.equal(h.currents.get(LEFT), "ws-1", "relative next wraps from the shown empty end");
-            assert.equal(h.currents.get(RIGHT), "ws-2", "opposite view unchanged by left wrap");
-            assert.equal(counters(h).members - wrapBase.members, 0, "wrap moves no windows");
-            assert.deepEqual(deadRows(reply, LEFT), [], "wrap retires nothing under the shared roster");
-            // Selecting the live ws-3 is a plain view switch: no fresh
-            // adoption, no trailing-spare backing, no removal, no transfer.
-            const selBase = counters(h);
-            h.currents.set(LEFT, "ws-3");
+            assert.equal(h.currents.get(RIGHT), "ws-3", "Next enters the next padding position rather than wrapping");
+            assert.equal(h.currents.get(LEFT), "ws-4", "Next does not switch the sibling");
+            assert.deepEqual(h.viewWrites, [`${RIGHT}->ws-3`], "one exact native selector write");
+            assert.deepEqual(h.memberWrites.slice(setupMemberWrites), [], "Next does not move windows");
+            assert.deepEqual(nativeMembers(), initialMembers);
+            assert.deepEqual(liveRows(reply, LEFT), leftRows, "sibling logical IDs and bindings remain unchanged");
+            const materialized = liveRows(reply, RIGHT);
+            assert.deepEqual(materialized.map((row) => row["bind"]), ["ws-1", "ws-2", "ws-3"]);
+            assert.deepEqual(materialized.slice(0, 2).map((row) => row["id"]), rightRows.map((row) => row["id"]));
+            assert.deepEqual(h.creations, []);
+            assert.deepEqual(h.removals, []);
+            assert.deepEqual(transfersOf(reply), []);
+
+            const beforeEcho = counters(h);
             h.fire("currentDesktopChanged");
             await h.settle();
-            reply = lastReply(h);
-            assert.equal(h.currents.get(LEFT), "ws-3", "selection lands on the live ws-3");
-            assert.equal(h.currents.get(RIGHT), "ws-2", "opposite view unchanged by left selection");
-            assert.equal(counters(h).creations - selBase.creations, 0, "live selection backs no spare");
-            assert.equal(counters(h).removals - selBase.removals, 0, "live selection removes no native");
-            assert.equal(counters(h).members - selBase.members, 0, "live selection moves no windows");
-            assert.deepEqual(deadRows(reply, LEFT), [], "live selection retires nothing");
-            assert.ok(transfersOf(reply).length === 0, "live selection retains no transfers");
-            const selAfter = counters(h);
+            assert.deepEqual(counters(h), beforeEcho, "native echo and a settled capture do not replay the operation");
+            assert.deepEqual(h.desktops.map((d) => d.id), order);
+
+            h.currents.set(RIGHT, "ws-2");
+            h.fire("currentDesktopChanged");
             await h.settle();
-            assert.deepEqual(counters(h), selAfter, "shared lifecycle does not oscillate");
+            assert.equal(h.currents.get(RIGHT), "ws-2", "external selection returns to the existing real row");
+            assert.equal(h.currents.get(LEFT), "ws-4");
+            assert.deepEqual(nativeMembers(), initialMembers);
+            assert.deepEqual(counters(h), beforeEcho, "external selection adds no adapter setters");
+            assert.deepEqual(liveRows(lastReply(h), LEFT), leftRows);
+            assert.deepEqual(transfersOf(lastReply(h)), []);
         } finally {
             await h.stop();
         }

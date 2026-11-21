@@ -285,7 +285,7 @@ export function truthfulClientFor(f: { x: number; y: number; width: number; heig
     return { x, y, width: w, height: h };
 }
 
-export async function makeHarness(focusId: string, ids: string[], opts?: { withEffectFacts?: boolean; withNativePreimage?: boolean; withIntentStore?: boolean; withNativeCreation?: boolean; withWait?: boolean; desktops?: string[]; fractionalScale?: number; outputs?: FakeOutputSpec[]; homes?: Record<string, string>; currents?: Record<string, string>; scopeClass?: string; devSettingsJson?: string; options?: unknown }): Promise<Harness> {
+export async function makeHarness(focusId: string, ids: string[], opts?: { withEffectFacts?: boolean; withNativePreimage?: boolean; withIntentStore?: boolean; withNativeCreation?: boolean; withWait?: boolean; desktops?: string[]; fractionalScale?: number; outputs?: FakeOutputSpec[]; homes?: Record<string, string>; currents?: Record<string, string>; scopeClass?: string; devSettingsJson?: string; options?: unknown; sharedNativeRoster?: false }): Promise<Harness> {
     // Multi-desktop selection support (tier 2A): the default stays exactly
     // one native desktop (`ws1`, the pre-existing shape); passing
     // `desktops` seeds that many natives in order, all but the first empty.
@@ -295,6 +295,7 @@ export async function makeHarness(focusId: string, ids: string[], opts?: { withE
     assert.ok(desktopIds.length > 0, "at least one native desktop");
     const liveDesktops: FakeDesktop[] = desktopIds.map((id) => ({ id, name: id === "ws1" ? "WS1" : id }));
     const ws: FakeDesktop = (liveDesktops[0] as FakeDesktop);
+    let nextDesktopOrdinal = liveDesktops.length + 1;
     // Multi-output topology support (tier 3B): the default stays exactly
     // one screen (`out`, the pre-existing shape); passing `outputs` seeds
     // that many live screens in order. Each entry carries the exact KWin
@@ -802,13 +803,24 @@ export async function makeHarness(focusId: string, ids: string[], opts?: { withE
             }
             assert.equal(typeof position, "number", "creation carries a numeric position");
             assert.equal(typeof name, "string", "creation carries a logical token name");
-            const id = `ws-${liveDesktops.length + 1}`;
+            while (liveDesktops.some((d) => d.id === `ws-${nextDesktopOrdinal}`)) nextDesktopOrdinal += 1;
+            const id = `ws-${nextDesktopOrdinal++}`;
             const desk: FakeDesktop = { id, name: name as string };
             const at = Math.max(0, Math.min(position as number, liveDesktops.length));
             liveDesktops.splice(at, 0, desk);
             harness.fire("desktopsChanged");
         },
-        removeDesktop: (): void => undefined,
+        removeDesktop: (ref: unknown): void => {
+            // The pre-existing generic independent fixture does not remove
+            // backing desktops. Real shared KWin fixtures prove the delta.
+            if (opts?.sharedNativeRoster === false) return;
+            const index = liveDesktops.indexOf(ref as FakeDesktop);
+            assert.ok(index >= 0, "removal carries an exact live desktop reference");
+            assert.ok(![...currentByOutput.values()].includes(ref as FakeDesktop), "removal never changes a live selector");
+            assert.ok(!wins.some((w) => w.desktops.includes(ref as FakeDesktop)), "removal never rehomes a window");
+            liveDesktops.splice(index, 1);
+            harness.fire("desktopsChanged");
+        },
     };
     for (const win of wins) {
         // Truthful native maximize echo: the real `setMaximize(bool, bool)`
@@ -1009,6 +1021,7 @@ export async function makeHarness(focusId: string, ids: string[], opts?: { withE
         readWorkspaceModeFn: () => "per-output-local",
         readDefaultTiledFn: () => true,
         ...(opts?.scopeClass !== undefined ? { readScopeClassFn: () => opts.scopeClass } : {}),
+        ...(opts?.sharedNativeRoster === false ? { sharedNativeRoster: false } : {}),
         ...(opts?.devSettingsJson !== undefined ? { devSettingsJson: opts.devSettingsJson } : {}),
         options: opts?.options === undefined ? { perOutputVirtualDesktops: true } : opts.options,
         highlightCallDbus: (_service: string, _path: string, _iface: string, method: string, ...args: ReadonlyArray<unknown>): void => {

@@ -50,7 +50,7 @@ function makeTwoOutput(opts: { throwOnce?: boolean; freezeCreated?: boolean } = 
         desktops: [wa1, wb1] as FakeDesktop[],
         wins: [] as Array<Record<string, unknown>>,
         activeScreen: { name: "out-secondary" },
-        currentByOut: new Map<string, FakeDesktop>([["out-primary", wa1], ["out-secondary", wb1]]),
+        current: wa1,
         created: [] as string[],
         throwArmed: opts.throwOnce === true,
     };
@@ -82,8 +82,8 @@ function makeTwoOutput(opts: { throwOnce?: boolean; freezeCreated?: boolean } = 
         currentDesktopChanged: (signals["currentDesktopChanged"] as FakeSignal).signal,
         activeScreenChanged: (signals["activeScreenChanged"] as FakeSignal).signal,
         clientArea: () => ({ x: 0, y: 0, width: 800, height: 600 }),
-        currentDesktopForScreen: (out: { name: string }) => world.currentByOut.get(out.name),
-        setCurrentDesktopForScreen: (d: FakeDesktop, out: { name: string }) => { world.currentByOut.set(out.name, d); },
+        currentDesktopForScreen: () => world.current,
+        setCurrentDesktopForScreen: (d: FakeDesktop) => { world.current = d; },
         sendClientToScreen: () => undefined,
         createDesktop: (...args: ReadonlyArray<unknown>) => {
             if (world.throwArmed) {
@@ -111,7 +111,7 @@ function makeTwoOutput(opts: { throwOnce?: boolean; freezeCreated?: boolean } = 
         log: () => undefined,
         gestureActive: () => false,
         registerShortcutFn: () => true,
-        readWorkspaceModeFn: () => "per-output-local",
+        readWorkspaceModeFn: () => "shared",
         readDefaultTiledFn: () => true,
     });
     assert.ok(handle !== null);
@@ -226,14 +226,11 @@ function dispatchObserve(h: ReturnType<typeof makeTwoOutput>): { source: string;
     return JSON.parse(h.lastCall("DescribeWorld").payload) as { source: string; nativeInvalid: string };
 }
 
-// Show a native desktop on an output (ordinary native view input):
-// incorporation is observed through receipt retirement plus native
-// order/current evidence, so observing it requires the created desktop to
-// be shown.
-function showNative(h: ReturnType<typeof makeTwoOutput>, out: string, nativeId: string): void {
+// Show a desktop in the one linked native view; every output observes it.
+function showNative(h: ReturnType<typeof makeTwoOutput>, nativeId: string): void {
     const ref = h.world.desktops.find((d) => d.id === nativeId);
     assert.ok(ref !== undefined, `native ${nativeId} exists`);
-    h.world.currentByOut.set(out, ref);
+    h.world.current = ref;
 }
 
 const UNBOUND = (logical: string, out: string, order: number): Record<string, unknown> => ({
@@ -259,7 +256,7 @@ describe("created-desktop friendly rename", () => {
         assert.equal(h.world.desktops.filter((d) => d.name === "wl-1").length, 0, "token name leaves the inventory after creation");
         // The causal receipt (not the name) is the proof: it survives the
         // rename and rides until the core incorporates it.
-        showNative(h, "out-secondary", (h.world.desktops.find((d) => d.id === h.world.created[0]) as FakeDesktop).id);
+        showNative(h, native.id);
         const r2 = dispatchObserve(h);
         h.lastCall("DescribeWorld").callback(ACC("gen-1", r2.source, r2.nativeInvalid, "2", {
             workspaces: [
@@ -291,6 +288,7 @@ describe("created-desktop friendly rename", () => {
             nativeCreations: [DESIRE("op-native-1", "wl-1", "out-secondary")],
         }));
         assert.equal(h.world.created.length, 0, "throw created nothing");
+        assert.equal(h.world.throwArmed, false, "the native create actually threw");
         // A later desktop is never attributed to the spent op: no rename,
         // no second native call, no fabricated binding.
         h.world.desktops.push(desk("native-9", "wl-1"));
@@ -306,7 +304,7 @@ describe("created-desktop friendly rename", () => {
         const stranger = h.world.desktops.find((d) => d.id === "native-9");
         assert.ok(stranger !== undefined);
         assert.equal(stranger.name, "wl-1", "unproven desktop keeps its name, never renamed");
-        showNative(h, "out-secondary", "native-9");
+        showNative(h, "native-9");
         dispatchObserve(h);
         // No binding: the native evidence rides without incorporation and
         // no logical views lane rides.
@@ -321,25 +319,25 @@ describe("created-desktop friendly rename", () => {
         const h = makeTwoOutput();
         discover(h);
         const req = dispatchObserve(h);
-        // Ambiguous attempt: the native call is a no-op for this leg, so the
-        // token stays unproven while the user appends an unrelated desktop.
+        // Append an unrelated desktop before the attempt. It belongs to
+        // the live pre-call inventory and cannot be the causal delta.
         h.world.desktops.push(desk("user-9", "User 9"));
         h.lastCall("DescribeWorld").callback(ACC("gen-1", req.source, req.nativeInvalid, "1", {
             workspaces: [
                 { id: "wa-1", out: "out-primary", bind: "wa-1", scope: { kind: "output", out: "out-primary" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "wl-adopted", out: "out-secondary", bind: "user-9", scope: { kind: "output", out: "out-secondary" }, order: 3, mode: "tiled", exist: true, hold: "" },
                 UNBOUND("wl-1", "out-secondary", 2),
             ],
             nativeCreations: [DESIRE("op-native-1", "wl-1", "out-secondary")],
         }));
-        // wl-1 either bound (renamed) or stayed ambiguous; in neither case
-        // may the stranger or the pre-existing desktops be renamed.
-        assert.equal(h.world.desktops.find((d) => d.id === "user-9")?.name, "User 9", "unrelated desktop never renamed");
+        assert.equal(h.world.created.length, 1, "the attempt really ran");
+        assert.equal(h.world.desktops.find((d) => d.id === "user-9")?.name, "User 9", "adopted desktop never renamed");
         assert.equal(h.world.desktops.find((d) => d.id === "wa-1")?.name, "wa-1", "existing desktop never renamed");
         assert.equal(h.world.desktops.find((d) => d.id === "wb-1")?.name, "wb-1", "existing desktop never renamed");
         h.handle?.stop();
     });
 
-    it("gives two same-reply desires distinct friendly names with no shared native", () => {
+    it("gives two same-reply desires distinct friendly names and distinct native IDs", () => {
         const h = makeTwoOutput();
         discover(h);
         const req = dispatchObserve(h);
@@ -357,15 +355,17 @@ describe("created-desktop friendly rename", () => {
         assert.notEqual(n1.id, n2.id, "no duplicate native binding");
         assert.equal(n1.name, "Desktop 3");
         assert.equal(n2.name, "Desktop 4", "second token uses its own enumerated position");
-        // No core bind yet: no logical views lane rides, but both ids are
-        // proven and distinctly renamed with no shared native.
-        showNative(h, "out-secondary", n1.id);
-        showNative(h, "out-primary", n2.id);
+        // No core bind yet: no logical views lane rides, but both distinct
+        // native IDs are reported on each output's shared roster.
+        showNative(h, n1.id);
         dispatchObserve(h);
         assertNoViews(h);
         const rows = nativeOf(h);
-        assert.ok(rows.find((b) => b.out === "out-secondary")?.order.includes(n1.id));
-        assert.ok(rows.find((b) => b.out === "out-primary")?.order.includes(n2.id));
+        assert.equal(rows.length, 2);
+        for (const row of rows) {
+            assert.ok(row.order.includes(n1.id) && row.order.includes(n2.id));
+            assert.equal(row.current, n1.id, "both outputs read the linked view");
+        }
         assert.equal(h.world.created.length, 2, "renames never re-create");
         h.handle?.stop();
     });
@@ -387,8 +387,11 @@ describe("created-desktop friendly rename", () => {
         const r2 = dispatchObserve(h);
         const payload = JSON.parse(h.lastCall("DescribeWorld").payload) as { report: { creationAttempts?: Array<Record<string, unknown>> } };
         assert.equal((payload.report.creationAttempts ?? []).length, 1, "failed rename keeps the receipt");
-        const created = (h.world.desktops.find((d) => d.id === h.world.created[0]) as FakeDesktop).id;
-        showNative(h, "out-secondary", created);
+        const frozen = h.world.desktops.find((d) => d.id === h.world.created[0]);
+        assert.ok(frozen !== undefined);
+        assert.equal(frozen.name, "wl-1", "the rejected rename leaves the creation token intact");
+        const created = frozen.id;
+        showNative(h, created);
         h.lastCall("DescribeWorld").callback(ACC("gen-1", r2.source, r2.nativeInvalid, "2", {
             workspaces: [
                 { id: "wa-1", out: "out-primary", bind: "wa-1", scope: { kind: "output", out: "out-primary" }, order: 0, mode: "tiled", exist: true, hold: "" },

@@ -25,6 +25,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 
 import { WORLD_DEBOUNCE_MS, startWorldAdapterEntry } from "../src/world-entry";
+import type { WorldRosterPlan } from "../src/world-report";
 import { createMiniBroker, parseRawEvalWithSettlements, type MiniBroker } from "./world-wire-harness";
 
 function repoRoot(): string {
@@ -213,7 +214,6 @@ interface Harness {
     readonly wins: FakeWindow[];
     readonly mover: FakeWindow;
     readonly currentByOutput: Map<string, FakeDesktop>;
-    readonly namesProvedAt: Map<string, number>;
     readonly calls: CapturedCall[];
     readonly answered: Set<number>;
     readonly replies: Map<number, string>;
@@ -252,6 +252,7 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
     const wsB: FakeDesktop = { id: "ws-b", name: "WS B" };
     const wsC: FakeDesktop = { id: "ws-c", name: "WS C" };
     const liveDesktops: FakeDesktop[] = [wsA, wsB, wsC];
+    let nextNativeId = liveDesktops.length + 1;
     const removed: string[] = [];
     const currentByOutput = new Map<string, FakeDesktop>([
         ["out-top", wsA],
@@ -340,7 +341,6 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
         wins,
         mover,
         currentByOutput,
-        namesProvedAt: new Map(),
         calls: [],
         answered: new Set<number>(),
         replies: new Map<number, string>(),
@@ -509,28 +509,15 @@ async function makeHarness(moverX: number, soloTop = false): Promise<Harness> {
             win.output = output as FakeScreen;
             harness.outputWrites.push(`${win.internalId}=>${(output as FakeScreen).name}`);
         },
-        // Production void creation: synchronously append one native
-        // desktop carrying the logical token as its name. Explicit core
-        // desires alone authorize creation; same-turn enumeration proves
-        // the created id causally. Fresh backing versus existing-desktop
-        // reuse remains the retained migration oracle's open distinction.
+        // KWin's void create callback publishes the new desktop in the
+        // ordered list before returning. A removed ID is never reused.
         createDesktop: (...args: ReadonlyArray<unknown>): void => {
             if (args.length !== 2 || typeof args[0] !== "number" || typeof args[1] !== "string" || (args[1] as string) === "") {
                 throw new Error("Insufficient arguments");
             }
-            const id = `native-${liveDesktops.length + 1}`;
+            const id = `native-${nextNativeId++}`;
             const at = Math.max(0, Math.min(args[0] as number, liveDesktops.length));
-            let name = args[1] as string;
-            const desktop: FakeDesktop = {
-                id,
-                get name() { return name; },
-                set name(value: string) {
-                    const ordinal = liveDesktops.indexOf(desktop) + 1;
-                    assert.ok(ordinal > 0, "rename targets a live desktop");
-                    harness.namesProvedAt.set(id, ordinal);
-                    name = value;
-                },
-            };
+            const desktop: FakeDesktop = { id, name: args[1] as string };
             liveDesktops.splice(at, 0, desktop);
             harness.fire("desktopsChanged");
         },
@@ -728,6 +715,94 @@ function appliedMatchesReply(h: Harness, reply: Record<string, unknown>): void {
     }
 }
 
+interface SplitBaseline {
+    sourceNative: string;
+    targetLogical: string;
+    targetNative: string;
+    leftNative: string;
+    outputWrites: number;
+    membershipWrites: number;
+    expectedMembershipWrites: number;
+}
+
+async function settledSplitBaseline(h: Harness): Promise<SplitBaseline> {
+    await discover(h);
+    const captures = [...h.replies].filter(([index]) => h.calls[index]?.method === "DescribeWorld")
+        .map(([, raw]) => JSON.parse(raw) as Record<string, unknown>);
+    const reply = captures[captures.length - 1];
+    assert.ok(reply !== undefined);
+    assert.equal(reply["rosterPlan"], undefined, "startup slot changes settle before the command");
+    const target = h.screens.bottomRight.name;
+    const targetLogical = (reply["outputs"] as Array<Record<string, unknown>>)
+        .find((row) => row["out"] === target)?.["view"];
+    assert.equal(typeof targetLogical, "string");
+    const targetNative = boundNativeOf(reply, target, targetLogical as string);
+    const leftNative = h.currentByOutput.get(h.screens.bottom.name)?.id;
+    assert.ok(targetNative !== null && leftNative !== undefined);
+    assert.equal(h.currentByOutput.get(target)?.id, targetNative, "startup target selector matches its real logical slot");
+    const first = (h.workspace["desktops"] as FakeDesktop[])[0]?.id;
+    const startupPlans = captures.flatMap((capture) => capture["rosterPlan"] ? [capture["rosterPlan"] as {
+        members: Array<{ step: string; win: string; out: string }>;
+        views: Array<{ step: string; out: string }>;
+    }] : []);
+    assert.deepEqual([...new Map(startupPlans.flatMap((plan) =>
+        plan.members.map((step) => [step.step, `${step.win}->${step.out}`] as const))).values()].sort(),
+        ["w-bl->out-bottom", "w-br->out-bottom-right"], "startup authorizes exactly the two lower member steps");
+    assert.deepEqual([...new Map(startupPlans.flatMap((plan) =>
+        plan.views.map((step) => [step.step, step.out] as const))).values()].sort(),
+        ["out-bottom", "out-bottom-right"], "startup authorizes exactly the two lower view steps");
+    assert.ok(first !== undefined);
+    assert.deepEqual(h.membershipWrites.slice().sort(), [`w-bl->${first}`, `w-br->${first}`],
+        "startup compacts precisely the two lower occupants onto their first real slot");
+    assert.deepEqual(h.viewSwitches.slice().sort(), [`out-bottom->${first}`, `out-bottom-right->${first}`],
+        "startup switches precisely the two lower selectors");
+    assert.deepEqual(h.outputWrites, [], "startup compaction does not move windows between outputs");
+    appliedMatchesReply(h, reply);
+    const before = [h.membershipWrites.length, h.viewSwitches.length, h.outputWrites.length, h.geometryWrites.length, h.focused.length];
+    const roster = (h.workspace["desktops"] as FakeDesktop[]).map((desktop) => desktop.id);
+    h.fire("screensChanged");
+    await h.settle();
+    assert.deepEqual([h.membershipWrites.length, h.viewSwitches.length, h.outputWrites.length, h.geometryWrites.length, h.focused.length],
+        before, "startup compaction does not replay any native setters");
+    assert.deepEqual((h.workspace["desktops"] as FakeDesktop[]).map((desktop) => desktop.id), roster,
+        "startup compaction does not replay roster mutations");
+    const sourceNative = h.mover.desktops[0]?.id;
+    assert.ok(sourceNative !== undefined, "the mover starts with a native home");
+    return {
+        sourceNative,
+        targetLogical: targetLogical as string, targetNative, leftNative,
+        outputWrites: h.outputWrites.length, membershipWrites: h.membershipWrites.length,
+        expectedMembershipWrites: sourceNative === targetNative ? 0 : 1,
+    };
+}
+
+function assertSplitArrival(h: Harness, issuing: Record<string, unknown>, baseline: SplitBaseline): void {
+    const { sourceNative, targetLogical, targetNative } = baseline;
+    const plan = issuing["rosterPlan"] as WorldRosterPlan | undefined;
+    assert.ok(plan !== undefined, "the issuing reply has native slot authority");
+    const target = h.screens.bottomRight.name;
+    assert.deepEqual(plan.members.map(({ win, before, out, target: slot }) => ({ win, before, out, slot })), [{
+        win: h.mover.internalId,
+        before: { out: h.screens.top.name, native: sourceNative },
+        out: target,
+        slot: { kind: "existing", native: targetNative },
+    }], "only the mover is authorized to cross to the selected destination slot");
+
+    const captureReplies = [...h.replies].filter(([index]) => h.calls[index]?.method === "DescribeWorld");
+    const last = captureReplies[captureReplies.length - 1];
+    assert.ok(last !== undefined);
+    const settled = JSON.parse(last[1]) as Record<string, unknown>;
+    assert.equal(settled["rosterPlan"], undefined, "the arrival proof settles the native slot plan");
+    assert.deepEqual(settled["transfers"], [], "no transfer remains after settlement");
+    const rows = settled["windows"] as Array<Record<string, unknown>>;
+    const mover = rows.find((row) => row["win"] === h.mover.internalId);
+    assert.ok(mover !== undefined, "the settled publication keeps the mover");
+    assert.equal(mover["out"], target, "the mover's settled row names the selected output");
+    assert.equal(mover["ws"], targetLogical, "the mover's settled row names the selected logical view");
+    assert.equal(boundNativeOf(settled, target, targetLogical), targetNative);
+    appliedMatchesReply(h, settled);
+}
+
 describe("world split-edge selection through the production entry (real Engine)", () => {
     it("moves down to the mover-selected non-left/top output", async () => {
         // Sole source leaf: a second local tile would let local R1 win, so
@@ -736,7 +811,7 @@ describe("world split-edge selection through the production entry (real Engine)"
         // resolves it with no adapter endpoint anywhere on the wire.
         const h = await makeHarness(1100, true);
         try {
-            await discover(h);
+            const baseline = await settledSplitBaseline(h);
             const leftBefore = { ...winById(h, "w-bl").frameGeometry };
             h.handle.requestMove("down");
             await h.settle();
@@ -744,6 +819,7 @@ describe("world split-edge selection through the production entry (real Engine)"
             assert.equal(moves.length, 1, "exactly one direction-only move dispatch, never replayed");
             const cmd = (moves[0] as { body: Record<string, unknown> }).body["command"] as Record<string, unknown>;
             assert.equal(cmd["op"], "move-directional");
+            assert.equal(cmd["direction"], "down");
             assert.deepEqual(Object.keys(cmd).sort(), ["direction", "op", "sameAxis", "win"], "command carries no endpoint or cross flag");
             // v4: the filed move drains through a capture; the draining
             // capture's bound reply carries the plan.
@@ -757,33 +833,29 @@ describe("world split-edge selection through the production entry (real Engine)"
             // with the foreign frame deferred until arrival proof, then
             // converges geometry on later rounds. Focus stays on the mover
             // with no redundant setter.
-            const rows = reply["windows"] as Array<Record<string, unknown>>;
-            const planned = rows.find((entry) => entry["win"] === "w-move");
-            assert.ok(planned !== undefined, "Engine plans the crossing mover");
-            assert.equal(planned["out"], "out-bottom-right", "selection resolves the non-left/top target");
-            assert.equal(boundNativeOf(reply, planned["out"] as string, planned["ws"] as string), "ws-c", "selection lands in the target view");
             const transfers = reply["transfers"] as Array<Record<string, unknown>>;
             assert.equal(transfers.length, 1, "exactly one retained transfer");
             assert.equal(transfers[0]?.["kind"], "window");
             assert.equal(transfers[0]?.["win"], "w-move");
             assert.equal(transfers[0]?.["out"], "out-bottom-right");
-            assert.equal(boundNativeOf(reply, transfers[0]?.["out"] as string, transfers[0]?.["ws"] as string), "ws-c", "transfer targets the ws-c cell");
+            assert.equal(transfers[0]?.["ws"], baseline.targetLogical, "transfer targets the same logical view");
             assert.equal(transfers[0]?.["follow"], true, "move follows the mover to the target view");
             assert.match(transfers[0]?.["op"] as string, /^op-\d+$/, "stable command identity");
-            appliedMatchesReply(h, reply);
+            assertSplitArrival(h, reply, baseline);
             assert.equal(h.mover.output.name, "out-bottom-right", "mover natively on the target after arrival");
             assert.deepEqual(
                 h.mover.desktops.map((desk) => desk.id),
-                ["ws-c"],
+                [baseline.targetNative],
                 "membership homed on arrival",
             );
-            assert.equal(h.outputWrites.length, 1, "exactly one native output relocation");
-            assert.equal(h.membershipWrites.length, 1, "exactly one native membership write");
+            assert.equal(h.outputWrites.length - baseline.outputWrites, 1, "exactly one native output relocation");
+            assert.equal(h.membershipWrites.length - baseline.membershipWrites, baseline.expectedMembershipWrites,
+                "membership changes only if the assigned native slot differs");
             const left = winById(h, "w-bl");
             assert.equal(left.output.name, "out-bottom", "unchosen left candidate keeps its output");
             assert.deepEqual(
                 left.desktops.map((desk) => desk.id),
-                ["ws-b"],
+                [baseline.leftNative],
                 "unchosen left candidate keeps its membership",
             );
             assert.deepEqual({ ...left.frameGeometry }, leftBefore, "unchosen left candidate keeps its geometry");
@@ -795,8 +867,9 @@ describe("world split-edge selection through the production entry (real Engine)"
             h.fire("windowActivated");
             await h.settle();
             assert.equal(h.commandPayloads("move-directional").length, 1, "no replay on duplicate signals");
-            assert.equal(h.outputWrites.length, 1, "no second relocation on duplicate signals");
-            assert.equal(h.membershipWrites.length, 1, "no second membership write on duplicate signals");
+            assert.equal(h.outputWrites.length - baseline.outputWrites, 1, "no second relocation on duplicate signals");
+            assert.equal(h.membershipWrites.length - baseline.membershipWrites, baseline.expectedMembershipWrites,
+                "no extra membership write on duplicate signals");
         } finally {
             await h.stop();
         }
@@ -805,27 +878,36 @@ describe("world split-edge selection through the production entry (real Engine)"
     it("sends down to the mover-selected target with follow", async () => {
         const h = await makeHarness(1100);
         try {
-            await discover(h);
+            const baseline = await settledSplitBaseline(h);
             h.handle.requestSendToOutput("down", true);
             await h.settle();
             const sends = h.commandPayloads("send-directional");
             assert.equal(sends.length, 1, "exactly one direction-only send dispatch, never replayed");
             const cmd = sends[0]?.body["command"] as Record<string, unknown>;
             assert.equal(cmd["follow"], true);
+            assert.equal(cmd["direction"], "down");
             assert.deepEqual(Object.keys(cmd).sort(), ["direction", "follow", "op", "win"], "send carries no endpoint");
             const captureIndex = h.drainCapture.get((sends[0] as { body: Record<string, unknown> }).body["clientCmd"]);
             assert.ok(captureIndex !== undefined, "the core drained the send");
             const reply = JSON.parse(h.replies.get(captureIndex as number) as string) as Record<string, unknown>;
             assert.notEqual(reply["outcome"], "rejected", "real Engine plans the send");
-            appliedMatchesReply(h, reply);
+            assert.equal((reply["transfers"] as Array<Record<string, unknown>>).find((row) => row["win"] === "w-move")?.["ws"],
+                baseline.targetLogical, "send targets the destination's logical current");
+            assertSplitArrival(h, reply, baseline);
             assert.equal(h.mover.output.name, "out-bottom-right", "send lands on the mover-selected target");
             assert.deepEqual(
                 h.mover.desktops.map((desk) => desk.id),
-                ["ws-c"],
+                [baseline.targetNative],
                 "send lands in the target view",
             );
             assert.equal(h.workspace["activeWindow"], h.mover, "follow focuses the mover");
             assert.equal(h.commandPayloads("send-directional").length, 1, "no send replay after settlement");
+            h.fire("windowActivated");
+            await h.settle();
+            assert.equal(h.commandPayloads("send-directional").length, 1, "no send replay on a fresh native observation");
+            assert.equal(h.outputWrites.length - baseline.outputWrites, 1, "the send relocates the mover exactly once");
+            assert.equal(h.membershipWrites.length - baseline.membershipWrites, baseline.expectedMembershipWrites,
+                "the send does not replay membership");
         } finally {
             await h.stop();
         }
@@ -835,26 +917,39 @@ describe("world split-edge selection through the production entry (real Engine)"
         // Mover centre x=150 falls in out-bottom's shared edge [0,640): a
         // windowed rank would pick the left candidate, but migration ranks
         // by largest shared edge (1280 vs 640) and must still pick right.
-        // The migrated logical rides with fresh backing on the target
-        // (correlated creation; the existing ws-a desktop keeps backing
-        // its own cell, never cannibalized) while the source refill adopts
-        // the already-bound eager spare (no redundant re-creation).
+        // The target reuses the slot after its current; growth, if needed,
+        // is only at the tail. The source refill retains its logical ID.
         const h = await makeHarness(100);
         try {
             await discover(h);
-            const nativeOrderBefore = ([...(h.workspace["desktops"] as Array<{ id: string }>)].map((d) => d.id));
-            const liveRows = (): Array<Record<string, unknown>> => {
-                const indices = [...h.replies.keys()].filter((at) => (h.calls[at] as CapturedCall).method === "DescribeWorld");
-                const raw = h.replies.get(Math.max(...indices) as number) as string;
-                return (JSON.parse(raw) as Record<string, unknown>)["workspaces"] as Array<Record<string, unknown>>;
+            const nativeOrder = (): string[] => (h.workspace["desktops"] as FakeDesktop[]).map((d) => d.id);
+            const latestReply = (): Record<string, unknown> => {
+                const indices = [...h.replies.keys()].filter((at) => h.calls[at]?.method === "DescribeWorld");
+                const raw = h.replies.get(Math.max(...indices));
+                assert.ok(raw !== undefined, "the broker published a capture reply");
+                return JSON.parse(raw) as Record<string, unknown>;
             };
-            // Eager spare is already bound before migration (dynamic
-            // lifecycle): the source trailing logical carries its backing
-            // here, so the refill must adopt that same binding rather than
-            // mint a redundant desktop. Snapshot the pre-migration rows to
-            // prove ownership below (D5 last-remaining refill, surviving
-            // empties qualify).
-            const preRows = liveRows();
+            const preRows = latestReply()["workspaces"] as Array<Record<string, unknown>>;
+            const nativeOrderBefore = nativeOrder();
+            const outputBefore = h.outputWrites.length;
+            const viewsBefore = h.viewSwitches.length;
+            const bottomBefore = h.currentByOutput.get(h.screens.bottom.name);
+            const bottomHome = winById(h, "w-bl").desktops.map((desk) => desk.id);
+            const targetOriginal = preRows.find((row) => row["out"] === "out-bottom-right" && row["bind"] ===
+                h.currentByOutput.get(h.screens.bottomRight.name)?.id)?.["id"];
+            assert.equal(typeof targetOriginal, "string", "the occupied destination current has a logical identity");
+            const target = h.screens.bottomRight;
+            const nativeSwitch = h.workspace["setCurrentDesktopForScreen"] as (desk: FakeDesktop, screen: FakeScreen) => void;
+            const arrivalsAtTargetSwitch: Array<Array<[string, string, string[]]>> = [];
+            h.workspace["setCurrentDesktopForScreen"] = (desk: FakeDesktop, screen: FakeScreen): void => {
+                if (screen.name === target.name) {
+                    arrivalsAtTargetSwitch.push(["w-move", "w-stay"].map((id) => {
+                        const win = winById(h, id);
+                        return [id, win.output.name, win.desktops.map((native) => native.id)];
+                    }));
+                }
+                nativeSwitch(desk, screen);
+            };
             h.handle.requestWorkspaceMigrate("down");
             await h.settle();
             const migrates = h.commandPayloads("migrate-directional");
@@ -862,6 +957,7 @@ describe("world split-edge selection through the production entry (real Engine)"
             const cmd = migrates[0]?.body["command"] as Record<string, unknown>;
             // v4: direction only; legacy from/ws keys refuse as unknown fields.
             assert.deepEqual(Object.keys(cmd).sort(), ["direction", "op"], "migrate names direction only, never the target");
+            assert.equal(cmd["direction"], "down");
             const captureIndex = h.drainCapture.get((migrates[0] as { body: Record<string, unknown> }).body["clientCmd"]);
             assert.ok(captureIndex !== undefined, "the core drained the migrate");
             // v4: terminal results ride the take lane (requester-only), never
@@ -878,90 +974,90 @@ describe("world split-edge selection through the production entry (real Engine)"
                 ["w-move", "w-stay"],
                 "the whole workspace migrates together",
             );
-            // Target backing stays genuinely fresh, resolved from the
-            // settled core-owned rows (never by ordinal or native reuse):
-            // the migrated logical binds a created desktop on the target.
-            // The existing ws-a desktop keeps backing its own cell, never
-            // cannibalized. The source refill is proven separately below:
-            // the eager spare already backs it before migration, so no
-            // settled invariant requires re-creating an already correctly
-            // bound spare (D5: refill uses last remaining workspace,
-            // surviving empties qualify).
-            const rows = liveRows();
-            const targetBacking = rows.find((b) => b["out"] === "out-bottom-right" && b["id"] === migratedLogical)?.["bind"] as string ?? "";
-            assert.ok(targetBacking !== "" && !nativeOrderBefore.includes(targetBacking), `target binds fresh backing (got ${targetBacking})`);
-            const target = h.screens.bottomRight;
+            const queued = h.broker.drained.filter((entry) => entry.clientCmd === migrates[0]?.body["clientCmd"]);
+            assert.equal(queued.length, 1, "the broker drains the originating command once");
+            const readyTakes = h.takeReplies.map((raw) => JSON.parse(raw) as Record<string, unknown>)
+                .filter((take) => take["outcome"] === "ready");
+            assert.deepEqual(readyTakes.map((take) => take["globalCmd"]), [queued[0]?.globalCmd],
+                "only the issuing command produces a terminal take");
+            const issuingRaw = h.replies.get(captureIndex);
+            assert.ok(issuingRaw !== undefined);
+            const issuing = JSON.parse(issuingRaw) as Record<string, unknown>;
+            assert.notEqual(issuing["outcome"], "rejected");
+            assert.ok(issuing["rosterPlan"], "the issuing reply authorizes a shared-roster plan");
+            const transfers = issuing["transfers"] as Array<Record<string, unknown>>;
+            const migrations = transfers.filter((t) => t["kind"] === "migration");
+            assert.equal(migrations.length, 1, "the command retains exactly one workspace migration");
+            const migration = migrations[0];
+            assert.equal(migration?.["cmdSeq"], queued[0]?.globalCmd, "migration retains the issuing command sequence");
+            assert.equal(migration?.["out"], "out-bottom-right");
+            assert.equal(migration?.["ws"], migratedLogical);
+
+            const settled = latestReply();
+            assert.equal(settled["rosterPlan"], undefined, "the native slot plan settles");
+            assert.deepEqual(settled["transfers"], [], "migration and refill both settle");
+            const rows = settled["workspaces"] as Array<Record<string, unknown>>;
+            const targetBacking = boundNativeOf(settled, "out-bottom-right", migratedLogical);
+            assert.ok(targetBacking !== null);
+            const orderAfter = nativeOrder();
+            const targetRows = rows.filter((row) => row["out"] === target.name);
+            assert.equal(targetBacking, nativeOrderBefore[1], "migration reuses the existing second slot after target current");
+            assert.deepEqual(orderAfter.slice(0, nativeOrderBefore.length), nativeOrderBefore,
+                "no existing slots are removed, replaced or reordered");
+            assert.equal(orderAfter.length, 3, "destination needs exactly occupied, migrated and spare slots");
+            assert.equal(new Set(orderAfter).size, orderAfter.length, "each native slot has a distinct ID");
+            assert.deepEqual(targetRows.map((row) => row["bind"]), orderAfter, "target real rows follow native slot order");
+            assert.equal(targetRows[2]?.["trailing"], true, "the target has a backed real spare at the tail");
+            assert.equal(targetRows[0]?.["id"], targetOriginal, "the original destination current still precedes the migrant");
+            assert.equal(targetRows[1]?.["id"], migratedLogical, "the migrant follows the original destination current");
             assert.equal(h.mover.output.name, target.name, "migrating workspace lands on the largest-edge output");
             const companion = winById(h, "w-stay");
             assert.equal(companion.output.name, target.name, "the whole workspace migrates together");
-            assert.deepEqual(h.mover.desktops.map((desk) => desk.id), [targetBacking], "mover homed on the fresh backing");
-            assert.deepEqual(companion.desktops.map((desk) => desk.id), [targetBacking], "companion homed on the fresh backing");
-            assert.equal(h.currentByOutput.get(target.name)?.id, targetBacking, "target view shows the fresh backing");
-            // The refill logical rides the paired refill transfer (never a
-            // guessed ordinal). Ownership proof (replaces the old
-            // post-command-fresh assertion, which predates the eager spare):
-            // the refill logical must already belong to the source ring
-            // before migration as its trailing spare; when that spare was
-            // already backed, the post backing must equal the SAME logical's
-            // pre-migration backing (re-creating it would be redundant, not
-            // a freshness proof), otherwise the post backing must be
-            // genuinely fresh. Cross-logical reuse on the source output
-            // stays forbidden: a pre-existing backing belonging to a
-            // DIFFERENT source logical would be a genuine bug, not an
-            // accepted spare.
-            const refillTransfer = ((): Record<string, unknown> | undefined => {
-                for (const raw of h.replies.values()) {
-                    const reply = JSON.parse(raw) as Record<string, unknown>;
-                    const replyTransfers = reply["transfers"] as Array<Record<string, unknown>>;
-                    const migration = replyTransfers.find((t) => t["kind"] === "migration");
-                    const found = replyTransfers.find((t) => t["kind"] === "view" && t["parent"] === migration?.["op"]);
-                    if (found !== undefined) {
-                        return found;
-                    }
-                }
-                return undefined;
-            })();
-            assert.ok(refillTransfer !== undefined, "explicit core refill retained");
-            const refillLogical = refillTransfer["ws"] as string;
-            assert.ok(refillLogical !== "" && refillLogical !== migratedLogical, "refill excludes the migrated logical");
-            const preRefill = preRows.find((b) => b["out"] === "out-top" && b["id"] === refillLogical);
-            assert.ok(preRefill !== undefined, "refill logical already belongs to the source ring before migration");
-            assert.equal(preRefill["trailing"], true, "refill logical is the source trailing spare before migration");
-            const preRefillBacking = preRefill["bind"] as string ?? "";
-            const refillBacking = rows.find((b) => b["out"] === "out-top" && b["id"] === refillLogical)?.["bind"] as string ?? "";
-            assert.ok(refillBacking !== "", "refill binds a backing after migration");
-            for (const other of preRows) {
-                if (other["out"] === "out-top" && other["id"] !== refillLogical) {
-                    assert.notEqual(other["bind"], refillBacking, "refill backing is not cannibalized from another source logical");
-                }
-            }
-            if (preRefillBacking !== "") {
-                assert.equal(refillBacking, preRefillBacking, "already-bound spare keeps its pre-migration backing");
-                assert.ok(nativeOrderBefore.includes(refillBacking), "retained refill backing is the pre-existing eager spare");
-            } else {
-                assert.ok(!nativeOrderBefore.includes(refillBacking), `unbound refill binds fresh backing (got ${refillBacking})`);
-            }
-            const topView = h.currentByOutput.get(h.screens.top.name);
-            assert.equal(topView?.id, refillBacking, "source refills to the refill backing");
-            // world-apply fixes the friendly name at binding proof, not
-            // the ordinal after a later removal shifts the native roster.
-            const refillOrdinal = h.namesProvedAt.get(refillBacking);
-            assert.ok(refillOrdinal !== undefined, "the refill backing received a proof-time name");
-            assert.equal(topView?.name, `Desktop ${refillOrdinal}`, "the proven spare carries its friendly position name, not the token");
-            const wsARows = rows.filter((b) => b["bind"] === "ws-a");
-            assert.deepEqual(wsARows.map((row) => row["out"]).sort(),
-                ["out-bottom", "out-bottom-right", "out-top"], "the vacated native retires on every output");
-            assert.ok(wsARows.every((row) => row["exist"] === false && row["id"] !== migratedLogical),
-                "all projections are tombstones, never backing for the migrated logical");
-            assert.ok(!(h.workspace["desktops"] as FakeDesktop[]).some((desktop) => desktop.id === "ws-a"),
-                "the jointly retired desktop is removed from the native roster");
-            assert.deepEqual(
-                h.viewSwitches.slice(0, 2),
-                [`out-bottom-right->${targetBacking}`, `out-top->${refillBacking}`],
-                "exactly the target and refill view switches, no self-refill of the target",
-            );
-            assert.equal(h.viewSwitches.length, 2, "settled rounds switch no further views");
+            assert.deepEqual(h.mover.desktops.map((desk) => desk.id), [targetBacking], "mover arrives on the assigned slot");
+            assert.deepEqual(companion.desktops.map((desk) => desk.id), [targetBacking], "companion arrives on the same slot");
+            assert.equal(h.currentByOutput.get(target.name)?.id, targetBacking, "target view shows the migrated logical");
+            assert.deepEqual(arrivalsAtTargetSwitch, [[
+                ["w-move", target.name, [targetBacking]],
+                ["w-stay", target.name, [targetBacking]],
+            ]], "both members arrive before the target selector is written");
+
+            const refills = transfers.filter((t) => t["kind"] === "view" && t["parent"] === migration?.["op"]);
+            assert.equal(refills.length, 1, "the issuing reply retains exactly one paired refill");
+            const refill = refills[0];
+            assert.equal(refill?.["cmdSeq"], queued[0]?.globalCmd, "refill has the same command provenance");
+            assert.equal(refill?.["out"], "out-top");
+            const refillLogical = refill?.["ws"] as string;
+            assert.ok(refillLogical && refillLogical !== migratedLogical, "refill excludes the migrated logical");
+            assert.equal(preRows.find((row) => row["out"] === "out-top" && row["id"] === refillLogical)?.["trailing"],
+                true, "the refill uses the source's existing logical spare");
+            const refillBacking = boundNativeOf(settled, "out-top", refillLogical);
+            assert.equal(refillBacking, nativeOrderBefore[0], "refill takes the first slot after source compaction");
+            assert.equal(h.currentByOutput.get(h.screens.top.name)?.id, refillBacking, "source shows the refill logical");
+            assert.ok(!rows.some((row) => row["out"] === "out-top" && row["id"] === migratedLogical), "source released the migrated logical");
+
+            assert.deepEqual(h.outputWrites.slice(outputBefore).sort(),
+                ["w-move=>out-bottom-right", "w-stay=>out-bottom-right"], "both members cross exactly once");
+            assert.deepEqual(h.viewSwitches.slice(viewsBefore), [`out-bottom-right->${targetBacking}`],
+                "switch only the target; source refill reuses its current native selector");
+            assert.equal(h.currentByOutput.get(h.screens.bottom.name), bottomBefore, "non-target selector is untouched");
+            assert.deepEqual(winById(h, "w-bl").desktops.map((desk) => desk.id), bottomHome, "non-target membership is untouched");
+            assert.deepEqual(winById(h, "w-br").desktops.map((desk) => desk.id), [targetRows[0]?.["bind"]],
+                "the original destination occupant stays on its own logical workspace's assigned slot");
+            appliedMatchesReply(h, settled);
+
+            const writeCounts = () => [
+                h.outputWrites.length, h.membershipWrites.length, h.viewSwitches.length,
+                h.focused.length, h.geometryWrites.length,
+            ];
+            const writes = writeCounts();
+            const order = nativeOrder();
+            h.fire("screensChanged");
+            await h.settle();
+            assert.deepEqual(writeCounts(), writes, "a fresh settled observation does not replay native writes");
+            assert.deepEqual(nativeOrder(), order, "settled observation does not mutate the roster");
             assert.equal(h.commandPayloads("migrate-directional").length, 1, "no migrate replay after settlement");
+            assert.equal(h.takeReplies.map((raw) => JSON.parse(raw) as Record<string, unknown>)
+                .filter((take) => take["outcome"] === "ready").length, 1, "no terminal take replay after settlement");
         } finally {
             await h.stop();
         }
@@ -975,7 +1071,7 @@ describe("world split-edge selection through the production entry (real Engine)"
         // sole-leaf report below.
         const h = await makeHarness(1100);
         try {
-            await discover(h);
+            const baseline = await settledSplitBaseline(h);
             const framesBefore = new Map(h.wins.map((win) => [win.internalId, { ...win.frameGeometry }]));
             h.handle.requestFocus("down");
             await h.settle();
@@ -1009,8 +1105,8 @@ describe("world split-edge selection through the production entry (real Engine)"
             assert.equal(focusTake["kind"], "operation-refused", "refusal kind stays the closed token");
             const active = h.workspace["activeWindow"] as FakeWindow;
             assert.equal(active.output.name, "out-top", "focus never leaves the source output");
-            assert.equal(h.outputWrites.length, 0, "focus writes no output transfer");
-            assert.equal(h.membershipWrites.length, 0, "focus writes no membership");
+            assert.equal(h.outputWrites.length - baseline.outputWrites, 0, "focus writes no output transfer");
+            assert.equal(h.membershipWrites.length - baseline.membershipWrites, 0, "focus writes no membership");
             for (const win of h.wins) {
                 assert.deepEqual({ ...win.frameGeometry }, framesBefore.get(win.internalId), `focus writes no geometry on ${win.internalId}`);
             }
@@ -1040,8 +1136,8 @@ describe("world split-edge selection through the production entry (real Engine)"
             assert.equal(localFocus["target"], "w-move", "focus stays on the mover");
             assert.equal(localFocus["cause"], "explicit-command", "mover follow-focus grant is command-owned");
             assert.equal(localFocus["afterShown"], null, "directional follow-focus carries no arrival dependencies");
-            assert.equal(h.outputWrites.length, 0, "local move writes no output transfer");
-            assert.equal(h.membershipWrites.length, 0, "local move writes no membership");
+            assert.equal(h.outputWrites.length - baseline.outputWrites, 0, "local move writes no output transfer");
+            assert.equal(h.membershipWrites.length - baseline.membershipWrites, 0, "local move writes no membership");
             assert.equal(h.commandPayloads("move-directional").length, 1, "no move replay after settlement");
         } finally {
             await h.stop();
@@ -1051,7 +1147,7 @@ describe("world split-edge selection through the production entry (real Engine)"
     it("pins the send flight across deferred native arrival with retained focus and no replay", async () => {
         const h = await makeHarness(1100);
         try {
-            await discover(h);
+            const baseline = await settledSplitBaseline(h);
             h.deferredTransfer = true;
             h.handle.requestSendToOutput("down", true);
             h.runTimers();
@@ -1059,10 +1155,15 @@ describe("world split-edge selection through the production entry (real Engine)"
             assert.equal(h.commandPayloads("send-directional").length, 1, "send dispatched once");
             assert.equal(h.pendingTransfers.length, 1, "native transfer initiated exactly once");
             assert.equal(h.mover.output.name, "out-top", "output still lagging");
+            const sendCapture = h.drainCapture.get(h.commandPayloads("send-directional")[0]?.body["clientCmd"]);
+            assert.ok(sendCapture !== undefined, "the deferred send drained");
+            const sendReply = JSON.parse(h.replies.get(sendCapture) as string) as Record<string, unknown>;
+            assert.equal((sendReply["transfers"] as Array<Record<string, unknown>>).find((row) => row["win"] === "w-move")?.["ws"],
+                baseline.targetLogical, "the deferred send pins the target logical even before output arrival");
             assert.deepEqual(
                 h.mover.desktops.map((desk) => desk.id),
-                ["ws-c"],
-                "membership applies while the output lags",
+                [baseline.targetNative],
+                "membership matches the target slot even while the output lags",
             );
             assert.equal(h.focused.length, 0, "no follow setter before arrival proof");
             // Delayed native arrival lands through a surface signal: exactly
@@ -1078,7 +1179,7 @@ describe("world split-edge selection through the production entry (real Engine)"
             assert.equal(h.mover.output.name, "out-bottom-right", "mover natively on the target after arrival");
             assert.deepEqual(
                 h.mover.desktops.map((desk) => desk.id),
-                ["ws-c"],
+                [baseline.targetNative],
                 "membership homed on arrival",
             );
             assert.equal(h.workspace["activeWindow"], h.mover, "mover keeps focus across the pinned arrival");
@@ -1100,7 +1201,7 @@ describe("world split-edge selection through the production entry (real Engine)"
         // then arrival settles exactly once with no second actuation.
         const h = await makeHarness(1100, true);
         try {
-            await discover(h);
+            const baseline = await settledSplitBaseline(h);
             h.deferredTransfer = true;
             h.handle.requestMove("down");
             h.runTimers();
@@ -1108,10 +1209,15 @@ describe("world split-edge selection through the production entry (real Engine)"
             assert.equal(h.commandPayloads("move-directional").length, 1, "move dispatched once");
             assert.equal(h.pendingTransfers.length, 1, "native transfer initiated exactly once");
             assert.equal(h.mover.output.name, "out-top", "output still lagging");
+            const moveCapture = h.drainCapture.get(h.commandPayloads("move-directional")[0]?.body["clientCmd"]);
+            assert.ok(moveCapture !== undefined, "the deferred move drained");
+            const moveReply = JSON.parse(h.replies.get(moveCapture) as string) as Record<string, unknown>;
+            assert.equal((moveReply["transfers"] as Array<Record<string, unknown>>).find((row) => row["win"] === "w-move")?.["ws"],
+                baseline.targetLogical, "the deferred move pins the target logical even before output arrival");
             assert.deepEqual(
                 h.mover.desktops.map((desk) => desk.id),
-                ["ws-c"],
-                "membership applies while the output lags",
+                [baseline.targetNative],
+                "membership matches the target slot even while the output lags",
             );
             assert.equal(h.focused.length, 0, "no focus setter before arrival proof");
             const [pending] = h.pendingTransfers;
@@ -1125,18 +1231,21 @@ describe("world split-edge selection through the production entry (real Engine)"
             assert.equal(h.mover.output.name, "out-bottom-right", "mover natively on the target after arrival");
             assert.deepEqual(
                 h.mover.desktops.map((desk) => desk.id),
-                ["ws-c"],
+                [baseline.targetNative],
                 "membership homed on arrival",
             );
             assert.equal(h.workspace["activeWindow"], h.mover, "mover keeps focus across the pinned arrival");
             assert.equal(h.focused.length, 0, "no redundant focus setter: the mover never lost focus");
-            assert.equal(h.outputWrites.length, 1, "exactly one relocation after deferred arrival");
-            assert.equal(h.membershipWrites.length, 1, "exactly one membership write after deferred arrival");
+            assert.equal(h.outputWrites.length - baseline.outputWrites, 1, "exactly one relocation after deferred arrival");
+            assert.equal(h.membershipWrites.length - baseline.membershipWrites, baseline.expectedMembershipWrites,
+                "at most the one required membership change after deferred arrival");
             h.fire("windowActivated");
             h.fire("windowActivated");
             await h.settle();
             assert.equal(h.commandPayloads("move-directional").length, 1, "no replay on duplicate signals");
-            assert.equal(h.outputWrites.length, 1, "no second relocation on duplicate signals");
+            assert.equal(h.outputWrites.length - baseline.outputWrites, 1, "no second relocation on duplicate signals");
+            assert.equal(h.membershipWrites.length - baseline.membershipWrites, baseline.expectedMembershipWrites,
+                "duplicate signals replay no member write");
             assert.equal(h.focused.length, 0, "still no redundant focus setter");
         } finally {
             await h.stop();
@@ -1149,7 +1258,7 @@ describe("world split-edge selection through the production entry (real Engine)"
         // relocated mover: no new transfer, no replay, mover stays homed.
         const h = await makeHarness(1100, true);
         try {
-            await discover(h);
+            const baseline = await settledSplitBaseline(h);
             h.handle.requestMove("down");
             await h.settle();
             assert.equal(h.mover.output.name, "out-bottom-right", "precondition: mover arrived");
@@ -1160,11 +1269,12 @@ describe("world split-edge selection through the production entry (real Engine)"
             assert.equal(h.mover.output.name, "out-bottom-right", "mover stays homed after topology refresh");
             assert.deepEqual(
                 h.mover.desktops.map((desk) => desk.id),
-                ["ws-c"],
+                [baseline.targetNative],
                 "membership stays homed after topology refresh",
             );
-            assert.equal(h.outputWrites.length, 1, "no second relocation after topology refresh");
-            assert.equal(h.membershipWrites.length, 1, "no second membership write after topology refresh");
+            assert.equal(h.outputWrites.length - baseline.outputWrites, 1, "no second relocation after topology refresh");
+            assert.equal(h.membershipWrites.length - baseline.membershipWrites, baseline.expectedMembershipWrites,
+                "no extra membership write after topology refresh");
         } finally {
             await h.stop();
         }
@@ -1173,7 +1283,7 @@ describe("world split-edge selection through the production entry (real Engine)"
     it("refuses an unreadable split edge with zero writes", async () => {
         const h = await makeHarness(1100);
         try {
-            await discover(h);
+            const baseline = await settledSplitBaseline(h);
             const framesBefore = new Map(h.wins.map((win) => [win.internalId, { ...win.frameGeometry }]));
             // Corrupt one FULL rectangle: the core can no longer rank the
             // edge, so the directional command must refuse fail-closed.
@@ -1190,7 +1300,8 @@ describe("world split-edge selection through the production entry (real Engine)"
             for (const win of h.wins) {
                 assert.deepEqual({ ...win.frameGeometry }, framesBefore.get(win.internalId), `no geometry write on ${win.internalId}`);
             }
-            assert.equal(h.membershipWrites.length, 0, "no membership write on refusal");
+            assert.equal(h.outputWrites.length - baseline.outputWrites, 0, "no output write on refusal");
+            assert.equal(h.membershipWrites.length - baseline.membershipWrites, 0, "no membership write on refusal");
             assert.equal(h.commandPayloads("move-directional").length, 1, "refusal never replays");
         } finally {
             await h.stop();

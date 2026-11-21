@@ -20,9 +20,10 @@ import * as path from "node:path";
 import { applyWorldReply } from "../src/world-apply";
 import { incrementU64 } from "../src/world-seq";
 import { WorldAdapterState } from "../src/world-state";
-import { parseWorldReply, isWorldRejection, type WorldReply } from "../src/world-report";
+import { isCoreWorldReply, parseWorldReply, isWorldRejection, type WorldReply, type WorldRosterPlan } from "../src/world-report";
 import type { WorldObservation } from "../src/world-observe";
 import type { WorldReplyResult } from "../src/world-report";
+import { applyWorldRoster, createWorldRosterSpendState, type WorldRosterHost } from "../src/world-roster";
 import {
     awaitDescribeFrom,
     awaitQueueCount,
@@ -878,17 +879,20 @@ describe("world migration member authority", () => {
     });
 
     it("genuine checked-broker migration pairs unrelated opaque ops and inverse lookalike acts independently", async () => {
-        const h = await makeHarness("win-a", ["win-a", "win-b"], {
+        const h = await makeHarness("win-a", ["win-a", "win-b", "win-c", "win-d", "win-e"], {
             outputs: [
-                { name: "out-a", geometry: { x: 0, y: 0, width: 800, height: 600 } },
-                { name: "out-b", geometry: { x: 800, y: 0, width: 800, height: 600 } },
+                { name: "out-source", geometry: { x: 0, y: 0, width: 800, height: 600 } },
+                { name: "out-dest", geometry: { x: 800, y: 0, width: 800, height: 600 } },
             ],
-            desktops: ["wa1", "wa2", "wb1", "wb2"],
-            homes: { "win-a": "out-a", "win-b": "out-b" },
-            currents: { "out-a": "wa1", "out-b": "wb1" },
+            desktops: ["slot-a", "slot-b", "slot-c", "slot-d"],
+            homes: { "win-b": "out-dest" },
+            currents: { "out-source": "slot-b", "out-dest": "slot-a" },
             scopeClass: "per-output-local",
+            withNativeCreation: true,
         });
-        winById(h, "win-b").desktops = [deskById(h, "wb1")];
+        winById(h, "win-a").desktops = [deskById(h, "slot-b")];
+        winById(h, "win-d").desktops = [deskById(h, "slot-c")];
+        winById(h, "win-e").desktops = [deskById(h, "slot-c")];
 
         let brokerReplyRaw = "";
         try {
@@ -908,117 +912,82 @@ describe("world migration member authority", () => {
             await h.bridge.close();
         }
 
-        const prepareBrokerReply = (
-            migOp: string,
-            refillOp: string,
-            refillParent: string | null,
-        ): { reply: WorldReply; targetNative: string; refillNative: string } => {
+        const prepareBrokerReply = (independent: boolean) => {
             const raw = JSON.parse(brokerReplyRaw) as Record<string, unknown>;
-            const rawTransfers = raw["transfers"] as Array<Record<string, unknown>>;
-            const rawMig = rawTransfers.find((t) => t["kind"] === "migration");
-            const rawRefill = rawTransfers.find(
-                (t) => t["kind"] === "view" && t["parent"] === rawMig?.["op"],
-            );
-            assert.ok(
-                rawMig !== undefined && rawRefill !== undefined,
-                "checked-broker drain carries migration and paired refill",
-            );
-            rawMig["op"] = migOp;
-            rawRefill["op"] = refillOp;
-            rawRefill["parent"] = refillParent;
+            const transfers = raw["transfers"] as Array<Record<string, unknown>>;
+            const migration = transfers.find((row) => row["kind"] === "migration");
+            const refill = transfers.find((row) => row["kind"] === "view" && row["parent"] === migration?.["op"]);
+            assert.ok(migration !== undefined && refill !== undefined, "broker retains migration and its paired refill");
+            migration["op"] = "mig-parent-alpha";
+            refill["op"] = independent ? "mig-parent-alpha-refill" : "view-child-beta";
+            refill["parent"] = independent ? null : migration["op"];
+            const plan = raw["rosterPlan"] as { members: Array<{ step: string; win: string }>; views: Array<{ out: string; deps: string[] }> };
+            assert.ok(plan !== undefined, "real shared KWin route issues slot authority");
+            const member = plan.members.find((row) => row.win === "win-a");
+            const source = plan.views.find((row) => row.out === "out-source");
+            const target = plan.views.find((row) => row.out === "out-dest");
+            assert.ok(member !== undefined && source !== undefined && target !== undefined, JSON.stringify(plan));
+            assert.ok(source.deps.includes(member.step) && target.deps.includes(member.step), "both real views require exact arrival");
+            if (independent) source.deps = source.deps.filter((step) => step !== member.step);
             const parsed = parseWorldReply(JSON.stringify(raw));
-            assert.ok(parsed !== null && !isWorldRejection(parsed), "strict reader accepts broker reply");
-            const reply = parsed as WorldReply;
-            const migRow = reply.transfers.find((t) => t.kind === "migration");
-            assert.ok(migRow !== undefined);
-            let targetNative =
-                reply.workspaces.find((ws) => ws.out === migRow.out && ws.id === migRow.ws)?.bind ?? "";
-            if (targetNative === "") {
-                targetNative = "wb2";
-                for (const ws of reply.workspaces) {
-                    if (ws.id === migRow.ws && ws.out === migRow.out && ws.bind === "") {
-                        ws.bind = targetNative;
-                    }
+            assert.ok(isCoreWorldReply(parsed) && parsed.rosterPlan !== undefined);
+            return parsed.rosterPlan;
+        };
+        const exercise = (plan: WorldRosterPlan, arrives: boolean) => {
+            const order = [...plan.baseline.order];
+            const currents = new Map(plan.currents.map((row) => [row.out, row.native]));
+            const occupants = new Map(plan.occupants.map((row) => [row.native, new Map(row.windows.map((w) => [w.win, w.out]))]));
+            const writes: string[] = [];
+            const viewWrites: string[] = [];
+            const memberHome: WorldRosterHost["memberHome"] = (win) => {
+                for (const [native, windows] of occupants) {
+                    const out = windows.get(win);
+                    if (out !== undefined) return { out, native };
                 }
-            }
-            const refillRow = reply.transfers.find((t) => t.op === refillOp);
-            assert.ok(refillRow !== undefined);
-            const refillNative =
-                reply.workspaces.find((ws) => ws.out === refillRow.out && ws.id === refillRow.ws)?.bind ?? "";
-            assert.ok(refillNative !== "", "refill workspace has native binding");
-            return { reply, targetNative, refillNative };
+                return null;
+            };
+            const host: WorldRosterHost = {
+                fresh: () => true, read: () => ({ order, currents, occupants }),
+                memberHome, canAffect: () => true, canWrite: () => true, canRemove: () => true,
+                append: () => { writes.push("append"); order.push("appended-tail"); return true; },
+                move: (win, out, native) => {
+                    writes.push(`move:${win}`);
+                    if (win !== "win-a" || arrives) {
+                        const before = memberHome(win);
+                        assert.ok(before !== null);
+                        occupants.get(before.native)?.delete(win);
+                        let windows = occupants.get(native);
+                        if (windows === undefined) occupants.set(native, windows = new Map());
+                        windows.set(win, out);
+                    }
+                    return true;
+                },
+                select: (out, native) => {
+                    writes.push(`view:${out}`); viewWrites.push(out); currents.set(out, native); return true;
+                },
+                remove: (native) => {
+                    writes.push(`remove:${native}`); order.splice(order.indexOf(native), 1); occupants.delete(native); return true;
+                },
+                focus: () => true,
+            };
+            const spend = createWorldRosterSpendState();
+            const applied = applyWorldRoster(plan, host, spend);
+            const beforeReplay = [...writes];
+            assert.deepEqual(applyWorldRoster(plan, host, spend), applied, "same publication preserves exact proof");
+            assert.deepEqual(writes, beforeReplay, "no native setter replays");
+            return { applied, viewWrites };
         };
 
-        // 1. Before arrival: no early refill or target switch.
-        const pre = prepareBrokerReply("mig-parent-alpha", "view-child-beta", "mig-parent-alpha");
-        const preWorld: FakeWorld = {
-            homing: new Map([
-                ["win-a", { out: "out-a", ws: "wa1" }],
-                ["win-b", { out: "out-b", ws: "wb1" }],
-            ]),
-            currents: new Map([["out-a", "wa1"], ["out-b", "wb1"]]),
-            sendToOutputCalls: [], setMembershipCalls: [], switchViewCalls: [],
-            lieMembership: true,
-        };
-        const preState = freshState(pre.reply);
-        const preApplied = applyWorldReply({
-            dispatchWatermark: preState.currentInvalid,
-            takeResult: null,
-            ...makeEnv(preState, preWorld),
-            observation: makeObservation(preWorld),
-            reply: pre.reply,
-        });
-        assert.deepEqual(preWorld.switchViewCalls, [], "no early refill or target switch before arrival");
-        assert.ok(preApplied.held >= 1);
+        const pending = exercise(prepareBrokerReply(false), false);
+        assert.deepEqual(pending.viewWrites, [], "no early refill or target switch before arrival");
+        assert.equal(pending.applied.stopped, "pending");
 
-        // 2. Arrival succeeds with no requester result: target then paired source refill in order.
-        const arrived = prepareBrokerReply("mig-parent-alpha", "view-child-beta", "mig-parent-alpha");
-        const arrivedWorld: FakeWorld = {
-            homing: new Map([
-                ["win-a", { out: "out-a", ws: "wa1" }],
-                ["win-b", { out: "out-b", ws: "wb1" }],
-            ]),
-            currents: new Map([["out-a", "wa1"], ["out-b", "wb1"]]),
-            sendToOutputCalls: [], setMembershipCalls: [], switchViewCalls: [],
-            lieMembership: false,
-        };
-        const arrivedState = freshState(arrived.reply);
-        const arrivedApplied = applyWorldReply({
-            dispatchWatermark: arrivedState.currentInvalid,
-            takeResult: null,
-            ...makeEnv(arrivedState, arrivedWorld),
-            observation: makeObservation(arrivedWorld),
-            reply: arrived.reply,
-        });
-        assert.deepEqual(
-            arrivedWorld.switchViewCalls,
-            [`out-b->${arrived.targetNative}`, `out-a->${arrived.refillNative}`],
-        );
-        assert.ok(arrivedApplied.viewWrites >= 2);
+        const arrived = exercise(prepareBrokerReply(false), true);
+        assert.deepEqual(arrived.viewWrites, ["out-dest", "out-source"], "arrival follows target then paired refill without requester result");
+        assert.equal(arrived.applied.complete, true);
 
-        // 3. Inverse: unparented suffix lookalike `<parent>-refill` with parent null acts independently.
-        const inverse = prepareBrokerReply("mig-parent-gamma", "mig-parent-gamma-refill", null);
-        const invWorld: FakeWorld = {
-            homing: new Map([
-                ["win-a", { out: "out-a", ws: "wa1" }],
-                ["win-b", { out: "out-b", ws: "wb1" }],
-            ]),
-            currents: new Map([["out-a", "wa1"], ["out-b", "wb1"]]),
-            sendToOutputCalls: [], setMembershipCalls: [], switchViewCalls: [],
-            lieMembership: true,
-        };
-        const invState = freshState(inverse.reply);
-        applyWorldReply({
-            dispatchWatermark: invState.currentInvalid,
-            takeResult: null,
-            ...makeEnv(invState, invWorld),
-            observation: makeObservation(invWorld),
-            reply: inverse.reply,
-        });
-        assert.deepEqual(
-            invWorld.switchViewCalls,
-            [`out-a->${inverse.refillNative}`],
-            "unparented suffix lookalike actuates independently while migration holds",
-        );
+        const inverse = exercise(prepareBrokerReply(true), false);
+        assert.deepEqual(inverse.viewWrites, ["out-source"], "unparented suffix lookalike acts independently while migration holds");
+        assert.equal(inverse.applied.stopped, "pending");
     });
 });

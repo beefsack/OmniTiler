@@ -49,6 +49,7 @@ impl WorldTransaction<'_> {
         effects: Vec<OneShotEffect>,
         held_scopes: &BTreeSet<DomainKey>,
     ) -> WorldReplyV4 {
+        let roster_unproved = self.shared_slot_transition_unproved();
         // Narrow producer style hold first, before any authority assembly:
         // the style-held output's domains join a local held set so the
         // established Hold paths suppress every write lane there.
@@ -132,6 +133,18 @@ impl WorldTransaction<'_> {
         // arrives via `style_output` so a style-only hold yields
         // `Unreadable` while pre-existing holds keep `IncompleteInventory`.
         let mut outputs = self.plan_outputs_inner(&[], style_output.as_ref(), held_scopes);
+        if roster_unproved {
+            for row in &mut outputs {
+                if !self.shared_output_write_held(&row.output) {
+                    continue;
+                }
+                if let Some(view) = self.unproved_shared_view(&row.output) {
+                    row.tiling_mode = self.workspace_tiling_mode(&row.output, &view);
+                    row.logical_view = Some(view);
+                }
+                row.hold = row.hold.or(Some(HoldReason::Unreadable));
+            }
+        }
         // Post-set the Unreadable hold on held-output rows, keeping any
         // existing hold (output rows already carry Unreadable from the
         // core above; workspace rows gain it here).
@@ -147,7 +160,46 @@ impl WorldTransaction<'_> {
                 }
             }
         }
-        let windows = rows.windows;
+        let mut windows = rows.windows;
+        let roster_plan = self.world.settlement.shared_roster.plan();
+        if roster_unproved {
+            for row in &mut windows {
+                if !self.shared_output_write_held(&row.output) {
+                    continue;
+                }
+                // Frame control is independent of the slot transition. Preserve
+                // the projected tile for the same lifetime only when the plan
+                // names this exact destination; the producer must first prove
+                // arrival in its resolved native slot.
+                let arriving = roster_plan.is_some_and(|plan| {
+                    plan.members.iter().any(|step| {
+                        step.window == row.lifetime
+                            && step.output == row.output
+                            && plan.projections.get(&row.output).is_some_and(|ring| {
+                                ring.iter()
+                                    .zip(&plan.slots)
+                                    .any(|(id, slot)| id == &row.workspace && slot == &step.target)
+                            })
+                    })
+                });
+                if let Some(home) = self.unproved_shared_home(&row.lifetime) {
+                    row.output = home.output;
+                    row.workspace = home.workspace.0;
+                }
+                if !arriving {
+                    row.allocation = None;
+                    row.effective_frame = None;
+                    row.frame_authority =
+                        crate::world_report::ScopeAuthority::Hold(HoldReason::Unreadable);
+                }
+                row.frame_operation = None;
+                row.clear_operation = None;
+                let hold = crate::world_report::ScopeAuthority::Hold(HoldReason::Unreadable);
+                row.membership_authority = hold;
+                row.visibility = None;
+                row.visibility_authority = hold;
+            }
+        }
         let cursor_warp = self.warp_for_publish(&effects, &windows, &local_held);
         self.prune_settled_outcomes();
         self.prune_drag_preview(&local_held);
@@ -179,9 +231,9 @@ impl WorldTransaction<'_> {
             .collect();
         // Retained transfer projection: the explicit originating command
         // correlation rides verbatim (never parsed from operation ids), with
-        // `held` set when the style-held output is the transfer source or
-        // target. A per-reply projection only: retained settlement meaning
-        // is untouched.
+        // `held` set when native authority belongs to the roster plan or
+        // when the style-held output is the transfer source or target.
+        // Correlation is descriptive and never renews native authority.
         let transfers = self
             .world
             .settlement
@@ -194,6 +246,7 @@ impl WorldTransaction<'_> {
                 target_workspace: retained.target.target_workspace.clone(),
                 follow: retained.target.follow,
                 held: retained.target.held
+                    || roster_unproved
                     || style_output.as_ref().is_some_and(|output| {
                         *output == retained.target.target_output
                             || *output == retained.source_output
@@ -210,6 +263,25 @@ impl WorldTransaction<'_> {
         self.validate_pending_focus();
         self.freeze_focus_after_shown();
         let focus_request = self.pending_focus_request();
+        let focus_held = roster_unproved
+            && focus_request
+                .as_ref()
+                .is_some_and(|focus| self.shared_output_write_held(&focus.output));
+        self.freeze_shared_roster_focus(focus_request.as_ref().filter(|_| focus_held).cloned());
+        // Keep the single canonical retained grant visible. On the shared
+        // slot route its identical plan operand gates the native action;
+        // a new grant on an affected output waits for the epoch.
+        let focus_request = focus_request.filter(|focus| {
+            !focus_held
+                || self
+                    .world
+                    .settlement
+                    .shared_roster
+                    .plan()
+                    .and_then(|plan| plan.focus.as_ref())
+                    == Some(focus)
+        });
+        let cursor_warp = if focus_held { None } else { cursor_warp };
         WorldReplyV4 {
             contract_version: WORLD_CONTRACT_VERSION_V4,
             adapter_incarnation: envelope.adapter_incarnation,

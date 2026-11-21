@@ -22,10 +22,11 @@ use crate::world_reply_write::{
     count_operation_settled_rows_bytes, count_reply_v4_bytes, count_switch_settled_section_bytes,
 };
 use crate::world_report_residual::WorldReportResidual;
+use crate::world_roster_wire::supports_roster;
 use tiler_core::world_engine::{
     AdmissionGateDecision, CoreAdmissionGate, ExactInnerCheck, ExactInnerDecision,
-    FutureReserveGateFacts, PreflightGateFacts, ReplayResidualToken, RetainedResidual,
-    TransitionResult, WakePrecheckCandidate, WorldEngine,
+    FutureReserveGateFacts, PreflightGateFacts, PreparedCandidate, ReplayResidualToken,
+    RetainedResidual, TransitionResult, WakePrecheckCandidate, WorldEngine,
 };
 use tiler_core::world_report::{WorldCommand, WorldReplyV4, WorldReportV4};
 
@@ -36,6 +37,7 @@ pub struct ProtocolAdmissionGate<'a> {
     max_reply_bytes: usize,
     residual: Option<&'a Arc<WorldReportResidual>>,
     wake_precheck: Option<&'a dyn Fn(&WakePrecheckCandidate<'_>) -> bool>,
+    roster_host_mismatch: Cell<bool>,
     wake_exhausted: Cell<bool>,
     last_invalid_reply: Cell<Option<&'static str>>,
     #[cfg(test)]
@@ -69,6 +71,7 @@ impl<'a> ProtocolAdmissionGate<'a> {
             max_reply_bytes: WORLD_MAX_REPLY_BYTES,
             residual: None,
             wake_precheck: None,
+            roster_host_mismatch: Cell::new(false),
             wake_exhausted: Cell::new(false),
             last_invalid_reply: Cell::new(None),
             #[cfg(test)]
@@ -86,11 +89,42 @@ impl<'a> ProtocolAdmissionGate<'a> {
             max_reply_bytes: WORLD_MAX_REPLY_BYTES,
             residual: residual.filter(|r| !r.is_empty()),
             wake_precheck: None,
+            roster_host_mismatch: Cell::new(false),
             wake_exhausted: Cell::new(false),
             last_invalid_reply: Cell::new(None),
             #[cfg(test)]
             count_calls: Cell::new(0),
         }
+    }
+
+    /// Dispatch using the same retained wire evidence for typed proofs, size
+    /// admission and replay identity.
+    pub fn dispatch_with_prepare<E>(
+        &self,
+        engine: &mut WorldEngine,
+        report: &WorldReportV4,
+        queued: &[(u64, WorldCommand)],
+        prepare: impl FnOnce(PreparedCandidate<'_>) -> Result<(), E>,
+    ) -> Result<TransitionResult, E> {
+        let feedback = self.residual.and_then(|r| r.roster_feedback.as_ref());
+        self.roster_host_mismatch.set(
+            feedback.is_some()
+                && (!engine.capabilities().is_some_and(supports_roster)
+                    || engine.settings().workspace_mode
+                        == tiler_core::workspace_scope::WorkspaceMode::Shared),
+        );
+        let result = match feedback {
+            Some(feedback) => engine.handle_report_with_roster_feedback_and_prepare(
+                report,
+                queued,
+                self,
+                feedback.proof(),
+                prepare,
+            ),
+            None => engine.handle_report_with_gate_and_prepare(report, queued, self, prepare),
+        };
+        self.roster_host_mismatch.set(false);
+        result
     }
 
     /// Attach a pre-validation wake-epoch precheck callback to run after
@@ -158,15 +192,20 @@ pub fn handle_report_decoded_checked(
     queued: &[(u64, WorldCommand)],
 ) -> TransitionResult {
     let gate = ProtocolAdmissionGate::with_residual(decoded.residual.as_ref());
-    engine
-        .handle_report_with_gate_and_prepare(&decoded.report, queued, &gate, |_| {
-            Ok::<(), std::convert::Infallible>(())
-        })
-        .unwrap_or_else(|e| match e {})
+    gate.dispatch_with_prepare(engine, &decoded.report, queued, |_| {
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .unwrap_or_else(|e| match e {})
 }
 
 impl CoreAdmissionGate for ProtocolAdmissionGate<'_> {
     fn check_request_size(&self, report: &WorldReportV4) -> AdmissionGateDecision {
+        if self.roster_host_mismatch.get() {
+            return AdmissionGateDecision::Reject {
+                kind: "snapshot-invalid",
+                message: "roster-host-mismatch",
+            };
+        }
         if report_estimate_v4_with_residual(report, self.residual.map(Arc::as_ref))
             > self.max_request_bytes
         {
@@ -563,8 +602,8 @@ mod tests {
             gesture_assoc: None,
             gesture_settled_assoc: None,
         };
-        let bound_err =
-            write_bound_reply_v4(&bad, &wire, &bind).expect_err("bound writer still validates");
+        let bound_err = write_bound_reply_v4(&bad, &wire, None, &bind)
+            .expect_err("bound writer still validates");
         assert_eq!(bound_err.kind, "unknown-value");
         assert_eq!(bound_err.message, "request contains an unknown value");
     }

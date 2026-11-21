@@ -300,6 +300,7 @@ fn connected_engine(generation: &str, caps: HostCapabilities) -> WorldEngine {
 /// this path.
 fn reply_wire(reply: &WorldReplyV4) -> String {
     let decoded = DecodedReplyV4 {
+        roster_plan: None,
         reply: reply.clone(),
         wire: ReplyWireOptionals {
             suspended_output_present: reply.presentation.suspended_output.is_some(),
@@ -1638,6 +1639,7 @@ fn focus_effects_refuse_through_v4_writer() {
         let mut refused = reply.clone();
         refused.effects = effects;
         let error = encode_reply_v4(&DecodedReplyV4 {
+            roster_plan: None,
             reply: refused.clone(),
             wire: ReplyWireOptionals {
                 suspended_output_present: refused.presentation.suspended_output.is_some(),
@@ -4671,6 +4673,7 @@ fn immutable_effect_rows_match_fixture_bytes() {
     assert!(
         tiler_protocol::world_protocol::encode_reply_v4(
             &tiler_protocol::world_protocol::DecodedReplyV4 {
+                roster_plan: None,
                 reply: reply.clone(),
                 wire: tiler_protocol::world_protocol::ReplyWireOptionals {
                     suspended_output_present: reply.presentation.suspended_output.is_some(),

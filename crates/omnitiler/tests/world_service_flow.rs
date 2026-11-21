@@ -371,6 +371,89 @@ fn capture_accepts_and_binds_source_watermark_clock() {
 }
 
 #[test]
+fn shared_roster_append_feedback_settles_and_replays_the_bound_publication() {
+    use serde_json::json;
+    use tiler_core::world_roster::RosterSlot;
+    use tiler_protocol::world_protocol::decode_reply_v4;
+
+    let service = WorldService::new();
+    let handshake = handshake_req(ADAPTER, "shared-roster")
+        .replace("\"equalCount\":false", "\"equalCount\":true")
+        .replace(
+            "\"sharedNativeRoster\":false",
+            "\"sharedNativeRoster\":true",
+        );
+    let discovery = parse(&service.discover(&handshake).expect("handshake"));
+    let generation = discovery["gen"].as_str().expect("generation");
+    service
+        .discover(&settings_req(ADAPTER, generation, "settings-roster"))
+        .expect("settings");
+    let windows = [window_json("win-roster", "[0,0,400,300]", Some(UUID_A))];
+    let native = |order: &[&str]| {
+        json!({
+            "out": "DP-1", "order": order, "current": UUID_A,
+            "occupancy": order.iter().map(|native| {
+                json!({"native": native, "count": u8::from(*native == UUID_A)})
+            }).collect::<Vec<_>>()
+        })
+        .to_string()
+    };
+    let first = inner_report(&windows, true, true, &native(&[UUID_A]));
+    let first = capture(ADAPTER, generation, 1, 1, &first);
+    let publication = service
+        .evaluate_capture(&first)
+        .expect("append publication");
+    let bound = parse(&publication);
+    let mut unbound = bound.clone();
+    for key in [
+        "source",
+        "nativeInvalid",
+        "clock",
+        "gestureAssoc",
+        "gestureSettledAssoc",
+    ] {
+        unbound.as_object_mut().unwrap().remove(key);
+    }
+    let decoded = decode_reply_v4(&unbound.to_string()).expect("strict v4 reply");
+    let plan = decoded.roster_plan.expect("shared-roster append");
+    let [RosterSlot::Existing(existing), RosterSlot::Append(step)] = plan.slots.as_slice() else {
+        panic!("expected the native floor append: {plan:?}");
+    };
+    assert_eq!(existing, UUID_A);
+    assert!(decoded.reply.native_creations.is_empty());
+    assert_eq!(service.evaluate_capture(&first).unwrap(), publication);
+    assert!(
+        preview_read(&service, "roster-preview")
+            .get("rosterPlan")
+            .is_none()
+    );
+
+    // The new native order alone cannot prove the append, even though the
+    // settled order will be identical to this raw observation.
+    let second = inner_report(&windows, true, true, &native(&[UUID_A, UUID_B]));
+    let second_bytes = service
+        .evaluate_capture(&capture(ADAPTER, generation, 2, 2, &second))
+        .expect("unproved observation");
+    assert_eq!(parse(&second_bytes)["rosterPlan"], bound["rosterPlan"]);
+    let mut third = parse(&second);
+    third["rosterFeedback"] = json!({
+        "op": plan.operation_id, "gen": plan.generation, "rev": plan.revision.to_string(),
+        "steps": [{
+            "step": step, "status": "appended",
+            "before": {"kind": "order", "order": [UUID_A]},
+            "after": {"kind": "order", "order": [UUID_A, UUID_B]}
+        }]
+    });
+    let third = capture(ADAPTER, generation, 3, 3, &third.to_string());
+    let settled = service.evaluate_capture(&third).expect("proved append");
+    let settled_value = parse(&settled);
+    assert_eq!(settled_value["ready"], true);
+    assert!(settled_value.get("rosterPlan").is_none(), "{settled_value}");
+    assert_eq!(service.evaluate_capture(&third).unwrap(), settled);
+    assert_eq!(service.evaluate_capture(&first).unwrap(), publication);
+}
+
+#[test]
 fn invalidation_watermark_is_monotonic_per_adapter() {
     let (service, generation) = discovered_service();
     let inner = inner_report(&[], true, false, "");

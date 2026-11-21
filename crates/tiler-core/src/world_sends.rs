@@ -829,14 +829,7 @@ impl WorldTransaction<'_> {
             else {
                 return false;
             };
-            let binding = |id: &str| {
-                self.world
-                    .settlement
-                    .native_map
-                    .iter()
-                    .find(|((out, _), logical)| out == &output.0 && logical.as_str() == id)
-                    .map(|((_, native), _)| native.as_str())
-            };
+            let binding = |id: &str| self.native_binding_for(&output.0, id);
             let known = |native: &str, occupied: bool| {
                 row.native_order.iter().any(|id| id == native)
                     && row.occupancy.iter().any(|occupancy| {
@@ -851,7 +844,7 @@ impl WorldTransaction<'_> {
             // An unbound logical spare has no native occupancy yet. If
             // it is bound, unreadable occupancy cannot prove this guard.
             let to = binding(spare);
-            if to.is_some_and(|native| !known(native, false)) {
+            if to.as_deref().is_some_and(|native| !known(native, false)) {
                 return false;
             }
             Some((row, from, to))
@@ -888,7 +881,7 @@ impl WorldTransaction<'_> {
                 return false;
             }
             let Some(home) = home else { return false };
-            if let Some((row, from, to)) = native {
+            if let Some((row, from, to)) = &native {
                 let Some(receipt) = fact.native_workspace.as_deref() else {
                     return false;
                 };
@@ -896,7 +889,7 @@ impl WorldTransaction<'_> {
                     receipt != from
                 } else {
                     receipt == from
-                        || Some(receipt) == to
+                        || Some(receipt) == to.as_deref()
                         || !row.native_order.iter().any(|id| id == receipt)
                 };
                 if fact.output.as_ref() != Some(output) || wrong_cell {

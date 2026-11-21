@@ -99,6 +99,7 @@ fn connected_engine(generation: &str, caps: HostCapabilities) -> WorldEngine {
 /// plus wire metadata.
 fn reply_wire(reply: &tiler_core::world_report::WorldReplyV4) -> String {
     let decoded = DecodedReplyV4 {
+        roster_plan: None,
         reply: reply.clone(),
         wire: ReplyWireOptionals {
             suspended_output_present: reply.presentation.suspended_output.is_some(),
@@ -125,6 +126,97 @@ fn decode_both(json: &str) -> DecodedReportV4 {
     let wired = decode_request_with_wire(json).expect("wired decodes");
     assert_eq!(plain, wired.report, "wrapper report matches plain decoder");
     wired
+}
+
+#[test]
+fn roster_feedback_preserves_exact_readbacks_and_replay_identity() {
+    use serde_json::{Value, json};
+    use tiler_core::world_roster::RosterStepProof;
+    use tiler_protocol::world_admission::handle_report_decoded_checked;
+    use tiler_protocol::world_protocol::{decode_report_v4, encode_report_v4};
+
+    let mut engine = connected_engine(
+        "gen-1",
+        HostCapabilities {
+            host_owned: true,
+            shared_native_roster: true,
+            ..Default::default()
+        },
+    );
+    let mut value = base_value();
+    value["gen"] = json!(engine.core_generation());
+    value["rosterFeedback"] = json!({
+        "op":"roster-1", "gen":engine.core_generation(), "rev":"1",
+        "steps":[
+            {"step":"append-1","status":"appended","before":{"kind":"order","order":["d1"]},
+                "after":{"kind":"order","order":["d1","d2"]}},
+            {"step":"member-1","status":"applied","before":{"kind":"home","out":"out-1","native":"d1"},
+                "after":{"kind":"home","out":"out-1","native":"d2"}},
+            {"step":"view-1","status":"applied","before":{"kind":"current","native":"d1"},
+                "after":{"kind":"current","native":"d2"}},
+            {"step":"remove-1","status":"applied","before":{"kind":"order","order":["d1","d2"]},
+                "after":{"kind":"order","order":["d2"]}},
+            {"step":"refused-1","status":"refused","before":null,"after":null}
+        ]
+    });
+    let decoded = decode_report_v4(&value.to_string()).unwrap();
+    let bytes = encode_report_v4(&decoded).unwrap();
+    assert_eq!(decode_report_v4(&bytes).unwrap(), decoded);
+    let reencoded: Value = serde_json::from_str(&bytes).unwrap();
+    assert_eq!(reencoded["rosterFeedback"], value["rosterFeedback"]);
+    assert_eq!(
+        decoded.roster_feedback().unwrap().proof().steps["append-1"],
+        RosterStepProof::Appended("d2".to_owned())
+    );
+
+    for (path, bad) in [
+        ("/rosterFeedback", Value::Null),
+        ("/rosterFeedback/rev", json!(1)),
+        ("/rosterFeedback/steps/0/status", json!("unknown")),
+        ("/rosterFeedback/steps/0/after/order", json!(["d2", "d1"])),
+        ("/rosterFeedback/steps/0/after/order", json!(["d1", "d1"])),
+        (
+            "/rosterFeedback/steps/1/after",
+            json!({"kind":"current","native":"d2"}),
+        ),
+        ("/rosterFeedback/steps/2/after", Value::Null),
+        ("/rosterFeedback/steps/3/after/order", json!(["d3"])),
+        (
+            "/rosterFeedback/steps/4/before",
+            json!({"kind":"current","native":"d1","extra":true}),
+        ),
+        ("/rosterFeedback/steps/4/step", json!("append-1")),
+    ] {
+        let mut invalid = value.clone();
+        *invalid.pointer_mut(path).unwrap() = bad;
+        assert!(
+            decode_report_v4(&invalid.to_string()).is_err(),
+            "accepted {path}"
+        );
+    }
+
+    assert!(matches!(
+        handle_report_decoded_checked(&mut engine, &decoded, &[]).outcome,
+        WorldOutcome::Accepted(_)
+    ));
+    assert!(matches!(
+        handle_report_decoded_checked(&mut engine, &decoded, &[]).outcome,
+        WorldOutcome::Duplicate(_)
+    ));
+    // Same core proof map, distinct actual setter evidence.
+    value["rosterFeedback"]["steps"][2]["before"]["native"] = json!("d3");
+    let changed = decode_report_v4(&value.to_string()).unwrap();
+    assert_eq!(
+        decoded.roster_feedback().unwrap().proof(),
+        changed.roster_feedback().unwrap().proof()
+    );
+    assert!(matches!(
+        handle_report_decoded_checked(&mut engine, &changed, &[]).outcome,
+        WorldOutcome::Rejected {
+            kind: "request-reused",
+            ..
+        }
+    ));
 }
 
 /// Both entry points must hold the same identifiable attempt row: the

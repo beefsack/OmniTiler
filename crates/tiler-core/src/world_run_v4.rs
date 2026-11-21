@@ -92,6 +92,7 @@ impl WorldTransaction<'_> {
             issuing_revision,
             predecessor,
             &[],
+            None,
         );
         outcome
     }
@@ -111,6 +112,7 @@ impl WorldTransaction<'_> {
     /// empty settlements so the caller reparks the batch.
     /// `predecessor` is the last fully incorporated reply's revision, absent
     /// at generation start. It is not the observation watermark.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn run_accepted_v4_batched(
         &mut self,
         report: &WorldReportV4,
@@ -119,6 +121,7 @@ impl WorldTransaction<'_> {
         issuing_revision: u64,
         predecessor: Option<u64>,
         queued: &[(u64, WorldCommand)],
+        roster_feedback: Option<&crate::world_roster::RosterFeedback>,
     ) -> (V4RunOutcome, Vec<BatchDisposition>) {
         // Admitted-candidate precondition without implementing admission:
         // an exhausted counter refuses and re-bootstraps under a new
@@ -259,6 +262,7 @@ impl WorldTransaction<'_> {
         self.ingest_staged_intent(&observation);
         self.stage_captured_v4(effective, observation);
         self.world.staged.revision = issuing_revision;
+        self.settle_shared_roster(roster_feedback);
         self.world.focus.prev_cursor = self.world.focus.last_cursor;
         self.world.focus.last_cursor = self.world.staged.observation.cursor;
         self.world
@@ -537,6 +541,10 @@ impl WorldTransaction<'_> {
             let _ = self.world.command_result.take();
             crate::world_cursor::maybe_push_focus_follows(self, &held_scopes, &mut effects);
             effects = self.drain_focus_candidates(effects, &held_scopes, issuing_revision);
+            self.plan_shared_roster(&held_scopes);
+            if self.connection.shared_roster_slots() {
+                self.build_staged_domains();
+            }
             let reply = self.publish_v4(
                 PublishEnvelopeV4 {
                     adapter_incarnation: report.adapter_incarnation.clone(),
@@ -589,6 +597,7 @@ impl WorldTransaction<'_> {
         // last executed command's identity.
         let mut last_bookkeeping = None;
         let mut first = true;
+        let roster_in_flight = self.shared_slot_transition_unproved();
         for entry in commands {
             let command_seq = entry.seq;
             let command = entry.command;
@@ -603,6 +612,15 @@ impl WorldTransaction<'_> {
                 dispositions.push(BatchDisposition {
                     seq: command_seq,
                     disposition: CommandDisposition::AlreadyConsumed,
+                });
+                first = false;
+                continue;
+            }
+            if roster_in_flight && crate::world_roster::changes_roster(command) {
+                self.note_command(command_seq);
+                dispositions.push(BatchDisposition {
+                    seq: command_seq,
+                    disposition: CommandDisposition::Refused(CommandRejectKind::TransferInFlight),
                 });
                 first = false;
                 continue;
@@ -664,7 +682,7 @@ impl WorldTransaction<'_> {
             {
                 *float_rect = Some(*rect);
             }
-            match self.execute_resolved_command(
+            let applied = self.execute_resolved_command(
                 issue,
                 command_seq,
                 dispatched.as_ref(),
@@ -673,7 +691,20 @@ impl WorldTransaction<'_> {
                 &held_scopes,
                 send_source,
                 migration_source,
-            ) {
+            );
+            // Directional actions may resolve to local layout work or to a
+            // native transfer. Only the latter conflicts with a frozen plan.
+            if roster_in_flight && self.world.settlement.retained != precommand.settlement.retained
+            {
+                *self.world = precommand;
+                self.note_command(command_seq);
+                dispositions.push(BatchDisposition {
+                    seq: command_seq,
+                    disposition: CommandDisposition::Refused(CommandRejectKind::TransferInFlight),
+                });
+                continue;
+            }
+            match applied {
                 CommandApplied::Effect(effect) => {
                     self.resweep_retiled(
                         &issue.owner,
@@ -786,6 +817,10 @@ impl WorldTransaction<'_> {
         // supersedes the retained slot here, while the carriers stay
         // internal for the selection freeze inside publication.
         let effects = self.drain_focus_candidates(effects, &held_scopes, issuing_revision);
+        self.plan_shared_roster(&held_scopes);
+        if self.connection.shared_roster_slots() {
+            self.build_staged_domains();
+        }
         let reply = self.publish_v4(
             PublishEnvelopeV4 {
                 adapter_incarnation: report.adapter_incarnation.clone(),

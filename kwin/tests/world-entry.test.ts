@@ -629,6 +629,38 @@ function reportOf(h: Harness): Record<string, unknown> {
     return requestOf(h)["report"] as Record<string, unknown>;
 }
 
+function acceptedSelectorReply(req: Record<string, unknown>, extra: Record<string, unknown>): string {
+    const report = req["report"] as {
+        native: Array<{ out: string; order: string[]; current: string }>;
+        windows: Array<{ win: string; out: string; nativeWs: string | null; sticky: boolean }>;
+    };
+    const [native] = report.native;
+    const [transfer] = extra["transfers"] as Array<{ op: string; out: string; ws: string }>;
+    assert.ok(native !== undefined && transfer !== undefined && transfer.out === native.out);
+    const workspaces = extra["workspaces"] as Array<{ id: string; bind: string }>;
+    const rows = native.order.map((id) => workspaces.find((ws) => ws.bind === id)?.id);
+    const target = workspaces.find((ws) => ws.id === transfer.ws)?.bind;
+    assert.ok(rows.every((id) => typeof id === "string") && target !== undefined);
+    const projections = [{ out: native.out, rows }];
+    return acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+        ...extra,
+        transfers: [{ ...transfer, held: true }],
+        rosterPlan: {
+            op: `roster-${transfer.op}`, gen: "gen-1", rev: "1", obs: "1",
+            baseline: { epoch: "1", order: native.order, projections },
+            currents: [{ out: native.out, native: native.current }],
+            occupants: native.order.map((id) => ({
+                native: id, windows: report.windows.filter((win) => !win.sticky && win.nativeWs === id)
+                    .map((win) => ({ win: win.win, out: win.out })),
+            })),
+            projections, slots: native.order.map((id) => ({ kind: "existing", native: id })),
+            members: [],
+            views: [{ step: transfer.op, out: native.out, before: native.current, target: { kind: "existing", native: target }, deps: [] }],
+            removals: [], focus: extra["focusRequest"] ?? null,
+        },
+    });
+}
+
 function queueOf(h: Harness): string {
     return h.lastCall("QueueWorldCommand").payload;
 }
@@ -1031,7 +1063,7 @@ describe("world entry discovery and observation", () => {
             h.runTimers();
             const req = requestOf(h);
             assert.equal(reportOf(h)["focused"], a, "pre-write foreground is normalized on the wire");
-            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+            h.lastCall("DescribeWorld").callback(acceptedSelectorReply(req, {
                 workspaces: [
                     { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
@@ -1084,7 +1116,7 @@ describe("world entry discovery and observation", () => {
             h.handle?.requestWorkspaceRelative(1);
             h.runTimers();
             const req = requestOf(h);
-            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+            h.lastCall("DescribeWorld").callback(acceptedSelectorReply(req, {
                 workspaces: [
                     { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
@@ -1139,7 +1171,7 @@ describe("world entry discovery and observation", () => {
             h.handle?.requestWorkspaceRelative(1);
             h.runTimers();
             const req = requestOf(h);
-            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+            h.lastCall("DescribeWorld").callback(acceptedSelectorReply(req, {
                 workspaces: [
                     { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
@@ -1175,7 +1207,7 @@ describe("world entry discovery and observation", () => {
             h.handle?.requestWorkspaceRelative(1);
             h.runTimers();
             const req = requestOf(h);
-            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+            h.lastCall("DescribeWorld").callback(acceptedSelectorReply(req, {
                 workspaces: [
                     { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
@@ -1207,7 +1239,7 @@ describe("world entry discovery and observation", () => {
             h.handle?.requestWorkspaceRelative(1);
             h.runTimers();
             const req = requestOf(h);
-            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+            h.lastCall("DescribeWorld").callback(acceptedSelectorReply(req, {
                 workspaces: [
                     { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
@@ -1234,7 +1266,7 @@ describe("world entry discovery and observation", () => {
             h.handle?.requestWorkspaceRelative(1);
             h.runTimers();
             const req = requestOf(h);
-            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+            h.lastCall("DescribeWorld").callback(acceptedSelectorReply(req, {
                 workspaces: [
                     { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
@@ -1261,7 +1293,7 @@ describe("world entry discovery and observation", () => {
             h.handle?.requestWorkspaceRelative(1);
             h.runTimers();
             const req = requestOf(h);
-            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+            h.lastCall("DescribeWorld").callback(acceptedSelectorReply(req, {
                 workspaces: [
                     { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
@@ -1288,7 +1320,7 @@ describe("world entry discovery and observation", () => {
             h.handle?.requestWorkspaceRelative(1);
             h.runTimers();
             const req = requestOf(h);
-            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+            h.lastCall("DescribeWorld").callback(acceptedSelectorReply(req, {
                 workspaces: [
                     { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
@@ -1315,7 +1347,7 @@ describe("world entry discovery and observation", () => {
             h.handle?.requestWorkspaceRelative(1);
             h.runTimers();
             const req = requestOf(h);
-            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+            h.lastCall("DescribeWorld").callback(acceptedSelectorReply(req, {
                 workspaces: [
                     { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
@@ -1342,7 +1374,7 @@ describe("world entry discovery and observation", () => {
             h.handle?.requestWorkspaceRelative(1);
             h.runTimers();
             const req = requestOf(h);
-            h.lastCall("DescribeWorld").callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+            h.lastCall("DescribeWorld").callback(acceptedSelectorReply(req, {
                 workspaces: [
                     { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
@@ -1429,7 +1461,7 @@ describe("world entry discovery and observation", () => {
     });
 
     it("creates through one flight and blocks removal of occupied workspaces", () => {
-        const h = makeHarness();
+        const h = makeHarness("shared");
         discover(h);
         h.handle?.requestWorkspaceRelative(1);
         h.runTimers();
@@ -2392,7 +2424,7 @@ describe("world entry all-mode native coverage", () => {
             // The flag is already off but notification has not arrived at the
             // adapter. Readback after either setter would be too late.
             options.perOutputVirtualDesktops = false;
-            flight.callback(acceptedReply("gen-1", req["source"] as string, req["nativeInvalid"] as string, "1", {
+            flight.callback(acceptedSelectorReply(req, {
                 workspaces: [
                     { id: "wl-1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" },
                     { id: "wl-2", out: "out", bind: "ws2", scope: { kind: "output", out: "out" }, order: 1, mode: "tiled", exist: true, hold: "" },
@@ -3471,11 +3503,12 @@ describe("world entry script-restart sequence handover", () => {
             assert.ok(reportedB !== undefined && !("floating" in reportedB) && !("fixedAuto" in reportedB), "raw row carries no verdicts");
             const replyScopesB = toggledB.reply["scopes"] as Array<Record<string, unknown>>;
             const replyWsB = ((toggledB.reply["workspaces"] as Array<Record<string, unknown>>) ?? []);
-            // v4: scopes ride the tagged union (never retired composite
-            // strings); the out-b current native (ws2) stays bound under a
-            // controlled covering scope.
-            const boundB = replyWsB.find((w) => w["out"] === "out-b" && w["bind"] === "ws2");
-            assert.ok(boundB !== undefined, `out-b current native ws2 stays bound: ${JSON.stringify(replyWsB)}`);
+            // The currently shown logical row, not a native ordinal, must
+            // have both an exact settled backing and controlled scope.
+            const outB = (toggledB.reply["outputs"] as Array<Record<string, unknown>>).find((o) => o["out"] === "out-b");
+            const boundB = replyWsB.find((w) => w["out"] === "out-b" && w["id"] === outB?.["view"]);
+            assert.equal(boundB?.["bind"], currents.get("out-b"), `out-b current stays bound: ${JSON.stringify(replyWsB)}`);
+            assert.ok(boundB !== undefined);
             const logicalB = boundB["id"] as string;
             const coveredB = replyScopesB.some((s) => {
                 const sc = s["scope"] as Record<string, unknown> | null;
@@ -4680,7 +4713,7 @@ describe("world entry focus feedback production regression", () => {
         const surface: Record<string, unknown> = {
             windowList: () => [w1, w2],
             screens,
-            desktops: [ws1, ws2],
+            desktops: [ws1, ws2, desk("ws3")],
             activeScreen: { name: "out-a" },
             get activeWindow() {
                 return active;

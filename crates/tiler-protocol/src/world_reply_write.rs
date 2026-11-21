@@ -20,17 +20,20 @@ use tiler_core::world_reply_validation::{
 };
 use tiler_core::world_report::{
     AfterShown, AfterShownScope, AuthorityScope, BorderPresentationV4, CommandRejectKind,
-    DragPreviewV4, FloatOrigin, FocusRequest, FrameWitness, HoldReason, IntentDesire,
+    DragPreviewV4, FloatOrigin, FocusRequest, FocusRequestCause, FrameWitness, HoldReason,
+    IntentDesire, MAX_FOCUS_DEPARTING, MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED, MAX_FOCUS_VIEWS,
     MAX_REPLY_OUTPUTS, MAX_REPLY_WINDOWS, MAX_REPLY_WORKSPACES, MAX_STATE_TARGETS_PER_WINDOW,
     NativeCreationDesire, OperationEvent, OutputDesire, RowDiagnostic, ScopeStatus, SwitchEvent,
     TransferKind, TransferTargetV4, WindowDesire, WorkspaceDesire, WorldPresentationV4,
     WorldReplyV4,
 };
+use tiler_core::world_roster::SharedRosterPlan;
 
 use crate::world_protocol::{
     ReplyWireOptionals, WORLD_MAX_REPLY_BYTES, WorldProtocolError, reply_snapshot, unknown_value,
 };
 use crate::world_reply_sink::{CountSink, ObjectWriter, ReplySink, SortedStringSink, StringSink};
+use crate::world_roster_wire::{check_publication, validate_plan, write_plan};
 
 type Result<T> = std::result::Result<T, WorldProtocolError>;
 
@@ -414,6 +417,33 @@ fn write_after_shown_v4<S: ReplySink, const VALIDATE: bool>(
         sink.push_str("null");
         return Ok(());
     };
+    if VALIDATE {
+        check_reply_id(&shown.op)?;
+        check_reply_cap(shown.members.len(), MAX_FOCUS_MEMBERS)?;
+        check_reply_cap(shown.views.len(), MAX_FOCUS_VIEWS)?;
+        check_reply_cap(shown.selected.len(), MAX_FOCUS_SELECTED)?;
+        check_reply_cap(shown.departing.len(), MAX_FOCUS_DEPARTING)?;
+        let mut members = BTreeSet::new();
+        let mut views = BTreeSet::new();
+        let mut selected = BTreeSet::new();
+        let mut departing = BTreeSet::new();
+        if !shown.members.iter().all(|row| members.insert(&row.win))
+            || !shown
+                .selected
+                .iter()
+                .all(|row| selected.insert((&row.out, &row.ws)))
+            || !shown
+                .views
+                .iter()
+                .all(|row| views.insert(&row.out) && selected.contains(&(&row.out, &row.ws)))
+            || !shown
+                .departing
+                .iter()
+                .all(|row| departing.insert((&row.out, &row.ws)))
+        {
+            return Err(reply_snapshot("encode-mismatch"));
+        }
+    }
     sink.write_object(|obj| {
         obj.field_str("op", &shown.op)?;
         obj.field_u64_str("obs", shown.obs)?;
@@ -450,10 +480,20 @@ fn write_after_shown_v4<S: ReplySink, const VALIDATE: bool>(
     })
 }
 
-fn write_focus_request_v4<S: ReplySink, const VALIDATE: bool>(
+pub(crate) fn write_focus_request_v4<S: ReplySink, const VALIDATE: bool>(
     request: &FocusRequest,
     sink: &mut S,
 ) -> Result<()> {
+    if VALIDATE {
+        check_reply_id(&request.id)?;
+        check_reply_id(&request.target.0)?;
+        check_reply_id(&request.output.0)?;
+        check_reply_id(&request.workspace)?;
+        let explicit = request.cause == FocusRequestCause::ExplicitCommand;
+        if explicit != request.cmd_seq.is_some() || (!explicit && request.after_shown.is_some()) {
+            return Err(reply_snapshot("encode-mismatch"));
+        }
+    }
     sink.write_object(|obj| {
         obj.field_str("id", &request.id)?;
         obj.field_str("target", &request.target.0)?;
@@ -1014,6 +1054,7 @@ fn map_validation_error(err: ReplyValidationError) -> WorldProtocolError {
 fn write_reply_v4_to_sink<S: ReplySink, const VALIDATE: bool>(
     reply: &WorldReplyV4,
     wire: &ReplyWireOptionals,
+    roster_plan: Option<&SharedRosterPlan>,
     broker_bind: Option<&BrokerReplyBind<'_>>,
     sink: &mut S,
 ) -> Result<()> {
@@ -1022,6 +1063,16 @@ fn write_reply_v4_to_sink<S: ReplySink, const VALIDATE: bool>(
         if reply.presentation.suspended_output.is_some() != wire.suspended_output_present {
             return Err(reply_snapshot("suspended-output-inconsistent"));
         }
+    }
+    if let Some(plan) = roster_plan {
+        check_publication(
+            Some(plan),
+            &reply.core_generation,
+            reply.state_revision,
+            reply.based_on_observation_seq,
+            reply.ready,
+        )?;
+        validate_plan(plan)?;
     }
     sink.write_object(|obj| {
         obj.field("v", |s| {
@@ -1112,6 +1163,9 @@ fn write_reply_v4_to_sink<S: ReplySink, const VALIDATE: bool>(
             &reply.diagnostics,
             write_row_diagnostic_v4::<S, false>,
         )?;
+        if let Some(plan) = roster_plan {
+            obj.field("rosterPlan", |s| write_plan(plan, s))?;
+        }
         if let Some(bind) = broker_bind {
             obj.field_str("source", bind.source)?;
             obj.field_u64_str("nativeInvalid", bind.native_invalid)?;
@@ -1174,7 +1228,7 @@ fn write_projection_preview<S: ReplySink>(
 #[must_use]
 pub fn count_reply_v4_bytes(reply: &WorldReplyV4, wire: &ReplyWireOptionals) -> usize {
     let mut sink = CountSink(0);
-    let _ = write_reply_v4_to_sink::<_, false>(reply, wire, None, &mut sink);
+    let _ = write_reply_v4_to_sink::<_, false>(reply, wire, None, None, &mut sink);
     sink.0
 }
 
@@ -1210,7 +1264,7 @@ pub(crate) fn count_switch_settled_section_bytes(settled: &[SwitchEvent]) -> usi
 /// 4 MiB transport cap so callers can measure headroom or over-budget sizes.
 pub fn count_reply_v4(reply: &WorldReplyV4, wire: &ReplyWireOptionals) -> Result<usize> {
     let mut sink = CountSink(0);
-    write_reply_v4_to_sink::<_, true>(reply, wire, None, &mut sink)?;
+    write_reply_v4_to_sink::<_, true>(reply, wire, None, None, &mut sink)?;
     Ok(sink.0)
 }
 
@@ -1224,14 +1278,23 @@ pub fn write_reply_v4_into(
     out: &mut String,
 ) -> Result<()> {
     let mut sink = StringSink(out);
-    write_reply_v4_to_sink::<_, true>(reply, wire, None, &mut sink)
+    write_reply_v4_to_sink::<_, true>(reply, wire, None, None, &mut sink)
 }
 
 /// Checked canonical encode of a borrowed v4 reply and wire optionals,
 /// enforcing the 4 MiB transport reply bound.
 pub fn write_reply_v4(reply: &WorldReplyV4, wire: &ReplyWireOptionals) -> Result<String> {
+    write_reply_v4_with_plan(reply, wire, None)
+}
+
+/// Checked canonical reply emission, including any shared-roster publication.
+pub fn write_reply_v4_with_plan(
+    reply: &WorldReplyV4,
+    wire: &ReplyWireOptionals,
+    roster_plan: Option<&SharedRosterPlan>,
+) -> Result<String> {
     let mut out = String::new();
-    write_reply_v4_into(reply, wire, &mut out)?;
+    write_reply_v4_to_sink::<_, true>(reply, wire, roster_plan, None, &mut StringSink(&mut out))?;
     if out.len() > WORLD_MAX_REPLY_BYTES {
         return Err(reply_snapshot("encode-mismatch"));
     }
@@ -1244,11 +1307,12 @@ pub fn write_reply_v4(reply: &WorldReplyV4, wire: &ReplyWireOptionals) -> Result
 pub fn write_bound_reply_v4(
     reply: &WorldReplyV4,
     wire: &ReplyWireOptionals,
+    roster_plan: Option<&SharedRosterPlan>,
     bind: &BrokerReplyBind<'_>,
 ) -> Result<String> {
     check_reply_id(bind.source)?;
     let mut sink = SortedStringSink::new();
-    write_reply_v4_to_sink::<_, true>(reply, wire, Some(bind), &mut sink)?;
+    write_reply_v4_to_sink::<_, true>(reply, wire, roster_plan, Some(bind), &mut sink)?;
     Ok(sink.finish())
 }
 
@@ -1258,6 +1322,7 @@ pub fn write_bound_reply_v4(
 pub fn write_bound_reply_v4_prevalidated(
     validated: ValidatedReply<'_>,
     wire: &ReplyWireOptionals,
+    roster_plan: Option<&SharedRosterPlan>,
     bind: &BrokerReplyBind<'_>,
 ) -> Result<String> {
     let reply = validated.reply();
@@ -1266,7 +1331,7 @@ pub fn write_bound_reply_v4_prevalidated(
     }
     check_reply_id(bind.source)?;
     let mut sink = SortedStringSink::new();
-    write_reply_v4_to_sink::<_, false>(reply, wire, Some(bind), &mut sink)?;
+    write_reply_v4_to_sink::<_, false>(reply, wire, roster_plan, Some(bind), &mut sink)?;
     Ok(sink.finish())
 }
 

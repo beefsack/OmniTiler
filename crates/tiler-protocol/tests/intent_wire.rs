@@ -135,6 +135,7 @@ fn connected_engine(generation: &str, caps: HostCapabilities) -> WorldEngine {
 /// plus wire metadata.
 fn reply_wire(reply: &WorldReplyV4) -> String {
     let decoded = DecodedReplyV4 {
+        roster_plan: None,
         reply: reply.clone(),
         wire: ReplyWireOptionals {
             suspended_output_present: reply.presentation.suspended_output.is_some(),

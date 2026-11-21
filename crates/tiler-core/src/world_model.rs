@@ -84,9 +84,11 @@ impl WorldTransaction<'_> {
     /// the unified ring with union occupancy: a workspace occupied on any
     /// live output survives everywhere (never deleted because one screen's
     /// scoped view is empty).
-    /// Independently scoped projections of a shared native roster retire
-    /// together; spare padding happens after the joint removal decision.
+    /// Separate shared-pager lifecycle instead projects accepted commands at publication.
     pub(crate) fn converge_logical_post(&mut self) {
+        if self.connection.shared_roster_slots() {
+            return;
+        }
         use crate::workspace::{WorkspaceFacts, plan_trailing};
         let inventory_complete = self.world.staged.observation.inventory_complete;
         let live: Vec<String> =
@@ -144,7 +146,6 @@ impl WorldTransaction<'_> {
         let shared = self.connection.workspace_mode_setting()
             == crate::workspace_scope::WorkspaceMode::Shared;
         let shared_native_roster = self.connection.shared_native_roster();
-        let mut pad_shared_spare = false;
         if shared {
             // Union occupancy over logical ids across all live outputs.
             let mut occupied_ids: BTreeSet<String> = BTreeSet::new();
@@ -355,43 +356,7 @@ impl WorldTransaction<'_> {
                 let plan = plan_trailing(&facts);
                 plans.insert(output.clone(), (ring, plan));
             }
-            if shared_native_roster {
-                if let Some(mut global) = self.shared_global_prunable_natives() {
-                    // Share only this turn's new spare demand on aligned
-                    // rings. A shorter ring during migration or hotplug is
-                    // not a spare request: backing count padding adds a
-                    // native to the longer ring too, preserving the gap.
-                    pad_shared_spare = plans.values().next().is_some_and(|(first, _)| {
-                        plans.values().all(|(ring, _)| ring.len() == first.len())
-                    });
-                    // A globally eligible native may still be kept by a
-                    // local trailing plan. Only remove groups every plan
-                    // would remove, before padding any spare demand.
-                    for (output, (ring, plan)) in &plans {
-                        global.retain(|native| {
-                            self.world
-                                .settlement
-                                .native_map
-                                .get(&(output.clone(), native.clone()))
-                                .is_some_and(|logical| {
-                                    plan.remove.iter().any(|&index| &ring[index] == logical)
-                                })
-                        });
-                    }
-                    for (output, (ring, plan)) in &mut plans {
-                        plan.remove.retain(|&index| {
-                            self.native_binding_for(output, &ring[index])
-                                .is_some_and(|native| global.contains(&native))
-                        });
-                    }
-                } else {
-                    // Incomplete or divergent observations cannot prove
-                    // all projections safe; never retire a subset.
-                    for (_, plan) in plans.values_mut() {
-                        plan.remove.clear();
-                    }
-                }
-            } else if self.connection.host_owned_workspace_domains()
+            if self.connection.host_owned_workspace_domains()
                 && self.connection.equal_workspace_count()
             {
                 // Partial native retirement readback must not replace an old
@@ -456,8 +421,7 @@ impl WorldTransaction<'_> {
                 }
             }
         }
-        // Equal-count parity for independent rosters, or one coordinated
-        // spare group on a shared roster. Pad only; never remove for parity.
+        // Legacy equal-count parity pads only; never remove for parity.
         // Host-owned padding needs readable inventories, screens, and
         // native orders: an incomplete list or a missing/empty native row
         // proves no count, so padding waits for a complete re-read.
@@ -471,7 +435,7 @@ impl WorldTransaction<'_> {
                 .all(|output| native_nonempty.contains(output.as_str()));
         let pad_equal_count =
             (!shared_native_roster || shared) && self.connection.equal_workspace_count();
-        if (pad_equal_count || pad_shared_spare) && inventories_readable && native_orders_known {
+        if pad_equal_count && inventories_readable && native_orders_known {
             let max_len = live
                 .iter()
                 .filter_map(|output| self.world.workspace.mapping.get(output).map(Vec::len))
@@ -1501,9 +1465,7 @@ impl WorldTransaction<'_> {
             || s.pending_source_releases
                 .iter()
                 .any(|(_, ws)| ws == candidate)
-            || s.migration_anchors
-                .iter()
-                .any(|((_, ws), anchor)| ws == candidate || anchor == candidate)
+            || self.is_shared_slot_bound(candidate)
             || s.last_views.values().any(|ws| ws == candidate)
             || s.native_map.values().any(|ws| ws == candidate)
             || s.retired_natives.values().any(|ws| ws == candidate)
@@ -1540,6 +1502,21 @@ impl WorldTransaction<'_> {
         output: &OutputId,
         default_tiled: bool,
     ) -> Option<String> {
+        let id = self.reserve_trailing_workspace(output, default_tiled)?;
+        self.world
+            .workspace
+            .mapping
+            .entry(output.0.clone())
+            .or_default()
+            .push(id.clone());
+        Some(id)
+    }
+
+    pub(crate) fn reserve_trailing_workspace(
+        &mut self,
+        output: &OutputId,
+        default_tiled: bool,
+    ) -> Option<String> {
         let id = loop {
             if self.world.workspace.creation_counter == u64::MAX {
                 return None;
@@ -1551,12 +1528,6 @@ impl WorldTransaction<'_> {
                 break candidate;
             }
         };
-        self.world
-            .workspace
-            .mapping
-            .entry(output.0.clone())
-            .or_default()
-            .push(id.clone());
         let key = DomainKey {
             output: output.clone(),
             workspace: WorkspaceId(id.clone()),
@@ -1781,6 +1752,14 @@ impl WorldTransaction<'_> {
                     continue;
                 }
                 if window.sticky && known_anywhere.contains(id) {
+                    continue;
+                }
+                // Reprojection changes a known lifetime's logical home;
+                // completion of a shared native move is not admission.
+                if self.connection.shared_roster_slots()
+                    && (known_anywhere.contains(id)
+                        || self.world.workspace.members.contains_key(&window.window))
+                {
                     continue;
                 }
                 // Safety priority: an unexplained fit-excluded newcomer

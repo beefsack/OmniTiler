@@ -1873,6 +1873,7 @@ fn run_loaded_scenario(
                                                 .is_some(),
                                         };
                                         let text = encode_reply_v4(&DecodedReplyV4 {
+                                            roster_plan: None,
                                             reply,
                                             wire: wire_flags,
                                         })
@@ -3232,6 +3233,7 @@ fn visibility_driver_fallback_true_consumer_edge() {
         .fallback = true;
     let suspended = typed.presentation.suspended_output.is_some();
     let text = encode_reply_v4(&DecodedReplyV4 {
+        roster_plan: None,
         reply: typed,
         wire: ReplyWireOptionals {
             suspended_output_present: suspended,

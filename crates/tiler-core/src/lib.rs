@@ -67,6 +67,7 @@ pub(crate) mod world_publish_v4;
 pub mod world_reply_validation;
 pub mod world_report;
 pub mod world_report_v4_checks;
+pub mod world_roster;
 pub(crate) mod world_run_v4;
 pub(crate) mod world_runtime_state;
 pub(crate) mod world_selection;

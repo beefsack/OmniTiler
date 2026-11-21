@@ -16,7 +16,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { startWorldAdapterEntry } from "../src/world-entry";
-import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
+import { isCoreWorldReply, parseWorldReply, type WorldRosterPlan } from "../src/world-report";
 import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
 interface FakeDesktop {
@@ -91,6 +91,7 @@ interface Harness {
     renders: Array<{ method: string; args: ReadonlyArray<unknown> }>;
     sentToOutput: string[];
     currents: Map<string, string>;
+    viewWrites: string[];
     runTimers: () => void;
     replyNext: (mutate?: (body: Record<string, unknown>) => void) => void;
 }
@@ -100,6 +101,7 @@ function setup(wins: FakeWindow[], currents: Map<string, string>, floatIntent = 
     const timers: Array<{ delay: number; cb: () => void }> = [];
     const renders: Array<{ method: string; args: ReadonlyArray<unknown> }> = [];
     const sentToOutput: string[] = [];
+    const viewWrites: string[] = [];
     const screens = [...new Set(wins.map((w) => w.output.name))].map((name) => ({ name }));
     const allDesktops: FakeDesktop[] = [];
     for (const w of wins) {
@@ -130,8 +132,11 @@ function setup(wins: FakeWindow[], currents: Map<string, string>, floatIntent = 
             const id = currents.get(name) ?? "";
             return allDesktops.find((d) => d.id === id) ?? null;
         },
-        setCurrentDesktopForScreen: (deskRef: unknown, outRef: unknown) => {
-            currents.set((outRef as { name: string }).name, (deskRef as { id: string }).id);
+        setCurrentDesktopForScreen: (deskRef: FakeDesktop, outRef: { name: string }) => {
+            const out = outRef.name;
+            const native = deskRef.id;
+            viewWrites.push(`${out}->${native}`);
+            currents.set(out, native);
         },
         sendClientToScreen: (client: unknown, output: unknown) => {
             sentToOutput.push(`${(client as FakeWindow).internalId}->${(output as { name: string }).name}`);
@@ -264,7 +269,7 @@ function setup(wins: FakeWindow[], currents: Map<string, string>, floatIntent = 
         assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");
         (last as { callback: (reply: unknown) => void }).callback(text);
     };
-    return { handle, calls, timers, renders, sentToOutput, currents, runTimers, replyNext };
+    return { handle, calls, timers, renders, sentToOutput, currents, viewWrites, runTimers, replyNext };
 }
 
 function discover(h: Harness): void {
@@ -386,7 +391,7 @@ const TAKE_RESULTS: Record<string, Record<string, unknown>> = {
         "targetOut": "out-b",
         "targetWs": "ws-1",
         "members": [
-            "win-a"
+            "win-a", "win-c"
         ],
         "floats": 0
     },
@@ -538,91 +543,91 @@ describe("world command result entry", () => {
         h.handle?.stop();
     });
 
-    it("migrates every member and follows the views without repeats", () => {
+    it("migrates every member and follows both views once under the typed roster plan, not the take result", () => {
         const outA = { name: "out-a" };
         const outB = { name: "out-b" };
         const wa1 = { id: "wa1" };
         const wb1 = { id: "wb1" };
-        const currents = new Map([["out-a", "wa1"], ["out-b", "wb1"]]);
-        const h = setup([makeWindow("win-a", outA, wa1), makeWindow("win-b", outB, wb1)], currents);
+        const wins = [makeWindow("win-a", outA, wa1), makeWindow("win-b", outB, wb1), makeWindow("win-c", outA, wa1)];
+        const h = setup(wins, new Map([["out-a", "wa1"], ["out-b", "wb1"]]));
         discover(h);
         stageTake("migrate");
-        h.replyNext((accept) => {
-            // Stage the creation-flow binding proof for the migrated unit
-            // (ws-1 to native wa1 on out-b): the live broker leaves it unbound
-            // until the adapter proves the desktop.
+        const desired = (accept: Record<string, unknown>): void => {
             accept["workspaces"] = [
                 { id: "ws-1", out: "out-b", bind: "wa1", scope: { kind: "workspace", out: "out-b", ws: "ws-1" }, order: 0, mode: "tiled", exist: true, hold: "" },
+                { id: "ws-refill", out: "out-a", bind: "wb1", scope: { kind: "workspace", out: "out-a", ws: "ws-refill" }, order: 1, mode: "tiled", exist: true, hold: "" },
             ];
             accept["outputs"] = [
-                { out: "out-a", view: "wa1", mode: "tiled", hold: "" },
-                { out: "out-b", view: "wa1", mode: "tiled", hold: "" },
+                { out: "out-a", view: "ws-refill", mode: "tiled", hold: "" },
+                { out: "out-b", view: "ws-1", mode: "tiled", hold: "" },
             ];
             accept["windows"] = [
-                { ...tiledRow("win-a"), out: "out-b", ws: "ws-1", alloc: [4, 4, 792, 592], frame: [4, 4, 792, 592] },
-                { ...tiledRow("win-b"), out: "out-b", ws: "wb1", alloc: [404, 4, 392, 592], frame: [404, 4, 392, 592] },
+                { ...tiledRow("win-a"), out: "out-b", ws: "ws-1", frame_auth: "untouched" },
+                { ...tiledRow("win-c"), out: "out-b", ws: "ws-1", frame_auth: "untouched" },
             ];
             accept["scopes"] = [
                 { scope: { kind: "workspace", out: "out-b", ws: "ws-1" }, auth: "controlled", reason: "" },
-                { scope: { kind: "workspace", out: "out-b", ws: "wb1" }, auth: "controlled", reason: "" },
             ];
-            accept["transfers"] = [
-                { op: "op-1", kind: "migration", win: "", out: "out-b", ws: "ws-1", follow: false, held: false, cmdSeq: null, parent: null },
-            ];
+        };
+        h.replyNext(desired);
+        assert.ok(h.calls.some((c) => c.method === "TakeCommandResult"), "requester-only migration result was collected");
+        assert.deepEqual(h.sentToOutput, [], "terminal result grants no native member authority");
+        assert.deepEqual(h.viewWrites, [], "terminal result grants no native view authority");
+
+        const rev = String(takeRev.n + 1);
+        const waSlot = { kind: "existing", native: "wa1" } as const;
+        const wbSlot = { kind: "existing", native: "wb1" } as const;
+        const plan: WorldRosterPlan = {
+            op: "roster-migration", gen: "gen-1", rev, obs: rev,
+            baseline: { epoch: "1", order: ["wa1", "wb1"], projections: [
+                { out: "out-a", rows: ["ws-1", "ws-refill"] },
+                { out: "out-b", rows: ["ws-spare", "ws-other"] },
+            ] },
+            currents: [{ out: "out-a", native: "wa1" }, { out: "out-b", native: "wb1" }],
+            occupants: [
+                { native: "wa1", windows: [{ win: "win-a", out: "out-a" }, { win: "win-c", out: "out-a" }] },
+                { native: "wb1", windows: [{ win: "win-b", out: "out-b" }] },
+            ],
+            projections: [
+                { out: "out-a", rows: ["ws-spare", "ws-refill"] },
+                { out: "out-b", rows: ["ws-1", "ws-other"] },
+            ],
+            slots: [waSlot, wbSlot],
+            members: ["win-a", "win-c"].map((win) => ({
+                step: `move-${win}`, win, before: { out: "out-a", native: "wa1" }, out: "out-b", target: waSlot, deps: [],
+            })),
+            views: [
+                { step: "target-follow", out: "out-b", before: "wb1", target: waSlot, deps: ["move-win-a", "move-win-c"] },
+                { step: "source-refill", out: "out-a", before: "wa1", target: wbSlot, deps: ["move-win-a", "move-win-c"] },
+            ],
+            removals: [], focus: null,
+        };
+        const applyPlan = (accept: Record<string, unknown>): void => {
+            desired(accept);
+            accept["rosterPlan"] = plan;
+        };
+        h.replyNext(applyPlan);
+        const sends = ["win-a->out-b", "win-c->out-b"];
+        const views = ["out-b->wa1", "out-a->wb1"];
+        assert.deepEqual(h.sentToOutput, sends, "every member arrives natively, with no sibling move");
+        assert.deepEqual(wins.map((win) => [win.output.name, win.desktops.map((d) => d.id)]), [
+            ["out-b", ["wa1"]], ["out-b", ["wb1"]], ["out-b", ["wa1"]],
+        ]);
+        assert.deepEqual(h.viewWrites, views, "target follows and source refills");
+        assert.deepEqual([...h.currents], [["out-a", "wb1"], ["out-b", "wa1"]]);
+        const issued = h.calls.filter((c) => c.method === "DescribeWorld").length;
+        h.replyNext((accept) => {
+            const captures = h.calls.filter((c) => c.method === "DescribeWorld");
+            assert.ok(captures.length > issued, "retained plan is delivered on a fresh capture");
+            const latest = captures[captures.length - 1];
+            assert.ok(latest);
+            const { report } = JSON.parse(latest.payload) as { report: { rosterFeedback?: { op: string; rev: string } } };
+            assert.equal(report.rosterFeedback?.op, plan.op, "original operation proof rides the replay capture");
+            assert.equal(report.rosterFeedback?.rev, plan.rev, "proof keeps its issuing revision");
+            applyPlan(accept);
         });
-        assert.ok(h.sentToOutput.some((c) => c === "win-a->out-b"), "member arrives natively");
-        assert.equal(currents.get("out-b"), "wa1", "target view follows");
-        const sends = h.sentToOutput.length;
-        // A repeat dispatch with converged observation issues no new moves.
-        h.runTimers();
-        const last = [...h.calls].reverse().find((c) => c.method === "DescribeWorld");
-        if (last !== undefined) {
-            const repBody = JSON.parse((last as { payload: string }).payload) as Record<string, unknown>;
-            takeRev.n += 1;
-            const second: Record<string, unknown> = {
-                v: 4, adapter: "test-adapter", gen: "gen-1",
-                req: repBody["source"], obs: String(takeRev.n), rev: String(takeRev.n),
-                ready: true, consumed: false,
-                source: repBody["source"], nativeInvalid: repBody["nativeInvalid"], clock: "1",
-                gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
-                focusRequest: null,
-                operationSettled: [], nativeCreations: [],
-                warpCursor: null,
-                intentDesired: [], switchSettled: [], diagnostics: [],
-                presentation: DISABLED_PRESENTATION,
-                scopes: [
-                    { scope: { kind: "workspace", out: "out-b", ws: "ws-1" }, auth: "controlled", reason: "" },
-                    { scope: { kind: "workspace", out: "out-b", ws: "wb1" }, auth: "controlled", reason: "" },
-                ],
-                workspaces: [
-                    { id: "ws-1", out: "out-b", bind: "wa1", scope: { kind: "workspace", out: "out-b", ws: "ws-1" }, order: 0, mode: "tiled", exist: true, hold: "" },
-                ],
-                outputs: [
-                    { out: "out-a", view: "wa1", mode: "tiled", hold: "" },
-                    { out: "out-b", view: "wa1", mode: "tiled", hold: "" },
-                ],
-                windows: [
-                    { ...tiledRow("win-a"), out: "out-b", ws: "ws-1", alloc: [4, 4, 792, 592], frame: [4, 4, 792, 592] },
-                    { ...tiledRow("win-b"), out: "out-b", ws: "wb1", alloc: [404, 4, 392, 592], frame: [404, 4, 392, 592] },
-                ],
-                transfers: [
-                    { op: "op-1", kind: "migration", win: "", out: "out-b", ws: "ws-1", follow: false, held: false, cmdSeq: null, parent: null },
-                ], effects: [], dragPreview: null,
-            };
-            const secondText = JSON.stringify(second);
-            const secondParsed = parseWorldReply(secondText);
-            assert.ok(secondParsed !== null && isCoreWorldReply(secondParsed), "authored accept binds strict v4");
-            (globalThis as Record<string, unknown>)["__takeResult"] = {
-                op: "migrate-workspace", direction: "right",
-                sourceOut: "out-a", sourceWs: "ws-1", targetOut: "out-b", targetWs: "ws-1",
-                members: ["win-a"], floats: 0,
-            };
-            (last as { callback: (reply: unknown) => void }).callback(secondText);
-            // Re-stage: the repeat dispatch drains observation-only. Take a
-            // pending collection path instead of reusing the result.
-            delete (globalThis as Record<string, unknown>)["__takeResult"];
-        }
-        assert.equal(h.sentToOutput.length, sends, "no repeated ambiguous moves");
+        assert.deepEqual(h.sentToOutput, sends, "no repeated member moves");
+        assert.deepEqual(h.viewWrites, views, "no repeated view setters");
         h.handle?.stop();
     });
 

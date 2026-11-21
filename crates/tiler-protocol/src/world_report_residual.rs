@@ -13,6 +13,7 @@ use tiler_core::world_engine::ReplayResidualToken;
 use tiler_core::world_report::AttemptLaneV4;
 
 use crate::world_admission_rows::held_fields_estimate;
+use crate::world_roster_wire::RosterFeedbackWire;
 
 /// Canonical ordered raw fields retained for one held row.
 pub type HeldFields = Vec<(String, RawSettingValue)>;
@@ -39,6 +40,8 @@ pub struct WorldReportResidual {
     /// Canonical ordered raw fields of a held `presentation` singleton object,
     /// when `report.presentation` is `PresentationRowV4::Held(_)`.
     pub held_presentation_fields: Option<HeldFields>,
+    /// Exact setter readbacks and the correlated proof derived from them.
+    pub roster_feedback: Option<RosterFeedbackWire>,
 }
 
 impl WorldReportResidual {
@@ -50,6 +53,7 @@ impl WorldReportResidual {
             && self.held_native_fields.is_empty()
             && self.held_attempt_fields.is_empty()
             && self.held_presentation_fields.is_none()
+            && self.roster_feedback.is_none()
     }
 
     /// Look up retained raw fields for one held screen ordinal in sorted
@@ -133,6 +137,11 @@ impl WorldReportResidual {
             .saturating_add(native_bytes)
             .saturating_add(attempt_bytes)
             .saturating_add(presentation_bytes)
+            .saturating_add(
+                self.roster_feedback
+                    .as_ref()
+                    .map_or(0, RosterFeedbackWire::byte_len),
+            )
     }
 }
 impl ReplayResidualToken for WorldReportResidual {

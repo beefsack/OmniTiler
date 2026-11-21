@@ -573,13 +573,18 @@ impl WorldTransaction<'_> {
                     };
                 };
                 let current = self.effective_view(&resolved).unwrap_or_default();
-                let Some(target) = self
-                    .resolve_selection_ring(
+                let padding = if *delta == 1 {
+                    self.materialize_next_shared_slot(&resolved, &current)
+                } else {
+                    None
+                };
+                let Some(target) = padding.or_else(|| {
+                    self.resolve_selection_ring(
                         &crate::world_engine::RawRouting::from_staged(&self.world.staged),
                         &resolved,
                     )
                     .and_then(|ring| resolve_relative_step(&ring, &current, *delta))
-                else {
+                }) else {
                     return CommandApplied::Rejected {
                         kind: KIND_SELECT_UNKNOWN,
                         message: MSG_SELECT_UNKNOWN,
@@ -1464,17 +1469,6 @@ impl WorldTransaction<'_> {
             let at = insert_at.min(ring.len());
             ring.insert(at, workspace.to_owned());
         }
-        // Shared roster: pin the authoritative after-current position so
-        // creation settlement and re-observation keep the moved row put
-        // while genuine external native reorders still move the rest.
-        if self.connection.shared_native_roster()
-            && let Some(anchor) = anchor_view
-        {
-            self.world
-                .settlement
-                .migration_anchors
-                .insert((target_output.0.clone(), workspace.to_owned()), anchor);
-        }
         self.carry_tiling(workspace, &source_output.0, &target_output.0);
         // Floating scope follows the id exactly like the tiling mode
         // above (mirroring the global-swap commit): without this the
@@ -1523,7 +1517,7 @@ impl WorldTransaction<'_> {
         // The actual source view is frozen here (before any retained
         // settlement reads it): the selection pending below carries it
         // and settlement never recomputes it per report.
-        let pending_selection = if selection_route {
+        let pending_selection = if selection_route || self.connection.shared_roster_slots() {
             let mut affected = vec![source_output.clone(), target_output.clone()];
             affected.sort();
             affected.dedup();
@@ -1561,7 +1555,11 @@ impl WorldTransaction<'_> {
                 let candidate = WindowId(foreground);
                 if !candidate.0.is_empty()
                     && members.contains(&candidate)
-                    && self.selection_route_eligible(&candidate, &target_key, held_scopes)
+                    && (if selection_route {
+                        self.selection_route_eligible(&candidate, &target_key, held_scopes)
+                    } else {
+                        self.host_selection_route_eligible(&candidate, &source_key, held_scopes)
+                    })
                 {
                     Some(candidate)
                 } else {

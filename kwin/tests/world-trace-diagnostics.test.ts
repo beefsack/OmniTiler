@@ -71,7 +71,7 @@ interface Harness {
     lastCall: (method: string) => { method: string; payload: string; callback: (reply: unknown) => void; answered: boolean };
 }
 
-function makeHarness(extraDesktops: readonly string[] = []): Harness {
+function makeHarness(extraDesktops: readonly string[] = [], mode: "per-output-local" | "shared" = "per-output-local"): Harness {
     const wins = [
         makeWin(WIN_A, { x: TILE_A[0], y: TILE_A[1], width: TILE_A[2], height: TILE_A[3] }),
         makeWin(WIN_B, { x: TILE_B[0], y: TILE_B[1], width: TILE_B[2], height: TILE_B[3] }),
@@ -152,7 +152,7 @@ function makeHarness(extraDesktops: readonly string[] = []): Harness {
         log: (m) => { logs.push(m); },
         gestureActive: () => false,
         registerShortcutFn: () => true,
-        readWorkspaceModeFn: () => "per-output-local",
+        readWorkspaceModeFn: () => mode,
         readDefaultTiledFn: () => true,
     });
     assert.ok(handle !== null);
@@ -1169,11 +1169,11 @@ describe("world trace observe-flight reconnect diagnostics", () => {
     });
 
     it("accepted window transfer records pre/post membership-attempt evidence", () => {
-        // Two-desktop single-output world: the transfer moves WIN_A across
-        // native desktops without an output send, so setMembership actuates
-        // on the fake native and records pre/post setter evidence.
+        // A linked host with two desktops exercises the legacy trace lane.
+        // WIN_A crosses desktops without a view switch or output send,
+        // so setMembership records exact pre/post setter evidence.
         const WS2 = "ws2";
-        const h = makeHarness([WS2]);
+        const h = makeHarness([WS2], "shared");
         discover(h);
         // Second commandless flight carries the transfer reply; the
         // discover auto flight is already settled.

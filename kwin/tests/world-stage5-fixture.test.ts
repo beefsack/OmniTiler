@@ -15,8 +15,8 @@
 // capability, the `foregroundKnown` report bit, and the nullable
 // `focusRequest` reply lane; frozen `test-fixtures/stage5-v4` (hidden-border
 // lineage without those keys) and `test-fixtures/stage5-v2` stay untouched
-// history. Genesis-1 is never byte-compared: its frame/member/view/clear/creation
-// attempt stamps are adopted from the preceding broker reply clock
+// history. Genesis-1 carries the correlated append proof and the native
+// frame attempt stamps adopted from the preceding broker reply clock
 // (`world-apply` stamps every mechanical attempt of an apply turn with
 // `state.lastClock`), so the test pins attempt target/readback bytes
 // field-wise plus frame stamps equal to the genesis-0 reply clock and
@@ -135,6 +135,7 @@ function assertNoAttempts(report: Record<string, unknown>, where: string): void 
     for (const lane of ATTEMPT_LANES) {
         assert.deepEqual(attemptLane(report, lane), [], `${where} carries no ${lane}`);
     }
+    assert.equal(report["rosterFeedback"], undefined, `${where} carries no roster feedback`);
 }
 
 function assertU64Le(a: string, b: string, where: string): void {
@@ -345,14 +346,11 @@ function checkGenesis(chain: ChainName): void {
     const manifest = loadManifest(chain);
     const genesis = result.envelopes.filter((entry) => entry.step === "genesis");
     assert.equal(genesis.length, manifest.genesisEnvelopes.length, `${chain} genesis capture count`);
-    assert.equal(genesis.length, 3, `${chain} retains initial, attempt and settled genesis captures`);
-    const genesis0 = genesis[0] as { step: string; file: string; bytes: string } | undefined;
-    const genesis1 = genesis[1] as { step: string; file: string; bytes: string } | undefined;
-    const genesis2 = genesis[2] as { step: string; file: string; bytes: string } | undefined;
-    assert.ok(genesis0 !== undefined && genesis1 !== undefined && genesis2 !== undefined, `${chain} genesis envelopes exist`);
+    assert.equal(genesis.length, 2, `${chain} retains startup and the proved same-apply append`);
+    const [genesis0, genesis1] = genesis;
+    assert.ok(genesis0 !== undefined && genesis1 !== undefined, `${chain} genesis envelopes exist`);
     assert.equal(genesis0.file, "envelope-genesis-0.json");
     assert.equal(genesis1.file, "envelope-genesis-1.json");
-    assert.equal(genesis2.file, "envelope-genesis-2.json");
     const compared0 = normalizeTopLevel(
         genesis0.bytes,
         activeFixture(chain, "envelope-genesis-0.json"),
@@ -360,19 +358,10 @@ function checkGenesis(chain: ChainName): void {
     );
     assert.equal(compared0.actual, compared0.expected, `${chain} genesis-0 is byte-exact`);
     assertNoAttempts(parseReport(genesis0.bytes), `${chain} genesis-0`);
-    const compared2 = normalizeTopLevel(
-        genesis2.bytes,
-        activeFixture(chain, "envelope-genesis-2.json"),
-        ["gen", "source"],
-    );
-    assert.equal(compared2.actual, compared2.expected, `${chain} settled genesis-2 is byte-exact`);
-    assertNoAttempts(parseReport(genesis2.bytes), `${chain} settled genesis-2`);
     const replies = result.replies.filter((entry) => entry.step === "genesis");
-    assert.equal(replies.length, 3, `${chain} genesis replies`);
-    const reply0 = replies[0] as { step: string; file: string; bytes: string } | undefined;
-    const reply1 = replies[1] as { step: string; file: string; bytes: string } | undefined;
-    const reply2 = replies[2] as { step: string; file: string; bytes: string } | undefined;
-    assert.ok(reply0 !== undefined && reply1 !== undefined && reply2 !== undefined, `${chain} genesis replies exist`);
+    assert.equal(replies.length, 2, `${chain} genesis replies`);
+    const [reply0, reply1] = replies;
+    assert.ok(reply0 !== undefined && reply1 !== undefined, `${chain} genesis replies exist`);
     const expectedStamp = (JSON.parse(reply0.bytes) as { clock: string }).clock;
     const clock = (JSON.parse(reply1.bytes) as { clock: string }).clock;
     assertGenesisAttempts(
@@ -382,12 +371,32 @@ function checkGenesis(chain: ChainName): void {
         clock,
         `${chain} genesis-1`,
     );
+    const issued = JSON.parse(reply0.bytes) as { gen: string; rosterPlan: Record<string, unknown> };
+    const settled = JSON.parse(reply1.bytes) as { rosterPlan?: unknown; workspaces: Array<{ bind: string }> };
+    const nativeBefore = (parseReport(genesis0.bytes)["native"] as Array<{ order: string[] }>)[0]?.order;
+    const nativeAfter = (parseReport(genesis1.bytes)["native"] as Array<{ order: string[] }>)[0]?.order;
+    const proof = parseReport(genesis1.bytes)["rosterFeedback"] as Record<string, unknown>;
+    const fixture = parseReport(activeFixture(chain, genesis1.file))["rosterFeedback"] as Record<string, unknown>;
+    const append = (issued.rosterPlan["slots"] as Array<{ kind: string; step?: string }>).find((slot) => slot.kind === "append");
+    assert.ok(append !== undefined && nativeBefore !== undefined && nativeAfter !== undefined);
+    assert.equal(proof["gen"], issued.gen, `${chain} feedback is bound to the issuing generation`);
+    assert.equal(proof["op"], issued.rosterPlan["op"]);
+    assert.equal(proof["rev"], issued.rosterPlan["rev"]);
+    assert.equal(nativeAfter.length, nativeBefore.length + 1);
+    assert.deepEqual(nativeAfter.slice(0, -1), nativeBefore);
+    assert.deepEqual(proof["steps"], [{
+        step: append.step, status: "appended",
+        before: { kind: "order", order: nativeBefore }, after: { kind: "order", order: nativeAfter },
+    }]);
+    assert.deepEqual({ ...proof, gen: fixture["gen"] }, fixture, `${chain} exact correlated append readback`);
+    assert.equal(settled.rosterPlan, undefined, `${chain} exact readback settles the issuing plan`);
+    assert.deepEqual(settled.workspaces.map((row) => row.bind), nativeAfter);
     // Genuine unknown-cover hide through the real entry+broker path: all
     // genesis captures fly before the first facts answer, so the report
     // carries no causal cover and the witness rides null while tiling facts
     // stay alive (complete inventory, same foreground). No handwritten
     // bytes: the recorder's own envelopes prove the fail-closed hide.
-    for (const genesis of [genesis0, genesis1, genesis2]) {
+    for (const genesis of [genesis0, genesis1]) {
         const report = parseReport(genesis.bytes);
         assert.equal(report["nativeInvalidWitness"], null, `${chain} ${genesis.file} carries no causal cover`);
         assert.equal(
@@ -403,7 +412,7 @@ function checkGenesis(chain: ChainName): void {
     // with nulls) while tiling stays alive. This is the core hide verdict
     // through the genuine entry+broker path, distinct from the scripted
     // direct-entry unknown-cover tests. No regeneration, no new files.
-    for (const reply of [reply0, reply1, reply2]) {
+    for (const reply of [reply0, reply1]) {
         const body = JSON.parse(reply.bytes) as Record<string, unknown>;
         const presentation = body["presentation"] as Record<string, unknown>;
         assert.deepEqual(
@@ -415,7 +424,7 @@ function checkGenesis(chain: ChainName): void {
         assert.equal(presentation["foreground"], "win-a", `${chain} ${reply.file} foreground stays live`);
         assert.equal((body["windows"] as Array<unknown>).length, 2, `${chain} ${reply.file} tiling rows stay live`);
     }
-    // Frame/member/view/clear/creation attempts appear only in genesis-1:
+    // Frame attempts and shared roster proof appear only in genesis-1:
     // every step envelope carries none.
     for (const entry of result.envelopes) {
         if (entry.step !== "genesis") {
@@ -840,6 +849,12 @@ function checkManifestGenConsistency(chain: ChainName): void {
             continue;
         }
         assert.equal(value["gen"], manifest.gen, `${chain} ${name} gen matches the manifest`);
+        const plan = value["rosterPlan"] as { gen: unknown } | undefined;
+        const report = value["report"] as { rosterFeedback?: { gen: unknown } } | undefined;
+        if (plan !== undefined) assert.equal(plan.gen, manifest.gen, `${chain} ${name} plan generation`);
+        if (report?.rosterFeedback !== undefined) {
+            assert.equal(report.rosterFeedback.gen, manifest.gen, `${chain} ${name} feedback generation`);
+        }
         checked += 1;
     }
     assert.ok(checked > 0, `${chain} checked at least one gen-carrying sibling`);

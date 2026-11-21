@@ -7,7 +7,7 @@
 // policy route: every selection/send/migration shortcut builds one of
 // these, never a synchronous TS desktop decision.
 
-import { isCanonicalU64, isCarriedPoint, isCarriedRect as isCarriedRectBounds, isCorrelationId, isGenerationId, isOpaqueId, incrementU64, utf8ByteLength, WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES } from "./world-seq";
+import { compareU64, isCanonicalU64, isCarriedPoint, isCarriedRect as isCarriedRectBounds, isCorrelationId, isGenerationId, isOpaqueId, incrementU64, utf8ByteLength, WORLD_CONTRACT_VERSION, WORLD_MAX_REPLY_BYTES } from "./world-seq";
 import { MAX_FOCUS_CHANGES, type FocusChanges } from "./world-focus-changes";
 import type { RawWindowFact, WorldObservation } from "./world-observe";
 import { rawNativeGestureJson, type NativeGestureSnapshot } from "./world-gesture";
@@ -549,12 +549,49 @@ export interface WorldPresentation {
     underlay: WorldPresentationUnderlay;
     pager: WorldPresentationPagerOutput[];
 }
+export type WorldRosterSlot = { kind: "existing"; native: string } | { kind: "append"; step: string };
+export interface WorldRosterHome { out: string; native: string }
+export interface WorldRosterProjection { out: string; rows: string[] }
+export interface WorldRosterPlan {
+    op: string;
+    gen: string;
+    rev: string;
+    obs: string;
+    baseline: { epoch: string; order: string[]; projections: WorldRosterProjection[] };
+    currents: WorldRosterHome[];
+    occupants: Array<{ native: string; windows: Array<{ win: string; out: string }> }>;
+    projections: WorldRosterProjection[];
+    slots: WorldRosterSlot[];
+    members: Array<{ step: string; win: string; before: WorldRosterHome; out: string; target: WorldRosterSlot; deps: string[] }>;
+    views: Array<{ step: string; out: string; before: string; target: WorldRosterSlot; deps: string[] }>;
+    removals: Array<{ step: string; native: string; deps: string[] }>;
+    focus: WorldFocusRequest | null;
+}
+
+export type WorldRosterReadback =
+    | { kind: "order"; order: readonly string[] }
+    | ({ kind: "home" } & WorldRosterHome)
+    | { kind: "current"; native: string };
+export interface WorldRosterStepFeedback {
+    step: string;
+    status: "applied" | "appended" | "refused";
+    before: WorldRosterReadback | null;
+    after: WorldRosterReadback | null;
+}
+export interface WorldRosterFeedback {
+    op: string;
+    gen: string;
+    rev: string;
+    steps: readonly WorldRosterStepFeedback[];
+}
+
 export interface WorldReply {
     adapter: string;
     gen: string;
     req: string;
     obs: string;
     rev: string;
+    rosterPlan?: WorldRosterPlan;
     ready: boolean;
     consumed: boolean;
     scopes: WorldReplyScope[];
@@ -726,6 +763,8 @@ const MAX_REPLY_NATIVE_CREATIONS = 256;
 const MAX_REPLY_SWITCH_EVENTS = 1024;
 const MAX_REPLY_DIAGNOSTICS = 10000;
 const MAX_STATE_TARGETS_PER_WINDOW = 4;
+export const MAX_ROSTER_NATIVE = 25;
+const MAX_ROSTER_STEPS = MAX_ROSTER_NATIVE * 2 + MAX_REPLY_WINDOWS + MAX_REPLY_OUTPUTS;
 
 // Closed v4 scope union: the output arm and workspace arm have disjoint key
 // sets; no string/composite compatibility form is accepted.
@@ -1629,6 +1668,229 @@ function parseFocusRequestRow(value: unknown): WorldFocusRequest | null {
     };
 }
 
+function rosterObject(value: unknown, keys: readonly string[]): Record<string, unknown> {
+    if (value === null || typeof value !== "object" || Array.isArray(value) ||
+        !hasExactKeys(value as Record<string, unknown>, keys)) {
+        throw new Error("roster-keys");
+    }
+    return value as Record<string, unknown>;
+}
+
+function rosterArray<T>(value: unknown, max: number, parse: (row: unknown) => T, key: (row: T) => string): T[] {
+    if (!Array.isArray(value) || value.length > max) {
+        throw new Error("roster-count");
+    }
+    const seen = new Set<string>();
+    const rows: T[] = [];
+    for (const row of value as unknown[]) {
+        const parsed = parse(row);
+        const id = key(parsed);
+        if (seen.has(id)) throw new Error("roster-duplicate");
+        seen.add(id);
+        rows.push(parsed);
+    }
+    return rows;
+}
+
+function rosterIds(value: unknown, max: number): string[] {
+    return rosterArray(value, max, reqOpaqueId, (id) => id);
+}
+
+function rosterU64(value: unknown): string {
+    if (!isCanonicalU64(value)) throw new Error("roster-counter");
+    return value;
+}
+
+function rosterCorrelation(value: unknown): string {
+    if (!isCorrelationId(value)) throw new Error("roster-correlation");
+    return value;
+}
+
+function rosterGeneration(value: unknown): string {
+    if (!isGenerationId(value)) throw new Error("roster-generation");
+    return value;
+}
+
+function parseRosterSlot(value: unknown): WorldRosterSlot {
+    if ((value as { kind?: unknown } | null)?.kind === "existing") {
+        const r = rosterObject(value, ["kind", "native"]);
+        return { kind: "existing", native: reqOpaqueId(r["native"]) };
+    }
+    const r = rosterObject(value, ["kind", "step"]);
+    if (r["kind"] !== "append") throw new Error("roster-slot");
+    return { kind: "append", step: rosterCorrelation(r["step"]) };
+}
+
+function parseRosterHome(value: unknown): WorldRosterHome {
+    const r = rosterObject(value, ["out", "native"]);
+    return { out: reqOpaqueId(r["out"]), native: reqOpaqueId(r["native"]) };
+}
+
+function parseRosterProjections(value: unknown, maxRows: number): WorldRosterProjection[] {
+    return rosterArray(value, MAX_REPLY_OUTPUTS, (row) => {
+        const r = rosterObject(row, ["out", "rows"]);
+        return { out: reqOpaqueId(r["out"]), rows: rosterIds(r["rows"], maxRows) };
+    }, (row) => row.out);
+}
+
+function parseRosterPlan(value: unknown): WorldRosterPlan {
+    const r = rosterObject(value, ["op", "gen", "rev", "obs", "baseline", "currents", "occupants",
+        "projections", "slots", "members", "views", "removals", "focus"]);
+    const b = rosterObject(r["baseline"], ["epoch", "order", "projections"]);
+    const order = rosterIds(b["order"], MAX_ROSTER_NATIVE);
+    const baseline = { epoch: rosterU64(b["epoch"]), order, projections: parseRosterProjections(b["projections"], order.length) };
+    const currents = rosterArray(r["currents"], MAX_REPLY_OUTPUTS, parseRosterHome, (row) => row.out);
+    const occupied = new Set<string>();
+    const occupants = rosterArray(r["occupants"], MAX_ROSTER_NATIVE, (row) => {
+        const o = rosterObject(row, ["native", "windows"]);
+        const native = reqOpaqueId(o["native"]);
+        if (!order.includes(native)) throw new Error("roster-occupant-slot");
+        const entries = rosterArray(o["windows"], MAX_REPLY_WINDOWS - occupied.size, (entry) => {
+            const w = rosterObject(entry, ["win", "out"]);
+            const win = reqOpaqueId(w["win"]);
+            if (occupied.has(win)) throw new Error("roster-duplicate-occupant");
+            occupied.add(win);
+            return { win, out: reqOpaqueId(w["out"]) };
+        }, (entry) => entry.win);
+        return { native, windows: entries };
+    }, (row) => row.native);
+    const slots = rosterArray(r["slots"], MAX_ROSTER_NATIVE, parseRosterSlot,
+        (slot) => slot.kind === "existing" ? `n:${slot.native}` : `s:${slot.step}`);
+    const projections = parseRosterProjections(r["projections"], slots.length);
+    const members = rosterArray(r["members"], MAX_REPLY_WINDOWS, (row) => {
+        const m = rosterObject(row, ["step", "win", "before", "out", "target", "deps"]);
+        return {
+            step: rosterCorrelation(m["step"]), win: reqOpaqueId(m["win"]), before: parseRosterHome(m["before"]),
+            out: reqOpaqueId(m["out"]), target: parseRosterSlot(m["target"]), deps: rosterIds(m["deps"], MAX_ROSTER_STEPS),
+        };
+    }, (row) => row.win);
+    const views = rosterArray(r["views"], MAX_REPLY_OUTPUTS, (row) => {
+        const v = rosterObject(row, ["step", "out", "before", "target", "deps"]);
+        return {
+            step: rosterCorrelation(v["step"]), out: reqOpaqueId(v["out"]), before: reqOpaqueId(v["before"]),
+            target: parseRosterSlot(v["target"]), deps: rosterIds(v["deps"], MAX_ROSTER_STEPS),
+        };
+    }, (row) => row.out);
+    const removals = rosterArray(r["removals"], MAX_ROSTER_NATIVE, (row) => {
+        const d = rosterObject(row, ["step", "native", "deps"]);
+        return { step: rosterCorrelation(d["step"]), native: reqOpaqueId(d["native"]), deps: rosterIds(d["deps"], MAX_ROSTER_STEPS) };
+    }, (row) => row.native);
+    const steps = new Set<string>();
+    const addStep = (step: string, deps: readonly string[]): void => {
+        if (steps.has(step) || !deps.every((dep) => steps.has(dep))) throw new Error("roster-step-order");
+        steps.add(step);
+    };
+    const retained = new Set<string>();
+    const append = new Set<string>();
+    let previous = -1;
+    for (const slot of slots) {
+        if (slot.kind === "append") {
+            addStep(slot.step, []);
+            append.add(slot.step);
+        } else {
+            const index = order.indexOf(slot.native);
+            if (append.size > 0 || index <= previous) throw new Error("roster-slot-order");
+            previous = index;
+            retained.add(slot.native);
+        }
+    }
+    const currentByOutput = new Map(currents.map((row) => [row.out, row.native]));
+    if (currents.some((row) => !order.includes(row.native))) throw new Error("roster-current");
+    const addTarget = (step: string, deps: readonly string[], target: WorldRosterSlot): void => {
+        const allowed = target.kind === "existing" ? retained.has(target.native) :
+            append.has(target.step) && deps.includes(target.step);
+        if (!allowed) throw new Error("roster-target");
+        addStep(step, deps);
+    };
+    for (const row of members) {
+        if (!order.includes(row.before.native) ||
+            (row.out === row.before.out && row.target.kind === "existing" && row.target.native === row.before.native)) {
+            throw new Error("roster-member-preimage");
+        }
+        addTarget(row.step, row.deps, row.target);
+    }
+    for (const row of views) {
+        if (currentByOutput.get(row.out) !== row.before || (row.target.kind === "existing" && row.target.native === row.before)) {
+            throw new Error("roster-view-preimage");
+        }
+        addTarget(row.step, row.deps, row.target);
+    }
+    for (const row of removals) {
+        if (!order.includes(row.native) || retained.has(row.native)) throw new Error("roster-removal");
+        addStep(row.step, row.deps);
+    }
+    if (retained.size + removals.length !== order.length) throw new Error("roster-partition");
+    return {
+        op: rosterCorrelation(r["op"]), gen: rosterGeneration(r["gen"]), rev: rosterU64(r["rev"]), obs: rosterU64(r["obs"]),
+        baseline, currents, occupants, projections, slots, members, views, removals, focus: parseFocusRequestRow(r["focus"]),
+    };
+}
+
+function encodeRosterReadback(value: WorldRosterReadback | null): string {
+    if (value === null) return "null";
+    const esc = encodeV4String;
+    switch (value.kind) {
+        case "order": {
+            const r = rosterObject(value, ["kind", "order"]);
+            return `{"kind":"order","order":[${rosterIds(r["order"], MAX_ROSTER_NATIVE).map(esc).join(",")}]}`;
+        }
+        case "home": {
+            const r = rosterObject(value, ["kind", "out", "native"]);
+            return `{"kind":"home","out":${esc(reqOpaqueId(r["out"]))},"native":${esc(reqOpaqueId(r["native"]))}}`;
+        }
+        case "current": {
+            const r = rosterObject(value, ["kind", "native"]);
+            return `{"kind":"current","native":${esc(reqOpaqueId(r["native"]))}}`;
+        }
+        default: throw new Error("roster-readback");
+    }
+}
+
+export function worldRosterAppendedNative(before: readonly string[], after: readonly string[]): string | null {
+    const native = after[before.length];
+    return native !== undefined && after.length === before.length + 1 && !before.includes(native) &&
+        before.every((id, index) => after[index] === id) ? native : null;
+}
+
+function isWorldRosterRemoval(before: readonly string[], after: readonly string[]): boolean {
+    if (after.length === 0 || before.length !== after.length + 1) return false;
+    let i = 0;
+    for (const native of before) if (after[i] === native) i++;
+    return i === after.length;
+}
+
+export function encodeV4RosterFeedback(value: WorldRosterFeedback): string | null {
+    try {
+        const esc = encodeV4String;
+        const f = rosterObject(value, ["op", "gen", "rev", "steps"]);
+        const steps = rosterArray(f["steps"], MAX_ROSTER_STEPS, (row) => {
+            const r = rosterObject(row, ["step", "status", "before", "after"]);
+            const { before, after, status } = r as unknown as WorldRosterStepFeedback;
+            const pre = encodeRosterReadback(before);
+            const post = encodeRosterReadback(after);
+            if (status === "appended") {
+                if (before?.kind !== "order" || after?.kind !== "order" ||
+                    worldRosterAppendedNative(before.order, after.order) === null) throw new Error("roster-append");
+            } else if (status === "applied") {
+                const changed = (before?.kind === "order" && after?.kind === "order" &&
+                    isWorldRosterRemoval(before.order, after.order)) ||
+                    (before?.kind === "home" && after?.kind === "home" &&
+                        (before.out !== after.out || before.native !== after.native)) ||
+                    (before?.kind === "current" && after?.kind === "current" && before.native !== after.native);
+                if (!changed) throw new Error("roster-transition");
+            } else if (status !== "refused" || (before !== null && after !== null && before.kind !== after.kind)) {
+                throw new Error("roster-status");
+            }
+            const step = rosterCorrelation(r["step"]);
+            return { step, bytes: `{"step":${esc(step)},"status":${esc(status)},"before":${pre},"after":${post}}` };
+        }, (row) => row.step);
+        return `{"op":${esc(rosterCorrelation(f["op"]))},"gen":${esc(rosterGeneration(f["gen"]))},` +
+            `"rev":${esc(rosterU64(f["rev"]))},"steps":[${steps.map((row) => row.bytes).join(",")}]}`;
+    } catch (_error) {
+        return null;
+    }
+}
+
 function parseOperationSettledRow(e: unknown): WorldReplyOperationSettlement {
     if (typeof e !== "object" || e === null || Array.isArray(e)) {
         throw new Error("op-settled-keys");
@@ -1794,9 +2056,11 @@ const CORE_REPLY_KEYS = ["v", "adapter", "gen", "req", "obs", "rev", "ready", "c
     "gestureSettled", "operationSettled", "nativeCreations", "warpCursor", "presentation",
     "intentDesired", "switchSettled", "diagnostics"] as const;
 const BOUND_REPLY_KEYS = [...CORE_REPLY_KEYS, "source", "nativeInvalid", "clock", "gestureAssoc", "gestureSettledAssoc"] as const;
+const ROSTER_REPLY_KEYS = [...BOUND_REPLY_KEYS, "rosterPlan"] as const;
 
 function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): WorldReply | null {
-    const want: ReadonlyArray<string> = allowUnbound ? CORE_REPLY_KEYS : BOUND_REPLY_KEYS;
+    const hasRoster = Object.prototype.hasOwnProperty.call(r, "rosterPlan");
+    const want = allowUnbound ? CORE_REPLY_KEYS : hasRoster ? ROSTER_REPLY_KEYS : BOUND_REPLY_KEYS;
     if (!hasExactKeys(r, want)) {
         return null;
     }
@@ -1864,6 +2128,11 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
         }
     };
     try {
+        const rosterPlan = hasRoster ? parseRosterPlan(r["rosterPlan"]) : undefined;
+        if (rosterPlan !== undefined && (!r["ready"] || rosterPlan.gen !== gen ||
+            compareU64(rosterPlan.rev, rev) > 0 || compareU64(rosterPlan.obs, obs) > 0)) {
+            return null;
+        }
         const scopes: WorldReplyScope[] = scopesRaw.map(parseScopeRow);
         unique(scopes, (s) => s.scope.kind === "output" ? `out:${s.scope.out}` : `ws:${s.scope.out}:${s.scope.ws}`, "duplicate-scope");
         const workspaces: WorldReplyWorkspace[] = wsRaw.map(parseWorkspaceRow);
@@ -1986,6 +2255,7 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
             gestureSettled, gestureAssoc, gestureSettledAssoc, operationSettled, nativeCreations, warpCursor, intentDesired, presentation,
             switchSettled, diagnostics,
             source, nativeInvalid, clock,
+            ...(rosterPlan === undefined ? {} : { rosterPlan }),
         };
     } catch (error) {
         void error;
@@ -3065,6 +3335,7 @@ export interface WorldReportV4Input {
     // Retained one-shot focus correlation (empty when nothing spent;
     // omitted lanes backfill the same empty default).
     readonly focusFeedbacks?: ReadonlyArray<WorldFocusFeedback>;
+    readonly rosterFeedback?: WorldRosterFeedback;
     readonly intentRecords: ReadonlyArray<WorldReportV4IntentRecord>;
 }
 
@@ -3272,6 +3543,9 @@ export function freezeWorldReportV4InnerJson(input: Omit<WorldReportV4Input, "fo
         }
         focusRows.push(bytes);
     }
+    const rosterFeedback = input.rosterFeedback === undefined ? undefined : encodeV4RosterFeedback(input.rosterFeedback);
+    if (rosterFeedback === null) return null;
+    const rosterLane = rosterFeedback === undefined ? "" : `,"rosterFeedback":${rosterFeedback}`;
     // Retained property-attempt evidence rides verbatim in canonical key
     // order inside one required propertyAttempts array. Empty rides the
     // literal empty lane, never an omission. A row that cannot be spelled
@@ -3318,7 +3592,7 @@ export function freezeWorldReportV4InnerJson(input: Omit<WorldReportV4Input, "fo
         `"presentation":${presentation}${lanes},` +
         `"intentRecords":[${intentRecords.join(",")}],` +
         `"propertyAttempts":[`;
-    const end = `],"rendererInput":null,` +
+    const end = `],"rendererInput":null${rosterLane},` +
         `"nativeGesture":${nativeGesture},"cursorWindow":${cursorWindow}${cursorHitLane},` +
         `"nativeInvalidWitness":${witness}}`;
     return {

@@ -17,7 +17,7 @@
     "nativeInvalid",
     "req"
   ],
-  "internalReads": 13,
+  "internalReads": 12,
   "parkedWaits": 1,
   "steps": [
     {
@@ -162,7 +162,6 @@
   ],
   "genesisEnvelopes": [
     "envelope-genesis-0.json",
-    "envelope-genesis-1.json",
-    "envelope-genesis-2.json"
+    "envelope-genesis-1.json"
   ]
 }

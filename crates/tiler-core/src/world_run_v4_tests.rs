@@ -210,6 +210,7 @@ fn run_with_settlements(
             issuing,
             issuing.checked_sub(1).filter(|prior| *prior != 0),
             &[],
+            None,
         )
     });
     (
@@ -643,7 +644,15 @@ fn consumed_rerun_with_new_observation_reconciles_without_revalidation() {
         Vec::new(),
     );
     match engine.tx(|tx| {
-        tx.run_accepted_v4_batched(&rerun, &issue(3), true, issuing, Some(issuing - 1), &[])
+        tx.run_accepted_v4_batched(
+            &rerun,
+            &issue(3),
+            true,
+            issuing,
+            Some(issuing - 1),
+            &[],
+            None,
+        )
     }) {
         (V4RunOutcome::CommandConsumed(reply), settlements) => {
             assert!(reply.command_consumed);

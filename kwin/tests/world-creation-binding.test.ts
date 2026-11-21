@@ -44,7 +44,7 @@ function makeTwoOutput(opts: { throwOnce?: boolean } = {}) {
         desktops: [wa1, wb1] as FakeDesktop[],
         wins: [] as Array<Record<string, unknown>>,
         activeScreen: { name: "out-secondary" },
-        currentByOut: new Map<string, FakeDesktop>([["out-primary", wa1], ["out-secondary", wb1]]),
+        current: wa1,
         created: [] as string[],
         throwArmed: opts.throwOnce === true,
     };
@@ -76,8 +76,8 @@ function makeTwoOutput(opts: { throwOnce?: boolean } = {}) {
         currentDesktopChanged: (signals["currentDesktopChanged"] as FakeSignal).signal,
         activeScreenChanged: (signals["activeScreenChanged"] as FakeSignal).signal,
         clientArea: () => ({ x: 0, y: 0, width: 800, height: 600 }),
-        currentDesktopForScreen: (out: { name: string }) => world.currentByOut.get(out.name),
-        setCurrentDesktopForScreen: (d: FakeDesktop, out: { name: string }) => { world.currentByOut.set(out.name, d); },
+        currentDesktopForScreen: () => world.current,
+        setCurrentDesktopForScreen: (d: FakeDesktop) => { world.current = d; },
         sendClientToScreen: () => undefined,
         createDesktop: (...args: ReadonlyArray<unknown>) => {
             if (world.throwArmed) {
@@ -101,7 +101,7 @@ function makeTwoOutput(opts: { throwOnce?: boolean } = {}) {
         log: () => undefined,
         gestureActive: () => false,
         registerShortcutFn: () => true,
-        readWorkspaceModeFn: () => "per-output-local",
+        readWorkspaceModeFn: () => "shared",
         readDefaultTiledFn: () => true,
     });
     assert.ok(handle !== null);
@@ -226,14 +226,11 @@ function dispatchObserve(h: ReturnType<typeof makeTwoOutput>): { source: string;
     return JSON.parse(h.lastCall("DescribeWorld").payload) as { source: string; nativeInvalid: string };
 }
 
-// Show a native desktop on an output (ordinary native view input):
-// incorporation is observed through receipt retirement plus native
-// order/current evidence, so observing it requires the created desktop to
-// be shown.
-function showNative(h: ReturnType<typeof makeTwoOutput>, out: string, nativeId: string): void {
+// Show a desktop in the one linked native view; every output observes it.
+function showNative(h: ReturnType<typeof makeTwoOutput>, nativeId: string): void {
     const ref = h.world.desktops.find((d) => d.id === nativeId);
     assert.ok(ref !== undefined, `native ${nativeId} exists`);
-    h.world.currentByOut.set(out, ref);
+    h.world.current = ref;
 }
 
 describe("creation binding handoff", () => {
@@ -255,7 +252,7 @@ describe("creation binding handoff", () => {
         // No core bind yet: the adapter publishes native order/current with
         // no logical views lane, and claims only the causal receipt, never
         // a binding.
-        showNative(h, "out-secondary", native.id);
+        showNative(h, native.id);
         dispatchObserve(h);
         assertNoViews(h);
         const pendingNative = nativeOf(h).find((b) => b.out === "out-secondary");
@@ -289,7 +286,7 @@ describe("creation binding handoff", () => {
         h.handle?.stop();
     });
 
-    it("incorporated desires never repeat and later core migration stays authoritative", () => {
+    it("incorporated desires never repeat when the core republishes the bound workspace", () => {
         const h = makeTwoOutput();
         discover(h);
         const req = dispatchObserve(h);
@@ -313,7 +310,7 @@ describe("creation binding handoff", () => {
             nativeCreations: [DESIRE("op-native-1", "wl-1", "out-secondary")],
         }));
         assert.equal(h.world.created.length, 1, "spent desire must not re-create");
-        showNative(h, "out-secondary", (h.world.desktops.find((d) => d.id === h.world.created[0]) as FakeDesktop).id);
+        showNative(h, native.id);
         dispatchObserve(h);
         // The core bind incorporates the spent receipt; the adapter reports
         // native order/current with no logical views lane.
@@ -323,24 +320,26 @@ describe("creation binding handoff", () => {
         assert.ok(acked.order.includes(h.world.created[0] as string));
         assert.equal(acked.current, h.world.created[0]);
         assert.equal(attemptsOf(h).length, 0, "incorporated receipt retires");
-        // Later legitimate migration of the same native to a new output wins.
+        // A later publication keeps the binding authoritative even if its
+        // reporting output changes; the native current remains linked.
         const r4 = JSON.parse(h.lastCall("DescribeWorld").payload) as { source: string; nativeInvalid: string };
         h.lastCall("DescribeWorld").callback(ACC("gen-1", r4.source, r4.nativeInvalid, "4", {
             workspaces: [
                 { id: "wa-1", out: "out-primary", bind: "wa-1", scope: { kind: "output", out: "out-primary" }, order: 0, mode: "tiled", exist: true, hold: "" },
                 { id: "wl-1", out: "out-primary", bind: native.id, scope: { kind: "output", out: "out-primary" }, order: 2, mode: "tiled", exist: true, hold: "" },
             ],
+            nativeCreations: [DESIRE("op-native-1", "wl-1", "out-secondary")],
         }));
-        showNative(h, "out-primary", native.id);
+        assert.equal(h.world.current.id, native.id);
         dispatchObserve(h);
-        // The migrated native rides the target output's order/current; no
-        // logical views lane rides, and nothing re-creates.
+        // The same linked native still rides on the other output.
         assertNoViews(h);
-        const migrated = nativeOf(h).find((b) => b.out === "out-primary");
-        assert.ok(migrated !== undefined);
-        assert.ok(migrated.order.includes(native.id));
-        assert.equal(migrated.current, native.id, "core migration wins");
-        assert.equal(h.world.created.length, 1, "migration must not re-create");
+        const linked = nativeOf(h).find((b) => b.out === "out-primary");
+        assert.ok(linked !== undefined);
+        assert.ok(linked.order.includes(native.id));
+        assert.equal(linked.current, native.id);
+        assert.equal(attemptsOf(h).length, 0, "republishing a bound workspace does not resurrect a receipt");
+        assert.equal(h.world.created.length, 1, "republishing must not re-create");
         h.handle?.stop();
     });
 
@@ -374,7 +373,7 @@ describe("creation binding handoff", () => {
         assert.equal(receipts[0]?.["created"], null, "no same-turn delta claims no id");
         // Only the core bind publishes the view: show the desktop, dispatch
         // a fresh capture, then answer it with the core-published bind.
-        showNative(h, "out-secondary", "native-9");
+        showNative(h, "native-9");
         const r3 = dispatchObserve(h);
         h.lastCall("DescribeWorld").callback(ACC("gen-1", r3.source, r3.nativeInvalid, "3", {
             workspaces: [
@@ -394,7 +393,7 @@ describe("creation binding handoff", () => {
         h.handle?.stop();
     });
 
-    it("two desires on two outputs execute independently with no shared native", () => {
+    it("two desires mint distinct natives and incorporate receipts independently", () => {
         const h = makeTwoOutput();
         discover(h);
         const req = dispatchObserve(h);
@@ -414,14 +413,18 @@ describe("creation binding handoff", () => {
         assert.equal(n2.name, "Desktop 4", "second token uses its own enumerated position");
         // Before any core bind, the adapter publishes native order/current
         // with no logical views lane: both receipts ride causally instead.
-        showNative(h, "out-secondary", n1.id);
-        showNative(h, "out-primary", n2.id);
+        showNative(h, n1.id);
         dispatchObserve(h);
         assertNoViews(h);
         const rows = nativeOf(h);
-        assert.ok(rows.find((b) => b.out === "out-secondary")?.order.includes(n1.id), "created native rides its output order");
-        assert.ok(rows.find((b) => b.out === "out-primary")?.order.includes(n2.id), "created native rides its output order");
-        assert.equal(attemptsOf(h).length, 2, "both receipts preserved");
+        assert.equal(rows.length, 2);
+        for (const row of rows) {
+            assert.ok(row.order.includes(n1.id) && row.order.includes(n2.id), "both new IDs ride the shared roster");
+            assert.equal(row.current, n1.id, "both outputs read the linked view");
+        }
+        assert.deepEqual(attemptsOf(h).map((row) => [row["op"], row["created"]]), [
+            ["op-native-1", n1.id], ["op-native-2", n2.id],
+        ], "each desire proves its own native ID");
         // Ack only wl-1: the wl-2 receipt must survive (no map-wide clear).
         const ack = JSON.parse(h.lastCall("DescribeWorld").payload) as { source: string; nativeInvalid: string };
         h.lastCall("DescribeWorld").callback(ACC("gen-1", ack.source, ack.nativeInvalid, "2", {
@@ -436,7 +439,7 @@ describe("creation binding handoff", () => {
         assertNoViews(h);
         const after = nativeOf(h);
         assert.ok(after.find((b) => b.out === "out-secondary")?.order.includes(n1.id));
-        assert.equal(attemptsOf(h).length, 1, "only the wl-2 receipt survives");
+        assert.deepEqual(attemptsOf(h).map((row) => row["op"]), ["op-native-2"], "only the wl-2 receipt survives");
         assert.equal(h.world.created.length, 2);
         // The wl-2 desire stays spent: still no second native call.
         const ack2 = JSON.parse(h.lastCall("DescribeWorld").payload) as { source: string; nativeInvalid: string };

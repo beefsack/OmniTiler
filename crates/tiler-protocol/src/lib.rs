@@ -11,5 +11,6 @@ mod world_reply_sink;
 pub mod world_reply_write;
 pub mod world_report_residual;
 mod world_report_rows;
+pub mod world_roster_wire;
 pub mod world_stress;
 pub mod world_stress_v4;

@@ -219,12 +219,14 @@ interface Harness {
     readonly timers: Array<{ delayMs: number; callback: () => void; cancelled: boolean; fired: boolean }>;
     readonly logs: string[];
     readonly geometryWrites: string[];
+    readonly geometryByCapture: Map<number, string[]>;
     readonly membershipWrites: string[];
     readonly outputWrites: string[];
+    readonly nativeWrites: string[];
     readonly focused: string[];
     readonly handle: NonNullable<ReturnType<typeof startWorldAdapterEntry>>;
     readonly signals: Record<string, FakeSignal>;
-    fire: (name: string, payload?: unknown) => void;
+    fire: (name: string, ...payload: unknown[]) => void;
     runTimers: (maxDelay?: number) => void;
     flush: () => Promise<number>;
     flushAll: () => Promise<void>;
@@ -310,6 +312,8 @@ async function makeHarness(): Promise<Harness> {
     const geometryWrites: string[] = [];
     const membershipWrites: string[] = [];
     const outputWrites: string[] = [];
+    const nativeWrites: string[] = [];
+    let nextDesktopId = 1;
     const focused: string[] = [];
     const sigNames = [
         "windowAdded",
@@ -340,14 +344,16 @@ async function makeHarness(): Promise<Harness> {
         timers: [],
         logs: [],
         geometryWrites,
+        geometryByCapture: new Map(),
         membershipWrites,
         outputWrites,
+        nativeWrites,
         focused,
         handle: null as unknown as NonNullable<ReturnType<typeof startWorldAdapterEntry>>,
         signals,
-        fire: (name: string, payload?: unknown): void => {
+        fire: (name: string, ...payload: unknown[]): void => {
             for (const handler of [...(signals[name] as FakeSignal).handlers]) {
-                handler(payload);
+                handler(...payload);
             }
         },
         runTimers: (maxDelay = WORLD_DEBOUNCE_MS): void => {
@@ -379,7 +385,9 @@ async function makeHarness(): Promise<Harness> {
             const reply = harness.broker.bindReply(coreReply, envelope, settlements);
             harness.answered.add(index);
             harness.replies.set(index, reply);
+            const geometryBefore = harness.geometryWrites.length;
             (harness.calls[index] as CapturedCall).callback(reply);
+            harness.geometryByCapture.set(index, harness.geometryWrites.slice(geometryBefore));
             return index;
         },
         flushAll: async (): Promise<void> => {
@@ -435,6 +443,16 @@ async function makeHarness(): Promise<Harness> {
         },
     };
     let activeRef: FakeWindow | null = mover;
+    function selectDesktop(desktop: FakeDesktop, screen: FakeScreen): void {
+        assert.ok(liveDesktops.includes(desktop), "selector references a live desktop");
+        const previous = currentByOutput.get(screen.name);
+        assert.ok(previous !== undefined, "selector references a live output");
+        currentByOutput.set(screen.name, desktop);
+        nativeWrites.push(`view:${screen.name}->${desktop.id}`);
+        if (previous !== desktop) {
+            harness.fire("currentDesktopChanged", previous, desktop, screen);
+        }
+    }
     const surface: Record<string, unknown> = {
         windowList: (): FakeWindow[] => [...harness.wins],
         screens: [left, right],
@@ -474,8 +492,10 @@ async function makeHarness(): Promise<Harness> {
             const out = (activeRef?.output as FakeScreen | undefined)?.name ?? "out-left";
             return harness.currentByOutput.get(out) ?? wsA;
         },
-        set currentDesktop(ref: unknown) {
-            void ref;
+        set currentDesktop(ref: FakeDesktop) {
+            for (const screen of [left, right]) {
+                selectDesktop(ref, screen);
+            }
         },
         clientArea: (_kind: number, output: unknown, _desktop: unknown): Record<string, number> => {
             const name = (output as FakeScreen).name;
@@ -488,14 +508,41 @@ async function makeHarness(): Promise<Harness> {
             const name = (output as FakeScreen).name;
             return harness.currentByOutput.get(name) ?? wsA;
         },
-        setCurrentDesktopForScreen: (): void => undefined,
+        setCurrentDesktopForScreen: selectDesktop,
         sendClientToScreen: (client: unknown, output: unknown): void => {
             const win = client as FakeWindow;
-            win.output = output as FakeScreen;
-            harness.outputWrites.push(`${win.internalId}=>${(output as FakeScreen).name}`);
+            const target = output as FakeScreen;
+            const previous = harness.currentByOutput.get(win.output.name);
+            const current = harness.currentByOutput.get(target.name);
+            win.output = target;
+            harness.outputWrites.push(`${win.internalId}=>${target.name}`);
+            nativeWrites.push(`output:${win.internalId}->${target.name}`);
+            for (const handler of [...win.__signals.outputChanged.handlers]) {
+                handler();
+            }
+            // Native send re-homes a singleton on its old output's current
+            // desktop when the destination output selects a different one.
+            if (current !== undefined && current !== previous &&
+                win.desktops.length === 1 && win.desktops[0] === previous) {
+                win.desktops = [current];
+            }
         },
-        createDesktop: (): void => undefined,
-        removeDesktop: (): void => undefined,
+        createDesktop: (position: number, name: string): void => {
+            assert.equal(position, liveDesktops.length, "roster only appends native desktops");
+            const desktop = { id: `ws-created-${nextDesktopId++}`, name };
+            liveDesktops.splice(position, 0, desktop);
+            nativeWrites.push(`append:${desktop.id}`);
+            harness.fire("desktopsChanged");
+        },
+        removeDesktop: (desktop: FakeDesktop): void => {
+            const index = liveDesktops.indexOf(desktop);
+            assert.ok(index >= 0, "removal references a live desktop");
+            assert.ok(![...currentByOutput.values()].includes(desktop), "move views before removal");
+            assert.ok(wins.every((win) => !win.desktops.includes(desktop)), "move members before removal");
+            liveDesktops.splice(index, 1);
+            nativeWrites.push(`remove:${desktop.id}`);
+            harness.fire("desktopsChanged");
+        },
     };
     for (const win of wins) {
         let frame = win.frameGeometry;
@@ -528,7 +575,12 @@ async function makeHarness(): Promise<Harness> {
             get: () => desks,
             set: (refs: FakeDesktop[]) => {
                 desks = refs;
-                harness.membershipWrites.push(`${win.internalId}->${refs.map((desk) => desk.id).join("+")}`);
+                const change = `${win.internalId}->${refs.map((desk) => desk.id).join("+")}`;
+                harness.membershipWrites.push(change);
+                nativeWrites.push(`member:${change}`);
+                for (const handler of [...win.__signals.desktopsChanged.handlers]) {
+                    handler();
+                }
                 return true;
             },
         });
@@ -668,6 +720,33 @@ describe("world unequal-height occupied-target R4 through the production entry (
         const h = await makeHarness();
         try {
             await discover(h);
+            // The two occupied logical views share pager slot one after
+            // startup compacts the right ring. Slot two backs both spares.
+            assert.deepEqual(h.nativeWrites, [
+                "member:w-r1->ws-a",
+                "member:w-r2->ws-a",
+                "view:out-right->ws-a",
+            ], "startup moves the right members before switching only the right view");
+            assert.deepEqual((h.workspace["desktops"] as FakeDesktop[]).map((desktop) => desktop.id), ["ws-a", "ws-b"]);
+            assert.deepEqual([...h.currentByOutput].map(([out, desktop]) => [out, desktop.id]), [
+                ["out-left", "ws-a"],
+                ["out-right", "ws-a"],
+            ]);
+            for (const win of h.wins) {
+                assert.deepEqual(win.desktops.map((desktop) => desktop.id), ["ws-a"], `${win.internalId} starts on its occupied view`);
+            }
+            const startupWrites = h.nativeWrites.length;
+            const startupGeometry = h.geometryWrites.length;
+            const startupFocus = h.focused.length;
+            const startupReports = h.replies.size;
+            h.fire("desktopsChanged");
+            await h.settle();
+            assert.ok(h.replies.size > startupReports, "settled startup is reported to the Engine again");
+            assert.equal(h.nativeWrites.length, startupWrites, "settled startup never replays roster mutations");
+            assert.equal(h.geometryWrites.length, startupGeometry, "settled startup never replays geometry");
+            assert.equal(h.focused.length, startupFocus, "settled startup never replays focus");
+            const movesAtStartup = h.commandPayloads("move-directional").length;
+            assert.equal(movesAtStartup, 0, "settled startup replay does not dispatch a move");
             // Fixture contract: genuinely unequal FULL heights (1152 vs
             // 1080 at y72) and genuinely unequal work areas (1100 vs
             // 1000). Both outputs stay occupied (2 and 3 alternating, never
@@ -704,13 +783,20 @@ describe("world unequal-height occupied-target R4 through the production entry (
                 const geometryBefore = h.geometryWrites.length;
                 h.handle.requestMove(direction);
                 await h.settle();
-                const moves = h.commandPayloads("move-directional");
+                const moves = h.commandPayloads("move-directional").slice(movesAtStartup);
                 assert.equal(moves.length, leg + 1, `exactly one new move dispatch on leg ${leg}`);
+                const move = moves[leg]?.body;
+                assert.ok(move !== undefined);
+                const command = move["command"] as Record<string, unknown>;
+                assert.deepEqual(command["win"], { currentFocus: true }, `leg ${leg} commands through native current focus`);
+                assert.equal(command["direction"], direction, `leg ${leg} queues the outward direction`);
                 // v2: filed moves drain FIFO through captures; the draining
                 // capture's bound reply carries the plan (never the queue
                 // call, which carries no reply).
-                const captureIndex = h.drainCapture.get((moves[leg]?.body as Record<string, unknown>)["clientCmd"]);
+                const captureIndex = h.drainCapture.get(move["clientCmd"]);
                 assert.ok(captureIndex !== undefined, `the core drained every move through leg ${leg}`);
+                const request = JSON.parse(h.calls[captureIndex as number]?.payload ?? "{}") as { report?: { focused?: string } };
+                assert.equal(request.report?.focused, "w-move", `leg ${leg} drains against the focused mover`);
                 const reply = JSON.parse(h.replies.get(captureIndex as number) as string) as Record<string, unknown>;
                 assert.notEqual(reply["outcome"], "rejected", `real Engine plans R4 leg ${leg}, got ${JSON.stringify(reply).slice(0, 200)}`);
                 const transfers = reply["transfers"] as Array<Record<string, unknown>>;
@@ -720,14 +806,28 @@ describe("world unequal-height occupied-target R4 through the production entry (
                 assert.equal(transfer["win"], "w-move", `leg ${leg} transfer carries the mover`);
                 assert.equal(transfer["out"], expectedOut, `leg ${leg} lands on the commanded output`);
                 assert.equal(transfer["follow"], true, `leg ${leg} follows the mover`);
-                assert.equal(transfer["held"], false, `leg ${leg} never holds/exhausts`);
+                assert.equal(transfer["held"], true, `leg ${leg} transfer is descriptive, not independent authority`);
                 assert.match(transfer["op"] as string, /^op-\d+$/, `leg ${leg} carries a stable command identity`);
                 moveOps.push(transfer["op"] as string);
                 const rows = reply["windows"] as Array<Record<string, unknown>>;
                 const planned = rows.find((entry) => entry["win"] === "w-move") as Record<string, unknown>;
                 assert.ok(planned !== undefined, `leg ${leg} plans the crossing mover`);
+                const plan = reply["rosterPlan"] as {
+                    members: Array<{ win: string; out: string; target: { kind: string; native?: string } }>;
+                    projections: Array<{ out: string; rows: string[] }>;
+                    slots: Array<{ kind: string; native?: string }>;
+                };
+                const member = plan?.members.find((row) => row.win === "w-move");
+                const logicalIndex = plan?.projections.find((row) => row.out === expectedOut)?.rows.indexOf(transfer["ws"] as string) ?? -1;
+                assert.equal(member?.out, expectedOut, `leg ${leg} has native arrival authority`);
+                assert.ok(logicalIndex >= 0);
+                assert.deepEqual(member?.target, plan.slots[logicalIndex], `leg ${leg} targets the moved logical row's assigned slot`);
                 const frame = planned["frame"] as [number, number, number, number];
-                appliedMatchesReply(h, reply);
+                assert.ok(h.geometryByCapture.get(captureIndex)?.includes(`w-move@${frame.join(",")}`),
+                    `leg ${leg} frames the mover in the same native apply`);
+                const settled = JSON.parse(h.replies.get(Math.max(...h.replies.keys())) as string) as Record<string, unknown>;
+                assert.equal(settled["rosterPlan"], undefined, `leg ${leg} finishes the roster epoch`);
+                appliedMatchesReply(h, settled);
                 assert.equal(h.mover.output.name, expectedOut, `leg ${leg} mover natively on the target`);
                 // Full target vertical allocation: the horizontal R4 wrap
                 // keeps the full work height (width halves). The native
@@ -780,12 +880,14 @@ describe("world unequal-height occupied-target R4 through the production entry (
             const movesBefore = h.commandPayloads("move-directional").length;
             const outputsBefore = h.outputWrites.length;
             const membershipsBefore = h.membershipWrites.length;
+            const nativeBefore = h.nativeWrites.length;
             h.fire("windowActivated");
             h.fire("windowActivated");
             await h.settle();
             assert.equal(h.commandPayloads("move-directional").length, movesBefore, "no replay on duplicate signals");
             assert.equal(h.outputWrites.length, outputsBefore, "no second relocation on duplicate signals");
             assert.equal(h.membershipWrites.length, membershipsBefore, "no second membership write on duplicate signals");
+            assert.equal(h.nativeWrites.length, nativeBefore, "no roster mutation on duplicate signals");
             assert.ok(!h.logs.some((line) => line.includes("command-dropped reason=move-")), "no move drops");
         } finally {
             await h.stop();

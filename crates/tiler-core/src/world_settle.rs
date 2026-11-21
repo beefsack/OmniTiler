@@ -291,6 +291,11 @@ impl WorldTransaction<'_> {
         source_output: &OutputId,
         workspace: &str,
     ) -> Vec<String> {
+        // Slot proof advances both projections together; it never re-adopts a
+        // vacated source pair through the legacy migration release path.
+        if self.connection.shared_roster_slots() {
+            return Vec::new();
+        }
         if !self.connection.host_owned_workspace_domains() {
             return Vec::new();
         }
@@ -510,6 +515,9 @@ impl WorldTransaction<'_> {
     /// Runs before [`WorldEngine::build_staged`] so homing assigns against
     /// adapter truth, never a stale desire.
     pub(crate) fn settle_views_pre(&mut self) {
+        if self.connection.shared_roster_slots() {
+            return;
+        }
         // Canonical view correlation/retention: exact (op, output, workspace)
         // evidence stages into every retained view slot before any hold.
         self.settle_property_attempts(crate::world_attempts::PropertyAttemptPhase::Views);
@@ -739,6 +747,10 @@ impl WorldTransaction<'_> {
             issue,
             consumed,
         });
+        if self.connection.shared_roster_slots() {
+            self.settle_floats();
+            return;
+        }
         // Canonical membership correlation/retention: exact (op, window,
         // target) evidence stages into every retained member/predecessor/
         // migration slot before any hold. Window transfers gate membership

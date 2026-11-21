@@ -39,6 +39,7 @@ fn submit_report(engine: &mut WorldEngine, body: &str) -> String {
         | WorldOutcome::CommandConsumed(reply) => {
             let suspended_output_present = reply.presentation.suspended_output.is_some();
             encode_reply(&DecodedReplyV4 {
+                roster_plan: None,
                 wire: ReplyWireOptionals {
                     suspended_output_present,
                 },

@@ -22,6 +22,7 @@ import { decodeList } from "./qml-list";
 import { normalizeNativeId } from "./native-id";
 import { readNativeAlias } from "./native-alias";
 import type { WorldObservation } from "./world-observe";
+import type { WorldRosterWitness } from "./world-roster";
 
 export interface WorldNativeEnv {
     surface: object;
@@ -471,6 +472,10 @@ export function createWorldNativeToggles(env: WorldNativeEnv): WorldNativeToggle
 // reader; lifecycle state and flight ordering stay owned by the entry, which
 // spreads this host into its single applyWorldReply call. No copied state.
 export type WorldApplyHost = Omit<ApplyEnv, "state" | "observation" | "reply" | "dispatchWatermark" | "takeResult" | "log" | "switchView"> & {
+    readRosterWitness: () => WorldRosterWitness | null;
+    resolveRosterWindow: (win: string) => object | null;
+    readRosterHome: (ref: object) => { out: string; native: string } | null;
+    rosterMemberWritable: (ref: object) => boolean;
     switchView: (desktopRef: object, outRef: object, nativePerOutput?: boolean) => boolean;
 };
 
@@ -480,7 +485,115 @@ export function createWorldApplyHost(
     optionsSource?: unknown,
     log?: (line: string) => void,
 ): WorldApplyHost {
+    const desktopIds = (ref: object): string[] | null => {
+        const list = decodeList(readProp(ref, "desktops"), MAX_NATIVE_WINDOW_DESKTOPS);
+        if (list === null) return null;
+        const ids: string[] = [];
+        for (const value of list) {
+            if (typeof value !== "object" || value === null) return null;
+            const id = readProp(value, "id");
+            if (!isOpaqueId(id) || ids.includes(id as string)) return null;
+            ids.push(id as string);
+        }
+        return ids;
+    };
+    const windowOutput = (ref: object): string | null => {
+        const output = readProp(ref, "output");
+        if (typeof output !== "object" || output === null) return null;
+        const name = readProp(output, "name");
+        return isOpaqueId(name) ? name as string : null;
+    };
     return {
+        resolveRosterWindow: (win) => {
+            try {
+                const windowList = readProp(surface, "windowList");
+                if (typeof windowList !== "function") return null;
+                const windows = decodeList(Reflect.apply(windowList, surface, []), MAX_NATIVE_WINDOWS);
+                if (windows === null) return null;
+                let found: object | null = null;
+                for (const ref of windows) {
+                    if (typeof ref !== "object" || ref === null || liveWindowId(readProp, ref) !== win) continue;
+                    if (found !== null) return null;
+                    found = ref;
+                }
+                return found;
+            } catch (_error) {
+                return null;
+            }
+        },
+        readRosterHome: (ref) => {
+            try {
+                if (!isLiveWindowListed(surface, readProp, ref) || readProp(ref, "onAllDesktops") !== false) {
+                    return null;
+                }
+                const out = windowOutput(ref);
+                const ids = desktopIds(ref);
+                return out !== null && ids?.length === 1 ? { out, native: ids[0] as string } : null;
+            } catch (_error) {
+                return null;
+            }
+        },
+        rosterMemberWritable: (ref) => {
+            try {
+                return isLiveWindowListed(surface, readProp, ref) &&
+                    readProp(ref, "managed") !== false && readProp(ref, "deleted") !== true &&
+                    readProp(ref, "modal") !== true && readProp(ref, "transient") !== true &&
+                    readProp(ref, "transientFor") == null && readProp(ref, "onAllDesktops") === false &&
+                    readProp(ref, "minimized") === false && readProp(ref, "fullScreen") === false &&
+                    (readProp(ref, "maximizeMode") ?? 0) === 0 && desktopIds(ref)?.length === 1;
+            } catch (_error) {
+                return false;
+            }
+        },
+        readRosterWitness: () => {
+            try {
+                const desktops = decodeList(readProp(surface, "desktops"), MAX_NATIVE_DESKTOPS);
+                const screens = decodeList(readProp(surface, "screens"), MAX_NATIVE_SCREENS);
+                const windowList = readProp(surface, "windowList");
+                if (desktops === null || screens === null || typeof windowList !== "function") return null;
+                const windows = decodeList(Reflect.apply(windowList, surface, []), MAX_NATIVE_WINDOWS);
+                if (windows === null) return null;
+                const order: string[] = [];
+                const occupants = new Map<string, Map<string, string>>();
+                for (const desktop of desktops) {
+                    if (typeof desktop !== "object" || desktop === null) return null;
+                    const native = readProp(desktop, "id");
+                    if (!isOpaqueId(native) || occupants.has(native as string)) return null;
+                    order.push(native as string);
+                    occupants.set(native as string, new Map());
+                }
+                const currents = new Map<string, string>();
+                for (const screen of screens) {
+                    if (typeof screen !== "object" || screen === null) return null;
+                    const out = readProp(screen, "name");
+                    const current = readDesktopForOutput(surface, screen);
+                    if (!isOpaqueId(out) || current === null || !occupants.has(current.id) ||
+                        currents.has(out as string)) return null;
+                    currents.set(out as string, current.id);
+                }
+                const classified = new Set<string>();
+                for (const window of windows) {
+                    if (typeof window !== "object" || window === null) return null;
+                    const sticky = readProp(window, "onAllDesktops");
+                    if (sticky === true) continue;
+                    if (sticky !== false) return null;
+                    const win = liveWindowId(readProp, window);
+                    const out = windowOutput(window);
+                    const ids = desktopIds(window);
+                    if (win === null || out === null || ids === null || ids.length === 0 ||
+                        classified.has(win)) return null;
+                    classified.add(win);
+                    for (const native of ids) {
+                        const homes = occupants.get(native);
+                        if (homes === undefined) return null;
+                        homes.set(win, out);
+                    }
+                }
+                return { order, currents, occupants };
+            } catch (_error) {
+                return null;
+            }
+        },
         isStillListed: (ref) => {
             // Stable-id liveness (see isLiveWindowListed): ref identity
             // never survives a scripting-engine enumeration.

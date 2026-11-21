@@ -79,6 +79,13 @@ export interface ApplyEnv {
     state: WorldAdapterState;
     observation: WorldObservation;
     reply: WorldReply;
+    // On the shared slot route, native lifecycle comes exclusively from
+    // the roster publication. The runner invokes the same focus consumer
+    // only after proving that plan's membership and selector dependencies.
+    runRoster?: (focus: (
+        request: WorldFocusRequest,
+        resolve: (out: string, logical: string) => string | null,
+    ) => boolean, memberArrived: (win: string, out: string, native: string) => boolean, result: ApplyResult) => void;
     // Local native-invalidation fence sampled at dispatch (the capture
     // flight watermark): mid-apply invalidation compares against this, so
     // native input landing mid-apply stops remaining unsafe writes. Never
@@ -799,6 +806,8 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
     // this dispatch fence, never against the dirty flag (self-sent dirty
     // must not stop multi-window geometry/membership).
     const entryObs = env.dispatchWatermark;
+    const rosterMembers = reply.rosterPlan === undefined
+        ? null : new Set(reply.rosterPlan.members.map((member) => member.win));
     const byWin = new Map<string, ObservedWindow>();
     for (const domain of observation.domains) {
         for (const w of domain.windows) {
@@ -868,8 +877,8 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         const targetFrame = row.frame ?? row.alloc;
         const transfer = reply.transfers.find((t) => t.kind === "window" && t.win === row.win);
         const targetNative = transfer === undefined ? null : nativeWsOf(reply, transfer.out, transfer.ws);
-        const arrivalPending = transfer !== undefined &&
-            (transfer.out !== observed.out || targetNative === null || targetNative !== observed.ws);
+        const arrivalPending = rosterMembers?.has(row.win) || (transfer !== undefined &&
+            (transfer.out !== observed.out || targetNative === null || targetNative !== observed.ws));
         if (arrivalPending) {
             // The destination frame must never be written at the source.
             // The same-flight crossing below requires fresh arrival proof.
@@ -886,7 +895,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         // authorizes no move here. Read-back confirmation proceeds even for
         // held/dispatched operations; only unconfirmed ones hold without
         // repeating.
-        if (!memberControlled || transfer === undefined) {
+        if (!memberControlled || transfer === undefined || env.runRoster !== undefined) {
             continue;
         }
         const op = transfer.op;
@@ -1563,7 +1572,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
     // Removal only after a fresh all-window occupancy/min-count/pin/mapping
     // visibility gate; unknown occupancy keeps.
     state.incorporateCreationBindings(reply);
-    for (const desire of reply.nativeCreations) {
+    for (const desire of env.runRoster === undefined ? reply.nativeCreations : []) {
         const op = desire.op;
         const logical = desire.ws;
         const out = desire.out;
@@ -1677,7 +1686,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
     // synchronous KWin signals make the call reentrant, so a reentrant
     // apply sees the grown inventory and never double-pads. Unreadable
     // inventory, a stale reply, a throw, or a no-growth step holds.
-    if (env.listDesktops !== undefined && env.minDesktops > 0) {
+    if (env.runRoster === undefined && env.listDesktops !== undefined && env.minDesktops > 0) {
         for (;;) {
             if (!replyFresh(env, reply, entryObs)) {
                 result.stoppedMidApply = true;
@@ -1751,7 +1760,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
     // repeats skip silently (no duplicate native call, no double hold).
     const removalSeen = new Set<string>();
     const removalDispatched = new Set<string>();
-    for (const ws of reply.workspaces) {
+    for (const ws of env.runRoster === undefined ? reply.workspaces : []) {
         if (ws.exist || ws.bind === "" || ws.hold !== "") {
             continue;
         }
@@ -1854,7 +1863,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
     // transfer operation id first; the mechanical disposition plus fresh
     // same-turn native currents rides the next report. Throws stay held;
     // refusals hold with the refused row. The core owns settlement.
-    for (const t of reply.transfers) {
+    for (const t of env.runRoster === undefined ? reply.transfers : []) {
         if (t.kind !== "view") {
             continue;
         }
@@ -1977,7 +1986,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
     // holds the whole migration. Views prove only when every member is
     // homed AND both views show; partial progress holds truthfully under
     // the same stable id.
-    for (const t of reply.transfers) {
+    for (const t of env.runRoster === undefined ? reply.transfers : []) {
         if (t.kind !== "migration") {
             continue;
         }
@@ -2684,7 +2693,9 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
     // a later latest snapshot reevaluates the same id. A moved local
     // fence stops (`stopped`): the caller spends it as a truthful
     // superseded no-call.
-    const checkSelectionReady = (after: WorldAfterShown): { status: "proven" | "not-ready" | "stopped"; arrival: WorldArrivalBracket[] } => {
+    const checkSelectionReady = (
+        after: WorldAfterShown, resolve: (out: string, logical: string) => string | null,
+    ): { status: "proven" | "not-ready" | "stopped"; arrival: WorldArrivalBracket[] } => {
         if (!isCanonicalU64(reply.obs) || !isCanonicalU64(after.obs) || compareU64(reply.obs, after.obs) < 0) {
             return { status: "not-ready", arrival: [] };
         }
@@ -2701,7 +2712,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             if (bracket === null) {
                 return { status: midApplyStopped(env, entryObs) ? "stopped" : "not-ready", arrival: [] };
             }
-            const native = nativeWsOf(reply, m.out, m.ws);
+            const native = resolve(m.out, m.ws);
             if (native === null || bracket.home === null || bracket.home.out !== m.out || bracket.home.ws !== native) {
                 return { status: "not-ready", arrival: [] };
             }
@@ -2729,7 +2740,8 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             arrival.push(bracket);
         }
         for (const scope of [...after.views, ...after.selected]) {
-            if (!liveViewShowsLogical(env, reply, scope.out, scope.ws)) {
+            const native = resolve(scope.out, scope.ws);
+            if (native === null || !liveViewShowsOn(env, scope.out, native)) {
                 return { status: "not-ready", arrival: [] };
             }
         }
@@ -2777,13 +2789,11 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
     // on the live mechanical gates. Raw focusFeedback only (exact
     // id/target/issuing-rev, arrival only when afterShown is non-null);
     // never retried.
-    const focusReq = reply.focusRequest;
-    if (focusReq === null) {
-        state.observeFocusEnvelope(null, reply.gen);
-        if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
-            focusTraceLast.delete(state);
-        }
-    } else if (state.observeFocusEnvelope(focusReq, reply.gen) === "fresh") {
+    const consumeFocus = (
+        focusReq: WorldFocusRequest,
+        resolve: (out: string, logical: string) => string | null,
+    ): void => {
+        if (state.observeFocusEnvelope(focusReq, reply.gen) !== "fresh") return;
         const readFocusPre = (view?: { out: string; native: string | null }): string | null =>
             env.readFocusEvidence === undefined ? readFgNow() : env.readFocusEvidence(view) || null;
         const deferFocus = (): boolean => {
@@ -2795,24 +2805,24 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         };
         const spend = (): boolean => focusPublicationCurrent(state, reply) && state.spendFocus(focusReq.id);
         if (deferFocus()) {
-            return result;
+            return;
         }
         // Readiness remains independent of intent. Only a terminal
         // mechanical stop without new intent evidence spends.
         let preArrival: WorldArrivalBracket[] | null = null;
         if (focusReq.afterShown !== null) {
-            const ready = checkSelectionReady(focusReq.afterShown);
+            const ready = checkSelectionReady(focusReq.afterShown, resolve);
             if (ready.status === "not-ready") {
                 if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
                     traceFocusEval(env, focusReq, "deferred", "not-ready");
                 }
-                return result;
+                return;
             }
             if (ready.status === "stopped") {
                 const stoppedFg = readFocusPre();
                 if (deferFocus() || !spend()) {
                     result.stoppedMidApply = true;
-                    return result;
+                    return;
                 }
                 state.recordFocusFeedback({
                     id: focusReq.id,
@@ -2831,7 +2841,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                     traceFocusEval(env, focusReq, "no-call", "superseded");
                 }
                 result.stoppedMidApply = true;
-                return result;
+                return;
             }
             preArrival = ready.arrival;
         }
@@ -2888,7 +2898,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         // positive-close requests without arrival never bypass the
         // captured-home check, and the live home check below stays
         // mandatory even for a bracketed target.
-        const focusNative = nativeWsOf(reply, focusReq.out, focusReq.ws);
+        const focusNative = resolve(focusReq.out, focusReq.ws);
         const capturedHomed = focusTarget !== undefined && focusNative !== null &&
             focusTarget.out === focusReq.out && focusTarget.ws === focusNative;
         const arrivalProvesDestination = preArrival !== null && preArrival.some((b) =>
@@ -2937,7 +2947,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             // the final foreground/lifetime read. No native work after this
             // fence until the one-shot focus call.
             if (deferFocus()) {
-                return result;
+                return;
             }
             if (!lifetimeOk || !safe || (env.readFocusEvidence !== undefined &&
                 (view !== focusNative || finalView !== focusNative)) || !replyFresh(env, reply, entryObs)) {
@@ -3014,9 +3024,31 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                 }
             }
         }
+    };
+    const planFocus = reply.rosterPlan?.focus ?? null;
+    const memberArrived = (win: string, out: string, native: string): boolean => {
+        const row = reply.windows.find((window) => window.win === win);
+        const observed = byWin.get(win);
+        const frame = row?.frame ?? row?.alloc;
+        if (row === undefined || observed === undefined || frame == null || row.floating ||
+            row.frame_auth !== "controlled" || row.frame_hold !== "" || row.frame_op !== "") return true;
+        return applyTiledFrame(env, entryObs, observed, frame, stamp, result, { out, ws: native });
+    };
+    env.runRoster?.((request, resolve) => {
+        if (reply.focusRequest?.id !== request.id) return true;
+        consumeFocus(request, resolve);
+        return state.observeFocusEnvelope(request, reply.gen) !== "fresh";
+    }, memberArrived, result);
+    if (planFocus === null || reply.focusRequest?.id !== planFocus.id) {
+        if (reply.focusRequest !== null) {
+            consumeFocus(reply.focusRequest, (out, logical) => nativeWsOf(reply, out, logical));
+        } else {
+            state.observeFocusEnvelope(null, reply.gen);
+            if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                focusTraceLast.delete(state);
+            }
+        }
     }
-    // Stale and duplicate-spent envelopes stay silent: no row, no spend,
-    // no retry. A null envelope above already retired the record.
     return result;
 }
 
@@ -3041,7 +3073,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             return null;
         }
     };
-    const focusReq = reply.focusRequest;
+    const focusReq = reply.rosterPlan?.focus?.id === reply.focusRequest?.id ? null : reply.focusRequest;
     if (focusReq !== null && focusPublicationCurrent(state, reply) &&
         state.observeFocusEnvelope(focusReq, reply.gen) === "fresh") {
         if (state.focusChanges.pending()) {

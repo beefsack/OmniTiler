@@ -100,6 +100,7 @@ impl Rec {
                 suspended_output_present: reply.presentation.suspended_output.is_some(),
             };
             let text = encode_reply_v4(&DecodedReplyV4 {
+                roster_plan: None,
                 reply: reply.clone(),
                 wire: wire_flags,
             })
@@ -749,6 +750,7 @@ pub fn assert_reproduces(fresh: Vec<(String, String)>, expected: Vec<(String, St
         };
         assert_eq!(
             encode_reply_v4(&DecodedReplyV4 {
+                roster_plan: None,
                 reply: fresh_decoded.reply,
                 wire: fresh_flags
             })

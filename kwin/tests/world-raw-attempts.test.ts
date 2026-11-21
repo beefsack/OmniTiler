@@ -17,7 +17,7 @@ import { startWorldAdapterEntry } from "../src/world-entry";
 import { WorldAdapterState } from "../src/world-state";
 import { applyWorldReply } from "../src/world-apply";
 import { isCoreWorldReply, parseWorldReply } from "../src/world-report";
-import type { WorldReply, WorldReplyScope } from "../src/world-report";
+import type { WorldReply, WorldReplyScope, WorldRosterPlan } from "../src/world-report";
 import type { WorldObservation } from "../src/world-observe";
 import { DISABLED_PRESENTATION } from "./world-wire-harness";
 
@@ -47,7 +47,7 @@ interface FakeWindow {
     setMaximize?: (vertical: boolean, horizontal: boolean) => void;
 }
 
-function makeSurface() {
+function makeSurface(separate: boolean) {
     const d1: FakeDesktop = { id: "d1", name: "d1" };
     const d2: FakeDesktop = { id: "d2", name: "d2" };
     const byId = new Map([["d1", d1], ["d2", d2]]);
@@ -88,8 +88,9 @@ function makeSurface() {
         },
     };
     wins.push(winD);
-    // Both views start unproven so follow and standalone actuation run.
-    const currents = new Map([["out-1", "d2"], ["out-2", "d1"]]);
+    // The separate route can start with different per-output currents;
+    // legacy attempt scenarios instead use one linked native view.
+    const currents = new Map([["out-1", separate ? "d2" : "d1"], ["out-2", "d1"]]);
     const calls: Array<{ method: string; payload: string; callback: (reply: unknown) => void }> = [];
     const timers: Array<{ delay: number; cb: () => void }> = [];
     const logs: string[] = [];
@@ -115,8 +116,12 @@ function makeSurface() {
         clientArea: (): Record<string, number> => ({ x: 0, y: 0, width: 800, height: 600 }),
         currentDesktopForScreen: (screen: { name: string }): FakeDesktop =>
             byId.get(currents.get(screen.name) ?? "") as FakeDesktop,
-        setCurrentDesktopForScreen: (deskRef: unknown, screen: { name: string }): void => {
-            currents.set(screen.name, (deskRef as FakeDesktop).id);
+        setCurrentDesktopForScreen: (deskRef: FakeDesktop, screen: { name: string }): void => {
+            if (separate) {
+                currents.set(screen.name, deskRef.id);
+            } else {
+                for (const out of currents.keys()) currents.set(out, deskRef.id);
+            }
         },
         sendClientToScreen: (mover: unknown, out: unknown): void => {
             (mover as FakeWindow).output = { name: (out as { name: string }).name };
@@ -135,8 +140,8 @@ type Flow = ReturnType<typeof makeSurface> & {
     handle: NonNullable<ReturnType<typeof startWorldAdapterEntry>>;
 };
 
-function startFlow(): Flow {
-    const base = makeSurface();
+function startFlow(separate = false): Flow {
+    const base = makeSurface(separate);
     const handle = startWorldAdapterEntry({
         options: { perOutputVirtualDesktops: true },
         workspace: base.surface,
@@ -155,7 +160,7 @@ function startFlow(): Flow {
         log: (m) => { base.logs.push(m); },
         gestureActive: () => false,
         registerShortcutFn: () => true,
-        readWorkspaceModeFn: () => "per-output-local",
+        readWorkspaceModeFn: () => separate ? "per-output-local" : "shared",
     });
     assert.ok(handle !== null);
     return { ...base, handle: handle as NonNullable<typeof handle> };
@@ -259,8 +264,8 @@ function accept(
 }
 
 describe("world raw mechanical attempts", () => {
-    it("carries populated frame/member/view arrays with exact wire shapes", () => {
-        const flow = startFlow();
+    it("carries exact frame/clear attempts and typed member/view feedback for divergent currents", () => {
+        const flow = startFlow(true);
         try {
             answerHandshake(flow, "gen-1");
             answerSettings(flow, "gen-1");
@@ -300,10 +305,26 @@ describe("world raw mechanical attempts", () => {
                     { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [300, 200, 250, 180], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "op-float-1", clear_op: "", floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                     { win: "win-d", out: "out-1", ws: "w1", alloc: [100, 100, 50, 50], frame: [100, 100, 50, 50], frame_auth: "untouched", frame_hold: "", member_auth: "untouched", member_hold: "", frame_op: "", clear_op: "op-clear-2", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
-                reply["transfers"] = [
-                    { op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false, cmdSeq: "9", parent: null },
-                    { op: "op-10", kind: "view", win: "", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null },
-                ];
+                const d1 = { kind: "existing", native: "d1" } as const;
+                const d2 = { kind: "existing", native: "d2" } as const;
+                const projections = [{ out: "out-1", rows: ["w1", "spare-1"] }, { out: "out-2", rows: ["spare-2", "w2"] }];
+                const plan: WorldRosterPlan = {
+                    op: "roster-9", gen: "gen-1", rev: "2", obs: "2",
+                    baseline: { epoch: "1", order: ["d1", "d2"], projections },
+                    currents: [{ out: "out-1", native: "d2" }, { out: "out-2", native: "d1" }],
+                    occupants: [
+                        { native: "d1", windows: ["win-a", "win-c", "win-d"].map((win) => ({ win, out: "out-1" })) },
+                        { native: "d2", windows: [{ win: "win-b", out: "out-2" }] },
+                    ],
+                    projections, slots: [d1, d2],
+                    members: [{ step: "move", win: "win-a", before: { out: "out-1", native: "d1" }, out: "out-2", target: d2, deps: [] }],
+                    views: [
+                        { step: "follow", out: "out-2", before: "d1", target: d2, deps: ["move"] },
+                        { step: "standalone", out: "out-1", before: "d2", target: d1, deps: [] },
+                    ],
+                    removals: [], focus: null,
+                };
+                reply["rosterPlan"] = plan;
             });
             // The member move landed (output + desktop setters ran on the
             // fake), the follow target view was unproven so it actuated,
@@ -317,13 +338,12 @@ describe("world raw mechanical attempts", () => {
             const inner = payload["report"] as Record<string, unknown>;
             const propAttempts = inner["propertyAttempts"] as Array<Record<string, unknown>>;
             const frames = propAttempts.filter((r) => r["kind"] === "frame");
-            const members = propAttempts.filter((r) => r["kind"] === "member");
-            const views = propAttempts.filter((r) => r["kind"] === "view");
+            assert.ok(!propAttempts.some((r) => r["kind"] === "member" || r["kind"] === "view"),
+                "typed roster steps never masquerade as legacy property attempts");
             const clears = propAttempts.filter((r) => r["kind"] === "clear");
             const diag = `logs=${JSON.stringify(flow.logs)} wins=${JSON.stringify(inner["windows"])}`;
             assert.ok(Array.isArray(frames) && frames.length === 3, `three frame attempts ride, got ${JSON.stringify(frames)} ${diag}`);
-            assert.ok(Array.isArray(members) && members.length === 1, `one member attempt rides, got ${JSON.stringify(members)}`);
-            assert.ok(Array.isArray(views) && views.length === 2, `two view attempts ride, got ${JSON.stringify(views)}`);
+            assert.deepEqual([...flow.currents], [["out-1", "d1"], ["out-2", "d2"]]);
             assert.ok(Array.isArray(clears) && clears.length === 1, `one clear attempt rides, got ${JSON.stringify(clears)} ${diag}`);
             assert.deepEqual(
                 clears[0],
@@ -349,44 +369,59 @@ describe("world raw mechanical attempts", () => {
                 placed,
                 { kind: "frame", win: "win-c", target: [300, 200, 250, 180], setter: "accepted", readback: [300, 200, 250, 180], dpiBefore: null, dpiAfter: null, attemptMs: "1", op: "op-float-1", pre: [10, 10, 100, 100] },
             );
-            // Membership: exact logical target correlation plus the real
-            // setter; the exact live WorkspaceRefs ride pre/post (the
-            // cross-output preimage keeps its source output, never the
-            // target) for core-side translation.
-            assert.deepEqual(
-                members[0],
-                {
-                    kind: "member", op: "op-9", win: "win-a", out: "out-2", ws: "w2", setter: "accepted",
-                    pre: { kind: "native", out: "out-1", ws: "d1" },
-                    post: { kind: "native", out: "out-2", ws: "d2" },
-                    attemptMs: "1",
-                },
-            );
-            // Views: follow parent plus standalone, same native-only ref
-            // rule with fresh live currents plus the observation-time
-            // baseline; the adapter never invents logical proof.
-            const follow = views.find((v) => v["op"] === "op-9");
-            assert.deepEqual(
-                follow,
-                {
-                    kind: "view", op: "op-9", out: "out-2", ws: "w2", setter: "accepted",
-                    pre: { kind: "native", out: "out-2", ws: "d1" },
-                    post: { kind: "native", out: "out-2", ws: "d2" },
-                    base: { kind: "native", out: "out-2", ws: "d1" },
-                    attemptMs: "1",
-                },
-            );
-            const alone = views.find((v) => v["op"] === "op-10");
-            assert.deepEqual(
-                alone,
-                {
-                    kind: "view", op: "op-10", out: "out-1", ws: "w1", setter: "accepted",
-                    pre: { kind: "native", out: "out-1", ws: "d2" },
-                    post: { kind: "native", out: "out-1", ws: "d1" },
-                    base: { kind: "native", out: "out-1", ws: "d2" },
-                    attemptMs: "1",
-                },
-            );
+            // Typed steps retain the exact source output on the cross-output
+            // preimage and record fresh native currents for both view writes.
+            assert.deepEqual(inner["rosterFeedback"], {
+                op: "roster-9", gen: "gen-1", rev: "2",
+                steps: [
+                    { step: "standalone", status: "applied",
+                        before: { kind: "current", native: "d2" }, after: { kind: "current", native: "d1" } },
+                    { step: "move", status: "applied",
+                        before: { kind: "home", out: "out-1", native: "d1" },
+                        after: { kind: "home", out: "out-2", native: "d2" } },
+                    { step: "follow", status: "applied",
+                        before: { kind: "current", native: "d1" }, after: { kind: "current", native: "d2" } },
+                ],
+            });
+        } finally {
+            flow.handle.stop();
+        }
+    });
+    it("carries exact legacy member and follow-view property attempts on the linked route", () => {
+        const flow = startFlow();
+        try {
+            answerHandshake(flow);
+            answerSettings(flow);
+            runTimers(flow);
+            accept(flow, "1", (reply) => {
+                reply["outputs"] = ["out-1", "out-2"].map((out) => ({ out, view: "w2", mode: "tiled", hold: "" }));
+                reply["windows"] = [
+                    { win: "win-a", out: "out-2", ws: "w2", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200],
+                        frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
+                        frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null,
+                        visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                ];
+                reply["transfers"] = [
+                    { op: "op-link-member", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false, cmdSeq: null, parent: null },
+                ];
+            });
+            flow.fire("desktopsChanged");
+            runTimers(flow);
+            const { report } = JSON.parse(lastPayload(flow, "DescribeWorld")) as { report: Record<string, unknown> };
+            assert.deepEqual([...flow.currents], [["out-1", "d2"], ["out-2", "d2"]], "the host exposes one linked current");
+            assert.equal(report["rosterFeedback"], undefined, "legacy steps do not invent typed proof");
+            const attempts = report["propertyAttempts"] as Array<Record<string, unknown>>;
+            assert.deepEqual(attempts.filter((row) => row["kind"] === "member"), [{
+                kind: "member", op: "op-link-member", win: "win-a", out: "out-2", ws: "w2", setter: "accepted",
+                pre: { kind: "native", out: "out-1", ws: "d1" },
+                post: { kind: "native", out: "out-2", ws: "d2" }, attemptMs: "1",
+            }]);
+            assert.deepEqual(attempts.filter((row) => row["kind"] === "view"), [{
+                kind: "view", op: "op-link-member", out: "out-2", ws: "w2", setter: "accepted",
+                pre: { kind: "native", out: "out-2", ws: "d1" },
+                post: { kind: "native", out: "out-2", ws: "d2" },
+                base: { kind: "native", out: "out-2", ws: "d1" }, attemptMs: "1",
+            }]);
         } finally {
             flow.handle.stop();
         }
@@ -482,7 +517,7 @@ describe("world raw mechanical attempts", () => {
             accept(flow, "1", (reply) => {
                 reply["outputs"] = [
                     { out: "out-1", view: "w1", mode: "tiled", hold: "" },
-                    { out: "out-2", view: "w2", mode: "tiled", hold: "" },
+                    { out: "out-2", view: "w1", mode: "tiled", hold: "" },
                 ];
                 reply["windows"] = [
                     { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
@@ -498,7 +533,7 @@ describe("world raw mechanical attempts", () => {
             accept(flow, "2", (reply) => {
                 reply["outputs"] = [
                     { out: "out-1", view: "w1", mode: "tiled", hold: "" },
-                    { out: "out-2", view: "w2", mode: "tiled", hold: "" },
+                    { out: "out-2", view: "w1", mode: "tiled", hold: "" },
                 ];
                 reply["windows"] = [
                     { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
@@ -582,7 +617,7 @@ describe("world raw mechanical attempts", () => {
             accept(flow, "1", (reply) => {
                 reply["outputs"] = [
                     { out: "out-1", view: "w1", mode: "tiled", hold: "" },
-                    { out: "out-2", view: "w2", mode: "tiled", hold: "" },
+                    { out: "out-2", view: "w1", mode: "tiled", hold: "" },
                 ];
                 reply["windows"] = [
                     { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
@@ -595,7 +630,7 @@ describe("world raw mechanical attempts", () => {
             accept(flow, "2", (reply) => {
                 reply["outputs"] = [
                     { out: "out-1", view: "w1", mode: "tiled", hold: "" },
-                    { out: "out-2", view: "w2", mode: "tiled", hold: "" },
+                    { out: "out-2", view: "w1", mode: "tiled", hold: "" },
                 ];
                 reply["windows"] = [
                     { win: "win-a", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },

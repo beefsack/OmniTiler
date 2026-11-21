@@ -1088,6 +1088,70 @@ fn writer_base() -> DecodedReplyV4 {
     decode_reply_v4(&fixture_text("messages/reply-observe.json")).expect("observe decodes")
 }
 
+#[test]
+fn roster_plan_round_trips_and_rejects_invalid_authority() {
+    let base = writer_base();
+    let mut value: serde_json::Value =
+        serde_json::from_str(&encode_reply_v4(&base).unwrap()).unwrap();
+    assert!(value.get("rosterPlan").is_none());
+    value["rosterPlan"] = serde_json::json!({
+        "op": "roster-1", "gen": value["gen"], "rev": value["rev"], "obs": value["obs"],
+        "baseline": {
+            "epoch": "1", "order": ["d1", "d2", "d3"],
+            "projections": [{"out":"out-a","rows":["ws-a","ws-b"]}]
+        },
+        "currents": [{"out":"out-a","native":"d1"}],
+        "occupants": [{"native":"d1","windows":[{"win":"win-a","out":"out-a"}]}],
+        "projections": [{"out":"out-a","rows":["ws-a","ws-c"]}],
+        "slots": [{"kind":"existing","native":"d1"},{"kind":"existing","native":"d2"},
+            {"kind":"append","step":"append-1"}],
+        "members": [{"step":"member-1","win":"win-a","before":{"out":"out-a","native":"d1"},
+            "out":"out-a","target":{"kind":"append","step":"append-1"},"deps":["append-1"]}],
+        "views": [{"step":"view-1","out":"out-a","before":"d1",
+            "target":{"kind":"existing","native":"d2"},"deps":["member-1"]}],
+        "removals": [{"step":"remove-1","native":"d3","deps":["view-1"]}],
+        "focus": {"id":"focus-a","target":"win-a","rev":"1","cause":"explicit-command",
+            "out":"out-a","ws":"ws-c","cmdSeq":"1","afterShown":null}
+    });
+    let decoded = decode_reply_v4(&value.to_string()).expect("slot reply decodes");
+    let encoded = encode_reply_v4(&decoded).expect("slot reply encodes");
+    assert_eq!(decode_reply_v4(&encoded).unwrap(), decoded);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&encoded).unwrap(),
+        value
+    );
+    assert_eq!(decoded.reply, base.reply);
+
+    for (path, bad) in [
+        ("/rosterPlan", serde_json::Value::Null),
+        ("/rosterPlan/rev", serde_json::json!("01")),
+        ("/rosterPlan/obs", serde_json::json!("18446744073709551615")),
+        ("/rosterPlan/gen", serde_json::json!("foreign-gen")),
+        (
+            "/rosterPlan/slots/0",
+            serde_json::json!({"kind":"unknown","native":"d1"}),
+        ),
+        ("/rosterPlan/slots/1/native", serde_json::json!("d1")),
+        ("/rosterPlan/members/0/deps", serde_json::json!(["view-1"])),
+        (
+            "/rosterPlan/views/0",
+            serde_json::json!({"step":"view-1","extra":true}),
+        ),
+        ("/rosterPlan/focus/cmdSeq", serde_json::Value::Null),
+        (
+            "/rosterPlan/baseline/order",
+            serde_json::json!((1..=26).map(|i| format!("d{i}")).collect::<Vec<_>>()),
+        ),
+    ] {
+        let mut invalid = value.clone();
+        *invalid.pointer_mut(path).unwrap() = bad;
+        assert!(
+            decode_reply_v4(&invalid.to_string()).is_err(),
+            "accepted {path}"
+        );
+    }
+}
+
 fn writer_focus_effect() -> DecodedReplyV4 {
     // Focus is the only effect kind and it never encodes: the writer
     // refusal below stays an effect-lane check. The duplicate-effect case
@@ -1615,6 +1679,7 @@ fn v4_reply_drag_preview_strict_validation_and_bounds() {
         revision: 2,
     };
     let base_decoded = DecodedReplyV4 {
+        roster_plan: None,
         reply: WorldReplyV4 {
             contract_version: WORLD_CONTRACT_VERSION_V4,
             adapter_incarnation: "adapter-a".to_owned(),
@@ -1805,10 +1870,17 @@ fn v4_reply_writer_after_shown_duplicate_and_later_error_precedence() {
     assert_eq!(later_count_err, later_err);
 }
 
-fn legacy_bound_oracle(decoded: &DecodedReplyV4, bind: &BrokerReplyBind<'_>) -> String {
-    let encoded = encode_reply_v4(decoded).expect("oracle inner encodes");
+fn legacy_bound_oracle(
+    decoded: &DecodedReplyV4,
+    roster_plan: Option<&serde_json::Value>,
+    bind: &BrokerReplyBind<'_>,
+) -> String {
+    let encoded = write_reply_v4(&decoded.reply, &decoded.wire).expect("oracle inner encodes");
     let mut val: serde_json::Value = serde_json::from_str(&encoded).expect("oracle json");
     let map = val.as_object_mut().expect("object");
+    if let Some(plan) = roster_plan {
+        map.insert("rosterPlan".to_owned(), plan.clone());
+    }
     let assoc_val = |a: Option<BrokerGestureAssoc<'_>>| match a {
         Some(a) => serde_json::json!({
             "instance": a.instance,
@@ -1936,10 +2008,26 @@ fn v4_bound_and_projection_match_stage5_fixtures_and_serde_oracle_byte_for_byte(
         gesture_assoc: None,
         gesture_settled_assoc: None,
     };
-    let actual_genesis =
-        write_bound_reply_v4(&genesis_decoded.reply, &genesis_decoded.wire, &genesis_bind)
-            .expect("write_bound_reply_v4");
+    assert!(
+        genesis_decoded.roster_plan.is_some(),
+        "active genesis carries slot authority"
+    );
+    let actual_genesis = write_bound_reply_v4(
+        &genesis_decoded.reply,
+        &genesis_decoded.wire,
+        genesis_decoded.roster_plan.as_ref(),
+        &genesis_bind,
+    )
+    .expect("write_bound_reply_v4");
     assert_eq!(actual_genesis, genesis_trimmed);
+    assert_eq!(
+        actual_genesis,
+        legacy_bound_oracle(
+            &genesis_decoded,
+            genesis_saved.get("rosterPlan"),
+            &genesis_bind
+        )
+    );
 
     // 2. Exact byte-for-byte match against stage5-v4-active/full/reply-preview-0.json
     // and projection-preview.json (with read-time gen/req/covered fields added).
@@ -1966,10 +2054,22 @@ fn v4_bound_and_projection_match_stage5_fixtures_and_serde_oracle_byte_for_byte(
         }),
         gesture_settled_assoc: None,
     };
-    let actual_preview_bound =
-        write_bound_reply_v4(&preview_decoded.reply, &preview_decoded.wire, &preview_bind)
-            .expect("write_bound_reply_v4");
+    let actual_preview_bound = write_bound_reply_v4(
+        &preview_decoded.reply,
+        &preview_decoded.wire,
+        preview_decoded.roster_plan.as_ref(),
+        &preview_bind,
+    )
+    .expect("write_bound_reply_v4");
     assert_eq!(actual_preview_bound, preview_trimmed);
+    assert_eq!(
+        actual_preview_bound,
+        legacy_bound_oracle(
+            &preview_decoded,
+            preview_saved.get("rosterPlan"),
+            &preview_bind
+        )
+    );
 
     let proj_fixture_raw = std::fs::read_to_string(stage5_dir.join("projection-preview.json"))
         .expect("projection-preview.json");
@@ -2053,8 +2153,8 @@ fn v4_bound_and_projection_match_stage5_fixtures_and_serde_oracle_byte_for_byte(
         }),
     };
     let actual_rich_bound =
-        write_bound_reply_v4(&rich.reply, &rich.wire, &rich_bind).expect("rich bound");
-    let oracle_rich_bound = legacy_bound_oracle(&rich, &rich_bind);
+        write_bound_reply_v4(&rich.reply, &rich.wire, None, &rich_bind).expect("rich bound");
+    let oracle_rich_bound = legacy_bound_oracle(&rich, None, &rich_bind);
     assert_eq!(actual_rich_bound, oracle_rich_bound);
 
     let actual_rich_proj =

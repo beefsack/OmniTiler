@@ -416,6 +416,7 @@ fn v4_estimate_nonfinite_total_and_held_structure_delta() {
                 RawSettingValue::String("op-held".to_owned()),
             )],
         )],
+        roster_feedback: None,
         held_presentation_fields: Some(vec![(
             "witness".to_owned(),
             RawSettingValue::String("bad-const".to_owned()),
