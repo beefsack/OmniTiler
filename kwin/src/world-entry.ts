@@ -558,7 +558,8 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     let presentationDispatchReady = false;
     // A successful native send without exact arrival can arm a scheduling
     // hint by native lifetime id, not by the transient scripting wrapper.
-    const crossingArrivals = new Map<string, AwaitingCrossingArrival & { readyRef: object | null }>();
+    type CrossingArrival = AwaitingCrossingArrival & { readyRef: object | null };
+    const crossingArrivals = new Map<string, CrossingArrival>();
     // No DescribeWorld round may start while a DiscoverWorld round is
     // outstanding: the generation it would carry is known-stale (rebind
     // window) or absent (startup, already gated by boundGen).
@@ -2637,13 +2638,13 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
     };
 
-    const crossingDispatchReady = (): boolean => {
-        if (ownedSeal !== null || pendingQueue[0]?.seal !== undefined) return false;
-        let ready = false;
+    const readyCrossing = (): CrossingArrival | undefined => {
+        if (ownedSeal !== null || pendingQueue[0]?.seal !== undefined) return undefined;
+        let ready: CrossingArrival | undefined;
         for (const [win, arrival] of crossingArrivals) {
             if (arrival.readyRef === null) continue;
             if (gestureActive() || !provesCrossingArrival(arrival.readyRef, arrival)) crossingArrivals.delete(win);
-            else ready = true;
+            else ready ??= arrival;
         }
         return ready;
     };
@@ -2671,11 +2672,11 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
 
     // Proven scoped arrivals and presentation refreshes can preempt the
     // ordinary native-event debounce, but never the existing capture flight.
-    const scheduleDispatch = (): void => {
+    const scheduleDispatch = (arrivalCatchupReady?: () => boolean): void => {
         if (stopped || debounceArmed) {
             return;
         }
-        const expedited = presentationDispatchReady || crossingDispatchReady();
+        const expedited = arrivalCatchupReady !== undefined || presentationDispatchReady || readyCrossing() !== undefined;
         if (expedited && state.inFlight !== null) return;
         debounceArmed = true;
         const epoch = (debounceEpoch += 1);
@@ -2688,14 +2689,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             }
             debounceArmed = false;
             dispatchTimerCancel = null;
-            if (expedited && !presentationDispatchReady && !crossingDispatchReady()) {
+            const crossing = expedited && arrivalCatchupReady === undefined ? readyCrossing() : undefined;
+            if (expedited && !presentationDispatchReady && crossing === undefined && !arrivalCatchupReady?.()) {
                 scheduleDispatch();
                 return;
             }
             if (!expedited && typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
                 worldTraceProbes.get(state)?.noteDebounceFire();
             }
-            void dispatch(false);
+            void dispatch(false, crossing);
         });
     };
 
@@ -7003,7 +7005,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
 
     const sendCapture = (
         observation: WorldObservation | null, focusChangesCut: FocusChangesCut, headOp: string | null,
-        clientCmds: string[], seal?: Seal, prefixLength = 0,
+        clientCmds: string[], seal?: Seal, prefixLength = 0, crossing?: CrossingArrival,
     ): boolean => {
         if (state.boundGen === null || ownScopeDepth !== 0 || homingSuppressDepth !== 0 || registeredPress !== null) return false;
         const frozen = seal ?? (observation === null ? null : freezeReport(observation));
@@ -7084,7 +7086,14 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 clearTerminalCaptureRetry();
             }
         }
-        transmitCapture(envelope, flight, headOp, traceObservation);
+        // A timer hint alone is not evidence that the flight observed arrival.
+        // Carry the proof only on the fresh, commandless observation that did.
+        const observedCrossing = crossing !== undefined && clientCmds.length === 0 && !gestureActive() &&
+            flight.gesture === null && observation !== null && observation.localInvalidWatermark === watermark &&
+            observation.domains.some(domain => domain.windows.some(win =>
+                win.win === crossing.win && win.out === crossing.out && win.nativeWs === crossing.native))
+            ? crossing : undefined;
+        transmitCapture(envelope, flight, headOp, traceObservation, false, observedCrossing);
         return true;
     };
 
@@ -7351,7 +7360,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // bounded same-envelope terminal retry above.
     const transmitCapture = (
         envelope: string, flight: CaptureFlight, headOp: string | null, observation: TraceObservation | null,
-        replay = false,
+        replay = false, observedCrossing?: CrossingArrival,
     ): void => {
         if (stopped || state.boundGen === null) {
             return;
@@ -7742,6 +7751,22 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                             if (!sealMoved) presentationSubscriber.notifyInvalidated();
                         } catch (error) {
                             void error;
+                        }
+                        const arrivalRef = observedCrossing?.readyRef;
+                        if (supersededDuringFlight && observedCrossing !== undefined && arrivalRef != null) {
+                            const ready = (): boolean =>
+                                state.lastReply === parsed && state.boundGen === parsed.gen &&
+                                state.dirty && state.inFlight === null && !discoverOutstanding && !sealResetRequired &&
+                                ownScopeDepth === 0 && homingSuppressDepth === 0 && signalDepth === 0 &&
+                                registeredPress === null && ownedSeal === null && pendingQueue.length === 0 &&
+                                drainTimerCancel === null && gestureTerminalPending === null && !gestureActive() &&
+                                provesCrossingArrival(arrivalRef, observedCrossing);
+                            // Replace the native debounce once. The replacement
+                            // takes a fresh observation and carries no retry hint.
+                            if (ready()) {
+                                cancelScheduledDispatch();
+                                scheduleDispatch(ready);
+                            }
                         }
                         takeResultsForUndecided(() => {
                             flightBatches.delete(flight.source);
@@ -8143,7 +8168,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         }
     };
 
-    const dispatch = (isCatchup: boolean): void => {
+    const dispatch = (isCatchup: boolean, crossing?: CrossingArrival): void => {
         void isCatchup;
         if (stopped || state.boundGen === null || discoverOutstanding) {
             return;
@@ -8223,7 +8248,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 log("omnitiler:world:observe-invalid recovery=on-next-event");
                 return;
             }
-            sendCapture(catchupObservation, state.focusChanges.freeze(catchupObservation, focusStart), null, []);
+            sendCapture(catchupObservation, state.focusChanges.freeze(catchupObservation, focusStart), null, [], undefined, 0, crossing);
             return;
         }
         pumpQueueFiling();
@@ -8254,7 +8279,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             return;
         }
         const focusCut = state.focusChanges.freeze(observation, focusStart);
-        sendCapture(observation, focusCut, headOp, clientCmds, undefined, preview.length);
+        sendCapture(observation, focusCut, headOp, clientCmds, undefined, preview.length, crossing);
         } finally {
             dispatchActive = false;
         }
@@ -8265,7 +8290,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
     // flight owns the wire anymore; sendCapture consumes the flag on start
     // (exactly one follow-up capture per owed wake, never a retry storm).
     const wakeFollowup = (): void => {
-        if (!stopped && state.inFlight === null && (wakePendingCapture || crossingDispatchReady())) {
+        if (!stopped && state.inFlight === null && (wakePendingCapture || readyCrossing() !== undefined)) {
             wakePendingCapture = false;
             scheduleDispatch();
         }

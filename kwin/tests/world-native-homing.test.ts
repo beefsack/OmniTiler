@@ -726,6 +726,65 @@ describe("world native homing", () => {
         });
     }
 
+    for (const intervening of ["none", "gesture", "leaves target"] as const) {
+        it(`bounds the fresh catch-up after a stale crossing arrival (${intervening})`, async () => {
+            const h = await makeHarness();
+            try {
+                h.currents.set(RIGHT, "ws-1");
+                await discover(h);
+                const mover = h.wins[0] as FakeWindow;
+                const sibling = h.wins[2] as FakeWindow;
+                const fromFrame = { ...mover.frameGeometry };
+                h.deferOutput = true;
+                h.handle.requestSendToOutput("left", true);
+                h.runTimers(0);
+                await h.flushAll();
+                assert.deepEqual(h.outputRequests, [mover]);
+
+                const arrival = h.calls.length;
+                mover.output = { name: LEFT };
+                h.fireWindow(mover, "outputChanged");
+                h.runTimers(0);
+                assert.equal(h.calls.length, arrival + 1);
+                assert.deepEqual(homingOf(h, arrival, mover.internalId), { out: LEFT, ws: "ws-1" });
+
+                h.fireWindow(sibling, "frameGeometryChanged");
+                assert.equal(await h.flush(), arrival);
+                assert.ok(h.logs.includes("omnitiler:world:stale reason=superseded-during-flight recovery=catchup"));
+                assert.deepEqual(mover.frameGeometry, fromFrame, "the stale reply writes no final frame");
+                const catchup = h.calls.length;
+                if (intervening === "gesture") h.gesture = true;
+                if (intervening === "leaves target") {
+                    mover.output = { name: RIGHT };
+                    h.fireWindow(mover, "outputChanged");
+                }
+                h.runTimers(0);
+                assert.equal(h.calls.length, catchup + (intervening === "none" ? 1 : 0));
+
+                if (intervening === "none") {
+                    assert.deepEqual(homingOf(h, catchup, mover.internalId), { out: LEFT, ws: "ws-1" });
+                    h.fireWindow(sibling, "frameGeometryChanged");
+                    assert.equal(await h.flush(), catchup);
+                    assert.deepEqual(mover.frameGeometry, fromFrame, "the catch-up is fenced too");
+                    const after = h.calls.length;
+                    h.runTimers(0);
+                    assert.equal(h.calls.length, after, "a second stale reply does not expedite again");
+                }
+                h.gesture = false;
+                const ordinary = h.calls.length;
+                h.runTimers();
+                assert.equal(h.calls.length, ordinary + 1, "ordinary recovery is still available");
+                await h.flushAll();
+                if (intervening !== "leaves target") {
+                    assert.notDeepEqual(mover.frameGeometry, fromFrame, "only a fresh reply writes the final tile");
+                }
+                assert.deepEqual(h.outputRequests, [mover], "catch-up never resends the crossing command");
+            } finally {
+                await h.stop();
+            }
+        });
+    }
+
     it("keeps a qualifying arrival on ordinary debounce during a gesture", async () => {
         const h = await makeHarness();
         try {
