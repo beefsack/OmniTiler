@@ -2,7 +2,8 @@
 
 ### Shared settings catalog and platform ownership
 - Decision: Pre-0.1 route D uses dependency-free Rust core catalog and native Windows tabbed Settings renderer. Catalog owns stable tab/section/field IDs, types, tokens, defaults, bounds, functional labels/help, validity and timing; widgets, storage, load policy and operations stay platform-owned. Toolkit types/serialized JSON stay out of core. Windows v1 nested snake_case retains strict refusal/last-good; KDE keys/tolerant decoding and saved/requested/confirmed state remain. Startup-only/next-admission notes describe actual adoption, not Save confirmation. Windows tabs: Tiling & Workspaces (gaps, workspace defaults/scope, move, admission/refill); Appearance (border/underlay); Shortcuts (takeover, Win+L, presets, bindings, Xbox/Game Bar); Desktop Integration (mouse Snap/taskbar pager). Preserve persistent status/conflict feedback and scrolling long notes; Windows-only fields/native panels stay adapter-owned.
-- Why: not recorded.
+  Adapters choose which fields to expose and on which surfaces; the shared catalog carries no host exposure flags.
+- Why: shared semantics stay consistent without duplicating the exposure already described by adapter UI and storage mappings.
 - Assumes / revisit if: KDE catalog migration uses generated descriptors and drift checking; macOS participation stays consumer-driven. Existing platform storage/adoption contracts remain authoritative.
 - Status: active, 2026-10-16
 - Evidence: [Windows catalog](../changes/shared-settings-catalog-windows-tabs.md), [KDE catalog](../changes/archive/kde-settings-core-catalog.md).

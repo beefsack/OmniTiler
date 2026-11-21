@@ -2,11 +2,11 @@
 //!
 //! Portable field/tab/section/type/default/bounds/token/label/help/timing
 //! metadata plus explicit validity outcomes. No toolkit types, no serialized
-//! JSON, no storage I/O, no native operations here. Platform adapters map
-//! these stable field IDs to their own storage keys and own all widgets,
-//! persistence, and operations. A future exporter outside this crate may
-//! read these tables to emit checked-in native descriptors; nothing here
-//! generates or requires generated code.
+//! JSON, no storage I/O, no native operations here. Platform adapters own
+//! exposure, map these stable field IDs to their own storage keys, and own
+//! all widgets, persistence, and operations. A future exporter outside this
+//! crate may read these tables to emit checked-in native descriptors; nothing
+//! here generates or requires generated code.
 
 use crate::born_maximized::BornMaximized;
 use crate::cursor_targeting::{FreshPlacement, SwitchTarget};
@@ -168,23 +168,6 @@ impl Timing {
     }
 }
 
-/// Host capability flags for one field. Portable fields list every host
-/// that exposes them; unsupported hosts omit the field from their UI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HostCaps {
-    pub windows: bool,
-    pub kde: bool,
-    pub macos: bool,
-}
-
-/// Capabilities for every portable field below: exposed on Windows and KDE,
-/// not on macOS (no tiling-settings UI there yet).
-pub const PORTABLE_CAPS: HostCaps = HostCaps {
-    windows: true,
-    kde: true,
-    macos: false,
-};
-
 /// Typed field value (also used for defaults). Text carries enum tokens
 /// and color strings; no JSON travels through this type.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -220,14 +203,12 @@ pub struct FieldDef {
     pub options: &'static [EnumOption],
     pub timing: Timing,
     pub timing_help: &'static str,
-    pub capabilities: HostCaps,
     /// Why the bound exists. Required at every bounded definition.
     pub bounds_reason: &'static str,
 }
 
-/// Generic native panel slot. Adapters declare their own explicit panels
-/// with these (presets, binding editor, gaming operations, takeover and
-/// Win+L remediation, snap policy); no generic setter may execute them.
+/// Generic native panel slot. Adapters declare their own explicit native
+/// panels with these; no generic setter may execute them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PanelSlot {
     pub id: &'static str,
@@ -447,7 +428,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Applies to subsequent layouts without restart.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Carried work-area geometry bound (0..64); retains the existing accepted settings range.",
     },
     FieldDef {
@@ -464,7 +444,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Applies to subsequent layouts without restart.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Carried work-area geometry bound (0..64); retains the existing accepted settings range.",
     },
     FieldDef {
@@ -481,7 +460,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::NextAdmission,
         timing_help: "Applies to workspaces created after Apply; existing workspaces keep their session tiling.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Boolean field; no numeric bound.",
     },
     FieldDef {
@@ -498,7 +476,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &WORKSPACE_MODE_OPTIONS,
         timing: Timing::Restart,
         timing_help: "Saved immediately; the running owner keeps its startup scope until restart.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Closed token set; unknown tokens refuse instead of migrating.",
     },
     FieldDef {
@@ -515,7 +492,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &SAME_AXIS_MOVE_OPTIONS,
         timing: Timing::NextAdmission,
         timing_help: "Applies to subsequent moves only; existing trees keep their layout until the next move.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Closed token set; unknown tokens refuse instead of migrating.",
     },
     FieldDef {
@@ -532,7 +508,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &BORN_MAXIMIZED_OPTIONS,
         timing: Timing::NextAdmission,
         timing_help: "Applies to subsequent admissions only; admitted windows keep their state.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Closed token set; unknown tokens refuse instead of migrating.",
     },
     FieldDef {
@@ -549,7 +524,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &FIXED_SIZE_OPTIONS,
         timing: Timing::NextAdmission,
         timing_help: "Applies to subsequent admissions only; retained classifications never change.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Closed token set; unknown tokens refuse instead of migrating.",
     },
     FieldDef {
@@ -566,7 +540,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &MIGRATION_REFILL_OPTIONS,
         timing: Timing::NextAdmission,
         timing_help: "Applies to subsequent migrations only; already-migrated workspaces keep their state.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Closed token set; unknown tokens refuse instead of migrating.",
     },
     FieldDef {
@@ -583,7 +556,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &SWITCH_TARGET_OPTIONS,
         timing: Timing::NextAdmission,
         timing_help: "Applies to subsequent selections only; retained views keep their state.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Closed token set; unknown tokens refuse instead of migrating.",
     },
     FieldDef {
@@ -600,7 +572,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &FRESH_PLACEMENT_OPTIONS,
         timing: Timing::NextAdmission,
         timing_help: "Applies to subsequent admissions only; admitted windows keep their state.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Closed token set; unknown tokens refuse instead of migrating.",
     },
     FieldDef {
@@ -617,7 +588,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Applies live without restart; hover focus mints on the next sampled report.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Boolean field; no numeric bound.",
     },
     FieldDef {
@@ -634,7 +604,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Applies live without restart; the next cross-output focus publishes the warp point.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Boolean field; no numeric bound.",
     },
     FieldDef {
@@ -651,7 +620,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Applies live without restart.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Boolean field; no numeric bound.",
     },
     FieldDef {
@@ -668,7 +636,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Applies live without restart.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Retains the existing accepted settings range (0..32); bounds overlay geometry.",
     },
     FieldDef {
@@ -685,7 +652,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Applies live without restart.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Retains the existing accepted settings range (0..64); bounds overlay geometry.",
     },
     FieldDef {
@@ -702,7 +668,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Applies live without restart.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Retains the existing accepted settings range (0..64); bounds overlay geometry.",
     },
     FieldDef {
@@ -719,7 +684,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Applies live without restart.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Fixed #rrggbb grammar; malformed colors refuse instead of guessing.",
     },
     FieldDef {
@@ -736,7 +700,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Applies live without restart.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Boolean field; no numeric bound.",
     },
     FieldDef {
@@ -753,7 +716,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Applies live without restart.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Boolean field; no numeric bound.",
     },
     FieldDef {
@@ -770,7 +732,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Applies live without restart.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Fixed #aarrggbb grammar; malformed colors refuse instead of guessing.",
     },
     FieldDef {
@@ -787,7 +748,6 @@ pub const ALL_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Applies live without restart.",
-        capabilities: PORTABLE_CAPS,
         bounds_reason: "Retains the existing accepted settings range (-1..32); -1 is the follow-border sentinel and values bound overlay geometry.",
     },
 ];
@@ -1104,12 +1064,8 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_timing_and_tab_placement_are_explicit() {
+    fn timing_and_tab_placement_are_explicit() {
         for field in ALL_FIELDS {
-            assert_eq!(field.capabilities, PORTABLE_CAPS, "caps drift {}", field.id);
-            assert!(field.capabilities.windows, "{}", field.id);
-            assert!(field.capabilities.kde, "{}", field.id);
-            assert!(!field.capabilities.macos, "{}", field.id);
             let section = find_section(field.section).expect("section");
             assert!(
                 section.tab == TAB_TILING_WORKSPACES || section.tab == TAB_APPEARANCE,

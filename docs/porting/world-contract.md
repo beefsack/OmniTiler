@@ -267,6 +267,11 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 
 ## Revisioned settings
 
+- Each adapter chooses which settings to expose on its own surfaces, using the
+  shared catalog for field semantics. Exposure does not enter the handshake or
+  settings messages: the handshake declares hard runtime capabilities, and the
+  settings request carries raw values, not a UI field list.
+
 - Send one complete raw settings snapshot at startup and on change. Core
   validates each field, applies valid siblings, and keeps last-good/default for
   invalid fields. Missing known fields use defaults at startup, last-good later;

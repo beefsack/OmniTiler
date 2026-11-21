@@ -364,9 +364,9 @@ pub const KDE_EXPOSED_FIELDS: &[KdeField] = &[
 // ---------------------------------------------------------------------------
 
 /// Portable fields with no KDE control (no KConfig key, no widget).
-/// Adapter-only exclusion list; shared capabilities are unchanged. The one
-/// remaining output-targeting entry stays catalog-portable but has no KCM
-/// control or schema key on KDE today (cursor warp stays unsupported).
+/// Adapter-only exclusion list. The one remaining output-targeting entry
+/// stays catalog-portable but has no KCM control or schema key on KDE today
+/// (cursor warp stays unsupported).
 pub const KDE_UNSUPPORTED_FIELDS: &[&str] = &[
     settings_catalog::FIELD_BORDER_ENABLED,
     settings_catalog::FIELD_UNDERLAY_ENABLED,

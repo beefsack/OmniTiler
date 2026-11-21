@@ -339,9 +339,26 @@ function settle(h: Harness, rev: string): void {
 }
 
 describe("world settings reload", () => {
-    it("includes cursor-first defaults in the normal snapshot", () => {
+    it("emits the exact KDE runtime snapshot keys and cursor-first defaults", () => {
         const settings = createWorldSettingsLive();
-        const byKey = new Map(settings.snapshotConnectionValues());
+        const entries = settings.snapshotConnectionValues();
+        assert.deepEqual(
+            entries.map(([key]) => key),
+            [
+                "gap",
+                "outer",
+                "defaultTiled",
+                "mode",
+                "sameAxis",
+                "bornMaximized",
+                "predicate",
+                "refill",
+                "switchTarget",
+                "freshPlacement",
+                "focusFollowsCursor",
+            ],
+        );
+        const byKey = new Map(entries);
         assert.equal(byKey.get("switchTarget"), "cursor-output");
         assert.equal(byKey.get("freshPlacement"), "cursor-output-last-focused");
         assert.equal(byKey.get("focusFollowsCursor"), false);
