@@ -428,9 +428,10 @@ fn n5_focus_hidden_and_minimized_refuses_without_effects() {
         let drain = dispatch(&service, &generation, 2, &inner);
         assert_eq!(drain["ready"], true);
         assert!(
-            drain["effects"].as_array().expect("effects").is_empty(),
-            "{win}: no focus effect"
+            drain.get("effects").is_none(),
+            "{win}: retired effects key omitted"
         );
+        assert!(drain["focusRequest"].is_null(), "{win}: no focus request");
         let take = parse(
             &service
                 .take_result(SENDER, &take_req(&generation, "1"))
@@ -486,10 +487,9 @@ fn n5_directional_nav_skips_hidden_and_minimized() {
     assert_eq!(queued["outcome"], "queued");
     let drain = dispatch(&service, &generation, 2, &inner);
     assert_eq!(drain["ready"], true);
-    let effects = drain["effects"].as_array().expect("effects");
     assert!(
-        effects.is_empty(),
-        "focus never publishes as wire effects: {effects:?}"
+        drain.get("effects").is_none(),
+        "wire omits retired effects key"
     );
     let request = &drain["focusRequest"];
     assert_eq!(request["target"], json!("win-b"), "nav lands on win-b");
@@ -537,9 +537,10 @@ fn n5_send_hidden_and_minimized_refuse_without_transfer() {
             "{win}: no transfer"
         );
         assert!(
-            drain["effects"].as_array().expect("effects").is_empty(),
-            "{win}: no effects"
+            drain.get("effects").is_none(),
+            "{win}: retired effects key omitted"
         );
+        assert!(drain["focusRequest"].is_null(), "{win}: no focus request");
         let take = parse(
             &service
                 .take_result(SENDER, &take_req(&generation, "1"))
@@ -688,9 +689,10 @@ fn n5_migrate_moves_hidden_and_minimized_without_geometry() {
     assert_eq!(migrations[0]["ws"], json!(logical));
     assert_eq!(migrations[0]["out"], json!("DP-2"));
     assert!(
-        drain["effects"].as_array().expect("effects").is_empty(),
-        "no focus to moved members"
+        drain.get("effects").is_none(),
+        "retired effects key omitted"
     );
+    assert!(drain["focusRequest"].is_null(), "no focus to moved members");
     // Hidden and minimized membership moves with the workspace: new
     // output, same logical workspace, still no geometry, clear, or frame.
     for win in ["win-h", "win-m"] {

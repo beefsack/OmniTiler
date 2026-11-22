@@ -1595,57 +1595,6 @@ fn reply_encode_matches_core_canonical_writer() {
 }
 
 #[test]
-fn focus_effects_refuse_through_v4_writer() {
-    // Focus left the effects lane: even correlation-valid synthetic
-    // producer shapes at maximum widths (token and revision at u64::MAX,
-    // distinct 128-byte subjects, longest explicit sequence) refuse on
-    // the canonical v4 writer with the fixed removed-focus token. Only
-    // the retained `focusRequest` lane carries focus; no other effect
-    // kind is admissible and the effects lane stays empty.
-    use tiler_core::directional::WindowId;
-    use tiler_core::world_report::{EffectCause, EffectKind, OneShotEffect};
-    let report = decode_request(&one_window_request()).expect("decodes");
-    let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let reply = match eval_report(&mut engine, &report) {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("expected accepted, got {other:?}"),
-    };
-    let admission_target = WindowId("a".repeat(128));
-    let explicit_target = WindowId("b".repeat(128));
-    assert_ne!(admission_target, explicit_target);
-    for effects in [
-        vec![OneShotEffect {
-            id: format!("af-{}", u64::MAX),
-            kind: EffectKind::Focus,
-            target: admission_target.clone(),
-            issued_revision: u64::MAX,
-            cause: EffectCause::AutomaticAdmission,
-            command_seq: None,
-            await_shown: false,
-        }],
-        vec![OneShotEffect {
-            id: format!("fx-{}", u64::MAX),
-            kind: EffectKind::Focus,
-            target: explicit_target.clone(),
-            issued_revision: u64::MAX,
-            cause: EffectCause::ExplicitCommand,
-            command_seq: Some(u64::MAX),
-            await_shown: false,
-        }],
-    ] {
-        let mut refused = reply.clone();
-        refused.effects = effects;
-        let error = encode_reply_v4(&DecodedReplyV4 {
-            roster_plan: None,
-            reply: refused.clone(),
-        })
-        .expect_err("focus carrier never encodes");
-        assert_eq!(error.kind, "snapshot-invalid");
-        assert_eq!(error.message, "effect-focus-removed");
-    }
-}
-
-#[test]
 fn reply_presentation_rev_encodes_quoted_exact_order() {
     // Required revision label at maximum width: the canonical v4 writer
     // spells the quoted `u64::MAX`, the label rides immediately after the
@@ -1813,13 +1762,12 @@ fn golden_bootstrap_reply_bytes_lock_wire_shape() {
     };
     assert!(!reply.ready);
     assert!(reply.scopes.is_empty());
-    assert!(reply.effects.is_empty());
     let wire = reply_wire(&reply);
     assert_eq!(
         wire,
         "{\"v\":4,\"adapter\":\"adapter-1\",\"gen\":\"gen-1\",\"req\":\"req-1\",\
         \"obs\":\"1\",\"rev\":\"0\",\"ready\":false,\"consumed\":false,\"scopes\":[],\
-        \"workspaces\":[],\"outputs\":[],\"windows\":[],\"transfers\":[],\"effects\":[],\
+        \"workspaces\":[],\"outputs\":[],\"windows\":[],\"transfers\":[],\
         \"focusRequest\":null,\"dragPreview\":null,\"gestureSettled\":null,\"operationSettled\":[],\"nativeCreations\":[],\
         \"warpCursor\":null,\"presentation\":{\"foreground\":\"\",\"rev\":\"0\",\
         \"border\":{\"visible\":false,\"reason\":\"\",\"subject\":null,\"outsets\":null,\
@@ -2365,14 +2313,6 @@ fn focus_directional_no_focus_decodes_and_crosses_end_to_end() {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
-    assert!(
-        reply
-            .effects
-            .iter()
-            .all(|effect| effect.kind != tiler_core::world_report::EffectKind::Focus),
-        "focus never publishes as wire effects: {:?}",
-        reply.effects
-    );
     let request = reply
         .focus_request
         .as_ref()
@@ -2464,14 +2404,6 @@ fn explicit_focus_effect_wire_carries_cause_metadata() {
     assert_eq!(focus_request.cmd_seq, Some(11));
     assert_eq!(focus_request.issued_revision, reply.state_revision);
     assert_eq!(focus_request.id, format!("focus-{}", reply.state_revision));
-    assert!(
-        reply
-            .effects
-            .iter()
-            .all(|effect| effect.kind != tiler_core::world_report::EffectKind::Focus),
-        "focus never publishes as wire effects: {:?}",
-        reply.effects
-    );
     let wire = reply_wire(&reply);
     let wire_value: serde_json::Value = serde_json::from_str(&wire).expect("wire is JSON");
     let row = &wire_value["focusRequest"];
@@ -2965,7 +2897,6 @@ fn startup_ordering_end_to_end_decode_engine_encode() {
     };
     assert!(!bootstrap.ready);
     assert!(bootstrap.scopes.is_empty());
-    assert!(bootstrap.effects.is_empty());
     assert_eq!(
         bootstrap.presentation.rev, bootstrap.state_revision,
         "empty bootstrap mirrors the current revision"
@@ -4585,15 +4516,6 @@ fn fixture_text(name: &str) -> String {
     std::fs::read_to_string(&path).expect("fixture bytes")
 }
 
-fn fixture_effects_slice(wire: &str) -> &str {
-    // Effect rows carry no arrays, so the first `]` after the array open
-    // closes the effects array.
-    let key = "\"effects\":[";
-    let open = wire.find(key).expect("effects array") + key.len() - 1;
-    let close = wire[open..].find(']').expect("effects close") + open;
-    &wire[open..=close]
-}
-
 #[test]
 fn immutable_effect_rows_match_fixture_bytes() {
     // Independent conformance: raw immutable fixture bytes on one side,
@@ -4618,9 +4540,9 @@ fn immutable_effect_rows_match_fixture_bytes() {
         }]);
         let error = tiler_protocol::world_protocol::decode_reply_v4(&value.to_string())
             .expect_err("retired kind refuses");
-        assert_eq!(error.kind, "unknown-value", "{kind} refusal kind");
+        assert_eq!(error.kind, "unknown-field", "{kind} refusal kind");
         assert_eq!(
-            error.message, "request contains an unknown value",
+            error.message, "request contains an unknown field",
             "{kind} refusal message"
         );
     }
@@ -4632,12 +4554,12 @@ fn immutable_effect_rows_match_fixture_bytes() {
         ("reply-effect-focus-follows-cursor", "focus-follows-cursor"),
     ] {
         let wire = fixture_text(name);
-        assert_eq!(
-            fixture_effects_slice(&wire),
-            "[]",
-            "{name} carries no effect row"
+        assert!(
+            !wire.contains("\"effects\""),
+            "{name} omits retired effects key"
         );
         let value: serde_json::Value = serde_json::from_str(&wire).expect("fixture parses");
+        assert!(value.get("effects").is_none(), "{name} has no effects key");
         assert_eq!(
             value
                 .get("focusRequest")
@@ -4647,32 +4569,6 @@ fn immutable_effect_rows_match_fixture_bytes() {
             "{name} retains {cause}"
         );
     }
-    // A focus carrier refuses on the wire in both directions.
-    let report = decode_request(&one_window_request()).expect("decodes");
-    let mut engine = connected_engine("gen-1", HostCapabilities::default());
-    let mut reply = match eval_report(&mut engine, &report) {
-        WorldOutcome::Accepted(reply) => reply,
-        other => panic!("expected accepted, got {other:?}"),
-    };
-    reply.effects = vec![tiler_core::world_report::OneShotEffect {
-        id: "effect-a".to_owned(),
-        kind: tiler_core::world_report::EffectKind::Focus,
-        target: tiler_core::directional::WindowId("win-a".to_owned()),
-        issued_revision: 1,
-        cause: tiler_core::world_report::EffectCause::ExplicitCommand,
-        command_seq: Some(1),
-        await_shown: false,
-    }];
-    assert!(
-        tiler_protocol::world_protocol::encode_reply_v4(
-            &tiler_protocol::world_protocol::DecodedReplyV4 {
-                roster_plan: None,
-                reply: reply.clone(),
-            }
-        )
-        .is_err(),
-        "focus carrier never encodes"
-    );
 }
 
 #[test]
@@ -4727,14 +4623,6 @@ fn admission_focus_effect_carries_causal_metadata() {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
-    assert!(
-        reply
-            .effects
-            .iter()
-            .all(|effect| effect.kind != tiler_core::world_report::EffectKind::Focus),
-        "focus never publishes as wire effects: {:?}",
-        reply.effects
-    );
     let request = reply.focus_request.as_ref().expect("one admission request");
     assert_eq!(request.target.0, "win-b");
     assert_eq!(
@@ -4808,14 +4696,6 @@ fn consumed_command_replays_no_explicit_effect_with_metadata() {
         tiler_core::world_report::FocusRequestCause::ExplicitCommand
     );
     assert_eq!(first_request.cmd_seq, Some(5));
-    assert!(
-        before
-            .effects
-            .iter()
-            .all(|effect| effect.kind != tiler_core::world_report::EffectKind::Focus),
-        "focus never publishes as wire effects: {:?}",
-        before.effects
-    );
     let retry_value: serde_json::Value = {
         let mut value = first_value;
         value["obs"] = serde_json::Value::String("3".to_owned());
@@ -4840,14 +4720,6 @@ fn consumed_command_replays_no_explicit_effect_with_metadata() {
         ),
         "consumed command emits AlreadyConsumed disposition: {:?}",
         transition.dispositions
-    );
-    assert!(
-        reply
-            .effects
-            .iter()
-            .all(|effect| effect.kind != tiler_core::world_report::EffectKind::Focus),
-        "no focus re-emission on the consumed path: {:?}",
-        reply.effects
     );
     assert_eq!(
         reply.focus_request,

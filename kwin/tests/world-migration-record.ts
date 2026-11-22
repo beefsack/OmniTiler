@@ -259,6 +259,7 @@ export async function recordMigrationFamily(options: MigrationRecordOptions): Pr
     };
     const handle = startWorldAdapterEntry({
         options: { perOutputVirtualDesktops: true },
+        sharedNativeRoster: false,
         workspace: makeSurface(),
         owner: "owner-a",
         adapter: "test-adapter",

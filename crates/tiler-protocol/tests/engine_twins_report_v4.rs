@@ -579,3 +579,45 @@ fn v4_estimate_delta_covers_toggle_maximize_command() {
             >= wire_cmd.len() - wire_bare.len()
     );
 }
+
+#[test]
+fn typed_admission_caps_action_outputs_at_max_world_screens() {
+    use tiler_core::world_engine::{WorldEngine, WorldOutcome};
+    use tiler_protocol::connection_protocol::{decode_handshake_request, decode_settings};
+    use tiler_protocol::world_admission::handle_report_checked;
+
+    let cap = tiler_core::world_report::MAX_WORLD_SCREENS;
+    let mut engine = WorldEngine::new("generation-a").expect("engine");
+    engine.handshake(
+        &decode_handshake_request(&fixture_text("messages/handshake-emulated.json"))
+            .expect("handshake"),
+    );
+    engine
+        .handle_settings(
+            &decode_settings(&fixture_text("messages/settings-defaults.json")).expect("settings"),
+        )
+        .expect("apply settings");
+
+    let mut at_cap = decode_ok("messages/report-observe.json");
+    at_cap.action_outputs = (0..cap).map(|i| OutputId(format!("out-{i}"))).collect();
+    let accepted = handle_report_checked(&mut engine, &at_cap, &[]);
+    assert!(
+        matches!(accepted.outcome, WorldOutcome::Accepted(_)),
+        "actionOutputs at cap should be accepted, got {:?}",
+        accepted.outcome
+    );
+
+    let mut over_cap = at_cap;
+    over_cap.observation_seq += 1;
+    over_cap.request_seq += 1;
+    over_cap.request_id = "request-b".to_owned();
+    over_cap.action_outputs.push(OutputId(format!("out-{cap}")));
+    let rejected = handle_report_checked(&mut engine, &over_cap, &[]);
+    assert_eq!(
+        rejected.outcome,
+        WorldOutcome::Rejected {
+            kind: "snapshot-invalid",
+            message: "section-over-cap",
+        }
+    );
+}

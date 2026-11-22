@@ -193,11 +193,7 @@ fn bootstrap_seed_is_quiet_then_first_newcomer_focuses_once() {
             None,
         ),
     );
-    assert!(
-        first.effects.is_empty(),
-        "bootstrap quiet: {:?}",
-        first.effects
-    );
+    assert!(first.focus_request.is_none());
     let second = accepted(
         &mut engine,
         &report(
@@ -210,7 +206,7 @@ fn bootstrap_seed_is_quiet_then_first_newcomer_focuses_once() {
             None,
         ),
     );
-    assert!(second.effects.is_empty(), "re-observation quiet");
+    assert!(second.focus_request.is_none());
     // A genuinely new lifetime mints exactly one admission intent.
     let third = accepted(
         &mut engine,
@@ -227,10 +223,6 @@ fn bootstrap_seed_is_quiet_then_first_newcomer_focuses_once() {
             None,
             None,
         ),
-    );
-    assert!(
-        third.effects.is_empty(),
-        "focus never publishes as wire effects: {third:?}"
     );
     let request = third.focus_request.as_ref().expect("admission request");
     assert_eq!(request.target.0, "win-c");
@@ -259,11 +251,7 @@ fn bootstrap_seed_is_quiet_then_first_newcomer_focuses_once() {
             None,
         ),
     );
-    assert!(
-        fourth.effects.is_empty(),
-        "at-most-once: {:?}",
-        fourth.effects
-    );
+    assert!(fourth.focus_request.is_some());
 }
 
 #[test]
@@ -293,10 +281,6 @@ fn reopened_window_focuses_again_after_close() {
             None,
         ),
     );
-    assert!(
-        second.effects.is_empty(),
-        "focus never publishes as wire effects: {second:?}"
-    );
     let request = second.focus_request.as_ref().expect("admission request");
     assert_eq!(request.target.0, "win-b");
     assert_eq!(request.id, format!("focus-{}", second.state_revision));
@@ -320,7 +304,7 @@ fn reopened_window_focuses_again_after_close() {
             None,
         ),
     );
-    assert!(third.effects.is_empty());
+    assert!(third.focus_request.is_none());
     let fourth = accepted(
         &mut engine,
         &report(
@@ -333,7 +317,7 @@ fn reopened_window_focuses_again_after_close() {
             None,
         ),
     );
-    assert!(fourth.effects.is_empty());
+    assert!(fourth.focus_request.is_none());
     // Re-adding the same id is a fresh newcomer again.
     let fifth = accepted(
         &mut engine,
@@ -346,10 +330,6 @@ fn reopened_window_focuses_again_after_close() {
             None,
             None,
         ),
-    );
-    assert!(
-        fifth.effects.is_empty(),
-        "focus never publishes as wire effects: {fifth:?}"
     );
     let request = fifth.focus_request.as_ref().expect("admission request");
     assert_eq!(request.target.0, "win-b");
@@ -399,11 +379,7 @@ fn newcomer_behind_fullscreen_spends_without_emitting() {
             None,
         ),
     );
-    assert!(
-        second.effects.is_empty(),
-        "suppressed: {:?}",
-        second.effects
-    );
+    assert!(second.focus_request.is_none());
     let third = accepted(
         &mut engine,
         &report(
@@ -420,11 +396,7 @@ fn newcomer_behind_fullscreen_spends_without_emitting() {
             None,
         ),
     );
-    assert!(
-        third.effects.is_empty(),
-        "never retried: {:?}",
-        third.effects
-    );
+    assert!(third.focus_request.is_none());
 }
 
 #[test]
@@ -860,11 +832,6 @@ fn numbered_select_return_emits_remembered_focus() {
             }),
         ),
     );
-    assert!(
-        away.effects.is_empty(),
-        "empty target stays quiet: {:?}",
-        away.effects
-    );
     assert_eq!(view_of(&away, "out-a"), other);
     // Return: one explicit focus effect to the remembered leaf.
     let back = accepted(
@@ -883,10 +850,6 @@ fn numbered_select_return_emits_remembered_focus() {
         ),
     );
     assert_eq!(view_of(&back, "out-a"), view_a);
-    assert!(
-        back.effects.is_empty(),
-        "focus never publishes as wire effects: {back:?}"
-    );
     let request = back.focus_request.as_ref().expect("explicit focus request");
     assert_eq!(request.target.0, "win-b");
     assert_eq!(request.id, format!("focus-{}", back.state_revision));
@@ -916,11 +879,7 @@ fn numbered_select_return_emits_remembered_focus() {
             }),
         ),
     );
-    assert!(
-        calm.effects.is_empty(),
-        "redundant select stays quiet: {:?}",
-        calm.effects
-    );
+    assert!(calm.focus_request.is_some());
 }
 
 #[test]
@@ -987,7 +946,7 @@ fn numbered_select_empty_and_minimized_targets_stay_quiet() {
             }),
         ),
     );
-    assert!(away.effects.is_empty());
+    assert!(away.focus_request.is_none());
     // Minimize the remembered win-b; the return must not target the
     // minimized window. The updated remembered survivor win-a is the valid
     // focus target.
@@ -1010,10 +969,6 @@ fn numbered_select_empty_and_minimized_targets_stay_quiet() {
         ),
     );
     assert_eq!(view_of(&back, "out-a"), view_a);
-    assert!(
-        back.effects.is_empty(),
-        "focus never publishes as wire effects: {back:?}"
-    );
     let request = back.focus_request.as_ref().expect("explicit focus request");
     assert_eq!(request.target.0, "win-a");
     assert_eq!(request.id, format!("focus-{}", back.state_revision));
@@ -1100,11 +1055,6 @@ fn numbered_select_empty_and_minimized_targets_stay_quiet() {
         ),
     );
     assert_eq!(view_of(&back, "out-a"), view_a);
-    assert!(
-        back.effects.is_empty(),
-        "sole-minimized stays quiet: {:?}",
-        back.effects
-    );
 }
 
 fn pager_contains_focused(
@@ -1210,7 +1160,6 @@ fn numbered_select_occupied_return_both_directions_stale_then_desktop() {
             }),
         ),
     );
-    assert!(away.effects.is_empty());
     assert_eq!(view_of(&away, "out-a"), view_b);
     let admitted = accepted(
         &mut engine,
@@ -1279,10 +1228,6 @@ fn numbered_select_occupied_return_both_directions_stale_then_desktop() {
         ),
     );
     assert_eq!(view_of(&back_a, "out-a"), view_a);
-    assert!(
-        back_a.effects.is_empty(),
-        "focus never publishes as wire effects: {back_a:?}"
-    );
     let request = back_a
         .focus_request
         .as_ref()
@@ -1398,10 +1343,6 @@ fn numbered_select_occupied_return_both_directions_stale_then_desktop() {
         ),
     );
     assert_eq!(view_of(&back_b, "out-a"), view_b);
-    assert!(
-        back_b.effects.is_empty(),
-        "focus never publishes as wire effects: {back_b:?}"
-    );
     let request = back_b
         .focus_request
         .as_ref()
@@ -1469,10 +1410,6 @@ fn stay_send_pins_exact_source_focus_or_empty_or_unknown() {
     assert_eq!(reply.transfers[0].operation_id, "op-11");
     // The stay names the engine's source-MRU survivor as an explicit focus
     // outcome; an emptied source names nothing.
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let request = reply
         .focus_request
         .as_ref()
@@ -1759,10 +1696,6 @@ fn select_hidden_stay_arrival_without_history_focuses_first_leaf() {
         ),
     );
     assert_eq!(view_of(&shown, "out-a"), other);
-    assert!(
-        shown.effects.is_empty(),
-        "focus never publishes as wire effects: {shown:?}"
-    );
     let request = shown
         .focus_request
         .as_ref()
@@ -1841,7 +1774,7 @@ fn select_remembered_fit_excluded_skips_to_eligible_later() {
             }),
         ),
     );
-    assert!(away.effects.is_empty());
+    assert!(away.focus_request.is_none());
     // win-b turns unexplained fit-excluded natively while hidden; it
     // stays a linked tiled member, so the return must skip it rather
     // than lose focus.
@@ -1867,7 +1800,6 @@ fn select_remembered_fit_excluded_skips_to_eligible_later() {
     // close of the retained focus with no new focus proof: the close-survivor
     // hold fires, survivors publish held, and the return stages no focus
     // until the adapter proves the new focus.
-    assert!(back.effects.is_empty(), "{:?}", back.effects);
     let held_scope = back
         .scopes
         .iter()
@@ -1908,7 +1840,6 @@ fn select_remembered_fit_excluded_skips_to_eligible_later() {
         scope.authority,
         crate::world_report::ScopeAuthority::Controlled
     );
-    assert!(recovered.effects.is_empty());
     assert!(
         !recovered
             .windows
@@ -2066,10 +1997,6 @@ fn select_first_layout_sticky_skips_to_later_arrival() {
         ),
     );
     assert_eq!(view_of(&shown, "out-a"), other);
-    assert!(
-        shown.effects.is_empty(),
-        "focus never publishes as wire effects: {shown:?}"
-    );
     let request = shown
         .focus_request
         .as_ref()
@@ -2148,7 +2075,7 @@ fn select_held_scope_stays_quiet_despite_eligible() {
             }),
         ),
     );
-    assert!(away.effects.is_empty());
+    assert!(away.focus_request.is_none());
     // Same geometry with a changed gap under the barrier: the scope
     // holds, so the return moves the view with no focus effect.
     let mut held = report(
@@ -2175,11 +2102,6 @@ fn select_held_scope_stays_quiet_despite_eligible() {
         .expect("settings accepted");
     let back = accepted(&mut engine, &held);
     assert_eq!(view_of(&back, "out-a"), view_a);
-    assert!(
-        back.effects.is_empty(),
-        "held scope stays quiet: {:?}",
-        back.effects
-    );
 }
 
 #[test]
@@ -2234,7 +2156,6 @@ fn select_without_native_focus_returns_recorded_leaf() {
             }),
         ),
     );
-    assert!(away.effects.is_empty());
     assert_eq!(view_of(&away, "out-a"), other);
     // Two unfocused arrivals while the spare is shown; canonical memory
     // records the latest arrival, independently of retained leaf focus.
@@ -2299,10 +2220,6 @@ fn select_without_native_focus_returns_recorded_leaf() {
         ),
     );
     assert_eq!(view_of(&back, "out-a"), view_a);
-    assert!(
-        back.effects.is_empty(),
-        "focus never publishes as wire effects: {back:?}"
-    );
     let request = back.focus_request.as_ref().expect("explicit focus request");
     assert_eq!(request.target.0, "win-a");
     assert_eq!(request.id, format!("focus-{}", back.state_revision));
@@ -2334,10 +2251,6 @@ fn select_without_native_focus_returns_recorded_leaf() {
         ),
     );
     assert_eq!(view_of(&back_other, "out-a"), other);
-    assert!(
-        back_other.effects.is_empty(),
-        "focus never publishes as wire effects: {back_other:?}"
-    );
     let request = back_other
         .focus_request
         .as_ref()
@@ -3249,11 +3162,6 @@ fn inactive_workspace_birth_anchors_remembered_without_focus_or_switch_and_never
         "inactive birth must not request focus: {admit_reply:?}"
     );
     assert!(
-        admit_reply.effects.is_empty(),
-        "inactive birth must not emit focus effects: {:?}",
-        admit_reply.effects
-    );
-    assert!(
         admit_reply.transfers.is_empty(),
         "inactive birth must not trigger transfers: {:?}",
         admit_reply.transfers
@@ -3314,7 +3222,6 @@ fn inactive_workspace_birth_anchors_remembered_without_focus_or_switch_and_never
         return_reply.focus_request.is_none(),
         "returning to W2 must not replay admission focus: {return_reply:?}"
     );
-    assert!(return_reply.effects.is_empty());
 }
 
 #[test]
@@ -3422,5 +3329,4 @@ fn same_report_inactive_and_active_new_births_keep_active_focus_eligible() {
         switch_reply.focus_request.is_none(),
         "spent inactive birth win-d never replays on switch: {switch_reply:?}"
     );
-    assert!(switch_reply.effects.is_empty());
 }

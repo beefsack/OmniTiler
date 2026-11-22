@@ -252,7 +252,7 @@ function setup(wins: FakeWindow[], currents: Map<string, string>, floatIntent = 
             workspaces: [],
             outputs: [{ out: "out", view: "ws", mode: "tiled", hold: "" }],
             windows: [tiledRow("win-a"), tiledRow("win-b")],
-            transfers: [], effects: [], dragPreview: null,
+            transfers: [], dragPreview: null,
         };
         if (mutate !== undefined) {
             mutate(accept);
@@ -321,7 +321,7 @@ function discover(h: Harness): void {
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws" }, auth: "controlled", reason: "" }],
         workspaces: [], outputs: [], windows: [],
-        transfers: [], effects: [], focusRequest: null, dragPreview: null,
+        transfers: [], focusRequest: null, dragPreview: null,
     });
     const autoParsed = parseWorldReply(autoText);
     assert.ok(autoParsed !== null && isCoreWorldReply(autoParsed), "authored accept binds strict v4");
@@ -711,7 +711,7 @@ describe("world command result entry", () => {
                 { ...tiledRow("win-a"), alloc: [4, 4, 792, 592], frame: [4, 4, 792, 592] },
                 tiledRow("win-b"),
             ],
-            transfers: [], effects: [], dragPreview: null,
+            transfers: [], dragPreview: null,
         };
         const unfloatText = JSON.stringify(unfloat);
         const unfloatParsed = parseWorldReply(unfloatText);

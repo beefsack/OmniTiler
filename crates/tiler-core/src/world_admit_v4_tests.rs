@@ -465,7 +465,6 @@ fn pre_ready_bootstrap_emits_no_authority() {
             assert_eq!(reply.state_revision, 0);
             assert_eq!(reply.presentation.rev, 0);
             assert!(settlements.is_empty());
-            assert!(reply.effects.is_empty());
         }
         (other, _) => panic!("expected pre-ready bootstrap, got {other:?}"),
     }

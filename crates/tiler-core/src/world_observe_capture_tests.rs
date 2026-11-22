@@ -12451,11 +12451,6 @@ fn host_return_keeps_outstanding_send_without_pullback() {
         "displacement policy pending: {:?}",
         gone.transfers
     );
-    assert!(
-        gone.effects.is_empty(),
-        "disappearance mints no focus: {:?}",
-        gone.effects
-    );
     // Truthful external evidence: the compositor kept win-b on a
     // survivor native, so the pending policy drops and the home adopts.
     let moved = host_accepted(
@@ -12472,6 +12467,7 @@ fn host_return_keeps_outstanding_send_without_pullback() {
             None,
         ),
     );
+    assert!(moved.focus_request.is_none());
     assert!(
         !engine
             .retained_transfers()
@@ -12479,11 +12475,6 @@ fn host_return_keeps_outstanding_send_without_pullback() {
             .any(|t| { matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-b") }),
         "policy superseded before the send: {:?}",
         engine.retained_transfers()
-    );
-    assert!(
-        moved.effects.iter().all(|e| e.target.0 != "win-a"),
-        "supersession steals no focus from the stable member: {:?}",
-        moved.effects
     );
     // Explicit same-output send of win-b onto the displaced unit hosted
     // by the survivor. The mover is the observed focus.
@@ -12569,11 +12560,6 @@ fn host_return_keeps_outstanding_send_without_pullback() {
             .all(|(out, _)| out != "out-b"),
         "no stale origin bindings pin the dead handle: {:?}",
         engine.world.settlement.native_map
-    );
-    assert!(
-        back.effects.iter().all(|e| e.target.0 != "win-b"),
-        "return mints no focus for the departed member: {:?}",
-        back.effects
     );
     // Quiescent follow-up: still no pullback, still no leak.
     let quiet = host_accepted(
@@ -12675,14 +12661,6 @@ fn host_newcomer_admits_survivor_unit_and_pending_policy_still_returns() {
                 .any(|t| { matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-n") }),
         "newcomer rides no hotplug flight: {:?}",
         arrival.transfers
-    );
-    assert!(
-        arrival
-            .effects
-            .iter()
-            .all(|e| e.target.0 != "win-a" && e.target.0 != "win-b"),
-        "newcomer birth steals no focus from members: {:?}",
-        arrival.effects
     );
     assert!(
         !engine
@@ -12790,11 +12768,6 @@ fn host_newcomer_admits_survivor_unit_and_pending_policy_still_returns() {
         host_hp_for(&back, "win-n").is_empty(),
         "return mints no flight for the newcomer: {:?}",
         back.transfers
-    );
-    assert!(
-        back.effects.is_empty(),
-        "return mints no admission focus: {:?}",
-        back.effects
     );
     // The adapter actuates the pull-back: arrival settles the return
     // flight and the world drains with separate homes preserved.
@@ -12971,11 +12944,6 @@ fn host_external_native_move_supersedes_pending_policy() {
             workspace: WorkspaceId(rig.a2.clone()),
         },
         "external home survives the return"
-    );
-    assert!(
-        back.effects.is_empty(),
-        "return mints no admission focus: {:?}",
-        back.effects
     );
 }
 
@@ -13211,6 +13179,7 @@ fn host_backed_unit_move_back_truth_wins_then_returns() {
             None,
         ),
     );
+    assert!(settled.focus_request.is_none());
     assert!(
         !engine
             .retained_transfers()
@@ -13238,11 +13207,6 @@ fn host_backed_unit_move_back_truth_wins_then_returns() {
             workspace: WorkspaceId(rig.a1.clone()),
         },
         "survivor home preserved"
-    );
-    assert!(
-        settled.effects.is_empty(),
-        "no admission focus across the journey: {:?}",
-        settled.effects
     );
     assert!(
         engine
@@ -13479,11 +13443,6 @@ fn host_predisconnect_send_survives_displacement_without_replacement() {
             workspace: WorkspaceId(rig.b2.clone()),
         },
         "displaced member rekeys with its unit, never pulled aside"
-    );
-    assert!(
-        gone.effects.is_empty(),
-        "displacement mints no focus over the command flights: {:?}",
-        gone.effects
     );
 }
 

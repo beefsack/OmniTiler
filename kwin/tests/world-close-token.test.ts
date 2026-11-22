@@ -31,7 +31,6 @@ function validReplyJson(over: Record<string, unknown> = {}): string {
         outputs: [],
         windows: [],
         transfers: [],
-        effects: [],
         dragPreview: null,
         gestureSettled: null,
         gestureAssoc: null,

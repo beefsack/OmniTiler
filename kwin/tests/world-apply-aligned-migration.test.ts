@@ -99,7 +99,6 @@ function loadMigrationReply(): WorldReply {
     // Core replies carry dragPreview (null here), never result (terminal
     // outcomes ride the take lane only, via takeResult at each call site).
     reply.dragPreview = null;
-    reply.effects = [];
     // The reshaped scenario must strict-parse as v4, not just the base
     // envelope: validates the authored bindings, transfers, and scopes
     // above through the real parser. The projection strips ONLY the

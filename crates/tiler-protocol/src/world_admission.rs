@@ -201,6 +201,12 @@ impl CoreAdmissionGate for ProtocolAdmissionGate<'_> {
                 message: "roster-host-mismatch",
             };
         }
+        if report.action_outputs.len() > tiler_core::world_report::MAX_WORLD_SCREENS {
+            return AdmissionGateDecision::Reject {
+                kind: "snapshot-invalid",
+                message: "section-over-cap",
+            };
+        }
         if report_estimate_v4_with_residual(report, self.residual.map(Arc::as_ref))
             > self.max_request_bytes
         {
@@ -333,7 +339,6 @@ mod tests {
             diagnostics: Vec::new(),
             windows: Vec::new(),
             transfers: Vec::new(),
-            effects: Vec::new(),
             focus_request: None,
             drag_preview: None,
             gesture_settled: None,
@@ -479,7 +484,8 @@ mod tests {
                 .map(|shown| shown.members.len()),
             Some(100)
         );
-        assert_eq!(exact, 4_192_839);
+        // Exact serialized size after retiring the 13-byte `"effects":[],` member.
+        assert_eq!(exact, 4_192_826);
         assert!(
             exact.saturating_add(future_reserve) <= WORLD_MAX_REPLY_BYTES,
             "exact + future reserve must fit under 4 MiB"

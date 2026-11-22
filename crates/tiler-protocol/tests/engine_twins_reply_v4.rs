@@ -5,9 +5,7 @@
 //! no adapters, no live work, no engine.
 
 use tiler_core::world_report::{BorderPresentationV4, TransferKind, TransferTargetV4};
-use tiler_protocol::world_admission_sizing::{
-    MAX_EFFECT_RESERVE_BYTES, MAX_EFFECT_ROW_BYTES, reply_upper_bound_v4, report_estimate_v4,
-};
+use tiler_protocol::world_admission_sizing::{reply_upper_bound_v4, report_estimate_v4};
 use tiler_protocol::world_protocol::{decode_reply_v4, decode_report_v4, encode_reply_v4};
 use tiler_protocol::world_reply_write::count_reply_v4_bytes;
 
@@ -173,10 +171,10 @@ fn v4_reply_twins_cover_extreme_transfers_and_border() {
 fn v4_reply_upper_bound_covers_report_estimate_plus_reserves() {
     let fixtures = report_fixtures();
     assert!(!fixtures.is_empty(), "report fixtures present");
-    // Count-independent reserves: envelope slack, effect coexistence, the
+    // Count-independent reserves: envelope slack, the
     // float/drag result shapes, migration base, anchored border, revision
     // label, underlay base, and the gesture terminal.
-    let fixed: usize = 4096 + MAX_EFFECT_RESERVE_BYTES + 2048 + 512 + 704 + 29 + 1024 + 96;
+    let fixed: usize = 4096 + 2048 + 512 + 704 + 29 + 1024 + 96;
     for fixture in fixtures {
         let decoded = decode_report_v4(&report_text(&fixture.file)).expect("fixture decodes");
         let report = &decoded.report;
@@ -212,10 +210,6 @@ fn v4_reply_exact_covers_presentation_rev_marginals_and_effect_reserve_constants
         assert_eq!(count_reply_v4_bytes(&rev_reply.reply), wire.len());
         assert_eq!(wire.len() - zero_len, expected_delta, "rev {rev}");
     }
-
-    assert_eq!(MAX_EFFECT_ROW_BYTES, 294);
-    assert_eq!(MAX_EFFECT_RESERVE_BYTES, 589);
-    assert_eq!(MAX_EFFECT_RESERVE_BYTES, 2 * MAX_EFFECT_ROW_BYTES + 1);
 }
 
 // Scenario files (`test-fixtures/world-wire/v4/scenarios`) are ordered

@@ -2636,7 +2636,6 @@ pub const MAX_REPLY_WORKSPACES: usize = 1024;
 pub const MAX_REPLY_OUTPUTS: usize = 16;
 pub const MAX_REPLY_WINDOWS: usize = 10_000;
 pub const MAX_REPLY_TRANSFERS: usize = 1024;
-pub const MAX_REPLY_EFFECTS: usize = 1024;
 pub const MAX_REPLY_OPERATIONS: usize = 1024;
 pub const MAX_REPLY_NATIVE_CREATIONS: usize = 256;
 pub const MAX_REPLY_SWITCH_EVENTS: usize = 1024;
@@ -2713,7 +2712,6 @@ pub struct WorldReplyV4 {
     pub outputs: Vec<OutputDesire>,
     pub windows: Vec<WindowDesire>,
     pub transfers: Vec<TransferTargetV4>,
-    pub effects: Vec<OneShotEffect>,
     /// Retained focus request, always present on the wire (`null`
     /// carries no request). Zero or one row, never a chain.
     pub focus_request: Option<FocusRequest>,

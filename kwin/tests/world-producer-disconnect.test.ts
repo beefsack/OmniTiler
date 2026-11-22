@@ -216,8 +216,8 @@ describe("world genuine-producer output disconnect and return journeys", () => {
             const transfers = disconnectReplies.flatMap((entry) => (entry["transfers"] as Array<Record<string, unknown>>) ?? []);
             assert.ok(transfers.length > 0, "displacement keeps commandless provenance until settled");
             assert.ok(transfers.every((transfer) => transfer["cmdSeq"] === null), "no policy step invents a command sequence");
-            assert.deepEqual(disconnectReplies.flatMap((entry) => (entry["effects"] as unknown[]) ?? []), [],
-                "displacement mints no focus effect");
+            assert.ok(disconnectReplies.every((entry) => !("effects" in entry) && entry["focusRequest"] === null),
+                "displacement mints no focus request and omits retired effects");
             assert.equal(h.focused.length, focusedBefore, "displacement activates no native window");
             assert.equal(h.activeRef?.internalId, "win-c", "native focus stays on the focused rehomed window");
             assert.equal(current({ name: "out-left" }).id, survivorCurrent, "the survivor's native current is unchanged");
@@ -357,13 +357,13 @@ describe("world genuine-producer output disconnect and return journeys", () => {
             assert.deepEqual(reply["nativeCreations"] ?? [], [], "return leaves no outstanding creation");
             // Reclaimed members are not fresh admissions: no focus effect
             // rides the return captures, and no native activates.
-            const returnEffects: unknown[] = [];
             for (const [at, raw] of h.replies) {
                 if (at >= callsBefore && (h.calls[at] as { method: string }).method === "DescribeWorld") {
-                    returnEffects.push(...(((JSON.parse(raw) as Record<string, unknown>)["effects"] as unknown[] | undefined) ?? []));
+                    const parsed = JSON.parse(raw) as Record<string, unknown>;
+                    assert.equal("effects" in parsed, false, "return reply omits retired effects");
+                    assert.equal(parsed["focusRequest"], null, "return mints no focus request");
                 }
             }
-            assert.deepEqual(returnEffects, [], "return mints no focus effect");
             assert.equal(h.focused.length, focusedBefore, "return activates no native window");
             // Sensitivity control: a stale pulled-back output must fail
             // loudly, proving the no-pullback assertions are not vacuous.
@@ -481,13 +481,13 @@ describe("world genuine-producer output disconnect and return journeys", () => {
                 "all natives name the survivor output",
             );
             appliedMatchesReply(h, removedReply);
-            const disconnectEffects: unknown[] = [];
             for (const [at, raw] of h.replies) {
                 if (at >= callsBefore && (h.calls[at] as { method: string }).method === "DescribeWorld") {
-                    disconnectEffects.push(...(((JSON.parse(raw) as Record<string, unknown>)["effects"] as unknown[] | undefined) ?? []));
+                    const parsed = JSON.parse(raw) as Record<string, unknown>;
+                    assert.equal("effects" in parsed, false, "disconnect reply omits retired effects");
+                    assert.equal(parsed["focusRequest"], null, "displacement mints no focus request");
                 }
             }
-            assert.deepEqual(disconnectEffects, [], "displacement mints no focus effect");
             assert.equal(h.focused.length, focusedBefore, "displacement activates no native window");
             assert.equal(h.activeRef?.internalId, "win-a", "native focus stays on the survivor T1");
             assert.notEqual(rowByWin(removedReply, "win-b")["ws"], rowByWin(removedReply, "win-a")["ws"], "T2 keeps a separate displaced unit on the occupied native index");

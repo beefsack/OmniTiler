@@ -183,11 +183,6 @@ fn accepted(
 /// request would survive here unchanged instead, never silently clear.
 fn assert_quiet_no_request(reply: &tiler_core::world_report::WorldReplyV4) {
     assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {:?}",
-        reply.effects
-    );
-    assert!(
         reply.focus_request.is_none(),
         "no pending focus decision retains nothing: {:?}",
         reply.focus_request
@@ -269,11 +264,6 @@ fn no_focus_journey_focuses_remembered_then_converges() {
             }),
             Some("out-a"),
         ),
-    );
-    assert!(
-        crossed.effects.is_empty(),
-        "focus never publishes as wire effects: {:?}",
-        crossed.effects
     );
     let request = crossed
         .focus_request
@@ -373,11 +363,6 @@ fn no_focus_noop_journey_stays_quiet() {
         tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted noop, got {other:?}"),
     };
-    assert!(
-        noop.effects.is_empty(),
-        "no neighbor mints no wire effects: {:?}",
-        noop.effects
-    );
     assert!(
         noop.focus_request.is_none(),
         "no-op decision retains nothing: {:?}",

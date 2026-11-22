@@ -281,7 +281,7 @@ function replyFor(h: Harness, mutate: (body: Record<string, unknown>) => void, r
         intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
-        workspaces: [], outputs: [], transfers: [], effects: [], dragPreview: null,
+        workspaces: [], outputs: [], transfers: [], dragPreview: null,
         windows: [],
     };
     mutate(pending);
@@ -427,7 +427,7 @@ describe("world capacity-float echo", () => {
             intentDesired: [], switchSettled: [], diagnostics: [],
             presentation: DISABLED_PRESENTATION,
             scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
-            workspaces: [], outputs: [], transfers: [], effects: [], dragPreview: null,
+            workspaces: [], outputs: [], transfers: [], dragPreview: null,
             windows: [{
                 ...TILE_A, floating: true, float_origin: "mystery",
             }],

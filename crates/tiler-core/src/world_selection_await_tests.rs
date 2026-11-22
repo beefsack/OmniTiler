@@ -377,10 +377,6 @@ fn feedback_row(
 fn selection_grants_await_shown_with_show_and_hide_targets() {
     let (mut engine, _home, away) = select_setup();
     let reply = select(&mut engine, 3, &away);
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let effect = reply
         .focus_request
         .as_ref()
@@ -645,10 +641,6 @@ fn ordinary_direct_focus_grants_no_arrival() {
             vec![],
             "",
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     assert!(
         reply
@@ -949,10 +941,6 @@ fn selection_close_prunes_binding_and_targets_without_stale_reuse() {
     assert!(
         engine.world.settlement.retained_selection.is_empty(),
         "no grant resurrected"
-    );
-    assert!(
-        readmit.effects.iter().all(|effect| !effect.await_shown),
-        "no arrival grant resurrected on re-admission"
     );
 }
 
@@ -1474,10 +1462,6 @@ fn selection_without_suppression_caps_binds_focusless_with_direct_effect() {
             "",
         ),
     );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     assert_eq!(
         reply
             .focus_request
@@ -1652,7 +1636,6 @@ fn selection_host_owned_focusless_pends_on_native_proof() {
             "",
         ),
     );
-    assert!(reply.effects.is_empty(), "empty trailing selects nothing");
     for row in &reply.windows {
         assert!(
             row.visibility.is_none(),
@@ -1700,7 +1683,6 @@ fn empty_selection_freezes_hide_then_supersedes_without_completing() {
     let empty = ring.last().expect("fresh trailing spare").clone();
     assert_ne!(empty, away, "spare is not the occupied workspace");
     let reply = select(&mut engine, 4, &empty);
-    assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
     assert!(
         reply.switch_settled.is_empty(),
         "supersession completes nothing: {reply:?}"
@@ -1723,10 +1705,6 @@ fn empty_selection_freezes_hide_then_supersedes_without_completing() {
     // A newer selection supersedes the pending focusless binding without
     // an event: selecting home resolves w1 and drops op-4 silently.
     let back = select(&mut engine, 5, &home);
-    assert!(
-        back.effects.is_empty(),
-        "focus never publishes as wire effects: {back:?}"
-    );
     assert!(
         back.switch_settled.is_empty(),
         "superseded focusless emits nothing: {back:?}"
@@ -1840,10 +1818,6 @@ fn selection_two_outputs_retain_independent_bindings() {
             screens.clone(),
         ),
     );
-    assert!(
-        first.effects.is_empty(),
-        "focus never publishes as wire effects: {first:?}"
-    );
     assert_eq!(
         first
             .focus_request
@@ -1878,10 +1852,6 @@ fn selection_two_outputs_retain_independent_bindings() {
             "",
             screens.clone(),
         ),
-    );
-    assert!(
-        second.effects.is_empty(),
-        "focus never publishes as wire effects: {second:?}"
     );
     assert_eq!(
         second
@@ -2030,10 +2000,6 @@ fn selection_follow_send_home_invalidates_stale_hide() {
     }];
     let granted = accepted(&mut engine, &proving);
     assert!(
-        granted.effects.is_empty(),
-        "focus never publishes as wire effects: {granted:?}"
-    );
-    assert!(
         granted
             .focus_request
             .as_ref()
@@ -2062,10 +2028,6 @@ fn selection_follow_send_home_invalidates_stale_hide() {
             vec![],
             "w2",
         ),
-    );
-    assert!(
-        followed.effects.is_empty(),
-        "focus never publishes as wire effects: {followed:?}"
     );
     assert_eq!(
         followed
@@ -2206,14 +2168,6 @@ fn follow_send_settles_membership_before_selection_terminal() {
         attempt_ms: 7,
     }];
     let followed = accepted(&mut engine, &follow_report);
-    assert!(
-        followed.effects.is_empty(),
-        "focus never publishes as wire effects: {followed:?}"
-    );
-    assert!(
-        followed.effects.is_empty(),
-        "focus never publishes as wire effects: {followed:?}"
-    );
     assert!(
         followed
             .focus_request
@@ -2420,10 +2374,6 @@ fn follow_to_different_workspace_prunes_stale_select_view_flight() {
     follow_report.focused_global = "w2".to_owned();
     follow_report.foreground_known = true;
     let followed = accepted(&mut engine, &follow_report);
-    assert!(
-        followed.effects.is_empty(),
-        "focus never publishes as wire effects: {followed:?}"
-    );
     assert!(
         followed
             .focus_request
@@ -2634,10 +2584,6 @@ fn follow_cross_output_binds_current_destination_and_settles_window_first() {
             screens.clone(),
         ),
     );
-    assert!(
-        followed.effects.is_empty(),
-        "focus never publishes as wire effects: {followed:?}"
-    );
     assert_eq!(
         followed
             .focus_request
@@ -2812,10 +2758,6 @@ fn follow_binding_superseded_then_close_drops_without_event() {
     );
     let second = accepted(&mut engine, &second_report);
     assert!(
-        second.effects.is_empty(),
-        "focus never publishes as wire effects: {second:?}"
-    );
-    assert!(
         second
             .focus_request
             .as_ref()
@@ -2910,10 +2852,6 @@ fn native_free_follow_source_echo_survives_then_proves() {
         attempt_ms: 7,
     }];
     let granted = accepted(&mut engine, &first_report);
-    assert!(
-        granted.effects.is_empty(),
-        "focus never publishes as wire effects: {granted:?}"
-    );
     assert!(
         granted
             .focus_request
@@ -3286,10 +3224,6 @@ fn host_owned_follow_binds_native_obligation_and_settles_window_first() {
     followed_report.focused_global = "w0".to_owned();
     followed_report.foreground_known = true;
     let followed = accepted(&mut engine, &followed_report);
-    assert!(
-        followed.effects.is_empty(),
-        "focus never publishes as wire effects: {followed:?}"
-    );
     assert_eq!(
         followed
             .focus_request
@@ -3566,10 +3500,6 @@ fn host_owned_follow_source_home_bracket_never_proves_arrival() {
     followed_report.focused_global = "w0".to_owned();
     followed_report.foreground_known = true;
     let followed = accepted(&mut engine, &followed_report);
-    assert!(
-        followed.effects.is_empty(),
-        "focus never publishes as wire effects: {followed:?}"
-    );
     let effect = followed
         .focus_request
         .clone()
@@ -3837,10 +3767,6 @@ fn selection_shared_mode_fans_out_scopes_and_survives_member_close() {
         ),
     );
     assert!(
-        granted.effects.is_empty(),
-        "focus never publishes as wire effects: {granted:?}"
-    );
-    assert!(
         granted
             .focus_request
             .as_ref()
@@ -3993,10 +3919,6 @@ fn selection_shared_mode_fans_out_scopes_and_survives_member_close() {
     assert!(
         engine.world.settlement.retained_selection.is_empty(),
         "no grant resurrected"
-    );
-    assert!(
-        readmit.effects.iter().all(|effect| !effect.await_shown),
-        "no arrival grant resurrected"
     );
 }
 
@@ -4430,10 +4352,6 @@ fn selection_composed_sticky_members_join_frozen_arrival_with_precedence() {
                 "",
             ),
         );
-        assert!(
-            granted.effects.is_empty(),
-            "focus never publishes as wire effects: {granted:?}"
-        );
         assert_eq!(
             granted
                 .focus_request
@@ -4666,10 +4584,6 @@ fn selection_historical_readiness_does_not_authorize_fresh_visibility() {
         ScopeAuthority::Controlled,
         "fullscreen withholds fresh writes"
     );
-    assert!(
-        flipped.effects.iter().all(|effect| !effect.await_shown),
-        "no new arrival grant follows the flip"
-    );
     check_latched(&engine);
     // Capability-gated maximize flips the same way: Hold with the same
     // revision, latch stable, no new grant.
@@ -4697,10 +4611,6 @@ fn selection_historical_readiness_does_not_authorize_fresh_visibility() {
         row(&maxed, "w2").visibility_authority,
         ScopeAuthority::Controlled,
         "maximize withholds fresh writes"
-    );
-    assert!(
-        maxed.effects.iter().all(|effect| !effect.await_shown),
-        "no new arrival grant follows the flip"
     );
     check_latched(&engine);
 }
@@ -5836,10 +5746,6 @@ fn switch_incomplete_inventory_settles_spent_evidence_without_renewal() {
             "{window} keeps its revision"
         );
     }
-    assert!(
-        reply.effects.iter().all(|effect| !effect.await_shown),
-        "no renewed arrival grant on the gap"
-    );
     assert_eq!(
         row(&reply, "w2").visibility_authority,
         ScopeAuthority::Hold(crate::world_report::HoldReason::IncompleteInventory),
@@ -6236,10 +6142,6 @@ fn switch_nocall_hide_terminates_without_retry_and_preserves_state() {
     assert_eq!(event.failed, vec![WindowId("w1".to_owned())]);
     assert_eq!(event.focus, SwitchFocus::Unproven);
     assert!(
-        reply.effects.iter().all(|effect| !effect.await_shown),
-        "terminal mints no fresh grant"
-    );
-    assert!(
         !engine
             .world
             .settlement
@@ -6274,10 +6176,6 @@ fn switch_nocall_hide_terminates_without_retry_and_preserves_state() {
     assert_eq!(
         again.switch_settled, reply.switch_settled,
         "retains terminal without re-settling"
-    );
-    assert!(
-        again.effects.iter().all(|effect| !effect.await_shown),
-        "no resurrected grant"
     );
     assert!(
         engine.world.settlement.retained_selection.is_empty(),
@@ -6503,10 +6401,6 @@ fn switch_partial_hide_failure_with_proven_arrival_and_focus() {
         "retains terminal without re-settling"
     );
     assert!(
-        again.effects.iter().all(|effect| !effect.await_shown),
-        "no resurrected grant"
-    );
-    assert!(
         engine.world.settlement.retained_selection.is_empty(),
         "nothing to retry"
     );
@@ -6525,19 +6419,10 @@ fn switch_partial_hide_failure_with_proven_arrival_and_focus() {
 fn focusless_occupied_to_empty_freezes_hide_and_completes_unproven() {
     let (mut engine, _home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    assert!(
-        granted.effects.is_empty(),
-        "focus never publishes as wire effects: {granted:?}"
-    );
     let ring = ring_ids(&granted, "out-a");
     let empty = ring.last().expect("fresh trailing spare").clone();
     assert_ne!(empty, away, "spare is not the occupied workspace");
     let reply = select(&mut engine, 4, &empty);
-    assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
-    assert!(
-        reply.effects.iter().all(|effect| !effect.await_shown),
-        "focusless mints no await grant"
-    );
     let binding = engine
         .world
         .settlement
@@ -6674,7 +6559,6 @@ fn focusless_occupied_to_empty_hide_refusal_fails() {
     let granted = select(&mut engine, 3, &away);
     let empty = ring_ids(&granted, "out-a").last().expect("spare").clone();
     let reply = select(&mut engine, 4, &empty);
-    assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
     assert!(reply.switch_settled.is_empty(), "hide needs proof: pending");
     let rev = reply.state_revision;
     let refused = vis_with(
@@ -6763,7 +6647,6 @@ fn focusless_empty_to_empty_zero_members_completes_at_issuing() {
             "",
         ),
     );
-    assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
     assert_eq!(
         reply.switch_settled.len(),
         1,
@@ -6826,10 +6709,6 @@ fn focusless_minimized_only_invents_no_focus() {
             vec![],
             "",
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "minimized-only invents no focus: {reply:?}"
     );
     assert_eq!(
         reply.switch_settled.len(),
@@ -7001,10 +6880,6 @@ fn host_owned_focus_bearing_grants_await_shown_with_native_obligations() {
         "n0",
         "w2",
     );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let effect = reply
         .focus_request
         .as_ref()
@@ -7106,10 +6981,6 @@ fn host_focus_grant() -> (WorldEngine, String, crate::world_report::WorldReplyV4
     let _ = accepted(&mut engine, &staged);
     let reply = host_select_windows(&mut engine, 3, &away, stage(), "n0", "w2");
     assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
-    assert!(
         reply
             .focus_request
             .as_ref()
@@ -7184,7 +7055,6 @@ fn departing_activation_does_not_cancel_but_earlier_destination_activation_does(
         let first = accepted(&mut engine, &capture);
         let expected = issued.focus_request.filter(|_| retain);
         assert_eq!(first.focus_request, expected);
-        assert!(first.effects.is_empty());
 
         let mut next = host_native_report(5, host_proof_windows(true), "n1", None, None);
         next.focused_global = "w1".to_owned();
@@ -7198,7 +7068,6 @@ fn departing_activation_does_not_cancel_but_earlier_destination_activation_does(
             arrived.focus_request, expected,
             "own fallback must not resurrect T"
         );
-        assert!(arrived.effects.is_empty());
     }
 }
 
@@ -7241,7 +7110,6 @@ fn only_target_hiding_selector_retires_with_unchanged_sticky_foreground() {
             reply.focus_request.as_ref(),
             issued.focus_request.as_ref().filter(|_| retain)
         );
-        assert!(reply.effects.is_empty());
         prior = reply.state_revision;
     }
 }
@@ -7911,10 +7779,6 @@ fn host_owned_focus_bearing_shared_needs_every_output_proof() {
     selecting.focused_global = "wA".to_owned();
     selecting.foreground_known = true;
     let reply = accepted(&mut engine, &selecting);
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let effect = reply
         .focus_request
         .as_ref()
@@ -8147,10 +8011,6 @@ fn host_owned_focus_bearing_shared_nonfocus_external_move_drops_binding() {
     selecting.focused_global = "wA".to_owned();
     selecting.foreground_known = true;
     let reply = accepted(&mut engine, &selecting);
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let effect = reply.focus_request.clone().expect("retained focus request");
     assert_eq!(effect.target.0, "wA");
     assert!(effect.after_shown.is_some(), "shared focus awaits arrival");
@@ -8332,10 +8192,6 @@ fn host_owned_focus_bearing_shared_partial_then_external_move_drops_binding() {
     selecting.focused_global = "wA".to_owned();
     selecting.foreground_known = true;
     let reply = accepted(&mut engine, &selecting);
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let effect = reply.focus_request.clone().expect("retained focus request");
     assert_eq!(effect.target.0, "wA");
     let frame = host_member_frames(&reply)[&WindowId("wA".to_owned())];
@@ -9023,10 +8879,6 @@ fn host_owned_focus_bearing_shared_nonfocus_own_refusal_pends_then_fails() {
     selecting.focused_global = "wA".to_owned();
     selecting.foreground_known = true;
     let reply = accepted(&mut engine, &selecting);
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let effect = reply.focus_request.clone().expect("retained focus request");
     assert_eq!(effect.target.0, "wA");
     let out_b_home = engine
@@ -9340,10 +9192,6 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
         ),
     );
     assert!(
-        grant.effects.is_empty(),
-        "focus never publishes as wire effects: {grant:?}"
-    );
-    assert!(
         grant
             .focus_request
             .as_ref()
@@ -9411,10 +9259,6 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
             crate::world_report::WORLD_CONTRACT_VERSION_V4
         );
         assert!(reply.switch_settled.is_empty());
-        assert!(
-            reply.effects.is_empty(),
-            "focus never publishes as wire effects: {reply:?}"
-        );
         assert!(
             reply
                 .focus_request
@@ -9528,7 +9372,6 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
     assert!(!other.command_consumed);
     assert_eq!(other_settlements.len(), 1);
     assert!(other_settlements[0].result.is_none());
-    assert!(other.effects.is_empty());
     assert!(
         engine
             .world
@@ -9603,7 +9446,6 @@ fn view_attempt(op: &str, target: &str, setter: FrameSetter) -> crate::world_rep
 fn host_owned_focusless_native_echo_completes_unproven() {
     let (mut engine, away) = host_boot();
     let reply = host_select(&mut engine, 2, &away);
-    assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
     assert!(reply.switch_settled.is_empty(), "native proof outstanding");
     assert!(
         engine
@@ -9666,10 +9508,6 @@ fn host_owned_focusless_minimized_native_member_takes_no_window_target() {
                 workspace: crate::directional::WorkspaceId(away.clone()),
             }),
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "minimized-only invents no focus: {reply:?}"
     );
     assert!(reply.switch_settled.is_empty(), "native proof outstanding");
     for row in &reply.windows {
@@ -9922,7 +9760,6 @@ fn host_owned_focusless_shared_needs_every_output_proof() {
             )),
         ),
     );
-    assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
     assert!(reply.switch_settled.is_empty(), "proofs outstanding");
     let binding = engine
         .world
@@ -10113,7 +9950,6 @@ fn host_owned_focusless_shared_same_ids_complete_unproven() {
             )),
         ),
     );
-    assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
     assert!(reply.switch_settled.is_empty(), "proofs outstanding");
     let binding = engine
         .world
@@ -10236,7 +10072,6 @@ fn host_owned_focusless_external_move_supersedes_without_event() {
             )),
         ),
     );
-    assert!(reply.effects.is_empty(), "no focus invented: {reply:?}");
     assert!(reply.switch_settled.is_empty(), "native proof outstanding");
     assert!(
         engine
@@ -10304,7 +10139,6 @@ fn host_owned_focusless_external_move_supersedes_without_event() {
             )),
         ),
     );
-    assert!(retry.effects.is_empty(), "no focus invented: {retry:?}");
     assert!(
         retry.switch_settled.is_empty(),
         "new binding pends proof: {retry:?}"
@@ -10654,10 +10488,6 @@ fn host_owned_focus_bearing_fullscreen_focus_freezes_frameless_and_proves() {
     staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let reply = host_select_windows(&mut engine, 3, &away, stage(), "n0", "w2");
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     assert_eq!(
         reply
             .focus_request
@@ -10740,10 +10570,6 @@ fn host_owned_focus_bearing_float_focus_freezes_frameless_and_proves() {
     staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let reply = host_select_windows(&mut engine, 3, &away, stage(), "n0", "w2");
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     assert_eq!(
         reply
             .focus_request
@@ -10843,10 +10669,6 @@ fn host_owned_focus_bearing_freezes_sticky_focus_at_actual_home() {
     selecting.focused_global = "ws".to_owned();
     selecting.foreground_known = true;
     let reply = accepted(&mut engine, &selecting);
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     assert_eq!(
         reply
             .focus_request
@@ -10995,10 +10817,6 @@ fn host_focus_grant_fullscreen_nonfocus() -> (WorldEngine, String, crate::world_
     staged.foreground_known = true;
     let _ = accepted(&mut engine, &staged);
     let reply = host_select_windows(&mut engine, 3, &away, stage(), "n0", "w2");
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     assert_eq!(
         reply
             .focus_request
@@ -11425,10 +11243,6 @@ fn migration_focused_producer_binds_both_outputs_and_settles_terminal() {
         "MRU refill selects the occupied away: {binding:?}"
     );
     // D6: only the moved active client refocuses, awaiting arrival.
-    assert!(
-        granted.effects.is_empty(),
-        "focus never publishes as wire effects: {granted:?}"
-    );
     assert_eq!(
         granted
             .focus_request
@@ -11871,7 +11685,6 @@ fn migration_focusless_variants_bind_without_effect() {
     // Focusless occupied (empty foreground): same frozen scope, no effect.
     let (mut engine, home, _) = migration_boot();
     let granted = migrate(&mut engine, 5, "out-a", &home, "");
-    assert!(granted.effects.is_empty(), "no focus invented: {granted:?}");
     let binding = engine
         .world
         .settlement
@@ -11984,10 +11797,7 @@ fn migration_close_mover_drops_binding_without_terminal() {
     // with no terminal: the closed lifetime can never prove arrival.
     let (mut engine, home, _) = migration_boot();
     let granted = migrate(&mut engine, 5, "out-a", &home, "w2");
-    assert!(
-        granted.effects.is_empty(),
-        "focus never publishes as wire effects: {granted:?}"
-    );
+    assert!(granted.focus_request.is_some());
     let screens = vec![screen("out-a", 0), screen("out-b", 800)];
     let closed = accepted(
         &mut engine,
@@ -12357,10 +12167,6 @@ fn migration_minimized_only_binds_focusless() {
             "w2",
         ),
     );
-    assert!(
-        granted.effects.is_empty(),
-        "minimized mover takes no focus: {granted:?}"
-    );
     // The minimized mover is blocked from per-window targets and the
     // refill resolves to the trailing spare rather than the stayer's
     // home, so no switch member obligates: the focusless binding
@@ -12455,10 +12261,7 @@ fn migration_sticky_foreground_takes_no_focus() {
             "w2",
         ),
     );
-    assert!(
-        granted.effects.iter().all(|e| e.target.0 != "w2"),
-        "sticky foreground never focuses: {granted:?}"
-    );
+    assert!(granted.focus_request.is_none());
 }
 
 #[test]
@@ -12546,10 +12349,6 @@ fn selection_eligible_ignores_logical_echo_then_completes_on_verdicts() {
         let (mut engine, home, away) = select_setup();
         let _ = home;
         let granted = select(&mut engine, 3, &away);
-        assert!(
-            granted.effects.is_empty(),
-            "focus never publishes as wire effects: {granted:?}"
-        );
         assert!(
             granted
                 .focus_request
@@ -12750,10 +12549,6 @@ fn policy_displaced_view_binds_focusless_under_own_parent_and_completes() {
         "policy view retained on the survivor"
     );
     assert!(
-        displaced.effects.is_empty(),
-        "policy mints no focus effect: {displaced:?}"
-    );
-    assert!(
         engine.world.settlement.pending_selection.is_none(),
         "policy never touches the command slot"
     );
@@ -12884,10 +12679,6 @@ fn policy_pending_loses_to_overlapping_command_in_the_same_cycle() {
         "no policy flight survives the race: {:?}",
         raced.transfers
     );
-    assert!(
-        raced.effects.is_empty(),
-        "focus never publishes as wire effects: {raced:?}"
-    );
     let binding = engine
         .world
         .settlement
@@ -12910,17 +12701,10 @@ fn selection_redundant_unchanged_preserves_binding_history_and_mints_nothing() {
     // (supersession end-state, history, and per-window targets untouched).
     let (mut engine, home, away) = select_setup();
     let granted = select(&mut engine, 3, &away);
-    assert!(
-        granted.effects.is_empty(),
-        "focus never publishes as wire effects: {granted:?}"
-    );
+    assert!(granted.focus_request.is_some());
     // First redundant: converge catches history up to the op-3 move (not
     // the command: the command itself mints nothing).
     let first = select(&mut engine, 4, &away);
-    assert!(
-        first.effects.is_empty(),
-        "redundant select mints no focus: {first:?}"
-    );
     assert!(
         first.transfers.iter().all(|t| t.operation_id != "op-4"),
         "redundant select mints no view flight: {:?}",
@@ -12953,10 +12737,6 @@ fn selection_redundant_unchanged_preserves_binding_history_and_mints_nothing() {
     let before_view = engine.tx_ro(|tx| tx.effective_view(&OutputId("out-a".to_owned())));
     // Second redundant: everything preserved exactly.
     let again = select(&mut engine, 5, &away);
-    assert!(
-        again.effects.is_empty(),
-        "redundant select mints no focus: {again:?}"
-    );
     assert!(
         again.transfers.iter().all(|t| t.operation_id != "op-5"),
         "redundant select mints no view flight: {:?}",
@@ -14222,7 +14002,6 @@ fn disconnect_rehomed_members_mint_no_admission_focus() {
         native("out-right", &["r0", "r1"], "r1"),
     ];
     let first = accepted(&mut engine, &boot);
-    assert!(first.effects.is_empty(), "baseline stays quiet: {first:?}");
     let empty_unit = first
         .workspaces
         .iter()
@@ -14260,11 +14039,6 @@ fn disconnect_rehomed_members_mint_no_admission_focus() {
     );
     disc.native = vec![native("out-left", &["l0", "l1"], "l0")];
     let reply = accepted(&mut engine, &disc);
-    assert!(
-        reply.effects.is_empty(),
-        "displacement mints no focus effect: {:?}",
-        reply.effects
-    );
     assert!(
         engine.world.workspace.displaced.contains_key("out-right"),
         "removed output displaces"
@@ -14369,10 +14143,6 @@ fn disconnect_control_genuine_newcomer_still_mints_admission_focus() {
     );
     admit.native = vec![native("out-left", &["l0", "l1"], "l0")];
     let reply = accepted(&mut engine, &admit);
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     assert_eq!(
         reply
             .focus_request

@@ -170,7 +170,7 @@ function startFlow() {
             ],
             outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
             windows: [winRow("win-a", "ws1"), winRow("win-b", "ws2")],
-            transfers: [], effects: [], dragPreview: null,
+            transfers: [], dragPreview: null,
             gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
             intentDesired: [],
             presentation: DISABLED_PRESENTATION,

@@ -520,11 +520,6 @@ fn ordinary_focus_command_dispatches_effect() {
         false,
     );
     let reply = accepted_reply(2, outcome);
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {:?}",
-        reply.effects
-    );
     let request = reply
         .focus_request
         .as_ref()
@@ -568,13 +563,6 @@ fn consumed_command_reconciles_without_reexecution() {
     match outcome {
         V4RunOutcome::CommandConsumed(reply) => {
             assert!(reply.command_consumed);
-            assert!(
-                !reply
-                    .effects
-                    .iter()
-                    .any(|effect| effect.command_seq == Some(1)),
-                "consumed sequences never re-execute"
-            );
             assert!(settlements.is_empty());
         }
         other => panic!("expected consumed v4 run, got {other:?}"),
@@ -656,14 +644,6 @@ fn consumed_rerun_with_new_observation_reconciles_without_revalidation() {
     }) {
         (V4RunOutcome::CommandConsumed(reply), settlements) => {
             assert!(reply.command_consumed);
-            assert!(
-                !reply
-                    .effects
-                    .iter()
-                    .any(|effect| effect.command_seq == Some(1)),
-                "consumed reruns never re-execute: {:?}",
-                reply.effects
-            );
             assert_eq!(
                 settlements,
                 vec![crate::world_report::BatchDisposition {
@@ -912,14 +892,6 @@ fn refused_command_preserves_observation_without_command_mutation() {
         ScopeAuthority::Controlled,
         "new window carries Controlled membership: {w2:?}"
     );
-    assert!(
-        !reply
-            .effects
-            .iter()
-            .any(|effect| effect.target.0 == "wSticky"),
-        "no effect for the refused mover: {:?}",
-        reply.effects
-    );
     assert_eq!(
         engine
             .world
@@ -1121,18 +1093,12 @@ fn renderer_unissued_revision_refuses_command() {
         false,
     );
     let reply = accepted_reply(2, outcome);
+    assert!(reply.focus_request.is_none());
     assert_eq!(
         settlements.first().and_then(|s| s.result.clone()),
         Some(CommandResult::Rejected {
             kind: CommandRejectKind::StaleRenderTarget
         })
-    );
-    assert!(
-        !reply
-            .effects
-            .iter()
-            .any(|effect| effect.command_seq == Some(1)),
-        "refused commands dispatch nothing"
     );
     assert_eq!(engine.world.command_highwater, Some(1));
     assert_eq!(
@@ -1194,11 +1160,6 @@ fn renderer_older_unchanged_target_executes_after_intervening_observation() {
     let reply = accepted_reply(3, reply_outcome);
     assert_eq!(reply_settlements.len(), 1);
     assert!(reply_settlements[0].result.is_none());
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {:?}",
-        reply.effects
-    );
     let request = reply
         .focus_request
         .as_ref()
@@ -1349,11 +1310,6 @@ fn renderer_equal_revision_with_exact_row_executes() {
     let reply = accepted_reply(2, outcome);
     assert_eq!(settlements.len(), 1);
     assert!(settlements[0].result.is_none());
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {:?}",
-        reply.effects
-    );
     let request = reply
         .focus_request
         .as_ref()

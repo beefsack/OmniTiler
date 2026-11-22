@@ -1132,7 +1132,6 @@ impl WorldEngine {
             diagnostics: Vec::new(),
             windows: Vec::new(),
             transfers: Vec::new(),
-            effects: Vec::new(),
             focus_request: None,
             drag_preview: None,
             gesture_settled: None,

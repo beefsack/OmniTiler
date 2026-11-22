@@ -181,7 +181,7 @@ const ACC = (gen: string, source: string, nativeInvalid: string, rev: string, ex
         intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [], workspaces: [], outputs: [], windows: [],
-        transfers: [], effects: [], dragPreview: null,
+        transfers: [], dragPreview: null,
         ...extra,
     });
     const parsed = parseWorldReply(text);

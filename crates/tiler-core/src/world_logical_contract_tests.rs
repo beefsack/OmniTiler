@@ -488,10 +488,6 @@ fn fresh_admission_focus_is_at_most_once() {
             false,
         ),
     );
-    assert!(
-        second.effects.is_empty(),
-        "focus never publishes as wire effects: {second:?}"
-    );
     let request = second.focus_request.as_ref().expect("admission request");
     assert_eq!(request.target.0, "win-a");
     assert_eq!(request.id, format!("focus-{}", second.state_revision));
@@ -519,7 +515,7 @@ fn fresh_admission_focus_is_at_most_once() {
             false,
         ),
     );
-    assert!(third.effects.is_empty());
+    assert!(third.focus_request.is_some());
 }
 
 #[test]
@@ -561,10 +557,6 @@ fn send_follow_and_stay_commit_window_transfers() {
         false,
     );
     let reply = accepted(&mut engine, &follow);
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let request = reply
         .focus_request
         .as_ref()
@@ -629,11 +621,6 @@ fn send_follow_and_stay_commit_window_transfers() {
         false,
     );
     let reply = accepted(&mut engine, &stay);
-    assert!(
-        reply.effects.is_empty(),
-        "emptied source names no focus: {:?}",
-        reply.effects
-    );
     assert_eq!(reply.transfers.len(), 1);
 }
 
@@ -1786,10 +1773,6 @@ fn directional_focus_crosses_outputs_with_explicit_effect() {
             false,
         ),
     );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let request = reply
         .focus_request
         .as_ref()
@@ -1859,12 +1842,7 @@ fn directional_focus_up_never_crosses_outputs() {
         .0
     {
         WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => {
-            assert!(
-                reply
-                    .effects
-                    .iter()
-                    .all(|effect| effect.target.0 != "win-b")
-            );
+            assert!(reply.focus_request.is_none());
         }
         WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "unchanged"),
         other => panic!("unexpected outcome: {other:?}"),
@@ -2059,10 +2037,6 @@ fn numbered_send_trailing_path_creates_and_commits_immediately() {
             true,
             false,
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     let request = reply
         .focus_request
@@ -2651,10 +2625,6 @@ fn numbered_send_trailing_create_stages_fresh_target_and_commits() {
             false,
         ),
     );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let request = reply
         .focus_request
         .as_ref()
@@ -2776,10 +2746,6 @@ fn numbered_follow_selects_target_view_and_stay_keeps_source() {
         output_view(&reply, "out-a").as_deref(),
         Some(view_b.as_str())
     );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let request = reply
         .focus_request
         .as_ref()
@@ -2829,10 +2795,6 @@ fn numbered_follow_selects_target_view_and_stay_keeps_source() {
     assert_eq!(
         output_view(&stayed, "out-a").as_deref(),
         Some(view_b.as_str())
-    );
-    assert!(
-        stayed.effects.is_empty(),
-        "focus never publishes as wire effects: {stayed:?}"
     );
     let request = stayed
         .focus_request
@@ -2967,10 +2929,6 @@ fn numbered_follow_fans_out_views_in_shared_mode() {
     assert_eq!(
         output_view(&reply, "out-b").as_deref(),
         Some(view_b.as_str())
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     let request = reply
         .focus_request
@@ -4295,12 +4253,6 @@ fn unexplained_fit_excluded_newcomers_hold_their_scope() {
             false,
         ),
     );
-    assert!(
-        reply
-            .effects
-            .iter()
-            .all(|effect| effect.target.0 != "win-game")
-    );
     assert_eq!(
         scope_of(&reply, "out-a", &view_a),
         ScopeAuthority::Controlled
@@ -4372,7 +4324,7 @@ fn gesture_barrier_holds_frames_without_repair() {
             true,
         ),
     );
-    assert!(reply.effects.is_empty());
+    assert!(reply.focus_request.is_none());
     let replay = accepted(
         &mut engine,
         &report(
@@ -4389,7 +4341,7 @@ fn gesture_barrier_holds_frames_without_repair() {
             false,
         ),
     );
-    assert!(replay.effects.is_empty(), "spent intent never replays");
+    assert!(replay.focus_request.is_none());
 }
 
 #[test]
@@ -4857,10 +4809,6 @@ fn cross_output_follow_ineligible_moves_view_without_binding() {
             .retained_selection
             .contains_key(&OutputId("out-b".to_owned())),
         "ineligible mover binds nothing"
-    );
-    assert!(
-        followed.effects.is_empty(),
-        "focus never publishes as wire effects: {followed:?}"
     );
     let request = followed
         .focus_request

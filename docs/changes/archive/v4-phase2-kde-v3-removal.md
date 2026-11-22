@@ -41,7 +41,7 @@
 | `handle_report_legacy`, `LegacyWorldOutcome`, legacy `run_accepted`/`finish`/`bootstrap_report_reply`, legacy observe/stage helpers, report/reply shapes and sizing, `WORLD_CONTRACT_VERSION_LEGACY` | Retired core lane | Coverage ported; separately reviewed cull complete |
 | `run_stress_legacy` and its runtime tests in `world_stress.rs` | Retired runner; shared loader/schema/schedule remain live | Runtime coverage ported to `run_stress_v4`; separate cull complete |
 | `world_report/publish/presentation/sizing.rs`, `ReportWireOptionals`, shared decode helpers, retired-key vocabulary, version constants `WORLD_CONTRACT_VERSION[_V4]` | Live shared v4 foundation (not legacy) | Retained |
-| `test-fixtures/world-wire` (non-v4, 12 files), `stage5`, `stage5-v2`, `stage5-v4`, the two stage5 proofs, `n5_retained.rs` (Windows exclusions, not a wire v3 test) | Retained by rule | Retained |
+| `test-fixtures/world-wire` (non-v4, 12 files), `stage5`, `stage5-v2`, `stage5-v4`, the two stage5 proofs, `n5_retained.rs` (Windows exclusions, not a wire v3 test) | Retained by rule (at that time) | Retained at that time (the 12 detached v3 files under `test-fixtures/world-wire/` were later retired from checkout; original bytes at `git show da69c63b:test-fixtures/world-wire/<file>`) |
 | `tiler-windows`/`tiler-macos` still import removed report/reply shapes or bootstrap APIs; their scripts and just recipes carry no v3 protocol code | Deferred adapter consumers | Adapter sources retained; temporarily broken adapters are authorized by the migration order and await their gated ports |
 | `justfile`, `just/linux.just`, CI workflows, packaging, nix, `kwin/package.json`, `kwin/native-effect` | Clean (CI "v3" hits are action version pins) | Nothing to cull |
 
@@ -71,7 +71,9 @@
   (`world_broker.rs`), so it cannot run; no `[[example]]` entry, justfile,
   recipe, CI, packaging or script referenced it; its private helpers are unused
   elsewhere. It was never run during v4 (recorded in the contract decision).
-  The recorded bytes under `test-fixtures/world-wire` are untouched and retained.
+  The recorded bytes under `test-fixtures/world-wire` were untouched and
+  retained at that time (later retired from checkout; original bytes remain
+  reproducible via `git show da69c63b:test-fixtures/world-wire/<file>`).
 - Doc references reconciled: `docs/porting/kde-port-notes.md` (two lines),
   `docs/porting/world-contract-v3.md` (broken link), and the active contract
   decision's generator assumption. Historical archived notes,

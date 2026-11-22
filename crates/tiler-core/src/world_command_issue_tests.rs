@@ -1599,11 +1599,6 @@ fn handle_report_echoes_envelope_request_and_command_sequence() {
         other => panic!("command report must accept, got {other:?}"),
     };
     assert_eq!(reply.request_id, "req-2");
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {:?}",
-        reply.effects
-    );
     let request = reply
         .focus_request
         .as_ref()
@@ -1620,11 +1615,6 @@ fn handle_report_echoes_envelope_request_and_command_sequence() {
         other => panic!("observation-only must accept, got {other:?}"),
     };
     assert_eq!(reply.request_id, "req-3");
-    assert!(
-        reply.effects.is_empty(),
-        "observation-only emits no effects: {:?}",
-        reply.effects
-    );
 }
 
 #[test]

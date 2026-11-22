@@ -612,7 +612,6 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         outputs: [],
         windows: [],
         transfers: [],
-        effects: [],
         dragPreview: null,
         ...extra,
     });
@@ -4915,7 +4914,7 @@ describe("world entry focus feedback production regression", () => {
             // foreground must name the selected home. Focus left the
             // effects lane: the grant rides the retained latest-only
             // focusRequest (v4), never a focus effect row.
-            assert.deepEqual(select.reply["effects"], [], "no focus effect is published on the v4 wire");
+            assert.equal("effects" in select.reply, false, "retired effects key omitted on the v4 wire");
             const focusReq = select.reply["focusRequest"] as Record<string, unknown> | null;
             assert.ok(focusReq !== null, `select grants focus: ${select.rawReply.slice(0, 500)}`);
             assert.equal(focusReq["cause"], "explicit-command", `select grant is command-owned: ${select.rawReply.slice(0, 500)}`);

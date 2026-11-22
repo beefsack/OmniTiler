@@ -307,11 +307,6 @@ fn view_of(reply: &WorldReplyV4, output: &str) -> Option<String> {
 /// the v4 wire; the newcomer carries a retained `automatic-admission`
 /// request with the routed scope frozen.
 fn expect_admission_request(reply: &WorldReplyV4, window: &str) {
-    assert!(
-        reply.effects.is_empty(),
-        "admission never publishes wire effects: {:?}",
-        reply.effects
-    );
     let request = reply
         .focus_request
         .as_ref()
@@ -1249,7 +1244,7 @@ fn empty_seed_routes_first_newcomer_by_policy_both_directions() {
     ] {
         let mut engine = engine_for(SwitchTarget::Cursor, FreshPlacement::CursorOutputMru);
         let seed = accepted(&mut engine, &report(1, vec![], "", None, None, None));
-        assert!(seed.effects.is_empty(), "empty seed quiet");
+        assert!(seed.focus_request.is_none());
         let arrival = accepted(
             &mut engine,
             &report(
@@ -1283,7 +1278,7 @@ fn close_all_then_new_lifetime_routes_by_policy() {
     let mut closed = report(2, vec![], "", None, None, None);
     closed.closed = vec![WindowId("win-a".to_owned())];
     let empty = accepted(&mut engine, &closed);
-    assert!(empty.effects.is_empty(), "close-all quiet");
+    assert!(empty.focus_request.is_none());
     let arrival = accepted(
         &mut engine,
         &report(
@@ -1366,7 +1361,6 @@ fn initial_incomplete_then_first_complete_stays_native_then_later_routes() {
     );
     assert_eq!(homed(&baseline, "win-a").0, "out-a");
     assert_eq!(homed(&baseline, "win-b").0, "out-b");
-    assert!(baseline.effects.is_empty(), "baseline quiet");
     let arrival = accepted(
         &mut engine,
         &report(
@@ -1444,7 +1438,6 @@ fn rebind_baseline_quiet_then_later_newcomer_routes() {
     rebound.core_generation = engine.core_generation().to_owned();
     let first = accepted(&mut engine, &rebound);
     assert_eq!(homed(&first, "win-c").0, "out-b");
-    assert!(first.effects.is_empty(), "rebind baseline quiet");
     assert_eq!(homed(&first, "win-a").0, "out-a");
     let mut later = report(
         5,

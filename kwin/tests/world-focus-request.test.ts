@@ -80,7 +80,6 @@ function replyText(opts: {
         workspaces: opts.workspaces ?? [wsBindRow("ws1")], outputs: [],
         windows: opts.windows ?? [winRow("win-a", "ws1"), winRow("win-c", "ws1")],
         transfers: [],
-        effects: [],
         focusRequest: opts.focusRequest,
         dragPreview: null,
     });
@@ -633,7 +632,7 @@ describe("world retained focus request", () => {
     });
 
     it("reader refuses old shapes and malformed focusRequest rows", () => {
-        const text = (focusRequest: unknown, effects: unknown = []): string => JSON.stringify({
+        const text = (focusRequest: unknown, effects?: unknown): string => JSON.stringify({
             v: 4, adapter: "test-adapter", gen: "gen-1", req: "req-1",
             obs: "1", rev: "7", ready: true, consumed: false,
             source: "req-1", nativeInvalid: "1", clock: "1",
@@ -646,7 +645,7 @@ describe("world retained focus request", () => {
             scopes: [], workspaces: [], outputs: [],
             windows: [],
             transfers: [],
-            effects,
+            ...(effects === undefined ? {} : { effects }),
             dragPreview: null,
         });
         const good = { id: "focus-7", target: "win-c", rev: "7", cause: "positive-close", out: "out", ws: "ws1", cmdSeq: null, afterShown: null };
@@ -656,7 +655,8 @@ describe("world retained focus request", () => {
         oldKey["closeFocus"] = oldKey["focusRequest"];
         delete oldKey["focusRequest"];
         assert.equal(parseWorldReply(JSON.stringify(oldKey)), null, "retired closeFocus key refuses");
-        // Any effects row refuses: the lane is required empty.
+        // Any effects key (even empty) refuses: the lane is retired.
+        assert.equal(parseWorldReply(text(good, [])), null, "retired empty effects refuses");
         assert.equal(parseWorldReply(text(good, [{ id: "fx-1" }])), null, "non-empty effects refuses");
         // Unknown cause refuses.
         assert.equal(parseWorldReply(text({ ...good, cause: "fx-spell" })), null, "unknown cause refuses");

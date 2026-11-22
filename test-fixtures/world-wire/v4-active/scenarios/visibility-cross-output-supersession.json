@@ -473,7 +473,6 @@
               "parent": null
             }
           ],
-          "effects": [],
           "focusRequest": {
             "id": "focus-3",
             "target": "win-a",
@@ -937,7 +936,6 @@
               "parent": null
             }
           ],
-          "effects": [],
           "focusRequest": {
             "id": "focus-6",
             "target": "win-b",
@@ -1428,7 +1426,6 @@
               "parent": null
             }
           ],
-          "effects": [],
           "focusRequest": null,
           "dragPreview": null,
           "gestureSettled": null,
@@ -1852,7 +1849,6 @@
               "parent": null
             }
           ],
-          "effects": [],
           "focusRequest": null,
           "dragPreview": null,
           "gestureSettled": null,
@@ -2276,7 +2272,6 @@
               "parent": null
             }
           ],
-          "effects": [],
           "focusRequest": {
             "id": "focus-11",
             "target": "win-old",
@@ -2761,7 +2756,6 @@
               "parent": null
             }
           ],
-          "effects": [],
           "focusRequest": {
             "id": "focus-12",
             "target": "win-a",

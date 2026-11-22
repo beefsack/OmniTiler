@@ -332,7 +332,6 @@ fn clean_publish_authorizes_without_holds() {
     assert_eq!(win_a.membership_authority, ScopeAuthority::Controlled);
     assert!(reply.transfers.is_empty());
     assert!(reply.diagnostics.is_empty());
-    assert!(reply.effects.is_empty());
     assert_eq!(reply.gesture_settled, None);
     assert!(reply.operation_settled.is_empty());
     assert!(reply.switch_settled.is_empty());
@@ -1005,7 +1004,7 @@ fn missing_domain_target_redirect_holds() {
 }
 
 #[test]
-fn focus_effects_filter_held_output() {
+fn focus_publication_retains_seated_winner_over_synthetic_carriers() {
     let mut engine = style_engine();
     seeded(
         &mut engine,
@@ -1022,9 +1021,8 @@ fn focus_effects_filter_held_output() {
         .tx_ro(|tx| tx.staged_homing(&WindowId("win-c".to_owned())))
         .expect("win-c home");
     let before_a = engine.tx_ro(|tx| tx.canonical_memory(&home_a));
-    // Focus is the only effect kind and it never publishes as a wire
-    // effect; the carriers below exercise the held-output publication
-    // path and must all strip.
+    // Synthetic explicit carrier effects do not override the seated
+    // pending-focus winner on held or clean outputs.
     let effects = vec![
         crate::world_report::OneShotEffect::explicit_focus(7, WindowId("win-a".to_owned()), 7),
         crate::world_report::OneShotEffect::explicit_focus(8, WindowId("win-c".to_owned()), 7),
@@ -1041,13 +1039,18 @@ fn focus_effects_filter_held_output() {
         )
     });
     let reply = engine.tx(|tx| tx.publish_v4(envelope(7), None, effects, &BTreeSet::new()));
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {:?}",
-        reply.effects
+    let request = reply
+        .focus_request
+        .as_ref()
+        .expect("seated automatic win-c focus request");
+    assert_eq!(request.target, WindowId("win-c".to_owned()));
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::AutomaticAdmission
     );
-    // No native effect kind remains: every carrier strips, so the held
-    // output keeps nothing and the clean output carries nothing either.
+    assert_eq!(request.cmd_seq, None);
+    // The seated automatic win-c winner publishes and updates home_c,
+    // while the held output home_a remains unchanged.
     assert_eq!(
         engine.tx_ro(|tx| tx.canonical_memory(&home_c)),
         Some(WindowId("win-c".to_owned()))

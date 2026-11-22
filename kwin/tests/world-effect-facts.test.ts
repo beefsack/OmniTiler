@@ -147,7 +147,7 @@ function makeHarness() {
                     intentDesired: [], presentation: DISABLED_PRESENTATION,
                     switchSettled: [], diagnostics: [],
                     scopes: [{ scope: { kind: "workspace", out: "out-1", ws: "ws-1" }, auth: "controlled", reason: "" }],
-                    workspaces: [], outputs: [], windows: [], transfers: [], effects: [], focusRequest: null, dragPreview: null,
+                    workspaces: [], outputs: [], windows: [], transfers: [], focusRequest: null, dragPreview: null,
                 });
                 const parsed = parseWorldReply(text);
                 assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored capture accept binds strict v4");
@@ -484,7 +484,7 @@ describe("native effect presentation-facts waiter", () => {
                 intentDesired: [], presentation: DISABLED_PRESENTATION,
                 switchSettled: [], diagnostics: [],
                 scopes: [{ scope: { kind: "workspace", out: "out-1", ws: "ws-1" }, auth: "controlled", reason: "" }],
-                workspaces: [], outputs: [], windows: [], transfers: [], effects: [], focusRequest: null, dragPreview: null,
+                workspaces: [], outputs: [], windows: [], transfers: [], focusRequest: null, dragPreview: null,
             });
             const parsed = parseWorldReply(text);
             assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored capture accept binds strict v4");
@@ -548,7 +548,7 @@ describe("native effect presentation-facts waiter", () => {
                 intentDesired: [], presentation: DISABLED_PRESENTATION,
                 switchSettled: [], diagnostics: [],
                 scopes: [{ scope: { kind: "workspace", out: "out-1", ws: "ws-1" }, auth: "controlled", reason: "" }],
-                workspaces: [], outputs: [], windows: [], transfers: [], effects: [], focusRequest: null, dragPreview: null,
+                workspaces: [], outputs: [], windows: [], transfers: [], focusRequest: null, dragPreview: null,
             });
             const parsed = parseWorldReply(text);
             assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored capture accept binds strict v4");

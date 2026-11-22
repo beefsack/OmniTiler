@@ -2808,11 +2808,6 @@ fn directional_outcome(
 }
 
 fn focus_effect_targets(reply: &crate::world_report::WorldReplyV4) -> Vec<WindowId> {
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {:?}",
-        reply.effects
-    );
     reply
         .focus_request
         .as_ref()
@@ -2821,11 +2816,6 @@ fn focus_effect_targets(reply: &crate::world_report::WorldReplyV4) -> Vec<Window
 }
 
 fn expect_explicit_focus(reply: &crate::world_report::WorldReplyV4, target: &str, cmd_seq: u64) {
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {:?}",
-        reply.effects
-    );
     let request = reply
         .focus_request
         .as_ref()

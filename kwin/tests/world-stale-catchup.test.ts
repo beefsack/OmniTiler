@@ -333,7 +333,7 @@ function acceptedReply(gen: string, dispatched: Record<string, unknown>, rev: st
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
         workspaces: [{ id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" }],
         outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
-        windows: [], transfers: [], effects: [], dragPreview: null,
+        windows: [], transfers: [], dragPreview: null,
         ...extra,
     });
     const parsed = parseWorldReply(text);
@@ -375,7 +375,6 @@ function staleReply(gen: string, dispatched: Record<string, unknown>, rev: strin
             state: [],
         }],
         transfers: [{ op: "op-9", kind: "view", win: "", out: "out", ws: "wl-1", follow: false, held: false, cmdSeq: null, parent: null }],
-        effects: [],
         focusRequest: { id: "focus-9", target: "win-a", rev, cause: "automatic-admission", out: "out", ws: "wl-1", cmdSeq: null, afterShown: null },
         ...overrides,
     });

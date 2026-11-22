@@ -1310,10 +1310,6 @@ fn same_report_admission_beats_close() {
             None,
         ),
     );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let request = reply.focus_request.as_ref().expect("admission winner");
     assert_eq!(request.target.0, "win-n", "newcomer beats close: {reply:?}");
     assert_eq!(request.cause, FocusRequestCause::AutomaticAdmission);
@@ -1351,10 +1347,6 @@ fn same_report_explicit_beats_admission_and_close() {
                 direction: None,
             }),
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     let request = reply.focus_request.as_ref().expect("explicit winner");
     assert_eq!(request.target.0, "win-a", "explicit beats all: {reply:?}");
@@ -1414,10 +1406,6 @@ fn hover_movement_over_pending_keeps_id() {
     let second = accepted(
         &mut engine,
         &hover_report(3, windows.clone(), "win-a", Some((120, 12)), Some("win-b")),
-    );
-    assert!(
-        second.effects.is_empty(),
-        "hover never publishes as wire effects: {second:?}"
     );
     assert_eq!(
         second.focus_request,
@@ -1606,10 +1594,6 @@ fn same_report_close_beats_hover_cursor_follows_winner() {
     close.cursor = Some((310, 10));
     close.cursor_hit = Some(WindowId("win-d".to_owned()));
     let closed = accepted(&mut engine, &close);
-    assert!(
-        closed.effects.is_empty(),
-        "focus never publishes as wire effects: {closed:?}"
-    );
     let request = closed.focus_request.clone().expect("close winner retained");
     assert_eq!(request.target.0, "win-c", "close survivor wins: {closed:?}");
     assert_eq!(request.cause, FocusRequestCause::PositiveClose);

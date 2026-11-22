@@ -352,7 +352,6 @@ fn host_owned_workspace_switch_and_return_preserves_fullscreen_and_focuses_cover
     assert_eq!(w1_away.visibility_authority, ScopeAuthority::Untouched);
     assert_eq!(w1_away.frame_operation, None);
     assert_eq!(w1_away.clear_operation, None);
-    assert!(away_reply.effects.is_empty());
 
     // Observe arrival on N2 with w2 visible and focused.
     let mut w1_off = w1_fs;
@@ -400,7 +399,6 @@ fn host_owned_workspace_switch_and_return_preserves_fullscreen_and_focuses_cover
     assert_eq!(w1_ret.visibility_authority, ScopeAuthority::Untouched);
     assert_eq!(w1_ret.frame_operation, None);
     assert_eq!(w1_ret.clear_operation, None);
-    assert!(return_reply.effects.is_empty());
 }
 
 #[test]
@@ -468,7 +466,6 @@ fn host_owned_focused_fullscreen_toggle_orientation_and_move_refuse() {
     assert_eq!(w1_toggle.effective_frame, None);
     assert_eq!(w1_toggle.frame_authority, ScopeAuthority::Untouched);
     assert!(w1_toggle.state.is_empty());
-    assert!(toggle_reply.effects.is_empty());
     assert_eq!(toggle_reply.focus_request, None);
 
     // Subsequent observation confirms w2 allocation is unchanged and w1 stays fullscreen/frameless.
@@ -581,7 +578,6 @@ fn workspace_tiling_toggle_off_and_on_preserves_fullscreen_without_automatic_eff
     assert!(w1_off.state.is_empty());
     assert_eq!(w1_off.frame_operation, None);
     assert_eq!(w1_off.clear_operation, None);
-    assert!(off_reply.effects.is_empty());
     assert_eq!(off_reply.focus_request, None);
     assert_eq!(desire(&off_reply, "w2").allocation, None);
 
@@ -614,7 +610,6 @@ fn workspace_tiling_toggle_off_and_on_preserves_fullscreen_without_automatic_eff
     assert!(w1_on.state.is_empty(), "no unsolicited fullscreen write");
     assert_eq!(w1_on.frame_operation, None);
     assert_eq!(w1_on.clear_operation, None);
-    assert!(on_reply.effects.is_empty(), "no automatic effects");
     assert_eq!(on_reply.focus_request, None, "no automatic focus request");
     let w2_on = desire(&on_reply, "w2");
     assert!(w2_on.allocation.is_some(), "sibling w2 re-tiles");

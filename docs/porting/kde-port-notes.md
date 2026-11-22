@@ -300,6 +300,9 @@ coordination only. See the [contract and outcome](../changes/kde-world-v2-port.m
 Tests: `kwin/tests/world-*.test.ts` and `test-fixtures/world-wire/` now
 exercise strict v2. Canonical reply fixtures come from the Rust service;
 request fixtures pin the JS producer, including populated raw attempts.
+(Historical note: the 12 detached v3 JSON files directly under
+`test-fixtures/world-wire/` were later retired from checkout; original bytes
+are reproducible via `git show da69c63b:test-fixtures/world-wire/<file>`.)
 
 ## KWin API facts the port relies on
 

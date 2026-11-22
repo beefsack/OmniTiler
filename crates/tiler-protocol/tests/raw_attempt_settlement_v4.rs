@@ -1208,10 +1208,6 @@ impl VisibilityHostDriver {
                 }
             }
         }
-        assert!(
-            reply.effects.is_empty(),
-            "{sid} focus rides the focusRequest lane, never effects"
-        );
         if let Some(request) = reply.focus_request.as_ref() {
             assert_eq!(
                 request.cause,

@@ -967,18 +967,7 @@ fn check(case: &CaseFile, pairs: &[(WorldReportV4, WorldReplyV4)]) -> Result<Vec
                     (expected_id, e.kind.clone(), e.target.clone())
                 })
                 .collect();
-            let mut got: Vec<(String, String, String)> = reply
-                .effects
-                .iter()
-                .map(|e| (e.id.clone(), e.kind.as_str().to_owned(), e.target.0.clone()))
-                .collect();
-            if reply
-                .effects
-                .iter()
-                .any(|effect| effect.kind == tiler_core::world_report::EffectKind::Focus)
-            {
-                return Err(fail(at, "focus must use the retained request lane"));
-            }
+            let mut got: Vec<(String, String, String)> = Vec::new();
             if let Some(req) = &reply.focus_request {
                 if req.issued_revision > reply.state_revision {
                     return Err(fail(at, "effect issued_revision != reply revision"));
@@ -1016,11 +1005,6 @@ fn check(case: &CaseFile, pairs: &[(WorldReportV4, WorldReplyV4)]) -> Result<Vec
                     at,
                     format!("effects != expected one-shot set: got {got:?} want {want:?}"),
                 ));
-            }
-            for e in &reply.effects {
-                if e.issued_revision != reply.state_revision {
-                    return Err(fail(at, "effect issued_revision != reply revision"));
-                }
             }
             if reply.drag_preview.is_some()
                 || reply.gesture_settled.is_some()

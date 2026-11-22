@@ -59,7 +59,6 @@ function acceptedReply(source: string, nativeInvalid: string, rev: string, extra
         outputs: [],
         windows: [],
         transfers: [],
-        effects: [],
         dragPreview: null,
         focusRequest: null,
         ...extra,

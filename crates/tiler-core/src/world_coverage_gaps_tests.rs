@@ -237,10 +237,6 @@ fn burst_batch_pins_last_eligible_newcomer_once() {
             None,
         ),
     );
-    assert!(
-        arrival.effects.is_empty(),
-        "focus never publishes as wire effects: {arrival:?}"
-    );
     let request = arrival.focus_request.as_ref().expect("admission request");
     assert_eq!(request.target.0, "w3");
     assert_eq!(request.id, format!("focus-{}", arrival.state_revision));
@@ -268,11 +264,7 @@ fn burst_batch_pins_last_eligible_newcomer_once() {
             None,
         ),
     );
-    assert!(
-        echo.effects.is_empty(),
-        "burst never replays: {:?}",
-        echo.effects
-    );
+    assert!(echo.focus_request.is_none());
 }
 
 #[test]
@@ -290,7 +282,6 @@ fn explicit_tile_retry_failure_mints_no_focus_and_never_loops() {
         &mut engine,
         &report(1, screens.clone(), seed.clone(), "w0", vec![], None, None),
     );
-    assert!(first.effects.is_empty(), "seed quiet: {:?}", first.effects);
     let floated: Vec<String> = first
         .windows
         .iter()
@@ -348,11 +339,6 @@ fn explicit_tile_retry_failure_mints_no_focus_and_never_loops() {
             }
             other => panic!("expected float result, got {other:?}"),
         }
-        assert!(
-            reply.effects.is_empty(),
-            "failed retry mints no focus: {:?}",
-            reply.effects
-        );
         assert!(row_of(&reply, &victim).floating, "retry stays floated");
         assert!(
             reply.transfers.is_empty(),
@@ -396,11 +382,6 @@ fn unexplained_excluded_newcomer_takes_no_activation() {
         ),
     );
     assert!(
-        reply.effects.is_empty(),
-        "excluded takes no activation: {:?}",
-        reply.effects
-    );
-    assert!(
         reply.windows.iter().all(|row| row.lifetime.0 != "game"),
         "safety exclusion carries no membership row: {:?}",
         reply.windows
@@ -420,11 +401,6 @@ fn unexplained_excluded_newcomer_takes_no_activation() {
             None,
             None,
         ),
-    );
-    assert!(
-        echo.effects.is_empty(),
-        "nothing queued: {:?}",
-        echo.effects
     );
     assert!(
         echo.windows.iter().all(|row| row.lifetime.0 != "game"),
@@ -468,10 +444,6 @@ fn normalized_ordinary_float_newcomer_focuses_once() {
             None,
         ),
     );
-    assert!(
-        arrival.effects.is_empty(),
-        "focus never publishes as wire effects: {arrival:?}"
-    );
     let request = arrival.focus_request.as_ref().expect("admission request");
     assert_eq!(request.target.0, "w2");
     assert_eq!(request.id, format!("focus-{}", arrival.state_revision));
@@ -499,7 +471,7 @@ fn normalized_ordinary_float_newcomer_focuses_once() {
             None,
         ),
     );
-    assert!(echo.effects.is_empty(), "no replay: {:?}", echo.effects);
+    assert!(echo.focus_request.is_none());
 }
 
 fn fixed_hints() -> WindowSizeHints {
@@ -552,11 +524,6 @@ fn automatic_fixed_size_newcomer_takes_no_admission_focus() {
             None,
         ),
     );
-    assert!(
-        arrival.effects.is_empty(),
-        "automatic withholds: {:?}",
-        arrival.effects
-    );
     assert!(row_of(&arrival, "wf").floating, "fixed floats automatic");
     let mut wf = float_fact("wf", "out-a", 200);
     wf.hints = Some(fixed_hints());
@@ -572,11 +539,7 @@ fn automatic_fixed_size_newcomer_takes_no_admission_focus() {
             None,
         ),
     );
-    assert!(
-        echo.effects.is_empty(),
-        "spent, never replays: {:?}",
-        echo.effects
-    );
+    assert!(echo.focus_request.is_none());
 }
 
 #[test]
@@ -611,11 +574,6 @@ fn adapter_asserted_automatic_float_newcomer_takes_no_admission_focus() {
             None,
         ),
     );
-    assert!(
-        arrival.effects.is_empty(),
-        "asserted automatic withholds: {:?}",
-        arrival.effects
-    );
     assert!(row_of(&arrival, "wa").floating, "stays floated");
     let mut wa_echo = fact("wa", "out-a", 200);
     wa_echo.hints = Some(fixed_hints());
@@ -631,11 +589,7 @@ fn adapter_asserted_automatic_float_newcomer_takes_no_admission_focus() {
             None,
         ),
     );
-    assert!(
-        echo.effects.is_empty(),
-        "spent, never replays: {:?}",
-        echo.effects
-    );
+    assert!(echo.focus_request.is_none());
 }
 
 #[test]
@@ -677,10 +631,6 @@ fn fixed_tile_override_newcomer_still_mints_once() {
             None,
         ),
     );
-    assert!(
-        arrival.effects.is_empty(),
-        "focus never publishes as wire effects: {arrival:?}"
-    );
     let request = arrival.focus_request.as_ref().expect("admission request");
     assert_eq!(request.target.0, "wt");
     assert_eq!(request.id, format!("focus-{}", arrival.state_revision));
@@ -709,7 +659,7 @@ fn fixed_tile_override_newcomer_still_mints_once() {
             None,
         ),
     );
-    assert!(echo.effects.is_empty(), "no replay: {:?}", echo.effects);
+    assert!(echo.focus_request.is_none());
 }
 
 #[test]
@@ -746,11 +696,7 @@ fn explicit_focus_of_automatic_float_after_withhold_stays_quiet() {
             None,
         ),
     );
-    assert!(
-        arrival.effects.is_empty(),
-        "automatic withholds: {:?}",
-        arrival.effects
-    );
+    assert!(arrival.focus_request.is_none());
     let mut wf = float_fact("wf", "out-a", 200);
     wf.hints = Some(fixed_hints());
     let explicit = accepted(
@@ -764,11 +710,6 @@ fn explicit_focus_of_automatic_float_after_withhold_stays_quiet() {
             None,
             None,
         ),
-    );
-    assert!(
-        explicit.effects.is_empty(),
-        "explicit focus mints nothing: {:?}",
-        explicit.effects
     );
     assert!(row_of(&explicit, "wf").floating, "still floated");
 }
@@ -807,11 +748,7 @@ fn automatic_fixed_float_keeps_withholding_across_hint_loss() {
             None,
         ),
     );
-    assert!(
-        arrival.effects.is_empty(),
-        "automatic withholds: {:?}",
-        arrival.effects
-    );
+    assert!(arrival.focus_request.is_none());
     let lost = accepted(
         &mut engine,
         &report(
@@ -827,11 +764,6 @@ fn automatic_fixed_float_keeps_withholding_across_hint_loss() {
             None,
             None,
         ),
-    );
-    assert!(
-        lost.effects.is_empty(),
-        "hint loss mints nothing: {:?}",
-        lost.effects
     );
     assert!(row_of(&lost, "wf").floating, "hint loss stays floated");
 }
@@ -870,11 +802,7 @@ fn closed_automatic_lifetime_reused_as_ordinary_mints_again() {
             None,
         ),
     );
-    assert!(
-        arrival.effects.is_empty(),
-        "automatic withholds: {:?}",
-        arrival.effects
-    );
+    assert!(arrival.focus_request.is_none());
     let closed = accepted(
         &mut engine,
         &report(
@@ -887,11 +815,7 @@ fn closed_automatic_lifetime_reused_as_ordinary_mints_again() {
             None,
         ),
     );
-    assert!(
-        closed.effects.is_empty(),
-        "close mints nothing: {:?}",
-        closed.effects
-    );
+    assert!(closed.focus_request.is_none());
     let readmit = accepted(
         &mut engine,
         &report(
@@ -907,10 +831,6 @@ fn closed_automatic_lifetime_reused_as_ordinary_mints_again() {
             None,
             None,
         ),
-    );
-    assert!(
-        readmit.effects.is_empty(),
-        "focus never publishes as wire effects: {readmit:?}"
     );
     let request = readmit.focus_request.as_ref().expect("admission request");
     assert_eq!(request.target.0, "wf");
@@ -953,10 +873,6 @@ fn mixed_batch_fixed_last_matches_sequential_ordinary_focus() {
             None,
         ),
     );
-    assert!(
-        seq_ordinary.effects.is_empty(),
-        "focus never publishes as wire effects: {seq_ordinary:?}"
-    );
     let request = seq_ordinary
         .focus_request
         .as_ref()
@@ -988,11 +904,6 @@ fn mixed_batch_fixed_last_matches_sequential_ordinary_focus() {
             None,
             None,
         ),
-    );
-    assert!(
-        seq_fixed.effects.is_empty(),
-        "sequential fixed withholds: {:?}",
-        seq_fixed.effects
     );
     // Batched: both arrive together with the fixed newcomer last in
     // selection (id) order.
@@ -1121,10 +1032,6 @@ fn mixed_batch_fixed_first_mints_ordinary() {
             None,
         ),
     );
-    assert!(
-        arrival.effects.is_empty(),
-        "focus never publishes as wire effects: {arrival:?}"
-    );
     let request = arrival.focus_request.as_ref().expect("admission request");
     assert_eq!(request.target.0, "wo");
     assert_eq!(request.id, format!("focus-{}", arrival.state_revision));
@@ -1158,11 +1065,7 @@ fn mixed_batch_fixed_first_mints_ordinary() {
             None,
         ),
     );
-    assert!(
-        echo.effects.is_empty(),
-        "spent, never replays: {:?}",
-        echo.effects
-    );
+    assert!(echo.focus_request.is_none());
 }
 
 #[test]
@@ -1199,11 +1102,6 @@ fn two_automatic_fixed_newcomers_take_no_focus() {
             None,
         ),
     );
-    assert!(
-        arrival.effects.is_empty(),
-        "both withhold: {:?}",
-        arrival.effects
-    );
     assert!(row_of(&arrival, "wf").floating, "wf floats automatic");
     assert!(row_of(&arrival, "wg").floating, "wg floats automatic");
     let mut wf = float_fact("wf", "out-a", 200);
@@ -1222,11 +1120,7 @@ fn two_automatic_fixed_newcomers_take_no_focus() {
             None,
         ),
     );
-    assert!(
-        echo.effects.is_empty(),
-        "spent, never replays: {:?}",
-        echo.effects
-    );
+    assert!(echo.focus_request.is_none());
 }
 
 #[test]
@@ -1290,19 +1184,10 @@ fn windows_profile_automatic_fixed_withholds_while_ordinary_mints() {
         );
         if case == "automatic-fixed" {
             assert!(
-                arrival.effects.is_empty(),
-                "windows profile withholds automatic fixed: {:?}",
-                arrival.effects
-            );
-            assert!(
                 row_of(&arrival, "wn").floating,
                 "automatic fixed floats under windows profile"
             );
         } else {
-            assert!(
-                arrival.effects.is_empty(),
-                "focus never publishes as wire effects: {arrival:?}"
-            );
             let request = arrival.focus_request.as_ref().expect("admission request");
             assert_eq!(request.target.0, "wn");
             assert_eq!(request.id, format!("focus-{}", arrival.state_revision));
@@ -1352,11 +1237,7 @@ fn explicit_focus_command_after_withhold_succeeds_without_admission_token() {
             None,
         ),
     );
-    assert!(
-        arrival.effects.is_empty(),
-        "automatic withholds: {:?}",
-        arrival.effects
-    );
+    assert!(arrival.focus_request.is_none());
     let mut wf = float_fact("wf", "out-a", 200);
     wf.hints = Some(fixed_hints());
     let commanded = accepted(
@@ -1373,10 +1254,6 @@ fn explicit_focus_command_after_withhold_succeeds_without_admission_token() {
                 direction: None,
             }),
         ),
-    );
-    assert!(
-        commanded.effects.is_empty(),
-        "focus never publishes as wire effects: {commanded:?}"
     );
     let request = commanded
         .focus_request
@@ -1426,11 +1303,6 @@ fn maximized_sibling_suppresses_admission_without_retry() {
         ),
     );
     assert!(
-        arrival.effects.is_empty(),
-        "suppressed behind maximized: {:?}",
-        arrival.effects
-    );
-    assert!(
         row_of(&arrival, "w2").allocation.is_some(),
         "still converges"
     );
@@ -1454,7 +1326,7 @@ fn maximized_sibling_suppresses_admission_without_retry() {
             None,
         ),
     );
-    assert!(echo.effects.is_empty(), "never retried: {:?}", echo.effects);
+    assert!(echo.focus_request.is_none());
 }
 
 #[test]
@@ -1489,11 +1361,6 @@ fn restart_adoption_stays_quiet_without_origin() {
             None,
         ),
     );
-    assert!(
-        adopt.effects.is_empty(),
-        "restart adoption quiet: {:?}",
-        adopt.effects
-    );
     let row = row_of(&adopt, "w1");
     assert!(row.floating, "float intent survives: {row:?}");
     assert_eq!(row.float_origin, None, "fresh core carries no origin");
@@ -1519,11 +1386,7 @@ fn restart_adoption_stays_quiet_without_origin() {
             }),
         ),
     );
-    assert!(
-        disabled.effects.is_empty(),
-        "disable quiet: {:?}",
-        disabled.effects
-    );
+    assert!(disabled.focus_request.is_none());
     let enabled = accepted(
         &mut restarted,
         &report(
@@ -1539,11 +1402,6 @@ fn restart_adoption_stays_quiet_without_origin() {
                 tiled: true,
             }),
         ),
-    );
-    assert!(
-        enabled.effects.is_empty(),
-        "enable re-adoption quiet: {:?}",
-        enabled.effects
     );
     assert!(row_of(&enabled, "w1").floating, "float intent restored");
 }
@@ -1584,11 +1442,6 @@ fn close_each_position_reflows_controlled_survivors() {
         let reply = accepted(
             &mut engine,
             &report(2, screens, remaining, survivor, vec![victim], None, None),
-        );
-        assert!(
-            reply.effects.is_empty(),
-            "{victim}: close mints no intent: {:?}",
-            reply.effects
         );
         assert!(
             reply.windows.iter().all(|row| row.lifetime.0 != victim),
@@ -1681,10 +1534,6 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
         stay.transfers
     );
     assert!(!stay.transfers[0].follow, "stay carries follow=false");
-    assert!(
-        stay.effects.is_empty(),
-        "focus never publishes as wire effects: {stay:?}"
-    );
     let request = stay.focus_request.as_ref().expect("explicit focus request");
     assert_eq!(request.target.0, "w2");
     assert_eq!(request.id, format!("focus-{}", stay.state_revision));
@@ -1713,11 +1562,6 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
         settled.transfers.is_empty(),
         "arrival settles: {:?}",
         settled.transfers
-    );
-    assert!(
-        settled.effects.is_empty(),
-        "no post-settlement replay: {:?}",
-        settled.effects
     );
     // Follow left names the mover exactly.
     let view_a = view_of(&settled, "out-a");
@@ -1749,10 +1593,6 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
         back.transfers
     );
     assert!(back.transfers[0].follow, "follow carries follow=true");
-    assert!(
-        back.effects.is_empty(),
-        "focus never publishes as wire effects: {back:?}"
-    );
     let request = back.focus_request.as_ref().expect("explicit focus request");
     assert_eq!(request.target.0, "w0");
     assert_eq!(request.id, format!("focus-{}", back.state_revision));
@@ -1779,11 +1619,7 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
             None,
         ),
     );
-    assert!(
-        echo.effects.is_empty(),
-        "follow never replays: {:?}",
-        echo.effects
-    );
+    assert!(echo.focus_request.is_none());
     // Mirror legs on a fresh engine: stay left names the out-b MRU
     // survivor; after exact settlement, follow right names the mover.
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
@@ -1846,10 +1682,6 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
         stay_left.transfers
     );
     assert!(!stay_left.transfers[0].follow, "stay carries follow=false");
-    assert!(
-        stay_left.effects.is_empty(),
-        "focus never publishes as wire effects: {stay_left:?}"
-    );
     let request = stay_left
         .focus_request
         .as_ref()
@@ -1887,11 +1719,6 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
         "arrival settles: {:?}",
         settled_left.transfers
     );
-    assert!(
-        settled_left.effects.is_empty(),
-        "no post-settlement replay: {:?}",
-        settled_left.effects
-    );
     let ahead = accepted(
         &mut engine,
         &report(
@@ -1919,10 +1746,6 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
         ahead.transfers
     );
     assert!(ahead.transfers[0].follow, "follow carries follow=true");
-    assert!(
-        ahead.effects.is_empty(),
-        "focus never publishes as wire effects: {ahead:?}"
-    );
     let request = ahead
         .focus_request
         .as_ref()
@@ -1952,11 +1775,7 @@ fn directional_sends_both_directions_name_exact_focus_without_replay() {
             None,
         ),
     );
-    assert!(
-        echo_left.effects.is_empty(),
-        "follow never replays: {:?}",
-        echo_left.effects
-    );
+    assert!(echo_left.focus_request.is_none());
 }
 
 #[test]
@@ -2426,11 +2245,6 @@ fn floating_source_migration_carries_without_engine_tree() {
         vec![OutputId("out-a".to_owned()), OutputId("out-b".to_owned())]
     );
     assert!(
-        reply.effects.is_empty(),
-        "no focus writes: {:?}",
-        reply.effects
-    );
-    assert!(
         row_of(&reply, "w0").allocation.is_none(),
         "no frame writes: {:?}",
         row_of(&reply, "w0")
@@ -2466,11 +2280,6 @@ fn floating_source_migration_carries_without_engine_tree() {
         1,
         "single flight survives: {:?}",
         lag.transfers
-    );
-    assert!(
-        lag.effects.is_empty(),
-        "lag replays nothing: {:?}",
-        lag.effects
     );
     for window in ["w0", "wf"] {
         assert_eq!(
@@ -2614,11 +2423,6 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
         "refusal settles: {:?}",
         settled.transfers
     );
-    assert!(
-        settled.effects.is_empty(),
-        "no focus writes: {:?}",
-        settled.effects
-    );
     let post_ring: Vec<String> = settled
         .workspaces
         .iter()
@@ -2714,7 +2518,6 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
         "stays settled: {:?}",
         calm.transfers
     );
-    assert!(calm.effects.is_empty(), "stays quiet: {:?}", calm.effects);
     let scope = calm
         .scopes
         .iter()
@@ -2815,11 +2618,6 @@ fn tiled_workspace_migration_carries_float_members() {
         "float exception carried: {members:?}"
     );
     assert_eq!(floats, 1, "relocated float count");
-    assert!(
-        reply.effects.is_empty(),
-        "migration mints no focus: {:?}",
-        reply.effects
-    );
     let wf_issuing = row_of(&reply, "wf");
     assert_eq!(wf_issuing.output.0, "out-b");
     assert_eq!(wf_issuing.workspace, view_a);
@@ -2939,11 +2737,6 @@ fn float_send_into_empty_and_occupied_trailings_stays_controlled() {
             "no holds: {:?}",
             reply.scopes
         );
-        assert!(
-            reply.effects.is_empty(),
-            "emptied source names nothing: {:?}",
-            reply.effects
-        );
         // Lag keeps the flight with no replay; the member-attempt proof settles.
         let lag = accepted(
             &mut engine,
@@ -2958,11 +2751,6 @@ fn float_send_into_empty_and_occupied_trailings_stays_controlled() {
             ),
         );
         assert_eq!(lag.transfers.len(), 1, "lag holds: {:?}", lag.transfers);
-        assert!(
-            lag.effects.is_empty(),
-            "lag replays nothing: {:?}",
-            lag.effects
-        );
         let arrived = float_fact("wf", "out-a", 200);
         let mut settle = report(5, screens.clone(), vec![arrived], "wf", vec![], None, None);
         settle.member_attempts.push(MemberAttempt {
@@ -3064,10 +2852,6 @@ fn float_send_into_empty_and_occupied_trailings_stays_controlled() {
             "{row:?}"
         );
         assert_eq!(row.frame_authority, ScopeAuthority::Untouched, "{row:?}");
-        assert!(
-            reply.effects.is_empty(),
-            "focus never publishes as wire effects: {reply:?}"
-        );
         let request = reply
             .focus_request
             .as_ref()
@@ -3195,11 +2979,6 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
         "sibling takes the full domain: {sibling:?}"
     );
     assert!(
-        floated.effects.iter().all(|e| e.target.0 != "w1"),
-        "no subject-targeted effects while fullscreen: {:?}",
-        floated.effects
-    );
-    assert!(
         floated.transfers.is_empty(),
         "float mints no transfer: {:?}",
         floated.transfers
@@ -3233,11 +3012,6 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
         row_of(&echo, "w1").effective_frame,
         Some(fallback),
         "echo keeps the durable placement"
-    );
-    assert!(
-        echo.effects.iter().all(|e| e.target.0 != "w1"),
-        "echo mints no subject effects: {:?}",
-        echo.effects
     );
     assert!(
         echo.transfers.is_empty(),
@@ -3297,11 +3071,6 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
         row_of(&retiled, "w0").allocation.is_some(),
         "sibling keeps a tile: {:?}",
         retiled.windows
-    );
-    assert!(
-        retiled.effects.iter().all(|e| e.target.0 != "w1"),
-        "fresh admission carries no subject effects: {:?}",
-        retiled.effects
     );
     assert!(
         retiled.transfers.is_empty(),
@@ -3374,11 +3143,6 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             row.frame_authority,
             ScopeAuthority::Untouched,
             "exit writes no frame: {row:?}"
-        );
-        assert!(
-            reply.effects.iter().all(|e| e.target.0 != "w1"),
-            "exit mints no subject effects: {:?}",
-            reply.effects
         );
         assert!(
             reply.transfers.is_empty(),
@@ -3464,11 +3228,6 @@ fn fullscreen_toggle_float_round_trip_on_world_command_path() {
             row.effective_frame,
             Some(alloc),
             "tiled frame rides the allocation: {row:?}"
-        );
-        assert!(
-            reply.effects.iter().all(|e| e.target.0 != "w1"),
-            "exit mints no subject effects: {:?}",
-            reply.effects
         );
         assert!(
             reply.transfers.is_empty(),
@@ -3737,11 +3496,6 @@ fn toggle_maximize_command_decides_and_reports() {
         "sibling slot survives"
     );
     assert!(toggled.transfers.is_empty(), "no transfers");
-    assert!(
-        toggled.effects.iter().all(|e| e.target.0 != "w1"),
-        "no subject effects: {:?}",
-        toggled.effects
-    );
     // Exact typed result on the settled command.
     let toggled_result = toggled_settlements.first().and_then(|s| s.result.clone());
     assert_eq!(
@@ -4704,7 +4458,6 @@ fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
             None,
         ),
     );
-    assert!(arrival.effects.is_empty());
     assert!(row_of(&arrival, "wf").floating);
     let mut wf_float = float_fact("wf", "out-a", 200);
     wf_float.hints = Some(fixed_hints());
@@ -4737,11 +4490,6 @@ fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
         }
         other => panic!("expected unfloat tile result, got {other:?}"),
     }
-    assert!(
-        untiled.effects.is_empty(),
-        "unfloat mints no admission focus: {:?}",
-        untiled.effects
-    );
     assert!(untiled.transfers.is_empty());
     assert!(!row_of(&untiled, "wf").floating);
     assert!(
@@ -4767,7 +4515,6 @@ fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
             None,
         ),
     );
-    assert!(echo.effects.is_empty());
     assert!(!row_of(&echo, "wf").floating);
     let mut hidden_wf = fixed_fact("wf", "out-a", 200);
     hidden_wf.minimized = Some(true);
@@ -4834,7 +4581,7 @@ fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
             }),
         ),
     );
-    assert!(disabled.effects.is_empty());
+    assert!(disabled.focus_request.is_none());
     let enabled = accepted(
         &mut engine,
         &report(
@@ -4864,10 +4611,5 @@ fn explicit_tile_override_via_real_toggle_float_survives_lifetime() {
             .world
             .layout
             .has_fixed_tile_override_any(&WindowId("wf".to_owned()))
-    );
-    assert!(
-        enabled.effects.is_empty(),
-        "re-adoption stays quiet: {:?}",
-        enabled.effects
     );
 }

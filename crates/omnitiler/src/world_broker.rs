@@ -4703,24 +4703,16 @@ mod tests {
         );
         assert_eq!(err, BrokerError::InvalidReply("unknown-value"));
 
-        // 2. Standalone bound writer: fixed semantic structural token -> InvalidReply("effect-focus-removed").
+        // 2. Standalone bound writer: fixed semantic structural token -> InvalidReply("duplicate-scope").
         let mut bad_semantic = valid_reply.clone();
-        bad_semantic
-            .effects
-            .push(tiler_core::world_report::OneShotEffect {
-                id: "eff-1".to_owned(),
-                target: tiler_core::directional::WindowId("win-a".to_owned()),
-                kind: tiler_core::world_report::EffectKind::Focus,
-                issued_revision: 1,
-                cause: tiler_core::world_report::EffectCause::ExplicitCommand,
-                command_seq: Some(1),
-                await_shown: false,
-            });
+        if let Some(first_scope) = bad_semantic.scopes.first().cloned() {
+            bad_semantic.scopes.push(first_scope);
+        }
         let err = map_protocol_reply_error(
             tiler_protocol::world_reply_write::write_bound_reply_v4(&bad_semantic, None, &bind)
-                .expect_err("effect-focus-removed must fail"),
+                .expect_err("duplicate-scope must fail"),
         );
-        assert_eq!(err, BrokerError::InvalidReply("effect-focus-removed"));
+        assert_eq!(err, BrokerError::InvalidReply("duplicate-scope"));
 
         // 3. Projection writer error translation -> InvalidReply, never Oversized.
         let mut bad_proj = valid_reply.clone();

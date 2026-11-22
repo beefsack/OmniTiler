@@ -198,10 +198,6 @@ fn v4_reply_valid_shapes_spot_check() {
         request.after_shown.is_some(),
         "selection-backed explicit carries dependencies"
     );
-    assert!(
-        focus.reply.effects.is_empty(),
-        "focus left the effects lane"
-    );
     let drag = decode_ok("messages/reply-result-drag-left.json");
     assert!(drag.reply.drag_preview.is_some(), "drag carries preview");
     let gesture = decode_ok("messages/reply-gesture-committed.json");
@@ -794,31 +790,7 @@ fn v4_reply_structural_regression() {
     let error = decode_value(&fallback).expect_err("fallback alone refuses");
     assert_eq!(error.message, "visibility-show-fallback");
 
-    // Effect correlation and state-count rules.
-    let mut effect = valid_reply_value();
-    effect["effects"] = serde_json::json!([{
-        "id": "effect-a", "kind": "focus", "target": "win-a", "rev": "1",
-        "cause": "automatic-admission", "cmdSeq": "1", "awaitShown": false
-    }]);
-    let error = decode_value(&effect).expect_err("non-explicit seq refuses");
-    assert_eq!(error.kind, "snapshot-invalid");
-    assert_eq!(error.message, "effect-non-explicit-seq");
-    let mut explicit_null = valid_reply_value();
-    explicit_null["effects"] = serde_json::json!([{
-        "id": "effect-a", "kind": "focus", "target": "win-a", "rev": "1",
-        "cause": "explicit-command", "cmdSeq": null, "awaitShown": false
-    }]);
-    let error = decode_value(&explicit_null).expect_err("explicit null seq refuses");
-    assert_eq!(error.kind, "snapshot-invalid");
-    assert_eq!(error.message, "effect-explicit-null-seq");
-    let mut automatic_shown = valid_reply_value();
-    automatic_shown["effects"] = serde_json::json!([{
-        "id": "effect-a", "kind": "focus", "target": "win-a", "rev": "1",
-        "cause": "automatic-admission", "cmdSeq": null, "awaitShown": true
-    }]);
-    let error = decode_value(&automatic_shown).expect_err("automatic await-shown refuses");
-    assert_eq!(error.kind, "snapshot-invalid");
-    assert_eq!(error.message, "effect-automatic-await-shown");
+    // State-count rules.
     let mut state = valid_reply_value();
     state["windows"][0]["state"] = serde_json::json!([
         {"property": "fullscreen", "value": false, "auth": "controlled", "reason": "", "cmdSeq": null},
@@ -1121,25 +1093,6 @@ fn roster_plan_round_trips_and_rejects_invalid_authority() {
     }
 }
 
-fn writer_focus_effect() -> DecodedReplyV4 {
-    // Focus is the only effect kind and it never encodes: the writer
-    // refusal below stays an effect-lane check. The duplicate-effect case
-    // pins the pre-pass uniqueness gate; explicit/null-seq and
-    // automatic/await coupling(shape) violations are decode-side checks
-    // (see `decode_effect`) and have no encodable witness.
-    let mut base = writer_base();
-    base.reply.effects = vec![tiler_core::world_report::OneShotEffect {
-        id: "effect-a".to_owned(),
-        kind: tiler_core::world_report::EffectKind::Focus,
-        target: tiler_core::directional::WindowId("win-a".to_owned()),
-        issued_revision: 1,
-        cause: tiler_core::world_report::EffectCause::ExplicitCommand,
-        command_seq: Some(1),
-        await_shown: false,
-    }];
-    base
-}
-
 #[test]
 fn v4_reply_writer_refuses_unspellable() {
     // (case, kind, message, mutation)
@@ -1150,11 +1103,6 @@ fn v4_reply_writer_refuses_unspellable() {
         .reply
         .windows
         .push(duplicate_window.reply.windows[0].clone());
-    let mut duplicate_effect = writer_focus_effect();
-    duplicate_effect
-        .reply
-        .effects
-        .push(duplicate_effect.reply.effects[0].clone());
     let mut duplicate_scope = writer_base();
     duplicate_scope
         .reply
@@ -1249,19 +1197,13 @@ fn v4_reply_writer_refuses_unspellable() {
             command_seq: None,
         },
     ];
-    let cases: [(&str, &str, &str, DecodedReplyV4); 16] = [
+    let cases: [(&str, &str, &str, DecodedReplyV4); 15] = [
         ("over-cap", "snapshot-invalid", "section-over-cap", over_cap),
         (
             "duplicate-window",
             "snapshot-invalid",
             "duplicate-window",
             duplicate_window,
-        ),
-        (
-            "duplicate-effect",
-            "snapshot-invalid",
-            "duplicate-effect",
-            duplicate_effect,
         ),
         (
             "duplicate-scope",
@@ -1584,7 +1526,6 @@ fn v4_reply_cap_valid_near_4mib_windows_encodes_and_roundtrips() {
     assert!(decoded.reply.outputs.len() <= MAX_REPLY_OUTPUTS);
     assert!(decoded.reply.windows.len() <= MAX_REPLY_WINDOWS);
     assert!(decoded.reply.transfers.len() <= MAX_REPLY_TRANSFERS);
-    assert!(decoded.reply.effects.is_empty());
     assert!(decoded.reply.operation_settled.len() <= MAX_REPLY_OPERATIONS);
     assert!(decoded.reply.native_creations.len() <= MAX_REPLY_NATIVE_CREATIONS);
     assert!(decoded.reply.intent_desired.len() <= MAX_INTENT_DESIRED);
@@ -1659,7 +1600,6 @@ fn v4_reply_drag_preview_strict_validation_and_bounds() {
             outputs: vec![],
             windows: vec![],
             transfers: vec![],
-            effects: vec![],
             focus_request: None,
             drag_preview: Some(preview),
             gesture_settled: None,
@@ -2187,4 +2127,47 @@ fn transfer_parent_required_nullable_bounded_opaque_id_codec_semantics() {
         let err = decode_reply_v4(&invalid.to_string()).expect_err("invalid parent refuses");
         assert_eq!(err.kind, "unknown-value");
     }
+}
+
+#[test]
+fn pw_out_03_effects_member_retired() {
+    let base = writer_base();
+    let core_wire = encode_reply_v4(&base).expect("core reply encodes");
+    let core_val: serde_json::Value = serde_json::from_str(&core_wire).expect("core json");
+    assert!(
+        core_val.get("effects").is_none(),
+        "core writer must omit retired effects member"
+    );
+
+    let bind = tiler_protocol::world_reply_write::BrokerReplyBind {
+        source: "src-a",
+        native_invalid: 1,
+        clock: 2,
+        gesture_assoc: None,
+        gesture_settled_assoc: None,
+    };
+    let bound_wire =
+        tiler_protocol::world_reply_write::write_bound_reply_v4(&base.reply, None, &bind)
+            .expect("bound reply encodes");
+    let bound_val: serde_json::Value = serde_json::from_str(&bound_wire).expect("bound json");
+    assert!(
+        bound_val.get("effects").is_none(),
+        "bound writer must omit retired effects member"
+    );
+
+    let mut clean = core_val.clone();
+    clean.as_object_mut().expect("object").remove("effects");
+    assert!(
+        decode_reply_v4(&clean.to_string()).is_ok(),
+        "core reader must accept reply without effects"
+    );
+
+    let mut with_empty = clean.clone();
+    with_empty
+        .as_object_mut()
+        .expect("object")
+        .insert("effects".to_owned(), serde_json::json!([]));
+    let err = decode_reply_v4(&with_empty.to_string())
+        .expect_err("core reader must refuse retired empty effects key");
+    assert_eq!(err.kind, "unknown-field");
 }

@@ -879,12 +879,6 @@ fn shared_world_actions_converge_per_fixture() {
                     "{}: newcomer output",
                     case.name
                 );
-                assert!(
-                    arrival.effects.is_empty(),
-                    "{}: admission never publishes wire effects: {:?}",
-                    case.name,
-                    arrival.effects
-                );
                 let request = arrival.focus_request.as_ref().unwrap_or_else(|| {
                     panic!(
                         "{}: newcomer retains admission request: {:?}",

@@ -76,7 +76,6 @@ const REPLY_TEXT = JSON.stringify({
         },
     ],
     transfers: [{ op: TRANSFER_OP, kind: "view", win: "", out: OUT, ws: WS_B, follow: false, held: false, cmdSeq: null, parent: null }],
-    effects: [],
     dragPreview: null,
 });
 

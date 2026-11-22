@@ -1284,7 +1284,6 @@ fn assert_repeated_adjacent_sole_follow_is_noop(index: u8) {
         assert_eq!(engine.world.command_highwater, Some(cmd));
         assert_eq!(step_counts(&reply), (0, 0, 0));
         assert!(reply.focus_request.is_none());
-        assert!(reply.effects.is_empty());
         assert_eq!(ring_ids_live(&engine, "out-a"), original);
         assert_eq!(engine.world.workspace.creation_counter, creation_counter);
         assert_eq!(engine.world.workspace.views["out-a"], home);

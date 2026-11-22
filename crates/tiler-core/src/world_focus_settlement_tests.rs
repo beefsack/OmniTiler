@@ -213,10 +213,6 @@ fn explicit_grant(engine: &mut WorldEngine, seq: u64, window: &str) -> PendingFo
         "wire cause: {reply:?}"
     );
     assert_eq!(request.cmd_seq, Some(seq), "wire cmd_seq: {reply:?}");
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     engine
         .world
         .focus
@@ -301,10 +297,6 @@ fn explicit_grant_settles_proven_without_arrival_or_current_focus() {
         .expect("command records memory");
     assert_eq!(memory.get(&domain), Some(&WindowId("w0".to_owned())));
     let (reply, settlements) = accepted_with_settlements(&mut engine, &settle);
-    assert!(
-        reply.effects.is_empty(),
-        "settlement emits nothing: {reply:?}"
-    );
     assert!(reply.transfers.is_empty());
     assert!(reply.operation_settled.is_empty());
     assert!(settlements.is_empty());
@@ -325,7 +317,7 @@ fn explicit_grant_settles_proven_without_arrival_or_current_focus() {
             None,
         ),
     );
-    assert!(reply.effects.is_empty());
+    assert!(reply.focus_request.is_none());
     assert!(
         engine.world.focus.pending_focus.is_none(),
         "observing the target satisfies the slot"
@@ -346,7 +338,7 @@ fn explicit_grant_settles_proven_without_arrival_or_current_focus() {
             None,
         ),
     );
-    assert!(reply.effects.is_empty());
+    assert!(reply.focus_request.is_none());
     assert_eq!(
         engine.world.focus.last_active_window.get(&domain),
         Some(&WindowId("w1".to_owned()))
@@ -390,7 +382,13 @@ fn opaque_tuple_matching_ignores_forged_and_mismatched_rows() {
             vec![forged_id, wrong_rev, wrong_target],
         ),
     );
-    assert!(reply.effects.is_empty());
+    let retained = reply
+        .focus_request
+        .as_ref()
+        .expect("retained focus request");
+    assert_eq!(retained.id, grant.id);
+    assert_eq!(retained.target, grant.target);
+    assert_eq!(retained.issued_revision, grant.issued_revision);
     assert_pending_feedback_none(&engine, "mismatches latch nothing");
     // The exact tuple latches on a later report.
     let reply = accepted(
@@ -407,7 +405,13 @@ fn opaque_tuple_matching_ignores_forged_and_mismatched_rows() {
             vec![good.clone()],
         ),
     );
-    assert!(reply.effects.is_empty());
+    let retained = reply
+        .focus_request
+        .as_ref()
+        .expect("retained focus request");
+    assert_eq!(retained.id, grant.id);
+    assert_eq!(retained.target, grant.target);
+    assert_eq!(retained.issued_revision, grant.issued_revision);
     let slot = pending(&engine);
     assert_eq!(slot.feedback, Some(good));
     assert_eq!(
@@ -991,7 +995,13 @@ fn first_tuple_latches_under_hold_incomplete_barrier_and_keeps_stamp() {
             ),
         ],
     );
-    assert!(reply.effects.is_empty());
+    let retained = reply
+        .focus_request
+        .as_ref()
+        .expect("retained focus request");
+    assert_eq!(retained.id, grant.id);
+    assert_eq!(retained.target, grant.target);
+    assert_eq!(retained.issued_revision, grant.issued_revision);
     assert_pending_feedback_none(&engine, "mismatch latches nothing");
     // The first exact match arrives under held/incomplete/barrier and
     // still latches: no readability gate.
@@ -1043,10 +1053,13 @@ fn observation_revisions_retain_pending_slot_until_delayed_feedback() {
                 None,
             ),
         );
-        assert!(
-            reply.effects.is_empty(),
-            "no retry on observation revisions"
-        );
+        let retained = reply
+            .focus_request
+            .as_ref()
+            .expect("retained focus request");
+        assert_eq!(retained.id, grant.id);
+        assert_eq!(retained.target, grant.target);
+        assert_eq!(retained.issued_revision, grant.issued_revision);
         assert_pending_feedback_none(&engine, "slot waits for feedback");
     }
     let row = feedback_row(
@@ -1106,10 +1119,6 @@ fn explicit_batch_focus_supersedes_admission_grant() {
             Some(2),
             Some(focus_command("w0")),
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     let request = reply.focus_request.as_ref().expect("explicit-only request");
     assert_eq!(request.target.0, "w0");
@@ -1179,10 +1188,6 @@ fn newer_emitted_batch_supersedes_older_and_stale_tuples_ignore() {
             Some(focus_command("w0")),
         ),
     );
-    assert!(
-        first.effects.is_empty(),
-        "focus never publishes as wire effects: {first:?}"
-    );
     let first_request = first.focus_request.as_ref().expect("explicit-only request");
     assert_eq!(first_request.target.0, "w0");
     let stale = {
@@ -1210,10 +1215,6 @@ fn newer_emitted_batch_supersedes_older_and_stale_tuples_ignore() {
             Some(3),
             Some(focus_command("w1")),
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     let request = reply
         .focus_request
@@ -1283,10 +1284,6 @@ fn focus_follows_cursor_grant_settles_alone() {
     hover.cursor = Some((110, 10));
     hover.cursor_hit = Some(WindowId("win-b".to_owned()));
     let reply = accepted(&mut engine, &hover);
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let request = reply.focus_request.as_ref().expect("hover request");
     assert_eq!(request.target.0, "win-b");
     assert_eq!(
@@ -1296,6 +1293,9 @@ fn focus_follows_cursor_grant_settles_alone() {
     assert_eq!(request.id, format!("focus-{}", request.issued_revision));
     let slot = pending(&engine);
     assert_eq!(slot.target.0, "win-b");
+    let prior_id = slot.id.clone();
+    let prior_target = slot.target.clone();
+    let prior_revision = slot.issued_revision;
     let row = feedback_row(
         &slot.id,
         "win-b",
@@ -1319,10 +1319,13 @@ fn focus_follows_cursor_grant_settles_alone() {
     settle.cursor = Some((110, 10));
     settle.cursor_hit = Some(WindowId("win-b".to_owned()));
     let reply = accepted(&mut engine, &with_feedback(settle, vec![row.clone()]));
-    assert!(
-        reply.effects.is_empty(),
-        "hover arrival mints nothing: {reply:?}"
-    );
+    let retained = reply
+        .focus_request
+        .as_ref()
+        .expect("retained hover focus request");
+    assert_eq!(retained.id, prior_id);
+    assert_eq!(retained.target, prior_target);
+    assert_eq!(retained.issued_revision, prior_revision);
     let slot = pending(&engine);
     assert_eq!(slot.feedback, Some(row));
     assert_eq!(
@@ -1608,7 +1611,13 @@ fn consumed_command_report_still_settles_feedback() {
     match engine.handle_report(&consumed, &[]) {
         (WorldOutcome::CommandConsumed(reply), settlements) => {
             assert!(settlements.is_empty());
-            assert!(reply.effects.is_empty());
+            let retained = reply
+                .focus_request
+                .as_ref()
+                .expect("retained focus request");
+            assert_eq!(retained.id, grant.id);
+            assert_eq!(retained.target, grant.target);
+            assert_eq!(retained.issued_revision, grant.issued_revision);
         }
         other => panic!("expected consumed, got {other:?}"),
     }
@@ -1710,7 +1719,6 @@ fn failed_attempt_keeps_accepted_memory_with_no_retry_or_side_effects() {
         ),
     );
     assert_eq!(engine.world.focus.last_active_window, memory);
-    assert!(reply.effects.is_empty(), "no focus retry: {reply:?}");
     assert!(reply.transfers.is_empty());
     assert!(reply.operation_settled.is_empty());
     assert!(settlements.is_empty());

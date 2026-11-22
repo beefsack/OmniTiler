@@ -117,7 +117,6 @@ function applyBoundReply(target: string, id: string, request: { cause: "automati
         workspaces: [{ id: "ws", out: "out", bind: "native-ws", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" }],
         outputs: [],
         windows: [], transfers: [],
-        effects: [],
         dragPreview: null,
     });
     const parsed = parseWorldReply(text);
@@ -547,7 +546,6 @@ function entryAcceptedReply(gen: string, source: string, nativeInvalid: string, 
         outputs: [],
         windows: [],
         transfers: [],
-        effects: [],
         dragPreview: null,
         ...extra,
     });

@@ -313,7 +313,6 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         outputs: [],
         windows: [],
         transfers: [],
-        effects: [],
         dragPreview: null,
         ...extra,
     });

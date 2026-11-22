@@ -14,8 +14,8 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    CommandRejectKind, CommandResult, EffectKind, PresentationIngressV4, PresentationRowV4,
-    ScreenReport, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReportV4,
+    CommandRejectKind, CommandResult, PresentationIngressV4, PresentationRowV4, ScreenReport,
+    WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -247,16 +247,6 @@ fn no_focus_command(direction: &str) -> WorldCommand {
     }
 }
 
-fn focus_effects(
-    reply: &crate::world_report::WorldReplyV4,
-) -> Vec<&crate::world_report::OneShotEffect> {
-    reply
-        .effects
-        .iter()
-        .filter(|effect| effect.kind == EffectKind::Focus)
-        .collect()
-}
-
 fn retained_outcome(
     settlements: &[crate::world_report::BatchSettlement],
 ) -> (String, Option<String>) {
@@ -334,11 +324,7 @@ fn seeded_history() -> WorldEngine {
         &mut engine,
         &report(4, screens, windows(), vec![], "", None, None, None, None),
     );
-    assert!(
-        focus_effects(&loss).is_empty(),
-        "loss converges without forced focus: {:?}",
-        loss.effects
-    );
+    assert!(loss.focus_request.is_none());
     engine
 }
 
@@ -366,10 +352,6 @@ fn no_focus_crosses_occupied_origin_to_existing_selection() {
             Some("out-a"),
             None,
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     let request = reply
         .focus_request
@@ -429,10 +411,6 @@ fn no_focus_crosses_empty_origin() {
             Some("out-a"),
             None,
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     let request = reply
         .focus_request
@@ -533,10 +511,6 @@ fn no_focus_wide_target_prefers_edge_leaf_over_mru() {
             None,
         ),
     );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let request = reply
         .focus_request
         .as_ref()
@@ -630,10 +604,6 @@ fn no_focus_seeded_target_prefers_newer_seeded_leaf() {
             None,
         ),
     );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let request = reply
         .focus_request
         .as_ref()
@@ -718,10 +688,6 @@ fn no_focus_down_prefers_mru_among_top_edge_pair() {
             None,
         ),
     );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let request = reply
         .focus_request
         .as_ref()
@@ -760,10 +726,6 @@ fn no_focus_resolves_source_from_cursor_when_foreground_unknown() {
             None,
             Some((900, 10)),
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     let request = reply
         .focus_request
@@ -814,7 +776,7 @@ fn no_focus_without_adjacent_output_is_noop() {
             None,
         ),
     );
-    assert!(reply.effects.is_empty(), "no neighbor: {:?}", reply.effects);
+    assert!(reply.focus_request.is_none());
     assert_eq!(
         retained_outcome(&settlements),
         (
@@ -858,11 +820,7 @@ fn no_focus_without_destination_selection_is_noop() {
             None,
         ),
     );
-    assert!(
-        reply.effects.is_empty(),
-        "empty target: {:?}",
-        reply.effects
-    );
+    assert!(reply.focus_request.is_none());
     assert_eq!(
         retained_outcome(&settlements),
         (
@@ -895,7 +853,7 @@ fn no_focus_without_resolvable_source_is_noop() {
     );
     crossing.action_outputs.clear();
     let (reply, settlements) = accepted_with_settlements(&mut engine, &crossing);
-    assert!(reply.effects.is_empty(), "no source: {:?}", reply.effects);
+    assert!(reply.focus_request.is_none());
     assert_eq!(
         retained_outcome(&settlements),
         (
@@ -939,10 +897,6 @@ fn no_focus_up_down_cross_stacked_outputs() {
             None,
         ),
     );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let request = reply
         .focus_request
         .as_ref()
@@ -982,11 +936,7 @@ fn no_focus_contradictory_focus_present_is_noop() {
             None,
         ),
     );
-    assert!(
-        reply.effects.is_empty(),
-        "contradiction: {:?}",
-        reply.effects
-    );
+    assert!(reply.focus_request.is_none());
     assert_eq!(
         retained_outcome(&settlements),
         (
@@ -1025,7 +975,7 @@ fn no_focus_unknown_window_stays_stale() {
             None,
         ),
     );
-    assert!(reply.effects.is_empty(), "stale: {:?}", reply.effects);
+    assert!(reply.focus_request.is_none());
     assert_eq!(settlements.len(), 1);
     match &settlements[0].result {
         Some(crate::world_report::CommandResult::Directional { outcome, cause, .. }) => {
@@ -1109,11 +1059,7 @@ fn host_focus_loss_observation_emits_no_focus() {
                 None,
             ),
         );
-        assert!(
-            focus_effects(&reply).is_empty(),
-            "loss emits no focus (seq {seq}): {:?}",
-            reply.effects
-        );
+        assert!(reply.focus_request.is_none());
         assert!(
             settlements.is_empty(),
             "loss mints no settlement (seq {seq}): {settlements:?}",
@@ -1169,11 +1115,7 @@ fn no_focus_floating_source_stops_navigation() {
             None,
         ),
     );
-    assert!(
-        reply.effects.is_empty(),
-        "floating source: {:?}",
-        reply.effects
-    );
+    assert!(reply.focus_request.is_none());
     assert_eq!(settlements.len(), 1);
     match &settlements[0].result {
         Some(crate::world_report::CommandResult::Directional { outcome, cause, .. }) => {
@@ -1232,11 +1174,7 @@ fn no_focus_floating_destination_is_noop() {
             None,
         ),
     );
-    assert!(
-        reply.effects.is_empty(),
-        "floating destination: {:?}",
-        reply.effects
-    );
+    assert!(reply.focus_request.is_none());
     assert_eq!(
         retained_outcome(&settlements),
         (
@@ -1346,11 +1284,7 @@ fn no_focus_unreadable_destination_is_noop() {
             None,
         ),
     );
-    assert!(
-        reply.effects.is_empty(),
-        "unreadable destination: {:?}",
-        reply.effects
-    );
+    assert!(reply.focus_request.is_none());
     assert_eq!(
         retained_outcome(&settlements),
         (

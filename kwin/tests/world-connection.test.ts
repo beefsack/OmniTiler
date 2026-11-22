@@ -230,6 +230,53 @@ describe("v4 connection codecs (handshake + settings)", () => {
         );
     });
 
+    it("settings-key admission matches Rust bounds, nested opacity, and diagnostic echo", () => {
+        const ascii4096 = "a".repeat(4096);
+        const multibyte4096 = "\u00e9".repeat(2048);
+        const ascii4097 = "a".repeat(4097);
+        const multibyte4097 = `${multibyte4096}a`;
+        const nested4097 = "n".repeat(4097);
+
+        // Accepted: empty direct name, 4096-byte ASCII/multibyte direct names,
+        // and nested JSON keys >4096 bytes with raw values unchanged.
+        const values: Array<[string, unknown]> = [
+            ["", true],
+            [ascii4096, 1],
+            [multibyte4096, "ok"],
+            ["unknown", { [nested4097]: null }],
+        ];
+        const text = buildSettingsRequest("adapter-a", GEN, "set-1", "1", values);
+        assert.ok(text !== null, "empty direct key, 4096-byte direct keys, and >4096-byte nested key accept");
+        const body = JSON.parse(text as string) as { values: Record<string, unknown> };
+        assert.deepEqual(body.values, {
+            "": true,
+            [ascii4096]: 1,
+            [multibyte4096]: "ok",
+            unknown: { [nested4097]: null },
+        });
+
+        // Strict over-cap direct names and non-finite nested values still refuse.
+        assert.equal(buildSettingsRequest("adapter-a", GEN, "set-1", "1", [[ascii4097, true]]), null);
+        assert.equal(buildSettingsRequest("adapter-a", GEN, "set-1", "1", [[multibyte4097, true]]), null);
+        assert.equal(
+            buildSettingsRequest("adapter-a", GEN, "set-1", "1", [["unknown", { [nested4097]: Number.NaN }]]),
+            null,
+        );
+
+        // Diagnostic unknown keys (including empty, NUL, multibyte, 4096-byte) echo; >4096 bytes refuses.
+        const withDiag = JSON.parse(settingsAccept("adapter-a", GEN, "set-1", "1")) as Record<string, unknown>;
+        const echoed = [
+            { key: "", kind: "unknown-field" },
+            { key: "\u0000setting", kind: "unknown-field" },
+            { key: "\u672a\u77e5", kind: "unknown-field" },
+            { key: multibyte4096, kind: "unknown-field" },
+        ];
+        withDiag["diagnostics"] = echoed;
+        assert.deepEqual(parseSettingsReply(JSON.stringify(withDiag))?.diagnostics, echoed);
+        withDiag["diagnostics"] = [{ key: multibyte4097, kind: "unknown-field" }];
+        assert.equal(parseSettingsReply(JSON.stringify(withDiag)), null);
+    });
+
     it("connection replies refuse over-bound payloads before JSON.parse", () => {
         const accept = handshakeAccept("adapter-a", "req-1", GEN);
         const pad = " ".repeat(4 * 1024 * 1024);

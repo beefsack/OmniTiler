@@ -711,11 +711,6 @@ pub(crate) mod tests {
             other => panic!("directional result, got {other:?}"),
         };
         assert_eq!(target, Some(WindowId("win-target".to_owned())));
-        assert!(
-            reply.effects.is_empty(),
-            "focus never publishes as wire effects: {:?}",
-            reply.effects
-        );
         let request = reply
             .focus_request
             .as_ref()
@@ -747,11 +742,6 @@ pub(crate) mod tests {
             },
         );
         assert_eq!(outcome_str(&result), Some("focus-float-retained"));
-        assert!(
-            _reply.effects.is_empty(),
-            "no focus effect on a miss, got {:?}",
-            _reply.effects
-        );
         // Right half-snap authorizes the bounded half in work-area
         // space; the adapter applies it exactly once.
         let (_reply, result) = directional(
@@ -1097,11 +1087,6 @@ pub(crate) mod tests {
             other => panic!("directional result, got {other:?}"),
         };
         assert_eq!(target, Some(WindowId("win-new".to_owned())));
-        assert!(
-            reply.effects.is_empty(),
-            "focus never publishes as wire effects: {:?}",
-            reply.effects
-        );
         let request = reply
             .focus_request
             .as_ref()
@@ -1163,11 +1148,6 @@ pub(crate) mod tests {
                 .any(|transfer| transfer.target_output.0 == "out-b"),
             "cross-output move retains a transfer, got {:?}",
             reply.transfers
-        );
-        assert!(
-            reply.effects.is_empty(),
-            "focus never publishes as wire effects: {:?}",
-            reply.effects
         );
         let request = reply
             .focus_request
@@ -1256,6 +1236,7 @@ pub(crate) mod tests {
                 }),
             ),
         );
+        assert!(reply.focus_request.is_none());
         assert_eq!(outcome_str(&result), Some("focus-float-refused-stale"));
         assert_eq!(
             result.as_ref().and_then(|result| match result {
@@ -1263,11 +1244,6 @@ pub(crate) mod tests {
                 _ => None,
             }),
             Some("unknown-window".to_owned())
-        );
-        assert!(
-            reply.effects.is_empty(),
-            "stale refusals stay atomic, got {:?}",
-            reply.effects
         );
     }
 }

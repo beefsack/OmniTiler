@@ -247,7 +247,6 @@ fn focus_follows_off_by_default_mints_no_effect() {
             false,
         ),
     );
-    assert!(reply.effects.is_empty());
     assert_eq!(reply.cursor_warp, None);
 }
 
@@ -268,10 +267,6 @@ fn focus_follows_on_mints_hover_effect() {
             true,
             false,
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     let request = reply.focus_request.as_ref().expect("hover request");
     assert_eq!(request.target.0, "win-b");
@@ -305,7 +300,7 @@ fn focus_follows_holds_when_already_focused() {
             false,
         ),
     );
-    assert!(reply.effects.is_empty());
+    assert!(reply.focus_request.is_none());
 }
 
 #[test]
@@ -331,13 +326,7 @@ fn focus_follows_paused_under_focused_fullscreen_game() {
             false,
         ),
     );
-    assert!(
-        reply
-            .effects
-            .iter()
-            .all(|effect| effect.target.0 != "win-b"),
-        "game pause must mint no hover focus"
-    );
+    assert!(reply.focus_request.is_none());
 }
 
 #[test]
@@ -358,7 +347,7 @@ fn focus_follows_paused_on_incomplete_inventory() {
             false,
         ),
     );
-    assert!(reply.effects.is_empty());
+    assert!(reply.focus_request.is_none());
 }
 
 #[test]
@@ -379,7 +368,7 @@ fn focus_follows_paused_under_gesture_barrier() {
             true,
         ),
     );
-    assert!(reply.effects.is_empty());
+    assert!(reply.focus_request.is_none());
 }
 
 #[test]
@@ -401,7 +390,7 @@ fn focus_follows_ignores_cursor_outside_every_window() {
             false,
         ),
     );
-    assert!(reply.effects.is_empty());
+    assert!(reply.focus_request.is_none());
 }
 
 /// Two-output rig: win-a on out-a focused, win-b on out-b.
@@ -470,10 +459,6 @@ fn warp_off_by_default_publishes_no_point() {
             }),
         ),
     );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let request = reply
         .focus_request
         .as_ref()
@@ -511,10 +496,6 @@ fn warp_publishes_cross_output_centre() {
                 direction: None,
             }),
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     let request = reply
         .focus_request
@@ -569,10 +550,6 @@ fn warp_skips_same_output_focus() {
                 direction: None,
             }),
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     let request = reply
         .focus_request
@@ -712,10 +689,6 @@ fn focus_follows_overlap_uses_topmost_hit() {
             false,
         ),
     );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let request = reply.focus_request.as_ref().expect("hover request");
     assert_eq!(request.target.0, "win-c");
     assert_eq!(request.id, format!("focus-{}", reply.state_revision));
@@ -748,7 +721,7 @@ fn focus_follows_absent_hit_mints_nothing() {
             false,
         ),
     );
-    assert!(reply.effects.is_empty());
+    assert!(reply.focus_request.is_none());
 }
 
 #[test]
@@ -770,10 +743,6 @@ fn focus_follows_hit_beats_rectangles() {
             true,
             false,
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     let request = reply.focus_request.as_ref().expect("hover request");
     assert_eq!(request.target.0, "win-b");
@@ -807,7 +776,7 @@ fn focus_follows_minimized_hit_mints_nothing() {
             false,
         ),
     );
-    assert!(reply.effects.is_empty());
+    assert!(reply.focus_request.is_none());
 }
 
 #[test]
@@ -912,7 +881,7 @@ fn focus_follows_ignores_noncurrent_view() {
             false,
         ),
     );
-    assert!(reply.effects.is_empty());
+    assert!(reply.focus_request.is_none());
 }
 
 #[test]
@@ -934,10 +903,6 @@ fn focus_follows_static_cursor_never_resteals() {
             true,
             false,
         ),
-    );
-    assert!(
-        coupled.effects.is_empty(),
-        "focus never publishes as wire effects: {coupled:?}"
     );
     let coupled_request = coupled.focus_request.clone().expect("hover request");
     assert_eq!(coupled_request.target.0, "win-b");
@@ -968,7 +933,6 @@ fn focus_follows_static_cursor_never_resteals() {
             false,
         ),
     );
-    assert!(idle.effects.is_empty());
     assert!(
         idle.focus_request.is_none(),
         "target equality satisfies the hover: {idle:?}"
@@ -995,10 +959,6 @@ fn focus_follows_static_cursor_never_resteals() {
                 direction: None,
             }),
         ),
-    );
-    assert!(
-        commanded.effects.is_empty(),
-        "focus never publishes as wire effects: {commanded:?}"
     );
     let commanded_request = commanded
         .focus_request
@@ -1030,7 +990,6 @@ fn focus_follows_static_cursor_never_resteals() {
             false,
         ),
     );
-    assert!(settled.effects.is_empty());
     assert!(
         settled.focus_request.is_none(),
         "target equality satisfies the explicit grant: {settled:?}"
@@ -1060,10 +1019,6 @@ fn focus_follows_yields_to_fresh_admission() {
             true,
             false,
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     let request = reply.focus_request.as_ref().expect("admission request");
     assert_eq!(request.target.0, "win-c");
@@ -1101,10 +1056,6 @@ fn focus_follows_yields_to_explicit_command_focus() {
                 direction: None,
             }),
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     let request = reply
         .focus_request
@@ -1154,10 +1105,6 @@ fn warp_follows_single_explicit_grant_not_superseded_admission() {
                 direction: None,
             }),
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     let request = reply
         .focus_request

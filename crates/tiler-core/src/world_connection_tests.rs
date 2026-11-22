@@ -169,7 +169,6 @@ fn reports_wait_for_initial_settings_and_ready_latches_across_gaps() {
     assert!(!bootstrap.ready);
     assert!(bootstrap.scopes.is_empty());
     assert!(bootstrap.workspaces.is_empty());
-    assert!(bootstrap.effects.is_empty());
     assert!(!bootstrap.command_consumed);
     assert_eq!(engine.state_revision(), 0);
     assert!(!engine.is_ready());
@@ -233,7 +232,6 @@ fn incomplete_first_report_after_settings_does_not_authorize_effects_or_readines
     assert!(!bootstrap.ready);
     assert!(bootstrap.scopes.is_empty());
     assert!(bootstrap.workspaces.is_empty());
-    assert!(bootstrap.effects.is_empty());
     assert_eq!(engine.state_revision(), 0);
     assert!(!engine.is_ready());
 
@@ -784,14 +782,6 @@ fn controlled_lifetimes(reply: &crate::world_report::WorldReplyV4) -> Vec<String
         .collect()
 }
 
-fn effect_targets(reply: &crate::world_report::WorldReplyV4) -> Vec<String> {
-    reply
-        .effects
-        .iter()
-        .map(|effect| effect.target.0.clone())
-        .collect()
-}
-
 fn transfer_targets(reply: &crate::world_report::WorldReplyV4) -> Vec<String> {
     reply
         .transfers
@@ -842,11 +832,6 @@ fn own_process_identity_excludes_while_same_output_sibling_stays_controlled() {
         !reply.windows.iter().any(|row| row.lifetime.0 == "win-own"),
         "own row authorizes no window desire: {:?}",
         reply.windows
-    );
-    assert!(
-        !effect_targets(&reply).contains(&"win-own".to_owned()),
-        "own row authorizes no effect: {:?}",
-        reply.effects
     );
     assert!(
         !transfer_targets(&reply).contains(&"win-own".to_owned()),

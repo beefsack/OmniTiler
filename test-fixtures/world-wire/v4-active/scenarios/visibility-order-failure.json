@@ -381,7 +381,6 @@
               "parent": null
             }
           ],
-          "effects": [],
           "focusRequest": {
             "id": "focus-5",
             "target": "win-a",
@@ -759,7 +758,6 @@
               "parent": null
             }
           ],
-          "effects": [],
           "focusRequest": {
             "id": "focus-7",
             "target": "win-a",
@@ -1159,7 +1157,6 @@
               "parent": null
             }
           ],
-          "effects": [],
           "focusRequest": {
             "id": "focus-9",
             "target": "win-a",
@@ -1527,7 +1524,6 @@
               "parent": null
             }
           ],
-          "effects": [],
           "focusRequest": null,
           "dragPreview": null,
           "gestureSettled": null,

@@ -161,7 +161,6 @@ fn assert_bootstrap(decoded: &DecodedReplyV4, generation: &str, request: &str, o
     assert!(reply.outputs.is_empty());
     assert!(reply.windows.is_empty());
     assert!(reply.transfers.is_empty());
-    assert!(reply.effects.is_empty());
     assert_eq!(reply.drag_preview, None);
     assert_eq!(reply.gesture_settled, None);
     assert!(reply.operation_settled.is_empty());

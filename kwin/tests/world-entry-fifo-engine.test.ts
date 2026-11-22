@@ -135,7 +135,7 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             // focus unissued, so only the return to origin publishes.
             // Focus left the effects lane: the grant rides the retained
             // latest-only focusRequest (v4), never a focus effect row.
-            assert.deepEqual(batchReply["effects"], [], "no focus effect is published on the v4 wire");
+            assert.equal("effects" in batchReply, false, "retired effects key omitted on the v4 wire");
             const batchFocus = batchReply["focusRequest"] as Record<string, unknown> | null;
             assert.ok(batchFocus !== null, `final publication carries the collapsed focus grant, got ${JSON.stringify(batchReply["focusRequest"])}`);
             assert.equal(batchFocus["target"], "win-c", "final publication returns focus to the origin");
@@ -208,7 +208,7 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             assert.notEqual(batchReply["outcome"], "rejected", "real Engine drains the debounced batch");
             // Focus left the effects lane: the grant rides the retained
             // latest-only focusRequest (v4), never a focus effect row.
-            assert.deepEqual(batchReply["effects"], [], "no focus effect is published on the v4 wire");
+            assert.equal("effects" in batchReply, false, "retired effects key omitted on the v4 wire");
             const batchFocus = batchReply["focusRequest"] as Record<string, unknown> | null;
             assert.ok(batchFocus !== null, `debounced pair carries the collapsed focus grant, got ${JSON.stringify(batchReply["focusRequest"])}`);
             assert.equal(batchFocus["target"], "win-c", "debounced pair returns focus to the origin");
@@ -303,7 +303,7 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             // neighbor. Focus left the effects lane (v4), so the grant
             // rides focusRequest; the mover is already focused, so the
             // already-target native fallback satisfies with zero setters.
-            assert.deepEqual(batchReply["effects"], [], "no focus effect is published on the v4 wire");
+            assert.equal("effects" in batchReply, false, "retired effects key omitted on the v4 wire");
             const moveFocus = batchReply["focusRequest"] as Record<string, unknown> | null;
             assert.ok(moveFocus !== null, `move batch carries the mover follow-focus grant, got ${JSON.stringify(batchReply["focusRequest"])}`);
             assert.equal(moveFocus["target"], "win-a", "move batch re-affirms focus on the mover");
@@ -376,7 +376,7 @@ describe("world entry rapid directional FIFO against the real Engine", () => {
             // same-batch resolution to the settled focus.
             // Focus left the effects lane: the grant rides the retained
             // latest-only focusRequest (v4), never a focus effect row.
-            assert.deepEqual(batchReply["effects"], [], "no focus effect is published on the v4 wire");
+            assert.equal("effects" in batchReply, false, "retired effects key omitted on the v4 wire");
             const mixedFocus = batchReply["focusRequest"] as Record<string, unknown> | null;
             assert.ok(mixedFocus !== null, `batch carries the settled focus grant, got ${JSON.stringify(batchReply["focusRequest"])}`);
             assert.equal(mixedFocus["target"], "win-b", "batch focuses the settled win-b");

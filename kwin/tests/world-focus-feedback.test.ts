@@ -85,7 +85,6 @@ function replyText(opts: {
         workspaces: opts.workspaces ?? [], outputs: [],
         windows: opts.windows ?? [winRow("win-b", "ws1")],
         transfers: [],
-        effects: [],
         dragPreview: null,
     });
 }
@@ -341,15 +340,21 @@ describe("world focus feedback rows", () => {
         assert.equal(rows[0]?.reason, "identity-stale");
     });
 
-    it("refuses a non-empty effects lane without actuating", () => {
-        // The retired one-shot effect lane is required empty: a reply
-        // carrying any effect row refuses at parse, so no focus row and
-        // no native call can follow from it.
-        const text = replyText({ focusRequest: null }).replace(
-            '"effects":[]',
-            '"effects":[{"id":"fx-9","kind":"raise","target":"win-b"}]',
+    it("refuses any effects key without actuating", () => {
+        // The retired one-shot effect lane is omitted from v4 replies: a reply
+        // carrying any effects key (empty or non-empty) refuses at parse.
+        const withNonEmpty = replyText({ focusRequest: null }).replace(
+            '"transfers":[]',
+            '"transfers":[],"effects":[{"id":"fx-9","kind":"raise","target":"win-b"}]',
         );
-        assert.equal(parseWorldReply(text), null, "non-empty effects refuses");
+        assert.notEqual(withNonEmpty, replyText({ focusRequest: null }));
+        assert.equal(parseWorldReply(withNonEmpty), null, "non-empty effects refuses");
+        const withEmpty = replyText({ focusRequest: null }).replace(
+            '"transfers":[]',
+            '"transfers":[],"effects":[]',
+        );
+        assert.notEqual(withEmpty, replyText({ focusRequest: null }));
+        assert.equal(parseWorldReply(withEmpty), null, "empty effects refuses");
     });
 
     it("never replays: duplicates record once, ack retires, stamps never restamp", () => {

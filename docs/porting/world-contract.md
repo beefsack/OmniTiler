@@ -160,7 +160,7 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
   [coordinates](world-contract-v3.md#coordinates-and-safety).
 - Requests and replies are independently <=4 MiB, validated before candidate
   mutation and checked against exact encoding before commit. No partial
-  oversized state applies. Retain caps: screens 16; windows/closed 10000 each;
+  oversized state applies. Retain caps: screens and `actionOutputs` 16 each; windows/closed 10000 each;
   unified `propertyAttempts` 1024 per kind (`frame`, `member`, `view`, `clear`,
   `state`) and 10000 for `visibility` (15120 total); creation attempts 256;
   native rows 4096 with <=256 ids per output; occupancy <=10000 per desktop;
@@ -277,7 +277,11 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
   validates each field, applies valid siblings, and keeps last-good/default for
   invalid fields. Missing known fields use defaults at startup, last-good later;
   unknown setting names receive per-field diagnostics, not startup refusal.
-  Raw setting names are UTF-8 <=4096 bytes; longer names refuse decoding before field processing.
+  Direct `values` keys (raw setting names) are UTF-8 <=4096 bytes inclusive,
+  including `""`; longer direct names refuse decoding before field processing.
+  Nested JSON object keys inside setting values are opaque data subject only to
+  the overall request byte limit; accepted unknown direct names are echoed
+  verbatim in `SettingsDiagnostic.key`.
   Duplicate revision/content is idempotent; older revision returns `stale`
   without replacing state; equal revision with different content returns
   `revision-reused` without replacing state. Receipt order does not change a
@@ -420,7 +424,7 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 | `gesture` | bool | no | Existing gesture write barrier. |
 | `cursor` | Point | yes | Native cursor in common coordinate space. |
 | `actionForeground,actionCached` | OutputId | yes | Observed frozen action context, not chosen source. |
-| `actionOutputs` | OutputId[] | no | Ordered known-output registry. |
+| `actionOutputs` | OutputId[] | no | Ordered known-output registry (<=16; refused as `snapshot-invalid` / `section-over-cap` above cap). |
 | `presentation` | PresentationIngress | no | Native foreground/render facts. |
 | `cursorHit` | WindowId | omit/null/empty | Native hit-test, never rectangle guess; empty when the hit is unreported/foreign/unbound. |
 | `monotonicMs` | Counter | omit -> 0 | Arbitrary-epoch milliseconds, not wall-clock. |
@@ -1149,8 +1153,7 @@ that step's ordered proof and requiring the exact planned ID for removal.
 | `scopes` | ScopeStatus[] | no | Every known scope's authority. |
 | `workspaces,outputs,windows` | WorkspaceDesire[], OutputDesire[], WindowDesire[] | no | Full desired snapshot, not a diff. |
 | `transfers` | TransferTarget[] | no | Retained transfer correlations. |
-| `effects` | empty array | no | No admissible entries or actuation authority; reserved raise/stack shapes are removed. |
-| `focusRequest` | FocusRequest | yes | Required nullable retained request for every cause, independent of effects. |
+| `focusRequest` | FocusRequest | yes | Required nullable retained request for every cause. |
 | `dragPreview` | DragPreviewV4 | yes | Required nullable retained identity-bound drag-preview overlay state (`{id,rev,domainOut,domainWs,sourceOut,sourceWs,rect,hover,win}` on the wire; Rust `WorldReplyV4.drag_preview`). |
 | `gestureSettled` | GestureSettled | yes | Retained latest core mutation outcome, not native completion. |
 | `operationSettled` | OperationEvent[] | no | Complete retained latest clear/float outcomes keyed by `(win,kind)`. |
@@ -1375,9 +1378,9 @@ that step's ordered proof and requiring the exact planned ID for removal.
 - Zero or one global request for every cause. This lane is approved
   2026-11-11 ([design and implementation status](../changes/retained-focus-requests.md)).
   Core and protocol implement this shape; coordinated adapter adoption and
-  verification remain incomplete. `closeFocus` and focus entries in `effects`
-  are rejected, not alternate accepted shapes. Reserved raise/stack entries
-  also reject; `effects` is required empty. Explicit-command
+  verification remain incomplete. `closeFocus` and any `effects` key
+  (empty or non-empty) are rejected as unknown, not alternate accepted shapes.
+  Explicit-command
   requests originate from direct/directional focus, remembered selection,
   send-follow and operation focus producers under existing execution-time
   subject gates. Automatic-admission requests originate from the
@@ -1912,7 +1915,8 @@ that step's ordered proof and requiring the exact planned ID for removal.
   observations and sets `consumed`, never re-executes. Commandless reports do
   not move command watermark. Transport timeout is not an engine verdict or
   permission to mint a new duplicate command. [Sequencing](world-contract-v3.md#3-identity-sequencing-and-dedup).
-- `effects` is required empty; retained transfers remain until observed,
+- `WorldReplyV4` omits the retired `effects` key (any `effects` key is rejected
+  as unknown); retained transfers remain until observed,
   externally superseded or proven refused. `WorldReplyV4` carries no `result`
   field (command outcomes ride only the issuing
   `TransitionResult.dispositions` (`Vec<BatchDisposition>`) and the broker's

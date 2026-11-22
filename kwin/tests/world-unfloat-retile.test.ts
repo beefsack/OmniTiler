@@ -233,7 +233,7 @@ function makeHarness(initial: LiveSpec[]) {
             intentDesired: [], switchSettled: [], diagnostics: [],
             presentation: DISABLED_PRESENTATION,
             scopes: [{ scope: { kind: "workspace", out: OUT, ws: WS_A }, auth: "controlled", reason: "" }],
-            workspaces: [], outputs: [], windows: [], transfers: [], effects: [], dragPreview: null,
+            workspaces: [], outputs: [], windows: [], transfers: [], dragPreview: null,
             ...snapshot,
         });
         const parsed = parseWorldReply(text);

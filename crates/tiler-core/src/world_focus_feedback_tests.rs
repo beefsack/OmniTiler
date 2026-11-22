@@ -123,7 +123,6 @@ fn output_arm_with_nulls_accepts_and_preserves() {
         rows,
     );
     assert!(reply.diagnostics.is_empty());
-    assert!(reply.effects.is_empty());
     assert!(reply.transfers.is_empty());
     assert!(reply.operation_settled.is_empty());
     assert!(settlements.is_empty());
@@ -149,7 +148,6 @@ fn native_arm_with_null_home_accepts_on_host_owned() {
             .focus_feedback,
         rows,
     );
-    assert!(reply.effects.is_empty());
     assert!(reply.transfers.is_empty());
 }
 

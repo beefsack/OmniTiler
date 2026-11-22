@@ -655,11 +655,6 @@ fn empty_focusless_issues_terminal_without_echo_resurrection() {
         "empty focusless issues no flight: {:?}",
         reply.transfers
     );
-    assert!(
-        reply.effects.is_empty(),
-        "empty focusless invents no focus: {:?}",
-        reply.effects
-    );
     assert_eq!(
         reply.switch_settled.len(),
         1,

@@ -209,7 +209,6 @@ fn foreground_round_trip_supersedes_even_when_snapshot_matches_previous() {
     capture.focus_changes = Some(interval(Some(issued.state_revision), &["win-d", "win-a"]));
     let (reply, _) = run_batched(&mut engine, &capture, &[]);
     assert!(reply.focus_request.is_none());
-    assert!(reply.effects.is_empty());
     assert_ne!(boot.state_revision, issued.state_revision);
     assert_eq!(
         engine.tx(|tx| tx.execution_subject()),
@@ -241,7 +240,6 @@ fn exact_incorporation_revision_anchors_even_when_observation_does_not_advance()
     stale.focus_changes = capture.focus_changes;
     let (retired, _) = run_batched(&mut engine, &stale, &[]);
     assert!(retired.focus_request.is_none());
-    assert!(retired.effects.is_empty());
 }
 
 #[test]
@@ -278,7 +276,6 @@ fn earlier_destination_intent_then_own_target_uses_observed_target_for_toggle_fl
         let (reply, settled) = run_batched(&mut engine, &capture, &[(2, toggle_current_float())]);
         assert_not_rejected(&settled[0].result, "implicit float");
         assert!(reply.focus_request.is_none());
-        assert!(reply.effects.is_empty());
         assert!(
             reply
                 .windows
@@ -327,7 +324,6 @@ fn first_decisive_foreground_event_classifies_retirement() {
         let trace = crate::world_engine::with_focus_trace_capture(|| {
             let (settled, _) = run_batched(&mut engine, &capture, &[]);
             assert!(settled.focus_request.is_none());
-            assert!(settled.effects.is_empty());
             assert_eq!(
                 engine.tx(|tx| tx.execution_subject()),
                 Some(WindowId(events[1].to_owned()))
@@ -379,7 +375,6 @@ fn directional_then_toggle_float_uses_new_fifo_target_without_native_activation(
             .iter()
             .any(|row| row.lifetime.0 == "win-a" && !row.floating)
     );
-    assert!(reply.effects.is_empty());
 }
 
 #[test]
@@ -490,7 +485,6 @@ fn complete_focus_interval_does_not_mask_positive_target_loss() {
     capture.focus_changes = Some(interval(Some(issued.state_revision), &[]));
     let (reply, _) = run_batched(&mut engine, &capture, &[]);
     assert!(reply.focus_request.is_none());
-    assert!(reply.effects.is_empty());
 }
 
 /// Focus B, then a non-focus command in the same batch, then a later
@@ -517,7 +511,6 @@ fn cursor_focus_then_nonfocus_survives_and_implicit_acts_on_cursor() {
     assert_not_rejected(&trailing.result, "trailing non-focus");
     // Focus never publishes as one-shot effects on the v4 wire: the
     // retained request is the authority.
-    assert!(setup.effects.is_empty());
     let pending = setup.focus_request.clone().expect("focus B retained");
     assert_eq!(pending.target.0, "win-b");
     assert_eq!(pending.cause, FocusRequestCause::ExplicitCommand);
@@ -584,7 +577,6 @@ fn cursor_refused_nonfocus_never_cancels_pending() {
         "trailing send must refuse; got {:?}",
         trailing.result
     );
-    assert!(reply.effects.is_empty());
     let pending = reply
         .focus_request
         .clone()

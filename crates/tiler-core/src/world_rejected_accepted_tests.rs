@@ -268,11 +268,6 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
         "new window carries Controlled membership: {w2:?}"
     );
     assert!(
-        !reply.effects.iter().any(|e| e.target.0 == "w-unknown"),
-        "no effect names the missing target: {:?}",
-        reply.effects
-    );
-    assert!(
         !reply.command_consumed,
         "fresh rejection publishes Accepted, not consumed"
     );
@@ -475,11 +470,6 @@ fn noncatalog_legacy_refusal_normalizes_to_operation_refused_without_mutation() 
         reply.transfers.is_empty(),
         "no transfer minted on refusal: {:?}",
         reply.transfers
-    );
-    assert!(
-        reply.effects.is_empty() || !reply.effects.iter().any(|e| e.target.0 == "w-ghost"),
-        "no effect for the unknown subject: {:?}",
-        reply.effects
     );
     assert!(
         row_window_ids(&reply).contains(&"w1".to_owned()),

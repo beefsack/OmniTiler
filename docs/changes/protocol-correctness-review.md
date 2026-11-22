@@ -98,9 +98,13 @@ Done: DiscoverWorld setup rejections use the five-key unbound envelope; real bro
 
 `kwin/src/world-connection.ts:488-531` refuses empty direct names and nested keys longer than 4096 UTF-8 bytes; Rust only caps direct names, allowing empty names and opaque nested keys (`crates/tiler-protocol/src/connection_protocol.rs:346-384,433,549,667`; explicit tests `connection_protocol/tests.rs:504-581`). **Options:** change both to prohibit these requests, or match `docs/porting/world-contract.md:278-279`. **Recommend matching the contract:** `values` unchanged, direct keys up to 4096 bytes including `""`, nested JSON keys subject to the overall byte limit, diagnostics echo unknown names. Generic KDE builder can then send what Rust can diagnose; no configured field needs the edge case. TS builder/test changes only, no fixture rewrites. Low risk; 10–25 lines; no dependency.
 
+Done: KDE preserves raw setting values and matches Rust's direct-name byte limit, including empty names and verbatim unknown-name diagnostics. The settings regression failed before and passed after; fixtures are unchanged.
+
 ### PW-IN-06 — Bound the ordered output registry explicitly
 
 `crates/tiler-protocol/src/world_protocol.rs:4410-4427` has no row bound on `actionOutputs`; KDE emits one entry per screen (`kwin/src/world-observe.ts:1824-1833`); core checks membership/uniqueness and consumes order (`crates/tiler-core/src/world_report_v4_checks.rs:234-243`, `world_tiling_views.rs:603`). **Options:** leave byte cap alone, or cap `actionOutputs: OutputId[]` at the existing screen-count limit in raw and typed admission. **Recommend the cap**, without moving membership/duplicate intent-record adjudication from core (`world_report_v4_checks.rs:823-`). Over-cap reports refuse earlier; active raw/typed cap tests, no frozen changes or KDE producer change expected [INFERENCE]. Low risk; 10–25 lines; no dependency.
+
+Done: raw and checked typed admission refuse more than 16 `actionOutputs` with `section-over-cap`; existing uniqueness checks and contextual routing are unchanged. Regression coverage exercises both admissions, with no producer or fixture changes.
 
 ### PW-EV-02 — Consolidate maximize-to-false
 
@@ -122,6 +126,8 @@ Done: DiscoverWorld setup rejections use the five-key unbound envelope; real bro
 
 `crates/tiler-core/src/world_publish_v4.rs:112-128,203,300`, `world_reply_validation.rs:470,512-522`, `crates/tiler-protocol/src/world_reply_write.rs:1104-1107`, `world_protocol.rs:5624,5724-5742,5851`, `kwin/src/world-report.ts:602-603,2055,2103-2147`: the writer always emits `effects:[]`, Rust refuses nonempty and TS uses `never[]`. **Options:** retain the permanently empty member or remove it from both exact v4-active schemas and from `WorldReplyV4`. **Recommend removal**, not deletion of internal cursor-warp projection inputs (deferred C3). Strict consumers, Rust/TS assertions and active corpus need migration; frozen bytes remain and active references may need twins. Medium risk; 80–160 source/test lines plus fixture churn [INFERENCE]; independent of cursor-warp implementation.
 
+Done: both exact v4-active reply schemas and `WorldReplyV4` omit `effects`; Rust and KDE reject the retired key, active replies were re-recorded, and frozen fixtures and internal cursor-warp inputs are unchanged.
+
 ### PW-OUT-04 — Narrow renderer replies without dropping scenario oracles
 
 `crates/tiler-protocol/src/world_reply_write.rs:1338-1384` sends full world arrays/presentation; `kwin/src/world-presentation.ts:167-268` relays foreground/border/reduced underlay/preview and coverage. Live scenarios *do* consume `windows` for exact sets/allocations (`scripts/kde-scenarios.mjs:989-1021,1120-1134,2205-2218`). **Options:** keep and close row-validation drift (`crates/tiler-core/src/world_reply_validation.rs:581-611`, `kwin/src/world-report.ts:2508-2559`), or retain the bound envelope, `windows` and `presentation:{foreground,border,underlay}` but drop `scopes/workspaces/outputs`, `pager`, `suspendedOutput` and nested `rev` from this route only. **Recommend the narrower projection** after migrating exact projection goldens and checking tooling consumers. KDE parser, writer and stage5-v4-active/broker reads change; native v2 relay and full replies do not. Medium risk; 70–140 lines [INFERENCE]; coordinate PW-BR-07.
@@ -133,6 +139,8 @@ Done: DiscoverWorld setup rejections use the five-key unbound envelope; real bro
 ### PW-FIX-02 — Separate detached v3 vectors from the frozen v4 evidence
 
 The [implementation review handoff](implementation-minimisation-review.md#handed-to-protocol-review) identified 12 files directly under `test-fixtures/world-wire/` (36,361 bytes), outside the four frozen families. Exact-path search finds historical review/migration references, e.g. `docs/changes/core-interface-review.md:2956-2968` and `docs/changes/v4-migration.md:83`, but no active consumers. **Options:** retain the detached v3 vectors for browsing; or retire them and make historical path references explicit as historical. **Recommend retirement** if source-control history is sufficient for v3 investigation; no live wire shape, adapter, runner or active fixture must change. Low runtime risk; loss of checkout-local historical reproducers; 12 files deleted plus a few explanatory lines; independent of PW-FIX-01. Do not include the optional recorder CLIs by association: the active KDE migration corpus documents its recorder (`test-fixtures/kde-v4-active/migration/README.md:12`), and the Stage5 recorder explicitly records its named v4 route (`kwin/tests/world-stage5-v4-record.ts:3-19`).
+
+Done: no active consumer referenced the 12 detached v3 vectors (36,361 bytes); they are retired from checkout and documented as reproducible from `da69c63b`. The frozen families and recorder routes are unchanged.
 
 
 ## C — keep

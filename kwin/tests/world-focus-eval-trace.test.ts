@@ -80,7 +80,6 @@ function replyText(opts: {
         workspaces: [wsBindRow("ws1")], outputs: [],
         windows: opts.windows ?? [winRow("win-a"), winRow("win-b")],
         transfers: [],
-        effects: [],
         focusRequest: opts.focusRequest,
         dragPreview: null,
     });

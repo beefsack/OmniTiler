@@ -61,7 +61,6 @@ function arrivalReply(): WorldReply {
         transfers: [
             { op: "op-87", kind: "window", win: "win-a", out: "out-b", ws: "wb1", follow: false, held: false, cmdSeq: null, parent: null },
         ],
-        effects: [],
         dragPreview: null,
         intentDesired: [],
         switchSettled: [],

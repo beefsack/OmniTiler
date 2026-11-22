@@ -925,7 +925,7 @@ describe("world fixed-client explicit tile after workspace enable (real Engine)"
             await h.flushAll();
             // Focus left the effects lane: admission intent rides the
             // retained latest-only focusRequest (v4), never a focus effect.
-            assert.deepEqual(fixedRound.parsed["effects"] ?? [], [], "no focus effect is published on the v4 wire");
+            assert.equal("effects" in fixedRound.parsed, false, "retired effects key omitted on the v4 wire");
             const fixedFocus = fixedRound.parsed["focusRequest"] as Record<string, unknown> | null;
             assert.ok(fixedFocus === null || fixedFocus["target"] !== WIN_AF_NEW, `automatic fixed newcomer takes no admission intent, got ${JSON.stringify(fixedFocus)}`);
             assert.equal(h.focused.length, focusedBefore, "automatic fixed admission writes no focus");
@@ -940,8 +940,7 @@ describe("world fixed-client explicit tile after workspace enable (real Engine)"
             h.runTimers();
             const ordRound = await h.flushOne();
             await h.flushAll();
-            const ordEffects = (ordRound.parsed["effects"] as Array<Record<string, unknown>>) ?? [];
-            assert.deepEqual(ordEffects, [], "no focus effect is published on the v4 wire");
+            assert.equal("effects" in ordRound.parsed, false, "retired effects key omitted on the v4 wire");
             const ordFocus = ordRound.parsed["focusRequest"] as Record<string, unknown> | null;
             assert.ok(ordFocus !== null && ordFocus["target"] === WIN_ORD_NEW && ordFocus["cause"] === "automatic-admission" && ordFocus["cmdSeq"] === null && ordFocus["afterShown"] === null, `ordinary newcomer takes admission intent, got ${JSON.stringify(ordFocus)}`);
             assert.ok(h.focused.includes(`{${WIN_ORD_NEW}}`), `ordinary admission activates natively, got ${JSON.stringify(h.focused)}`);
@@ -963,8 +962,7 @@ describe("world fixed-client explicit tile after workspace enable (real Engine)"
             h.runTimers();
             const fencedRound = await h.flushOne();
             await h.flushAll();
-            const fencedEffects = (fencedRound.parsed["effects"] as Array<Record<string, unknown>>) ?? [];
-            assert.deepEqual(fencedEffects, [], "no focus effect is published on the v4 wire");
+            assert.equal("effects" in fencedRound.parsed, false, "retired effects key omitted on the v4 wire");
             const fencedFocus = fencedRound.parsed["focusRequest"] as Record<string, unknown> | null;
             assert.equal(fencedFocus, null, `fenced newcomer spends core-side with no admission intent, got ${JSON.stringify(fencedFocus)}`);
             assert.equal(h.focused.length, focusedAfterOrdinary, `focused float fence writes no native focus, got ${JSON.stringify(h.focused)}`);

@@ -24,8 +24,6 @@ pub const MAX_INTENT_DESIRED_DATA_JSON: usize = 49;
 pub const MAX_INTENT_DESIRED_ROW_BYTES: usize = 196;
 pub const MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES: usize = 512;
 pub const MAX_TARGET_LANES_PER_WINDOW: usize = 626;
-pub const MAX_EFFECT_ROW_BYTES: usize = 294;
-pub const MAX_EFFECT_RESERVE_BYTES: usize = MAX_EFFECT_ROW_BYTES * 2 + 1;
 
 #[must_use]
 pub fn max_operation_settle_reserve(slot_count: usize) -> usize {
@@ -406,7 +404,6 @@ pub fn reply_upper_bound_v4(
         .saturating_add(created_workspaces.saturating_mul(512))
         .saturating_add(logical_workspaces.saturating_mul(336))
         .saturating_add(4096)
-        .saturating_add(MAX_EFFECT_RESERVE_BYTES)
         .saturating_add(2048)
         .saturating_add(512)
         .saturating_add(704)

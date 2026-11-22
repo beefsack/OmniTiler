@@ -53,6 +53,8 @@ assert.deepEqual(
     MIGRATE_TAKE,
 );
 
+const REFILL_NATIVE = "native-refill-a";
+
 function loadReply(): WorldReply {
     // The active drain capture carries the required nullable
     // `focusRequest` lane natively (null: no close intent in this
@@ -61,7 +63,15 @@ function loadReply(): WorldReply {
     assert.ok("focusRequest" in raw, "active drain reply carries the focusRequest lane");
     const parsed = parseWorldReply(JSON.stringify(raw));
     assert.ok(parsed !== null && !isWorldRejection(parsed));
-    return parsed as WorldReply;
+    const reply = parsed as WorldReply;
+    const refillOp = reply.transfers.find((t) => t.op === "op-1-refill");
+    assert.ok(
+        refillOp !== undefined && !refillOp.held && refillOp.out === "out-a" && refillOp.ws === "ws-2",
+        "recorded op-1-refill child is unheld and names out-a/ws-2",
+    );
+    const refillRow = reply.workspaces.find((ws) => ws.id === "ws-2" && ws.out === "out-a");
+    assert.ok(refillRow !== undefined && refillRow.bind === "wb1", "recorded ws-2 row on out-a is bound wb1");
+    return reply;
 }
 
 // Stage the creation-flow binding proof for the migrated unit: the
@@ -72,6 +82,19 @@ function bindTarget(reply: WorldReply): void {
     for (const ws of reply.workspaces) {
         if (ws.id === "ws-1" && ws.out === "out-b") {
             ws.bind = "wa1";
+        }
+    }
+}
+
+// Stage a distinct synthetic native token on the recorded out-a/ws-2 refill
+// row (and optionally adjust its order when testing a strictly lower decoy).
+function bindRefill(reply: WorldReply, order?: number): void {
+    for (const ws of reply.workspaces) {
+        if (ws.id === "ws-2" && ws.out === "out-a") {
+            ws.bind = REFILL_NATIVE;
+            if (order !== undefined) {
+                ws.order = order;
+            }
         }
     }
 }
@@ -282,13 +305,9 @@ describe("world migration apply", () => {
     it("refills the source view to its first remaining row", () => {
         const reply = loadReply();
         bindTarget(reply);
-        // Bind the trailing token as a remaining source workspace: the
-        // source output refills there once the migrated workspace leaves.
-        for (const ws of reply.workspaces) {
-            if (ws.id === "ws-6" && ws.out === "out-a") {
-                ws.bind = "ws-6";
-            }
-        }
+        // Stage a distinct native token on the recorded source refill row:
+        // the source output refills there once the migrated workspace leaves.
+        bindRefill(reply);
         const world: FakeWorld = {
             homing: new Map([
                 ["win-a", { out: "out-a", ws: "wa1" }],
@@ -305,20 +324,16 @@ describe("world migration apply", () => {
             reply,
         });
         assert.ok(world.switchViewCalls.some((c) => c === "out-b->wa1"), "target view follows");
-        assert.ok(world.switchViewCalls.some((c) => c === "out-a->ws-6"), "source refills");
+        assert.ok(world.switchViewCalls.some((c) => c === `out-a->${REFILL_NATIVE}`), "source refills");
     });
 
     it("prefers the core-retained refill view over the rows-lowest fallback", () => {
         const reply = loadReply();
         bindTarget(reply);
-        // Two remaining source rows: wa0 sorts first, but the broker's own
-        // paired refill child (op-1-refill, emitted with the migration)
-        // names ws-6 and must win. The adapter never selects the refill.
-        for (const ws of reply.workspaces) {
-            if (ws.id === "ws-6" && ws.out === "out-a") {
-                ws.bind = "ws-6";
-            }
-        }
+        // Two remaining source rows: wa0 sorts first (order 0 vs 1), but the
+        // broker's own paired refill child (op-1-refill, emitted with the
+        // migration) names ws-2 and must win. The adapter never selects the refill.
+        bindRefill(reply, 1);
         reply.workspaces.push({
             id: "wa0", out: "out-a", bind: "wa0",
             scope: { kind: "output", out: "out-a" }, order: 0, mode: "tiled", exist: true, hold: "", trailing: false,
@@ -338,7 +353,7 @@ describe("world migration apply", () => {
             observation: makeObservation(world),
             reply,
         });
-        assert.ok(world.switchViewCalls.some((c) => c === "out-a->ws-6"), "core refill wins");
+        assert.ok(world.switchViewCalls.some((c) => c === `out-a->${REFILL_NATIVE}`), "core refill wins");
         assert.ok(!world.switchViewCalls.some((c) => c === "out-a->wa0"), "rows-lowest loses");
     });
 
@@ -534,16 +549,12 @@ describe("world migration apply", () => {
 describe("world migration refill gating", () => {
     // Reply with the broker-retained paired refill child (op-1-refill,
     // emitted with the op-1 migration by the recorded core): the paired view
-    // names the core-chosen ws-6 source refill, with wa0 as the
-    // rows-lowest decoy.
+    // names the core-chosen ws-2 source refill, with wa0 as the
+    // rows-lowest decoy (order 0 vs 1).
     function loadPairedReply(): WorldReply {
         const reply = loadReply();
         bindTarget(reply);
-        for (const ws of reply.workspaces) {
-            if (ws.id === "ws-6" && ws.out === "out-a") {
-                ws.bind = "ws-6";
-            }
-        }
+        bindRefill(reply, 1);
         reply.workspaces.push({
             id: "wa0", out: "out-a", bind: "wa0",
             scope: { kind: "output", out: "out-a" }, order: 0, mode: "tiled", exist: true, hold: "", trailing: false,
@@ -579,7 +590,7 @@ describe("world migration refill gating", () => {
             reply,
         });
         assert.ok(!world.switchViewCalls.some((c) => c === "out-a->ws-gone"), "conflicting view not chosen");
-        assert.ok(world.switchViewCalls.some((c) => c === "out-a->ws-6"), "paired refill wins");
+        assert.ok(world.switchViewCalls.some((c) => c === `out-a->${REFILL_NATIVE}`), "paired refill wins");
         assert.ok(world.switchViewCalls.some((c) => c === "out-b->wa1"), "target follows");
         assert.ok(applied.viewWrites >= 2);
     });
@@ -613,7 +624,7 @@ describe("world migration refill gating", () => {
         assert.equal(world.sendToOutputCalls.length, 1, "no member replay on late proof");
         assert.deepEqual(
             world.switchViewCalls,
-            ["out-b->wa1", "out-a->ws-6"],
+            ["out-b->wa1", `out-a->${REFILL_NATIVE}`],
             "target and refill switch exactly once each",
         );
         assert.ok(second.viewWrites >= 2);
@@ -626,7 +637,7 @@ describe("world migration refill gating", () => {
         });
         assert.equal(world.sendToOutputCalls.length, 1);
         assert.equal(world.setMembershipCalls.length, 0);
-        assert.deepEqual(world.switchViewCalls, ["out-b->wa1", "out-a->ws-6"], "no duplicate views");
+        assert.deepEqual(world.switchViewCalls, ["out-b->wa1", `out-a->${REFILL_NATIVE}`], "no duplicate views");
         void third;
     });
 
@@ -649,14 +660,14 @@ describe("world migration refill gating", () => {
             },
         };
         const first = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: MIGRATE_TAKE, ...lying, observation: makeObservation(world), reply });
-        assert.ok(world.switchViewCalls.some((c) => c === "out-a->ws-6"), "refill attempted once");
+        assert.ok(world.switchViewCalls.some((c) => c === `out-a->${REFILL_NATIVE}`), "refill attempted once");
         assert.ok(first.held >= 1, "unproven refill holds");
         void first;
         // A repeat under the fresh revision retries nothing ambiguous.
         const second = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: MIGRATE_TAKE, ...lying, observation: makeObservation(world), reply });
         assert.deepEqual(
-            world.switchViewCalls.filter((c) => c === "out-a->ws-6"),
-            ["out-a->ws-6"],
+            world.switchViewCalls.filter((c) => c === `out-a->${REFILL_NATIVE}`),
+            [`out-a->${REFILL_NATIVE}`],
             "ambiguous refill never retried",
         );
         assert.ok(second.held >= 1);
@@ -669,7 +680,7 @@ describe("world migration refill gating", () => {
         // Members already homed at the target, both views already shown.
         world.homing.set("win-a", { out: "out-b", ws: "wa1" });
         world.currents.set("out-b", "wa1");
-        world.currents.set("out-a", "ws-6");
+        world.currents.set("out-a", REFILL_NATIVE);
         const state = freshState(reply);
         const applied = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: MIGRATE_TAKE,
             ...makeEnv(state, world),
@@ -707,11 +718,7 @@ describe("world migration member authority", () => {
     ): WorldReply {
         const reply = loadReply();
         bindTarget(reply);
-        for (const ws of reply.workspaces) {
-            if (ws.id === "ws-6" && ws.out === "out-a") {
-                ws.bind = "ws-6";
-            }
-        }
+        bindRefill(reply);
         const winA = reply.windows.find((w) => w.win === "win-a");
         assert.ok(winA !== undefined);
         winA.frame_auth = "untouched";
@@ -800,7 +807,7 @@ describe("world migration member authority", () => {
             });
             assert.deepEqual(world.sendToOutputCalls, ["win-a->out-b", "win-c->out-b"], `${auth}: later authorized output moves`);
             assert.deepEqual(world.setMembershipCalls, ["win-a->wa1", "win-c->wa1"], `${auth}: later authorized membership moves`);
-            assert.deepEqual(world.switchViewCalls, ["out-b->wa1", "out-a->ws-6"], `${auth}: target and refill switch on proof`);
+            assert.deepEqual(world.switchViewCalls, ["out-b->wa1", `out-a->${REFILL_NATIVE}`], `${auth}: target and refill switch on proof`);
             assert.ok(!frameWrites.includes("win-a"), `${auth}: no frame write on authorized float`);
             assert.equal(applied.membershipWrites, 2);
         }
@@ -834,7 +841,7 @@ describe("world migration member authority", () => {
         assert.equal(world.sendToOutputCalls.length, 0);
         assert.equal(world.setMembershipCalls.length, 0);
         assert.equal(setGeometryCalls, 0);
-        assert.deepEqual(world.switchViewCalls, ["out-b->wa1", "out-a->ws-6"]);
+        assert.deepEqual(world.switchViewCalls, ["out-b->wa1", `out-a->${REFILL_NATIVE}`]);
         assert.equal(applied.viewWrites, 2);
     });
 

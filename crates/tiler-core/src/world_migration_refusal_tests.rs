@@ -517,11 +517,6 @@ fn wholly_unarrived_refusal_restores_unit_and_focus() {
         settled.transfers
     );
     assert!(
-        settled.effects.is_empty(),
-        "no focus writes on rollback reply: {:?}",
-        settled.effects
-    );
-    assert!(
         settled.windows.iter().all(|w| w.frame_operation.is_none()),
         "no replayed operations on rollback reply: {:?}",
         settled.windows
@@ -1429,11 +1424,6 @@ fn acknowledged_refusal_recovers_without_attempt_replay() {
         settled.windows.iter().all(|w| w.frame_operation.is_none()),
         "no replayed operations: {:?}",
         settled.windows
-    );
-    assert!(
-        settled.effects.is_empty(),
-        "no effects on rollback reply after ack: {:?}",
-        settled.effects
     );
     let source_status = settled
         .scopes

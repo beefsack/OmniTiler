@@ -204,7 +204,7 @@ function acceptCapture(
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
         workspaces: [], outputs: [],
         windows: [windowRow(frame)],
-        transfers: [], effects: [], focusRequest: null, dragPreview: null,
+        transfers: [], focusRequest: null, dragPreview: null,
         gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,

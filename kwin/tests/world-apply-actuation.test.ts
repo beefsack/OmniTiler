@@ -508,7 +508,6 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         outputs: [],
         windows: [],
         transfers: [],
-        effects: [],
         dragPreview: null,
         ...extra,
     });
@@ -1565,7 +1564,7 @@ describe("world apply safety reads", () => {
                 visibility: null, visibility_auth: "untouched", visibility_hold: "",
                 state: [],
             }],
-            transfers: [], effects: [], dragPreview: null,
+            transfers: [], dragPreview: null,
         });
         const parsed = parseWorldReply(text);
         assert.ok(parsed !== null && isCoreWorldReply(parsed));
@@ -1875,7 +1874,7 @@ describe("world admission focus on settled floats", () => {
                 state: [],
             }],
             transfers: [],
-            effects: [], dragPreview: null,
+            dragPreview: null,
         });
         const parsed = parseWorldReply(text);
         assert.ok(parsed !== null && isCoreWorldReply(parsed));

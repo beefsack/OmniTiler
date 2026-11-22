@@ -106,7 +106,6 @@ fn restore_float_true_floats_at_native_frame_without_ops() {
     let row = row_for(&reply, "win-a").expect("float row");
     assert!(row.frame_operation.is_none(), "{row:?}");
     assert!(row.clear_operation.is_none(), "{row:?}");
-    assert!(reply.effects.iter().all(|e| e.target.0 != "win-a"));
 }
 
 #[test]
@@ -1881,7 +1880,6 @@ fn floating_pending_true_stays_intentional_across_tiling_changes() {
     let row = row_for(&reply, "win-n").expect("floating row");
     assert!(row.frame_operation.is_none(), "{row:?}");
     assert!(row.clear_operation.is_none(), "{row:?}");
-    assert!(reply.effects.iter().all(|e| e.target.0 != "win-n"));
 
     // Enabling tiling keeps the intentional float with no geometry op.
     let mut f = fact("win-n", "out-a", 400);
@@ -1921,7 +1919,6 @@ fn floating_pending_true_stays_intentional_across_tiling_changes() {
     let row = row_for(&reply, "win-n").expect("float row");
     assert!(row.frame_operation.is_none(), "{row:?}");
     assert!(row.clear_operation.is_none(), "{row:?}");
-    assert!(reply.effects.iter().all(|e| e.target.0 != "win-n"));
 }
 
 #[test]

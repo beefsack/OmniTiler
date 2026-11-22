@@ -651,7 +651,6 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
         other => panic!("directional result, got {other:?}"),
     };
     assert_eq!(outcome, "focus-float-refused-stale");
-    assert!(reply.effects.is_empty(), "never focused");
     assert!(reply.transfers.is_empty(), "never moved");
 }
 
@@ -710,11 +709,6 @@ fn minimized_trailing_retains_workspace_and_focus_global_ignored() {
     );
     assert_eq!(row.allocation, None);
     assert_eq!(row.effective_frame, None);
-    assert!(
-        second.effects.is_empty(),
-        "minimized focus never actuates: {:?}",
-        second.effects
-    );
     assert!(second.transfers.is_empty());
 }
 
@@ -783,7 +777,6 @@ fn readable_none_membership_retained_home_fences_without_move() {
         "unknown membership fences write authority"
     );
     assert!(held.transfers.is_empty(), "no rehoming move");
-    assert!(held.effects.is_empty());
 }
 
 #[test]
@@ -812,7 +805,6 @@ fn readable_none_membership_newcomer_launch_publishes_no_row() {
     );
     assert_eq!(bound_ids(&reply, "out-a").len(), 2);
     assert!(reply.transfers.is_empty());
-    assert!(reply.effects.is_empty());
 }
 
 #[test]
@@ -844,7 +836,6 @@ fn fullscreen_none_absent_order_current_none_launch_adopts_nothing() {
         "fullscreen Space adopts nothing, never a guess"
     );
     assert!(reply.transfers.is_empty());
-    assert!(reply.effects.is_empty());
 }
 
 #[test]
@@ -922,7 +913,6 @@ fn sticky_tiled_launch_none_publishes_no_row() {
     );
     assert_eq!(bound_ids(&reply, "out-a").len(), 2);
     assert!(reply.transfers.is_empty());
-    assert!(reply.effects.is_empty());
 }
 
 #[test]
@@ -952,7 +942,6 @@ fn sticky_float_newcomer_none_publishes_no_row() {
     );
     assert_eq!(bound_ids(&reply, "out-a").len(), 2);
     assert!(reply.transfers.is_empty());
-    assert!(reply.effects.is_empty());
 }
 
 #[test]
@@ -1000,7 +989,6 @@ fn sticky_float_retained_none_loses_row_without_move() {
         "float-sticky-None drops its row instead of collapsing"
     );
     assert!(held.transfers.is_empty(), "no rehoming move");
-    assert!(held.effects.is_empty());
 }
 
 #[test]
@@ -1123,14 +1111,6 @@ fn close_focused_tiled_reflows_without_minimized_focus() {
     );
     assert_eq!(minimized.allocation, None);
     assert_eq!(minimized.effective_frame, None);
-    assert!(
-        reply
-            .effects
-            .iter()
-            .all(|effect| effect.target.0 != "win-c"),
-        "close-reflow never focuses the minimized lifetime: {:?}",
-        reply.effects
-    );
     assert!(reply.transfers.is_empty());
 }
 
@@ -1200,11 +1180,6 @@ fn pager_click_minimized_refuses_while_tiled_focus_succeeds() {
     click_tiled.focused_global = "win-a".to_owned();
     click_tiled.foreground_known = true;
     let reply = accepted(&mut engine, &click_tiled);
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {:?}",
-        reply.effects
-    );
     let request = reply
         .focus_request
         .as_ref()

@@ -525,15 +525,15 @@ function checkSettingValue(value: unknown): boolean {
     }
     if (typeof value === "object") {
         return Object.keys(value as Record<string, unknown>).every(
-            (k) => utf8ByteLength(k) <= 4096 && checkSettingValue((value as Record<string, unknown>)[k]),
+            (k) => checkSettingValue((value as Record<string, unknown>)[k]),
         );
     }
     return false;
 }
 
 // Exact v4 settings request. Values ride raw (no adapter clamp/default:
-// the core validates each field); keys over 4096 bytes, duplicate keys,
-// and non-finite numbers fail closed. rev is the independent per-lifetime
+// the core validates each field); direct keys over 4096 UTF-8 bytes, duplicate
+// keys, and non-finite numbers fail closed. rev is the independent per-lifetime
 // settings revision (canonical u64, never the report/capture sequence).
 export function buildSettingsRequest(
     adapter: string,
@@ -550,7 +550,7 @@ export function buildSettingsRequest(
     }
     const seen = new Set<string>();
     for (const [key, value] of values) {
-        if (typeof key !== "string" || key.length === 0 || utf8ByteLength(key) > 4096 || seen.has(key)) {
+        if (typeof key !== "string" || utf8ByteLength(key) > 4096 || seen.has(key)) {
             return null;
         }
         seen.add(key);

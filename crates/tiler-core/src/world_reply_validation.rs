@@ -16,11 +16,11 @@ use crate::world_report::{
     AfterShown, AuthorityScope, BorderPresentationV4, CommandRejectKind, DragPreviewV4,
     FocusRequest, FocusRequestCause, FrameWitness, IntentDesire, MAX_FOCUS_DEPARTING,
     MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED, MAX_FOCUS_VIEWS, MAX_INTENT_DESIRED,
-    MAX_REPLY_DIAGNOSTICS, MAX_REPLY_EFFECTS, MAX_REPLY_NATIVE_CREATIONS, MAX_REPLY_OPERATIONS,
-    MAX_REPLY_OUTPUTS, MAX_REPLY_SCOPES, MAX_REPLY_SWITCH_EVENTS, MAX_REPLY_TRANSFERS,
-    MAX_REPLY_WINDOWS, MAX_REPLY_WORKSPACES, MAX_STATE_TARGETS_PER_WINDOW, NativeCreationDesire,
-    OperationEvent, OutputDesire, RowDiagnostic, ScopeStatus, StateProperty, SwitchEvent,
-    TransferKind, TransferTargetV4, WORLD_CONTRACT_VERSION_V4, WindowDesire, WorkspaceDesire,
+    MAX_REPLY_DIAGNOSTICS, MAX_REPLY_NATIVE_CREATIONS, MAX_REPLY_OPERATIONS, MAX_REPLY_OUTPUTS,
+    MAX_REPLY_SCOPES, MAX_REPLY_SWITCH_EVENTS, MAX_REPLY_TRANSFERS, MAX_REPLY_WINDOWS,
+    MAX_REPLY_WORKSPACES, MAX_STATE_TARGETS_PER_WINDOW, NativeCreationDesire, OperationEvent,
+    OutputDesire, RowDiagnostic, ScopeStatus, StateProperty, SwitchEvent, TransferKind,
+    TransferTargetV4, WORLD_CONTRACT_VERSION_V4, WindowDesire, WorkspaceDesire,
     WorldPresentationV4, WorldReplyV4,
 };
 
@@ -467,7 +467,6 @@ pub fn validate_reply_v4(reply: &WorldReplyV4, host: Option<&HostCapabilities>) 
     check_cap(reply.outputs.len(), MAX_REPLY_OUTPUTS)?;
     check_cap(reply.windows.len(), MAX_REPLY_WINDOWS)?;
     check_cap(reply.transfers.len(), MAX_REPLY_TRANSFERS)?;
-    check_cap(reply.effects.len(), MAX_REPLY_EFFECTS)?;
     check_cap(reply.operation_settled.len(), MAX_REPLY_OPERATIONS)?;
     check_cap(reply.native_creations.len(), MAX_REPLY_NATIVE_CREATIONS)?;
     check_cap(reply.intent_desired.len(), MAX_INTENT_DESIRED)?;
@@ -508,17 +507,6 @@ pub fn validate_reply_v4(reply: &WorldReplyV4, host: Option<&HostCapabilities>) 
             return Err(ReplyValidationError::snapshot("duplicate-transfer"));
         }
         validate_transfer(transfer)?;
-    }
-    let mut seen_effects = BTreeSet::new();
-    for effect in &reply.effects {
-        if !seen_effects.insert(effect.id.as_str()) {
-            return Err(ReplyValidationError::snapshot("duplicate-effect"));
-        }
-    }
-    if let Some(first) = reply.effects.first() {
-        check_id(&first.id)?;
-        check_id(&first.target.0)?;
-        return Err(ReplyValidationError::snapshot("effect-focus-removed"));
     }
     let mut seen_operations = BTreeSet::new();
     for event in &reply.operation_settled {

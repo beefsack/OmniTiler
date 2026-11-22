@@ -149,11 +149,6 @@ fn test_issue(report: &WorldReportV4) -> crate::world_engine::EventIssue {
 }
 
 fn focus_targets(reply: &WorldReplyV4) -> Vec<WindowId> {
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {:?}",
-        reply.effects
-    );
     reply
         .focus_request
         .iter()
@@ -623,11 +618,7 @@ fn redundant_view_select_records_nothing_extra() {
             }),
         ),
     );
-    assert!(
-        focus_targets(&reply).is_empty(),
-        "redundant select stays NoEffect: {:?}",
-        reply.effects
-    );
+    assert!(reply.focus_request.is_none());
     assert_eq!(
         remembered_window(&engine, &key),
         before,
@@ -1291,11 +1282,7 @@ fn close_focused_falls_back_to_mru_survivor_without_command_effect() {
     );
     close.closed = vec![WindowId("win-b".to_owned())];
     let reply = accepted(&mut engine, &close);
-    assert!(
-        focus_targets(&reply).is_empty(),
-        "close emits no command-owned focus effect: {:?}",
-        reply.effects
-    );
+    assert!(reply.focus_request.is_none());
     assert_eq!(
         remembered_window(&engine, &key),
         Some(WindowId("win-a".to_owned())),
@@ -1894,14 +1881,16 @@ fn sticky_shown_away_from_home_returns_sticky() {
             }),
         ),
     );
-    assert!(
-        !focus_targets(&focused).is_empty()
-            && focus_targets(&focused)
-                .iter()
-                .all(|t| *t == WindowId("win-s".to_owned())),
-        "sticky focuses from the shown spare: {:?}",
-        focused.effects
+    let request = focused
+        .focus_request
+        .as_ref()
+        .expect("explicit sticky focus request");
+    assert_eq!(request.target, WindowId("win-s".to_owned()));
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
     );
+    assert_eq!(request.cmd_seq, Some(12));
     // Detour to home, then return to the spare: sticky must come back.
     let _ = accepted(
         &mut engine,
@@ -2007,14 +1996,16 @@ fn later_tile_outranks_stale_home_sticky_on_return() {
             }),
         ),
     );
-    assert!(
-        !focus_targets(&focused).is_empty()
-            && focus_targets(&focused)
-                .iter()
-                .all(|t| *t == WindowId("win-s".to_owned())),
-        "sticky focuses from the shown spare: {:?}",
-        focused.effects
+    let request = focused
+        .focus_request
+        .as_ref()
+        .expect("explicit sticky focus request");
+    assert_eq!(request.target, WindowId("win-s".to_owned()));
+    assert_eq!(
+        request.cause,
+        crate::world_report::FocusRequestCause::ExplicitCommand
     );
+    assert_eq!(request.cmd_seq, Some(12));
     assert_eq!(
         home_of(&engine, &WindowId("win-s".to_owned())),
         Some(DomainKey {
@@ -2770,10 +2761,7 @@ fn last_active_no_focus_empty_target_with_visible_sticky_stays_quiet() {
             }),
         ),
     );
-    assert!(
-        away.effects.is_empty(),
-        "empty spare with only a visible sticky invents no focus"
-    );
+    assert!(away.focus_request.is_none());
     assert_eq!(
         engine.tx(|tx| tx.canonical_memory(&home)),
         Some(WindowId("win-s".to_owned())),
@@ -3216,11 +3204,7 @@ fn last_active_close_after_tile_supersession_falls_back_to_tiled() {
     );
     close.closed = vec![tile];
     let reply = accepted(&mut engine, &close);
-    assert!(
-        focus_targets(&reply).is_empty(),
-        "close emits no focus effect, got {:?}",
-        reply.effects
-    );
+    assert!(reply.focus_request.is_none());
     assert_eq!(
         engine.tx(|tx| tx.canonical_memory(&home)),
         Some(WindowId("win-a".to_owned())),
@@ -3325,11 +3309,7 @@ fn sticky_visibility_switch_mints_no_admission_and_no_spare_memory() {
         &mut engine,
         &report(4, two_screens(), windows(), "win-a", None, None),
     );
-    assert!(
-        focus_targets(&obs).is_empty(),
-        "visible sticky mints no admission focus, got {:?}",
-        obs.effects
-    );
+    assert!(obs.focus_request.is_none());
     assert_eq!(
         engine.tx(|tx| tx.canonical_memory(&spare)),
         None,
@@ -3340,11 +3320,7 @@ fn sticky_visibility_switch_mints_no_admission_and_no_spare_memory() {
         &mut engine,
         &report(5, two_screens(), windows(), "win-a", None, None),
     );
-    assert!(
-        focus_targets(&obs2).is_empty(),
-        "detour observation stays quiet, got {:?}",
-        obs2.effects
-    );
+    assert!(obs2.focus_request.is_none());
     assert_eq!(
         engine.tx(|tx| tx.canonical_memory(&spare)),
         None,

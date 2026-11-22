@@ -273,7 +273,6 @@ function makeHarness(scopeClass?: string | readonly string[], opts: { floatInten
             outputs: [],
             windows: opts.windows ?? defaultWindows,
             transfers: opts.transfers ?? [],
-            effects: [],
             focusRequest: opts.focusRequest ?? null,
             dragPreview: opts.dragPreview ?? null,
             gestureSettled: opts.gestureSettled ?? null,

@@ -4,8 +4,7 @@
 
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::world_report::{
-    AfterShown, AfterShownMember, AfterShownScope, EffectCause, EffectKind, FocusRequest,
-    FocusRequestCause, OneShotEffect,
+    AfterShown, AfterShownMember, AfterShownScope, FocusRequest, FocusRequestCause,
 };
 use tiler_core::world_report_v4_checks::{report_digest_v4, validate_report_v4_reason};
 use tiler_protocol::world_admission_sizing::{reply_upper_bound_v4, report_estimate_v4};
@@ -162,10 +161,6 @@ fn reply_focus_request_all_causes_round_trip_with_correlation() {
     assert_eq!(shown.members.len(), 1);
     assert_eq!(shown.views.len(), 1);
     assert_eq!(shown.selected.len(), 1);
-    assert!(
-        explicit.reply.effects.is_empty(),
-        "focus left the effects lane"
-    );
     let wire = encode_reply_v4(&explicit).expect("explicit witness encodes");
     assert_eq!(
         wire,
@@ -211,33 +206,18 @@ fn reply_mixed_old_lane_and_focus_effect_refuse() {
     );
     let error = decode_reply_v4(&pending).expect_err("renamed lane refuses");
     assert_eq!(error.kind, "unknown-field");
-    // Focus left the effects lane: a focus row refuses on decode even when
-    // the retained lane is null.
+    // Retired effects key refuses as an unknown field (both empty and non-empty).
     let mut effect_text: serde_json::Value =
         serde_json::from_str(&reply_text("messages/reply-bootstrap.json")).expect("valid");
+    effect_text["effects"] = serde_json::json!([]);
+    let error = decode_reply_v4(&effect_text.to_string()).expect_err("empty effects key refuses");
+    assert_eq!(error.kind, "unknown-field");
     effect_text["effects"] = serde_json::json!([{
         "id": "effect-a", "kind": "focus", "target": "win-a", "rev": "1",
         "cause": "explicit-command", "cmdSeq": "1", "awaitShown": false,
     }]);
     let error = decode_reply_v4(&effect_text.to_string()).expect_err("focus effect refuses");
-    assert_eq!(error.kind, "snapshot-invalid");
-    assert_eq!(error.message, "effect-focus-removed");
-    // The writer refuses a focus carrier the same way instead of emitting
-    // it: the core strips focus before publish.
-    let mut decoded =
-        decode_reply_v4(&reply_text("messages/reply-bootstrap.json")).expect("decodes");
-    decoded.reply.effects = vec![OneShotEffect {
-        id: "effect-a".to_owned(),
-        kind: EffectKind::Focus,
-        target: WindowId("win-a".to_owned()),
-        issued_revision: 1,
-        cause: EffectCause::ExplicitCommand,
-        command_seq: Some(1),
-        await_shown: false,
-    }];
-    let error = encode_reply_v4(&decoded).expect_err("focus effect never encodes");
-    assert_eq!(error.kind, "snapshot-invalid");
-    assert_eq!(error.message, "effect-focus-removed");
+    assert_eq!(error.kind, "unknown-field");
 }
 
 #[test]

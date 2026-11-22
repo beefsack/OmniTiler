@@ -62,7 +62,6 @@ const ACCEPTED = (
     outputs: [],
     windows: [],
     transfers: [],
-    effects: [],
     dragPreview: null,
     gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null,
     focusRequest: null,

@@ -304,4 +304,37 @@ describe("world-reply-v4", () => {
         assert.equal(parseWorldReply(withFrame([0, 0, 16385, 1])), null);
         assert.equal(parseWorldReply(withFrame([0, 0, 100, 100], [32769, 0])), null);
     });
+
+    it("PW-OUT-03: retired effects key refuses on core/bootstrap, bound, and roster replies", () => {
+        const bootClean = clone("reply-bootstrap.json");
+        Reflect.deleteProperty(bootClean, "effects");
+        assert.ok(isCoreWorldReply(parseDiscoveryReply(JSON.stringify(bootClean))));
+        assert.equal(parseDiscoveryReply(JSON.stringify({ ...bootClean, effects: [] })), null);
+
+        const boundClean = clone("reply-observe.json");
+        Reflect.deleteProperty(boundClean, "effects");
+        assert.ok(isCoreWorldReply(parseWorldReply(boundText(boundClean))));
+        assert.equal(parseWorldReply(boundText({ ...boundClean, effects: [] })), null);
+
+        const rosterClean = {
+            ...boundClean,
+            rosterPlan: {
+                op: "rp-1",
+                gen: boundClean["gen"],
+                rev: boundClean["rev"],
+                obs: boundClean["obs"],
+                baseline: { epoch: "1", order: [], projections: [] },
+                currents: [],
+                occupants: [],
+                projections: [],
+                slots: [],
+                members: [],
+                views: [],
+                removals: [],
+                focus: null,
+            },
+        };
+        assert.ok(isCoreWorldReply(parseWorldReply(boundText(rosterClean))));
+        assert.equal(parseWorldReply(boundText({ ...rosterClean, effects: [] })), null);
+    });
 });

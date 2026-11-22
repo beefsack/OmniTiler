@@ -185,7 +185,6 @@ fn exact_match_success_confirms_sticky() {
     assert!(reply.diagnostics.is_empty());
     assert!(settlements.is_empty());
     assert!(reply.operation_settled.is_empty());
-    assert!(reply.effects.is_empty());
     assert!(reply.windows.iter().all(|row| row.state.is_empty()));
     assert!(reply.windows.iter().all(|row| row.visibility.is_none()));
 }
@@ -1361,7 +1360,6 @@ fn terminal_proof_stable_against_later_flip() {
         AttemptOutcome::Applied,
     );
     assert!(reply.windows.iter().all(|row| row.state.is_empty()));
-    assert!(reply.effects.is_empty());
 }
 
 #[test]

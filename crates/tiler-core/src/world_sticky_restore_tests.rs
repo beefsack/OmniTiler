@@ -464,10 +464,6 @@ fn all_six_sticky_priors_admit_as_semantic_float_with_exact_prior() {
         let row = row_for(&reply, "win-a").expect("float row");
         assert!(row.frame_operation.is_none(), "{row:?}");
         assert!(row.clear_operation.is_none(), "{row:?}");
-        assert!(
-            reply.effects.iter().all(|e| e.target.0 != "win-a"),
-            "import mints no focus: {reply:?}"
-        );
     }
 }
 

@@ -760,11 +760,6 @@ fn shared_first_incomplete_reports_empty_then_complete_mints_and_latches() {
         first.transfers
     );
     assert!(
-        first.effects.is_empty(),
-        "gap effects nothing: {:?}",
-        first.effects
-    );
-    assert!(
         first.native_creations.is_empty(),
         "gap mints no creations: {:?}",
         first.native_creations

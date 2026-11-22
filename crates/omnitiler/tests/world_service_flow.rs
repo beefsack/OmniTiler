@@ -1349,10 +1349,14 @@ fn actuator_reply_carries_no_terminal_result_but_presentation_hides_tokens() {
         .expect("accepted");
     let dispatched = parse(&dispatched_text);
     assert_eq!(dispatched["consumed"], false);
-    // The actuator lane keeps its one-shot native work (effects) but never
+    // The actuator lane keeps its native work (transfers, focusRequest) but never
     // the requester-correlated terminal result, even though no separate
     // issuer exists here.
-    assert!(dispatched.get("effects").is_some());
+    assert!(
+        dispatched.get("effects").is_none(),
+        "retired effects key omitted"
+    );
+    assert!(dispatched.get("transfers").is_some());
     assert!(
         dispatched.get("result").is_none(),
         "actuator reply carries no result field"

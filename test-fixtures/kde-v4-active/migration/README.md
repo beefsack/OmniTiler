@@ -17,8 +17,10 @@ Retained input sequence (mirrors the historical README):
 
 1. `handshake.request.json`: production `buildHandshakeRequest`,
    answered by the real core, minting the serving generation
-   (`world-eval-0`). Carries the required `sharedNativeRoster`
-   capability (`true` here).
+   (`world-eval-0`). Carries `sharedNativeRoster: false` (independent-native
+   profile, via the test-only `startWorldAdapterEntry` override) so this
+   fixture exercises the disjoint non-roster migration apply route; the
+   separate real-broker producer suite remains the KDE shared-roster proof.
 2. `settings.request.json`: production `buildSettingsRequest`
    (`set-1`, rev `1`) with the entry-default snapshot, accepted.
 3. `capture-seed-1.*`: production report + capture envelope, stamped by
@@ -27,12 +29,13 @@ Retained input sequence (mirrors the historical README):
 4. `queue.request.json`: the entry-filed `migrate-directional` right
    (`clientCmd` 1), filed through `MiniBroker.answerQueue`.
 5. `capture-drain.*` + `MIGRATE_DRAIN.reply.json`: the next capture
-   drains the command. The bound drain reply retains the migration
-   transfer `op-1` (`out-b`/`ws-1`, `cmdSeq` 1) plus its paired
-   source-refill child `op-1-refill` (`out-a`/`ws-6`); the migrated row is
-   unbound (`bind` `""`) until the creation-flow proof; `WorldReplyV4` carries
-   no `result` field (terminal results ride issuing `Vec<BatchSettlement>` and
-   the requester-only `TakeCommandResult` lane) and carries required nullable
+   drains the command. The bound drain reply retains the unheld migration
+   transfer `op-1` (`out-b`/`ws-1`, `cmdSeq` 1) plus its paired unheld
+   source-refill child `op-1-refill` (`out-a`/`ws-2`, bound `wb1`); the
+   migrated row is unbound (`bind` `""`) until the creation-flow proof;
+   `WorldReplyV4` omits the retired `effects` key, carries no `result` field
+   (terminal results ride issuing `Vec<BatchSettlement>` and the
+   requester-only `TakeCommandResult` lane), and carries required nullable
    `dragPreview: null`.
 6. `take.request.json` / `MIGRATE_TAKE.result.json`: the terminal
    `migrate-workspace` result (`out-a`/`ws-1` right to `out-b`/`ws-1`,
@@ -59,10 +62,10 @@ source nonce).
 
 Boundary: the historical `test-fixtures/kde-v4/migration` family is
 preserved read-only history (predates `sharedNativeRoster`,
-`foregroundKnown`, `focusRequest`, `intentDesired`). The core's workspace
-model has since grown more trailing spares, so the core-chosen refill here
-is `ws-6` (historical: `ws-3`); the take result and the op-1/op-1-refill
-pairing semantics are unchanged.
+`foregroundKnown`, `focusRequest`, `intentDesired`, and removal of `effects`).
+Under the independent-native (`sharedNativeRoster: false`) profile, the
+core-chosen refill here is `ws-2` (bound `wb1`, order 0 on `out-a`); the take
+result and the unheld `op-1`/`op-1-refill` pairing semantics are unchanged.
 
 What this is NOT: the binding envelope (`source`, `nativeInvalid`,
 `clock`, `gestureAssoc`, `gestureSettledAssoc`) is applied by the test-only

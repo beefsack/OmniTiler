@@ -946,7 +946,7 @@ describe("world genuine-producer workspace selection journeys", () => {
             // non-null `afterShown` per the native selection evidence;
             // focus left the effects lane, so no focus effect row rides).
             // The grant target must home to the selected cell.
-            assert.deepEqual(drain["effects"], [], "no focus effect is published on the v4 wire");
+            assert.equal("effects" in drain, false, "retired effects key omitted on the v4 wire");
             const focusReq = drain["focusRequest"] as Record<string, unknown> | null;
             assert.ok(focusReq !== null, "populated grant carries the retained focus request");
             assert.equal(focusReq["cause"], "explicit-command", "grant is command-owned");
@@ -1041,7 +1041,8 @@ describe("world genuine-producer workspace selection journeys", () => {
                 [{ out: "out", op: "op-1", outcome: "complete", focus: "unproven", failed: [], fallback: false }],
                 "focusless binding settles one terminal",
             );
-            assert.deepEqual(reply["effects"], [], "no focus effect is invented for an empty target");
+            assert.equal("effects" in reply, false, "retired effects key omitted on the v4 wire");
+            assert.equal(reply["focusRequest"], null, "no focus request is invented for an empty target");
             assert.deepEqual(h.focused, [], "no native focus actuation without a target");
             const ids = ((reply["windows"] as Array<Record<string, unknown>>).map((w) => w["win"] as string)).sort();
             assert.deepEqual(ids, ["win-a", "win-b"], "published window set exact after empty selection");
@@ -1093,7 +1094,8 @@ describe("world genuine-producer workspace selection journeys", () => {
             const reply = lastDescribeReply(h);
             assert.equal("result" in reply, false, "actuator lane never carries a terminal");
             assert.deepEqual(reply["switchSettled"], [], "superseded open parent emits no terminal");
-            assert.deepEqual(reply["effects"], [], "no arrival focus effect is filed");
+            assert.equal("effects" in reply, false, "retired effects key omitted on the v4 wire");
+            assert.equal(reply["focusRequest"], null, "no arrival focus request is filed");
             assert.deepEqual(h.focused, [], "no native focus actuation");
             appliedMatchesReply(h, reply);
         } finally {

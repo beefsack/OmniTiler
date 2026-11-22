@@ -172,7 +172,7 @@ function acceptCapture(gen: string, envelope: Record<string, unknown>, rev: stri
             visibility: null, visibility_auth: "untouched", visibility_hold: "",
             state: [],
         }],
-        transfers: [], effects: [], focusRequest: null, dragPreview: null,
+        transfers: [], focusRequest: null, dragPreview: null,
         gestureSettled: null, gestureAssoc: null, gestureSettledAssoc: null, operationSettled: [], nativeCreations: [], warpCursor: null,
         intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,

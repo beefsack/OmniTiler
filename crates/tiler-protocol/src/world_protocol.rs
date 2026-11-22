@@ -84,23 +84,22 @@ use tiler_core::world_presentation::{
 use tiler_core::world_report::{
     ActivationPolicy, AfterShown, AfterShownMember, AfterShownScope, ArrivalBracket,
     ArrivalLocation, AttemptLaneV4, AuthorityScope, BorderHideReasonV4, BorderPresentationV4,
-    CommandRejectKind, DragPreviewV4, EffectKind, FloatOrigin, FocusChange, FocusChanges,
+    CommandRejectKind, DragPreviewV4, FloatOrigin, FocusChange, FocusChanges,
     FocusDirectionalSubject, FocusFeedback, FocusRequest, FocusRequestCause, FrameWitness,
     FullscreenOwner, HeldAttemptRow, HeldNativeRow, HeldPresentationRow, HeldScreenRow,
     HeldWindowRow, HoldReason, IntentDesire, IntentRecord, MAX_FOCUS_CHANGES, MAX_FOCUS_DEPARTING,
     MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED, MAX_FOCUS_VIEWS, MAX_INTENT_DESIRED, MAX_INTENT_RECORDS,
-    MAX_REPLY_DIAGNOSTICS, MAX_REPLY_EFFECTS, MAX_REPLY_NATIVE_CREATIONS, MAX_REPLY_OPERATIONS,
-    MAX_REPLY_OUTPUTS, MAX_REPLY_SCOPES, MAX_REPLY_SWITCH_EVENTS, MAX_REPLY_TRANSFERS,
-    MAX_REPLY_WINDOWS, MAX_REPLY_WORKSPACES, MAX_STATE_TARGETS_PER_WINDOW, NativeCreationDesire,
-    NativeObservation, NativeWorkspaceFact, OneShotEffect, OperationEvent, OperationKind,
-    OperationOutcome, OutputDesire, OutputIdentity, PresentationIngressV4,
-    PresentationPagerFrameV4, PresentationRowV4, RenderTarget, RendererInput, RowDiagnostic,
-    RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScopeStatus, ScreenReport, StateProperty,
-    StateTarget, SwitchEvent, SwitchFocus, SwitchOutcome, TilingMode, TransferKind,
-    TransferTargetV4, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
-    VisibilityTarget, WindowDesire, WindowFact, WindowType, WorkspaceDesire, WorkspaceRef,
-    WorldCommand, WorldPresentationV4, WorldReplyV4, WorldReportV4, check_screen_structure,
-    check_window_structure,
+    MAX_REPLY_DIAGNOSTICS, MAX_REPLY_NATIVE_CREATIONS, MAX_REPLY_OPERATIONS, MAX_REPLY_OUTPUTS,
+    MAX_REPLY_SCOPES, MAX_REPLY_SWITCH_EVENTS, MAX_REPLY_TRANSFERS, MAX_REPLY_WINDOWS,
+    MAX_REPLY_WORKSPACES, MAX_STATE_TARGETS_PER_WINDOW, NativeCreationDesire, NativeObservation,
+    NativeWorkspaceFact, OperationEvent, OperationKind, OperationOutcome, OutputDesire,
+    OutputIdentity, PresentationIngressV4, PresentationPagerFrameV4, PresentationRowV4,
+    RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
+    ScopeAuthority, ScopeStatus, ScreenReport, StateProperty, StateTarget, SwitchEvent,
+    SwitchFocus, SwitchOutcome, TilingMode, TransferKind, TransferTargetV4, VisibilityFact,
+    VisibilityReason, VisibilitySample, VisibilitySetter, VisibilityTarget, WindowDesire,
+    WindowFact, WindowType, WorkspaceDesire, WorkspaceRef, WorldCommand, WorldPresentationV4,
+    WorldReplyV4, WorldReportV4, check_screen_structure, check_window_structure,
 };
 use tiler_core::world_roster::SharedRosterPlan;
 
@@ -4156,6 +4155,12 @@ pub fn decode_report_v4_map(
         },
         action_outputs: match map.get("actionOutputs") {
             Some(serde_json::Value::Array(items)) => {
+                if items.len() > tiler_core::world_report::MAX_WORLD_SCREENS {
+                    return Err(WorldProtocolError {
+                        kind: KIND_SNAPSHOT,
+                        message: "section-over-cap",
+                    });
+                }
                 let mut outputs = Vec::with_capacity(items.len());
                 for item in items {
                     match item {
@@ -4631,53 +4636,6 @@ fn decode_transfer_v4(value: &serde_json::Value) -> Result<TransferTargetV4> {
         held: req_bool(map, "held")?,
         command_seq: opt_u64_or_null(map, "cmdSeq")?,
         parent: opt_id_or_null(map, "parent")?,
-    })
-}
-
-fn decode_effect(value: &serde_json::Value) -> Result<OneShotEffect> {
-    let map = as_object(value)?;
-    check_keys(
-        map,
-        &[
-            "id",
-            "kind",
-            "target",
-            "rev",
-            "cause",
-            "cmdSeq",
-            "awaitShown",
-        ],
-    )?;
-    let kind = match req_str(map, "kind")? {
-        "focus" => EffectKind::Focus,
-        _ => return Err(unknown_value()),
-    };
-    let cause = match req_str(map, "cause")? {
-        "explicit-command" => tiler_core::world_report::EffectCause::ExplicitCommand,
-        "automatic-admission" => tiler_core::world_report::EffectCause::AutomaticAdmission,
-        "focus-follows-cursor" => tiler_core::world_report::EffectCause::FocusFollowsCursor,
-        _ => return Err(unknown_value()),
-    };
-    let command_seq = opt_u64_or_null(map, "cmdSeq")?;
-    let await_shown = req_bool(map, "awaitShown")?;
-    let explicit = cause == tiler_core::world_report::EffectCause::ExplicitCommand;
-    if explicit && command_seq.is_none() {
-        return Err(reply_snapshot("effect-explicit-null-seq"));
-    }
-    if !explicit && command_seq.is_some() {
-        return Err(reply_snapshot("effect-non-explicit-seq"));
-    }
-    if !explicit && await_shown {
-        return Err(reply_snapshot("effect-automatic-await-shown"));
-    }
-    Ok(OneShotEffect {
-        id: req_id(map, "id")?,
-        kind,
-        target: WindowId(req_id(map, "target")?),
-        issued_revision: req_u64_str(map, "rev")?,
-        cause,
-        command_seq,
-        await_shown,
     })
 }
 
@@ -5357,7 +5315,6 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
             "outputs",
             "windows",
             "transfers",
-            "effects",
             "focusRequest",
             "dragPreview",
             "gestureSettled",
@@ -5456,25 +5413,6 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
             return Err(reply_snapshot("duplicate-transfer"));
         }
         transfers.push(transfer);
-    }
-    let effects_value = map.get("effects").ok_or_else(malformed)?;
-    let effect_items = effects_value.as_array().ok_or_else(malformed)?;
-    if effect_items.len() > MAX_REPLY_EFFECTS {
-        return Err(reply_snapshot("section-over-cap"));
-    }
-    let mut effects = Vec::with_capacity(effect_items.len());
-    let mut seen_effects = std::collections::BTreeSet::new();
-    for item in effect_items {
-        let effect = decode_effect(item)?;
-        // Focus left the effects lane: the retained `focusRequest` carries
-        // every cause now. A focus row on the wire refuses.
-        if effect.kind == EffectKind::Focus {
-            return Err(reply_snapshot("effect-focus-removed"));
-        }
-        if !seen_effects.insert(effect.id.clone()) {
-            return Err(reply_snapshot("duplicate-effect"));
-        }
-        effects.push(effect);
     }
     let drag_preview = decode_drag_preview(map.get("dragPreview").ok_or_else(malformed)?)?;
     let gesture_settled = decode_gesture_settled(map.get("gestureSettled").ok_or_else(malformed)?)?;
@@ -5578,7 +5516,6 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
             outputs,
             windows,
             transfers,
-            effects,
             focus_request: decode_focus_request(map.get("focusRequest").ok_or_else(malformed)?)?,
             drag_preview,
             gesture_settled,
@@ -6987,7 +6924,6 @@ mod tests {
             outputs: Vec::new(),
             windows: Vec::new(),
             transfers: Vec::new(),
-            effects: Vec::new(),
             focus_request: None,
             drag_preview: None,
             gesture_settled: None,

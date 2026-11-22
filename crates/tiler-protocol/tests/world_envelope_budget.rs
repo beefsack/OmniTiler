@@ -20,8 +20,8 @@ use tiler_core::world_report::{
 };
 use tiler_protocol::world_admission::ProtocolAdmissionGate;
 use tiler_protocol::world_admission_sizing::{
-    MAX_EFFECT_RESERVE_BYTES, MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES, MAX_TARGET_LANES_PER_WINDOW,
-    max_intent_desired_bound, max_intent_save_bound_v4, reply_upper_bound_v4, report_estimate_v4,
+    MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES, MAX_TARGET_LANES_PER_WINDOW, max_intent_desired_bound,
+    max_intent_save_bound_v4, reply_upper_bound_v4, report_estimate_v4,
 };
 use tiler_protocol::world_protocol::{WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES};
 use tiler_protocol::world_reply_write::count_reply_v4_bytes;
@@ -590,98 +590,6 @@ fn preflight_intent_desired_reserve_crossing_refuses_and_retry_accepts() {
 }
 
 #[test]
-fn preflight_effect_reserve_boundary_refuses_before_mutation_and_retry_accepts() {
-    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
-    accepted(
-        &mut engine,
-        &report(
-            1,
-            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
-        ),
-    );
-    let focus = || WorldCommand::Focus {
-        window: tiler_core::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
-        direction: None,
-    };
-    let bound_of = |windows: &[WindowFact]| {
-        let mut r = report(2, windows.to_vec());
-        r.command_seq = Some(2);
-        r.command = Some(focus());
-        reply_upper_bound_v4(&r, 0, 1, 2, 0, 2)
-    };
-    let mut windows = vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)];
-    for i in 0..2200 {
-        windows.push(fact(&format!("win-pad-{i:05}"), "out-a", 0));
-    }
-    while bound_of(&windows) - MAX_EFFECT_RESERVE_BYTES > WORLD_MAX_REPLY_BYTES {
-        windows.pop();
-    }
-    let shortfall = WORLD_MAX_REPLY_BYTES
-        .saturating_sub(bound_of(&windows) - MAX_EFFECT_RESERVE_BYTES)
-        .saturating_sub(10);
-    windows[2].title = Some("t".repeat(shortfall + 2));
-
-    let mut r = report(2, windows);
-    r.command_seq = Some(2);
-    r.command = Some(focus());
-    let without_reserve = reply_upper_bound_v4(&r, 0, 1, 2, 0, 2) - MAX_EFFECT_RESERVE_BYTES;
-    assert!(
-        report_estimate_v4(&r) <= WORLD_MAX_REQUEST_BYTES,
-        "request itself fits; only the reply bound trips"
-    );
-    assert!(
-        without_reserve <= WORLD_MAX_REPLY_BYTES,
-        "reserve-free bound fits: {without_reserve}"
-    );
-    assert!(
-        without_reserve + MAX_EFFECT_RESERVE_BYTES > WORLD_MAX_REPLY_BYTES,
-        "added effect coexistence reserve is the discriminator"
-    );
-
-    let revision = engine.state_revision();
-    let gate = ProtocolAdmissionGate::new();
-    let transition = engine
-        .handle_report_with_gate_and_prepare(&r, &[], &gate, |_| {
-            Ok::<(), std::convert::Infallible>(())
-        })
-        .unwrap_or_else(|e| match e {});
-    assert!(
-        matches!(
-            transition.dispositions.as_slice(),
-            [tiler_core::world_report::BatchDisposition {
-                seq: 2,
-                disposition: tiler_core::world_report::CommandDisposition::NotRun,
-            }]
-        ),
-        "expected NotRun disposition, got {:?}",
-        transition.dispositions
-    );
-    assert!(
-        matches!(transition.outcome, WorldOutcome::Rejected { kind, .. } if kind == "reply-oversize"),
-        "expected reply-oversize, got {:?}",
-        transition.outcome
-    );
-    assert_eq!(engine.state_revision(), revision, "refusal mutates nothing");
-
-    let mut retry = report(
-        2,
-        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 400)],
-    );
-    retry.command_seq = Some(2);
-    retry.command = Some(focus());
-    let reply = accepted(&mut engine, &retry);
-    assert!(
-        reply.focus_request.as_ref().is_some_and(|request| {
-            request.target.0 == "win-a"
-                && request.cause == FocusRequestCause::ExplicitCommand
-                && request.cmd_seq == Some(2)
-        }),
-        "retry with unconsumed command_seq emits explicit focus: {:?}",
-        reply.focus_request
-    );
-}
-
-#[test]
 fn explicit_focus_with_newcomer_fits_preflight_reserve_and_canonical_count() {
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
     accepted(&mut engine, &report(1, vec![fact("win-a", "out-a", 0)]));
@@ -697,11 +605,6 @@ fn explicit_focus_with_newcomer_fits_preflight_reserve_and_canonical_count() {
     });
     let pre_bound = reply_upper_bound_v4(&input, 0, 1, 2, 0, 1);
     let reply = accepted(&mut engine, &input);
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {:?}",
-        reply.effects
-    );
     let explicit = reply.focus_request.as_ref().expect("explicit request");
     assert_eq!(explicit.target.0, "win-a");
     assert_eq!(explicit.id, format!("focus-{}", reply.state_revision));

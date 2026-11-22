@@ -1209,11 +1209,6 @@ fn global_unique_swap_occupied_current_emits_destination_remembered_focus() {
     );
     assert_eq!(view_of(&swapped, "out-a").as_deref(), Some(view_b.as_str()));
     assert_eq!(view_of(&swapped, "out-b").as_deref(), Some(view_a.as_str()));
-    assert!(
-        swapped.effects.is_empty(),
-        "focus never publishes as wire effects: {:?}",
-        swapped.effects
-    );
     let request = swapped
         .focus_request
         .as_ref()
@@ -1277,11 +1272,6 @@ fn global_unique_swap_empty_current_emits_destination_remembered_focus() {
     );
     assert_eq!(view_of(&swapped, "out-a").as_deref(), Some(view_b.as_str()));
     assert_eq!(view_of(&swapped, "out-b").as_deref(), Some(view_a.as_str()));
-    assert!(
-        swapped.effects.is_empty(),
-        "focus never publishes as wire effects: {:?}",
-        swapped.effects
-    );
     let request = swapped
         .focus_request
         .as_ref()
@@ -1344,11 +1334,6 @@ fn global_unique_swap_to_empty_stays_quiet() {
     );
     assert_eq!(view_of(&swapped, "out-a").as_deref(), Some(view_b.as_str()));
     assert_eq!(view_of(&swapped, "out-b").as_deref(), Some(view_a.as_str()));
-    assert!(
-        swapped.effects.is_empty(),
-        "empty destination stays quiet: {:?}",
-        swapped.effects
-    );
 }
 
 #[test]

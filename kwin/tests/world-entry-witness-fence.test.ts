@@ -288,7 +288,7 @@ function acceptedReply(gen: string, source: string, nativeInvalid: string, rev: 
         warpCursor: null, intentDesired: [], switchSettled: [], diagnostics: [],
         presentation: DISABLED_PRESENTATION,
         scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
-        workspaces: [], outputs: [], windows: [], transfers: [], effects: [], focusRequest: null, dragPreview: null,
+        workspaces: [], outputs: [], windows: [], transfers: [], focusRequest: null, dragPreview: null,
     });
     const parsed = parseWorldReply(text);
     assert.ok(parsed !== null && isCoreWorldReply(parsed), "authored accept binds strict v4");

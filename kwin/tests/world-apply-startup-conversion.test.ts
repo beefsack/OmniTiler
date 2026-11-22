@@ -250,7 +250,6 @@ function conversionCreationReply(): WorldReply {
             windowRow("win-m", OUT_2, WS_1),
         ],
         transfers: [],
-        effects: [],
         dragPreview: null,
     };
 }
@@ -328,7 +327,6 @@ function conversionMoveReply(): WorldReply {
             { op: "op-scm-1-4", kind: "window", win: "win-z", out: OUT_2, ws: TOKEN, follow: false, held: false, cmdSeq: null, parent: null },
             { op: "op-scv-1-0", kind: "view", win: "", out: OUT_2, ws: TOKEN, follow: false, held: false, cmdSeq: null, parent: null },
         ],
-        effects: [],
         dragPreview: null,
     };
 }
@@ -427,7 +425,6 @@ describe("world startup conversion actuation", () => {
             transfers: [
                 { op: "op-scm-1-0", kind: "window", win: "win-b", out: OUT_2, ws: TOKEN, follow: false, held: false, cmdSeq: null, parent: null },
             ],
-            effects: [],
             dragPreview: null,
         };
         const state = freshState(reply);

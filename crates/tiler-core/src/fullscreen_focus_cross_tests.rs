@@ -756,11 +756,6 @@ fn expect_explicit_focus(
     cmd_seq: u64,
     rev: u64,
 ) {
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {:?}",
-        reply.effects
-    );
     let request = reply
         .focus_request
         .as_ref()

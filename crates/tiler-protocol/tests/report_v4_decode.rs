@@ -3027,3 +3027,27 @@ fn v4_visibility_attempt_discriminators() {
     assert_narrow_vis_hold("win-b", false, zero_padded_vis.clone(), "live-zero-padded");
     assert_narrow_vis_hold("win-a", true, zero_padded_vis, "held-zero-padded");
 }
+
+#[test]
+fn raw_action_outputs_capped_at_max_world_screens() {
+    let cap = tiler_core::world_report::MAX_WORLD_SCREENS;
+
+    let mut at_cap = fixture_value("messages/report-observe.json");
+    at_cap["actionOutputs"] = serde_json::Value::Array(
+        (0..cap)
+            .map(|i| serde_json::Value::String(format!("out-{i}")))
+            .collect(),
+    );
+    let decoded = decode_report_v4(&at_cap.to_string()).expect("actionOutputs at cap decodes");
+    assert_eq!(decoded.report.action_outputs.len(), cap);
+
+    let mut over_cap = fixture_value("messages/report-observe.json");
+    over_cap["actionOutputs"] = serde_json::Value::Array(
+        (0..=cap)
+            .map(|i| serde_json::Value::String(format!("out-{i}")))
+            .collect(),
+    );
+    let error = decode_report_v4(&over_cap.to_string()).expect_err("actionOutputs cap+1 refuses");
+    assert_eq!(error.kind, "snapshot-invalid");
+    assert_eq!(error.message, "section-over-cap");
+}

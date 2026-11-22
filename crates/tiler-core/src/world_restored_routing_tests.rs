@@ -680,10 +680,6 @@ fn exhausted_move_retains_identity_pinned_transfer_and_settles_on_arrival() {
     // The tiled directional move keeps focus on the mover through one
     // spent core effect (the old adapter follow-focus lane, now
     // core-owned at-most-once): exactly one, naming the mover.
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let request = reply
         .focus_request
         .as_ref()
@@ -981,7 +977,6 @@ fn drag_preview_same_domain_routes_and_carries_core_rect_and_hover() {
     assert_eq!(row_of(&reply, "win-a").output.0, "out-a");
     assert_eq!(row_of(&reply, "win-b").output.0, "out-a");
     assert!(reply.transfers.is_empty());
-    assert!(reply.effects.is_empty());
 }
 
 fn presentation_query(
@@ -1277,7 +1272,6 @@ fn operation_send_retains_and_foreign_routes_refuse() {
         }),
     );
     let reply = accepted(&mut engine, &read);
-    assert!(reply.effects.is_empty());
     assert_eq!(row_of(&reply, "win-a").workspace, view_a);
     // Operation send retains exactly like an explicit send.
     assert_eq!(ring.len(), 2);
@@ -1320,10 +1314,6 @@ fn operation_send_retains_and_foreign_routes_refuse() {
         output_view(&reply, "out-a").as_deref(),
         Some(ring[1].as_str()),
         "ineligible follow still moves the logical view"
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     let request = reply
         .focus_request
@@ -2444,10 +2434,6 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
                 // their own gaps (checked by the shared assert below).
             }
             2 | 3 => {
-                assert!(
-                    reply.effects.is_empty(),
-                    "focus never publishes as wire effects: {reply:?}"
-                );
                 let request = reply
                     .focus_request
                     .as_ref()
@@ -2483,10 +2469,6 @@ fn operation_routes_preserve_configured_outer_across_outputs() {
                         .retained_selection
                         .contains_key(&OutputId("out-a".to_owned())),
                     "ineligible mover binds nothing"
-                );
-                assert!(
-                    reply.effects.is_empty(),
-                    "focus never publishes as wire effects: {reply:?}"
                 );
                 let request = reply
                     .focus_request
@@ -2686,10 +2668,6 @@ fn explicit_output_send_uses_output_route() {
         assert_eq!(row_of(&reply, "win-a").output.0, "out-b");
         assert_eq!(row_of(&reply, "win-a").workspace, view_b);
         assert_pair_gaps(&engine, &key_a, &key_b);
-        assert!(
-            reply.effects.is_empty(),
-            "focus never publishes as wire effects: {reply:?}"
-        );
         let request = effect.expect("explicit focus request");
         assert_eq!(request.command_seq, Some(11));
         if follow {
@@ -2760,19 +2738,6 @@ fn explicit_output_send_uses_output_route() {
             reply.transfers.len(),
             "same transfer shape"
         );
-        let pfocus: Vec<_> = preply
-            .effects
-            .iter()
-            .filter(|e| e.kind == crate::world_report::EffectKind::Focus)
-            .map(|e| e.target.0.clone())
-            .collect();
-        let efocus: Vec<_> = reply
-            .effects
-            .iter()
-            .filter(|e| e.kind == crate::world_report::EffectKind::Focus)
-            .map(|e| e.target.0.clone())
-            .collect();
-        assert_eq!(efocus, pfocus, "same focus outcome");
         for window in ["win-a", "win-s", "win-b"] {
             assert_eq!(
                 row_of(&reply, window).allocation,
@@ -3649,11 +3614,6 @@ fn physical_return_unplug_replug_cycles_keep_unit_and_views() {
             engine.world.workspace.displaced.contains_key("out-b"),
             "cycle {cycle}: displaced"
         );
-        assert!(
-            away.effects.is_empty(),
-            "cycle {cycle}: displacement mints no focus effects: {:?}",
-            away.effects
-        );
         assert_eq!(
             output_view(&away, "out-a"),
             Some(view_a.clone()),
@@ -3678,11 +3638,6 @@ fn physical_return_unplug_replug_cycles_keep_unit_and_views() {
             !engine.world.workspace.displaced.contains_key("out-b"),
             "cycle {cycle}: reclaimed: {:?}",
             engine.world.workspace.displaced
-        );
-        assert!(
-            back.effects.is_empty(),
-            "cycle {cycle}: return mints no focus effects: {:?}",
-            back.effects
         );
         let units: Vec<_> = back
             .workspaces
@@ -3859,11 +3814,6 @@ fn physical_disconnect_no_survivor_holds_unit_for_retry() {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("empty-screen disconnect must hold, got {other:?}"),
     };
-    assert!(
-        held.effects.is_empty(),
-        "no-survivor displacement mints no focus effects: {:?}",
-        held.effects
-    );
     assert!(
         held.transfers.is_empty(),
         "no-survivor displacement mints no flights: {:?}",
@@ -4451,6 +4401,7 @@ fn physical_return_survivor_leaves_then_origin_returns_renamed() {
             None,
         ),
     );
+    assert!(away.focus_request.is_none());
     assert_eq!(
         engine
             .world
@@ -4459,11 +4410,6 @@ fn physical_return_survivor_leaves_then_origin_returns_renamed() {
             .get("out-s")
             .map(|e| e.dest.as_str()),
         Some("out-t")
-    );
-    assert!(
-        away.effects.is_empty(),
-        "first displacement mints no focus: {:?}",
-        away.effects
     );
     let chained = accepted(
         &mut engine,
@@ -4485,6 +4431,7 @@ fn physical_return_survivor_leaves_then_origin_returns_renamed() {
             None,
         ),
     );
+    assert!(chained.focus_request.is_none());
     assert!(
         engine.world.workspace.displaced.contains_key("out-s"),
         "S association survives"
@@ -4503,11 +4450,6 @@ fn physical_return_survivor_leaves_then_origin_returns_renamed() {
         Some("out-u"),
         "chain refresh tracks the live host: {:?}",
         engine.world.workspace.displaced
-    );
-    assert!(
-        chained.effects.is_empty(),
-        "chained displacement mints no focus: {:?}",
-        chained.effects
     );
     let s_units: Vec<String> = engine
         .world
@@ -4581,11 +4523,6 @@ fn physical_return_survivor_leaves_then_origin_returns_renamed() {
             && row.output.0 == "out-s2"
             && row.workspace == view_s),
         "S member rides its exact unit home: {rows:?}",
-    );
-    assert!(
-        back.effects.is_empty(),
-        "renamed return mints no focus: {:?}",
-        back.effects
     );
     assert!(
         back.transfers
@@ -4872,11 +4809,6 @@ fn physical_chain_return_s_first_then_t_keeps_exact_affinity() {
         "U member stays on its unit: {rows:?}"
     );
     assert!(
-        both_back.effects.is_empty(),
-        "returns mint no focus: {:?}",
-        both_back.effects
-    );
-    assert!(
         both_back
             .transfers
             .iter()
@@ -5148,11 +5080,6 @@ fn physical_chain_return_t_first_then_s_keeps_exact_affinity() {
         "U member stays on its unit: {rows:?}"
     );
     assert!(
-        both_back.effects.is_empty(),
-        "returns mint no focus: {:?}",
-        both_back.effects
-    );
-    assert!(
         both_back
             .transfers
             .iter()
@@ -5328,11 +5255,6 @@ fn physical_chain_return_simultaneous_partition_keeps_exact_affinity() {
             && row.output.0 == "out-u"
             && row.workspace == view_u),
         "U member stays on its unit: {rows:?}"
-    );
-    assert!(
-        both_back.effects.is_empty(),
-        "returns mint no focus: {:?}",
-        both_back.effects
     );
     assert!(
         both_back
@@ -5544,11 +5466,6 @@ fn physical_chain_return_simultaneous_reverse_order_keeps_exact_affinity() {
             && row.output.0 == "out-u"
             && row.workspace == view_u),
         "U member stays on its unit: {rows:?}"
-    );
-    assert!(
-        both_back.effects.is_empty(),
-        "returns mint no focus: {:?}",
-        both_back.effects
     );
     assert!(
         both_back
@@ -5828,11 +5745,6 @@ fn physical_chain_return_moved_out_member_stays_away() {
             .all(|row| row.workspace != view_s),
         "S unit returns with then-current contents: {:?}",
         both_back.windows
-    );
-    assert!(
-        both_back.effects.is_empty(),
-        "returns mint no focus: {:?}",
-        both_back.effects
     );
     assert!(
         both_back

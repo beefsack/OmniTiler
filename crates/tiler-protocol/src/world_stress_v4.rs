@@ -362,14 +362,6 @@ fn recompute_foreground_v4(sim: &mut SimV4) {
 }
 
 fn note_effects_v4(sim: &mut SimV4, reply: &WorldReplyV4, at: &str) -> Result<(), String> {
-    for effect in &reply.effects {
-        if effect.issued_revision != reply.state_revision {
-            return Err(fail(at, "effect issued_revision != reply revision"));
-        }
-        if effect.kind == tiler_core::world_report::EffectKind::Focus {
-            return Err(fail(at, "focus never publishes as wire effects"));
-        }
-    }
     // Retained focus lane: latest-only, once-per-id. Re-emission of the
     // same id resends the identical row; satisfaction clears the pending
     // row but the latched last target above stays for the oracle.
@@ -951,16 +943,6 @@ fn submit_command_v4(
         // the retained request's exact target/cause/command row.
         let _marker = action.expect_effect.clone().expect("validated");
         let want_target = action.expect_target.clone().expect("validated");
-        if reply
-            .effects
-            .iter()
-            .any(|e| e.kind == tiler_core::world_report::EffectKind::Focus)
-        {
-            return Err(fail(
-                at,
-                format!("{op} carries a focus effect on the v4 wire", op = action.op),
-            ));
-        }
         let request = reply.focus_request.clone().ok_or_else(|| {
             fail(
                 at,

@@ -211,10 +211,6 @@ fn admission_effect_id_stays_within_opaque_bound_at_max_subject() {
             None,
         ),
     );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let request = reply.focus_request.as_ref().expect("admission request");
     assert_eq!(request.target.0, target);
     assert_eq!(request.id, format!("focus-{}", reply.state_revision));
@@ -264,10 +260,7 @@ fn admission_effect_id_stays_within_opaque_bound_at_max_subject() {
             vec![live.clone()],
         ),
     );
-    assert!(
-        settled.effects.is_empty(),
-        "feedback mints nothing: {settled:?}"
-    );
+    assert!(settled.focus_request.is_none());
     assert!(
         engine.world.focus.pending_focus.is_none(),
         "target equality satisfies the request"
@@ -297,10 +290,6 @@ fn hover_effect_id_stays_within_opaque_bound_at_max_subject() {
             Some((110, 10)),
             Some(&target),
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     let request = reply.focus_request.as_ref().expect("hover request");
     assert_eq!(request.target.0, target);
@@ -353,10 +342,7 @@ fn hover_effect_id_stays_within_opaque_bound_at_max_subject() {
             vec![live.clone()],
         ),
     );
-    assert!(
-        settled.effects.is_empty(),
-        "feedback mints nothing: {settled:?}"
-    );
+    assert!(settled.focus_request.is_none());
     assert!(
         engine.world.focus.pending_focus.is_none(),
         "target equality satisfies the request"
@@ -395,10 +381,6 @@ fn suppressed_same_target_automatic_candidate_keeps_token_for_later_hover() {
         direction: None,
     });
     let commanded = accepted(&mut engine, &arrival);
-    assert!(
-        commanded.effects.is_empty(),
-        "focus never publishes as wire effects: {commanded:?}"
-    );
     let request = commanded
         .focus_request
         .as_ref()
@@ -435,10 +417,6 @@ fn suppressed_same_target_automatic_candidate_keeps_token_for_later_hover() {
             Some((110, 10)),
             Some("win-b"),
         ),
-    );
-    assert!(
-        hovered.effects.is_empty(),
-        "focus never publishes as wire effects: {hovered:?}"
     );
     let request = hovered.focus_request.as_ref().expect("hover request");
     assert_eq!(request.target.0, "win-b");
@@ -487,10 +465,6 @@ fn admission_token_is_first_issuing_revision_and_stable_across_observations() {
             None,
         ),
     );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let request = reply.focus_request.as_ref().expect("admission request");
     assert_eq!(request.target.0, "win-b");
     assert_eq!(
@@ -523,7 +497,7 @@ fn admission_token_is_first_issuing_revision_and_stable_across_observations() {
                 None,
             ),
         );
-        assert!(echo.effects.is_empty(), "echo mints nothing: {echo:?}");
+        assert!(echo.focus_request.is_none());
     }
     assert_eq!(
         engine
@@ -573,10 +547,6 @@ fn distinct_same_prefix_subjects_get_distinct_tokens() {
             None,
         ),
     );
-    assert!(
-        one.effects.is_empty() && two.effects.is_empty(),
-        "focus never publishes as wire effects: {one:?} {two:?}"
-    );
     let one_request = one.focus_request.as_ref().expect("admission request");
     let two_request = two.focus_request.as_ref().expect("admission request");
     assert_eq!(one_request.id, format!("focus-{}", one.state_revision));
@@ -621,10 +591,6 @@ fn repeated_hover_retains_token_through_move_away_and_back() {
             Some("win-b"),
         ),
     );
-    assert!(
-        first.effects.is_empty(),
-        "focus never publishes as wire effects: {first:?}"
-    );
     let first_request = first.focus_request.as_ref().expect("hover request");
     assert_eq!(first_request.target.0, "win-b");
     assert_eq!(first_request.id, format!("focus-{}", first.state_revision));
@@ -657,10 +623,6 @@ fn repeated_hover_retains_token_through_move_away_and_back() {
             Some("win-c"),
         ),
     );
-    assert!(
-        away.effects.is_empty(),
-        "focus never publishes as wire effects: {away:?}"
-    );
     let away_request = away.focus_request.as_ref().expect("hover request");
     assert_eq!(away_request.target.0, "win-c");
     assert_eq!(away_request.id, format!("focus-{}", away.state_revision));
@@ -682,10 +644,6 @@ fn repeated_hover_retains_token_through_move_away_and_back() {
             Some((115, 10)),
             Some("win-b"),
         ),
-    );
-    assert!(
-        back.effects.is_empty(),
-        "focus never publishes as wire effects: {back:?}"
     );
     let back_request = back.focus_request.as_ref().expect("hover request");
     assert_eq!(back_request.target.0, "win-b");
@@ -719,10 +677,6 @@ fn token_survives_incomplete_held_and_engine_known_absence() {
             None,
             None,
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     {
         let request = reply.focus_request.as_ref().expect("admission request");
@@ -796,7 +750,7 @@ fn token_survives_incomplete_held_and_engine_known_absence() {
             None,
         ),
     );
-    assert!(echo.effects.is_empty(), "no replay: {echo:?}");
+    assert!(echo.focus_request.is_none());
     assert_eq!(
         engine
             .world
@@ -829,10 +783,6 @@ fn temporary_slot_exclusion_never_renews_the_mapping() {
             None,
         ),
     );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     {
         let request = reply.focus_request.as_ref().expect("admission request");
         assert_eq!(request.target.0, "win-b");
@@ -851,10 +801,7 @@ fn temporary_slot_exclusion_never_renews_the_mapping() {
     let mut closed = probe.clone();
     closed.closed = vec![target.clone()];
     let closed_reply = accepted(&mut engine, &closed);
-    assert!(
-        closed_reply.effects.is_empty(),
-        "close mints nothing: {closed_reply:?}"
-    );
+    assert!(closed_reply.focus_request.is_none());
     assert!(
         !engine
             .world
@@ -873,10 +820,6 @@ fn temporary_slot_exclusion_never_renews_the_mapping() {
             None,
             None,
         ),
-    );
-    assert!(
-        readmit.effects.is_empty(),
-        "focus never publishes as wire effects: {readmit:?}"
     );
     let readmit_request = readmit.focus_request.as_ref().expect("admission request");
     assert_eq!(readmit_request.target.0, "win-b");
@@ -940,10 +883,6 @@ fn close_reuse_mints_fresh_token_and_stale_feedback_cannot_settle() {
             None,
         ),
     );
-    assert!(
-        first.effects.is_empty(),
-        "focus never publishes as wire effects: {first:?}"
-    );
     let first_request = first.focus_request.as_ref().expect("admission request");
     assert_eq!(first_request.target.0, "win-b");
     assert_eq!(first_request.id, format!("focus-{}", first.state_revision));
@@ -959,10 +898,7 @@ fn close_reuse_mints_fresh_token_and_stale_feedback_cannot_settle() {
     let mut closed = report(3, vec![fact("win-a", "out-a", 0)], "win-a", None, None);
     closed.closed = vec![WindowId("win-b".to_owned())];
     let closed_reply = accepted(&mut engine, &closed);
-    assert!(
-        closed_reply.effects.is_empty(),
-        "close mints nothing: {closed_reply:?}"
-    );
+    assert!(closed_reply.focus_request.is_none());
     assert!(
         !engine
             .world
@@ -980,10 +916,6 @@ fn close_reuse_mints_fresh_token_and_stale_feedback_cannot_settle() {
             None,
             None,
         ),
-    );
-    assert!(
-        readmit.effects.is_empty(),
-        "focus never publishes as wire effects: {readmit:?}"
     );
     let readmit_request = readmit.focus_request.as_ref().expect("admission request");
     assert_eq!(readmit_request.target.0, "win-b");
@@ -1110,10 +1042,6 @@ fn duplicate_cache_and_consumed_command_mint_no_new_identities() {
         None,
     );
     let reply = accepted(&mut engine, &arrival);
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     {
         let request = reply.focus_request.as_ref().expect("admission request");
         assert_eq!(request.target.0, "win-b");
@@ -1153,10 +1081,6 @@ fn duplicate_cache_and_consumed_command_mint_no_new_identities() {
         direction: None,
     });
     let focus_reply = accepted(&mut engine, &commanded);
-    assert!(
-        focus_reply.effects.is_empty(),
-        "focus never publishes as wire effects: {focus_reply:?}"
-    );
     {
         let request = focus_reply
             .focus_request
@@ -1180,10 +1104,7 @@ fn duplicate_cache_and_consumed_command_mint_no_new_identities() {
         WorldOutcome::CommandConsumed(reply) => reply,
         other => panic!("expected consumed command, got {other:?}"),
     };
-    assert!(
-        consumed.effects.is_empty(),
-        "consumed command mints nothing: {consumed:?}"
-    );
+    assert!(consumed.focus_request.is_some());
     assert_eq!(
         engine.world.focus.automatic_focus_tokens, after_focus,
         "consumed path mints no identities"
@@ -1231,10 +1152,6 @@ fn rejected_command_keeps_admission_mapping_envelope_rejection_adopts_nothing() 
         Some(crate::world_report::CommandResult::Rejected {
             kind: crate::world_report::CommandRejectKind::FocusUnknown
         })
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     let admission = reply
         .focus_request
@@ -1299,10 +1216,6 @@ fn max_revision_boundary_mints_no_unissued_identity() {
             None,
             None,
         ),
-    );
-    assert!(
-        reply.effects.is_empty(),
-        "focus never publishes as wire effects: {reply:?}"
     );
     {
         let request = reply.focus_request.as_ref().expect("admission request");

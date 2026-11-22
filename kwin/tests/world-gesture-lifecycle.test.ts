@@ -150,7 +150,7 @@ describe("native gesture lifecycle transport", () => {
                     const text = JSON.stringify({
                         v: 4, adapter: "test-adapter", gen: "gen-1", req: body.source, obs: String(describeRev), rev: String(describeRev),
                         ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
-                        windows: [], transfers: [], effects: [], dragPreview: null,
+                        windows: [], transfers: [], dragPreview: null,
                         gestureSettled,
                         gestureAssoc: assoc,
                         gestureSettledAssoc,
@@ -350,7 +350,7 @@ describe("native gesture broker cutover", () => {
             const text = JSON.stringify({
                 v: 4, adapter: "test-adapter", gen: "gen-1", req: body.source, obs: String(describeRev), rev: String(describeRev),
                 ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
-                windows: [], transfers: [], effects: [], focusRequest: null, dragPreview: null,
+                windows: [], transfers: [], focusRequest: null, dragPreview: null,
                 gestureSettled: settled, gestureAssoc: assoc, gestureSettledAssoc: settledAssoc, operationSettled: [], nativeCreations: [], warpCursor: null,
                 intentDesired: [], switchSettled: [], diagnostics: [],
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",
@@ -1261,7 +1261,7 @@ describe("native gesture broker cutover", () => {
             const text = JSON.stringify({
                 v: 4, adapter: "test-adapter", gen: body.gen, req: body.source, obs: String(obs), rev: String(rev),
                 ready: true, consumed: false, scopes: [], workspaces: [], outputs: [],
-                windows: [], transfers: [], effects: [], focusRequest: null, dragPreview: null,
+                windows: [], transfers: [], focusRequest: null, dragPreview: null,
                 gestureSettled: retainedSettled, gestureAssoc: assoc, gestureSettledAssoc: retainedSettledAssoc, operationSettled: [], nativeCreations: [], warpCursor: null,
                 intentDesired: [], switchSettled: [], diagnostics: [],
                 source: body.source, nativeInvalid: body.nativeInvalid, clock: "1",

@@ -395,7 +395,6 @@ fn four_native_bound_plus_ordinary_spare_no_moves_at_launch() {
         "no member moves at launch: {:?}",
         reply.transfers
     );
-    assert!(reply.effects.is_empty(), "no launch effects");
     assert!(reply.drag_preview.is_none(), "no launch preview");
     // The N1 pair shares one logical workspace with a real tiled split:
     // both allocations present, x-ordered, non-overlapping, controlled.
@@ -492,7 +491,6 @@ fn four_native_bound_plus_ordinary_spare_no_moves_at_launch() {
     let bound_again = bound_ids(&again, "out-a");
     assert_eq!(bound, bound_again, "stable across repeats");
     assert!(again.transfers.is_empty());
-    assert!(again.effects.is_empty());
     let again_a = again
         .windows
         .iter()
@@ -1383,7 +1381,6 @@ fn shared_incompatible_orders_hold_without_adoption() {
         "no invented membership while ambiguous"
     );
     assert!(conflicted.transfers.is_empty());
-    assert!(conflicted.effects.is_empty());
     // Every published scope row holds; outputs hold; workspace rows hold
     // with no fabricated bindings.
     assert!(!conflicted.scopes.is_empty(), "held rows still publish");

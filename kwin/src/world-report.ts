@@ -599,8 +599,6 @@ export interface WorldReply {
     outputs: WorldReplyOutput[];
     windows: WorldReplyWindow[];
     transfers: WorldReplyTransfer[];
-    // Required empty effects lane (no admissible entries): any row refuses.
-    effects: never[];
     // Required nullable retained focus request (bootstrap and not-ready
     // replies carry null). Missing or malformed refuses.
     focusRequest: WorldFocusRequest | null;
@@ -2037,15 +2035,15 @@ export function parseIntentDesired(value: unknown): WorldIntentDesire[] | null {
     return out;
 }
 
-// Exact v4 core reply shape: the 24 core keys the Rust canonical encoder
+// Exact v4 core reply shape: the 23 core keys the Rust canonical encoder
 // emits (including the required opaque `intentDesired`, `switchSettled`,
 // and `diagnostics` lanes), plus source/nativeInvalid/clock/gestureAssoc
 // on the bound (capture) lane. Any unknown key refuses, and a
 // present-but-malformed `intentDesired` lane refuses the whole reply. The
-// bootstrap lane (no capture flown yet) carries exactly the 24 core keys;
+// bootstrap lane (no capture flown yet) carries exactly the 23 core keys;
 // the bindings default without validation.
 const CORE_REPLY_KEYS = ["v", "adapter", "gen", "req", "obs", "rev", "ready", "consumed",
-    "scopes", "workspaces", "outputs", "windows", "transfers", "effects", "focusRequest", "dragPreview",
+    "scopes", "workspaces", "outputs", "windows", "transfers", "focusRequest", "dragPreview",
     "gestureSettled", "operationSettled", "nativeCreations", "warpCursor", "presentation",
     "intentDesired", "switchSettled", "diagnostics"] as const;
 const BOUND_REPLY_KEYS = [...CORE_REPLY_KEYS, "source", "nativeInvalid", "clock", "gestureAssoc", "gestureSettledAssoc"] as const;
@@ -2093,18 +2091,17 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
     const outRaw = arr("outputs");
     const winRaw = arr("windows");
     const trRaw = arr("transfers");
-    const fxRaw = arr("effects");
     const opSettledRaw = arr("operationSettled");
     const creationsRaw = arr("nativeCreations");
     const switchRaw = arr("switchSettled");
     const diagRaw = arr("diagnostics");
-    if (!scopesRaw || !wsRaw || !outRaw || !winRaw || !trRaw || !fxRaw || !opSettledRaw || !creationsRaw || !switchRaw || !diagRaw) {
+    if (!scopesRaw || !wsRaw || !outRaw || !winRaw || !trRaw || !opSettledRaw || !creationsRaw || !switchRaw || !diagRaw) {
         return null;
     }
     if (
         scopesRaw.length > MAX_REPLY_SCOPES || wsRaw.length > MAX_REPLY_WORKSPACES ||
         outRaw.length > MAX_REPLY_OUTPUTS || winRaw.length > MAX_REPLY_WINDOWS ||
-        trRaw.length > MAX_REPLY_TRANSFERS || fxRaw.length > 0 ||
+        trRaw.length > MAX_REPLY_TRANSFERS ||
         opSettledRaw.length > MAX_REPLY_OPERATIONS || creationsRaw.length > MAX_REPLY_NATIVE_CREATIONS ||
         switchRaw.length > MAX_REPLY_SWITCH_EVENTS || diagRaw.length > MAX_REPLY_DIAGNOSTICS
     ) {
@@ -2136,8 +2133,6 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
         unique(windows, (w) => w.win, "duplicate-window");
         const transfers: WorldReplyTransfer[] = trRaw.map(parseTransferRow);
         unique(transfers, (t) => t.op, "duplicate-transfer");
-        // Effects lane is required empty: any row refuses the whole reply.
-        const effects: never[] = [];
         const operationSettled: WorldReplyOperationSettlement[] = opSettledRaw.map(parseOperationSettledRow);
         unique(operationSettled, (o) => `${o.win}\u0000${o.kind}`, "duplicate-operation");
         const nativeCreations: WorldNativeCreation[] = creationsRaw.map(parseNativeCreationRow);
@@ -2244,7 +2239,7 @@ function parseCoreReply(r: Record<string, unknown>, allowUnbound: boolean): Worl
         return {
             adapter, gen, req, obs, rev,
             ready: r["ready"] as boolean, consumed: r["consumed"] as boolean,
-            scopes, workspaces, outputs, windows, transfers, effects, focusRequest, dragPreview,
+            scopes, workspaces, outputs, windows, transfers, focusRequest, dragPreview,
             gestureSettled, gestureAssoc, gestureSettledAssoc, operationSettled, nativeCreations, warpCursor, intentDesired, presentation,
             switchSettled, diagnostics,
             source, nativeInvalid, clock,

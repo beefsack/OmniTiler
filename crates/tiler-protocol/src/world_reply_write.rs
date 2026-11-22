@@ -713,10 +713,6 @@ fn write_reply_v4_to_sink<S: ReplySink, const VALIDATE: bool>(
             write_window_desire_v4(w, s, true)
         })?;
         obj.field_array("transfers", &reply.transfers, write_transfer_v4)?;
-        obj.field("effects", |s| {
-            s.push_str("[]");
-            Ok(())
-        })?;
         obj.field("focusRequest", |s| match &reply.focus_request {
             None => {
                 s.push_str("null");

@@ -2951,6 +2951,10 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; fini
   excluding their pretty-printing, wrapper, and file newline. They do not
   measure the broker envelope, native traffic, or a typical-user distribution;
   jq reserialization is not a byte-for-byte canonical-writer equality test.
+  (Historical note: the 12 detached v3 JSON files directly under
+  `test-fixtures/world-wire/` were later retired from checkout; retrieve the
+  original bytes from source history with
+  `git show da69c63b:test-fixtures/world-wire/<file>`.)
 
 ```sh
 jq -c '{file:input_filename,bytes:(.report|tojson|utf8bytelength),windows:(.report.windows|length),screens:(.report.screens|length)}' test-fixtures/world-wire/report-observe.json test-fixtures/world-wire/report-send.json test-fixtures/world-wire/report-outer-gap.json
@@ -4289,7 +4293,7 @@ git status --short
 
 ### O(1). Shared wire artifacts and their consumers
 
-- D: `test-fixtures/world-wire/` contains 12 JSON files: one discovery, five reports and six replies. The regeneration example reads production-shaped requests and rewrites the six replies, including outer-gap (`crates/omnitiler/examples/world_wire_fixtures.rs:1-30,269-285`). These are producer-byte, parser/shape and behavior artifacts, not a standalone cross-adapter codec-roundtrip suite.
+- D: `test-fixtures/world-wire/` contains 12 JSON files: one discovery, five reports and six replies. The regeneration example reads production-shaped requests and rewrites the six replies, including outer-gap (`crates/omnitiler/examples/world_wire_fixtures.rs:1-30,269-285`). These are producer-byte, parser/shape and behavior artifacts, not a standalone cross-adapter codec-roundtrip suite. (Historical note: these 12 detached v3 files were later retired from checkout; retrieve the original bytes via `git show da69c63b:test-fixtures/world-wire/<file>`.)
 
 | Artifacts (all under `test-fixtures/world-wire/`) | Coverage and direct consumers |
 |---|---|

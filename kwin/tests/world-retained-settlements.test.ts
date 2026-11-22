@@ -29,7 +29,6 @@ function makeBaseReply(over: Record<string, unknown> = {}): Record<string, unkno
         outputs: [],
         windows: [],
         transfers: [],
-        effects: [],
         focusRequest: null,
         dragPreview: null,
         gestureSettled: null,

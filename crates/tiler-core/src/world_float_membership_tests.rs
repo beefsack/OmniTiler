@@ -1076,7 +1076,6 @@ fn dialog_hints_null_stays_float_member_without_frame_write() {
         "float scope stays controlled: {:?}",
         reply.scopes
     );
-    assert!(reply.effects.is_empty(), "{:?}", reply.effects);
 
     // Readable hints then unreadable again: no home/authority churn.
     let home = engine
@@ -1143,7 +1142,6 @@ fn dialog_hints_null_stays_float_member_without_frame_write() {
     assert!(back_row.allocation.is_none(), "{back_row:?}");
     assert!(back_row.frame_operation.is_none(), "{back_row:?}");
     assert_eq!(back_row.workspace, readable_row.workspace, "{back_row:?}");
-    assert!(back.effects.is_empty(), "{:?}", back.effects);
     assert!(back.transfers.is_empty(), "{:?}", back.transfers);
 
     // Dependent toggle stays fail-closed without replacing nulls.
@@ -1521,7 +1519,6 @@ fn retained_explicit_automatic_null_cycle_keeps_home() {
         "{:?}",
         row_of(&reply, "win-a")
     );
-    assert!(reply.effects.is_empty(), "{:?}", reply.effects);
     assert!(reply.transfers.is_empty(), "{:?}", reply.transfers);
     let reply = accepted(
         &mut engine,
@@ -1554,7 +1551,6 @@ fn retained_explicit_automatic_null_cycle_keeps_home() {
             .home,
         home
     );
-    assert!(reply.effects.is_empty(), "{:?}", reply.effects);
     assert!(reply.transfers.is_empty(), "{:?}", reply.transfers);
 
     // Explicit float via ToggleFloat keeps the same stability.
@@ -1638,7 +1634,6 @@ fn retained_explicit_automatic_null_cycle_keeps_home() {
         "withhold while null: {:?}",
         row_of(&reply, "win-e")
     );
-    assert!(reply.effects.is_empty(), "{:?}", reply.effects);
     assert!(reply.transfers.is_empty(), "{:?}", reply.transfers);
     // Readable recovery: same home, still floating, same ToggleFloat
     // op resumes (never reminted).
@@ -1667,7 +1662,6 @@ fn retained_explicit_automatic_null_cycle_keeps_home() {
             .home,
         home
     );
-    assert!(reply.effects.is_empty(), "{:?}", reply.effects);
     assert!(reply.transfers.is_empty(), "{:?}", reply.transfers);
 }
 

@@ -1130,7 +1130,7 @@ describe("world split-edge selection through the production entry (real Engine)"
             // latest-only focusRequest: it actuates with no redundant
             // native write, so focus is unchanged. Focus left the effects
             // lane, so no focus effect row rides.
-            assert.deepEqual(localReply["effects"], [], "no focus effect is published on the v4 wire");
+            assert.equal("effects" in localReply, false, "retired effects key omitted on the v4 wire");
             const localFocus = localReply["focusRequest"] as Record<string, unknown> | null;
             assert.ok(localFocus !== null, `local move carries the mover follow-focus grant, got ${JSON.stringify(localReply["focusRequest"])}`);
             assert.equal(localFocus["target"], "w-move", "focus stays on the mover");

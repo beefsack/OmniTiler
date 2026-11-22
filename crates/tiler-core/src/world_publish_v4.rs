@@ -103,29 +103,9 @@ impl WorldTransaction<'_> {
                 local_held.insert(key);
             }
         }
-        // One retained focus request: focus never publishes as one-shot
-        // effects on the v4 wire. Focus carriers stay INTERNAL through row
-        // assembly so the selection freeze below still sees them; only the
-        // wire reply strips focus. Focus homed on the style-held output
-        // never records, retains, warps, or publishes.
-        // Unknown homing passes through.
-        let wire_effects: Vec<OneShotEffect> = effects
-            .iter()
-            .filter(|effect| {
-                if effect.kind == crate::world_report::EffectKind::Focus {
-                    return false;
-                }
-                let Some(output) = &style_output else {
-                    return true;
-                };
-                self.world
-                    .staged
-                    .homing
-                    .get(&effect.target)
-                    .is_none_or(|home| home.output != *output)
-            })
-            .cloned()
-            .collect();
+        // One retained focus request: focus carriers stay INTERNAL through
+        // row assembly and cursor-warp projection, never publishing on the
+        // v4 wire.
         let rows =
             self.assemble_publication_rows(false, &effects, &local_held, style_output.as_ref());
         let mut workspaces = self.plan_workspaces(&rows.scopes);
@@ -297,7 +277,6 @@ impl WorldTransaction<'_> {
             diagnostics: self.world.staged.diagnostics.clone(),
             windows,
             transfers,
-            effects: wire_effects,
             focus_request,
             drag_preview,
             gesture_settled,

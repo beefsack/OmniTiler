@@ -2319,6 +2319,7 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
                 Some(command),
             ),
         );
+        assert!(reply.focus_request.is_none());
         assert_eq!(settlements.len(), 1);
         assert_eq!(outcome_str(&settlements[0].result), Some(outcome));
         assert_eq!(
@@ -2330,11 +2331,6 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
                     _ => None,
                 }),
             Some("unknown-window".to_owned())
-        );
-        assert!(
-            reply.effects.is_empty(),
-            "stale refusals stay atomic, got {:?}",
-            reply.effects
         );
     }
 }

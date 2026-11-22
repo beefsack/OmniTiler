@@ -195,13 +195,6 @@ fn selection_reply_spells_through_v4_writer() {
             "",
         ),
     );
-    assert!(
-        reply
-            .effects
-            .iter()
-            .all(|effect| effect.kind != tiler_core::world_report::EffectKind::Focus),
-        "focus never publishes as wire effects: {reply:?}"
-    );
     let request = reply
         .focus_request
         .as_ref()
@@ -228,6 +221,10 @@ fn selection_reply_spells_through_v4_writer() {
     assert!(
         !wire.contains("awaitShown"),
         "no one-shot grant on the wire"
+    );
+    assert!(
+        !wire.contains("\"effects\":"),
+        "retired effects key omitted on the v4 wire"
     );
 
     // The wire pair rides one authorizing revision with no fallback.

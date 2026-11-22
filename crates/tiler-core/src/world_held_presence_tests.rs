@@ -154,7 +154,6 @@ fn held_member_keeps_home_sibling_scope_stays_controlled() {
         diagnostic.kind == RowDiagnosticKind::InvalidFact
             && diagnostic.id.as_deref() == Some("win-a")
     }));
-    assert!(reply.effects.is_empty());
 
     // Recovery reuses the same lifetime: same home, no fresh focus intent.
     let reply = accepted(
@@ -177,7 +176,6 @@ fn held_member_keeps_home_sibling_scope_stays_controlled() {
     assert!(controlled_row(&reply, "win-a"));
     assert!(controlled_row(&reply, "win-b"));
     assert_eq!(engine.world.focus.admission_focus_spent, spent);
-    assert!(reply.effects.is_empty());
 }
 
 #[test]
@@ -535,7 +533,6 @@ fn known_exclusion_never_members_or_controls() {
             .contains_key(&WindowId("win-x".to_owned()))
     );
     assert!(!reply.windows.iter().any(|row| row.lifetime.0 == "win-x"));
-    assert!(reply.effects.is_empty());
     assert!(reply.transfers.is_empty());
     assert!(controlled_row(&reply, "win-t"));
 
@@ -560,7 +557,6 @@ fn known_exclusion_never_members_or_controls() {
             .contains_key(&WindowId("win-x".to_owned()))
     );
     assert!(!reply.windows.iter().any(|row| row.lifetime.0 == "win-x"));
-    assert!(reply.effects.is_empty());
 
     // Fixed-hint recovery floats untouched with no placement or clear ops.
     let mut fixed = fact("win-x", "out-a", 40);
@@ -650,7 +646,6 @@ fn own_process_windows_never_member() {
             .contains_key(&WindowId("win-self".to_owned()))
     );
     assert!(!reply.windows.iter().any(|row| row.lifetime.0 == "win-self"));
-    assert!(reply.effects.is_empty());
     assert!(reply.transfers.is_empty());
 
     let mut own = fact("win-self", "out-a", 40);
@@ -732,7 +727,6 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
             None,
         ),
     );
-    assert!(arrival.effects.is_empty());
     let arrival_row = arrival
         .windows
         .iter()
@@ -782,7 +776,6 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
         }
         other => panic!("expected unfloat tile result, got {other:?}"),
     }
-    assert!(untiled.effects.is_empty());
     assert!(
         !untiled
             .windows
@@ -823,7 +816,6 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
             .contains_key(&WindowId("wf".to_owned()))
     );
     assert!(!denied.windows.iter().any(|row| row.lifetime.0 == "wf"));
-    assert!(denied.effects.is_empty());
     assert!(denied.transfers.is_empty());
     assert!(!denied.windows.iter().any(
         |row| row.lifetime.0 == "wf" && row.membership_authority == ScopeAuthority::Controlled
@@ -869,7 +861,6 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
             .iter()
             .any(|row| row.lifetime.0 == "wf")
     );
-    assert!(denied_gapped.effects.is_empty());
     assert!(
         engine
             .world
@@ -919,7 +910,6 @@ fn excluded_fixed_tile_override_restores_after_safety_gap() {
             .members
             .contains_key(&WindowId("wf".to_owned()))
     );
-    assert!(lifted.effects.is_empty());
 
     // Explicit native close ends the lifetime: the ledger clears and the
     // reused id with fixed hints floats automatic again.
