@@ -540,30 +540,48 @@ fn render_frame_attempt(attempt: &FrameAttempt) -> String {
         .dpi_after
         .map(|dpi| dpi.to_string())
         .unwrap_or_else(|| "null".to_owned());
+    let purpose = match &attempt.purpose {
+        tiler_core::world_report::FramePurpose::Layout => "{\"kind\":\"layout\"}".to_owned(),
+        tiler_core::world_report::FramePurpose::FloatPlacement {
+            operation_id,
+            prewrite,
+        } => format!(
+            "{{\"kind\":\"float-placement\",\"op\":{},\"pre\":{}}}",
+            wire_str(operation_id),
+            opt_rect_text(prewrite),
+        ),
+    };
     format!(
-        "{{\"kind\":\"frame\",\"win\":{},\"target\":{},\"setter\":\"{}\",\"readback\":{},\
-         \"dpiBefore\":{},\"dpiAfter\":{},\"attemptMs\":\"{}\",\"op\":{},\"pre\":{}}}",
+        "{{\"kind\":\"frame\",\"win\":{},\"target\":{},\"disposition\":{{\"kind\":\"called\",\"setter\":\"{}\"}},\"readback\":{},\
+         \"dpiBefore\":{},\"dpiAfter\":{},\"attemptMs\":\"{}\",\"purpose\":{}}}",
         wire_str(&attempt.window.0),
         rect_text(&attempt.target),
-        attempt.setter.as_str(),
+        attempt.disposition.as_str(),
         opt_rect_text(&attempt.readback),
         dpi_before,
         dpi_after,
         attempt.attempt_ms,
-        wire_str(attempt.operation_id.as_deref().unwrap_or("")),
-        opt_rect_text(&attempt.prewrite),
+        purpose,
     )
 }
 
 fn render_member_attempt(attempt: &MemberAttempt) -> String {
+    let disposition = match attempt.disposition {
+        tiler_core::world_report::MemberDisposition::Called(setter) => {
+            format!("{{\"kind\":\"called\",\"setter\":\"{}\"}}", setter.as_str())
+        }
+        tiler_core::world_report::MemberDisposition::AlreadyAtTarget => {
+            "{\"kind\":\"already-at-target\"}".to_owned()
+        }
+    };
     format!(
-        "{{\"kind\":\"member\",\"op\":{},\"win\":{},\"out\":{},\"ws\":{},\"setter\":\"{}\",\
+        "{{\"kind\":\"member\",\"op\":{},\"win\":{},\"out\":{},\"ws\":{},\"disposition\":{},\
          \"pre\":{},\"post\":{},\"attemptMs\":\"{}\"}}",
         wire_str(&attempt.operation_id),
         wire_str(&attempt.window.0),
         wire_str(&attempt.target_output.0),
         wire_str(&attempt.target_workspace),
-        attempt.setter.as_str(),
+        disposition,
         opt_workspace_ref_text(&attempt.pre),
         opt_workspace_ref_text(&attempt.post),
         attempt.attempt_ms,
@@ -572,12 +590,12 @@ fn render_member_attempt(attempt: &MemberAttempt) -> String {
 
 fn render_view_attempt(attempt: &ViewAttempt) -> String {
     format!(
-        "{{\"kind\":\"view\",\"op\":{},\"out\":{},\"ws\":{},\"setter\":\"{}\",\
+        "{{\"kind\":\"view\",\"op\":{},\"out\":{},\"ws\":{},\"disposition\":{{\"kind\":\"called\",\"setter\":\"{}\"}},\
          \"pre\":{},\"post\":{},\"base\":{},\"attemptMs\":\"{}\"}}",
         wire_str(&attempt.operation_id),
         wire_str(&attempt.target_output.0),
         wire_str(&attempt.target_workspace),
-        attempt.setter.as_str(),
+        attempt.disposition.as_str(),
         opt_workspace_ref_text(&attempt.pre),
         opt_workspace_ref_text(&attempt.post),
         opt_workspace_ref_text(&attempt.baseline),
@@ -976,18 +994,20 @@ fn malformed_optionals_reject_identically_on_both_apis() {
     let mut bad_setter = base_value();
     bad_setter["propertyAttempts"] = serde_json::json!([{
         "kind": "frame",
-        "win": "win-a", "target": [0, 0, 800, 560], "setter": "clamped",
+        "win": "win-a", "target": [0, 0, 800, 560],
+        "disposition": {"kind": "called", "setter": "clamped"},
         "readback": null, "dpiBefore": null, "dpiAfter": null,
-        "attemptMs": "1000", "op": "", "pre": null,
+        "attemptMs": "1000", "purpose": {"kind": "layout"},
     }]);
     let (kind, _) = assert_same_rejection(&bad_setter.to_string());
     assert_eq!(kind, "unknown-value");
     let mut unknown_field = base_value();
     unknown_field["propertyAttempts"] = serde_json::json!([{
         "kind": "frame",
-        "win": "win-a", "target": [0, 0, 800, 560], "setter": "threw",
+        "win": "win-a", "target": [0, 0, 800, 560],
+        "disposition": {"kind": "called", "setter": "threw"},
         "readback": null, "dpiBefore": null, "dpiAfter": null,
-        "attemptMs": "1000", "op": "", "pre": null, "verdict": "clamp",
+        "attemptMs": "1000", "purpose": {"kind": "layout"}, "verdict": "clamp",
     }]);
     let unknown_wire = unknown_field.to_string();
     assert_same_hold(&unknown_wire, AttemptLaneV4::Frame, &["win-a"]);
@@ -1016,7 +1036,8 @@ fn malformed_optionals_reject_identically_on_both_apis() {
     bad_member["propertyAttempts"] = serde_json::json!([{
         "kind": "member",
         "op": "transfer-a", "win": "win-a", "out": "out", "ws": "ws-a",
-        "setter": "accepted", "pre": null, "post": null, "attemptMs": "20",
+        "disposition": {"kind": "called", "setter": "accepted"},
+        "pre": null, "post": null, "attemptMs": "20",
         "nativePost": "native-a",
     }]);
     let member_wire = bad_member.to_string();
@@ -1036,7 +1057,8 @@ fn malformed_optionals_reject_identically_on_both_apis() {
     let mut bad_view = base_value();
     bad_view["propertyAttempts"] = serde_json::json!([{
         "kind": "view",
-        "op": "op-9", "out": "out", "ws": "ws-1", "setter": "threw",
+        "op": "op-9", "out": "out", "ws": "ws-1",
+        "disposition": {"kind": "called", "setter": "threw"},
         "pre": "", "post": "", "base": "", "attemptMs": "1",
     }]);
     let view_wire = bad_view.to_string();

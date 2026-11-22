@@ -1267,7 +1267,9 @@ fn unit_i_gesture_transfer_128_byte_window_and_max_counter_typed_route() {
             window: WindowId(w128.clone()),
             target_output: transfer.target_output.clone(),
             target_workspace: transfer.target_workspace.clone(),
-            setter: crate::world_report::MemberDisposition::Accepted,
+            disposition: crate::world_report::MemberDisposition::Called(
+                crate::world_report::FrameSetter::Accepted,
+            ),
             pre: pre_ref.clone(),
             post: post_ref.clone(),
             attempt_ms: 5,
@@ -1290,7 +1292,9 @@ fn unit_i_gesture_transfer_128_byte_window_and_max_counter_typed_route() {
             window: WindowId(w128.clone()),
             target_output: transfer.target_output.clone(),
             target_workspace: transfer.target_workspace.clone(),
-            setter: crate::world_report::MemberDisposition::Accepted,
+            disposition: crate::world_report::MemberDisposition::Called(
+                crate::world_report::FrameSetter::Accepted,
+            ),
             pre: pre_ref,
             post: post_ref,
             attempt_ms: 6,

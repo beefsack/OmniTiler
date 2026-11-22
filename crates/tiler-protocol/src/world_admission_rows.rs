@@ -125,11 +125,22 @@ fn arrival_bracket_estimate(bracket: &ArrivalBracket) -> usize {
 }
 
 pub(crate) fn focus_feedback_estimate(row: &FocusFeedback) -> usize {
-    109 + json_string_len(&row.id)
+    let disp_len = match row.disposition {
+        tiler_core::world_report::FocusDisposition::Called { setter, reason } => {
+            "{\"kind\":\"called\",\"setter\":},\"reason\":".len()
+                + json_string_len(setter.as_str())
+                + json_string_len(reason.as_str())
+        }
+        tiler_core::world_report::FocusDisposition::NotCalled { reason } => {
+            "{\"kind\":\"not-called\",\"reason\":}".len() + json_string_len(reason.as_str())
+        }
+    };
+    "{\"id\":,\"target\":,\"rev\":\"\",\"disposition\":,\"pre\":,\"post\":,\"foregroundProven\":,\"arrival\":[],\"attemptMs\":\"\"}"
+        .len()
+        + json_string_len(&row.id)
         + json_string_len(&row.target.0)
         + u64_len(row.revision)
-        + json_string_len(row.setter.as_str())
-        + json_string_len(row.reason.as_str())
+        + disp_len
         + row.pre.as_ref().map_or(4, |id| json_string_len(&id.0))
         + row.post.as_ref().map_or(4, |id| json_string_len(&id.0))
         + bool_len(row.foreground_proven)

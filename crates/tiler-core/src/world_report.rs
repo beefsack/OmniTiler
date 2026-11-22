@@ -728,39 +728,54 @@ impl FrameSetter {
 }
 
 /// Mechanical outcome of one native membership write attempt. Pure actuator
-/// disposition, never a policy conclusion: `Accepted` means the setter
-/// reported success, `Refused` is an explicit native refusal, `Threw` is a
-/// throwing/ambiguous call that may have executed, and `AlreadyAtTarget`
-/// is a consumed operation whose matching readback already proves the
-/// target with no native call.
+/// disposition, never a policy conclusion: `Called(setter)` records an actual
+/// native setter call, and `AlreadyAtTarget` is a consumed operation whose
+/// matching readback already proves the target with no native call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MemberDisposition {
-    Accepted,
-    Refused,
-    Threw,
+    Called(FrameSetter),
     AlreadyAtTarget,
-}
-
-impl MemberDisposition {
-    /// Wire token for this value, matching the protocol codec vocabulary.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Accepted => "accepted",
-            Self::Refused => "refused",
-            Self::Threw => "threw",
-            Self::AlreadyAtTarget => "already-at-target",
-        }
-    }
 }
 
 impl From<FrameSetter> for MemberDisposition {
     fn from(value: FrameSetter) -> Self {
-        match value {
-            FrameSetter::Accepted => Self::Accepted,
-            FrameSetter::Refused => Self::Refused,
-            FrameSetter::Threw => Self::Threw,
+        Self::Called(value)
+    }
+}
+
+/// Structural purpose of one native frame attempt: either an ordinary layout
+/// frame write (`Layout`) or an explicit retained float-placement write
+/// (`FloatPlacement`) with a nonempty opaque operation id and optional
+/// readable prewrite frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FramePurpose {
+    Layout,
+    FloatPlacement {
+        operation_id: String,
+        prewrite: Option<Rect>,
+    },
+}
+
+impl FramePurpose {
+    #[must_use]
+    pub fn operation_id(&self) -> Option<&str> {
+        match self {
+            Self::Layout => None,
+            Self::FloatPlacement { operation_id, .. } => Some(operation_id.as_str()),
         }
+    }
+
+    #[must_use]
+    pub const fn prewrite(&self) -> Option<Rect> {
+        match self {
+            Self::Layout => None,
+            Self::FloatPlacement { prewrite, .. } => *prewrite,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_layout(&self) -> bool {
+        matches!(self, Self::Layout)
     }
 }
 
@@ -799,13 +814,12 @@ impl From<FrameSetter> for MemberDisposition {
 pub struct FrameAttempt {
     pub window: WindowId,
     pub target: Rect,
-    pub setter: FrameSetter,
+    pub disposition: FrameSetter,
     pub readback: Option<Rect>,
     pub dpi_before: Option<u32>,
     pub dpi_after: Option<u32>,
     pub attempt_ms: u64,
-    pub operation_id: Option<String>,
-    pub prewrite: Option<Rect>,
+    pub purpose: FramePurpose,
 }
 
 /// One normalized raw membership attempt: the mechanical facts behind a
@@ -842,7 +856,7 @@ pub struct MemberAttempt {
     pub window: WindowId,
     pub target_output: OutputId,
     pub target_workspace: String,
-    pub setter: MemberDisposition,
+    pub disposition: MemberDisposition,
     pub pre: Option<WorkspaceRef>,
     pub post: Option<WorkspaceRef>,
     pub attempt_ms: u64,
@@ -875,7 +889,7 @@ pub struct ViewAttempt {
     pub operation_id: String,
     pub target_output: OutputId,
     pub target_workspace: String,
-    pub setter: FrameSetter,
+    pub disposition: FrameSetter,
     pub pre: Option<WorkspaceRef>,
     pub post: Option<WorkspaceRef>,
     pub baseline: Option<WorkspaceRef>,
@@ -908,7 +922,7 @@ pub struct StateAttempt {
     pub property: StateProperty,
     pub target: bool,
     pub revision: u64,
-    pub setter: FrameSetter,
+    pub disposition: FrameSetter,
     pub pre: Option<bool>,
     pub post: Option<bool>,
     pub attempt_ms: u64,
@@ -977,8 +991,7 @@ pub struct FocusFeedback {
     pub id: String,
     pub target: WindowId,
     pub revision: u64,
-    pub setter: VisibilitySetter,
-    pub reason: VisibilityReason,
+    pub disposition: FocusDisposition,
     pub pre: Option<WindowId>,
     pub post: Option<WindowId>,
     pub foreground_proven: bool,
@@ -1678,8 +1691,7 @@ pub struct VisibilityAttempt {
     pub target: bool,
     pub revision: u64,
     pub path: LastWritePath,
-    pub setter: VisibilitySetter,
-    pub reason: VisibilityReason,
+    pub disposition: VisibilityDisposition,
     pub pre: Option<VisibilitySample>,
     pub post: Option<VisibilitySample>,
 }
@@ -1716,40 +1728,106 @@ impl LastWritePath {
     }
 }
 
-/// Mechanical disposition of one visibility write: the native setter outcome
-/// or `not-called` (no call is not a successful native call). Pure actuator
-/// disposition, never a policy conclusion.
+/// Mechanical disposition of one visibility attempt: either an actual native
+/// setter call with its row-level mechanical reason, or a no-call with its
+/// nested mechanical reason. Pure actuator disposition, never a policy
+/// conclusion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum VisibilitySetter {
-    Accepted,
-    Refused,
-    Threw,
-    NotCalled,
+pub enum VisibilityDisposition {
+    Called {
+        setter: FrameSetter,
+        reason: VisibilityReason,
+    },
+    NotCalled {
+        reason: VisibilityReason,
+    },
 }
 
-impl VisibilitySetter {
+impl VisibilityDisposition {
+    #[must_use]
+    pub const fn reason(self) -> VisibilityReason {
+        match self {
+            Self::Called { reason, .. } | Self::NotCalled { reason } => reason,
+        }
+    }
+}
+
+/// Bounded typed mechanical reason for a focus no-call (`focusFeedback`
+/// `disposition.kind == "not-called"`). Every token is prefixed with `focus-`
+/// and disjoint from [`VisibilityReason`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FocusNoCallReason {
+    NoReason,
+    IdentityStale,
+    ScopeHeld,
+    Unreadable,
+    Unsupported,
+    PreimageUnavailable,
+    ForegroundChanged,
+    Fullscreen,
+    Game,
+    ShowBlocked,
+    ForegroundUnproven,
+    Superseded,
+    NativeRefused,
+}
+
+impl FocusNoCallReason {
     /// Wire token for this value, matching the protocol codec vocabulary.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Accepted => "accepted",
-            Self::Refused => "refused",
-            Self::Threw => "threw",
-            Self::NotCalled => "not-called",
+            Self::NoReason => "focus-no-reason",
+            Self::IdentityStale => "focus-identity-stale",
+            Self::ScopeHeld => "focus-scope-held",
+            Self::Unreadable => "focus-unreadable",
+            Self::Unsupported => "focus-unsupported",
+            Self::PreimageUnavailable => "focus-preimage-unavailable",
+            Self::ForegroundChanged => "focus-foreground-changed",
+            Self::Fullscreen => "focus-fullscreen",
+            Self::Game => "focus-game",
+            Self::ShowBlocked => "focus-show-blocked",
+            Self::ForegroundUnproven => "focus-foreground-unproven",
+            Self::Superseded => "focus-superseded",
+            Self::NativeRefused => "focus-native-refused",
         }
     }
 
-    /// Parse a wire token; `None` for unknown tokens (the codec refuses).
+    /// Parse a wire token; `None` for unknown tokens (including old visibility
+    /// reason tokens; the codec refuses).
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         Some(match value {
-            "accepted" => Self::Accepted,
-            "refused" => Self::Refused,
-            "threw" => Self::Threw,
-            "not-called" => Self::NotCalled,
+            "focus-no-reason" => Self::NoReason,
+            "focus-identity-stale" => Self::IdentityStale,
+            "focus-scope-held" => Self::ScopeHeld,
+            "focus-unreadable" => Self::Unreadable,
+            "focus-unsupported" => Self::Unsupported,
+            "focus-preimage-unavailable" => Self::PreimageUnavailable,
+            "focus-foreground-changed" => Self::ForegroundChanged,
+            "focus-fullscreen" => Self::Fullscreen,
+            "focus-game" => Self::Game,
+            "focus-show-blocked" => Self::ShowBlocked,
+            "focus-foreground-unproven" => Self::ForegroundUnproven,
+            "focus-superseded" => Self::Superseded,
+            "focus-native-refused" => Self::NativeRefused,
             _ => return None,
         })
     }
+}
+
+/// Mechanical disposition of one focus feedback row: either an actual native
+/// setter call with its row-level mechanical reason, or a no-call with its
+/// focus-namespaced nested reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FocusDisposition {
+    Called {
+        setter: FrameSetter,
+        reason: VisibilityReason,
+    },
+    NotCalled {
+        reason: FocusNoCallReason,
+    },
 }
 
 /// Bounded typed mechanical reason for [`LastWrite`]: empty on an ordinary

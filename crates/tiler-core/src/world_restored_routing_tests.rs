@@ -1525,7 +1525,7 @@ fn float_send_authorizes_membership_and_guarded_sends_refuse() {
         window: WindowId("win-f".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: ring[1].clone(),
-        setter: FrameSetter::Accepted.into(),
+        disposition: FrameSetter::Accepted.into(),
         pre: None,
         post: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),

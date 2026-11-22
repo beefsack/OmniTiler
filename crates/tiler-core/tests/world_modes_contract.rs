@@ -782,7 +782,7 @@ fn same_output_send_stays_pending_then_settles_on_member_attempt() {
                 window: WindowId("win-a".to_owned()),
                 target_output: OutputId("out-a".to_owned()),
                 target_workspace: target.clone(),
-                setter: FrameSetter::Accepted.into(),
+                disposition: FrameSetter::Accepted.into(),
                 pre: None,
                 post: Some(WorkspaceRef::Logical {
                     output: OutputId("out-a".to_owned()),
@@ -868,7 +868,7 @@ fn unknown_membership_never_counts_as_target_receipt() {
                 window: WindowId("win-a".to_owned()),
                 target_output: OutputId("out-a".to_owned()),
                 target_workspace: target.clone(),
-                setter: FrameSetter::Accepted.into(),
+                disposition: FrameSetter::Accepted.into(),
                 pre: None,
                 post: Some(WorkspaceRef::Logical {
                     output: OutputId("out-a".to_owned()),
@@ -943,7 +943,7 @@ fn migration_partial_arrival_holds_narrowly_on_refusal() {
                 window: WindowId("win-b".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
                 target_workspace: view_a.clone(),
-                setter: FrameSetter::Refused.into(),
+                disposition: FrameSetter::Refused.into(),
                 pre: Some(WorkspaceRef::Logical {
                     output: OutputId("out-a".to_owned()),
                     workspace: WorkspaceId(view_a.clone()),

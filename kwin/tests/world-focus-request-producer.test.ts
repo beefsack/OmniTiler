@@ -589,8 +589,8 @@ async function proveLatestOnly(h: Harness, dispatch: number, minted: Minted, opt
     assert.equal(rows[0]?.id, issued.id, "feedback id preserved");
     assert.equal(rows[0]?.target, issued.target, "feedback target preserved");
     assert.equal(rows[0]?.rev, issued.rev, "feedback carries the immutable issuing rev, not the publication rev");
-    assert.equal(rows[0]?.setter, "accepted", "truthful raw setter");
-    assert.equal(rows[0]?.reason, "", "ordinary call carries no reason");
+    assert.deepEqual(rows[0]?.disposition, { kind: "called", setter: "accepted" }, "truthful raw disposition");
+    assert.equal(rows[0] && "reason" in rows[0] ? rows[0].reason : undefined, "", "ordinary call carries no reason");
     assert.equal(rows[0]?.pre, report.focused, "truthful raw pre from the genuine report");
     assert.equal(rows[0]?.post, issued.target, "truthful raw post");
     assert.equal(rows[0]?.foregroundProven, true, "fresh post proves the target");
@@ -703,7 +703,7 @@ async function proveLatestOnly(h: Harness, dispatch: number, minted: Minted, opt
     assert.equal(sentFeedback[0]?.["id"], issued.id, "settled feedback id exact");
     assert.equal(sentFeedback[0]?.["target"], issued.target, "settled feedback target exact");
     assert.equal(sentFeedback[0]?.["rev"], issued.rev, "settled feedback rev is the issuing rev");
-    assert.equal(sentFeedback[0]?.["setter"], "accepted", "settled feedback setter truthful");
+    assert.deepEqual(sentFeedback[0]?.["disposition"], { kind: "called", setter: "accepted" }, "settled feedback disposition truthful");
     const settleEnvelope = JSON.parse(minted.requests[3] as string) as Record<string, unknown>;
     const settleAdapter = settleEnvelope["adapter"] as string;
     const settleGen = settleEnvelope["gen"] as string;

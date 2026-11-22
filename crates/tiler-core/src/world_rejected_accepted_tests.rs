@@ -204,13 +204,12 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
             w: 40,
             h: 90,
         },
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         readback: None,
         dpi_before: None,
         dpi_after: None,
         attempt_ms: 1000,
-        operation_id: None,
-        prewrite: None,
+        purpose: crate::world_report::FramePurpose::Layout,
     }];
     let (reply, settlements) = match engine.handle_report(&rejected, &[]) {
         (WorldOutcome::Accepted(reply), settlements) => (reply, settlements),

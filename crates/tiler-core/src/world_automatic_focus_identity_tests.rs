@@ -8,7 +8,7 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    FocusFeedback, PresentationRowV4, RowDiagnosticKind, VisibilityReason, VisibilitySetter,
+    FocusFeedback, PresentationRowV4, RowDiagnosticKind, VisibilityReason,
     WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 use crate::world_v4_support_tests::empty_ingress;
@@ -129,12 +129,39 @@ fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
     }
 }
 
+fn map_focus_disposition(
+    setter: Option<crate::world_report::FrameSetter>,
+    reason: VisibilityReason,
+) -> crate::world_report::FocusDisposition {
+    use crate::world_report::{FocusDisposition, FocusNoCallReason};
+    match setter {
+        Some(setter) => FocusDisposition::Called { setter, reason },
+        None => FocusDisposition::NotCalled {
+            reason: match reason {
+                VisibilityReason::Empty => FocusNoCallReason::NoReason,
+                VisibilityReason::IdentityStale => FocusNoCallReason::IdentityStale,
+                VisibilityReason::ScopeHeld => FocusNoCallReason::ScopeHeld,
+                VisibilityReason::Unreadable => FocusNoCallReason::Unreadable,
+                VisibilityReason::Unsupported => FocusNoCallReason::Unsupported,
+                VisibilityReason::PreimageUnavailable => FocusNoCallReason::PreimageUnavailable,
+                VisibilityReason::ForegroundChanged => FocusNoCallReason::ForegroundChanged,
+                VisibilityReason::Fullscreen => FocusNoCallReason::Fullscreen,
+                VisibilityReason::Game => FocusNoCallReason::Game,
+                VisibilityReason::ShowBlocked => FocusNoCallReason::ShowBlocked,
+                VisibilityReason::FocusUnproven => FocusNoCallReason::ForegroundUnproven,
+                VisibilityReason::Superseded => FocusNoCallReason::Superseded,
+                VisibilityReason::NativeRefused => FocusNoCallReason::NativeRefused,
+            },
+        },
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn feedback_row(
     id: &str,
     target: &str,
     revision: u64,
-    setter: VisibilitySetter,
+    setter: Option<crate::world_report::FrameSetter>,
     reason: VisibilityReason,
     pre: Option<&str>,
     post: Option<&str>,
@@ -145,8 +172,7 @@ fn feedback_row(
         id: id.to_owned(),
         target: WindowId(target.to_owned()),
         revision,
-        setter,
-        reason,
+        disposition: map_focus_disposition(setter, reason),
         pre: pre.map(|id| WindowId(id.to_owned())),
         post: post.map(|id| WindowId(id.to_owned())),
         foreground_proven: proven,
@@ -239,7 +265,7 @@ fn admission_effect_id_stays_within_opaque_bound_at_max_subject() {
         &emitted_id,
         &target,
         emitted_rev,
-        VisibilitySetter::Accepted,
+        Some(crate::world_report::FrameSetter::Accepted),
         VisibilityReason::Empty,
         Some("win-a"),
         Some(&target),
@@ -321,7 +347,7 @@ fn hover_effect_id_stays_within_opaque_bound_at_max_subject() {
         &emitted_id,
         &target,
         emitted_rev,
-        VisibilitySetter::Accepted,
+        Some(crate::world_report::FrameSetter::Accepted),
         VisibilityReason::Empty,
         Some("win-a"),
         Some(&target),
@@ -934,7 +960,7 @@ fn close_reuse_mints_fresh_token_and_stale_feedback_cannot_settle() {
         &stale_id,
         "win-b",
         stale_rev,
-        VisibilitySetter::Accepted,
+        Some(crate::world_report::FrameSetter::Accepted),
         VisibilityReason::Empty,
         Some("win-a"),
         Some("win-b"),
@@ -977,7 +1003,7 @@ fn close_reuse_mints_fresh_token_and_stale_feedback_cannot_settle() {
         &fresh.id,
         "win-b",
         fresh.issued_revision,
-        VisibilitySetter::Accepted,
+        Some(crate::world_report::FrameSetter::Accepted),
         VisibilityReason::Empty,
         Some("win-a"),
         Some("win-b"),

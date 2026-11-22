@@ -673,13 +673,12 @@ describe("v4 frame attempt lane", () => {
         return {
             win: "win-a",
             target: [0, 0, 200, 200],
-            setter: "accepted",
+            disposition: { kind: "called", setter: "accepted" },
             readback: [0, 0, 200, 200],
             dpiBefore: null,
             dpiAfter: null,
             attemptMs: "7",
-            op: "",
-            pre: null,
+            purpose: { kind: "layout" },
             ...over,
         };
     }
@@ -691,35 +690,34 @@ describe("v4 frame attempt lane", () => {
             .filter((r) => r["kind"] === "frame");
         assert.equal(rows.length, 1);
         assert.deepEqual(Object.keys(rows[0] as Record<string, unknown>), [
-            "kind", "win", "target", "setter", "readback",
-            "dpiBefore", "dpiAfter", "attemptMs", "op", "pre",
+            "kind", "win", "target", "disposition", "readback",
+            "dpiBefore", "dpiAfter", "attemptMs", "purpose",
         ]);
-        assert.equal(rows[0]?.["op"], "");
+        assert.deepEqual(rows[0]?.["disposition"], { kind: "called", setter: "accepted" });
+        assert.deepEqual(rows[0]?.["purpose"], { kind: "layout" });
         assert.deepEqual(rows[0]?.["readback"], [0, 0, 200, 200]);
-        assert.equal(rows[0]?.["pre"], null);
     });
 
     it("encodes an ordinary refused write with null readback and null pre", () => {
-        const { json, value } = buildWithFrames([ordinary({ setter: "refused", readback: null })]);
+        const { json, value } = buildWithFrames([ordinary({ disposition: { kind: "called", setter: "refused" }, readback: null })]);
         assert.ok(json !== null, "ordinary refused row with unreadable readback must encode");
         const rows = ((value as Record<string, unknown>)["propertyAttempts"] as Array<Record<string, unknown>>)
             .filter((r) => r["kind"] === "frame");
+        assert.deepEqual(rows[0]?.["disposition"], { kind: "called", setter: "refused" });
         assert.equal(rows[0]?.["readback"], null);
-        assert.equal(rows[0]?.["op"], "");
-        assert.equal(rows[0]?.["pre"], null);
+        assert.deepEqual(rows[0]?.["purpose"], { kind: "layout" });
     });
 
     it("encodes an explicit float placement under its retained operation id", () => {
-        const { json, value } = buildWithFrames([ordinary({ op: "op-1", pre: [3, 3, 11, 11] })]);
+        const { json, value } = buildWithFrames([ordinary({ purpose: { kind: "float-placement", op: "op-1", pre: [3, 3, 11, 11] } })]);
         assert.ok(json !== null, "explicit placement row must encode");
         const rows = ((value as Record<string, unknown>)["propertyAttempts"] as Array<Record<string, unknown>>)
             .filter((r) => r["kind"] === "frame");
-        assert.equal(rows[0]?.["op"], "op-1");
-        assert.deepEqual(rows[0]?.["pre"], [3, 3, 11, 11]);
+        assert.deepEqual(rows[0]?.["purpose"], { kind: "float-placement", op: "op-1", pre: [3, 3, 11, 11] });
     });
 
     it("fails closed on a bad nonempty operation id", () => {
-        assert.equal(buildWithFrames([ordinary({ op: "not an id!" })]).json, null);
+        assert.equal(buildWithFrames([ordinary({ purpose: { kind: "float-placement", op: "not an id!", pre: null } })]).json, null);
     });
 
     it("fails closed on a bad window id", () => {
@@ -727,11 +725,11 @@ describe("v4 frame attempt lane", () => {
     });
 
     it("fails closed on an invalid pre rect", () => {
-        assert.equal(buildWithFrames([ordinary({ op: "op-1", pre: [0, 0, 1.5, 2] })]).json, null);
+        assert.equal(buildWithFrames([ordinary({ purpose: { kind: "float-placement", op: "op-1", pre: [0, 0, 1.5, 2] } })]).json, null);
     });
 
     it("fails closed on a pre-write frame without an operation", () => {
-        assert.equal(buildWithFrames([ordinary({ pre: [3, 3, 11, 11] })]).json, null);
+        assert.equal(buildWithFrames([ordinary({ purpose: { kind: "float-placement", op: "", pre: [3, 3, 11, 11] } })]).json, null);
     });
 
     it("fails closed on an invalid target rect", () => {
@@ -764,7 +762,7 @@ describe("v4 member/view attempt lanes", () => {
             win: "win-a",
             out: "out-2",
             ws: "w2",
-            setter: "accepted",
+            disposition: { kind: "called", setter: "accepted" },
             pre: { kind: "native", out: "out-1", ws: "d1" },
             post: { kind: "native", out: "out-2", ws: "d2" },
             attemptMs: "7",
@@ -777,7 +775,7 @@ describe("v4 member/view attempt lanes", () => {
             op: "op-9",
             out: "out-2",
             ws: "w2",
-            setter: "accepted",
+            disposition: { kind: "called", setter: "accepted" },
             pre: { kind: "native", out: "out-2", ws: "d1" },
             post: { kind: "native", out: "out-2", ws: "d2" },
             base: { kind: "native", out: "out-2", ws: "d1" },
@@ -793,7 +791,7 @@ describe("v4 member/view attempt lanes", () => {
             .filter((r) => r["kind"] === "member");
         assert.equal(rows.length, 1);
         assert.deepEqual(Object.keys(rows[0] as Record<string, unknown>), [
-            "kind", "op", "win", "out", "ws", "setter", "pre", "post", "attemptMs",
+            "kind", "op", "win", "out", "ws", "disposition", "pre", "post", "attemptMs",
         ]);
         // The cross-output preimage keeps its source output, never the target.
         assert.ok(json.includes('"pre":{"kind":"native","out":"out-1","ws":"d1"}'), "pre ref spells kind/out/ws");
@@ -821,7 +819,7 @@ describe("v4 member/view attempt lanes", () => {
             .filter((r) => r["kind"] === "view");
         assert.equal(rows.length, 1);
         assert.deepEqual(Object.keys(rows[0] as Record<string, unknown>), [
-            "kind", "op", "out", "ws", "setter", "pre", "post", "base", "attemptMs",
+            "kind", "op", "out", "ws", "disposition", "pre", "post", "base", "attemptMs",
         ]);
         assert.ok(json.includes('"base":{"kind":"native","out":"out-2","ws":"d1"}'), "baseline spells kind/out/ws");
         for (const sidecar of ["nativePre", "nativePost", "nativeBase"]) {

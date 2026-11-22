@@ -1420,11 +1420,11 @@ fn foreign_epoch_attempt_stamps_refuse_above_the_dispatch_clock() {
     assert!(is_canonical_u64(clock));
     // A raw attempt stamped past the dispatch clock (foreign epoch) refuses;
     // the stream and queue stay untouched.
-    let future_attempt =
-        "{\"kind\":\"frame\",\"win\":\"win-001\",\"target\":[0,0,100,100],\"setter\":\"accepted\",\
+    let future_attempt = "{\"kind\":\"frame\",\"win\":\"win-001\",\"target\":[0,0,100,100],\
+          \"disposition\":{\"kind\":\"called\",\"setter\":\"accepted\"},\
           \"readback\":[0,0,100,100],\"dpiBefore\":null,\"dpiAfter\":null,\
-          \"attemptMs\":\"18446744073709551615\",\"op\":\"\",\"pre\":null}"
-            .to_owned();
+          \"attemptMs\":\"18446744073709551615\",\"purpose\":{\"kind\":\"layout\"}}"
+        .to_owned();
     let future_inner = inner_report_with_attempts(&[], true, false, "", &future_attempt, false);
     let refused = parse(
         &service
@@ -3066,8 +3066,8 @@ fn clear_attempt(rev: &str, win: &str, setter: &str, pre: bool, post: Option<boo
     let post_json = post.map_or("null".to_owned(), |v| v.to_string());
     format!(
         "{{\"kind\":\"state\",\"win\":\"{win}\",\"property\":\"maximized\",\"target\":false,\
-          \"rev\":\"{rev}\",\"setter\":\"{setter}\",\"pre\":{pre},\"post\":{post_json},\
-          \"attemptMs\":\"0\"}}"
+          \"rev\":\"{rev}\",\"disposition\":{{\"kind\":\"called\",\"setter\":\"{setter}\"}},\
+          \"pre\":{pre},\"post\":{post_json},\"attemptMs\":\"0\"}}"
     )
 }
 

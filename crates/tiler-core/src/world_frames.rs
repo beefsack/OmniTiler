@@ -214,7 +214,7 @@ pub(crate) fn consume_attempt(
     if attempt.disposition == AttemptDisposition::Accepted
         && let Some(readback) = attempt.readback
         && if readback == attempt.target {
-            attempt.operation_id.is_none() && observed.w == readback.w && observed.h == readback.h
+            attempt.purpose.is_layout() && observed.w == readback.w && observed.h == readback.h
         } else {
             observed != readback
         }

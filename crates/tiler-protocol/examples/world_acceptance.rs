@@ -36,7 +36,7 @@ use tiler_core::workspace_scope::WorkspaceMode;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
     AuthorityScope, LastWritePath, PresentationIngressV4, PresentationRowV4, ScreenReport,
-    VisibilityAttempt, VisibilityReason, VisibilitySample, VisibilitySetter,
+    VisibilityAttempt, VisibilityDisposition, VisibilityReason, VisibilitySample,
     WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 
@@ -340,8 +340,9 @@ fn build_report_v4(
                         target: *shown,
                         revision: *rev,
                         path: LastWritePath::Staged,
-                        setter: VisibilitySetter::NotCalled,
-                        reason: VisibilityReason::ScopeHeld,
+                        disposition: VisibilityDisposition::NotCalled {
+                            reason: VisibilityReason::ScopeHeld,
+                        },
                         pre: None,
                         post: Some(VisibilitySample {
                             obs: step.observation,

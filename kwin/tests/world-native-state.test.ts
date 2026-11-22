@@ -502,7 +502,7 @@ describe("world native state executor (StateTarget mechanics)", () => {
             assert.ok(h.setterCalls("win-a").includes("setMaximize"), `mode=${mode}`);
             const rows = attemptsOf(h, "win-a", "maximized");
             assert.equal(rows.length, 1);
-            assert.equal(rows[0]?.setter, "accepted");
+            assert.equal(rows[0]?.disposition.setter, "accepted");
             assert.equal(rows[0]?.rev, "5");
             assert.equal(rows[0]?.attemptMs, "9");
             assert.equal(rows[0]?.target, true);
@@ -520,7 +520,7 @@ describe("world native state executor (StateTarget mechanics)", () => {
         h.writes("ok");
         assert.ok(h.setterCalls("win-a").includes("set:fullScreen"));
         const rows = attemptsOf(h, "win-a", "fullscreen");
-        assert.equal(rows[0]?.setter, "accepted");
+        assert.equal(rows[0]?.disposition.setter, "accepted");
         assert.equal(rows[0]?.pre, false);
         assert.equal(rows[0]?.post, true);
         // Ordinary fullscreen entries never unmaximize.
@@ -538,7 +538,7 @@ describe("world native state executor (StateTarget mechanics)", () => {
         assert.deepEqual(h.store.recordFor("win-a")?.desktops, ["desk-1", "desk-2"]);
         assert.ok(h.setterCalls("win-a").includes("set:onAllDesktops"));
         const rows = attemptsOf(h, "win-a", "sticky");
-        assert.equal(rows[0]?.setter, "accepted");
+        assert.equal(rows[0]?.disposition.setter, "accepted");
         assert.equal(rows[0]?.pre, false);
         assert.equal(rows[0]?.post, true);
     });
@@ -562,7 +562,7 @@ describe("world native state executor (StateTarget mechanics)", () => {
         h.writes("ok");
         assert.ok(h.setterCalls("win-a").includes("set:keepAbove"));
         const rows = attemptsOf(h, "win-a", "above");
-        assert.equal(rows[0]?.setter, "accepted");
+        assert.equal(rows[0]?.disposition.setter, "accepted");
         assert.equal(rows[0]?.pre, false);
         assert.equal(rows[0]?.post, true);
     });
@@ -592,7 +592,7 @@ describe("world native state executor (StateTarget mechanics)", () => {
         h.run(replyFor("gen-1", "5", [{ win: "win-a", state: [target("fullscreen", true)] }]));
         h.writes("ok");
         const rows = attemptsOf(h, "win-a", "fullscreen");
-        assert.equal(rows[0]?.setter, "accepted");
+        assert.equal(rows[0]?.disposition.setter, "accepted");
         assert.equal(rows[0]?.pre, false);
         // Applied flag lagged: the bool is unchanged even though the call
         // was accepted. The core completes this from observation, not here.
@@ -604,13 +604,13 @@ describe("world native state executor (StateTarget mechanics)", () => {
         threw.wins[0]?.throwOn.add("fullScreen");
         threw.run(replyFor("gen-1", "5", [{ win: "win-a", state: [target("fullscreen", true)] }]));
         threw.writes("ok");
-        assert.equal(attemptsOf(threw, "win-a", "fullscreen")[0]?.setter, "threw");
+        assert.equal(attemptsOf(threw, "win-a", "fullscreen")[0]?.disposition.setter, "threw");
 
         const refused = setup([makeWin({ internalId: "win-a" })]);
         refused.wins[0]?.refuseOn.add("fullScreen");
         refused.run(replyFor("gen-1", "5", [{ win: "win-a", state: [target("fullscreen", true)] }]));
         refused.writes("ok");
-        assert.equal(attemptsOf(refused, "win-a", "fullscreen")[0]?.setter, "refused");
+        assert.equal(attemptsOf(refused, "win-a", "fullscreen")[0]?.disposition.setter, "refused");
     });
 
     it("definitely missing methods take zero calls and zero attempts", () => {
@@ -655,7 +655,7 @@ describe("world native state executor (StateTarget mechanics)", () => {
         // Storage failure wrote nothing native: zero attempts for win-a.
         assert.deepEqual(h.setterCalls("win-a"), []);
         assert.deepEqual(attemptsOf(h, "win-a", "fullscreen"), []);
-        assert.equal(attemptsOf(h, "win-b", "fullscreen")[0]?.setter, "accepted");
+        assert.equal(attemptsOf(h, "win-b", "fullscreen")[0]?.disposition.setter, "accepted");
         assert.ok(h.setterCalls("win-b").includes("set:fullScreen"));
     });
 
@@ -777,7 +777,7 @@ describe("world native state executor (StateTarget mechanics)", () => {
         assert.equal(h.wins[0]?.maximizeMode, 3);
         assert.equal(attemptsOf(h, "win-a", "fullscreen").length, 1);
         assert.equal(attemptsOf(h, "win-a", "maximized").length, 1);
-        assert.equal(attemptsOf(h, "win-a", "maximized")[0]?.setter, "accepted");
+        assert.equal(attemptsOf(h, "win-a", "maximized")[0]?.disposition.setter, "accepted");
     });
 
     it("paired maximize never runs when the fullscreen clear definitely refuses", () => {
@@ -794,7 +794,7 @@ describe("world native state executor (StateTarget mechanics)", () => {
         const calls = h.setterCalls("win-a");
         assert.ok(calls.includes("set:fullScreen"));
         assert.ok(!calls.includes("setMaximize"), `unexpected maximize: ${calls.join(",")}`);
-        assert.equal(attemptsOf(h, "win-a", "fullscreen")[0]?.setter, "refused");
+        assert.equal(attemptsOf(h, "win-a", "fullscreen")[0]?.disposition.setter, "refused");
         // The skipped maximize was never attempted: not-called, no row.
         assert.deepEqual(attemptsOf(h, "win-a", "maximized"), []);
     });
@@ -824,7 +824,7 @@ describe("world native state executor (StateTarget mechanics)", () => {
         h.wins[0]!.keepBelow = true;
         h.run(replyFor("gen-1", "5", [{ win: "win-a", state: [target("above", true)] }]));
         h.writes("ok");
-        assert.equal(attemptsOf(h, "win-a", "above")[0]?.setter, "accepted");
+        assert.equal(attemptsOf(h, "win-a", "above")[0]?.disposition.setter, "accepted");
         h.run(replyFor("gen-1", "6", [{
             win: "win-a",
             state: [
@@ -842,8 +842,8 @@ describe("world native state executor (StateTarget mechanics)", () => {
         // pair {false,true} from the owned above-true, not the live slot.
         assert.deepEqual(row["stacking"], { above: false, below: true });
         h.writes("ok");
-        assert.equal(attemptsOf(h, "win-a", "maximized")[0]?.setter, "accepted");
-        assert.equal(attemptsOf(h, "win-a", "above")[0]?.setter, "accepted");
+        assert.equal(attemptsOf(h, "win-a", "maximized")[0]?.disposition.setter, "accepted");
+        assert.equal(attemptsOf(h, "win-a", "above")[0]?.disposition.setter, "accepted");
     });
 
     it("commandless above acquire-release-resume runs three calls; republish adds none", () => {
@@ -866,23 +866,23 @@ describe("world native state executor (StateTarget mechanics)", () => {
         const rows = attemptsOf(h, "win-a", "above");
         assert.equal(rows.length, 1);
         assert.equal(rows[0]?.rev, "7");
-        assert.equal(rows[0]?.setter, "accepted");
+        assert.equal(rows[0]?.disposition.setter, "accepted");
     });
 
     it("lagged fullscreen acquire then maximize then late apply lets a fresh release succeed", () => {
         const h = setup([makeWin({ internalId: "win-a", fullScreen: false, lagFs: true })]);
         h.run(replyFor("gen-1", "5", [{ win: "win-a", state: [target("fullscreen", true)] }]));
         h.writes("ok");
-        assert.equal(attemptsOf(h, "win-a", "fullscreen")[0]?.setter, "accepted");
+        assert.equal(attemptsOf(h, "win-a", "fullscreen")[0]?.disposition.setter, "accepted");
         h.run(replyFor("gen-1", "6", [{ win: "win-a", state: [target("maximized", true)] }]));
         h.writes("ok");
-        assert.equal(attemptsOf(h, "win-a", "maximized")[0]?.setter, "accepted");
+        assert.equal(attemptsOf(h, "win-a", "maximized")[0]?.disposition.setter, "accepted");
         // KWin applies the requested fullscreen late.
         h.wins[0]!.fullScreen = true;
         h.run(replyFor("gen-1", "7", [{ win: "win-a", state: [target("fullscreen", false)] }]));
         h.writes("ok");
         const rows = attemptsOf(h, "win-a", "fullscreen");
-        assert.equal(rows[0]?.setter, "accepted");
+        assert.equal(rows[0]?.disposition.setter, "accepted");
         assert.equal(rows[0]?.rev, "7");
         assert.equal(rows[0]?.pre, true);
         assert.ok(h.setterCalls("win-a").filter((c) => c === "set:fullScreen").length >= 2);
@@ -900,7 +900,7 @@ describe("world native state executor (StateTarget mechanics)", () => {
         const rows = attemptsOf(h, "win-a", "fullscreen");
         assert.equal(rows.length, 1);
         assert.equal(rows[0]?.rev, "6");
-        assert.equal(rows[0]?.setter, "accepted");
+        assert.equal(rows[0]?.disposition.setter, "accepted");
         // Redelivery afterwards: no second call, no overwrite.
         h.run(replyFor("gen-1", "7", [{ win: "win-a", state: [target("fullscreen", true)] }]));
         h.writes("ok");
@@ -938,7 +938,7 @@ describe("world native state executor (StateTarget mechanics)", () => {
         const rows = attemptsOf(h, "win-a", "fullscreen");
         assert.equal(rows.length, 1);
         assert.equal(rows[0]?.rev, "8");
-        assert.equal(rows[0]?.setter, "accepted");
+        assert.equal(rows[0]?.disposition.setter, "accepted");
     });
 
     it("above-false without an owned pair writes nothing and records nothing", () => {
@@ -968,7 +968,7 @@ describe("world native state executor (StateTarget mechanics)", () => {
                 state: [target("fullscreen", true), target("sticky", true)],
             }]));
             h.writes("ok");
-            assert.equal(attemptsOf(h, "win-a", "fullscreen")[0]?.setter, "accepted");
+            assert.equal(attemptsOf(h, "win-a", "fullscreen")[0]?.disposition.setter, "accepted");
             assert.deepEqual(attemptsOf(h, "win-a", "sticky"), []);
             assert.ok(h.setterCalls("win-a").includes("set:fullScreen"));
             assert.ok(!h.setterCalls("win-a").includes("set:onAllDesktops"));
@@ -989,7 +989,7 @@ describe("world native state executor (StateTarget mechanics)", () => {
                 state: [target("fullscreen", true), target("sticky", true)],
             }]));
             h.writes("ok");
-            assert.equal(attemptsOf(h, "win-a", "fullscreen")[0]?.setter, "accepted");
+            assert.equal(attemptsOf(h, "win-a", "fullscreen")[0]?.disposition.setter, "accepted");
             assert.deepEqual(attemptsOf(h, "win-a", "sticky"), []);
         }
     });
@@ -1024,7 +1024,7 @@ describe("spent-marker clearing", () => {
         const rows = attemptsOf(h, "win-a", "fullscreen");
         assert.equal(rows.length, 1);
         assert.equal(rows[0]?.rev, "5");
-        assert.equal(rows[0]?.setter, "accepted");
+        assert.equal(rows[0]?.disposition.setter, "accepted");
     });
 
     it("untouched row beside a controlled lane preserves the marker", () => {
@@ -1064,7 +1064,7 @@ describe("spent-marker clearing", () => {
         const rows = attemptsOf(h, "win-a", "fullscreen");
         assert.equal(rows.length, 1);
         assert.equal(rows[0]?.rev, "5");
-        assert.equal(rows[0]?.setter, "accepted");
+        assert.equal(rows[0]?.disposition.setter, "accepted");
     });
 
     it("reentrant changed-identity run keeps frozen evidence and the newer marker", () => {
@@ -1094,7 +1094,7 @@ describe("spent-marker clearing", () => {
         let rows = attemptsOf(h, "win-a", "fullscreen");
         assert.equal(rows.length, 1);
         assert.equal(rows[0]?.rev, "5");
-        assert.equal(rows[0]?.setter, "accepted");
+        assert.equal(rows[0]?.disposition.setter, "accepted");
         assert.equal(rows[0]?.target, true);
         // Newer identity is spent: republishing false rewrites nothing.
         h.run(replyFor("gen-1", "7", [{ win: "win-a", state: [target("fullscreen", false)] }]));
@@ -1121,7 +1121,7 @@ describe("spent-marker clearing", () => {
         h.writes("ok");
         const acq = attemptsOf(h, "win-a", "above");
         assert.equal(acq.length, 1);
-        assert.equal(acq[0]?.setter, "refused");
+        assert.equal(acq[0]?.disposition.setter, "refused");
         assert.equal(acq[0]?.rev, "5");
         h.wins[0]?.refuseOn.delete("keepAbove");
         const before = h.setterCalls("win-a").length;
@@ -1131,7 +1131,7 @@ describe("spent-marker clearing", () => {
         assert.equal(h.setterCalls("win-a").length, before);
         const rows = attemptsOf(h, "win-a", "above");
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "refused");
+        assert.equal(rows[0]?.disposition.setter, "refused");
         assert.equal(rows[0]?.rev, "5");
         assert.equal(rows[0]?.target, true);
         // Same-identity re-add never retries.
@@ -1147,7 +1147,7 @@ describe("spent-marker clearing", () => {
         h.writes("ok");
         const acq = attemptsOf(h, "win-a", "above");
         assert.equal(acq.length, 1);
-        assert.equal(acq[0]?.setter, "threw");
+        assert.equal(acq[0]?.disposition.setter, "threw");
         assert.equal(acq[0]?.rev, "5");
         h.wins[0]?.throwOn.delete("keepAbove");
         const before = h.setterCalls("win-a").length;
@@ -1156,7 +1156,7 @@ describe("spent-marker clearing", () => {
         assert.equal(h.setterCalls("win-a").length, before);
         const rows = attemptsOf(h, "win-a", "above");
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "threw");
+        assert.equal(rows[0]?.disposition.setter, "threw");
         assert.equal(rows[0]?.rev, "5");
         h.run(replyFor("gen-1", "7", [{ win: "win-a", state: [target("above", true)] }]));
         h.writes("ok");
@@ -1178,7 +1178,7 @@ describe("spent-marker clearing", () => {
         const rows = attemptsOf(h, "win-a", "fullscreen");
         assert.equal(rows.length, 1);
         assert.equal(rows[0]?.rev, "7");
-        assert.equal(rows[0]?.setter, "accepted");
+        assert.equal(rows[0]?.disposition.setter, "accepted");
     });
 
     it("absent-property gap with Hold return writes nothing", () => {
@@ -1194,7 +1194,7 @@ describe("spent-marker clearing", () => {
         const h = setup([makeWin({ internalId: "win-a", keepAbove: false, keepBelow: false })]);
         h.run(replyFor("gen-1", "5", [{ win: "win-a", state: [target("above", true)] }]));
         h.writes("ok");
-        assert.equal(attemptsOf(h, "win-a", "above")[0]?.setter, "accepted");
+        assert.equal(attemptsOf(h, "win-a", "above")[0]?.disposition.setter, "accepted");
         const aboveCalls = () => h.setterCalls("win-a").filter(
             (c) => c === "set:keepAbove" || c === "set:keepBelow",
         ).length;
@@ -1213,7 +1213,7 @@ describe("spent-marker clearing", () => {
         const rows = attemptsOf(h, "win-a", "above");
         assert.equal(rows.length, 1);
         assert.equal(rows[0]?.rev, "5");
-        assert.equal(rows[0]?.setter, "accepted");
+        assert.equal(rows[0]?.disposition.setter, "accepted");
     });
 });
 
@@ -1236,7 +1236,7 @@ describe("mid-call completion fences", () => {
             const w = h.wins[0] as unknown as { calls: string[] };
             h.run(replyFor("gen-1", "5", [{ win: "win-a", state: [target("above", true)] }]));
             h.writes("ok");
-            assert.equal(attemptsOf(h, "win-a", "above")[0]?.setter, "accepted");
+            assert.equal(attemptsOf(h, "win-a", "above")[0]?.disposition.setter, "accepted");
             // Release of the saved (false,true) pair needs two subcalls.
             const hostAny = h.host as unknown as { setKeepAbove: NativeStateHost["setKeepAbove"] };
             const prev = hostAny.setKeepAbove;
@@ -1257,7 +1257,7 @@ describe("mid-call completion fences", () => {
             assert.ok(!calls.includes("set:keepBelow"), `${c.name}: second subcall must not run`);
             const rows = attemptsOf(h, "win-a", "above");
             assert.equal(rows.length, 1, c.name);
-            assert.equal(rows[0]?.setter, "accepted", c.name);
+            assert.equal(rows[0]?.disposition.setter, "accepted", c.name);
             assert.equal(rows[0]?.rev, "6", c.name);
             assert.equal(rows[0]?.target, false, c.name);
         }
@@ -1322,7 +1322,7 @@ describe("mid-call completion fences", () => {
         h.writes("ok");
         const rows = attemptsOf(h, "win-a", "above");
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "accepted");
+        assert.equal(rows[0]?.disposition.setter, "accepted");
         assert.equal(rows[0]?.rev, "5");
         // No ownership installed: a later release is silent.
         const before = h.setterCalls("win-a").length;
@@ -1336,7 +1336,7 @@ describe("mid-call completion fences", () => {
         const h = setup([makeWin({ internalId: "win-a", keepAbove: false, keepBelow: true })]);
         h.run(replyFor("gen-1", "5", [{ win: "win-a", state: [target("above", true)] }]));
         h.writes("ok");
-        assert.equal(attemptsOf(h, "win-a", "above")[0]?.setter, "accepted");
+        assert.equal(attemptsOf(h, "win-a", "above")[0]?.disposition.setter, "accepted");
         // No-op prune: the live set still contains the in-flight window.
         const hostAny = h.host as unknown as { setKeepAbove: NativeStateHost["setKeepAbove"] };
         const prev = hostAny.setKeepAbove;
@@ -1354,7 +1354,7 @@ describe("mid-call completion fences", () => {
         assert.ok(h.setterCalls("win-a").includes("set:keepBelow"));
         const rows = attemptsOf(h, "win-a", "above");
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "accepted");
+        assert.equal(rows[0]?.disposition.setter, "accepted");
         assert.equal(rows[0]?.rev, "6");
         assert.equal(rows[0]?.target, false);
         assert.equal(h.wins[0]?.keepAbove, false);
@@ -1368,7 +1368,7 @@ describe("mid-call completion fences", () => {
         ]);
         h.run(replyFor("gen-1", "5", [{ win: "win-a", state: [target("above", true)] }]));
         h.writes("ok");
-        assert.equal(attemptsOf(h, "win-a", "above")[0]?.setter, "accepted");
+        assert.equal(attemptsOf(h, "win-a", "above")[0]?.disposition.setter, "accepted");
         // Prune drops win-b but keeps the in-flight win-a alive.
         const hostAny = h.host as unknown as { setKeepAbove: NativeStateHost["setKeepAbove"] };
         const prev = hostAny.setKeepAbove;
@@ -1385,7 +1385,7 @@ describe("mid-call completion fences", () => {
         assert.ok(h.setterCalls("win-a").includes("set:keepBelow"));
         const rows = attemptsOf(h, "win-a", "above");
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "accepted");
+        assert.equal(rows[0]?.disposition.setter, "accepted");
         assert.equal(rows[0]?.rev, "6");
         assert.equal(h.wins[0]?.keepAbove, false);
         assert.equal(h.wins[0]?.keepBelow, true);
@@ -1395,7 +1395,7 @@ describe("mid-call completion fences", () => {
         const h = setup([makeWin({ internalId: "win-a", keepAbove: false, keepBelow: true })]);
         h.run(replyFor("gen-1", "5", [{ win: "win-a", state: [target("above", true)] }]));
         h.writes("ok");
-        assert.equal(attemptsOf(h, "win-a", "above")[0]?.setter, "accepted");
+        assert.equal(attemptsOf(h, "win-a", "above")[0]?.disposition.setter, "accepted");
         // Release rev6, but a nested acquire rev7 completes inside the first
         // subcall: the outer must not clobber it (no stale second subcall,
         // no ownership delete).
@@ -1493,7 +1493,7 @@ describe("mid-call completion fences", () => {
         assert.deepEqual(droppedAny(h), []);
         assert.deepEqual(h.setterCalls("win-a"), ["set:fullScreen"]);
         assert.equal(attemptsOf(h, "win-a", "fullscreen").length, 1);
-        assert.equal(attemptsOf(h, "win-a", "fullscreen")[0]?.setter, "accepted");
+        assert.equal(attemptsOf(h, "win-a", "fullscreen")[0]?.disposition.setter, "accepted");
         assert.equal(h.spentCount(), 1);
     });
 });

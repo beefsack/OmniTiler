@@ -199,65 +199,92 @@ pub fn report_estimate_v4_with_residual(
     }
     bytes += 20;
     for attempt in &report.frames {
-        bytes += 113
+        let purpose_len = match &attempt.purpose {
+            tiler_core::world_report::FramePurpose::Layout => "{\"kind\":\"layout\"}".len(),
+            tiler_core::world_report::FramePurpose::FloatPlacement {
+                operation_id,
+                prewrite,
+            } => {
+                "{\"kind\":\"float-placement\",\"op\":,\"pre\":}".len()
+                    + json_string_len(operation_id)
+                    + prewrite.map_or(4, |rect| {
+                        5 + int_len(rect.x) + int_len(rect.y) + int_len(rect.w) + int_len(rect.h)
+                    })
+            }
+        };
+        bytes += "{\"kind\":\"frame\",\"win\":,\"target\":[,,,],\"disposition\":{\"kind\":\"called\",\"setter\":},\"readback\":,\"dpiBefore\":,\"dpiAfter\":,\"attemptMs\":\"\",\"purpose\":}".len()
             + json_string_len(&attempt.window.0)
             + int_len(attempt.target.x)
             + int_len(attempt.target.y)
             + int_len(attempt.target.w)
             + int_len(attempt.target.h)
-            + json_string_len(attempt.setter.as_str())
+            + json_string_len(attempt.disposition.as_str())
             + attempt.readback.map_or(4, |rect| {
                 5 + int_len(rect.x) + int_len(rect.y) + int_len(rect.w) + int_len(rect.h)
             })
             + attempt.dpi_before.map_or(4, |dpi| u64_len(u64::from(dpi)))
             + attempt.dpi_after.map_or(4, |dpi| u64_len(u64::from(dpi)))
             + u64_len(attempt.attempt_ms)
-            + json_string_len(attempt.operation_id.as_deref().unwrap_or_default())
-            + attempt.prewrite.map_or(4, |rect| {
-                5 + int_len(rect.x) + int_len(rect.y) + int_len(rect.w) + int_len(rect.h)
-            });
+            + purpose_len;
     }
     for attempt in &report.member_attempts {
-        bytes += "{\"kind\":\"member\",\"op\":\"\",\"win\":\"\",\"out\":\"\",\"ws\":\"\",\"setter\":\"\",\"pre\":null,\"post\":null,\"attemptMs\":\"\"}".len() - 12
+        let disp_len = match attempt.disposition {
+            tiler_core::world_report::MemberDisposition::Called(setter) => {
+                "{\"kind\":\"called\",\"setter\":}".len() + json_string_len(setter.as_str())
+            }
+            tiler_core::world_report::MemberDisposition::AlreadyAtTarget => {
+                "{\"kind\":\"already-at-target\"}".len()
+            }
+        };
+        bytes += "{\"kind\":\"member\",\"op\":,\"win\":,\"out\":,\"ws\":,\"disposition\":,\"pre\":,\"post\":,\"attemptMs\":\"\"}".len()
             + json_string_len(&attempt.operation_id)
             + json_string_len(&attempt.window.0)
             + json_string_len(&attempt.target_output.0)
             + json_string_len(&attempt.target_workspace)
-            + json_string_len(attempt.setter.as_str())
+            + disp_len
             + workspace_ref_option_len(&attempt.pre)
             + workspace_ref_option_len(&attempt.post)
             + u64_len(attempt.attempt_ms);
     }
     for attempt in &report.view_attempts {
-        bytes += "{\"kind\":\"view\",\"op\":\"\",\"out\":\"\",\"ws\":\"\",\"setter\":\"\",\"pre\":null,\"post\":null,\"base\":null,\"attemptMs\":\"\"}".len() - 10
+        bytes += "{\"kind\":\"view\",\"op\":,\"out\":,\"ws\":,\"disposition\":{\"kind\":\"called\",\"setter\":},\"pre\":,\"post\":,\"base\":,\"attemptMs\":\"\"}".len()
             + json_string_len(&attempt.operation_id)
             + json_string_len(&attempt.target_output.0)
             + json_string_len(&attempt.target_workspace)
-            + json_string_len(attempt.setter.as_str())
+            + json_string_len(attempt.disposition.as_str())
             + workspace_ref_option_len(&attempt.pre)
             + workspace_ref_option_len(&attempt.post)
             + workspace_ref_option_len(&attempt.baseline)
             + u64_len(attempt.attempt_ms);
     }
     for attempt in &report.state_attempts {
-        bytes += 94
+        bytes += "{\"kind\":\"state\",\"win\":,\"property\":,\"target\":,\"rev\":\"\",\"disposition\":{\"kind\":\"called\",\"setter\":},\"pre\":,\"post\":,\"attemptMs\":\"\"}".len()
             + json_string_len(&attempt.window.0)
             + json_string_len(attempt.property.as_str())
             + bool_len(attempt.target)
             + u64_len(attempt.revision)
-            + json_string_len(attempt.setter.as_str())
+            + json_string_len(attempt.disposition.as_str())
             + attempt.pre.map_or(4, bool_len)
             + attempt.post.map_or(4, bool_len)
             + u64_len(attempt.attempt_ms);
     }
     for attempt in &report.visibility_attempts {
-        bytes += 97
+        let disp_len = match attempt.disposition {
+            tiler_core::world_report::VisibilityDisposition::Called { setter, reason } => {
+                "{\"kind\":\"called\",\"setter\":},\"reason\":".len()
+                    + json_string_len(setter.as_str())
+                    + json_string_len(reason.as_str())
+            }
+            tiler_core::world_report::VisibilityDisposition::NotCalled { reason } => {
+                "{\"kind\":\"not-called\",\"reason\":}".len() + json_string_len(reason.as_str())
+            }
+        };
+        bytes += "{\"kind\":\"visibility\",\"win\":,\"target\":,\"revision\":\"\",\"path\":,\"disposition\":,\"pre\":,\"post\":}".len()
             + json_string_len(&attempt.window.0)
             + bool_len(attempt.target)
             + u64_len(attempt.revision)
             + json_string_len(attempt.path.as_str())
-            + json_string_len(attempt.setter.as_str())
-            + json_string_len(attempt.reason.as_str())
+            + disp_len
             + visibility_sample_estimate(&attempt.pre)
             + visibility_sample_estimate(&attempt.post);
     }

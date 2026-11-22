@@ -11,9 +11,11 @@ import { FocusChangesTracker, type FocusChangesCut } from "./world-focus-changes
 import { compareU64, incrementU64, isCanonicalU64, isOpaqueId } from "./world-seq";
 import {
     encodeV4FocusFeedback,
+    encodeV4FrameAttempt,
+    encodeV4MemberAttempt,
     encodeV4StateAttempt,
+    encodeV4ViewAttempt,
     isWorldRejection,
-    type FrameSetter,
     type WorldAttemptLanes,
     type WorldAfterShown,
     type WorldCommand,
@@ -23,12 +25,10 @@ import {
     type WorldFocusRequest,
     type WorldFrameAttempt,
     type WorldMemberAttempt,
-    type WorldMemberRef,
     type WorldReply,
     type WorldReplyResult,
     type WorldStateAttempt,
     type WorldViewAttempt,
-    type WorldViewRef,
 } from "./world-report";
 
 // One bounded retained focus-request record: the exact latest envelope
@@ -135,19 +135,6 @@ const MAX_STATE_ATTEMPTS = 1024;
 // evict oldest-first past the cap so a report can never refuse over-cap.
 const MAX_FOCUS_FEEDBACK = 1024;
 const MAX_FOCUS_ARRIVAL_TOTAL = 10_000;
-
-function isSetter(value: unknown): value is FrameSetter {
-    return value === "accepted" || value === "refused" || value === "threw";
-}
-
-function isRectTuple(value: unknown): value is [number, number, number, number] {
-    return Array.isArray(value) && value.length === 4 &&
-        (value as ReadonlyArray<unknown>).every((n) => typeof n === "number" && Number.isInteger(n));
-}
-
-function isStamp(value: unknown): value is string {
-    return isCanonicalU64(value);
-}
 
 export class WorldAdapterState {
     readonly focusChanges = new FocusChangesTracker();
@@ -546,19 +533,27 @@ export class WorldAdapterState {
     // refuse, never stored. Redelivery reuses the stored stamp: callers
     // never restamp.
     recordFrameAttempt(attempt: WorldFrameAttempt): boolean {
-        if (
-            !isOpaqueId(attempt.win) || !isSetter(attempt.setter) || !isStamp(attempt.attemptMs) ||
-            !isRectTuple(attempt.target) ||
-            (attempt.readback !== null && !isRectTuple(attempt.readback)) ||
-            (attempt.dpiBefore !== null && !(Number.isInteger(attempt.dpiBefore) && (attempt.dpiBefore as number) >= 0)) ||
-            (attempt.dpiAfter !== null && !(Number.isInteger(attempt.dpiAfter) && (attempt.dpiAfter as number) >= 0)) ||
-            typeof attempt.op !== "string" ||
-            (attempt.pre !== null && !isRectTuple(attempt.pre)) ||
-            (attempt.op === "" && attempt.pre !== null)
-        ) {
+        if (encodeV4FrameAttempt(attempt) === null) {
             return false;
         }
-        this.frameAttempts.set(attempt.win, { ...attempt, target: [...attempt.target] as [number, number, number, number] });
+        const purpose = attempt.purpose.kind === "layout"
+            ? { kind: "layout" as const }
+            : {
+                kind: "float-placement" as const,
+                op: attempt.purpose.op,
+                pre: attempt.purpose.pre === null
+                    ? null
+                    : [...attempt.purpose.pre] as [number, number, number, number],
+            };
+        this.frameAttempts.set(attempt.win, {
+            ...attempt,
+            target: [...attempt.target] as [number, number, number, number],
+            disposition: { ...attempt.disposition },
+            readback: attempt.readback === null
+                ? null
+                : [...attempt.readback] as [number, number, number, number],
+            purpose,
+        });
         while (this.frameAttempts.size > MAX_FRAME_ATTEMPTS) {
             const oldest = this.frameAttempts.keys().next();
             if (oldest.done === true) {
@@ -577,19 +572,12 @@ export class WorldAdapterState {
     // the namespace the host capability allows; the core translates them
     // through its own bindings.
     recordMemberAttempt(attempt: WorldMemberAttempt): boolean {
-        const refOk = (r: WorldMemberRef | null): boolean =>
-            r === null || ((r.kind === "logical" || r.kind === "native") &&
-                isOpaqueId(r.out) && isOpaqueId(r.ws));
-        if (
-            !isOpaqueId(attempt.op) || !isOpaqueId(attempt.win) ||
-            !isOpaqueId(attempt.out) || !isOpaqueId(attempt.ws) ||
-            !(isSetter(attempt.setter) || attempt.setter === "already-at-target") || !isStamp(attempt.attemptMs) ||
-            !refOk(attempt.pre) || !refOk(attempt.post)
-        ) {
+        if (encodeV4MemberAttempt(attempt) === null) {
             return false;
         }
         const clean: WorldMemberAttempt = {
             ...attempt,
+            disposition: { ...attempt.disposition },
             pre: attempt.pre === null ? null : { ...attempt.pre },
             post: attempt.post === null ? null : { ...attempt.post },
         };
@@ -610,17 +598,12 @@ export class WorldAdapterState {
     // native namespace is admitted: a logical view ref has no wire
     // spelling and refuses here, never reaching the report lane.
     recordViewAttempt(attempt: WorldViewAttempt): boolean {
-        const refOk = (r: WorldViewRef | null): boolean =>
-            r === null || (r.kind === "native" && isOpaqueId(r.out) && isOpaqueId(r.ws));
-        if (
-            !isOpaqueId(attempt.op) || !isOpaqueId(attempt.out) || !isOpaqueId(attempt.ws) ||
-            !isSetter(attempt.setter) || !isStamp(attempt.attemptMs) ||
-            !refOk(attempt.pre) || !refOk(attempt.post) || !refOk(attempt.base)
-        ) {
+        if (encodeV4ViewAttempt(attempt) === null) {
             return false;
         }
         const clean: WorldViewAttempt = {
             ...attempt,
+            disposition: { ...attempt.disposition },
             pre: attempt.pre === null ? null : { ...attempt.pre },
             post: attempt.post === null ? null : { ...attempt.post },
             base: attempt.base === null ? null : { ...attempt.base },
@@ -782,11 +765,11 @@ export class WorldAdapterState {
         let retired = 0;
         const sameFrame = (a: WorldFrameAttempt, b: WorldFrameAttempt): boolean =>
             a.win === b.win && a.target.join(",") === b.target.join(",") &&
-            a.setter === b.setter &&
+            JSON.stringify(a.disposition) === JSON.stringify(b.disposition) &&
             (a.readback?.join(",") ?? "") === (b.readback?.join(",") ?? "") &&
             a.dpiBefore === b.dpiBefore && a.dpiAfter === b.dpiAfter &&
-            a.attemptMs === b.attemptMs && a.op === b.op &&
-            (a.pre?.join(",") ?? "") === (b.pre?.join(",") ?? "");
+            a.attemptMs === b.attemptMs &&
+            JSON.stringify(a.purpose) === JSON.stringify(b.purpose);
         for (const sent of this.inFlight.delivered.frames) {
             const live = this.frameAttempts.get(sent.win);
             if (live !== undefined && sameFrame(live, sent)) {
@@ -796,7 +779,7 @@ export class WorldAdapterState {
         }
         const sameMember = (a: WorldMemberAttempt, b: WorldMemberAttempt): boolean =>
             a.op === b.op && a.win === b.win && a.out === b.out && a.ws === b.ws &&
-            a.setter === b.setter &&
+            JSON.stringify(a.disposition) === JSON.stringify(b.disposition) &&
             JSON.stringify(a.pre) === JSON.stringify(b.pre) &&
             JSON.stringify(a.post) === JSON.stringify(b.post) &&
             a.attemptMs === b.attemptMs;
@@ -809,7 +792,7 @@ export class WorldAdapterState {
         }
         const sameView = (a: WorldViewAttempt, b: WorldViewAttempt): boolean =>
             a.op === b.op && a.out === b.out && a.ws === b.ws &&
-            a.setter === b.setter &&
+            JSON.stringify(a.disposition) === JSON.stringify(b.disposition) &&
             JSON.stringify(a.pre) === JSON.stringify(b.pre) &&
             JSON.stringify(a.post) === JSON.stringify(b.post) &&
             JSON.stringify(a.base) === JSON.stringify(b.base) &&
@@ -828,7 +811,7 @@ export class WorldAdapterState {
         // (different keys) are untouched by construction.
         const sameState = (a: WorldStateAttempt, b: WorldStateAttempt): boolean =>
             a.win === b.win && a.property === b.property && a.target === b.target &&
-            a.rev === b.rev && a.setter === b.setter &&
+            a.rev === b.rev && JSON.stringify(a.disposition) === JSON.stringify(b.disposition) &&
             a.pre === b.pre && a.post === b.post && a.attemptMs === b.attemptMs;
         for (const sent of this.inFlight.delivered.states) {
             const live = this.stateAttempts.get(`${sent.win}\u0000${sent.property}`);

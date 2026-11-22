@@ -402,7 +402,7 @@ describe("terminal drop diagnostics", () => {
             const attemptFrames = attempt["frames"] as Array<Record<string, unknown>>;
             assert.equal(attemptFrames.length, 1);
             assert.deepEqual(attemptFrames[0]?.["target"], [10, 20, 300, 400]);
-            assert.equal(attemptFrames[0]?.["setter"], "accepted");
+            assert.deepEqual(attemptFrames[0]?.["disposition"], { kind: "called", setter: "accepted" });
             h.answerAcks();
             h.fireDelay(120);
             h.answerDescribes(() => ({ settled: null }));
@@ -504,7 +504,7 @@ describe("terminal drop diagnostics", () => {
             const frames = attempt["frames"] as Array<Record<string, unknown>>;
             assert.equal(frames.length, 1);
             assert.deepEqual(frames[0]?.["target"], [8, 52, 1012, 1092]);
-            assert.equal(frames[0]?.["setter"], "accepted");
+            assert.deepEqual(frames[0]?.["disposition"], { kind: "called", setter: "accepted" });
             assert.deepEqual(frames[0]?.["readback"], [11, 21, 300, 380]);
             assert.ok((attempts[0] as string).indexOf("commit") === -1, attempts[0] as string);
             // First follow-up still shows the pre-write frame: the later

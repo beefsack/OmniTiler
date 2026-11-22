@@ -789,7 +789,7 @@ export function createNativeStateExecutor(deps: NativeStateExecutorDeps): Native
                     property: lane.property,
                     target: frozenTarget,
                     rev: frozenRev,
-                    setter: result.setter,
+                    disposition: { kind: "called", setter: result.setter },
                     pre,
                     post: result.post,
                     attemptMs: frozenClock,

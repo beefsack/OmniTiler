@@ -12,9 +12,9 @@ use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::world_engine::EventIssue;
 use crate::world_report::{
-    FrameAttempt, FrameSetter, LastWritePath, MemberAttempt, MemberDisposition, StateAttempt,
-    StateProperty, TransferKind, ViewAttempt, VisibilityAttempt, VisibilityReason,
-    VisibilitySample, VisibilitySetter, WorkspaceRef, WorldCommand,
+    FrameAttempt, FramePurpose, FrameSetter, LastWritePath, MemberAttempt, MemberDisposition,
+    StateAttempt, StateProperty, TransferKind, ViewAttempt, VisibilityAttempt,
+    VisibilityDisposition, VisibilityReason, VisibilitySample, WorkspaceRef, WorldCommand,
 };
 
 /// Shared mechanical call disposition carried by canonical attempts. The
@@ -53,9 +53,7 @@ pub(crate) enum MemberAttemptDisposition {
 impl From<MemberDisposition> for MemberAttemptDisposition {
     fn from(value: MemberDisposition) -> Self {
         match value {
-            MemberDisposition::Accepted => Self::Called(AttemptDisposition::Accepted),
-            MemberDisposition::Refused => Self::Called(AttemptDisposition::Refused),
-            MemberDisposition::Threw => Self::Called(AttemptDisposition::Threw),
+            MemberDisposition::Called(setter) => Self::Called(setter.into()),
             MemberDisposition::AlreadyAtTarget => Self::AlreadyAtTarget,
         }
     }
@@ -73,13 +71,11 @@ pub(crate) enum VisibilityAttemptDisposition {
     NotCalled,
 }
 
-impl From<VisibilitySetter> for VisibilityAttemptDisposition {
-    fn from(value: VisibilitySetter) -> Self {
+impl From<VisibilityDisposition> for VisibilityAttemptDisposition {
+    fn from(value: VisibilityDisposition) -> Self {
         match value {
-            VisibilitySetter::Accepted => Self::Called(AttemptDisposition::Accepted),
-            VisibilitySetter::Refused => Self::Called(AttemptDisposition::Refused),
-            VisibilitySetter::Threw => Self::Called(AttemptDisposition::Threw),
-            VisibilitySetter::NotCalled => Self::NotCalled,
+            VisibilityDisposition::Called { setter, .. } => Self::Called(setter.into()),
+            VisibilityDisposition::NotCalled { .. } => Self::NotCalled,
         }
     }
 }
@@ -166,8 +162,7 @@ pub(crate) struct FrameAttemptEvidence {
     pub(crate) dpi_before: Option<u32>,
     pub(crate) dpi_after: Option<u32>,
     pub(crate) attempt_ms: u64,
-    pub(crate) operation_id: Option<String>,
-    pub(crate) prewrite: Option<Rect>,
+    pub(crate) purpose: FramePurpose,
 }
 
 /// Normalize one raw wire frame attempt into its typed canonical evidence at
@@ -179,13 +174,12 @@ pub(crate) fn frame_evidence(raw: &FrameAttempt) -> FrameAttemptEvidence {
     FrameAttemptEvidence {
         window: raw.window.clone(),
         target: raw.target,
-        disposition: raw.setter.into(),
+        disposition: raw.disposition.into(),
         readback: raw.readback,
         dpi_before: raw.dpi_before,
         dpi_after: raw.dpi_after,
         attempt_ms: raw.attempt_ms,
-        operation_id: raw.operation_id.clone(),
-        prewrite: raw.prewrite,
+        purpose: raw.purpose.clone(),
     }
 }
 
@@ -202,7 +196,7 @@ pub(crate) fn frame_evidence_matches(
 ) -> bool {
     evidence.window == *window
         && evidence.target == *target
-        && evidence.operation_id.as_deref() == operation_id
+        && evidence.purpose.operation_id() == operation_id
 }
 
 /// True when `attempt` is a lost-ack redelivery of an already-consumed frame
@@ -279,7 +273,7 @@ impl PropertyAttempt {
             revision: raw.revision,
             property: raw.property,
             target: raw.target,
-            disposition: raw.setter.into(),
+            disposition: raw.disposition.into(),
             pre: raw.pre,
             post: raw.post,
             attempt_ms: raw.attempt_ms,
@@ -295,7 +289,7 @@ impl PropertyAttempt {
             window: raw.window.clone(),
             target_output: raw.target_output.clone(),
             target_workspace: raw.target_workspace.clone(),
-            disposition: raw.setter.into(),
+            disposition: raw.disposition.into(),
             pre: raw.pre.clone(),
             post: raw.post.clone(),
             attempt_ms: raw.attempt_ms,
@@ -310,7 +304,7 @@ impl PropertyAttempt {
             operation_id: raw.operation_id.clone(),
             target_output: raw.target_output.clone(),
             target_workspace: raw.target_workspace.clone(),
-            disposition: raw.setter.into(),
+            disposition: raw.disposition.into(),
             pre: raw.pre.clone(),
             post: raw.post.clone(),
             baseline: raw.baseline.clone(),
@@ -329,8 +323,8 @@ impl PropertyAttempt {
             revision: raw.revision,
             target: raw.target,
             path: raw.path,
-            disposition: raw.setter.into(),
-            reason: raw.reason,
+            disposition: raw.disposition.into(),
+            reason: raw.disposition.reason(),
             pre: raw.pre,
             post: raw.post,
         })
@@ -794,7 +788,7 @@ mod tests {
             revision: rev,
             property: StateProperty::Maximized,
             target: false,
-            setter: match disposition {
+            disposition: match disposition {
                 AttemptDisposition::Accepted => FrameSetter::Accepted,
                 AttemptDisposition::Refused => FrameSetter::Refused,
                 AttemptDisposition::Threw => FrameSetter::Threw,
@@ -811,7 +805,7 @@ mod tests {
             revision: 1,
             property: StateProperty::Maximized,
             target: false,
-            setter: FrameSetter::Accepted,
+            disposition: FrameSetter::Accepted,
             pre: Some(true),
             post: Some(false),
             attempt_ms: 9,
@@ -890,7 +884,7 @@ mod tests {
             revision: 9,
             property: StateProperty::Maximized,
             target: false,
-            setter: FrameSetter::Refused,
+            disposition: FrameSetter::Refused,
             pre: Some(true),
             post: Some(true),
             attempt_ms: 42,
@@ -919,7 +913,7 @@ mod tests {
             window: window("win-a"),
             target_output: OutputId("out-a".to_owned()),
             target_workspace: "ws-1".to_owned(),
-            setter: disposition,
+            disposition,
             pre: Some(workspace("out-b", "ws-9")),
             post: Some(workspace("out-a", "ws-1")),
             attempt_ms: 11,
@@ -931,7 +925,7 @@ mod tests {
             operation_id: op.to_owned(),
             target_output: OutputId("out-a".to_owned()),
             target_workspace: "ws-1".to_owned(),
-            setter: disposition,
+            disposition,
             pre: Some(workspace("out-b", "ws-9")),
             post: Some(workspace("out-a", "ws-1")),
             baseline: Some(workspace("out-b", "ws-9")),
@@ -970,7 +964,7 @@ mod tests {
     #[test]
     fn member_and_view_bindings_reject_wrong_kind_and_forged_rows() {
         let attempts = vec![
-            member("op-m", MemberDisposition::Accepted),
+            member("op-m", MemberDisposition::Called(FrameSetter::Accepted)),
             view("op-v", FrameSetter::Accepted),
         ];
         let out_a = OutputId("out-a".to_owned());
@@ -1027,10 +1021,13 @@ mod tests {
     fn member_view_retention_takes_first_row_within_report_and_replaces_later() {
         let out_a = OutputId("out-a".to_owned());
         let attempts = vec![
-            member("op-m", MemberDisposition::Accepted),
-            member("op-m", MemberDisposition::Refused),
+            member("op-m", MemberDisposition::Called(FrameSetter::Accepted)),
+            member("op-m", MemberDisposition::Called(FrameSetter::Refused)),
         ];
-        let mut slot = Some(member("op-m", MemberDisposition::Threw));
+        let mut slot = Some(member(
+            "op-m",
+            MemberDisposition::Called(FrameSetter::Threw),
+        ));
         assert!(retain_matching_attempt(
             &attempts,
             |attempt| {
@@ -1112,7 +1109,7 @@ mod tests {
                 w: 300,
                 h: 400,
             },
-            setter: FrameSetter::Threw,
+            disposition: FrameSetter::Threw,
             readback: Some(Rect {
                 x: 1,
                 y: 2,
@@ -1122,13 +1119,18 @@ mod tests {
             dpi_before: Some(96),
             dpi_after: Some(120),
             attempt_ms: ms,
-            operation_id: op.map(str::to_owned),
-            prewrite: Some(Rect {
-                x: 1,
-                y: 2,
-                w: 150,
-                h: 400,
-            }),
+            purpose: match op {
+                None => FramePurpose::Layout,
+                Some(op) => FramePurpose::FloatPlacement {
+                    operation_id: op.to_owned(),
+                    prewrite: Some(Rect {
+                        x: 1,
+                        y: 2,
+                        w: 150,
+                        h: 400,
+                    }),
+                },
+            },
         })
     }
 
@@ -1142,18 +1144,20 @@ mod tests {
                 w: 500,
                 h: 600,
             },
-            setter: FrameSetter::Accepted,
+            disposition: FrameSetter::Accepted,
             readback: None,
             dpi_before: Some(120),
             dpi_after: None,
             attempt_ms: 42,
-            operation_id: Some("op-f".to_owned()),
-            prewrite: Some(Rect {
-                x: 3,
-                y: 4,
-                w: 100,
-                h: 600,
-            }),
+            purpose: FramePurpose::FloatPlacement {
+                operation_id: "op-f".to_owned(),
+                prewrite: Some(Rect {
+                    x: 3,
+                    y: 4,
+                    w: 100,
+                    h: 600,
+                }),
+            },
         };
         let normalized = PropertyAttempt::from_frame_attempt(&raw);
         let evidence = normalized.as_frame().expect("frame arm");
@@ -1163,8 +1167,8 @@ mod tests {
         assert_eq!(evidence.readback, None);
         assert_eq!((evidence.dpi_before, evidence.dpi_after), (Some(120), None));
         assert_eq!(evidence.attempt_ms, 42);
-        assert_eq!(evidence.operation_id.as_deref(), Some("op-f"));
-        assert_eq!(evidence.prewrite, raw.prewrite);
+        assert_eq!(evidence.purpose.operation_id(), Some("op-f"));
+        assert_eq!(evidence.purpose.prewrite(), raw.purpose.prewrite());
         // No other arm can read frame evidence and vice versa.
         assert!(normalized.as_state().is_none());
         assert!(normalized.as_member().is_none());
@@ -1226,14 +1230,13 @@ mod tests {
         assert!(zero.is_empty(), "zero stamp never enters the watermark");
     }
 
-    fn visibility_last(setter: VisibilitySetter, with_post: bool) -> VisibilityAttempt {
+    fn visibility_last(disposition: VisibilityDisposition, with_post: bool) -> VisibilityAttempt {
         VisibilityAttempt {
             window: window("win-v"),
             target: true,
             revision: 7,
             path: LastWritePath::Fallback,
-            setter,
-            reason: VisibilityReason::ScopeHeld,
+            disposition,
             pre: Some(VisibilitySample {
                 obs: 2,
                 lifetime_matched: Some(true),
@@ -1259,7 +1262,13 @@ mod tests {
 
     #[test]
     fn visibility_normalization_preserves_raw_facts_and_isolates_kind() {
-        let raw = visibility_last(VisibilitySetter::Refused, true);
+        let raw = visibility_last(
+            VisibilityDisposition::Called {
+                setter: FrameSetter::Refused,
+                reason: VisibilityReason::ScopeHeld,
+            },
+            true,
+        );
         let normalized = PropertyAttempt::from_visibility_attempt(&raw);
         let evidence = normalized.as_visibility().expect("visibility arm");
         assert_eq!(evidence.window, window("win-v"));
@@ -1280,7 +1289,7 @@ mod tests {
         assert!(normalized.as_frame().is_none());
         for arm in [
             state(),
-            member("op-m", MemberDisposition::Accepted),
+            member("op-m", MemberDisposition::Called(FrameSetter::Accepted)),
             view("op-v", FrameSetter::Accepted),
             frame(None, 42),
         ] {
@@ -1291,19 +1300,26 @@ mod tests {
     #[test]
     fn visibility_disposition_shares_call_facts_and_isolates_notcalled() {
         for (setter, shared) in [
-            (VisibilitySetter::Accepted, AttemptDisposition::Accepted),
-            (VisibilitySetter::Refused, AttemptDisposition::Refused),
-            (VisibilitySetter::Threw, AttemptDisposition::Threw),
+            (FrameSetter::Accepted, AttemptDisposition::Accepted),
+            (FrameSetter::Refused, AttemptDisposition::Refused),
+            (FrameSetter::Threw, AttemptDisposition::Threw),
         ] {
-            let normalized =
-                PropertyAttempt::from_visibility_attempt(&visibility_last(setter, false));
+            let normalized = PropertyAttempt::from_visibility_attempt(&visibility_last(
+                VisibilityDisposition::Called {
+                    setter,
+                    reason: VisibilityReason::ScopeHeld,
+                },
+                false,
+            ));
             assert_eq!(
                 normalized.as_visibility().map(|e| e.disposition),
                 Some(VisibilityAttemptDisposition::Called(shared))
             );
         }
         let not_called = PropertyAttempt::from_visibility_attempt(&visibility_last(
-            VisibilitySetter::NotCalled,
+            VisibilityDisposition::NotCalled {
+                reason: VisibilityReason::ScopeHeld,
+            },
             false,
         ));
         assert_eq!(
@@ -1315,7 +1331,10 @@ mod tests {
     #[test]
     fn visibility_evidence_matches_exact_authorization_only() {
         let normalized = PropertyAttempt::from_visibility_attempt(&visibility_last(
-            VisibilitySetter::Accepted,
+            VisibilityDisposition::Called {
+                setter: FrameSetter::Accepted,
+                reason: VisibilityReason::ScopeHeld,
+            },
             true,
         ));
         let evidence = normalized.as_visibility().expect("visibility arm");
@@ -1350,7 +1369,10 @@ mod tests {
         let attempts = vec![
             state(),
             PropertyAttempt::from_visibility_attempt(&visibility_last(
-                VisibilitySetter::Accepted,
+                VisibilityDisposition::Called {
+                    setter: FrameSetter::Accepted,
+                    reason: VisibilityReason::ScopeHeld,
+                },
                 true,
             )),
         ];

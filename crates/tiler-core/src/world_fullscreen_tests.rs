@@ -158,7 +158,7 @@ fn attempt(
         property: StateProperty::Fullscreen,
         target,
         revision,
-        setter,
+        disposition: setter,
         pre,
         post,
         attempt_ms: 1,
@@ -1159,7 +1159,7 @@ fn pending_window_transfer_holds_fullscreen_publication() {
             window: WindowId("win-a".to_owned()),
             target_output: crate::directional::OutputId("out-a".to_owned()),
             target_workspace: ring[1].clone(),
-            setter: FrameSetter::Accepted.into(),
+            disposition: FrameSetter::Accepted.into(),
             pre: None,
             post: Some(crate::world_report::WorkspaceRef::Logical {
                 output: crate::directional::OutputId("out-a".to_owned()),

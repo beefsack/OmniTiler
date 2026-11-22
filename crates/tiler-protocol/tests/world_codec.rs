@@ -1047,9 +1047,11 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     value["monotonicMs"] = serde_json::Value::String("1200".to_owned());
     value["propertyAttempts"] = serde_json::json!([{
         "kind": "frame",
-        "win": "win-a", "target": [0, 0, 800, 560], "setter": "accepted",
+        "win": "win-a", "target": [0, 0, 800, 560],
+        "disposition": {"kind": "called", "setter": "accepted"},
         "readback": [0, 0, 700, 560], "dpiBefore": 96, "dpiAfter": 120,
-        "attemptMs": "1000", "op": "op-7", "pre": [0, 0, 800, 560],
+        "attemptMs": "1000",
+        "purpose": {"kind": "float-placement", "op": "op-7", "pre": [0, 0, 800, 560]},
     }]);
     let wire = value.to_string();
     let report = decode_request(&wire).expect("attempts decode");
@@ -1057,13 +1059,13 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     assert_eq!(report.frames.len(), 1);
     let attempt = &report.frames[0];
     assert_eq!(attempt.window.0, "win-a");
-    assert_eq!(attempt.setter, FrameSetter::Accepted);
+    assert_eq!(attempt.disposition, FrameSetter::Accepted);
     assert_eq!(attempt.dpi_before, Some(96));
     assert_eq!(attempt.dpi_after, Some(120));
     assert_eq!(attempt.attempt_ms, 1000);
-    assert_eq!(attempt.operation_id.as_deref(), Some("op-7"));
+    assert_eq!(attempt.purpose.operation_id(), Some("op-7"));
     assert_eq!(
-        attempt.prewrite,
+        attempt.purpose.prewrite(),
         Some(tiler_core::geometry::Rect {
             x: 0,
             y: 0,
@@ -1071,28 +1073,30 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
             h: 560
         })
     );
-    // Ordinary writes carry an empty operation id and no prewrite.
+    // Ordinary writes carry layout purpose.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["propertyAttempts"] = serde_json::json!([{
         "kind": "frame",
-        "win": "win-a", "target": [0, 0, 800, 560], "setter": "refused",
+        "win": "win-a", "target": [0, 0, 800, 560],
+        "disposition": {"kind": "called", "setter": "refused"},
         "readback": null, "dpiBefore": null, "dpiAfter": null,
-        "attemptMs": "1001", "op": "", "pre": null,
+        "attemptMs": "1001", "purpose": {"kind": "layout"},
     }]);
     let report = decode_request(&value.to_string()).expect("ordinary decodes");
-    assert_eq!(report.frames[0].operation_id, None);
-    assert_eq!(report.frames[0].prewrite, None);
-    // A prewrite without an operation id holds narrowly in v4: only
-    // placement writes carry a preimage, and the identifiable row is
-    // retained instead of refusing the envelope.
+    assert_eq!(
+        report.frames[0].purpose,
+        tiler_core::world_report::FramePurpose::Layout
+    );
+    // Legacy op/pre holds narrowly in v4 instead of becoming valid evidence.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["propertyAttempts"] = serde_json::json!([{
         "kind": "frame",
-        "win": "win-a", "target": [0, 0, 800, 560], "setter": "refused",
+        "win": "win-a", "target": [0, 0, 800, 560],
+        "disposition": {"kind": "called", "setter": "refused"},
         "readback": null, "dpiBefore": null, "dpiAfter": null,
         "attemptMs": "1001", "op": "", "pre": [0, 0, 800, 560],
     }]);
-    let held_report = decode_request(&value.to_string()).expect("pre without op holds");
+    let held_report = decode_request(&value.to_string()).expect("legacy op/pre holds");
     assert!(held_report.frames.is_empty(), "no valid frame row");
     assert_eq!(held_report.held_attempts.len(), 1, "one held attempt row");
     assert_eq!(
@@ -1113,18 +1117,20 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["propertyAttempts"] = serde_json::json!([{
         "kind": "frame",
-        "win": "win-a", "target": [0, 0, 800, 560], "setter": "clamped",
+        "win": "win-a", "target": [0, 0, 800, 560],
+        "disposition": {"kind": "called", "setter": "clamped"},
         "readback": null, "dpiBefore": null, "dpiAfter": null,
-        "attemptMs": "1000", "op": "", "pre": null,
+        "attemptMs": "1000", "purpose": {"kind": "layout"},
     }]);
     let error = decode_request(&value.to_string()).expect_err("bad setter refuses");
     assert_eq!(error.kind, "unknown-value");
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["propertyAttempts"] = serde_json::json!([{
         "kind": "frame",
-        "win": "win-a", "target": [0, 0, 800, 560], "setter": "threw",
+        "win": "win-a", "target": [0, 0, 800, 560],
+        "disposition": {"kind": "called", "setter": "threw"},
         "readback": null, "dpiBefore": null, "dpiAfter": null,
-        "attemptMs": "1000", "op": "", "pre": null, "verdict": "clamp",
+        "attemptMs": "1000", "purpose": {"kind": "layout"}, "verdict": "clamp",
     }]);
     // Unknown attempt keys hold the identifiable row in v4 instead of
     // refusing the envelope.
@@ -1134,12 +1140,14 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     // Duplicate windows refuse with fixed vocabulary, never payload bytes.
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["propertyAttempts"] = serde_json::json!([
-        {"kind": "frame", "win": "win-a", "target": [0, 0, 800, 560], "setter": "refused",
+        {"kind": "frame", "win": "win-a", "target": [0, 0, 800, 560],
+         "disposition": {"kind": "called", "setter": "refused"},
          "readback": null, "dpiBefore": null, "dpiAfter": null, "attemptMs": "1000",
-         "op": "", "pre": null},
-        {"kind": "frame", "win": "win-a", "target": [0, 0, 800, 560], "setter": "refused",
+         "purpose": {"kind": "layout"}},
+        {"kind": "frame", "win": "win-a", "target": [0, 0, 800, 560],
+         "disposition": {"kind": "called", "setter": "refused"},
          "readback": null, "dpiBefore": null, "dpiAfter": null, "attemptMs": "1001",
-         "op": "", "pre": null},
+         "purpose": {"kind": "layout"}},
     ]);
     let error = decode_request(&value.to_string()).expect_err("duplicate refuses");
     assert_eq!(error.kind, "snapshot-invalid");
@@ -1165,7 +1173,7 @@ fn typed_attempts_decode_v4_nested_witnesses_and_reject_old_or_wrong_arms() {
             window: WindowId("win-a".into()),
             target_output: OutputId("out-a".into()),
             target_workspace: "ws-a".into(),
-            setter: FrameSetter::Accepted.into(),
+            disposition: FrameSetter::Accepted.into(),
             pre: Some(WorkspaceRef::Logical {
                 output: OutputId("out-a".into()),
                 workspace: WorkspaceId("ws-a".into()),
@@ -1199,7 +1207,7 @@ fn typed_attempts_decode_v4_nested_witnesses_and_reject_old_or_wrong_arms() {
             operation_id: "view-a".into(),
             target_output: OutputId("out-a".into()),
             target_workspace: "ws-a".into(),
-            setter: FrameSetter::Accepted,
+            disposition: FrameSetter::Accepted,
             pre: Some(WorkspaceRef::Native {
                 output: OutputId("out-a".into()),
                 workspace: NativeWorkspaceId::parse("native-a").unwrap(),
@@ -1268,7 +1276,8 @@ fn typed_attempts_decode_v4_nested_witnesses_and_reject_old_or_wrong_arms() {
 
     let logical_view = serde_json::json!({
         "kind":"view",
-        "op":"view-a", "out":"out-a", "ws":"ws-a", "setter":"accepted",
+        "op":"view-a", "out":"out-a", "ws":"ws-a",
+        "disposition":{"kind":"called","setter":"accepted"},
         "pre":{"kind":"logical","out":"out-a","ws":"ws-a"},
         "post":null, "base":null, "attemptMs":"20"
     });
@@ -1278,7 +1287,8 @@ fn typed_attempts_decode_v4_nested_witnesses_and_reject_old_or_wrong_arms() {
     );
     let parallel = serde_json::json!({
         "kind":"view",
-        "op":"view-a", "out":"out-a", "ws":"ws-a", "setter":"accepted",
+        "op":"view-a", "out":"out-a", "ws":"ws-a",
+        "disposition":{"kind":"called","setter":"accepted"},
         "pre":null, "post":null, "base":null, "nativePost":"native-a", "attemptMs":"20"
     });
     assert_eq!(
@@ -1287,7 +1297,8 @@ fn typed_attempts_decode_v4_nested_witnesses_and_reject_old_or_wrong_arms() {
     );
     let malformed_member = serde_json::json!({
         "kind":"member",
-        "op":"transfer-a", "win":"win-a", "out":"out-a", "ws":"ws-a", "setter":"accepted",
+        "op":"transfer-a", "win":"win-a", "out":"out-a", "ws":"ws-a",
+        "disposition":{"kind":"called","setter":"accepted"},
         "pre":{"kind":"native","out":"out-a","ws":"native-a","extra":true},
         "post":null, "attemptMs":"20"
     });
@@ -1314,11 +1325,11 @@ fn member_already_at_target_round_trips_both_namespaces() {
         value["propertyAttempts"] = serde_json::json!([{
             "kind":"member",
             "op":"transfer-a","win":"win-a","out":"out","ws":target,
-            "setter":"already-at-target","pre":home,"post":home,"attemptMs":"23"
+            "disposition":{"kind":"already-at-target"},"pre":home,"post":home,"attemptMs":"23"
         }]);
         let decoded = decode_report_v4(&value.to_string()).expect("no-call report");
         let attempt = &decoded.report.member_attempts[0];
-        assert_eq!(attempt.setter, MemberDisposition::AlreadyAtTarget);
+        assert_eq!(attempt.disposition, MemberDisposition::AlreadyAtTarget);
         assert_eq!(attempt.operation_id, "transfer-a");
         assert_eq!(attempt.window.0, "win-a");
         assert_eq!(attempt.target_output.0, "out");
@@ -1342,7 +1353,7 @@ fn member_already_at_target_keeps_strict_shape_and_member_only_disposition() {
 
     let row = serde_json::json!({
         "op":"transfer-a","win":"win-a","out":"out","ws":"target",
-        "setter":"already-at-target",
+        "disposition":{"kind":"already-at-target"},
         "pre":{"kind":"logical","out":"out","ws":"target"},
         "post":{"kind":"logical","out":"out","ws":"target"},"attemptMs":"23"
     });
@@ -1351,7 +1362,7 @@ fn member_already_at_target_keeps_strict_shape_and_member_only_disposition() {
         "win",
         "out",
         "ws",
-        "setter",
+        "disposition",
         "pre",
         "post",
         "attemptMs",
@@ -1362,19 +1373,19 @@ fn member_already_at_target_keeps_strict_shape_and_member_only_disposition() {
     }
     for setter in ["not-called", "consumed", "unknown"] {
         let mut invalid = row.clone();
-        invalid["setter"] = serde_json::json!(setter);
+        invalid["disposition"] = serde_json::json!({"kind": setter});
         assert!(decode_member_attempt(&invalid).is_err(), "{setter}");
     }
     let view = serde_json::json!({
-        "op":"view-a","out":"out","ws":"target","setter":"already-at-target",
+        "op":"view-a","out":"out","ws":"target","disposition":{"kind":"already-at-target"},
         "pre":null,"post":null,"base":null,"attemptMs":"23"
     });
     assert!(decode_view_attempt(&view).is_err());
 
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("report");
     value["propertyAttempts"] = serde_json::json!([
-        {"kind":"member","op":"transfer-a","win":"win-a","out":"out","ws":"target","setter":"already-at-target","pre":{"kind":"logical","out":"out","ws":"target"},"post":{"kind":"logical","out":"out","ws":"target"},"attemptMs":"23"},
-        {"kind":"member","op":"transfer-a","win":"win-a","out":"out","ws":"target","setter":"already-at-target","pre":{"kind":"logical","out":"out","ws":"target"},"post":{"kind":"logical","out":"out","ws":"target"},"attemptMs":"23"},
+        {"kind":"member","op":"transfer-a","win":"win-a","out":"out","ws":"target","disposition":{"kind":"already-at-target"},"pre":{"kind":"logical","out":"out","ws":"target"},"post":{"kind":"logical","out":"out","ws":"target"},"attemptMs":"23"},
+        {"kind":"member","op":"transfer-a","win":"win-a","out":"out","ws":"target","disposition":{"kind":"already-at-target"},"pre":{"kind":"logical","out":"out","ws":"target"},"post":{"kind":"logical","out":"out","ws":"target"},"attemptMs":"23"},
     ]);
     let error = decode_request(&value.to_string()).expect_err("duplicate no-call row");
     assert_eq!(error.kind, "snapshot-invalid");
@@ -1519,7 +1530,8 @@ fn empty_view_attempt_refs_hold_identifiable_row() {
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["propertyAttempts"] = serde_json::json!([{
         "kind": "view",
-        "op": "op-9", "out": "out-a", "ws": "ws-2", "setter": "threw",
+        "op": "op-9", "out": "out-a", "ws": "ws-2",
+        "disposition": {"kind": "called", "setter": "threw"},
         "pre": "", "post": "", "base": "", "attemptMs": "1",
     }]);
     let decoded = decode_report_v4(&value.to_string()).expect("empty refs hold");
@@ -4122,8 +4134,11 @@ fn v4_window_rows_retain_canonical_bytes_from_immutable_fixtures() {
     assert_eq!(vis.revision, 1);
     assert_eq!(vis.path, tiler_core::world_report::LastWritePath::Staged);
     assert_eq!(
-        vis.setter,
-        tiler_core::world_report::VisibilitySetter::Accepted
+        vis.disposition,
+        tiler_core::world_report::VisibilityDisposition::Called {
+            setter: tiler_core::world_report::FrameSetter::Accepted,
+            reason: tiler_core::world_report::VisibilityReason::Empty,
+        }
     );
     assert_eq!(vis.pre.as_ref().expect("pre").obs, 1);
     assert_eq!(vis.post.as_ref().expect("post").obs, 1);
@@ -4173,8 +4188,10 @@ fn v4_window_rows_retain_canonical_bytes_from_immutable_fixtures() {
         tiler_core::world_report::LastWritePath::Independent
     );
     assert_eq!(
-        vis_null.setter,
-        tiler_core::world_report::VisibilitySetter::NotCalled
+        vis_null.disposition,
+        tiler_core::world_report::VisibilityDisposition::NotCalled {
+            reason: tiler_core::world_report::VisibilityReason::PreimageUnavailable,
+        }
     );
     assert!(vis_null.pre.is_none() && vis_null.post.is_none());
 
@@ -4731,7 +4748,7 @@ fn v4_held_rows_project_typed_facts_with_wire_parity() {
         "win": "win-a",
         "out": "out",
         "ws": "ws-1",
-        "setter": "accepted",
+        "disposition": {"kind": "called", "setter": "accepted"},
         "pre": {"kind": "native", "out": "out", "ws": "ws-native-1", "extra": true},
         "post": null,
         "attemptMs": "1"
@@ -4814,7 +4831,7 @@ fn held_native_and_attempt_replay_residual_and_order_len_cap() {
         "win": "win-a",
         "out": "out",
         "ws": "ws-1",
-        "setter": "accepted",
+        "disposition": {"kind": "called", "setter": "accepted"},
         "pre": {"kind": "native", "out": "out", "ws": "ws-1"},
         "post": null,
         "attemptMs": "1",

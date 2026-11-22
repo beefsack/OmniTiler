@@ -261,7 +261,7 @@ fn contradictory_receipt_never_proves_send_arrival() {
                 window: WindowId("win-a".to_owned()),
                 target_output: OutputId("out-a".to_owned()),
                 target_workspace: target.clone(),
-                setter: FrameSetter::Accepted.into(),
+                disposition: FrameSetter::Accepted.into(),
                 pre: None,
                 post: Some(WorkspaceRef::Logical {
                     output: OutputId("out-a".to_owned()),
@@ -386,7 +386,7 @@ fn migration_contradictory_receipt_does_not_settle() {
                 window: WindowId("win-a".to_owned()),
                 target_output: OutputId("out-b".to_owned()),
                 target_workspace: view_a.clone(),
-                setter: FrameSetter::Accepted.into(),
+                disposition: FrameSetter::Accepted.into(),
                 pre: None,
                 post: Some(WorkspaceRef::Logical {
                     output: OutputId("out-b".to_owned()),
@@ -858,7 +858,7 @@ fn possibly_executed_persists_held_across_disappearance() {
                 window: WindowId("win-a".to_owned()),
                 target_output: OutputId("out-a".to_owned()),
                 target_workspace: target.clone(),
-                setter: FrameSetter::Threw.into(),
+                disposition: FrameSetter::Threw.into(),
                 pre: Some(WorkspaceRef::Logical {
                     output: OutputId("out-a".to_owned()),
                     workspace: WorkspaceId(source.clone()),
@@ -1018,7 +1018,7 @@ fn retained_settlements_grant_no_extra_writes_or_spend_pending_obligations() {
     use tiler_core::world_report::{
         ArrivalBracket, ArrivalLocation, FocusFeedback, LastWritePath, OperationKind,
         OperationOutcome, SwitchOutcome, VisibilityAttempt, VisibilityFact, VisibilityReason,
-        VisibilitySample, VisibilitySetter,
+        VisibilitySample,
     };
 
     let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
@@ -1120,8 +1120,10 @@ fn retained_settlements_grant_no_extra_writes_or_spend_pending_obligations() {
         target: shown,
         revision: rev,
         path: LastWritePath::Staged,
-        setter: VisibilitySetter::Accepted,
-        reason: VisibilityReason::Empty,
+        disposition: tiler_core::world_report::VisibilityDisposition::Called {
+            setter: tiler_core::world_report::FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        },
         pre: None,
         post: Some(sample(obs, shown)),
     };
@@ -1144,8 +1146,10 @@ fn retained_settlements_grant_no_extra_writes_or_spend_pending_obligations() {
         id: s1_eff.id.clone(),
         target: WindowId("w2".to_owned()),
         revision: s1_eff.issued_revision,
-        setter: VisibilitySetter::Accepted,
-        reason: VisibilityReason::Empty,
+        disposition: tiler_core::world_report::FocusDisposition::Called {
+            setter: tiler_core::world_report::FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        },
         pre: Some(WindowId("w1".to_owned())),
         post: Some(WindowId("w2".to_owned())),
         foreground_proven: true,

@@ -207,7 +207,7 @@ describe("world v4 producer binding and ordinary apply", () => {
         const attempts = state.framesForReport().filter((a) => a.win === "win-a");
         assert.equal(attempts.length, 1);
         assert.deepEqual(attempts[0]?.target, [8, 8, 800, 600]);
-        assert.equal(attempts[0]?.setter, "accepted");
+        assert.deepEqual(attempts[0]?.disposition, { kind: "called", setter: "accepted" });
         assert.deepEqual(attempts[0]?.readback, [8, 8, 800, 600]);
     });
 
@@ -235,7 +235,7 @@ describe("world v4 producer binding and ordinary apply", () => {
         const attempts = state.framesForReport().filter((a) => a.win === "win-a");
         assert.equal(attempts.length, 1);
         assert.deepEqual(attempts[0]?.target, [8, 8, 800, 600]);
-        assert.equal(attempts[0]?.setter, "accepted");
+        assert.deepEqual(attempts[0]?.disposition, { kind: "called", setter: "accepted" });
         assert.deepEqual(attempts[0]?.readback, [8, 8, 800, 600]);
     });
 

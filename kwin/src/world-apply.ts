@@ -21,7 +21,7 @@
 // from the fresh native facts.
 
 import type { ObservedWindow, WorldObservation } from "./world-observe";
-import { type WorldReply, type WorldReplyTransfer, type WorldReplyWindow, type WorldReplyResult, type FrameSetter, type WorldMemberRef, type WorldViewRef, type FocusReason, type FocusSetter, type WorldAfterShown, type WorldArrivalBracket, type WorldVisibilitySample, type WorldFocusRequest } from "./world-report";
+import { type WorldReply, type WorldReplyTransfer, type WorldReplyWindow, type WorldReplyResult, type FrameSetter, type WorldMemberRef, type WorldViewRef, type FocusCalledReason, type FocusNoCallReason, type WorldAfterShown, type WorldArrivalBracket, type WorldVisibilitySample, type WorldFocusRequest } from "./world-report";
 import { compareU64, isCanonicalU64, isOpaqueId } from "./world-seq";
 import { WorldAdapterState, type FocusRequestRecord } from "./world-state";
 
@@ -652,7 +652,7 @@ function actuateViewForTransfer(
     // with the observation-time baseline for core-side translation.
     state.recordViewAttempt({
         op: transfer.op, out: transfer.out, ws: transfer.ws,
-        setter: threw ? "threw" : ok ? "accepted" : "refused",
+        disposition: { kind: "called", setter: threw ? "threw" : ok ? "accepted" : "refused" },
         pre: viewPre, post: viewPost, base: viewBase,
         attemptMs: isCanonicalU64(state.lastClock) ? state.lastClock : "0",
     });
@@ -788,9 +788,10 @@ function applyTiledFrame(
     // Core owns clamp/suppression from this mechanical attempt plus the
     // next observed facts. A setter boolean is not proof of convergence.
     env.state.recordFrameAttempt({
-        win: observed.win, target: [target[0], target[1], target[2], target[3]], setter,
+        win: observed.win, target: [target[0], target[1], target[2], target[3]],
+        disposition: { kind: "called", setter },
         readback: readback === null ? null : [readback.x, readback.y, readback.w, readback.h],
-        dpiBefore: null, dpiAfter: null, attemptMs: stamp, op: "", pre: null,
+        dpiBefore: null, dpiAfter: null, attemptMs: stamp, purpose: { kind: "layout" },
     });
     if (setter === "accepted") {
         result.geometryWrites += 1;
@@ -940,7 +941,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                 state.markDispatched(op);
                 state.recordMemberAttempt({
                     op, win: row.win, out: targetOut, ws: targetWs,
-                    setter: "already-at-target",
+                    disposition: { kind: "already-at-target" },
                     pre: liveMemberRefOf(liveHome),
                     post: readMemberRefNow(env, observed.ref),
                     attemptMs: stamp,
@@ -1034,7 +1035,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             if (!betweenStepsOk(env, reply, entryObs, observed)) {
                 state.recordMemberAttempt({
                     op, win: row.win, out: targetOut, ws: targetWs,
-                    setter: threw ? "threw" : outOk ? "accepted" : "refused",
+                    disposition: { kind: "called", setter: threw ? "threw" : outOk ? "accepted" : "refused" },
                     pre: liveMemberRefOf(liveHome),
                     post: readMemberRefNow(env, observed.ref),
                     attemptMs: stamp,
@@ -1068,7 +1069,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                 // ambiguous, refused-but-arrived stays refused).
                 state.recordMemberAttempt({
                     op, win: row.win, out: targetOut, ws: targetWs,
-                    setter: threw ? "threw" : outOk ? "accepted" : "refused",
+                    disposition: { kind: "called", setter: threw ? "threw" : outOk ? "accepted" : "refused" },
                     pre: liveMemberRefOf(liveHome),
                     post: liveMemberRefOf(midHome),
                     attemptMs: stamp,
@@ -1099,7 +1100,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             if (outAttempted) {
                 state.recordMemberAttempt({
                     op, win: row.win, out: targetOut, ws: targetWs,
-                    setter: threw ? "threw" : outOk ? "accepted" : "refused",
+                    disposition: { kind: "called", setter: threw ? "threw" : outOk ? "accepted" : "refused" },
                     pre: liveMemberRefOf(liveHome),
                     post: liveMemberRefOf(midHome),
                     attemptMs: stamp,
@@ -1142,7 +1143,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                     : "accepted";
             state.recordMemberAttempt({
                 op, win: row.win, out: targetOut, ws: targetWs,
-                setter: memberSetter, pre: liveMemberRefOf(liveHome),
+                disposition: { kind: "called", setter: memberSetter }, pre: liveMemberRefOf(liveHome),
                 post: liveMemberRefOf(proof),
                 attemptMs: stamp,
             });
@@ -1328,10 +1329,10 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         // evidence plus the fresh facts.
         state.recordFrameAttempt({
             win: row.win, target: [target.x, target.y, target.w, target.h],
-            setter: threw ? "threw" : floatOk ? "accepted" : "refused",
+            disposition: { kind: "called", setter: threw ? "threw" : floatOk ? "accepted" : "refused" },
             readback: proof === null ? null : [proof.x, proof.y, proof.w, proof.h],
             dpiBefore: null, dpiAfter: null, attemptMs: stamp,
-            op, pre: [liveRect.x, liveRect.y, liveRect.w, liveRect.h],
+            purpose: { kind: "float-placement", op, pre: [liveRect.x, liveRect.y, liveRect.w, liveRect.h] },
         });
         if (proof !== null && sameRect(proof, [target.x, target.y, target.w, target.h])) {
             result.geometryWrites += 1;
@@ -1526,7 +1527,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             property: "maximized",
             target: false,
             rev: reply.rev,
-            setter: threw ? "threw" : ok ? "accepted" : "refused",
+            disposition: { kind: "called", setter: threw ? "threw" : ok ? "accepted" : "refused" },
             pre: maximizedNow,
             post,
             attemptMs: stamp,
@@ -1936,7 +1937,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         // baseline for core-side translation.
         state.recordViewAttempt({
             op: t.op, out: t.out, ws: t.ws,
-            setter: threw ? "threw" : ok ? "accepted" : "refused",
+            disposition: { kind: "called", setter: threw ? "threw" : ok ? "accepted" : "refused" },
             pre: viewPre, post: viewPost, base: viewBase,
             attemptMs: stamp,
         });
@@ -2232,7 +2233,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                     traceMigrate(env, `omnitiler:world:migrate-member op=${t.op} idx=${actIdx}/${members.length} pre=${pre} srcView=${echoSrcView === null ? "null" : "ok"} tgtView=${echoTgtView === null ? "null" : "ok"} echo=skipped set=skipped proof=${pre} branch=failed-between`);
                     state.recordMemberAttempt({
                         op: t.op, win: id, out: t.out, ws: t.ws,
-                        setter: threw ? "threw" : outOk ? "accepted" : "refused",
+                        disposition: { kind: "called", setter: threw ? "threw" : outOk ? "accepted" : "refused" },
                         pre: memberPre,
                         post: readMemberRefNow(env, observed.ref),
                         attemptMs: stamp,
@@ -2254,7 +2255,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                     result.membershipWrites += 1;
                     state.recordMemberAttempt({
                         op: t.op, win: id, out: t.out, ws: t.ws,
-                        setter: threw ? "threw" : outOk ? "accepted" : "refused",
+                        disposition: { kind: "called", setter: threw ? "threw" : outOk ? "accepted" : "refused" },
                         pre: memberPre,
                         post: liveMemberRefOf(home),
                         attemptMs: stamp,
@@ -2278,7 +2279,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                 if (needOutMove && outRef !== null) {
                     state.recordMemberAttempt({
                         op: t.op, win: id, out: t.out, ws: t.ws,
-                        setter: threw ? "threw" : outOk ? "accepted" : "refused",
+                        disposition: { kind: "called", setter: threw ? "threw" : outOk ? "accepted" : "refused" },
                         pre: memberPre,
                         post: liveMemberRefOf(home),
                         attemptMs: stamp,
@@ -2319,7 +2320,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                         : "accepted";
                 state.recordMemberAttempt({
                     op: t.op, win: id, out: t.out, ws: t.ws,
-                    setter: migrateSetter, pre: memberPre,
+                    disposition: { kind: "called", setter: migrateSetter }, pre: memberPre,
                     post: liveMemberRefOf(proof),
                     attemptMs: stamp,
                 });
@@ -2423,7 +2424,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                     // observation-time baseline.
                     state.recordViewAttempt({
                         op: t.op, out: t.out, ws: t.ws,
-                        setter: targetView.setter, pre: targetPre,
+                        disposition: { kind: "called", setter: targetView.setter }, pre: targetPre,
                         post: readViewRefNow(env, t.out),
                         base: targetBase,
                         attemptMs: stamp,
@@ -2456,7 +2457,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                     if (refillView.setter !== null) {
                         state.recordViewAttempt({
                             op: refillOp, out: refillChild.out, ws: refillChild.ws,
-                            setter: refillView.setter, pre: refillPre,
+                            disposition: { kind: "called", setter: refillView.setter }, pre: refillPre,
                             post: readViewRefNow(env, sourceOut),
                             base: refillBase,
                             attemptMs: stamp,
@@ -2738,26 +2739,26 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         return { status: "proven", arrival };
     };
     // Narrow pre-setter failure reason: a listing/homing mismatch names
-    // identity-stale; anything else (unreadable safety) names unreadable.
-    const preSetterReason = (target: ObservedWindow, expected: { out: string; ws: string }): FocusReason => {
+    // focus-identity-stale; anything else (unreadable safety) names focus-unreadable.
+    const preSetterReason = (target: ObservedWindow, expected: { out: string; ws: string }): FocusNoCallReason => {
         try {
             if (!env.isStillListed(target.ref)) {
-                return "identity-stale";
+                return "focus-identity-stale";
             }
         } catch (error) {
             void error;
-            return "unreadable";
+            return "focus-unreadable";
         }
         try {
             const live = env.readLiveMembership(target.ref);
             if (live === null || live.out !== expected.out || live.ws !== expected.ws) {
-                return "identity-stale";
+                return "focus-identity-stale";
             }
         } catch (error) {
             void error;
-            return "unreadable";
+            return "focus-unreadable";
         }
-        return "unreadable";
+        return "focus-unreadable";
     };
     // 5. Retained focus request: ONE generic consumer keyed by the opaque
     // request id, never cause-specific. Only the latest publication
@@ -2818,8 +2819,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                     id: focusReq.id,
                     target: focusReq.target,
                     rev: focusReq.rev,
-                    setter: "not-called",
-                    reason: "superseded",
+                    disposition: { kind: "not-called", reason: "focus-superseded" },
                     pre: stoppedFg,
                     post: stoppedFg,
                     foregroundProven: false,
@@ -2835,9 +2835,9 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             }
             preArrival = ready.arrival;
         }
-        const recordFocusRow = (
-            setter: FocusSetter,
-            reason: FocusReason,
+        const recordFocusCalled = (
+            setter: FrameSetter,
+            reason: FocusCalledReason,
             pre: string | null,
             post: string | null,
             proven: boolean,
@@ -2847,7 +2847,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                 id: focusReq.id,
                 target: focusReq.target,
                 rev: focusReq.rev,
-                setter,
+                disposition: { kind: "called", setter },
                 reason,
                 pre,
                 post,
@@ -2857,23 +2857,38 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             });
             state.noteFollowup();
             if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
-                const decision = setter === "not-called"
-                    ? (reason === "" ? "equality" : "no-call")
-                    : "called";
-                const traceReason = setter === "not-called"
-                    ? (reason === "" ? "already-target" : reason)
-                    : (setter === "accepted"
-                        ? (reason === "" ? "setter-accepted" : reason)
-                        : (reason === "" ? setter : reason));
-                traceFocusEval(env, focusReq, decision, traceReason);
+                const traceReason = setter === "accepted"
+                    ? (reason === "" ? "setter-accepted" : reason)
+                    : (reason === "" ? setter : reason);
+                traceFocusEval(env, focusReq, "called", traceReason);
             }
         };
         const terminalNoCall = (
-            reason: FocusReason, pre: string | null, post: string | null,
+            reason: FocusNoCallReason, pre: string | null, post: string | null,
             proven = false, arrival: WorldArrivalBracket[] = [],
         ): void => {
             if (!deferFocus() && spend()) {
-                recordFocusRow("not-called", reason, pre, post, proven, arrival);
+                state.recordFocusFeedback({
+                    id: focusReq.id,
+                    target: focusReq.target,
+                    rev: focusReq.rev,
+                    disposition: { kind: "not-called", reason },
+                    pre,
+                    post,
+                    foregroundProven: proven,
+                    arrival,
+                    attemptMs: stamp,
+                });
+                state.noteFollowup();
+                if (typeof __OMNITILER_TRACE__ === "string" && __OMNITILER_TRACE__ === "1") {
+                    const decision = reason === "focus-no-reason" ? "equality" : "no-call";
+                    const traceReason = reason === "focus-no-reason"
+                        ? "already-target"
+                        : reason === "focus-foreground-unproven"
+                            ? "focus-unproven"
+                            : reason.slice(6);
+                    traceFocusEval(env, focusReq, decision, traceReason);
+                }
             }
         };
         const focusTarget = byWin.get(focusReq.target);
@@ -2896,7 +2911,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             b.home.out === focusReq.out && b.home.ws === focusNative);
         if (focusTarget === undefined || focusNative === null || (!capturedHomed && !arrivalProvesDestination)) {
             const fg = readFocusPre();
-            terminalNoCall("identity-stale", fg, fg);
+            terminalNoCall("focus-identity-stale", fg, fg);
             result.held += 1;
         } else if (observation.gesture || !replyFresh(env, reply, entryObs)) {
             if (midApplyStopped(env, entryObs) || observation.gesture) {
@@ -2904,11 +2919,11 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                 // fresh live read); a gesture barrier holds the scope.
                 const moved = midApplyStopped(env, entryObs) && !observation.gesture;
                 const fg = readFocusPre();
-                terminalNoCall(moved ? "superseded" : "scope-held", fg, fg);
+                terminalNoCall(moved ? "focus-superseded" : "focus-scope-held", fg, fg);
                 result.held += 1;
             } else {
                 const fg = readFocusPre();
-                terminalNoCall("superseded", fg, fg);
+                terminalNoCall("focus-superseded", fg, fg);
                 result.stoppedMidApply = true;
             }
         } else {
@@ -2946,10 +2961,10 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                 // A moved fence supersedes; a replaced lifetime under a
                 // still-current fence names the stale identity; anything
                 // else rides the narrow listing/homing/safety reason.
-                const reason = moved
-                    ? "superseded" as const
+                const reason: FocusNoCallReason = moved
+                    ? "focus-superseded"
                     : !lifetimeOk
-                        ? "identity-stale" as const
+                        ? "focus-identity-stale"
                         : preSetterReason(focusTarget, expected);
                 terminalNoCall(reason, pre, fg, false, arrival);
                 result.stoppedMidApply = true;
@@ -2958,20 +2973,20 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                 // target equality satisfies first. The sampled arrival
                 // still rides: the core settles the frozen arrival set
                 // from factual brackets, never from setter disposition.
-                terminalNoCall("", pre, pre, true, arrival);
+                terminalNoCall("focus-no-reason", pre, pre, true, arrival);
             } else if (focusReq.cause === "positive-close" && pre === null) {
                 // Positive-close only: unknown foreground never dispatches
                 // blind. Informative safety no-call, spent, never retried.
                 // Admission and hover keep no unknown-foreground verdict
                 // (the core retires only the close lane on it), so they
                 // rely on the live mechanical gates instead.
-                terminalNoCall("focus-unproven", pre, pre, false, arrival);
+                terminalNoCall("focus-foreground-unproven", pre, pre, false, arrival);
                 result.held += 1;
             } else if (focusReq.cause === "positive-close" && observation.foregroundKnown !== true) {
                 // Positive-close only: the dispatch observation never
                 // proved a foreground, so a stable-looking fresh read proves
                 // nothing. Informative safety no-call, spent, never retried.
-                terminalNoCall("focus-unproven", pre, pre, false, arrival);
+                terminalNoCall("focus-foreground-unproven", pre, pre, false, arrival);
                 result.held += 1;
             } else if (focusReq.cause === "positive-close" && env.readFocusEvidence === undefined &&
                 pre !== observation.focusedGlobal) {
@@ -2979,7 +2994,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                 // captured baseline, so newer native input intervened.
                 // Never steal focus back; informative safety no-call,
                 // spent, never retried.
-                terminalNoCall("foreground-changed", pre, pre, false, arrival);
+                terminalNoCall("focus-foreground-changed", pre, pre, false, arrival);
                 result.held += 1;
             } else if (spend()) {
                 let ok = false;
@@ -2997,16 +3012,16 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
                 env.log(`omnitiler:world:focus-request-attempt req=${reply.req} rev=${reply.rev} target=${focusReq.target} reason=${focusReq.cause}`);
                 env.log(`omnitiler:world:focus-request-result req=${reply.req} rev=${reply.rev} target=${focusReq.target} reason=${focusReq.cause} outcome=${threw ? "threw" : ok ? "setter-accepted" : "setter-refused"} proven=${proven ? "true" : "false"}`);
                 if (!threw && ok && proven) {
-                    recordFocusRow("accepted", "", pre, post, true, arrival);
+                    recordFocusCalled("accepted", "", pre, post, true, arrival);
                     result.effects += 1;
                 } else if (threw) {
-                    recordFocusRow("threw", "", pre, post, proven, arrival);
+                    recordFocusCalled("threw", "", pre, post, proven, arrival);
                     result.held += 1;
                 } else if (!ok) {
-                    recordFocusRow("refused", "native-refused", pre, post, proven, arrival);
+                    recordFocusCalled("refused", "native-refused", pre, post, proven, arrival);
                     result.held += 1;
                 } else {
-                    recordFocusRow("accepted", "focus-unproven", pre, post, false, arrival);
+                    recordFocusCalled("accepted", "focus-unproven", pre, post, false, arrival);
                     result.held += 1;
                 }
                 if (midApplyStopped(env, entryObs)) {
@@ -3077,8 +3092,7 @@ export function applyWorldReply(env: ApplyEnv): ApplyResult {
             id: focusReq.id,
             target: focusReq.target,
             rev: focusReq.rev,
-            setter: "not-called",
-            reason: "superseded",
+            disposition: { kind: "not-called", reason: "focus-superseded" },
             pre: fg,
             post: fg,
             foregroundProven: false,

@@ -2728,15 +2728,17 @@ fn published_settlement_trace_operation_q1_q2_duplicate_late_toggle_and_reset() 
     );
     r3.windows[0].rect = Some(float_target);
     r3.frames = vec![FrameAttempt {
-        operation_id: Some("op-2".to_owned()),
         window: WindowId("win-a".to_owned()),
         target: float_target,
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         readback: Some(float_target),
         dpi_before: None,
         dpi_after: None,
         attempt_ms: 7,
-        prewrite: None,
+        purpose: crate::world_report::FramePurpose::FloatPlacement {
+            operation_id: "op-2".to_owned(),
+            prewrite: None,
+        },
     }];
     let settled_lines = crate::world_engine::with_settlement_trace_capture(|| {
         let reply3 = accepted_v4(&mut engine, &r3);
@@ -2817,15 +2819,17 @@ fn published_settlement_trace_operation_q1_q2_duplicate_late_toggle_and_reset() 
         ingress_v4("win-a"),
     );
     r6.frames = vec![FrameAttempt {
-        operation_id: Some("op-5".to_owned()),
         window: WindowId("win-a".to_owned()),
         target: float_target,
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         readback: Some(float_target),
         dpi_before: None,
         dpi_after: None,
         attempt_ms: 7,
-        prewrite: None,
+        purpose: crate::world_report::FramePurpose::FloatPlacement {
+            operation_id: "op-5".to_owned(),
+            prewrite: None,
+        },
     }];
     let replaced_lines = crate::world_engine::with_settlement_trace_capture(|| {
         let reply6 = accepted_v4(&mut engine, &r6);
@@ -2874,15 +2878,17 @@ fn published_settlement_trace_operation_q1_q2_duplicate_late_toggle_and_reset() 
             );
             r8.windows[1].rect = Some(target_b);
             r8.frames = vec![FrameAttempt {
-                operation_id: Some("op-7".to_owned()),
                 window: WindowId("win-b".to_owned()),
                 target: target_b,
-                setter: FrameSetter::Accepted,
+                disposition: FrameSetter::Accepted,
                 readback: Some(target_b),
                 dpi_before: None,
                 dpi_after: None,
                 attempt_ms: 7,
-                prewrite: None,
+                purpose: crate::world_report::FramePurpose::FloatPlacement {
+                    operation_id: "op-7".to_owned(),
+                    prewrite: None,
+                },
             }];
             let _ = accepted_v4(&mut engine, &r8);
         });
@@ -2986,7 +2992,7 @@ fn published_settlement_trace_operation_q1_q2_duplicate_late_toggle_and_reset() 
         property: crate::world_report::StateProperty::Maximized,
         target: false,
         revision: reply_move.state_revision,
-        setter: crate::world_report::FrameSetter::Accepted,
+        disposition: crate::world_report::FrameSetter::Accepted,
         pre: Some(true),
         post: Some(false),
         attempt_ms: 7,
@@ -3009,7 +3015,7 @@ fn published_settlement_trace_operation_q1_q2_duplicate_late_toggle_and_reset() 
 fn published_settlement_trace_switch_q1_lifecycle_genuine() {
     use crate::world_report::{
         ArrivalBracket, ArrivalLocation, FocusFeedback, LastWritePath, VisibilityAttempt,
-        VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
+        VisibilityFact, VisibilityReason, VisibilitySample,
     };
 
     let mut engine = engine_with(Vec::new());
@@ -3083,8 +3089,10 @@ fn published_settlement_trace_switch_q1_lifecycle_genuine() {
         target,
         revision: rev,
         path: LastWritePath::Staged,
-        setter: VisibilitySetter::Accepted,
-        reason: VisibilityReason::Empty,
+        disposition: crate::world_report::VisibilityDisposition::Called {
+            setter: crate::world_report::FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        },
         pre: None,
         post: Some(VisibilitySample {
             obs,
@@ -3112,8 +3120,10 @@ fn published_settlement_trace_switch_q1_lifecycle_genuine() {
         id: eff3.id,
         target: WindowId("win-b".to_owned()),
         revision: eff3.issued_revision,
-        setter: VisibilitySetter::Accepted,
-        reason: VisibilityReason::Empty,
+        disposition: crate::world_report::FocusDisposition::Called {
+            setter: crate::world_report::FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        },
         pre: Some(WindowId("win-a".to_owned())),
         post: Some(WindowId("win-b".to_owned())),
         foreground_proven: true,
@@ -3202,8 +3212,10 @@ fn published_settlement_trace_switch_q1_lifecycle_genuine() {
         id: eff5.id,
         target: WindowId("win-a".to_owned()),
         revision: eff5.issued_revision,
-        setter: VisibilitySetter::Accepted,
-        reason: VisibilityReason::Empty,
+        disposition: crate::world_report::FocusDisposition::Called {
+            setter: crate::world_report::FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        },
         pre: Some(WindowId("win-b".to_owned())),
         post: Some(WindowId("win-a".to_owned())),
         foreground_proven: true,
@@ -3617,15 +3629,17 @@ fn q2_dropped_trace_rejects_outbound_gate_preserves_same_obs_and_dedups() {
     );
     r3.windows[0].rect = Some(float_target);
     r3.frames = vec![FrameAttempt {
-        operation_id: Some("op-2".to_owned()),
         window: WindowId("win-a".to_owned()),
         target: float_target,
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         readback: Some(float_target),
         dpi_before: None,
         dpi_after: None,
         attempt_ms: 7,
-        prewrite: None,
+        purpose: crate::world_report::FramePurpose::FloatPlacement {
+            operation_id: "op-2".to_owned(),
+            prewrite: None,
+        },
     }];
     let _ = accepted_v4(&mut engine, &r3);
     assert_eq!(engine.world.settlement.operation_settled.len(), 1);
@@ -3788,15 +3802,14 @@ fn drag_preview_trace_emits_correlated_branch_reasons_and_is_gated() {
         .iter()
         .filter_map(|w| {
             w.effective_frame.map(|target| FrameAttempt {
-                operation_id: None,
                 window: w.lifetime.clone(),
                 target,
-                setter: FrameSetter::Accepted,
+                disposition: FrameSetter::Accepted,
                 readback: Some(target),
                 dpi_before: None,
                 dpi_after: None,
                 attempt_ms: 5,
-                prewrite: None,
+                purpose: crate::world_report::FramePurpose::Layout,
             })
         })
         .collect();

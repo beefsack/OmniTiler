@@ -25,7 +25,7 @@ use crate::world_report::{
     ArrivalBracket, ArrivalLocation, AuthorityScope, FocusFeedback, FrameSetter, HeldScreenRow,
     HeldWindowRow, LastWritePath, MemberAttempt, OneShotEffect, PresentationRowV4, RowDiagnostic,
     RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, SwitchFocus, SwitchOutcome,
-    VisibilityAttempt, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
+    VisibilityAttempt, VisibilityFact, VisibilityReason, VisibilitySample,
     WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef, WorldCommand, WorldReportV4,
 };
 use crate::world_v4_support_tests::empty_ingress;
@@ -362,8 +362,10 @@ fn feedback_row(
         id: id.to_owned(),
         target: WindowId(target.to_owned()),
         revision,
-        setter: VisibilitySetter::Accepted,
-        reason: crate::world_report::VisibilityReason::Empty,
+        disposition: crate::world_report::FocusDisposition::Called {
+            setter: crate::world_report::FrameSetter::Accepted,
+            reason: crate::world_report::VisibilityReason::Empty,
+        },
         pre: None,
         post: post.map(|id| WindowId(id.to_owned())),
         foreground_proven: proven,
@@ -1986,7 +1988,7 @@ fn selection_follow_send_home_invalidates_stale_hide() {
         window: WindowId("w2".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
-        setter: FrameSetter::Accepted.into(),
+        disposition: FrameSetter::Accepted.into(),
         pre: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(home.clone()),
@@ -2155,7 +2157,7 @@ fn follow_send_settles_membership_before_selection_terminal() {
         window: WindowId("w2".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
-        setter: FrameSetter::Accepted.into(),
+        disposition: FrameSetter::Accepted.into(),
         pre: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(home.clone()),
@@ -2207,7 +2209,7 @@ fn follow_send_settles_membership_before_selection_terminal() {
         window: WindowId("w2".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: home.clone(),
-        setter: FrameSetter::Accepted.into(),
+        disposition: FrameSetter::Accepted.into(),
         pre: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(away.clone()),
@@ -2406,7 +2408,7 @@ fn follow_to_different_workspace_prunes_stale_select_view_flight() {
         operation_id: "op-3".to_owned(),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         pre: Some(native_ref("n0")),
         post: Some(native_ref("n1")),
         baseline: Some(native_ref("n1")),
@@ -2703,7 +2705,7 @@ fn follow_binding_superseded_then_close_drops_without_event() {
         window: WindowId("w2".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
-        setter: FrameSetter::Accepted.into(),
+        disposition: FrameSetter::Accepted.into(),
         pre: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(home.clone()),
@@ -2839,7 +2841,7 @@ fn native_free_follow_source_echo_survives_then_proves() {
         window: WindowId("w2".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
-        setter: FrameSetter::Accepted.into(),
+        disposition: FrameSetter::Accepted.into(),
         pre: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(home.clone()),
@@ -2923,7 +2925,7 @@ fn native_free_follow_source_echo_survives_then_proves() {
         window: WindowId("w1".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
-        setter: FrameSetter::Accepted.into(),
+        disposition: FrameSetter::Accepted.into(),
         pre: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(home.clone()),
@@ -3051,7 +3053,7 @@ fn native_free_follow_source_echo_survives_then_proves() {
         window: WindowId("w2".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: third_away.clone(),
-        setter: FrameSetter::Accepted.into(),
+        disposition: FrameSetter::Accepted.into(),
         pre: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(third_home.clone()),
@@ -3121,7 +3123,7 @@ fn native_free_follow_source_echo_survives_then_proves() {
         window: WindowId("w2".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: sup_away.clone(),
-        setter: FrameSetter::Accepted.into(),
+        disposition: FrameSetter::Accepted.into(),
         pre: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(sup_home.clone()),
@@ -3342,7 +3344,7 @@ fn host_owned_follow_binds_native_obligation_and_settles_window_first() {
         window: WindowId("w0".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
-        setter: FrameSetter::Accepted.into(),
+        disposition: FrameSetter::Accepted.into(),
         pre: Some(WorkspaceRef::Native {
             output: OutputId("out-a".to_owned()),
             workspace: crate::ids::NativeWorkspaceId::parse("n0").expect("native id"),
@@ -3419,7 +3421,7 @@ fn host_owned_follow_binds_native_obligation_and_settles_window_first() {
         operation_id: "op-3".to_owned(),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         pre: Some(native_ref("n0")),
         post: Some(native_ref("n1")),
         baseline: Some(native_ref("n1")),
@@ -4633,8 +4635,10 @@ fn vis_confirmed(window: &str, target: bool, rev: u64, post_obs: u64) -> Visibil
         target,
         revision: rev,
         path: LastWritePath::Staged,
-        setter: VisibilitySetter::Accepted,
-        reason: VisibilityReason::Empty,
+        disposition: crate::world_report::VisibilityDisposition::Called {
+            setter: crate::world_report::FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        },
         pre: None,
         post: Some(confirm_sample(post_obs, target)),
     }
@@ -4644,7 +4648,7 @@ fn vis_with(
     window: &str,
     target: bool,
     rev: u64,
-    setter: VisibilitySetter,
+    setter: Option<crate::world_report::FrameSetter>,
     reason: VisibilityReason,
     post: Option<VisibilitySample>,
 ) -> VisibilityAttempt {
@@ -4653,8 +4657,10 @@ fn vis_with(
         target,
         revision: rev,
         path: LastWritePath::Staged,
-        setter,
-        reason,
+        disposition: match setter {
+            Some(setter) => crate::world_report::VisibilityDisposition::Called { setter, reason },
+            None => crate::world_report::VisibilityDisposition::NotCalled { reason },
+        },
         pre: None,
         post,
     }
@@ -4670,8 +4676,10 @@ fn refused_feedback(id: &str, target: &str, revision: u64) -> FocusFeedback {
         id: id.to_owned(),
         target: WindowId(target.to_owned()),
         revision,
-        setter: VisibilitySetter::Refused,
-        reason: VisibilityReason::Empty,
+        disposition: crate::world_report::FocusDisposition::Called {
+            setter: crate::world_report::FrameSetter::Refused,
+            reason: VisibilityReason::Empty,
+        },
         pre: Some(WindowId("w-other".to_owned())),
         post: Some(WindowId("w-other".to_owned())),
         foreground_proven: false,
@@ -4685,8 +4693,9 @@ fn notcalled_feedback(id: &str, target: &str, revision: u64) -> FocusFeedback {
         id: id.to_owned(),
         target: WindowId(target.to_owned()),
         revision,
-        setter: VisibilitySetter::NotCalled,
-        reason: VisibilityReason::ScopeHeld,
+        disposition: crate::world_report::FocusDisposition::NotCalled {
+            reason: crate::world_report::FocusNoCallReason::ScopeHeld,
+        },
         pre: None,
         post: None,
         foreground_proven: false,
@@ -4887,7 +4896,7 @@ fn switch_hide_refused_terminates_with_failed_without_readiness() {
         "w1",
         false,
         rev,
-        VisibilitySetter::Refused,
+        Some(crate::world_report::FrameSetter::Refused),
         VisibilityReason::ShowBlocked,
         Some(confirm_sample(4, true)),
     );
@@ -4939,7 +4948,7 @@ fn switch_blocked_show_and_nocall_focus_terminates() {
         "w2",
         true,
         rev,
-        VisibilitySetter::NotCalled,
+        None,
         VisibilityReason::ScopeHeld,
         Some(confirm_sample(4, false)),
     );
@@ -6108,14 +6117,7 @@ fn switch_nocall_hide_terminates_without_retry_and_preserves_state() {
     // Explicit no-call hide: a correlated row with no post can never
     // confirm, so the departing hide fails terminally while the show
     // confirms; unproven focus (no arrival) keeps the outcome failed.
-    let w1_lw = vis_with(
-        "w1",
-        false,
-        rev,
-        VisibilitySetter::NotCalled,
-        VisibilityReason::ScopeHeld,
-        None,
-    );
+    let w1_lw = vis_with("w1", false, rev, None, VisibilityReason::ScopeHeld, None);
     let reply = accepted(
         &mut engine,
         &with_visibility(
@@ -6198,7 +6200,7 @@ fn switch_threw_hide_with_mismatched_post_terminates() {
         "w1",
         false,
         rev,
-        VisibilitySetter::Threw,
+        Some(crate::world_report::FrameSetter::Threw),
         VisibilityReason::Empty,
         Some(confirm_sample(4, true)),
     );
@@ -6305,8 +6307,10 @@ fn switch_partial_hide_failure_with_proven_arrival_and_focus() {
         target: false,
         revision: rev,
         path: LastWritePath::Staged,
-        setter: VisibilitySetter::Refused,
-        reason: VisibilityReason::Empty,
+        disposition: crate::world_report::VisibilityDisposition::Called {
+            setter: crate::world_report::FrameSetter::Refused,
+            reason: VisibilityReason::Empty,
+        },
         pre: Some(confirm_sample(3, true)),
         post: Some(confirm_sample(4, true)),
     };
@@ -6564,7 +6568,7 @@ fn focusless_occupied_to_empty_hide_refusal_fails() {
         "w2",
         false,
         rev,
-        VisibilitySetter::Refused,
+        Some(crate::world_report::FrameSetter::Refused),
         VisibilityReason::ShowBlocked,
         Some(confirm_sample(5, true)),
     );
@@ -8910,7 +8914,7 @@ fn host_owned_focus_bearing_shared_nonfocus_own_refusal_pends_then_fails() {
         operation_id: "op-3".to_owned(),
         target_output: OutputId("out-b".to_owned()),
         target_workspace: out_b_home.workspace.0.clone(),
-        setter: FrameSetter::Refused,
+        disposition: FrameSetter::Refused,
         pre: Some(WorkspaceRef::Native {
             output: OutputId("out-b".to_owned()),
             workspace: native_n0.clone(),
@@ -9140,7 +9144,7 @@ fn host_owned_focus_bearing_open_binding_never_wedges_repeated_populated_switche
             operation_id: op.to_owned(),
             target_output: OutputId("out-a".to_owned()),
             target_workspace: target.to_owned(),
-            setter: FrameSetter::Accepted,
+            disposition: FrameSetter::Accepted,
             pre: Some(native_ref(pre)),
             post: Some(native_ref(post)),
             baseline: Some(native_ref(pre)),
@@ -9432,7 +9436,7 @@ fn view_attempt(op: &str, target: &str, setter: FrameSetter) -> crate::world_rep
         operation_id: op.to_owned(),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: target.to_owned(),
-        setter,
+        disposition: setter,
         pre: Some(native_ref("n0")),
         post: Some(native_ref("n0")),
         baseline: Some(native_ref("n0")),
@@ -9799,7 +9803,7 @@ fn host_owned_focusless_first_latched_raw_wins_over_later_row() {
         operation_id: "op-2".to_owned(),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         pre: Some(native_ref("n0")),
         post: Some(native_ref("n0")),
         baseline: Some(native_ref("n0")),
@@ -9821,7 +9825,7 @@ fn host_owned_focusless_first_latched_raw_wins_over_later_row() {
         operation_id: "op-2".to_owned(),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: away.clone(),
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         pre: Some(native_ref("n0")),
         post: Some(native_ref("n1")),
         baseline: Some(native_ref("n0")),
@@ -11895,7 +11899,7 @@ fn migration_rollback_revokes_exact_rev_and_keeps_newer_selection() {
         window: WindowId("w2".to_owned()),
         target_output: OutputId("out-b".to_owned()),
         target_workspace: home.clone(),
-        setter: FrameSetter::Refused.into(),
+        disposition: FrameSetter::Refused.into(),
         pre: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
             workspace: WorkspaceId(home.clone()),

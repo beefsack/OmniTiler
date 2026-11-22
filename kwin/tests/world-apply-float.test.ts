@@ -275,7 +275,7 @@ describe("world float placement", () => {
         assert.ok(first.geometryWrites >= 1);
         assert.deepEqual(world.frames.get("win-a"), TARGET);
         assert.equal(heldAmbiguous(state, OP), true, "dispatch recorded once; the raw attempt rides, core owns settlement");
-        assert.deepEqual(state.framesForReport().filter((a) => a.op === OP).length, 1, "one raw frame attempt recorded");
+        assert.deepEqual(state.framesForReport().filter((a) => a.purpose.kind === "float-placement" && a.purpose.op === OP).length, 1, "one raw frame attempt recorded");
         assert.equal(state.dirty, true, "dispatch schedules a follow-up capture");
         // A duplicate reply (same operation) never double-places.
         const second = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,
@@ -353,7 +353,7 @@ describe("world float placement", () => {
         });
         assert.equal(calls, 0, "stale final gate runs no native setter");
         assert.ok(!state.floatSpent.has(OP), "stale veto spends no one-shot token");
-        assert.deepEqual(state.framesForReport().filter((a) => a.op === OP), [], "stale veto records no attempt");
+        assert.deepEqual(state.framesForReport().filter((a) => a.purpose.kind === "float-placement" && a.purpose.op === OP), [], "stale veto records no attempt");
         assert.equal(stale.stoppedMidApply, true, "stale homing stops the apply");
         // A fresh capture (homing converged) retries the still-undispatched
         // desire exactly once.
@@ -593,8 +593,8 @@ describe("world float placement", () => {
         assert.equal(calls, 1);
         assert.equal(heldAmbiguous(state, OP), true, "dispatch record stays; the refused row rides, core owns refusal");
         assert.deepEqual(
-            state.framesForReport().filter((a) => a.op === OP),
-            [{ win: "win-a", target: [162, 122, 475, 355], setter: "refused", readback: [10, 10, 100, 100], dpiBefore: null, dpiAfter: null, attemptMs: state.lastClock, op: OP, pre: [10, 10, 100, 100] }],
+            state.framesForReport().filter((a) => a.purpose.kind === "float-placement" && a.purpose.op === OP),
+            [{ win: "win-a", target: [162, 122, 475, 355], disposition: { kind: "called", setter: "refused" }, readback: [10, 10, 100, 100], dpiBefore: null, dpiAfter: null, attemptMs: state.lastClock, purpose: { kind: "float-placement", op: OP, pre: [10, 10, 100, 100] } }],
             "refused disposition plus unchanged prewrite rides the next report",
         );
         const again = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,

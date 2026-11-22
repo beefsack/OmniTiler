@@ -16,9 +16,7 @@ use tiler_core::connection::{
     ApplicationIdentity, HandshakeRequest, HostCapabilities, SettingsRequest,
 };
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
-use tiler_core::world_report::{
-    ArrivalLocation, VisibilityReason, VisibilitySetter, WorkspaceRef, WorldReportV4,
-};
+use tiler_core::world_report::{ArrivalLocation, VisibilityReason, WorkspaceRef, WorldReportV4};
 use tiler_core::world_report_v4_checks::report_digest_v4;
 use tiler_protocol::world_admission_sizing::report_estimate_v4;
 use tiler_protocol::world_protocol::decode_request;
@@ -117,8 +115,13 @@ fn immutable_focus_rows_decode_to_exact_typed_facts() {
     assert_eq!(row.id, "effect-a");
     assert_eq!(row.target.0, "win-a");
     assert_eq!(row.revision, 1);
-    assert_eq!(row.setter, VisibilitySetter::Accepted);
-    assert_eq!(row.reason, VisibilityReason::Empty);
+    assert_eq!(
+        row.disposition,
+        tiler_core::world_report::FocusDisposition::Called {
+            setter: tiler_core::world_report::FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        }
+    );
     assert_eq!(row.pre.as_ref().map(|id| id.0.as_str()), Some("win-b"));
     assert_eq!(row.post.as_ref().map(|id| id.0.as_str()), Some("win-a"));
     assert!(row.foreground_proven);
@@ -151,15 +154,25 @@ fn immutable_focus_rows_decode_to_exact_typed_facts() {
         decode_request(&envelope(&nested_rows("report-focus-feedback-refused"))).expect("decodes");
     let row = &report.focus_feedback[0];
     assert_eq!(row.target.0, "win-b");
-    assert_eq!(row.setter, VisibilitySetter::Refused);
-    assert_eq!(row.reason, VisibilityReason::NativeRefused);
+    assert_eq!(
+        row.disposition,
+        tiler_core::world_report::FocusDisposition::Called {
+            setter: tiler_core::world_report::FrameSetter::Refused,
+            reason: VisibilityReason::NativeRefused,
+        }
+    );
     assert!(!row.foreground_proven);
     assert!(row.arrival.is_empty());
     let report =
         decode_request(&envelope(&nested_rows("report-focus-feedback-threw"))).expect("decodes");
     let row = &report.focus_feedback[0];
-    assert_eq!(row.setter, VisibilitySetter::Threw);
-    assert_eq!(row.reason, VisibilityReason::Empty);
+    assert_eq!(
+        row.disposition,
+        tiler_core::world_report::FocusDisposition::Called {
+            setter: tiler_core::world_report::FrameSetter::Threw,
+            reason: VisibilityReason::Empty,
+        }
+    );
     assert_eq!(row.pre.as_ref().map(|id| id.0.as_str()), Some("win-a"));
     assert_eq!(row.post, None);
     assert!(row.arrival.is_empty());
@@ -169,8 +182,12 @@ fn immutable_focus_rows_decode_to_exact_typed_facts() {
     let report = decode_request(&envelope(&nested_rows("report-focus-feedback-unreadable")))
         .expect("decodes");
     let row = &report.focus_feedback[0];
-    assert_eq!(row.setter, VisibilitySetter::NotCalled);
-    assert_eq!(row.reason, VisibilityReason::ShowBlocked);
+    assert_eq!(
+        row.disposition,
+        tiler_core::world_report::FocusDisposition::NotCalled {
+            reason: tiler_core::world_report::FocusNoCallReason::ShowBlocked,
+        }
+    );
     assert_eq!(row.pre, None);
     assert_eq!(row.post, None);
     assert!(!row.foreground_proven);
@@ -330,7 +347,7 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
     fn row() -> serde_json::Value {
         serde_json::json!({
             "id": "effect-a", "target": "win-a", "rev": "1",
-            "setter": "accepted", "reason": "",
+            "disposition": {"kind": "called", "setter": "accepted"}, "reason": "",
             "pre": "win-b", "post": "win-a", "foregroundProven": true,
             "arrival": [{
                 "win": "win-a", "obs": "1",
@@ -356,7 +373,7 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
         "unknown-field"
     );
     let mut bad_setter = row();
-    bad_setter["setter"] = serde_json::json!("retried");
+    bad_setter["disposition"]["setter"] = serde_json::json!("retried");
     assert_eq!(
         decode_request(&envelope(&serde_json::json!([bad_setter])))
             .expect_err("unknown setter refuses")
@@ -520,7 +537,7 @@ fn cap_1024_accepts_and_1025_refuses() {
                 .map(|n| {
                     serde_json::json!({
                         "id": format!("fb-{n:04}"), "target": "win-a", "rev": "7",
-                        "setter": "accepted", "reason": "",
+                        "disposition": {"kind": "called", "setter": "accepted"}, "reason": "",
                         "pre": null, "post": null, "foregroundProven": true,
                         "arrival": [], "attemptMs": "9",
                     })
@@ -553,7 +570,7 @@ fn arrival_total_cap_refuses_over_10000() {
         let brackets: Vec<serde_json::Value> = (0..count).map(bracket).collect();
         envelope(&serde_json::json!([{
             "id": "effect-a", "target": "win-a", "rev": "7",
-            "setter": "accepted", "reason": "",
+            "disposition": {"kind": "called", "setter": "accepted"}, "reason": "",
             "pre": null, "post": null, "foregroundProven": true,
             "arrival": brackets, "attemptMs": "9",
         }]))
@@ -573,7 +590,7 @@ fn arrival_total_cap_refuses_over_10000() {
                 let brackets: Vec<serde_json::Value> = (0..count).map(bracket).collect();
                 serde_json::json!({
                     "id": format!("effect-{r}"), "target": "win-a", "rev": "7",
-                    "setter": "accepted", "reason": "",
+                    "disposition": {"kind": "called", "setter": "accepted"}, "reason": "",
                     "pre": null, "post": null, "foregroundProven": true,
                     "arrival": brackets, "attemptMs": "9",
                 })
@@ -611,10 +628,16 @@ fn digest_separates_every_raw_field() {
     rev.focus_feedback[0].revision = 2;
     cases.push(("rev", rev));
     let mut setter = report.clone();
-    setter.focus_feedback[0].setter = VisibilitySetter::Refused;
+    setter.focus_feedback[0].disposition = tiler_core::world_report::FocusDisposition::Called {
+        setter: tiler_core::world_report::FrameSetter::Refused,
+        reason: VisibilityReason::Empty,
+    };
     cases.push(("setter", setter));
     let mut reason = report.clone();
-    reason.focus_feedback[0].reason = VisibilityReason::NativeRefused;
+    reason.focus_feedback[0].disposition = tiler_core::world_report::FocusDisposition::Called {
+        setter: tiler_core::world_report::FrameSetter::Accepted,
+        reason: VisibilityReason::NativeRefused,
+    };
     cases.push(("reason", reason));
     let mut pre = report.clone();
     pre.focus_feedback[0].pre = None;
@@ -737,7 +760,7 @@ fn compact_automatic_ids_decode_and_overlong_spellings_refuse() {
     fn row(id: &str, target: &str) -> serde_json::Value {
         serde_json::json!({
             "id": id, "target": target, "rev": "18446744073709551615",
-            "setter": "accepted", "reason": "",
+            "disposition": {"kind": "called", "setter": "accepted"}, "reason": "",
             "pre": "win-a", "post": target, "foregroundProven": true,
             "arrival": [], "attemptMs": "20",
         })

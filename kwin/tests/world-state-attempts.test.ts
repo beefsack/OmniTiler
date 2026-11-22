@@ -113,7 +113,7 @@ function stateRow(over: Partial<WorldStateAttempt> & { win: string }): WorldStat
         property: "fullscreen",
         target: true,
         rev: "2",
-        setter: "accepted",
+        disposition: { kind: "called", setter: "accepted" },
         pre: false,
         post: true,
         attemptMs: "7",
@@ -129,10 +129,10 @@ describe("world state attempt encoding", () => {
             assert.equal(
                 bytes,
                 `{"kind":"state","win":"win-a","property":"${property}","target":true,` +
-                `"rev":"2","setter":"accepted","pre":false,"post":true,"attemptMs":"7"}`,
+                `"rev":"2","disposition":{"kind":"called","setter":"accepted"},"pre":false,"post":true,"attemptMs":"7"}`,
             );
             assert.deepEqual(Object.keys(JSON.parse(bytes as string)), [
-                "kind", "win", "property", "target", "rev", "setter", "pre", "post", "attemptMs",
+                "kind", "win", "property", "target", "rev", "disposition", "pre", "post", "attemptMs",
             ]);
         }
     });
@@ -145,7 +145,7 @@ describe("world state attempt encoding", () => {
                     assert.equal(
                         bytes,
                         `{"kind":"state","win":"win-a","property":"fullscreen","target":${flag(target)},` +
-                        `"rev":"2","setter":"accepted","pre":${flag(pre)},"post":${flag(post)},"attemptMs":"7"}`,
+                        `"rev":"2","disposition":{"kind":"called","setter":"accepted"},"pre":${flag(pre)},"post":${flag(post)},"attemptMs":"7"}`,
                         `exact bytes for target=${flag(target)} pre=${flag(pre)} post=${flag(post)}`,
                     );
                 }
@@ -158,7 +158,7 @@ describe("world state attempt encoding", () => {
         assert.equal(
             maxed,
             `{"kind":"state","win":"win-a","property":"fullscreen","target":true,` +
-            `"rev":"18446744073709551615","setter":"accepted","pre":false,"post":true,` +
+            `"rev":"18446744073709551615","disposition":{"kind":"called","setter":"accepted"},"pre":false,"post":true,` +
             `"attemptMs":"18446744073709551615"}`,
         );
         // Target is never nullable: null refuses.
@@ -167,7 +167,7 @@ describe("world state attempt encoding", () => {
             null,
         );
     });
-    it("refuses invalid values, ids, counters, and setters", () => {
+    it("refuses invalid values, ids, counters, and dispositions", () => {
         const base = stateRow({ win: "win-a" });
         const bad: unknown[] = [
             null, [], "x", 7,
@@ -183,9 +183,13 @@ describe("world state attempt encoding", () => {
             { ...base, rev: "01" },
             { ...base, rev: "x" },
             { ...base, rev: "18446744073709551616" },
-            { ...base, setter: "not-called" },
-            { ...base, setter: "" },
-            { ...base, setter: "ACCEPTED" },
+            { ...base, disposition: { kind: "already-at-target" } },
+            { ...base, disposition: { kind: "not-called", reason: "focus-no-reason" } },
+            { ...base, disposition: { kind: "called", setter: "not-called" } },
+            { ...base, disposition: { kind: "called", setter: "" } },
+            { ...base, disposition: { kind: "called", setter: "ACCEPTED" } },
+            { ...base, disposition: { kind: "called", setter: "accepted", extra: 1 } },
+            { ...base, setter: "accepted" },
             { ...base, pre: 0 },
             { ...base, pre: "false" },
             { ...base, pre: [] },
@@ -213,26 +217,26 @@ describe("world state attempt retention", () => {
         const state = new WorldAdapterState("adapter-a", "owner-a");
         for (const setter of ["accepted", "refused", "threw"] as const) {
             assert.equal(state.recordStateAttempt(
-                stateRow({ win: "win-a", property: "maximized", target: true, rev: "2", setter, pre: null, post: null }),
+                stateRow({ win: "win-a", property: "maximized", target: true, rev: "2", disposition: { kind: "called", setter }, pre: null, post: null }),
             ), true);
         }
         // Same-tuple replays (identical window/property/target/rev) keep
         // the first row: the original stamp is never replaced.
         assert.equal(state.recordStateAttempt(
-            stateRow({ win: "win-a", property: "maximized", target: true, rev: "2", setter: "threw", pre: true, post: true, attemptMs: "9" }),
+            stateRow({ win: "win-a", property: "maximized", target: true, rev: "2", disposition: { kind: "called", setter: "threw" }, pre: true, post: true, attemptMs: "9" }),
         ), true);
         const rows = state.statesForReport();
         assert.equal(rows.length, 1);
-        assert.deepEqual(rows[0], stateRow({ win: "win-a", property: "maximized", target: true, rev: "2", setter: "accepted", pre: null, post: null }));
+        assert.deepEqual(rows[0], stateRow({ win: "win-a", property: "maximized", target: true, rev: "2", disposition: { kind: "called", setter: "accepted" }, pre: null, post: null }));
         // A newer tuple for the same property (new target and rev)
         // replaces its predecessor: the core settles one fact per
         // property and refuses two rows as duplicate-state-attempt.
         assert.equal(state.recordStateAttempt(
-            stateRow({ win: "win-a", property: "maximized", target: false, rev: "3", setter: "refused", pre: true, post: true, attemptMs: "8" }),
+            stateRow({ win: "win-a", property: "maximized", target: false, rev: "3", disposition: { kind: "called", setter: "refused" }, pre: true, post: true, attemptMs: "8" }),
         ), true);
         const next = state.statesForReport();
         assert.equal(next.length, 1);
-        assert.deepEqual(next[0], stateRow({ win: "win-a", property: "maximized", target: false, rev: "3", setter: "refused", pre: true, post: true, attemptMs: "8" }));
+        assert.deepEqual(next[0], stateRow({ win: "win-a", property: "maximized", target: false, rev: "3", disposition: { kind: "called", setter: "refused" }, pre: true, post: true, attemptMs: "8" }));
     });
     it("retains unrelated properties and windows side by side, sorted", () => {
         const state = new WorldAdapterState("adapter-a", "owner-a");
@@ -303,7 +307,7 @@ describe("world state attempt acknowledgement", () => {
         // A newer tuple for the same property replaces the delivered
         // predecessor before its ack lands.
         assert.equal(state.recordStateAttempt(
-            stateRow({ win: "win-a", target: false, rev: "3", setter: "refused", pre: true, post: true, attemptMs: "8" }),
+            stateRow({ win: "win-a", target: false, rev: "3", disposition: { kind: "called", setter: "refused" }, pre: true, post: true, attemptMs: "8" }),
         ), true);
         // An unrelated window joins after the snapshot.
         assert.equal(state.recordStateAttempt(stateRow({ win: "win-b", property: "above" })), true);
@@ -312,7 +316,7 @@ describe("world state attempt acknowledgement", () => {
         assert.deepEqual(
             state.statesForReport(),
             [
-                stateRow({ win: "win-a", target: false, rev: "3", setter: "refused", pre: true, post: true, attemptMs: "8" }),
+                stateRow({ win: "win-a", target: false, rev: "3", disposition: { kind: "called", setter: "refused" }, pre: true, post: true, attemptMs: "8" }),
                 stateRow({ win: "win-b", property: "above" }),
             ],
         );
@@ -358,7 +362,7 @@ describe("world state attempt report lane", () => {
         assert.deepEqual((JSON.parse(empty as string) as Record<string, unknown>)["propertyAttempts"], []);
         const rows = [
             stateRow({ win: "win-a", property: "fullscreen" }),
-            stateRow({ win: "win-a", property: "sticky", target: false, rev: "3", setter: "threw", pre: null, post: false, attemptMs: "8" }),
+            stateRow({ win: "win-a", property: "sticky", target: false, rev: "3", disposition: { kind: "called", setter: "threw" }, pre: null, post: false, attemptMs: "8" }),
         ];
         const full = buildInner(rows);
         assert.ok(full !== null);

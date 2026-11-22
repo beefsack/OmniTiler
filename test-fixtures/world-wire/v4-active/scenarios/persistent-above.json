@@ -422,10 +422,13 @@
               "property": "above",
               "target": true,
               "rev": "1",
-              "setter": "accepted",
               "pre": false,
               "post": true,
-              "attemptMs": "20"
+              "attemptMs": "20",
+              "disposition": {
+                "kind": "called",
+                "setter": "accepted"
+              }
             }
           ],
           "focusFeedback": [],
@@ -816,10 +819,13 @@
               "property": "above",
               "target": false,
               "rev": "3",
-              "setter": "accepted",
               "pre": true,
               "post": false,
-              "attemptMs": "60"
+              "attemptMs": "60",
+              "disposition": {
+                "kind": "called",
+                "setter": "accepted"
+              }
             }
           ],
           "focusFeedback": [],
@@ -994,10 +1000,13 @@
               "property": "above",
               "target": true,
               "rev": "4",
-              "setter": "accepted",
               "pre": false,
               "post": true,
-              "attemptMs": "490"
+              "attemptMs": "490",
+              "disposition": {
+                "kind": "called",
+                "setter": "accepted"
+              }
             }
           ],
           "focusFeedback": [],
@@ -1337,10 +1346,13 @@
               "property": "above",
               "target": false,
               "rev": "6",
-              "setter": "accepted",
               "pre": true,
               "post": false,
-              "attemptMs": "690"
+              "attemptMs": "690",
+              "disposition": {
+                "kind": "called",
+                "setter": "accepted"
+              }
             }
           ],
           "focusFeedback": [],
@@ -1515,10 +1527,13 @@
               "property": "above",
               "target": true,
               "rev": "7",
-              "setter": "accepted",
               "pre": false,
               "post": true,
-              "attemptMs": "790"
+              "attemptMs": "790",
+              "disposition": {
+                "kind": "called",
+                "setter": "accepted"
+              }
             }
           ],
           "focusFeedback": [],
@@ -2523,10 +2538,13 @@
               "property": "above",
               "target": true,
               "rev": "13",
-              "setter": "accepted",
               "pre": false,
               "post": true,
-              "attemptMs": "1390"
+              "attemptMs": "1390",
+              "disposition": {
+                "kind": "called",
+                "setter": "accepted"
+              }
             }
           ],
           "focusFeedback": [],

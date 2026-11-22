@@ -13,7 +13,7 @@ use crate::world_transaction::WorldTransaction;
 use std::collections::BTreeSet;
 
 use crate::directional::WindowId;
-use crate::world_report::{FocusFeedback, VisibilitySetter};
+use crate::world_report::{FocusDisposition, FocusFeedback, FrameSetter};
 
 /// Verdict for one first-correlated feedback row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,8 +38,13 @@ pub(crate) fn classify_focus_feedback(target: &WindowId, row: &FocusFeedback) ->
     if row.foreground_proven && row.post.as_ref() == Some(target) {
         return FocusVerdict::Proven;
     }
-    if row.setter == VisibilitySetter::Refused
-        && let (Some(pre), Some(post)) = (&row.pre, &row.post)
+    if matches!(
+        row.disposition,
+        FocusDisposition::Called {
+            setter: FrameSetter::Refused,
+            ..
+        }
+    ) && let (Some(pre), Some(post)) = (&row.pre, &row.post)
         && pre == post
         && pre != target
     {

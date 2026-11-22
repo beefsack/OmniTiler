@@ -501,7 +501,7 @@ fn engine_sticky_save_and_rollback_clear_spell_exact_fixture_bytes() {
         property: StateProperty::Sticky,
         target: true,
         revision: binding_rev,
-        setter: FrameSetter::Refused,
+        disposition: FrameSetter::Refused,
         pre: Some(false),
         post: Some(false),
         attempt_ms: 7,

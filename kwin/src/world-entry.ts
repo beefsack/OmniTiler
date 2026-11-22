@@ -1116,13 +1116,15 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         const traceDiagEmitMember = (
             snap: string, sourceToken: string, rev: string, attempt: {
                 op: unknown; win: unknown; out: unknown; ws: unknown;
-                setter: unknown; pre: unknown; post: unknown; attemptMs: unknown;
+                disposition: { kind: "called"; setter: unknown } | { kind: "already-at-target" };
+                pre: unknown; post: unknown; attemptMs: unknown;
             },
         ): void => {
+            const setter = attempt.disposition.kind === "called" ? attempt.disposition.setter : "already-at-target";
             log(`omnitiler:world:trace ev=member-attempt snap=${snap} src=${traceDiagId(sourceToken)} rev=${traceDiagStamp(rev)} ` +
                 `op=${traceDiagId(attempt.op)} win=${traceDiagId(attempt.win)} ` +
                 `out=${traceDiagId(attempt.out)} ws=${traceDiagId(attempt.ws)} ` +
-                `setter=${traceDiagSetter(attempt.setter)} pre=${traceDiagMemberRef(attempt.pre)} ` +
+                `setter=${traceDiagSetter(setter)} pre=${traceDiagMemberRef(attempt.pre)} ` +
                 `post=${traceDiagMemberRef(attempt.post)} attemptMs=${traceDiagStamp(attempt.attemptMs)} t=${Date.now()}`);
         };
         // Fresh receipt plus reply evidence for one accepted apply. Runs
@@ -1284,17 +1286,27 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         // Emit one attempt row. Caller bounds volume and attribution; the
         // label carries the delivery boundary (applySrc/flushSrc).
         const traceDiagEmitAttempt = (label: string, parsedRow: Record<string, unknown>): void => {
+            const disposition = parsedRow["disposition"];
+            const setter = typeof disposition === "object" && disposition !== null
+                && (disposition as Record<string, unknown>)["kind"] === "called"
+                ? (disposition as Record<string, unknown>)["setter"]
+                : undefined;
             if (typeof parsedRow["target"] === "boolean" || typeof parsedRow["property"] === "string") {
                 log(`omnitiler:world:trace ev=state-attempt ${label} win=${traceDiagId(parsedRow["win"])} ` +
                     `property=${traceDiagProperty(parsedRow["property"])} target=${traceDiagBool(parsedRow["target"])} ` +
-                    `rev=${traceDiagId(parsedRow["rev"])} setter=${traceDiagId(parsedRow["setter"])} ` +
+                    `rev=${traceDiagId(parsedRow["rev"])} setter=${traceDiagId(setter)} ` +
                     `pre=${traceDiagBool(parsedRow["pre"])} post=${traceDiagBool(parsedRow["post"])} ` +
                     `attemptMs=${traceDiagAttemptMs(parsedRow["attemptMs"])}`);
             } else {
+                const purpose = parsedRow["purpose"];
+                const isFloat = typeof purpose === "object" && purpose !== null
+                    && (purpose as Record<string, unknown>)["kind"] === "float-placement";
+                const op = isFloat ? (purpose as Record<string, unknown>)["op"] : undefined;
+                const pre = isFloat ? (purpose as Record<string, unknown>)["pre"] : undefined;
                 log(`omnitiler:world:trace ev=frame-attempt ${label} win=${traceDiagId(parsedRow["win"])} ` +
-                    `target=${traceDiagRect(parsedRow["target"])} setter=${traceDiagId(parsedRow["setter"])} ` +
-                    `readback=${traceDiagRect(parsedRow["readback"])} pre=${traceDiagRect(parsedRow["pre"])} ` +
-                    `op=${traceDiagId(parsedRow["op"])} attemptMs=${traceDiagAttemptMs(parsedRow["attemptMs"])} ` +
+                    `target=${traceDiagRect(parsedRow["target"])} setter=${traceDiagId(setter)} ` +
+                    `readback=${traceDiagRect(parsedRow["readback"])} pre=${traceDiagRect(pre)} ` +
+                    `op=${traceDiagId(op)} attemptMs=${traceDiagAttemptMs(parsedRow["attemptMs"])} ` +
                     `dpi=${traceDiagDpi(parsedRow["dpiBefore"])}/${traceDiagDpi(parsedRow["dpiAfter"])}`);
             }
         };
@@ -1923,9 +1935,17 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         `target=${traceDiagId(f.target)} issuingRev=${traceDiagStamp(f.rev)}`;
                     const pre = f.pre !== null && traceFixtureProven.has(f.pre) ? traceDiagId(f.pre) : "-";
                     const post = f.post !== null && traceFixtureProven.has(f.post) ? traceDiagId(f.post) : "-";
+                    const focusSetter = f.disposition.kind === "called" ? f.disposition.setter : "not-called";
+                    const focusReason = "reason" in f
+                        ? f.reason
+                        : f.disposition.reason === "focus-no-reason"
+                            ? ""
+                            : f.disposition.reason === "focus-foreground-unproven"
+                                ? "focus-unproven"
+                                : f.disposition.reason.slice(6);
                     traceLogSafe(
-                        `omnitiler:world:trace ev=fixture-focus-feedback-sent ${key} setter=${f.setter} ` +
-                        `reason=${traceDiagId(f.reason)} pre=${pre} post=${post} ` +
+                        `omnitiler:world:trace ev=fixture-focus-feedback-sent ${key} setter=${focusSetter} ` +
+                        `reason=${traceDiagId(focusReason)} pre=${pre} post=${post} ` +
                         `proven=${traceDiagBool(f.foregroundProven)} attemptMs=${traceDiagStamp(f.attemptMs)}`,
                     );
                     for (const b of f.arrival) {
@@ -1946,7 +1966,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     for (const v of views.slice(0, OBSERVE_MAX_MEMBERS)) {
                         traceLogSafe(
                             `omnitiler:world:trace ev=fixture-view-attempt-sent ${capture} op=${traceDiagId(v.op)} ` +
-                            `out=${traceDiagId(v.out)} ws=${traceDiagId(v.ws)} setter=${traceDiagSetter(v.setter)} ` +
+                            `out=${traceDiagId(v.out)} ws=${traceDiagId(v.ws)} setter=${traceDiagSetter(v.disposition.setter)} ` +
                             `pre=${traceDiagMemberRef(v.pre)} post=${traceDiagMemberRef(v.post)} ` +
                             `base=${traceDiagMemberRef(v.base)} attemptMs=${traceDiagStamp(v.attemptMs)}`,
                         );

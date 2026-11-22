@@ -492,21 +492,19 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
             {
                 return Some("frame-readback-invalid");
             }
-            if let Some(prewrite) = attempt.prewrite
-                && !valid_carried_rect(prewrite.x, prewrite.y, prewrite.w, prewrite.h)
+            if let crate::world_report::FramePurpose::FloatPlacement {
+                operation_id,
+                prewrite,
+            } = &attempt.purpose
             {
-                return Some("frame-prewrite-invalid");
-            }
-            if let Some(op) = attempt.operation_id.as_deref()
-                && !op.is_empty()
-                && !is_opaque_id(op)
-            {
-                return Some("frame-operation-invalid");
-            }
-            if attempt.operation_id.as_deref().is_none_or(str::is_empty)
-                && attempt.prewrite.is_some()
-            {
-                return Some("frame-pre-without-operation");
+                if let Some(prewrite) = prewrite
+                    && !valid_carried_rect(prewrite.x, prewrite.y, prewrite.w, prewrite.h)
+                {
+                    return Some("frame-prewrite-invalid");
+                }
+                if !is_opaque_id(operation_id) {
+                    return Some("frame-operation-invalid");
+                }
             }
             if !seen_frames.insert(attempt.window.0.clone()) {
                 return Some("duplicate-frame");
@@ -1161,10 +1159,22 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         sep(hash);
         feed(hash, attempt.path.as_str());
         sep(hash);
-        feed(hash, attempt.setter.as_str());
-        sep(hash);
-        feed(hash, attempt.reason.as_str());
-        sep(hash);
+        match attempt.disposition {
+            crate::world_report::VisibilityDisposition::Called { setter, reason } => {
+                feed(hash, "called");
+                sep(hash);
+                feed(hash, setter.as_str());
+                sep(hash);
+                feed(hash, reason.as_str());
+                sep(hash);
+            }
+            crate::world_report::VisibilityDisposition::NotCalled { reason } => {
+                feed(hash, "not-called");
+                sep(hash);
+                feed(hash, reason.as_str());
+                sep(hash);
+            }
+        }
         for sample in [attempt.pre.as_ref(), attempt.post.as_ref()] {
             match sample {
                 None => {
@@ -1454,7 +1464,7 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
             ),
         );
         sep(&mut hash);
-        feed(&mut hash, attempt.setter.as_str());
+        feed(&mut hash, attempt.disposition.as_str());
         sep(&mut hash);
         feed(
             &mut hash,
@@ -1482,19 +1492,28 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         sep(&mut hash);
         feed(&mut hash, &attempt.attempt_ms.to_string());
         sep(&mut hash);
-        feed(
-            &mut hash,
-            attempt.operation_id.as_deref().unwrap_or_default(),
-        );
-        sep(&mut hash);
-        feed(
-            &mut hash,
-            &attempt
-                .prewrite
-                .map(|rect| format!("{},{},{},{}", rect.x, rect.y, rect.w, rect.h))
-                .unwrap_or_default(),
-        );
-        sep(&mut hash);
+        match &attempt.purpose {
+            crate::world_report::FramePurpose::Layout => {
+                feed(&mut hash, "layout");
+                sep(&mut hash);
+            }
+            crate::world_report::FramePurpose::FloatPlacement {
+                operation_id,
+                prewrite,
+            } => {
+                feed(&mut hash, "float-placement");
+                sep(&mut hash);
+                feed(&mut hash, operation_id);
+                sep(&mut hash);
+                feed(
+                    &mut hash,
+                    &prewrite
+                        .map(|rect| format!("{},{},{},{}", rect.x, rect.y, rect.w, rect.h))
+                        .unwrap_or_default(),
+                );
+                sep(&mut hash);
+            }
+        }
     }
     for attempt in member_attempts {
         feed(&mut hash, &attempt.operation_id);
@@ -1505,8 +1524,18 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         sep(&mut hash);
         feed(&mut hash, &attempt.target_workspace);
         sep(&mut hash);
-        feed(&mut hash, attempt.setter.as_str());
-        sep(&mut hash);
+        match attempt.disposition {
+            crate::world_report::MemberDisposition::Called(setter) => {
+                feed(&mut hash, "called");
+                sep(&mut hash);
+                feed(&mut hash, setter.as_str());
+                sep(&mut hash);
+            }
+            crate::world_report::MemberDisposition::AlreadyAtTarget => {
+                feed(&mut hash, "already-at-target");
+                sep(&mut hash);
+            }
+        }
         feed(
             &mut hash,
             &attempt
@@ -1535,7 +1564,7 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         sep(&mut hash);
         feed(&mut hash, &attempt.target_workspace);
         sep(&mut hash);
-        feed(&mut hash, attempt.setter.as_str());
+        feed(&mut hash, attempt.disposition.as_str());
         sep(&mut hash);
         feed(
             &mut hash,
@@ -1605,7 +1634,7 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         flag(&mut hash, attempt.target);
         feed(&mut hash, &attempt.revision.to_string());
         sep(&mut hash);
-        feed(&mut hash, attempt.setter.as_str());
+        feed(&mut hash, attempt.disposition.as_str());
         sep(&mut hash);
         for value in [attempt.pre, attempt.post] {
             feed(
@@ -1662,10 +1691,22 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         sep(&mut hash);
         feed(&mut hash, &row.revision.to_string());
         sep(&mut hash);
-        feed(&mut hash, row.setter.as_str());
-        sep(&mut hash);
-        feed(&mut hash, row.reason.as_str());
-        sep(&mut hash);
+        match row.disposition {
+            crate::world_report::FocusDisposition::Called { setter, reason } => {
+                feed(&mut hash, "called");
+                sep(&mut hash);
+                feed(&mut hash, setter.as_str());
+                sep(&mut hash);
+                feed(&mut hash, reason.as_str());
+                sep(&mut hash);
+            }
+            crate::world_report::FocusDisposition::NotCalled { reason } => {
+                feed(&mut hash, "not-called");
+                sep(&mut hash);
+                feed(&mut hash, reason.as_str());
+                sep(&mut hash);
+            }
+        }
         for endpoint in [&row.pre, &row.post] {
             feed(
                 &mut hash,

@@ -308,7 +308,7 @@ describe("world state-target entry (production wiring)", () => {
         const row = attempts.find((a) => a["win"] === "win-a" && a["property"] === "fullscreen");
         assert.ok(row !== undefined, "exact raw attempt rides next capture");
         assert.equal(row["target"], true);
-        assert.equal(row["setter"], "accepted");
+        assert.deepEqual(row["disposition"], { kind: "called", setter: "accepted" });
         assert.equal(row["pre"], false);
         h.handle?.stop();
     });
@@ -828,7 +828,7 @@ describe("world state-target entry (production wiring)", () => {
         const row = attempts.find((a) => a["win"] === "win-a" && a["property"] === "above");
         assert.ok(row !== undefined, "exact raw above attempt rides followup capture");
         assert.equal(row["target"], true);
-        assert.equal(row["setter"], "accepted");
+        assert.deepEqual(row["disposition"], { kind: "called", setter: "accepted" });
         assert.equal(row["pre"], false);
         assert.equal(row["post"], true);
         h.handle?.stop();

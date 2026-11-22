@@ -347,7 +347,7 @@ describe("world raw mechanical attempts", () => {
             assert.ok(Array.isArray(clears) && clears.length === 1, `one state clear attempt rides, got ${JSON.stringify(clears)} ${diag}`);
             assert.deepEqual(
                 clears[0],
-                { kind: "state", win: "win-d", property: "maximized", target: false, rev: "2", setter: "accepted", pre: true, post: false, attemptMs: "1" },
+                { kind: "state", win: "win-d", property: "maximized", target: false, rev: "2", disposition: { kind: "called", setter: "accepted" }, pre: true, post: false, attemptMs: "1" },
                 "native nonactivating clear with fresh pre/post proof; the already-clear window emits no row",
             );
             // Tiled sweep: ordinary write (empty op, no prewrite), real
@@ -355,19 +355,19 @@ describe("world raw mechanical attempts", () => {
             const sweep = frames.find((f) => f["win"] === "win-b");
             assert.deepEqual(
                 sweep,
-                { kind: "frame", win: "win-b", target: [800, 0, 400, 300], setter: "accepted", readback: [800, 0, 400, 300], dpiBefore: null, dpiAfter: null, attemptMs: "1", op: "", pre: null },
+                { kind: "frame", win: "win-b", target: [800, 0, 400, 300], disposition: { kind: "called", setter: "accepted" }, readback: [800, 0, 400, 300], dpiBefore: null, dpiAfter: null, attemptMs: "1", purpose: { kind: "layout" } },
             );
             assert.deepEqual(
                 frames.find((f) => f["win"] === "win-a"),
-                { kind: "frame", win: "win-a", target: [800, 0, 200, 200], setter: "accepted", readback: [800, 0, 200, 200], dpiBefore: null, dpiAfter: null, attemptMs: "1", op: "", pre: null },
+                { kind: "frame", win: "win-a", target: [800, 0, 200, 200], disposition: { kind: "called", setter: "accepted" }, readback: [800, 0, 200, 200], dpiBefore: null, dpiAfter: null, attemptMs: "1", purpose: { kind: "layout" } },
                 "the final tiled frame and its exact membership proof ride the same capture",
             );
             // Explicit float placement: stable op correlation plus the live
             // pre-write frame; the setter alone never proves completion.
-            const placed = frames.find((f) => f["op"] === "op-float-1");
+            const placed = frames.find((f) => (f["purpose"] as Record<string, unknown> | undefined)?.["op"] === "op-float-1");
             assert.deepEqual(
                 placed,
-                { kind: "frame", win: "win-c", target: [300, 200, 250, 180], setter: "accepted", readback: [300, 200, 250, 180], dpiBefore: null, dpiAfter: null, attemptMs: "1", op: "op-float-1", pre: [10, 10, 100, 100] },
+                { kind: "frame", win: "win-c", target: [300, 200, 250, 180], disposition: { kind: "called", setter: "accepted" }, readback: [300, 200, 250, 180], dpiBefore: null, dpiAfter: null, attemptMs: "1", purpose: { kind: "float-placement", op: "op-float-1", pre: [10, 10, 100, 100] } },
             );
             // Typed steps retain the exact source output on the cross-output
             // preimage and record fresh native currents for both view writes.
@@ -412,12 +412,12 @@ describe("world raw mechanical attempts", () => {
             assert.equal(report["rosterFeedback"], undefined, "legacy steps do not invent typed proof");
             const attempts = report["propertyAttempts"] as Array<Record<string, unknown>>;
             assert.deepEqual(attempts.filter((row) => row["kind"] === "member"), [{
-                kind: "member", op: "op-link-member", win: "win-a", out: "out-2", ws: "w2", setter: "accepted",
+                kind: "member", op: "op-link-member", win: "win-a", out: "out-2", ws: "w2", disposition: { kind: "called", setter: "accepted" },
                 pre: { kind: "native", out: "out-1", ws: "d1" },
                 post: { kind: "native", out: "out-2", ws: "d2" }, attemptMs: "1",
             }]);
             assert.deepEqual(attempts.filter((row) => row["kind"] === "view"), [{
-                kind: "view", op: "op-link-member", out: "out-2", ws: "w2", setter: "accepted",
+                kind: "view", op: "op-link-member", out: "out-2", ws: "w2", disposition: { kind: "called", setter: "accepted" },
                 pre: { kind: "native", out: "out-2", ws: "d1" },
                 post: { kind: "native", out: "out-2", ws: "d2" },
                 base: { kind: "native", out: "out-2", ws: "d1" }, attemptMs: "1",
@@ -544,7 +544,7 @@ describe("world raw mechanical attempts", () => {
             });
             const expected = {
                 op: "op-at-target", win: "win-a", out: "out-1", ws: "w1",
-                setter: "already-at-target",
+                disposition: { kind: "already-at-target" },
                 pre: { kind: "native", out: "out-1", ws: "d1" },
                 post: { kind: "native", out: "out-1", ws: "d1" },
                 attemptMs: "1",
@@ -653,7 +653,7 @@ describe("world raw mechanical attempts", () => {
             assert.ok(Array.isArray(clears) && clears.length === 1, `one state clear attempt rides from the held row, got ${JSON.stringify(clears)} ${diag}`);
             assert.deepEqual(
                 clears[0],
-                { kind: "state", win: "win-d", property: "maximized", target: false, rev: "2", setter: "accepted", pre: true, post: false, attemptMs: "1" },
+                { kind: "state", win: "win-d", property: "maximized", target: false, rev: "2", disposition: { kind: "called", setter: "accepted" }, pre: true, post: false, attemptMs: "1" },
                 "held scope authorizes the property clear with fresh pre/post proof",
             );
         } finally {
@@ -667,25 +667,25 @@ describe("world attempt retention", () => {
         const state = new WorldAdapterState("adapter-a", "owner-a");
         state.recordClock("7");
         assert.equal(state.recordFrameAttempt({
-            win: "win-a", target: [0, 0, 1, 1], setter: "accepted", readback: null,
-            dpiBefore: null, dpiAfter: null, attemptMs: "7", op: "", pre: null,
+            win: "win-a", target: [0, 0, 1, 1], disposition: { kind: "called", setter: "accepted" }, readback: null,
+            dpiBefore: null, dpiAfter: null, attemptMs: "7", purpose: { kind: "layout" },
         }), true);
         assert.equal(state.recordFrameAttempt({
-            win: "win-a", target: [0, 0, 2, 2], setter: "refused", readback: null,
-            dpiBefore: null, dpiAfter: null, attemptMs: "7", op: "", pre: null,
+            win: "win-a", target: [0, 0, 2, 2], disposition: { kind: "called", setter: "refused" }, readback: null,
+            dpiBefore: null, dpiAfter: null, attemptMs: "7", purpose: { kind: "layout" },
         }), true);
         assert.equal(state.recordMemberAttempt({
             op: "op-1", win: "win-a", out: "out-1", ws: "w1",
-            setter: "accepted", pre: null, post: null, attemptMs: "7",
+            disposition: { kind: "called", setter: "accepted" }, pre: null, post: null, attemptMs: "7",
         }), true);
         assert.equal(state.recordViewAttempt({
             op: "op-2", out: "out-1", ws: "w1",
-            setter: "threw", pre: null, post: null, base: null, attemptMs: "7",
+            disposition: { kind: "called", setter: "threw" }, pre: null, post: null, base: null, attemptMs: "7",
         }), true);
         // Invalid rows never store: empty op on a member attempt.
         assert.equal(state.recordMemberAttempt({
             op: "", win: "win-a", out: "out-1", ws: "w1",
-            setter: "accepted", pre: null, post: null, attemptMs: "7",
+            disposition: { kind: "called", setter: "accepted" }, pre: null, post: null, attemptMs: "7",
         }), false);
         assert.equal(state.framesForReport().length, 1);
         assert.deepEqual(state.framesForReport()[0]?.["target"], [0, 0, 2, 2]);
@@ -696,8 +696,8 @@ describe("world attempt retention", () => {
         const flight = state.beginCapture("src-1", null);
         assert.ok(flight !== null);
         state.recordFrameAttempt({
-            win: "win-a", target: [0, 0, 3, 3], setter: "accepted", readback: null,
-            dpiBefore: null, dpiAfter: null, attemptMs: "7", op: "", pre: null,
+            win: "win-a", target: [0, 0, 3, 3], disposition: { kind: "called", setter: "accepted" }, readback: null,
+            dpiBefore: null, dpiAfter: null, attemptMs: "7", purpose: { kind: "layout" },
         });
         const pruned = state.ackDelivered("src-1", true);
         assert.equal(pruned, 2);
@@ -715,7 +715,7 @@ describe("world attempt retention", () => {
         // A native member preimage (host-owned route) retains verbatim.
         assert.equal(state.recordMemberAttempt({
             op: "op-1", win: "win-a", out: "out-2", ws: "w2",
-            setter: "accepted",
+            disposition: { kind: "called", setter: "accepted" },
             pre: { kind: "native", out: "out-1", ws: "d1" },
             post: { kind: "native", out: "out-2", ws: "d2" },
             attemptMs: "7",
@@ -724,7 +724,7 @@ describe("world attempt retention", () => {
         // to the target.
         assert.equal(state.recordMemberAttempt({
             op: "op-2", win: "win-b", out: "out-1", ws: "w1",
-            setter: "accepted",
+            disposition: { kind: "called", setter: "accepted" },
             pre: { kind: "logical", out: "out-1", ws: "w9" },
             post: { kind: "logical", out: "out-1", ws: "w1" },
             attemptMs: "7",
@@ -732,14 +732,14 @@ describe("world attempt retention", () => {
         assert.deepEqual(state.memberAttemptsForReport(), [
             {
                 op: "op-1", win: "win-a", out: "out-2", ws: "w2",
-                setter: "accepted",
+                disposition: { kind: "called", setter: "accepted" },
                 pre: { kind: "native", out: "out-1", ws: "d1" },
                 post: { kind: "native", out: "out-2", ws: "d2" },
                 attemptMs: "7",
             },
             {
                 op: "op-2", win: "win-b", out: "out-1", ws: "w1",
-                setter: "accepted",
+                disposition: { kind: "called", setter: "accepted" },
                 pre: { kind: "logical", out: "out-1", ws: "w9" },
                 post: { kind: "logical", out: "out-1", ws: "w1" },
                 attemptMs: "7",
@@ -749,13 +749,13 @@ describe("world attempt retention", () => {
         // and refuses at retention, never reaching the report lane.
         assert.equal(state.recordViewAttempt({
             op: "op-3", out: "out-1", ws: "w1",
-            setter: "accepted",
+            disposition: { kind: "called", setter: "accepted" },
             pre: { kind: "logical", out: "out-1", ws: "w1" } as never,
             post: null, base: null, attemptMs: "7",
         }), false);
         assert.equal(state.recordViewAttempt({
             op: "op-3", out: "out-1", ws: "w1",
-            setter: "accepted",
+            disposition: { kind: "called", setter: "accepted" },
             pre: { kind: "native", out: "out-1", ws: "d1" },
             post: { kind: "native", out: "out-1", ws: "d2" },
             base: { kind: "native", out: "out-1", ws: "d1" },
@@ -764,18 +764,77 @@ describe("world attempt retention", () => {
         // Malformed ref ids fail closed on both lanes.
         assert.equal(state.recordMemberAttempt({
             op: "op-4", win: "win-a", out: "out-1", ws: "w1",
-            setter: "accepted",
+            disposition: { kind: "called", setter: "accepted" },
             pre: { kind: "native", out: "out-1", ws: "bad id" },
             post: null, attemptMs: "7",
         }), false);
         assert.equal(state.recordViewAttempt({
             op: "op-4", out: "out-1", ws: "w1",
-            setter: "accepted", pre: null, post: null, base: null, attemptMs: "7",
+            disposition: { kind: "called", setter: "accepted" }, pre: null, post: null, base: null, attemptMs: "7",
         }), true);
         assert.equal(state.recordViewAttempt({
             op: "", out: "out-1", ws: "w1",
-            setter: "accepted", pre: null, post: null, base: null, attemptMs: "7",
+            disposition: { kind: "called", setter: "accepted" }, pre: null, post: null, base: null, attemptMs: "7",
         }), false);
+    });
+    it("refuses wrong disposition arms and old frame forms", () => {
+        const state = new WorldAdapterState("adapter-a", "owner-a");
+        const frameBase = {
+            win: "win-a", target: [0, 0, 100, 100],
+            disposition: { kind: "called", setter: "accepted" },
+            readback: null, dpiBefore: null, dpiAfter: null, attemptMs: "7",
+            purpose: { kind: "layout" },
+        };
+        const badFrames: unknown[] = [
+            { ...frameBase, disposition: { kind: "already-at-target" } },
+            { ...frameBase, disposition: { kind: "not-called", reason: "focus-no-reason" } },
+            { ...frameBase, setter: "accepted" },
+            { ...frameBase, op: "", pre: null },
+            { ...frameBase, purpose: { kind: "layout", pre: null } },
+            { ...frameBase, purpose: { kind: "float-placement", op: "", pre: null } },
+            { ...frameBase, purpose: { kind: "float-placement", op: "op-1" } },
+        ];
+        for (const row of badFrames) {
+            assert.equal(state.recordFrameAttempt(row as never), false, `refuses frame ${JSON.stringify(row)}`);
+        }
+        assert.equal(state.recordMemberAttempt({
+            op: "op-1", win: "win-a", out: "out-1", ws: "w1",
+            disposition: { kind: "not-called", reason: "focus-no-reason" } as never,
+            pre: null, post: null, attemptMs: "7",
+        }), false);
+        assert.equal(state.recordViewAttempt({
+            op: "op-1", out: "out-1", ws: "w1",
+            disposition: { kind: "already-at-target" } as never,
+            pre: null, post: null, base: null, attemptMs: "7",
+        }), false);
+        assert.equal(state.recordViewAttempt({
+            op: "op-1", out: "out-1", ws: "w1",
+            disposition: { kind: "not-called", reason: "focus-no-reason" } as never,
+            pre: null, post: null, base: null, attemptMs: "7",
+        }), false);
+        assert.deepEqual(state.framesForReport(), []);
+        assert.deepEqual(state.memberAttemptsForReport(), []);
+        assert.deepEqual(state.viewAttemptsForReport(), []);
+        // Positive same-lane controls confirm valid tagged arms still record.
+        assert.equal(state.recordFrameAttempt(frameBase as never), true);
+        assert.equal(state.recordFrameAttempt({
+            ...frameBase,
+            win: "win-b",
+            purpose: { kind: "float-placement", op: "op-float-1", pre: [1, 2, 3, 4] },
+        } as never), true);
+        assert.equal(state.recordMemberAttempt({
+            op: "op-1", win: "win-a", out: "out-1", ws: "w1",
+            disposition: { kind: "already-at-target" },
+            pre: null, post: null, attemptMs: "7",
+        }), true);
+        assert.equal(state.recordViewAttempt({
+            op: "op-1", out: "out-1", ws: "w1",
+            disposition: { kind: "called", setter: "accepted" },
+            pre: null, post: null, base: null, attemptMs: "7",
+        }), true);
+        assert.equal(state.framesForReport().length, 2);
+        assert.equal(state.memberAttemptsForReport().length, 1);
+        assert.equal(state.viewAttemptsForReport().length, 1);
     });
 });
 
@@ -996,12 +1055,12 @@ describe("world attempt acknowledgement", () => {
         state.boundGen = "gen-1";
         state.recordClock("9");
         assert.equal(state.recordFrameAttempt({
-            win: "win-a", target: [0, 0, 1, 1], setter: "accepted", readback: null,
-            dpiBefore: null, dpiAfter: null, attemptMs: "9", op: "", pre: null,
+            win: "win-a", target: [0, 0, 1, 1], disposition: { kind: "called", setter: "accepted" }, readback: null,
+            dpiBefore: null, dpiAfter: null, attemptMs: "9", purpose: { kind: "layout" },
         }), true);
         assert.equal(state.recordMemberAttempt({
             op: "op-1", win: "win-a", out: "out-1", ws: "w1",
-            setter: "accepted", pre: null, post: null, attemptMs: "9",
+            disposition: { kind: "called", setter: "accepted" }, pre: null, post: null, attemptMs: "9",
         }), true);
         const reply = (rev: string, obs: string, src = "src-1"): never => ({
             adapter: "adapter-a", gen: "gen-1", req: src, source: src,
@@ -1023,8 +1082,8 @@ describe("world attempt acknowledgement", () => {
         // A stale revision consumes nothing: newer facts survive.
         assert.ok(state.beginCapture("src-2", null) !== null);
         assert.equal(state.recordFrameAttempt({
-            win: "win-a", target: [0, 0, 2, 2], setter: "refused", readback: null,
-            dpiBefore: null, dpiAfter: null, attemptMs: "9", op: "", pre: null,
+            win: "win-a", target: [0, 0, 2, 2], disposition: { kind: "called", setter: "refused" }, readback: null,
+            dpiBefore: null, dpiAfter: null, attemptMs: "9", purpose: { kind: "layout" },
         }), true);
         assert.deepEqual(state.acceptReply(reply("1", "1", "src-2"), "src-2", "0"), { applied: false, reason: "stale-rev" });
         assert.equal(state.framesForReport().length, 1, "stale reply retains the newer frame");
@@ -1127,7 +1186,7 @@ describe("world setter attempt correspondence", () => {
         const members = state.memberAttemptsForReport();
         assert.deepEqual(members, [{
             op: "op-9", win: "win-a", out: "out-2", ws: "w2",
-            setter: "accepted",
+            disposition: { kind: "called", setter: "accepted" },
             pre: { kind: "native", out: "out-1", ws: "d1" },
             post: { kind: "native", out: "out-2", ws: "d1" },
             attemptMs: "9",
@@ -1260,7 +1319,7 @@ describe("world setter attempt correspondence", () => {
         };
         const callRow = {
             op: "op-9", win: "win-a", out: "out-2", ws: "w2",
-            setter: "threw",
+            disposition: { kind: "called", setter: "threw" },
             pre: { kind: "native", out: "out-1", ws: "d1" },
             post: { kind: "native", out: "out-2", ws: "d2" },
             attemptMs: "9",
@@ -1349,7 +1408,7 @@ describe("world setter attempt correspondence", () => {
         assert.equal(sends, 1, "output setter ran once before the homing went unreadable");
         assert.deepEqual(state.memberAttemptsForReport(), [{
             op: "op-10", win: "win-q", out: "out-b", ws: "w1",
-            setter: "accepted",
+            disposition: { kind: "called", setter: "accepted" },
             pre: { kind: "native", out: "out-a", ws: "da" },
             post: null,
             attemptMs: "9",
@@ -1406,7 +1465,7 @@ describe("world setter attempt correspondence", () => {
         };
         const expected = {
             op: "op-new", win: "win-a", out: "out-2", ws: "w2",
-            setter: "already-at-target",
+            disposition: { kind: "already-at-target" },
             pre: { kind: "native", out: "out-2", ws: "d2" },
             post: { kind: "native", out: "out-2", ws: "d2" },
             attemptMs: "9",
@@ -1504,7 +1563,7 @@ describe("world setter attempt correspondence", () => {
         assert.equal(lateReads, 3, "membership read at target, at preSetterOk, then at post");
         assert.deepEqual(state2.memberAttemptsForReport(), [{
             op: "op-new", win: "win-a", out: "out-2", ws: "w2",
-            setter: "already-at-target",
+            disposition: { kind: "already-at-target" },
             pre: { kind: "native", out: "out-2", ws: "d2" },
             post: null,
             attemptMs: "9",
@@ -1619,7 +1678,7 @@ describe("world clear attempt correspondence", () => {
         assert.equal(calls(), 1, "exactly one native clear");
         assert.deepEqual(state.statesForReport(), [{
             win: "win-c", property: "maximized", target: false, rev: "1",
-            setter: "accepted", pre: true, post: false, attemptMs: "9",
+            disposition: { kind: "called", setter: "accepted" }, pre: true, post: false, attemptMs: "9",
         }], "accepted disposition with fresh pre/post maximized states");
         assert.equal(result.clears, 1, "accepted dispatch counts the clear write");
         assert.equal(result.held, 0, "proven clear holds nothing");
@@ -1647,7 +1706,7 @@ describe("world clear attempt correspondence", () => {
         assert.equal(calls(), 1, "the refused setter still ran once");
         assert.deepEqual(state.statesForReport(), [{
             win: "win-c", property: "maximized", target: false, rev: "1",
-            setter: "refused", pre: true, post: true, attemptMs: "9",
+            disposition: { kind: "called", setter: "refused" }, pre: true, post: true, attemptMs: "9",
         }], "refused disposition keeps the unchanged pre/post proof");
         assert.equal(result.clears, 0, "refused dispatch earns no write credit");
         assert.ok(result.held >= 1, "unproven clear holds");
@@ -1676,7 +1735,7 @@ describe("world clear attempt correspondence", () => {
         assert.equal(calls(), 1, "outer apply must not call clearMaximized a second time after reentrant refusal");
         assert.deepEqual(state.statesForReport(), [{
             win: "win-c", property: "maximized", target: false, rev: "1",
-            setter: "refused", pre: true, post: true, attemptMs: "9",
+            disposition: { kind: "called", setter: "refused" }, pre: true, post: true, attemptMs: "9",
         }], "single refused attempt preserved");
         assert.equal(result.clears, 0);
     });
@@ -1784,7 +1843,7 @@ describe("world clear attempt correspondence", () => {
         assert.equal(calls(), 1, "the throwing setter ran once");
         assert.deepEqual(state.statesForReport(), [{
             win: "win-c", property: "maximized", target: false, rev: "1",
-            setter: "threw", pre: true, post: true, attemptMs: "9",
+            disposition: { kind: "called", setter: "threw" }, pre: true, post: true, attemptMs: "9",
         }], "throw keeps the best-known unchanged proof, never fabricated arrival");
         assert.equal(result.clears, 0);
         assert.ok(result.held >= 1);
@@ -1832,7 +1891,7 @@ describe("world clear attempt correspondence", () => {
         assert.equal(readable.calls(), 1, "stable safety dispatches the retained desire");
         assert.deepEqual(state.statesForReport(), [{
             win: "win-c", property: "maximized", target: false, rev: "1",
-            setter: "accepted", pre: true, post: false, attemptMs: "9",
+            disposition: { kind: "called", setter: "accepted" }, pre: true, post: false, attemptMs: "9",
         }], "fresh proof rides the next report");
         assert.equal(retry.clears, 1);
     });
@@ -2045,7 +2104,7 @@ describe("world clear attempt correspondence", () => {
             assert.equal(switchCalls, 0, "no switchView call on baseline float apply");
             assert.ok(state.isDispatched("op-float-1"), "float dispatch fence recorded before fresh reply");
             assert.equal(state.framesForReport().length, 1);
-            assert.equal(state.framesForReport()[0]?.op, "op-float-1");
+            assert.deepEqual(state.framesForReport()[0]?.purpose, { kind: "float-placement", op: "op-float-1", pre: [0, 0, 100, 100] });
 
             // 3) Accept genuinely fresh src-2 (obs=2, rev=2) desiring op-float-2,
             //    deferring its apply; empty f2 delivered snapshot leaves op-float-1 intact.
@@ -2054,19 +2113,19 @@ describe("world clear attempt correspondence", () => {
                 { frame_op: "op-float-2", frame: [20, 30, 400, 300] },
             );
             assert.deepEqual(state.acceptReply(reply2, "src-2", f2.watermark), { applied: true, reason: "accepted" });
-            assert.equal(state.framesForReport()[0]?.op, "op-float-1");
+            assert.deepEqual(state.framesForReport()[0]?.purpose, { kind: "float-placement", op: "op-float-1", pre: [0, 0, 100, 100] });
 
             // 4) Begin src-3 capture (snapshots op-float-1), then run deferred accepted
             //    reply2 apply to generate newer same-key op-float-2 receipt while src-3
             //    is in flight.
             const f3 = state.beginCapture("src-3", null);
             assert.ok(f3 !== null);
-            assert.equal(f3.delivered.frames[0]?.op, "op-float-1");
+            assert.deepEqual(f3.delivered.frames[0]?.purpose, { kind: "float-placement", op: "op-float-1", pre: [0, 0, 100, 100] });
             applyWorldReply(floatEnv(reply2, f2.watermark));
             assert.equal(geoCalls, 2, "accepted reply2 op-float-2 ran setGeometry once");
             assert.equal(switchCalls, 0, "no switchView call before fresh accepted outcome application");
-            assert.equal(state.framesForReport()[0]?.op, "op-float-2");
-            assert.notEqual(f3.delivered.frames[0]?.op, state.framesForReport()[0]?.op, "delivered snapshot op-float-1 and newer stored op-float-2 differ");
+            assert.deepEqual(state.framesForReport()[0]?.purpose, { kind: "float-placement", op: "op-float-2", pre: [0, 0, 100, 100] });
+            assert.notDeepEqual(f3.delivered.frames[0]?.purpose, state.framesForReport()[0]?.purpose, "delivered snapshot op-float-1 and newer stored op-float-2 differ");
 
             // 5) Accept fresh src-3 (obs=3, rev=3) carrying scripted valid clear/float/switch
             //    settlements and the same spent op-float-1 desire: grants zero extra writes,
@@ -2091,7 +2150,7 @@ describe("world clear attempt correspondence", () => {
             assert.equal(switchCalls, 0, "fresh accepted outcomes grant zero switchView calls");
             assert.ok(state.isDispatched("op-float-1"), "float dispatch fence persists");
             assert.equal(state.framesForReport().length, 1, "newer same-key frame receipt survives older acceptance");
-            assert.equal(state.framesForReport()[0]?.op, "op-float-2");
+            assert.deepEqual(state.framesForReport()[0]?.purpose, { kind: "float-placement", op: "op-float-2", pre: [0, 0, 100, 100] });
             assert.deepEqual(state.framesForReport()[0]?.target, [20, 30, 400, 300]);
 
             // Settlement rows in an unbound/mismatched reply never substitute for attempt receipt.

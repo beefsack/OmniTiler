@@ -4195,7 +4195,7 @@ fn retained_membership_cap_uncertainty_controls_and_command_created_entry() {
         property: StateProperty::Sticky,
         target: false,
         revision: cmd_reply.state_revision,
-        setter: FrameSetter::Refused,
+        disposition: FrameSetter::Refused,
         pre: Some(true),
         post: Some(true),
         attempt_ms: 1,

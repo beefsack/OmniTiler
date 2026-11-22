@@ -6,11 +6,11 @@ use std::collections::BTreeSet;
 use tiler_core::bounds::is_opaque_id;
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::world_report::{
-    AttemptLaneV4, FrameAttempt, HeldAttemptRow, LastWritePath, MAX_WORLD_FRAMES,
-    MAX_WORLD_MEMBER_ATTEMPTS, MAX_WORLD_PROPERTY_ATTEMPTS, MAX_WORLD_STATE_ATTEMPTS,
-    MAX_WORLD_VIEW_ATTEMPTS, MAX_WORLD_VISIBILITY_ATTEMPTS, MemberAttempt, MemberDisposition,
-    StateAttempt, StateProperty, ViewAttempt, VisibilityAttempt, VisibilityReason,
-    VisibilitySetter,
+    AttemptLaneV4, FrameAttempt, FramePurpose, FrameSetter, HeldAttemptRow, LastWritePath,
+    MAX_WORLD_FRAMES, MAX_WORLD_MEMBER_ATTEMPTS, MAX_WORLD_PROPERTY_ATTEMPTS,
+    MAX_WORLD_STATE_ATTEMPTS, MAX_WORLD_VIEW_ATTEMPTS, MAX_WORLD_VISIBILITY_ATTEMPTS,
+    MemberAttempt, MemberDisposition, StateAttempt, StateProperty, ViewAttempt, VisibilityAttempt,
+    VisibilityDisposition, VisibilityReason,
 };
 
 use crate::world_protocol::{
@@ -228,9 +228,39 @@ fn check_kind(map: &serde_json::Map<String, serde_json::Value>, expected: &str) 
     Ok(())
 }
 
-/// Staged v4 frame-attempt decode: lenient `op`/`pre` (missing or bad-typed
-/// `op`/`pre`, or `pre` without `op`) and any extra key hold the identifiable
-/// row instead of refusing the envelope.
+pub(crate) fn decode_called_disposition(value: &serde_json::Value) -> Result<FrameSetter> {
+    let map = as_object(value)?;
+    check_keys(map, &["kind", "setter"])?;
+    check_kind(map, "called")?;
+    parse_frame_setter(req_str(map, "setter")?)
+}
+
+fn decode_member_disposition(value: &serde_json::Value) -> Result<MemberDisposition> {
+    let map = as_object(value)?;
+    match req_str(map, "kind")? {
+        "called" => {
+            check_keys(map, &["kind", "setter"])?;
+            Ok(MemberDisposition::Called(parse_frame_setter(req_str(
+                map, "setter",
+            )?)?))
+        }
+        "already-at-target" => {
+            check_keys(map, &["kind"])?;
+            Ok(MemberDisposition::AlreadyAtTarget)
+        }
+        _ => Err(unknown_value()),
+    }
+}
+
+pub(crate) fn push_called_disposition(out: &mut String, setter: FrameSetter) {
+    out.push_str("{\"kind\":\"called\",\"setter\":");
+    push_json_string(out, setter.as_str());
+    out.push('}');
+}
+
+/// Staged v4 frame-attempt decode: malformed `purpose` or any extra key (such
+/// as legacy `op`/`pre`) holds the identifiable row instead of refusing the
+/// envelope.
 fn decode_frame_attempt_v4(
     value: &serde_json::Value,
     ordinal: usize,
@@ -240,13 +270,12 @@ fn decode_frame_attempt_v4(
         "kind",
         "win",
         "target",
-        "setter",
+        "disposition",
         "readback",
         "dpiBefore",
         "dpiAfter",
         "attemptMs",
-        "op",
-        "pre",
+        "purpose",
     ];
     let map = as_object(value)?;
     check_kind(map, "frame")?;
@@ -257,37 +286,63 @@ fn decode_frame_attempt_v4(
     };
     let extra = map.keys().any(|key| !SCHEMA.contains(&key.as_str()));
     let mut held = extra;
-    let operation_id = match map.get("op") {
-        None => {
-            held = true;
-            None
-        }
-        Some(serde_json::Value::String(op)) if op.is_empty() => None,
-        Some(serde_json::Value::String(op)) => Some(op.clone()),
-        Some(_) => {
-            held = true;
-            None
-        }
-    };
-    let prewrite = match map.get("pre") {
-        None => {
-            held = true;
-            None
-        }
-        Some(serde_json::Value::Null) => None,
-        Some(value) => match req_rect_value(value) {
-            Ok(rect) => Some(rect),
-            Err(_) => {
+    let mut held_op: Option<&str> = None;
+    let mut purpose: Option<FramePurpose> = None;
+    match map.get("purpose") {
+        Some(serde_json::Value::Object(pmap)) => match pmap.get("kind") {
+            Some(serde_json::Value::String(kind)) if kind == "layout" => {
+                if pmap.len() == 1 {
+                    purpose = Some(FramePurpose::Layout);
+                } else {
+                    held = true;
+                }
+            }
+            Some(serde_json::Value::String(kind)) if kind == "float-placement" => {
+                let p_extra = pmap.keys().any(|k| k != "kind" && k != "op" && k != "pre");
+                let op_val = match pmap.get("op") {
+                    Some(serde_json::Value::String(op)) if !op.is_empty() => {
+                        held_op = Some(op.as_str());
+                        Some(op.as_str())
+                    }
+                    _ => {
+                        held = true;
+                        None
+                    }
+                };
+                let pre_val = match pmap.get("pre") {
+                    Some(serde_json::Value::Null) => Some(None),
+                    Some(v) => match req_rect_value(v) {
+                        Ok(rect) => Some(Some(rect)),
+                        Err(_) => {
+                            held = true;
+                            None
+                        }
+                    },
+                    None => {
+                        held = true;
+                        None
+                    }
+                };
+                if p_extra {
+                    held = true;
+                }
+                if !held && let (Some(op), Some(pre)) = (op_val, pre_val) {
+                    purpose = Some(FramePurpose::FloatPlacement {
+                        operation_id: op.to_owned(),
+                        prewrite: pre,
+                    });
+                }
+            }
+            _ => {
                 held = true;
-                None
             }
         },
-    };
-    if operation_id.as_deref().is_none_or(str::is_empty) && prewrite.is_some() {
-        held = true;
+        _ => {
+            held = true;
+        }
     }
     let target = req_rect_value(map.get("target").ok_or_else(malformed)?)?;
-    let setter = parse_frame_setter(req_str(map, "setter")?)?;
+    let disposition = decode_called_disposition(map.get("disposition").ok_or_else(malformed)?)?;
     let readback = opt_rect_or_null(map, "readback")?;
     let dpi_before = opt_u32_or_null(map, "dpiBefore")?;
     let dpi_after = opt_u32_or_null(map, "dpiAfter")?;
@@ -300,7 +355,7 @@ fn decode_frame_attempt_v4(
     }
     if held {
         let mut identity = vec![window.0.clone()];
-        if let Some(op) = operation_id.as_deref()
+        if let Some(op) = held_op
             && !op.is_empty()
         {
             identity.push(op.to_owned());
@@ -309,9 +364,9 @@ fn decode_frame_attempt_v4(
             held_attempt_row(AttemptLaneV4::Frame, ordinal, map, SCHEMA, identity, None);
         return Ok(AttemptRowOutcome::Held { row, fields });
     }
-    if let Some(op) = operation_id.as_deref()
-        && !op.is_empty()
-        && !is_opaque_id(op)
+    let purpose = purpose.ok_or_else(malformed)?;
+    if let FramePurpose::FloatPlacement { operation_id, .. } = &purpose
+        && !is_opaque_id(operation_id)
     {
         return Err(WorldProtocolError {
             kind: KIND_SNAPSHOT,
@@ -321,13 +376,12 @@ fn decode_frame_attempt_v4(
     Ok(AttemptRowOutcome::Valid(FrameAttempt {
         window,
         target,
-        setter,
+        disposition,
         readback,
         dpi_before,
         dpi_after,
         attempt_ms,
-        operation_id,
-        prewrite,
+        purpose,
     }))
 }
 
@@ -341,7 +395,7 @@ pub fn decode_member_attempt(value: &serde_json::Value) -> Result<MemberAttempt>
             "win",
             "out",
             "ws",
-            "setter",
+            "disposition",
             "pre",
             "post",
             "attemptMs",
@@ -354,13 +408,7 @@ pub fn decode_member_attempt(value: &serde_json::Value) -> Result<MemberAttempt>
         window: WindowId(req_id(map, "win")?),
         target_output: OutputId(req_id(map, "out")?),
         target_workspace: req_id(map, "ws")?,
-        setter: match req_str(map, "setter")? {
-            "accepted" => MemberDisposition::Accepted,
-            "refused" => MemberDisposition::Refused,
-            "threw" => MemberDisposition::Threw,
-            "already-at-target" => MemberDisposition::AlreadyAtTarget,
-            _ => return Err(unknown_value()),
-        },
+        disposition: decode_member_disposition(map.get("disposition").ok_or_else(malformed)?)?,
         pre: opt_workspace_ref_or_null(map, "pre", false)?,
         post: opt_workspace_ref_or_null(map, "post", false)?,
         attempt_ms: req_u64_str(map, "attemptMs")?,
@@ -378,7 +426,7 @@ fn decode_member_attempt_v4(
         "win",
         "out",
         "ws",
-        "setter",
+        "disposition",
         "pre",
         "post",
         "attemptMs",
@@ -443,7 +491,7 @@ pub fn decode_view_attempt(value: &serde_json::Value) -> Result<ViewAttempt> {
             "op",
             "out",
             "ws",
-            "setter",
+            "disposition",
             "pre",
             "post",
             "base",
@@ -456,7 +504,7 @@ pub fn decode_view_attempt(value: &serde_json::Value) -> Result<ViewAttempt> {
         operation_id: req_id(map, "op")?,
         target_output: OutputId(req_id(map, "out")?),
         target_workspace: req_id(map, "ws")?,
-        setter: parse_frame_setter(req_str(map, "setter")?)?,
+        disposition: decode_called_disposition(map.get("disposition").ok_or_else(malformed)?)?,
         pre: opt_workspace_ref_or_null(map, "pre", true)?,
         post: opt_workspace_ref_or_null(map, "post", true)?,
         baseline: opt_workspace_ref_or_null(map, "base", true)?,
@@ -474,7 +522,7 @@ fn decode_view_attempt_v4(
         "op",
         "out",
         "ws",
-        "setter",
+        "disposition",
         "pre",
         "post",
         "base",
@@ -543,7 +591,7 @@ pub fn decode_state_attempt(value: &serde_json::Value) -> Result<StateAttempt> {
             "property",
             "target",
             "rev",
-            "setter",
+            "disposition",
             "pre",
             "post",
             "attemptMs",
@@ -555,7 +603,7 @@ pub fn decode_state_attempt(value: &serde_json::Value) -> Result<StateAttempt> {
         property: StateProperty::parse(req_str(map, "property")?).ok_or_else(unknown_value)?,
         target: req_bool(map, "target")?,
         revision: req_u64_str(map, "rev")?,
-        setter: parse_frame_setter(req_str(map, "setter")?)?,
+        disposition: decode_called_disposition(map.get("disposition").ok_or_else(malformed)?)?,
         pre: opt_bool_or_null(map, "pre")?,
         post: opt_bool_or_null(map, "post")?,
         attempt_ms: req_u64_str(map, "attemptMs")?,
@@ -568,8 +616,50 @@ fn parse_visibility_fields(
 ) -> Result<VisibilityAttempt> {
     check_kind(map, "visibility")?;
     let path = LastWritePath::parse(req_str(map, "path")?).ok_or_else(unknown_value)?;
-    let setter = VisibilitySetter::parse(req_str(map, "setter")?).ok_or_else(unknown_value)?;
-    let reason = VisibilityReason::parse(req_str(map, "reason")?).ok_or_else(unknown_value)?;
+    let disp_map = as_object(map.get("disposition").ok_or_else(malformed)?)?;
+    let disposition = match req_str(disp_map, "kind")? {
+        "called" => {
+            check_keys(disp_map, &["kind", "setter"])?;
+            check_keys(
+                map,
+                &[
+                    "kind",
+                    "win",
+                    "target",
+                    "revision",
+                    "path",
+                    "disposition",
+                    "reason",
+                    "pre",
+                    "post",
+                ],
+            )?;
+            let setter = parse_frame_setter(req_str(disp_map, "setter")?)?;
+            let reason =
+                VisibilityReason::parse(req_str(map, "reason")?).ok_or_else(unknown_value)?;
+            VisibilityDisposition::Called { setter, reason }
+        }
+        "not-called" => {
+            check_keys(disp_map, &["kind", "reason"])?;
+            check_keys(
+                map,
+                &[
+                    "kind",
+                    "win",
+                    "target",
+                    "revision",
+                    "path",
+                    "disposition",
+                    "pre",
+                    "post",
+                ],
+            )?;
+            let reason =
+                VisibilityReason::parse(req_str(disp_map, "reason")?).ok_or_else(unknown_value)?;
+            VisibilityDisposition::NotCalled { reason }
+        }
+        _ => return Err(unknown_value()),
+    };
     let pre = match map.get("pre") {
         None => return Err(malformed()),
         Some(serde_json::Value::Null) => None,
@@ -585,8 +675,7 @@ fn parse_visibility_fields(
         target: req_bool(map, "target")?,
         revision: req_u64_str(map, "revision")?,
         path,
-        setter,
-        reason,
+        disposition,
         pre,
         post,
     })
@@ -598,7 +687,15 @@ fn decode_visibility_attempt_v4(
     seen_visibility: &mut BTreeSet<String>,
 ) -> Result<AttemptRowOutcome<VisibilityAttempt>> {
     const SCHEMA: &[&str] = &[
-        "kind", "win", "target", "revision", "path", "setter", "reason", "pre", "post",
+        "kind",
+        "win",
+        "target",
+        "revision",
+        "path",
+        "disposition",
+        "reason",
+        "pre",
+        "post",
     ];
     let map = as_object(value)?;
     let window = match map.get("win") {
@@ -612,12 +709,7 @@ fn decode_visibility_attempt_v4(
             message: "duplicate-visibility-attempt",
         });
     }
-    let extra = map.keys().any(|key| !SCHEMA.contains(&key.as_str()));
-    let parsed = if !extra {
-        parse_visibility_fields(map, window.clone())
-    } else {
-        Err(malformed())
-    };
+    let parsed = parse_visibility_fields(map, window.clone());
     match parsed {
         Ok(attempt) => Ok(AttemptRowOutcome::Valid(attempt)),
         Err(_) => {
@@ -645,8 +737,8 @@ fn encode_frame_attempt_v4(row: &FrameAttempt) -> Result<String> {
     push_json_string(&mut out, &row.window.0);
     out.push_str(",\"target\":");
     push_rect(&mut out, &row.target);
-    out.push_str(",\"setter\":");
-    push_json_string(&mut out, row.setter.as_str());
+    out.push_str(",\"disposition\":");
+    push_called_disposition(&mut out, row.disposition);
     out.push_str(",\"readback\":");
     push_opt_rect(&mut out, &row.readback);
     out.push_str(",\"dpiBefore\":");
@@ -655,10 +747,20 @@ fn encode_frame_attempt_v4(row: &FrameAttempt) -> Result<String> {
     push_opt_u32(&mut out, &row.dpi_after);
     out.push_str(",\"attemptMs\":\"");
     out.push_str(&row.attempt_ms.to_string());
-    out.push_str("\",\"op\":");
-    push_json_string(&mut out, row.operation_id.as_deref().unwrap_or(""));
-    out.push_str(",\"pre\":");
-    push_opt_rect(&mut out, &row.prewrite);
+    out.push_str("\",\"purpose\":");
+    match &row.purpose {
+        FramePurpose::Layout => out.push_str("{\"kind\":\"layout\"}"),
+        FramePurpose::FloatPlacement {
+            operation_id,
+            prewrite,
+        } => {
+            out.push_str("{\"kind\":\"float-placement\",\"op\":");
+            push_json_string(&mut out, operation_id);
+            out.push_str(",\"pre\":");
+            push_opt_rect(&mut out, prewrite);
+            out.push('}');
+        }
+    }
     out.push('}');
     Ok(out)
 }
@@ -673,8 +775,11 @@ fn encode_member_attempt_v4(row: &MemberAttempt) -> Result<String> {
     push_json_string(&mut out, &row.target_output.0);
     out.push_str(",\"ws\":");
     push_json_string(&mut out, &row.target_workspace);
-    out.push_str(",\"setter\":");
-    push_json_string(&mut out, row.setter.as_str());
+    out.push_str(",\"disposition\":");
+    match row.disposition {
+        MemberDisposition::Called(setter) => push_called_disposition(&mut out, setter),
+        MemberDisposition::AlreadyAtTarget => out.push_str("{\"kind\":\"already-at-target\"}"),
+    }
     out.push_str(",\"pre\":");
     push_opt_workspace_ref(&mut out, &row.pre);
     out.push_str(",\"post\":");
@@ -693,8 +798,8 @@ fn encode_view_attempt_v4(row: &ViewAttempt) -> Result<String> {
     push_json_string(&mut out, &row.target_output.0);
     out.push_str(",\"ws\":");
     push_json_string(&mut out, &row.target_workspace);
-    out.push_str(",\"setter\":");
-    push_json_string(&mut out, row.setter.as_str());
+    out.push_str(",\"disposition\":");
+    push_called_disposition(&mut out, row.disposition);
     out.push_str(",\"pre\":");
     push_opt_workspace_ref(&mut out, &row.pre);
     out.push_str(",\"post\":");
@@ -717,8 +822,8 @@ fn encode_state_attempt(row: &StateAttempt) -> Result<String> {
     out.push_str(if row.target { "true" } else { "false" });
     out.push_str(",\"rev\":\"");
     out.push_str(&row.revision.to_string());
-    out.push_str("\",\"setter\":");
-    push_json_string(&mut out, row.setter.as_str());
+    out.push_str("\",\"disposition\":");
+    push_called_disposition(&mut out, row.disposition);
     out.push_str(",\"pre\":");
     push_opt_bool(&mut out, &row.pre);
     out.push_str(",\"post\":");
@@ -739,10 +844,19 @@ fn encode_visibility_attempt_v4(row: &VisibilityAttempt) -> Result<String> {
     out.push_str(&row.revision.to_string());
     out.push_str("\",\"path\":");
     push_json_string(&mut out, row.path.as_str());
-    out.push_str(",\"setter\":");
-    push_json_string(&mut out, row.setter.as_str());
-    out.push_str(",\"reason\":");
-    push_json_string(&mut out, row.reason.as_str());
+    out.push_str(",\"disposition\":");
+    match row.disposition {
+        VisibilityDisposition::Called { setter, reason } => {
+            push_called_disposition(&mut out, setter);
+            out.push_str(",\"reason\":");
+            push_json_string(&mut out, reason.as_str());
+        }
+        VisibilityDisposition::NotCalled { reason } => {
+            out.push_str("{\"kind\":\"not-called\",\"reason\":");
+            push_json_string(&mut out, reason.as_str());
+            out.push('}');
+        }
+    }
     out.push_str(",\"pre\":");
     match &row.pre {
         None => out.push_str("null"),

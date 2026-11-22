@@ -334,7 +334,7 @@ describe("world drag arrival distinct namespaces", () => {
         assert.equal(attempts[0]?.op, SEND_OP);
         assert.equal(attempts[0]?.out, "out-a");
         assert.equal(attempts[0]?.ws, LOGICAL_TARGET);
-        assert.equal(attempts[0]?.setter, "accepted");
+        assert.deepEqual(attempts[0]?.disposition, { kind: "called", setter: "accepted" });
         assert.deepEqual(attempts[0]?.pre, { kind: "native", out: "out-a", ws: NATIVE_SOURCE });
         assert.deepEqual(attempts[0]?.post, { kind: "native", out: "out-a", ws: NATIVE_TARGET });
         // Fresh observation at the translated home with the transfer still
@@ -372,7 +372,7 @@ describe("world drag arrival distinct namespaces", () => {
         // attempt records accepted-with-source-post, never arrival.
         const attempts = state.memberAttemptsForReport().filter((a) => a.win === "win-a");
         assert.equal(attempts.length, 1);
-        assert.equal(attempts[0]?.setter, "accepted");
+        assert.deepEqual(attempts[0]?.disposition, { kind: "called", setter: "accepted" });
         assert.deepEqual(attempts[0]?.pre, { kind: "native", out: "out-a", ws: NATIVE_SOURCE });
         assert.deepEqual(attempts[0]?.post, { kind: "native", out: "out-a", ws: NATIVE_SOURCE });
         assert.deepEqual(world.homing.get("win-a"), { out: "out-a", ws: NATIVE_SOURCE });

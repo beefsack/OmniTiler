@@ -1082,7 +1082,7 @@ describe("world entry discovery and observation", () => {
             const row = wire.find((r) => r["id"] === "focus-view-1");
             assert.ok(row !== undefined, "focus row rides the next report");
             assert.equal(row["target"], b, "feedback uses the canonical target, not the native braces");
-            assert.equal(row["setter"], "accepted");
+            assert.deepEqual(row["disposition"], { kind: "called", setter: "accepted" });
             assert.equal(row["foregroundProven"], true);
             assert.ok(Array.isArray(row["arrival"]) && (row["arrival"] as Array<unknown>).length >= 1, "arrival brackets ride");
             const settled = requestOf(h);
@@ -1154,7 +1154,7 @@ describe("world entry discovery and observation", () => {
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
             const row = wire.find((r) => r["id"] === "focus-mismatch-1");
             assert.ok(row !== undefined);
-            assert.equal(row["setter"], "accepted", "setter ran");
+            assert.deepEqual(row["disposition"], { kind: "called", setter: "accepted" }, "setter ran");
             assert.equal(row["foregroundProven"], false, "mismatched live never proves");
         } finally {
             (h.world as unknown as Record<string, unknown>)["__syncFocusEcho"] = false;
@@ -1221,7 +1221,7 @@ describe("world entry discovery and observation", () => {
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
             const row = wire.find((r) => r["id"] === "focus-view-6");
             assert.ok(row !== undefined, "focus row rides the next report");
-            assert.equal(row["setter"], "accepted");
+            assert.deepEqual(row["disposition"], { kind: "called", setter: "accepted" });
             assert.equal(row["foregroundProven"], true);
         } finally {
             (h.world as unknown as Record<string, unknown>)["__syncViewEcho"] = false;
@@ -1412,7 +1412,7 @@ describe("world entry discovery and observation", () => {
             const wire = (reportOf(h)["focusFeedback"] as Array<Record<string, unknown>>);
             const row = wire.find((r) => r["id"] === "focus-throw-1");
             assert.ok(row !== undefined, "throw row rides the next report");
-            assert.equal(row["setter"], "threw");
+            assert.deepEqual(row["disposition"], { kind: "called", setter: "threw" });
             assert.equal(row["foregroundProven"], false);
         } finally {
             (h.world as unknown as Record<string, unknown>)["__throwFocus"] = false;
@@ -5134,7 +5134,7 @@ describe("world entry focus feedback production regression", () => {
         assert.equal(driven.switchEvents[0]!["outcome"], "complete", `healthy witness completes: ${JSON.stringify(driven.switchEvents[0]).slice(0, 500)}`);
         assert.equal(driven.switchEvents[0]!["focus"], "proven", `healthy foreground proves focus: ${JSON.stringify(driven.switchEvents[0]).slice(0, 500)}`);
         assert.deepEqual((driven.switchEvents[0]!["failed"] as Array<unknown>), [], "complete carries no failures");
-        assert.equal(driven.feedbackWire[0]!["setter"], "accepted", "production setter accepted");
+        assert.deepEqual(driven.feedbackWire[0]!["disposition"], { kind: "called", setter: "accepted" }, "production setter accepted");
         assert.equal(driven.feedbackWire[0]!["foregroundProven"], true, "genuine foreground proof rides");
         assert.ok(Array.isArray(driven.feedbackWire[0]!["arrival"]) && (driven.feedbackWire[0]!["arrival"] as Array<unknown>).length >= 1, "populated grant carries arrival brackets");
         // Deterministic retention proof (driven inside the helper, never
@@ -5158,7 +5158,7 @@ describe("world entry focus feedback production regression", () => {
         assert.equal(driven.switchEvents[0]!["outcome"], "complete", `resumed witness completes: ${JSON.stringify(driven.switchEvents[0]).slice(0, 500)}`);
         assert.equal(driven.switchEvents[0]!["focus"], "proven", `resumed foreground proves focus: ${JSON.stringify(driven.switchEvents[0]).slice(0, 500)}`);
         assert.deepEqual((driven.switchEvents[0]!["failed"] as Array<unknown>), [], "complete carries no failures");
-        assert.equal(driven.feedbackWire[0]!["setter"], "accepted", "resumed production setter accepted");
+        assert.deepEqual(driven.feedbackWire[0]!["disposition"], { kind: "called", setter: "accepted" }, "resumed production setter accepted");
         assert.equal(driven.feedbackWire[0]!["foregroundProven"], true, "genuine foreground proof rides on resume");
         assert.ok(Array.isArray(driven.feedbackWire[0]!["arrival"]) && (driven.feedbackWire[0]!["arrival"] as Array<unknown>).length >= 1, "resumed grant carries arrival brackets");
         // Deterministic retention proof (driven inside the helper, never
@@ -5187,8 +5187,8 @@ describe("world entry focus feedback production regression", () => {
     it("sync view-switch own echoes satisfy zero-setter with arrival and complete/proven", { timeout: 120000 }, async () => {
         const driven = await driveSelect(true, true);
         assert.equal(driven.feedbackWire.length, 1, "one focus row, no missing feedback");
-        assert.equal(driven.feedbackWire[0]!["setter"], "not-called", "own echoes already restored the foreground: zero redundant setters");
-        assert.equal(driven.feedbackWire[0]!["reason"], "", "already-target satisfaction carries the empty ordinary reason");
+        assert.deepEqual(driven.feedbackWire[0]!["disposition"], { kind: "not-called", reason: "focus-no-reason" }, "own echoes already restored the foreground: zero redundant setters");
+        assert.equal("reason" in driven.feedbackWire[0]!, false, "not-called focus feedback omits row-level reason");
         const fxTarget = ((driven.selectReply["focusRequest"] as Record<string, unknown>)!)["target"];
         assert.equal(driven.feedbackWire[0]!["target"], fxTarget, "row names the granted target");
         assert.equal(driven.feedbackWire[0]!["post"], fxTarget, "post names the granted foreground");

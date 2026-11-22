@@ -25,9 +25,8 @@ use crate::world_report::{
     PresentationIngressV4, PresentationRowV4, RenderTarget, RendererInput, RowDiagnostic,
     RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScreenReport, StateAttempt,
     StateProperty, SwitchOutcome, TransferKind, TransferTarget, ViewAttempt, VisibilityAttempt,
-    VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
-    WORLD_CONTRACT_VERSION_V4, WindowDesire, WindowFact, WorkspaceRef, WorldCommand, WorldReplyV4,
-    WorldReportV4,
+    VisibilityFact, VisibilityReason, VisibilitySample, WORLD_CONTRACT_VERSION_V4, WindowDesire,
+    WindowFact, WorkspaceRef, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 use crate::world_selection::{
     FrozenArrivalMember, RetainedSelection, SelectionScope, SelectionTarget, SwitchMember,
@@ -129,13 +128,12 @@ fn frame_row(window: &str) -> FrameAttempt {
     FrameAttempt {
         window: WindowId(window.to_owned()),
         target: rect(0, 0, 40, 90),
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         readback: None,
         dpi_before: None,
         dpi_after: None,
         attempt_ms: 11,
-        operation_id: None,
-        prewrite: None,
+        purpose: crate::world_report::FramePurpose::Layout,
     }
 }
 
@@ -145,7 +143,7 @@ fn member_row(operation: &str, window: &str) -> MemberAttempt {
         window: WindowId(window.to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: "ws-9".to_owned(),
-        setter: FrameSetter::Accepted.into(),
+        disposition: FrameSetter::Accepted.into(),
         pre: None,
         post: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
@@ -160,7 +158,7 @@ fn view_row(operation: &str) -> ViewAttempt {
         operation_id: operation.to_owned(),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: "ws-1".to_owned(),
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         pre: None,
         post: None,
         baseline: None,
@@ -187,7 +185,7 @@ fn state_row(window: &str, property: StateProperty) -> StateAttempt {
         property,
         target: true,
         revision: 1,
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         pre: Some(false),
         post: Some(false),
         attempt_ms: 16,
@@ -199,8 +197,10 @@ fn feedback_row(id: &str, target: &str) -> FocusFeedback {
         id: id.to_owned(),
         target: WindowId(target.to_owned()),
         revision: 1,
-        setter: VisibilitySetter::Accepted,
-        reason: VisibilityReason::Empty,
+        disposition: crate::world_report::FocusDisposition::Called {
+            setter: crate::world_report::FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        },
         pre: None,
         post: None,
         foreground_proven: false,
@@ -2279,7 +2279,7 @@ fn state_attempt(
         property: StateProperty::Sticky,
         target,
         revision,
-        setter,
+        disposition: setter,
         pre,
         post,
         attempt_ms: 16,
@@ -2474,8 +2474,10 @@ fn focus_row(id: &str, revision: u64) -> FocusFeedback {
         id: id.to_owned(),
         target: WindowId("win-a".to_owned()),
         revision,
-        setter: VisibilitySetter::Accepted,
-        reason: VisibilityReason::Empty,
+        disposition: crate::world_report::FocusDisposition::Called {
+            setter: crate::world_report::FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        },
         pre: None,
         post: Some(WindowId("win-a".to_owned())),
         foreground_proven: true,
@@ -2493,13 +2495,12 @@ fn frame_attempt(
     FrameAttempt {
         window: WindowId("win-a".to_owned()),
         target,
-        setter,
+        disposition: setter,
         readback,
         dpi_before: None,
         dpi_after: None,
         attempt_ms: ms,
-        operation_id: None,
-        prewrite: None,
+        purpose: crate::world_report::FramePurpose::Layout,
     }
 }
 
@@ -2730,8 +2731,10 @@ fn sel_feedback(id: &str, revision: u64, arrival: Vec<ArrivalBracket>) -> FocusF
         id: id.to_owned(),
         target: WindowId("win-a".to_owned()),
         revision,
-        setter: VisibilitySetter::Accepted,
-        reason: VisibilityReason::Empty,
+        disposition: crate::world_report::FocusDisposition::Called {
+            setter: crate::world_report::FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        },
         pre: None,
         post: Some(WindowId("win-a".to_owned())),
         foreground_proven: true,
@@ -2967,11 +2970,14 @@ fn settle_selection_feedback_first_exact_tuples_latch_from_staged_capture() {
         &mut engine,
         5,
         vec![ViewAttempt {
-            setter: FrameSetter::Refused,
+            disposition: FrameSetter::Refused,
             ..view_row("op-3")
         }],
         vec![FocusFeedback {
-            setter: VisibilitySetter::Refused,
+            disposition: crate::world_report::FocusDisposition::Called {
+                setter: FrameSetter::Refused,
+                reason: VisibilityReason::Empty,
+            },
             foreground_proven: false,
             arrival: Vec::new(),
             ..matched.clone()
@@ -3018,7 +3024,10 @@ fn settle_selection_feedback_first_exact_tuples_latch_from_staged_capture() {
         vec![
             first.clone(),
             FocusFeedback {
-                setter: VisibilitySetter::Refused,
+                disposition: crate::world_report::FocusDisposition::Called {
+                    setter: FrameSetter::Refused,
+                    reason: VisibilityReason::Empty,
+                },
                 foreground_proven: false,
                 arrival: Vec::new(),
                 ..first.clone()
@@ -3189,7 +3198,7 @@ fn settle_selection_feedback_view_receipts_independent_focusless_and_host_owned(
         &mut engine,
         3,
         vec![ViewAttempt {
-            setter: FrameSetter::Refused,
+            disposition: FrameSetter::Refused,
             ..view_row("op-4")
         }],
         Vec::new(),
@@ -4123,7 +4132,7 @@ fn clear_4b2d(
         property: StateProperty::Maximized,
         target: false,
         revision,
-        setter,
+        disposition: setter,
         pre,
         post,
         attempt_ms: 7,
@@ -4143,7 +4152,7 @@ fn member_4b2d(
         window: WindowId(window.to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: target_workspace.to_owned(),
-        setter: setter.into(),
+        disposition: setter.into(),
         pre,
         post,
         attempt_ms: 7,
@@ -4162,7 +4171,7 @@ fn view_4b2d(operation: &str, target_workspace: &str) -> ViewAttempt {
         operation_id: operation.to_owned(),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: target_workspace.to_owned(),
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         pre: None,
         post: None,
         baseline: None,
@@ -4179,13 +4188,15 @@ fn frame_4b2d(
     FrameAttempt {
         window: WindowId("win-a".to_owned()),
         target,
-        setter,
+        disposition: setter,
         readback: None,
         dpi_before: dpi.0,
         dpi_after: dpi.1,
         attempt_ms: ms,
-        operation_id: Some("op-f".to_owned()),
-        prewrite: None,
+        purpose: crate::world_report::FramePurpose::FloatPlacement {
+            operation_id: "op-f".to_owned(),
+            prewrite: None,
+        },
     }
 }
 
@@ -4421,7 +4432,7 @@ fn member_out_4b2d(
         window: WindowId(window.to_owned()),
         target_output: OutputId(output.to_owned()),
         target_workspace: target_workspace.to_owned(),
-        setter: setter.into(),
+        disposition: setter.into(),
         pre,
         post,
         attempt_ms: 7,
@@ -4433,7 +4444,7 @@ fn view_out_4b2d(operation: &str, output: &str, target_workspace: &str) -> ViewA
         operation_id: operation.to_owned(),
         target_output: OutputId(output.to_owned()),
         target_workspace: target_workspace.to_owned(),
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         pre: None,
         post: None,
         baseline: None,
@@ -4476,7 +4487,7 @@ fn view_native_refused_4b2d(
         operation_id: operation.to_owned(),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: target_workspace.to_owned(),
-        setter: FrameSetter::Refused,
+        disposition: FrameSetter::Refused,
         pre: Some(native_ref_4b2d(pre_native)),
         post: Some(native_ref_4b2d(pre_native)),
         baseline: None,
@@ -5445,7 +5456,10 @@ fn settle_float_uses_staged_frames_with_replay_dpi_and_close() {
     // A forged frame tuple (wrong operation) reads as absent: the
     // source frame holds with nothing staged.
     let mut forged = frame_4b2d(target, FrameSetter::Accepted, 5, (None, None));
-    forged.operation_id = Some("op-X".to_owned());
+    forged.purpose = crate::world_report::FramePurpose::FloatPlacement {
+        operation_id: "op-X".to_owned(),
+        prewrite: None,
+    };
     let mut forged_engine = settle_engine_4b2d();
     stage_attempts_4b2d(
         &mut forged_engine,
@@ -5829,13 +5843,12 @@ fn settle_float_holds_own_prior_tile_echo_not_external() {
         let own_attempt = FrameAttempt {
             window: WindowId("win-a".to_owned()),
             target: own_tile_rect,
-            setter: FrameSetter::Accepted,
+            disposition: FrameSetter::Accepted,
             readback: Some(float_rect),
             dpi_before: None,
             dpi_after: None,
             attempt_ms: 100,
-            operation_id: None,
-            prewrite: None,
+            purpose: crate::world_report::FramePurpose::Layout,
         };
         if !defer_attempt {
             refloat.frames.push(own_attempt.clone());
@@ -5890,7 +5903,7 @@ fn settle_float_holds_own_prior_tile_echo_not_external() {
                 let mut bad_attempt = own_attempt.clone();
                 match invalid {
                     "clockless" => bad_attempt.attempt_ms = 0,
-                    "refused" => bad_attempt.setter = FrameSetter::Refused,
+                    "refused" => bad_attempt.disposition = FrameSetter::Refused,
                     "dpi" => {
                         bad_attempt.dpi_before = Some(96);
                         bad_attempt.dpi_after = Some(144);
@@ -7385,8 +7398,10 @@ fn confirm_visibility_attempt(
         target,
         revision: rev,
         path: LastWritePath::Staged,
-        setter: VisibilitySetter::Accepted,
-        reason: VisibilityReason::Empty,
+        disposition: crate::world_report::VisibilityDisposition::Called {
+            setter: crate::world_report::FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        },
         pre: None,
         post: Some(VisibilitySample {
             obs: post_obs,
@@ -11205,7 +11220,7 @@ fn staged_selection_native_proof_success_refusal_and_latched_hold() {
         operation_id: "op-4".to_owned(),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: "ws-1".to_owned(),
-        setter: FrameSetter::Refused,
+        disposition: FrameSetter::Refused,
         pre: Some(WorkspaceRef::Native {
             output: OutputId("out-a".to_owned()),
             workspace: crate::ids::NativeWorkspaceId::parse("n0").expect("native id"),
@@ -11307,7 +11322,7 @@ fn selection_native_proof_fresh_fallback_scans_past_unrelated_first_view() {
         operation_id: "op-4".to_owned(),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: "ws-1".to_owned(),
-        setter: FrameSetter::Refused,
+        disposition: FrameSetter::Refused,
         pre: Some(WorkspaceRef::Native {
             output: OutputId("out-a".to_owned()),
             workspace: crate::ids::NativeWorkspaceId::parse("n0").expect("native id"),
@@ -12014,7 +12029,7 @@ fn staged_selection_feedback_first_latch_across_restage() {
         operation_id: "op-4".to_owned(),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: "ws-1".to_owned(),
-        setter: FrameSetter::Refused,
+        disposition: FrameSetter::Refused,
         pre: Some(WorkspaceRef::Native {
             output: OutputId("out-a".to_owned()),
             workspace: crate::ids::NativeWorkspaceId::parse("n0").expect("native id"),

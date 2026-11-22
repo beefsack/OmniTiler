@@ -10,7 +10,7 @@ use crate::world_close_focus::PendingFocus;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_focus::{FocusVerdict, classify_focus_feedback};
 use crate::world_report::{
-    FocusFeedback, PresentationRowV4, RowDiagnosticKind, VisibilityReason, VisibilitySetter,
+    FocusFeedback, PresentationRowV4, RowDiagnosticKind, VisibilityReason,
     WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 use crate::world_v4_support_tests::empty_ingress;
@@ -128,12 +128,39 @@ fn report(
     }
 }
 
+fn map_focus_disposition(
+    setter: Option<crate::world_report::FrameSetter>,
+    reason: VisibilityReason,
+) -> crate::world_report::FocusDisposition {
+    use crate::world_report::{FocusDisposition, FocusNoCallReason};
+    match setter {
+        Some(setter) => FocusDisposition::Called { setter, reason },
+        None => FocusDisposition::NotCalled {
+            reason: match reason {
+                VisibilityReason::Empty => FocusNoCallReason::NoReason,
+                VisibilityReason::IdentityStale => FocusNoCallReason::IdentityStale,
+                VisibilityReason::ScopeHeld => FocusNoCallReason::ScopeHeld,
+                VisibilityReason::Unreadable => FocusNoCallReason::Unreadable,
+                VisibilityReason::Unsupported => FocusNoCallReason::Unsupported,
+                VisibilityReason::PreimageUnavailable => FocusNoCallReason::PreimageUnavailable,
+                VisibilityReason::ForegroundChanged => FocusNoCallReason::ForegroundChanged,
+                VisibilityReason::Fullscreen => FocusNoCallReason::Fullscreen,
+                VisibilityReason::Game => FocusNoCallReason::Game,
+                VisibilityReason::ShowBlocked => FocusNoCallReason::ShowBlocked,
+                VisibilityReason::FocusUnproven => FocusNoCallReason::ForegroundUnproven,
+                VisibilityReason::Superseded => FocusNoCallReason::Superseded,
+                VisibilityReason::NativeRefused => FocusNoCallReason::NativeRefused,
+            },
+        },
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn feedback_row(
     id: &str,
     target: &str,
     revision: u64,
-    setter: VisibilitySetter,
+    setter: Option<crate::world_report::FrameSetter>,
     reason: VisibilityReason,
     pre: Option<&str>,
     post: Option<&str>,
@@ -144,8 +171,7 @@ fn feedback_row(
         id: id.to_owned(),
         target: WindowId(target.to_owned()),
         revision,
-        setter,
-        reason,
+        disposition: map_focus_disposition(setter, reason),
         pre: pre.map(|id| WindowId(id.to_owned())),
         post: post.map(|id| WindowId(id.to_owned())),
         foreground_proven: proven,
@@ -265,7 +291,7 @@ fn explicit_grant_settles_proven_without_arrival_or_current_focus() {
         &grant.id,
         "w0",
         grant.issued_revision,
-        VisibilitySetter::Accepted,
+        Some(crate::world_report::FrameSetter::Accepted),
         VisibilityReason::Empty,
         Some("w-fore"),
         Some("w0"),
@@ -353,7 +379,7 @@ fn opaque_tuple_matching_ignores_forged_and_mismatched_rows() {
         &grant.id,
         "w0",
         grant.issued_revision,
-        VisibilitySetter::Accepted,
+        Some(crate::world_report::FrameSetter::Accepted),
         VisibilityReason::Empty,
         Some("w-fore"),
         Some("w0"),
@@ -425,10 +451,19 @@ fn proof_holds_despite_nonaccepted_setter() {
     // non-terminal; informative Threw/NotCalled rows retire instead (see
     // terminal_no_call_retires_the_single_slot).
     for (setter, reason) in [
-        (VisibilitySetter::Accepted, VisibilityReason::NativeRefused),
-        (VisibilitySetter::Refused, VisibilityReason::NativeRefused),
-        (VisibilitySetter::Threw, VisibilityReason::Empty),
-        (VisibilitySetter::NotCalled, VisibilityReason::Empty),
+        (
+            Some(crate::world_report::FrameSetter::Accepted),
+            VisibilityReason::NativeRefused,
+        ),
+        (
+            Some(crate::world_report::FrameSetter::Refused),
+            VisibilityReason::NativeRefused,
+        ),
+        (
+            Some(crate::world_report::FrameSetter::Threw),
+            VisibilityReason::Empty,
+        ),
+        (None, VisibilityReason::Empty),
     ] {
         let mut engine = test_engine();
         bootstrap_two(&mut engine);
@@ -477,7 +512,7 @@ fn proof_requires_equality_even_when_proven_flag_set() {
         &grant.id,
         "w0",
         grant.issued_revision,
-        VisibilitySetter::Accepted,
+        Some(crate::world_report::FrameSetter::Accepted),
         VisibilityReason::Empty,
         Some("w-fore"),
         Some("w1"),
@@ -511,7 +546,7 @@ fn proof_requires_equality_even_when_proven_flag_set() {
         &grant.id,
         "w0",
         grant.issued_revision,
-        VisibilitySetter::Accepted,
+        Some(crate::world_report::FrameSetter::Accepted),
         VisibilityReason::Empty,
         Some("w-fore"),
         Some("w0"),
@@ -543,7 +578,7 @@ fn proof_requires_equality_even_when_proven_flag_set() {
 /// the w0 grant. Engine settlement behavior (retain vs retire) is covered
 /// by the pending-slot tests below; this table pins the verdict function.
 fn settle_once(
-    setter: VisibilitySetter,
+    setter: Option<crate::world_report::FrameSetter>,
     reason: VisibilityReason,
     pre: Option<&str>,
     post: Option<&str>,
@@ -561,7 +596,7 @@ fn conservative_refused_unproven_table() {
     // foreground around the attempt.
     assert_eq!(
         settle_once(
-            VisibilitySetter::Refused,
+            Some(crate::world_report::FrameSetter::Refused),
             VisibilityReason::NativeRefused,
             Some("w-fore"),
             Some("w-fore"),
@@ -571,7 +606,7 @@ fn conservative_refused_unproven_table() {
     );
     assert_eq!(
         settle_once(
-            VisibilitySetter::Refused,
+            Some(crate::world_report::FrameSetter::Refused),
             VisibilityReason::Empty,
             Some("w-fore"),
             Some("w-fore"),
@@ -582,7 +617,7 @@ fn conservative_refused_unproven_table() {
     // Proof beats the refusal shape: equality proof is not setter success.
     assert_eq!(
         settle_once(
-            VisibilitySetter::Refused,
+            Some(crate::world_report::FrameSetter::Refused),
             VisibilityReason::Empty,
             Some("w0"),
             Some("w0"),
@@ -595,7 +630,7 @@ fn conservative_refused_unproven_table() {
     // foreground flag is set, because post is not the granted target.
     assert_eq!(
         settle_once(
-            VisibilitySetter::Refused,
+            Some(crate::world_report::FrameSetter::Refused),
             VisibilityReason::Empty,
             Some("w-fore"),
             Some("w-fore"),
@@ -606,7 +641,7 @@ fn conservative_refused_unproven_table() {
     // Everything else is unproven: changed foreground under refusal.
     assert_eq!(
         settle_once(
-            VisibilitySetter::Refused,
+            Some(crate::world_report::FrameSetter::Refused),
             VisibilityReason::Empty,
             Some("w-fore"),
             Some("w-other"),
@@ -618,7 +653,7 @@ fn conservative_refused_unproven_table() {
     // evidence (and without proof, not proof either).
     assert_eq!(
         settle_once(
-            VisibilitySetter::Refused,
+            Some(crate::world_report::FrameSetter::Refused),
             VisibilityReason::Empty,
             Some("w0"),
             Some("w0"),
@@ -629,7 +664,7 @@ fn conservative_refused_unproven_table() {
     // Refused setter with unknown/null facts is unproven, never refused.
     assert_eq!(
         settle_once(
-            VisibilitySetter::Refused,
+            Some(crate::world_report::FrameSetter::Refused),
             VisibilityReason::Empty,
             None,
             Some("w-fore"),
@@ -639,7 +674,7 @@ fn conservative_refused_unproven_table() {
     );
     assert_eq!(
         settle_once(
-            VisibilitySetter::Refused,
+            Some(crate::world_report::FrameSetter::Refused),
             VisibilityReason::Empty,
             Some("w-fore"),
             None,
@@ -649,7 +684,7 @@ fn conservative_refused_unproven_table() {
     );
     assert_eq!(
         settle_once(
-            VisibilitySetter::Refused,
+            Some(crate::world_report::FrameSetter::Refused),
             VisibilityReason::Empty,
             None,
             None,
@@ -661,7 +696,7 @@ fn conservative_refused_unproven_table() {
     // an unchanged non-target foreground stays unproven.
     assert_eq!(
         settle_once(
-            VisibilitySetter::Accepted,
+            Some(crate::world_report::FrameSetter::Accepted),
             VisibilityReason::NativeRefused,
             Some("w-fore"),
             Some("w-fore"),
@@ -672,7 +707,7 @@ fn conservative_refused_unproven_table() {
     // Accepted without equality is unproven.
     assert_eq!(
         settle_once(
-            VisibilitySetter::Accepted,
+            Some(crate::world_report::FrameSetter::Accepted),
             VisibilityReason::Empty,
             Some("w-fore"),
             Some("w-fore"),
@@ -684,7 +719,7 @@ fn conservative_refused_unproven_table() {
     // non-target foreground.
     assert_eq!(
         settle_once(
-            VisibilitySetter::NotCalled,
+            None,
             VisibilityReason::Unreadable,
             Some("w-fore"),
             Some("w-fore"),
@@ -694,7 +729,7 @@ fn conservative_refused_unproven_table() {
     );
     assert_eq!(
         settle_once(
-            VisibilitySetter::Threw,
+            Some(crate::world_report::FrameSetter::Threw),
             VisibilityReason::Empty,
             Some("w-fore"),
             Some("w-fore"),
@@ -704,13 +739,7 @@ fn conservative_refused_unproven_table() {
     );
     // Null facts are unproven.
     assert_eq!(
-        settle_once(
-            VisibilitySetter::NotCalled,
-            VisibilityReason::Unreadable,
-            None,
-            None,
-            false
-        ),
+        settle_once(None, VisibilityReason::Unreadable, None, None, false),
         FocusVerdict::Unproven
     );
 }
@@ -724,7 +753,7 @@ fn first_correlated_row_wins_within_and_across_reports() {
         &grant.id,
         "w0",
         grant.issued_revision,
-        VisibilitySetter::Accepted,
+        Some(crate::world_report::FrameSetter::Accepted),
         VisibilityReason::Empty,
         Some("w-fore"),
         Some("w0"),
@@ -735,7 +764,7 @@ fn first_correlated_row_wins_within_and_across_reports() {
         &grant.id,
         "w0",
         grant.issued_revision,
-        VisibilitySetter::Refused,
+        Some(crate::world_report::FrameSetter::Refused),
         VisibilityReason::NativeRefused,
         Some("w-fore"),
         Some("w-fore"),
@@ -769,7 +798,7 @@ fn first_correlated_row_wins_within_and_across_reports() {
         &grant.id,
         "w0",
         grant.issued_revision,
-        VisibilitySetter::Refused,
+        Some(crate::world_report::FrameSetter::Refused),
         VisibilityReason::Empty,
         Some("w-fore"),
         Some("w-fore"),
@@ -814,7 +843,7 @@ fn later_contradictions_never_upgrade_a_latched_attempt() {
         &grant.id,
         "w0",
         grant.issued_revision,
-        VisibilitySetter::Accepted,
+        Some(crate::world_report::FrameSetter::Accepted),
         VisibilityReason::Empty,
         Some("w-fore"),
         Some("w-fore"),
@@ -848,7 +877,7 @@ fn later_contradictions_never_upgrade_a_latched_attempt() {
         &grant.id,
         "w0",
         grant.issued_revision,
-        VisibilitySetter::Accepted,
+        Some(crate::world_report::FrameSetter::Accepted),
         VisibilityReason::Empty,
         Some("w-fore"),
         Some("w0"),
@@ -893,7 +922,7 @@ fn terminal_no_call_retires_the_single_slot() {
         &grant.id,
         "w0",
         grant.issued_revision,
-        VisibilitySetter::NotCalled,
+        None,
         VisibilityReason::Unreadable,
         Some("w-fore"),
         Some("w-fore"),
@@ -938,7 +967,7 @@ fn first_tuple_latches_under_hold_incomplete_barrier_and_keeps_stamp() {
             grant.id.as_str(),
             "w0",
             grant.issued_revision,
-            VisibilitySetter::Accepted,
+            Some(crate::world_report::FrameSetter::Accepted),
             VisibilityReason::Empty,
             None,
             Some("w0"),
@@ -974,7 +1003,7 @@ fn first_tuple_latches_under_hold_incomplete_barrier_and_keeps_stamp() {
                 "fx-9",
                 "w0",
                 grant.issued_revision,
-                VisibilitySetter::Accepted,
+                Some(crate::world_report::FrameSetter::Accepted),
                 VisibilityReason::Empty,
                 None,
                 Some("w0"),
@@ -985,7 +1014,7 @@ fn first_tuple_latches_under_hold_incomplete_barrier_and_keeps_stamp() {
                 &grant.id,
                 "w0",
                 grant.issued_revision + 1,
-                VisibilitySetter::Accepted,
+                Some(crate::world_report::FrameSetter::Accepted),
                 VisibilityReason::Empty,
                 None,
                 Some("w0"),
@@ -1015,7 +1044,10 @@ fn first_tuple_latches_under_hold_incomplete_barrier_and_keeps_stamp() {
     // A contradictory same-tuple row (refused shape, same opaque identity)
     // cannot overwrite the latched history or its stamp.
     let same_contra = FocusFeedback {
-        setter: VisibilitySetter::Refused,
+        disposition: crate::world_report::FocusDisposition::Called {
+            setter: crate::world_report::FrameSetter::Refused,
+            reason: VisibilityReason::Empty,
+        },
         pre: Some(WindowId("w-fore".to_owned())),
         post: Some(WindowId("w-fore".to_owned())),
         foreground_proven: false,
@@ -1065,7 +1097,7 @@ fn observation_revisions_retain_pending_slot_until_delayed_feedback() {
         &grant.id,
         "w0",
         grant.issued_revision,
-        VisibilitySetter::Refused,
+        Some(crate::world_report::FrameSetter::Refused),
         VisibilityReason::Empty,
         Some("w-fore"),
         Some("w-fore"),
@@ -1134,7 +1166,7 @@ fn explicit_batch_focus_supersedes_admission_grant() {
         &slot.id,
         &slot.target.0,
         slot.issued_revision,
-        VisibilitySetter::Accepted,
+        Some(crate::world_report::FrameSetter::Accepted),
         VisibilityReason::Empty,
         Some("w-fore"),
         Some(slot.target.0.clone()).as_deref(),
@@ -1195,7 +1227,7 @@ fn newer_emitted_batch_supersedes_older_and_stale_tuples_ignore() {
             &slot.id,
             &slot.target.0,
             slot.issued_revision,
-            VisibilitySetter::Accepted,
+            Some(crate::world_report::FrameSetter::Accepted),
             VisibilityReason::Empty,
             Some("w-fore"),
             Some(slot.target.0.clone()).as_deref(),
@@ -1299,7 +1331,7 @@ fn focus_follows_cursor_grant_settles_alone() {
         &slot.id,
         "win-b",
         slot.issued_revision,
-        VisibilitySetter::Accepted,
+        Some(crate::world_report::FrameSetter::Accepted),
         VisibilityReason::Empty,
         Some("win-a"),
         Some("win-b"),
@@ -1353,7 +1385,7 @@ fn settle_under_sweep_hold_and_held_presence_retains() {
         &grant.id,
         "w0",
         grant.issued_revision,
-        VisibilitySetter::Accepted,
+        Some(crate::world_report::FrameSetter::Accepted),
         VisibilityReason::Empty,
         Some("w-fore"),
         Some("w0"),
@@ -1476,7 +1508,7 @@ fn explicit_close_prunes_and_reused_id_cannot_match_old_grant() {
         &grant.id,
         "w0",
         grant.issued_revision,
-        VisibilitySetter::Accepted,
+        Some(crate::world_report::FrameSetter::Accepted),
         VisibilityReason::Empty,
         Some("w-fore"),
         Some("w0"),
@@ -1517,7 +1549,7 @@ fn accepted_report_rejected_command_retains_feedback_settlement() {
         &grant.id,
         "w0",
         grant.issued_revision,
-        VisibilitySetter::Refused,
+        Some(crate::world_report::FrameSetter::Refused),
         VisibilityReason::Empty,
         Some("w-fore"),
         Some("w-fore"),
@@ -1563,7 +1595,7 @@ fn envelope_rejection_adopts_nothing() {
         "forged",
         "w0",
         0,
-        VisibilitySetter::Accepted,
+        Some(crate::world_report::FrameSetter::Accepted),
         VisibilityReason::Empty,
         Some("w-fore"),
         Some("w0"),
@@ -1589,7 +1621,7 @@ fn consumed_command_report_still_settles_feedback() {
         &grant.id,
         "w0",
         grant.issued_revision,
-        VisibilitySetter::Accepted,
+        Some(crate::world_report::FrameSetter::Accepted),
         VisibilityReason::Empty,
         Some("w-fore"),
         Some("w0"),
@@ -1646,7 +1678,7 @@ fn duplicate_replay_keeps_settlement_unchanged() {
             &grant.id,
             "w0",
             grant.issued_revision,
-            VisibilitySetter::Accepted,
+            Some(crate::world_report::FrameSetter::Accepted),
             VisibilityReason::Empty,
             Some("w-fore"),
             Some("w0"),
@@ -1678,7 +1710,7 @@ fn failed_attempt_keeps_accepted_memory_with_no_retry_or_side_effects() {
         &grant.id,
         "w0",
         grant.issued_revision,
-        VisibilitySetter::Refused,
+        Some(crate::world_report::FrameSetter::Refused),
         VisibilityReason::Empty,
         Some("w-fore"),
         Some("w-fore"),

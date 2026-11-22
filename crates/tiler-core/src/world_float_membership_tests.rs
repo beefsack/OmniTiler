@@ -1931,7 +1931,7 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
         property: crate::world_report::StateProperty::Maximized,
         target: false,
         revision: clear_rev,
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         pre: Some(true),
         post: Some(true),
         attempt_ms: 7,

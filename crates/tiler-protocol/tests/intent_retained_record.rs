@@ -200,7 +200,7 @@ fn produce() -> Vec<(String, String, String)> {
             "property": "sticky",
             "target": true,
             "rev": binding_rev.to_string(),
-            "setter": "refused",
+            "disposition": {"kind": "called", "setter": "refused"},
             "pre": false,
             "post": false,
             "attemptMs": "7",

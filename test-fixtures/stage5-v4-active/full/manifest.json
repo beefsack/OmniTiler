@@ -9,7 +9,7 @@
   },
   "chain": "full",
   "adapter": "kwin-stage5-v4",
-  "gen": "w-1795342810078131529-841238-0",
+  "gen": "gen-stage5-v4-active",
   "volatile": [
     "gen",
     "source",

@@ -160,8 +160,9 @@ fn build_report_v4(
                         target: *shown,
                         revision: *rev,
                         path: LastWritePath::Staged,
-                        setter: tiler_core::world_report::VisibilitySetter::NotCalled,
-                        reason: tiler_core::world_report::VisibilityReason::ScopeHeld,
+                        disposition: tiler_core::world_report::VisibilityDisposition::NotCalled {
+                            reason: tiler_core::world_report::VisibilityReason::ScopeHeld,
+                        },
                         pre: None,
                         post: Some(tiler_core::world_report::VisibilitySample {
                             obs: sim.obs,
@@ -1712,12 +1713,10 @@ mod tests {
             assert_eq!(last.target, *shown);
             assert_eq!(last.revision, *rev);
             assert_eq!(
-                last.setter,
-                tiler_core::world_report::VisibilitySetter::NotCalled
-            );
-            assert_eq!(
-                last.reason,
-                tiler_core::world_report::VisibilityReason::ScopeHeld
+                last.disposition,
+                tiler_core::world_report::VisibilityDisposition::NotCalled {
+                    reason: tiler_core::world_report::VisibilityReason::ScopeHeld,
+                }
             );
             let post = last.post.as_ref().expect("no-call still samples the read");
             assert_eq!(

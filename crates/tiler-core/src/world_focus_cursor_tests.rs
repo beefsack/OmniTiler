@@ -13,8 +13,8 @@ use crate::world_engine::{EventIssue, KIND_GENERATION, WorldEngine};
 use crate::world_report::{
     BatchSettlement, CommandRejectKind, CommandResult, FocusFeedback, FocusRequestCause,
     HeldWindowRow, PresentationIngressV4, PresentationRowV4, RowDiagnosticKind, ScopeAuthority,
-    SendSource, StateProperty, StateTarget, VisibilityReason, VisibilitySetter,
-    WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
+    SendSource, StateProperty, StateTarget, VisibilityReason, WORLD_CONTRACT_VERSION_V4,
+    WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 use crate::world_run_v4::V4RunOutcome;
 use crate::world_v4_support_tests::{fact, screen};
@@ -263,8 +263,10 @@ fn earlier_destination_intent_then_own_target_uses_observed_target_for_toggle_fl
         id: request.id.clone(),
         target: request.target.clone(),
         revision: request.issued_revision,
-        setter: VisibilitySetter::Accepted,
-        reason: VisibilityReason::Empty,
+        disposition: crate::world_report::FocusDisposition::Called {
+            setter: crate::world_report::FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        },
         pre: Some(WindowId("win-a".to_owned())),
         post: Some(request.target.clone()),
         foreground_proven: true,
@@ -630,8 +632,10 @@ fn cursor_refused_pending_resets_to_observed_not_abandoned() {
         id: pending.id.clone(),
         target: WindowId("win-b".to_owned()),
         revision: pending.issued_revision,
-        setter: VisibilitySetter::Refused,
-        reason: VisibilityReason::NativeRefused,
+        disposition: crate::world_report::FocusDisposition::Called {
+            setter: crate::world_report::FrameSetter::Refused,
+            reason: VisibilityReason::NativeRefused,
+        },
         pre: Some(WindowId("win-a".to_owned())),
         post: Some(WindowId("win-a".to_owned())),
         foreground_proven: false,

@@ -20,8 +20,8 @@ use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
     ArrivalBracket, ArrivalLocation, FocusFeedback, LastWritePath, ScopeAuthority,
-    VisibilityAttempt, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
-    WorldReplyV4, WorldReportV4,
+    VisibilityAttempt, VisibilityFact, VisibilityReason, VisibilitySample, WorldReplyV4,
+    WorldReportV4,
 };
 use tiler_protocol::world_admission_sizing::max_switch_settle_reserve;
 use tiler_protocol::world_protocol::{
@@ -114,8 +114,10 @@ fn confirmed_write(win: &str, target: bool, rev: u64, post_obs: u64) -> Visibili
         target,
         revision: rev,
         path: LastWritePath::Staged,
-        setter: VisibilitySetter::Accepted,
-        reason: VisibilityReason::Empty,
+        disposition: tiler_core::world_report::VisibilityDisposition::Called {
+            setter: tiler_core::world_report::FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        },
         pre: None,
         post: Some(VisibilitySample {
             obs: post_obs,
@@ -336,8 +338,10 @@ fn selection_reply_carries_switch_terminal_through_v4_writer() {
         id: request.id.clone(),
         target: request.target.clone(),
         revision: request.issued_revision,
-        setter: VisibilitySetter::Accepted,
-        reason: VisibilityReason::Empty,
+        disposition: tiler_core::world_report::FocusDisposition::Called {
+            setter: tiler_core::world_report::FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        },
         pre: None,
         post: Some(request.target.clone()),
         foreground_proven: true,

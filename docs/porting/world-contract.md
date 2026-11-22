@@ -1676,8 +1676,8 @@ that step's ordered proof and requiring the exact planned ID for removal.
 
 ## Raw attempts and settlement
 
-- SetterOutcome is the renamed FrameSetter, with unchanged
-  `accepted/refused/threw` tokens. Acceptance alone never proves completion;
+- A native setter outcome is `accepted`, `refused`, or `threw`.
+  Acceptance alone never proves completion;
   explicit refusal needs readable unchanged preimage. Anything possibly executed
   remains ambiguous/spent, never blind retry. Carry attempts into a freshly
   captured report whose observations do not predate immediate readbacks; later
@@ -1685,26 +1685,56 @@ that step's ordered proof and requiring the exact planned ID for removal.
   redeliver the original stamps idempotently. [Settlement baseline](world-contract-v3.md#5-raw-attempts-and-settlement),
   [rename/consolidation](../changes/core-interface-review.md#original-backlog-lines-159-186).
 
-- Existing property-attempt fields and meaning are unchanged outside the slot
-  route. Attempt disposition, old rows and matching property readback are
-  not foreground attribution. Attribution does not prove property settlement
-  or focus arrival.
+- Active v4 uses exact tagged `disposition` and frame `purpose` objects
+  with no legacy aliases. Frame, state and view accept only `called`;
+  membership also accepts `already-at-target`; visibility and focus also
+  accept `not-called` with lane-specific reasons. Nested members not
+  specified for the selected arm are invalid. An invalid row never supplies
+  typed evidence; existing identity-bound row holds and hard refusals still
+  apply. Attempt disposition, old rows and matching property readback are not
+  foreground attribution. Attribution does not prove property settlement or
+  focus arrival.
+
+| Former active row | Active v4 representation | Meaning retained |
+| --- | --- | --- |
+| `setter:"accepted"`, `"refused"` or `"threw"` (frame, member, view, state, visibility, focus) | `disposition:{kind:"called",setter}` with the same setter token | Native call outcome; any former visibility or focus `reason` stays at row level on this arm, with exactly its former vocabulary and meaning. |
+| Member `setter:"already-at-target"` | `disposition:{kind:"already-at-target"}` | Exact operation consumed without a native call. Only membership has this arm. |
+| Visibility `setter:"not-called"` with `reason` | `disposition:{kind:"not-called",reason}` with the same reason, no row-level `reason` | Visibility safety evidence, not a native call. All former reason values in the table below remain valid here. |
+| Focus `setter:"not-called"` with former visibility-vocabulary `reason` | `disposition:{kind:"not-called",reason}` with the focus token in the table below, no row-level `reason` | Focus safety evidence, not a native call. Empty old reason was not itself equality; independent foreground evidence still proves equality. |
+| Frame `op:"",pre:null` | `purpose:{kind:"layout"}` | Regular layout frame; no float operation or prewrite fact. |
+| Frame nonempty opaque `op` with `pre` a rectangle or null | `purpose:{kind:"float-placement",op,pre}` | Exact float operation and original nullable prewrite fact. |
+
+| Former row-level reason (visibility or focus) | Visibility reason (called or not called) and focus called reason | Focus not-called reason |
+| --- | --- | --- |
+| `""` | `""` | `focus-no-reason` |
+| `identity-stale` | `identity-stale` | `focus-identity-stale` |
+| `scope-held` | `scope-held` | `focus-scope-held` |
+| `unreadable` | `unreadable` | `focus-unreadable` |
+| `unsupported` | `unsupported` | `focus-unsupported` |
+| `preimage-unavailable` | `preimage-unavailable` | `focus-preimage-unavailable` |
+| `foreground-changed` | `foreground-changed` | `focus-foreground-changed` |
+| `fullscreen` | `fullscreen` | `focus-fullscreen` |
+| `game` | `game` | `focus-game` |
+| `show-blocked` | `show-blocked` | `focus-show-blocked` |
+| `focus-unproven` | `focus-unproven` | `focus-foreground-unproven` |
+| `superseded` | `superseded` | `focus-superseded` |
+| `native-refused` | `native-refused` | `focus-native-refused` |
 
 | Record | Key | Type | Null/absence | Meaning |
 | --- | --- | --- | --- | --- |
-| `FrameAttempt` | `kind,win,target,setter` | `"frame"`, WindowId, Rect, SetterOutcome | no | Exact window and attempted frame target. |
+| `FrameAttempt` | `kind,win,target,disposition` | `"frame"`, WindowId, Rect, called disposition | no | Exact window and attempted frame target. |
 | | `readback` | Rect | yes | Immediate frame readback. |
 | | `dpiBefore,dpiAfter` | integer | yes | Native DPI observations around the call. |
 | | `attemptMs` | Counter | no | Original monotonic call stamp. |
-| | `op,pre` | Id, Rect | empty Id / nullable Rect | Operation and prewrite frame for correlated frame work. |
-| `MemberAttempt` | `kind,op,win,out,ws,setter` | `"member"`, Id, WindowId, OutputId, WorkspaceId, MemberDisposition | no | Operation, subject, target and call or no-call disposition. |
+| | `purpose` | layout or float-placement purpose | no | Layout has only `kind`; float-placement also requires opaque nonempty `op` and nullable Rect `pre`. |
+| `MemberAttempt` | `kind,op,win,out,ws,disposition` | `"member"`, Id, WindowId, OutputId, WorkspaceId, called or already-at-target disposition | no | Operation, subject, target and call or no-call disposition. |
 | | `pre,post` | WorkspaceRef | yes | Single logical-or-native reference set, live before/after. |
 | | `attemptMs` | Counter | no | Original monotonic call or no-call consumption stamp. |
-| `ViewAttempt` | `kind,op,out,ws,setter` | `"view"`, Id, OutputId, WorkspaceId, SetterOutcome | no | Output-scoped native selector evidence for existing parent/phase. |
+| `ViewAttempt` | `kind,op,out,ws,disposition` | `"view"`, Id, OutputId, WorkspaceId, called disposition | no | Output-scoped native selector evidence for existing parent/phase. |
 | | `pre,post,base` | WorkspaceRef with kind native | yes | Native before/after/observation baseline only. |
 | | `attemptMs` | Counter | no | Original stamp. |
 | `StateAttempt` | `kind,win,property,target,rev` | `"state"`, WindowId, state property, bool, Counter | no | Exact core native-state target. |
-| | `setter` | SetterOutcome | no | Actual native call disposition. |
+| | `disposition` | called disposition | no | Actual native call outcome. |
 | | `pre,post` | bool | yes | Observed property immediately around call. |
 | | `attemptMs` | Counter | no | Original stamp. |
 
@@ -1718,6 +1748,9 @@ that step's ordered proof and requiring the exact planned ID for removal.
   Identifiable malformed visibility evidence for a live or held window
   holds only that scope. Native state malformed or duplicate rows refuse
   rather than holding.
+  A frame with valid call evidence but malformed purpose is held; a frame
+  without valid called disposition refuses. Malformed focus feedback refuses.
+  Neither the retired flat attempt fields nor a held frame can settle a write.
 - Decode by fixed kind/section order: frame, membership, view, separate
   creation, native state, visibility, then separate focus feedback. Use
   producer order within each kind; the first
@@ -1744,7 +1777,7 @@ that step's ordered proof and requiring the exact planned ID for removal.
   ViewAttempt permits no logical arm; native-free visibility/focus completes
   selection. This is the [G1 technical reconciliation](../changes/v4-migration.md#b-reconciliations-and-open-points),
   approved 2026-11-02, not a new product decision.
-- `MemberDisposition` carries `accepted/refused/threw` for native calls and
+- Membership disposition carries `called` for native calls and
   `already-at-target` for consumption of a transfer operation without a call
   (User 2026-11-17). The latter reports the exact operation, window and desired
   target with live `pre`/`post` membership readbacks; it is not setter success.
@@ -1757,10 +1790,10 @@ that step's ordered proof and requiring the exact planned ID for removal.
   lane, retries or adapter policy; retained settlement outcomes are unchanged.
   KDE emits the row on its already-at-target transfer branch; macOS and Windows
   adopt the same row later.
-- Frame and maximize-clear rows retain their kind-specific target/readback/DPI/
-  prewrite and pre/post-maximized fields in `propertyAttempts`. Native
-  creation remains separate, retaining its before/after and correlated-created
-  identity fields.
+- Frame and maximized-false state rows retain their kind-specific readback
+  facts (frame target, readback, DPI and float prewrite; state target and
+  pre/post-maximized) in `propertyAttempts`. Native creation remains separate,
+  retaining its before/after and correlated-created identity fields.
   Outside slot plans, ordinary creation needs explicit `nativeCreations`
   authorization, spent before call; an unbound spare is not permission.
   Unknown/ambiguous created identity holds without recreation. Without causal
@@ -1790,8 +1823,8 @@ that step's ordered proof and requiring the exact planned ID for removal.
 | `VisibilityAttempt` | `kind,win` | `"visibility"`, WindowId | no | Closed `propertyAttempts` row for visibility writes; one row per window lifetime. |
 | | `target,revision` | bool, Counter | no | Existing desired-state target and revision; no visibility id. |
 | | `path` | `staged/fallback/independent` | no | Actual execution route. |
-| | `setter` | SetterOutcome or `not-called` | no | No-call is not a successful native call. |
-| | `reason` | VisibilityReason | empty on ordinary call | Bounded typed mechanical reason. |
+| | `disposition` | called or visibility not-called disposition | no | Actual call or bounded visibility no-call reason. |
+| | `reason` | visibility reason | required on called (may be empty); omitted on not-called | Bounded mechanical fact about the call. |
 | | `pre,post` | VisibilitySample | yes | Identity-bound reads immediately around action/no-call. |
 | `ArrivalBracket` | `win,obs` | WindowId, Counter | no | Required arrival subject and common source watermark. |
 | | `before` | VisibilitySample | no | First lifetime/visibility read. |
@@ -1801,8 +1834,8 @@ that step's ordered proof and requiring the exact planned ID for removal.
 | | `frame` | Rect | yes | Native frame read BETWEEN before/after; null cannot prove readiness. |
 | | `after` | VisibilitySample | no | Final lifetime/visibility read with no intervening invalidation. |
 | `FocusFeedback` | `id,target,rev` | Id, WindowId, Counter | no | Exact retained-request correlation by opaque id, target and issuing revision. |
-| | `setter` | SetterOutcome or `not-called` | no | At-most-once call/no-call. |
-| | `reason` | VisibilityReason | empty on ordinary call | Mechanical blocked/refusal fact. |
+| | `disposition` | called or focus not-called disposition | no | At-most-once call or bounded focus no-call reason. |
+| | `reason` | focus called reason | required on called (may be empty); omitted on not-called | Bounded mechanical fact about the call. |
 | | `pre,post` | WindowId | yes | Live foreground before/after; null means unknown. |
 | | `foregroundProven` | bool | no | Actual foreground equality proof, never setter success. |
 | | `arrival` | ArrivalBracket[] | no | Readiness brackets; blocked subjects use their visibility attempt no-call evidence, not a different array arm. |

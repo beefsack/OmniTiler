@@ -2269,7 +2269,7 @@ impl WorldTransaction<'_> {
                 .and_then(PropertyAttempt::as_frame)
                 && !dpi_basis_changed(pending.dpi_before, pending.dpi_after)
                 && pending.disposition == AttemptDisposition::Refused
-                && let (Some(pre), Some(readback)) = (pending.prewrite, pending.readback)
+                && let (Some(pre), Some(readback)) = (pending.purpose.prewrite(), pending.readback)
                 && pre != retained.target
                 && readback == pre
                 && current == pre

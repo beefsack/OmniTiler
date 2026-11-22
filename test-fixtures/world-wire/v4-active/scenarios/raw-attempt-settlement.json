@@ -900,7 +900,6 @@
                 640,
                 480
               ],
-              "setter": "accepted",
               "readback": [
                 8,
                 8,
@@ -910,13 +909,20 @@
               "dpiBefore": 96,
               "dpiAfter": 96,
               "attemptMs": "210",
-              "op": "op-1",
-              "pre": [
-                8,
-                8,
-                800,
-                600
-              ]
+              "disposition": {
+                "kind": "called",
+                "setter": "accepted"
+              },
+              "purpose": {
+                "kind": "float-placement",
+                "op": "op-1",
+                "pre": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
             }
           ],
           "focusFeedback": [],
@@ -1469,7 +1475,6 @@
                 640,
                 480
               ],
-              "setter": "refused",
               "readback": [
                 8,
                 8,
@@ -1479,13 +1484,20 @@
               "dpiBefore": 96,
               "dpiAfter": 96,
               "attemptMs": "410",
-              "op": "op-2",
-              "pre": [
-                8,
-                8,
-                800,
-                600
-              ]
+              "disposition": {
+                "kind": "called",
+                "setter": "refused"
+              },
+              "purpose": {
+                "kind": "float-placement",
+                "op": "op-2",
+                "pre": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
             }
           ],
           "focusFeedback": [],
@@ -2038,7 +2050,6 @@
                 640,
                 480
               ],
-              "setter": "accepted",
               "readback": [
                 100,
                 100,
@@ -2048,13 +2059,20 @@
               "dpiBefore": 96,
               "dpiAfter": 96,
               "attemptMs": "610",
-              "op": "op-3",
-              "pre": [
-                8,
-                8,
-                800,
-                600
-              ]
+              "disposition": {
+                "kind": "called",
+                "setter": "accepted"
+              },
+              "purpose": {
+                "kind": "float-placement",
+                "op": "op-3",
+                "pre": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
             }
           ],
           "focusFeedback": [],
@@ -2332,7 +2350,6 @@
                 640,
                 480
               ],
-              "setter": "accepted",
               "readback": [
                 100,
                 100,
@@ -2342,13 +2359,20 @@
               "dpiBefore": 96,
               "dpiAfter": 96,
               "attemptMs": "610",
-              "op": "op-3",
-              "pre": [
-                8,
-                8,
-                800,
-                600
-              ]
+              "disposition": {
+                "kind": "called",
+                "setter": "accepted"
+              },
+              "purpose": {
+                "kind": "float-placement",
+                "op": "op-3",
+                "pre": [
+                  8,
+                  8,
+                  800,
+                  600
+                ]
+              }
             }
           ],
           "focusFeedback": [],
@@ -2989,10 +3013,13 @@
               "property": "maximized",
               "target": false,
               "rev": "9",
-              "setter": "accepted",
               "pre": true,
               "post": false,
-              "attemptMs": "910"
+              "attemptMs": "910",
+              "disposition": {
+                "kind": "called",
+                "setter": "accepted"
+              }
             }
           ],
           "focusFeedback": [],

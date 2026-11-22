@@ -202,8 +202,8 @@ describe("world focus feedback rows", () => {
         assert.equal(result.effects, 1);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "accepted");
-        assert.equal(rows[0]?.reason, "");
+        assert.deepEqual(rows[0]?.disposition, { kind: "called", setter: "accepted" });
+        assert.equal(rows[0] && "reason" in rows[0] ? rows[0].reason : undefined, "");
         assert.equal(rows[0]?.pre, "win-a");
         assert.equal(rows[0]?.post, "win-b");
         assert.equal(rows[0]?.foregroundProven, true);
@@ -225,8 +225,8 @@ describe("world focus feedback rows", () => {
         assert.equal(result.effects, 0);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "refused");
-        assert.equal(rows[0]?.reason, "native-refused");
+        assert.deepEqual(rows[0]?.disposition, { kind: "called", setter: "refused" });
+        assert.equal(rows[0] && "reason" in rows[0] ? rows[0].reason : undefined, "native-refused");
         assert.equal(rows[0]?.pre, "win-a");
         assert.equal(rows[0]?.post, "win-a");
         assert.equal(rows[0]?.foregroundProven, false);
@@ -246,7 +246,7 @@ describe("world focus feedback rows", () => {
         assert.equal(result.effects, 0);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "threw");
+        assert.deepEqual(rows[0]?.disposition, { kind: "called", setter: "threw" });
         assert.equal(rows[0]?.post, null);
         assert.equal(rows[0]?.foregroundProven, false);
     });
@@ -266,8 +266,8 @@ describe("world focus feedback rows", () => {
         assert.equal(result.effects, 0);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "accepted");
-        assert.equal(rows[0]?.reason, "focus-unproven");
+        assert.deepEqual(rows[0]?.disposition, { kind: "called", setter: "accepted" });
+        assert.equal(rows[0] && "reason" in rows[0] ? rows[0].reason : undefined, "focus-unproven");
         assert.equal(rows[0]?.post, "win-a");
         assert.equal(rows[0]?.foregroundProven, false);
     });
@@ -292,7 +292,7 @@ describe("world focus feedback rows", () => {
         applyWorldReply(env);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "refused");
+        assert.deepEqual(rows[0]?.disposition, { kind: "called", setter: "refused" });
         assert.equal(rows[0]?.post, "win-b");
         assert.equal(rows[0]?.foregroundProven, true);
     });
@@ -315,7 +315,7 @@ describe("world focus feedback rows", () => {
         applyWorldReply(env);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "threw");
+        assert.deepEqual(rows[0]?.disposition, { kind: "called", setter: "threw" });
         assert.equal(rows[0]?.post, "win-b");
         assert.equal(rows[0]?.foregroundProven, true);
     });
@@ -335,8 +335,7 @@ describe("world focus feedback rows", () => {
         assert.equal(rows.length, 1);
         // Pre-setter gate fails on the vanished listing: narrow no-call
         // with the fresh foreground stamps.
-        assert.equal(rows[0]?.setter, "not-called");
-        assert.equal(rows[0]?.reason, "identity-stale");
+        assert.deepEqual(rows[0]?.disposition, { kind: "not-called", reason: "focus-identity-stale" });
     });
 
     it("refuses any effects key without actuating", () => {
@@ -404,8 +403,7 @@ describe("world focus feedback rows", () => {
         assert.equal(result.effects, 0);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "not-called");
-        assert.equal(rows[0]?.reason, "superseded");
+        assert.deepEqual(rows[0]?.disposition, { kind: "not-called", reason: "focus-superseded" });
     });
 
     it("defers on lifetime mismatch, resumes once the lifetime binds", () => {
@@ -438,7 +436,7 @@ describe("world focus feedback rows", () => {
         assert.equal(lit.effects, 1);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "accepted");
+        assert.deepEqual(rows[0]?.disposition, { kind: "called", setter: "accepted" });
         for (const b of rows[0]?.arrival ?? []) {
             assert.equal(b.before.lifetimeMatched, true, "resumed bracket binds the lifetime");
             assert.equal(b.after.lifetimeMatched, true, "resumed bracket binds the lifetime");
@@ -474,8 +472,8 @@ describe("world focus feedback rows", () => {
         assert.equal(result.effects, 0, "unreadable identity never proves");
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "accepted");
-        assert.equal(rows[0]?.reason, "focus-unproven");
+        assert.deepEqual(rows[0]?.disposition, { kind: "called", setter: "accepted" });
+        assert.equal(rows[0] && "reason" in rows[0] ? rows[0].reason : undefined, "focus-unproven");
         assert.equal(rows[0]?.post, "win-b");
         assert.equal(rows[0]?.foregroundProven, false);
         assert.deepEqual(rows[0]?.arrival ?? [], [], "no afterShown means no arrival sampling");
@@ -498,8 +496,7 @@ describe("world focus feedback rows", () => {
         applyWorldReply(env);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "not-called");
-        assert.equal(rows[0]?.reason, "identity-stale");
+        assert.deepEqual(rows[0]?.disposition, { kind: "not-called", reason: "focus-identity-stale" });
     });
 
     it("stamps bracket obs from the reply and the write stamp from the clock, diverged", () => {
@@ -578,8 +575,7 @@ describe("world focus feedback rows", () => {
         assert.equal(rows.length, 1, "early exit still spends the skipped focus request");
         assert.equal(rows[0]?.id, "focus-1");
         assert.equal(rows[0]?.target, "win-b");
-        assert.equal(rows[0]?.setter, "not-called");
-        assert.equal(rows[0]?.reason, "superseded");
+        assert.deepEqual(rows[0]?.disposition, { kind: "not-called", reason: "focus-superseded" });
         assert.equal(rows[0]?.pre, "win-a");
         assert.equal(rows[0]?.post, "win-a");
         assert.equal(rows[0]?.foregroundProven, false);
@@ -711,7 +707,7 @@ describe("world focus lane caps", () => {
             const n = String(i + 1).padStart(4, "0");
             const ok = state.recordFocusFeedback({
                 id: `fx-${n}`, target: "win-b", rev: "1",
-                setter: "not-called", reason: "scope-held",
+                disposition: { kind: "not-called", reason: "focus-scope-held" },
                 pre: null, post: null, foregroundProven: false,
                 arrival: [], attemptMs: "1",
             });
@@ -729,7 +725,7 @@ describe("world focus lane caps", () => {
         // the oldest row evicts and only the newest survives.
         const many = (id: string) => ({
             id, target: "win-b", rev: "1",
-            setter: "accepted" as const, reason: "" as const,
+            disposition: { kind: "called" as const, setter: "accepted" as const }, reason: "" as const,
             pre: null, post: "win-b", foregroundProven: true,
             arrival: Array.from({ length: 6000 }, () => ({
                 win: "win-b", obs: "1",
@@ -747,6 +743,36 @@ describe("world focus lane caps", () => {
         const total = rows.reduce((n, r) => n + r.arrival.length, 0);
         assert.ok(total <= 10000, `total brackets bounded, got ${total}`);
         assert.deepEqual(rows.map((r) => r.id), ["fx-2"]);
+    });
+
+    it("refuses wrong focus disposition arms, visibility-only no-call reasons, and row-level not-called reason", () => {
+        const state = new WorldAdapterState("test-adapter", "owner-a");
+        const calledBase = {
+            id: "fx-1", target: "win-b", rev: "1",
+            disposition: { kind: "called", setter: "accepted" },
+            reason: "",
+            pre: null, post: "win-b", foregroundProven: true,
+            arrival: [], attemptMs: "1",
+        };
+        const noCallBase = {
+            id: "fx-2", target: "win-b", rev: "1",
+            disposition: { kind: "not-called", reason: "focus-superseded" },
+            pre: null, post: null, foregroundProven: false,
+            arrival: [], attemptMs: "1",
+        };
+        const bad: unknown[] = [
+            { ...calledBase, disposition: { kind: "already-at-target" } },
+            { ...calledBase, setter: "accepted" },
+            { ...noCallBase, disposition: { kind: "not-called", reason: "" } },
+            { ...noCallBase, disposition: { kind: "not-called", reason: "identity-stale" } },
+            { ...noCallBase, disposition: { kind: "not-called", reason: "focus-unproven" } },
+            { ...noCallBase, reason: "" },
+            { ...noCallBase, reason: "superseded" },
+        ];
+        for (const row of bad) {
+            assert.equal(state.recordFocusFeedback(row as never), false, `refuses ${JSON.stringify(row)}`);
+        }
+        assert.deepEqual(state.focusFeedbacksForReport(), []);
     });
 });
 
@@ -1002,8 +1028,17 @@ describe("world selection readiness", () => {
             assert.equal(rows.length, 1);
             const row = rows[0]!;
             assert.equal(row.foregroundProven, !movedAgain);
-            assert.equal(row.setter, movedAgain ? "not-called" : "accepted");
-            assert.equal(row.reason, movedAgain ? "identity-stale" : "");
+            assert.deepEqual(
+                row.disposition,
+                movedAgain
+                    ? { kind: "not-called", reason: "focus-identity-stale" }
+                    : { kind: "called", setter: "accepted" },
+            );
+            if (!movedAgain) {
+                assert.equal("reason" in row ? row.reason : undefined, "");
+            } else {
+                assert.equal("reason" in row, false);
+            }
             if (!movedAgain) {
                 assert.equal(row.arrival[0]?.before.obs, reply.obs);
                 assert.deepEqual(row.arrival[0]?.home, { out: "out", ws: "native-destination" });

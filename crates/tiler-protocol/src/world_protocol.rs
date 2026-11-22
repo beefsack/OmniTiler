@@ -97,9 +97,9 @@ use tiler_core::world_report::{
     RenderTarget, RendererInput, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
     ScopeAuthority, ScopeStatus, ScreenReport, StateProperty, StateTarget, SwitchEvent,
     SwitchFocus, SwitchOutcome, TilingMode, TransferKind, TransferTargetV4, VisibilityFact,
-    VisibilityReason, VisibilitySample, VisibilitySetter, VisibilityTarget, WindowDesire,
-    WindowFact, WindowType, WorkspaceDesire, WorkspaceRef, WorldCommand, WorldPresentationV4,
-    WorldReplyV4, WorldReportV4, check_screen_structure, check_window_structure,
+    VisibilityReason, VisibilitySample, VisibilityTarget, WindowDesire, WindowFact, WindowType,
+    WorkspaceDesire, WorkspaceRef, WorldCommand, WorldPresentationV4, WorldReplyV4, WorldReportV4,
+    check_screen_structure, check_window_structure,
 };
 use tiler_core::world_roster::SharedRosterPlan;
 
@@ -1199,25 +1199,53 @@ pub(crate) fn opt_bool_or_null(
 /// the native/output check.
 fn decode_focus_feedback(value: &serde_json::Value) -> Result<FocusFeedback> {
     let map = as_object(value)?;
-    check_keys(
-        map,
-        &[
-            "id",
-            "target",
-            "rev",
-            "setter",
-            "reason",
-            "pre",
-            "post",
-            "foregroundProven",
-            "arrival",
-            "attemptMs",
-        ],
-    )?;
-    let setter_text = req_str(map, "setter")?;
-    let setter = VisibilitySetter::parse(setter_text).ok_or_else(unknown_value)?;
-    let reason_text = req_str(map, "reason")?;
-    let reason = VisibilityReason::parse(reason_text).ok_or_else(unknown_value)?;
+    let disp_map = as_object(map.get("disposition").ok_or_else(malformed)?)?;
+    let disposition = match req_str(disp_map, "kind")? {
+        "called" => {
+            check_keys(disp_map, &["kind", "setter"])?;
+            check_keys(
+                map,
+                &[
+                    "id",
+                    "target",
+                    "rev",
+                    "disposition",
+                    "reason",
+                    "pre",
+                    "post",
+                    "foregroundProven",
+                    "arrival",
+                    "attemptMs",
+                ],
+            )?;
+            let setter = parse_frame_setter(req_str(disp_map, "setter")?)?;
+            let reason =
+                VisibilityReason::parse(req_str(map, "reason")?).ok_or_else(unknown_value)?;
+            tiler_core::world_report::FocusDisposition::Called { setter, reason }
+        }
+        "not-called" => {
+            check_keys(disp_map, &["kind", "reason"])?;
+            check_keys(
+                map,
+                &[
+                    "id",
+                    "target",
+                    "rev",
+                    "disposition",
+                    "pre",
+                    "post",
+                    "foregroundProven",
+                    "arrival",
+                    "attemptMs",
+                ],
+            )?;
+            let reason =
+                tiler_core::world_report::FocusNoCallReason::parse(req_str(disp_map, "reason")?)
+                    .ok_or_else(unknown_value)?;
+            tiler_core::world_report::FocusDisposition::NotCalled { reason }
+        }
+        _ => return Err(unknown_value()),
+    };
     let arrival_value = map.get("arrival").ok_or_else(malformed)?;
     let mut arrival = Vec::new();
     for item in arrival_value.as_array().ok_or_else(malformed)? {
@@ -1227,8 +1255,7 @@ fn decode_focus_feedback(value: &serde_json::Value) -> Result<FocusFeedback> {
         id: req_id(map, "id")?,
         target: WindowId(req_id(map, "target")?),
         revision: req_u64_str(map, "rev")?,
-        setter,
-        reason,
+        disposition,
         pre: opt_window_or_null(map, "pre")?,
         post: opt_window_or_null(map, "post")?,
         foreground_proven: req_bool(map, "foregroundProven")?,
@@ -5882,10 +5909,19 @@ fn encode_focus_feedback(row: &FocusFeedback) -> Result<String> {
     push_json_string(&mut out, &row.target.0);
     out.push_str(",\"rev\":\"");
     out.push_str(&row.revision.to_string());
-    out.push_str("\",\"setter\":");
-    push_json_string(&mut out, row.setter.as_str());
-    out.push_str(",\"reason\":");
-    push_json_string(&mut out, row.reason.as_str());
+    out.push_str("\",\"disposition\":");
+    match row.disposition {
+        tiler_core::world_report::FocusDisposition::Called { setter, reason } => {
+            crate::world_property_attempts::push_called_disposition(&mut out, setter);
+            out.push_str(",\"reason\":");
+            push_json_string(&mut out, reason.as_str());
+        }
+        tiler_core::world_report::FocusDisposition::NotCalled { reason } => {
+            out.push_str("{\"kind\":\"not-called\",\"reason\":");
+            push_json_string(&mut out, reason.as_str());
+            out.push('}');
+        }
+    }
     out.push_str(",\"pre\":");
     push_opt_window(&mut out, &row.pre);
     out.push_str(",\"post\":");

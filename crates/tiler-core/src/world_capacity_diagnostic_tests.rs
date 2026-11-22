@@ -246,13 +246,15 @@ fn float_attempt(
     crate::world_report::FrameAttempt {
         window: WindowId(window.to_owned()),
         target,
-        setter,
+        disposition: setter,
         readback,
         dpi_before: None,
         dpi_after: None,
         attempt_ms: ms,
-        operation_id: Some(operation.to_owned()),
-        prewrite,
+        purpose: crate::world_report::FramePurpose::FloatPlacement {
+            operation_id: operation.to_owned(),
+            prewrite,
+        },
     }
 }
 
@@ -932,13 +934,15 @@ fn float_dpi_change_blocks_confirmation_until_fresh_evidence() {
             vec![FrameAttempt {
                 window: WindowId("win-a".to_owned()),
                 target,
-                setter: crate::world_report::FrameSetter::Accepted,
+                disposition: crate::world_report::FrameSetter::Accepted,
                 readback: Some(target),
                 dpi_before: Some(96),
                 dpi_after: Some(120),
                 attempt_ms: 4000,
-                operation_id: Some("op-12".to_owned()),
-                prewrite: Some(source),
+                purpose: crate::world_report::FramePurpose::FloatPlacement {
+                    operation_id: "op-12".to_owned(),
+                    prewrite: Some(source),
+                },
             }],
         ),
     );
@@ -1094,13 +1098,12 @@ fn float_forged_correlation_never_settles() {
         FrameAttempt {
             window: WindowId("win-a".to_owned()),
             target,
-            setter: FrameSetter::Accepted,
+            disposition: FrameSetter::Accepted,
             readback: Some(source),
             dpi_before: None,
             dpi_after: None,
             attempt_ms: 4000,
-            operation_id: None,
-            prewrite: None,
+            purpose: crate::world_report::FramePurpose::Layout,
         },
     ];
     for (index, attempt) in forged.into_iter().enumerate() {
@@ -1586,13 +1589,15 @@ fn float_dpi_flip_holds_recovery_then_target_settles() {
             vec![crate::world_report::FrameAttempt {
                 window: WindowId("win-a".to_owned()),
                 target,
-                setter: FrameSetter::Accepted,
+                disposition: FrameSetter::Accepted,
                 readback: Some(third),
                 dpi_before: Some(96),
                 dpi_after: Some(120),
                 attempt_ms: 4000,
-                operation_id: Some("op-12".to_owned()),
-                prewrite: Some(source),
+                purpose: crate::world_report::FramePurpose::FloatPlacement {
+                    operation_id: "op-12".to_owned(),
+                    prewrite: Some(source),
+                },
             }],
         ),
     );

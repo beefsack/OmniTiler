@@ -247,8 +247,8 @@ describe("world retained focus request", () => {
         assert.equal(rows[0]?.id, "focus-7");
         assert.equal(rows[0]?.target, "win-c");
         assert.equal(rows[0]?.rev, "7");
-        assert.equal(rows[0]?.setter, "accepted");
-        assert.equal(rows[0]?.reason, "");
+        assert.deepEqual(rows[0]?.disposition, { kind: "called", setter: "accepted" });
+        assert.equal(rows[0] && "reason" in rows[0] ? rows[0].reason : undefined, "");
         assert.equal(rows[0]?.pre, "win-a");
         assert.equal(rows[0]?.post, "win-c");
         assert.equal(rows[0]?.foregroundProven, true);
@@ -276,8 +276,7 @@ describe("world retained focus request", () => {
         assert.deepEqual(focusCalls, []);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "not-called");
-        assert.equal(rows[0]?.reason, "");
+        assert.deepEqual(rows[0]?.disposition, { kind: "not-called", reason: "focus-no-reason" });
         assert.equal(rows[0]?.pre, "win-c");
         assert.equal(rows[0]?.post, "win-c");
         assert.equal(rows[0]?.foregroundProven, true);
@@ -299,8 +298,7 @@ describe("world retained focus request", () => {
         assert.deepEqual(focusCalls, []);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "not-called");
-        assert.equal(rows[0]?.reason, "foreground-changed");
+        assert.deepEqual(rows[0]?.disposition, { kind: "not-called", reason: "focus-foreground-changed" });
         assert.equal(rows[0]?.pre, "win-b");
         assert.equal(rows[0]?.post, "win-b");
         assert.equal(rows[0]?.foregroundProven, false);
@@ -327,8 +325,7 @@ describe("world retained focus request", () => {
         assert.deepEqual(focusCalls, []);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "not-called");
-        assert.equal(rows[0]?.reason, "foreground-changed");
+        assert.deepEqual(rows[0]?.disposition, { kind: "not-called", reason: "focus-foreground-changed" });
         assert.equal(rows[0]?.pre, "win-foreign");
         assert.equal(rows[0]?.foregroundProven, false);
     });
@@ -349,8 +346,7 @@ describe("world retained focus request", () => {
         assert.deepEqual(focusCalls, []);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "not-called");
-        assert.equal(rows[0]?.reason, "focus-unproven");
+        assert.deepEqual(rows[0]?.disposition, { kind: "not-called", reason: "focus-foreground-unproven" });
         assert.equal(rows[0]?.pre, "win-a");
         assert.equal(rows[0]?.foregroundProven, false);
     });
@@ -371,8 +367,7 @@ describe("world retained focus request", () => {
         assert.deepEqual(focusCalls, []);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "not-called");
-        assert.equal(rows[0]?.reason, "foreground-changed");
+        assert.deepEqual(rows[0]?.disposition, { kind: "not-called", reason: "focus-foreground-changed" });
         assert.equal(rows[0]?.pre, "win-a");
         assert.equal(rows[0]?.foregroundProven, false);
     });
@@ -390,8 +385,7 @@ describe("world retained focus request", () => {
         assert.deepEqual(focusCalls, []);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "not-called");
-        assert.equal(rows[0]?.reason, "focus-unproven");
+        assert.deepEqual(rows[0]?.disposition, { kind: "not-called", reason: "focus-foreground-unproven" });
         assert.equal(rows[0]?.foregroundProven, false);
         // The safety no-call spent: a duplicate publication never retries.
         const again = applyWorldReply(baseEnv(state, observation, reply, fg, refs, focusCalls));
@@ -416,8 +410,8 @@ describe("world retained focus request", () => {
         assert.deepEqual(focusCalls, ["win-c"]);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "accepted");
-        assert.equal(rows[0]?.reason, "");
+        assert.deepEqual(rows[0]?.disposition, { kind: "called", setter: "accepted" });
+        assert.equal(rows[0] && "reason" in rows[0] ? rows[0].reason : undefined, "");
     });
 
     it("drifted homing holds as a stale identity", () => {
@@ -434,8 +428,7 @@ describe("world retained focus request", () => {
         assert.deepEqual(focusCalls, []);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "not-called");
-        assert.equal(rows[0]?.reason, "identity-stale");
+        assert.deepEqual(rows[0]?.disposition, { kind: "not-called", reason: "focus-identity-stale" });
     });
 
     it("absent target holds as a stale identity", () => {
@@ -454,8 +447,7 @@ describe("world retained focus request", () => {
         assert.deepEqual(focusCalls, []);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "not-called");
-        assert.equal(rows[0]?.reason, "identity-stale");
+        assert.deepEqual(rows[0]?.disposition, { kind: "not-called", reason: "focus-identity-stale" });
     });
 
     it("null envelope retires; the same id then refuses as stale while a newer id adopts", () => {
@@ -503,7 +495,7 @@ describe("world retained focus request", () => {
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
         assert.equal(rows[0]?.id, "focus-9");
-        assert.equal(rows[0]?.reason, "");
+        assert.deepEqual(rows[0]?.disposition, { kind: "not-called", reason: "focus-no-reason" });
     });
 
     it("same-revision mismatch refuses as stale without spending", () => {
@@ -583,7 +575,7 @@ describe("world retained focus request", () => {
         assert.deepEqual(focusCalls, ["win-c"]);
         const rows = state.focusFeedbacksForReport();
         assert.equal(rows.length, 1);
-        assert.equal(rows[0]?.setter, "accepted");
+        assert.deepEqual(rows[0]?.disposition, { kind: "called", setter: "accepted" });
         assert.deepEqual((rows[0]?.arrival ?? []).map((b) => b.win), ["win-c"]);
         assert.equal((rows[0]?.arrival ?? [])[0]?.obs, "1");
         // The automatic positive-close twin rides empty arrival.

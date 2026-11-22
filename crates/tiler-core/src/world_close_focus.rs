@@ -17,8 +17,8 @@ use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::session::DomainKey;
 use crate::world_focus::{FocusVerdict, classify_focus_feedback};
 use crate::world_report::{
-    AfterShown, FocusChange, FocusFeedback, FocusRequest, FocusRequestCause, VisibilityReason,
-    VisibilitySetter, WorldReportV4,
+    AfterShown, FocusChange, FocusDisposition, FocusFeedback, FocusNoCallReason, FocusRequest,
+    FocusRequestCause, FrameSetter, VisibilityReason, WorldReportV4,
 };
 
 /// One retained focus request: the frozen target of the winning focus
@@ -104,10 +104,19 @@ fn trace_foreground_intent(
 }
 
 /// Whether a first-correlated no-call row is a terminal disposition rather
-/// than unproven silence. Bare (`Empty`) and explicitly unproven
-/// (`FocusUnproven`) rows retain the request; every informative mechanical
+/// than unproven silence. Bare (`NoReason`) and explicitly unproven
+/// (`ForegroundUnproven`) rows retain the request; every informative mechanical
 /// reason spends the id, so re-emission could never actuate again.
-fn terminal_no_call(reason: VisibilityReason) -> bool {
+fn terminal_focus_no_call(reason: FocusNoCallReason) -> bool {
+    !matches!(
+        reason,
+        FocusNoCallReason::NoReason | FocusNoCallReason::ForegroundUnproven
+    )
+}
+
+/// Whether a first-correlated called-threw row carries a terminal informative
+/// reason rather than unproven silence.
+fn terminal_focus_called_reason(reason: VisibilityReason) -> bool {
     !matches!(
         reason,
         VisibilityReason::Empty | VisibilityReason::FocusUnproven
@@ -116,16 +125,21 @@ fn terminal_no_call(reason: VisibilityReason) -> bool {
 
 /// Whether one first-correlated focus feedback row retires the request:
 /// a proven refusal under the existing ordinary-focus rule, or a terminal
-/// safety no-call. Mere disagreement after accepted dispatch stays unproven
-/// and retains, exactly like ordinary focus grants.
+/// safety no-call / called-threw with informative reason. Mere disagreement
+/// after accepted dispatch stays unproven and retains, exactly like ordinary
+/// focus grants.
 fn focus_feedback_retires(pending: &PendingFocus, row: &FocusFeedback) -> bool {
     if classify_focus_feedback(&pending.target, row) == FocusVerdict::Refused {
         return true;
     }
-    matches!(
-        row.setter,
-        VisibilitySetter::NotCalled | VisibilitySetter::Threw
-    ) && terminal_no_call(row.reason)
+    match row.disposition {
+        FocusDisposition::NotCalled { reason } => terminal_focus_no_call(reason),
+        FocusDisposition::Called {
+            setter: FrameSetter::Threw,
+            reason,
+        } => terminal_focus_called_reason(reason),
+        FocusDisposition::Called { .. } => false,
+    }
 }
 
 enum FocusEvidenceVerdict {
@@ -537,15 +551,16 @@ impl WorldTransaction<'_> {
                 .as_ref()
                 .filter(|row| focus_feedback_retires(&pending, row))
             {
-                let decision = if row.setter == VisibilitySetter::NotCalled {
-                    "no-call"
-                } else {
-                    "called"
-                };
-                let reason = if row.reason == VisibilityReason::Empty {
-                    row.setter.as_str()
-                } else {
-                    row.reason.as_str()
+                let (decision, reason) = match row.disposition {
+                    FocusDisposition::NotCalled { reason } => ("no-call", reason.as_str()),
+                    FocusDisposition::Called { setter, reason } => (
+                        "called",
+                        if reason == VisibilityReason::Empty {
+                            setter.as_str()
+                        } else {
+                            reason.as_str()
+                        },
+                    ),
                 };
                 (decision, reason)
             } else {

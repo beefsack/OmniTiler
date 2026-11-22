@@ -318,29 +318,35 @@ export interface WorldCreationAttempt {
 // `refused` is an explicit native refusal, `threw` is a throwing/ambiguous
 // call that may have executed.
 export type FrameSetter = "accepted" | "refused" | "threw";
+export interface CalledDisposition {
+    kind: "called";
+    setter: FrameSetter;
+}
 // Only membership admits consumed-without-call target confirmation.
-export type MemberSetter = FrameSetter | "already-at-target";
+export type MemberDisposition =
+    | CalledDisposition
+    | { kind: "already-at-target" };
+export type FramePurpose =
+    | { kind: "layout" }
+    | { kind: "float-placement"; op: string; pre: [number, number, number, number] | null };
 // One normalized raw frame attempt: the mechanical facts behind a single
 // native frame write. `target` echoes the desired frame as correlation;
-// `readback` is the immediate post-write frame (`null` unreadable);
-// `dpiBefore`/`dpiAfter` are the live window DPI around the write (`null`
-// unreadable, or the adapter coordinate space has no per-window basis;
-// never guessed); `attemptMs` is the adapter monotonic clock at the write;
-// `op` correlates an explicit float-placement write to its retained core
-// operation (`""` for ordinary writes, never inferred); `pre` is the live
-// frame immediately before the write (`null` unreadable; `Some` without an
-// operation id refuses server-side). At most one latest-wins entry per
-// window.
+// `disposition` is `{ kind: "called", setter }`; `readback` is the
+// immediate post-write frame (`null` unreadable); `dpiBefore`/`dpiAfter`
+// are the live window DPI around the write (`null` unreadable, or the
+// adapter coordinate space has no per-window basis; never guessed);
+// `attemptMs` is the adapter monotonic clock at the write; `purpose` is
+// `{ kind: "layout" }` or `{ kind: "float-placement", op, pre }`. At most
+// one latest-wins entry per window.
 export interface WorldFrameAttempt {
     win: string;
     target: [number, number, number, number];
-    setter: FrameSetter;
+    disposition: CalledDisposition;
     readback: [number, number, number, number] | null;
     dpiBefore: number | null;
     dpiAfter: number | null;
     attemptMs: string;
-    op: string;
-    pre: [number, number, number, number] | null;
+    purpose: FramePurpose;
 }
 // Approved v4 workspace reference (world-contract.md "Typed references"):
 // `kind` names the id namespace explicitly, never inferred from the
@@ -366,7 +372,7 @@ export interface WorldMemberAttempt {
     win: string;
     out: string;
     ws: string;
-    setter: MemberSetter;
+    disposition: MemberDisposition;
     pre: WorldMemberRef | null;
     post: WorldMemberRef | null;
     attemptMs: string;
@@ -383,7 +389,7 @@ export interface WorldViewAttempt {
     op: string;
     out: string;
     ws: string;
-    setter: FrameSetter;
+    disposition: CalledDisposition;
     pre: WorldViewRef | null;
     post: WorldViewRef | null;
     base: WorldViewRef | null;
@@ -397,8 +403,8 @@ export type WorldStateProperty = "fullscreen" | "maximized" | "sticky" | "above"
 // single native property write for one window under one authorizing
 // revision. `property`/`target` echo the exact core native-state target;
 // `rev` is the authorizing WorldReply rev (never the later report obs,
-// reqSeq, or the write stamp); `setter` is the actual native call
-// disposition; `pre`/`post` are the observed property immediately around
+// reqSeq, or the write stamp); `disposition` is `{ kind: "called", setter }`;
+// `pre`/`post` are the observed property immediately around
 // the call (null when unreadable, never a default); `attemptMs` is the
 // original canonical write stamp (redelivery reuses it, never restamps).
 // At most one latest-wins entry per window property: the core refuses two
@@ -408,21 +414,28 @@ export interface WorldStateAttempt {
     property: WorldStateProperty;
     target: boolean;
     rev: string;
-    setter: FrameSetter;
+    disposition: CalledDisposition;
     pre: boolean | null;
     post: boolean | null;
     attemptMs: string;
 }
-// Mechanical disposition of one focus write: the native setter outcome or
-// `not-called` (no call is not a successful native call). Pure actuator
-// disposition, never a policy conclusion.
-export type FocusSetter = "accepted" | "refused" | "threw" | "not-called";
-// Bounded typed mechanical reason for one focus write: empty on an
+// Bounded typed mechanical reason for a called focus write: empty on an
 // ordinary call, otherwise one of the closed tokens. Facts only.
-export type FocusReason =
+export type FocusCalledReason =
     | "" | "identity-stale" | "scope-held" | "unreadable" | "unsupported"
     | "preimage-unavailable" | "foreground-changed" | "fullscreen" | "game"
     | "show-blocked" | "focus-unproven" | "superseded" | "native-refused";
+// Bounded typed mechanical reason for a focus no-call: disjoint from
+// VisibilityReason, every token prefixed with `focus-`.
+export type FocusNoCallReason =
+    | "focus-no-reason" | "focus-identity-stale" | "focus-scope-held"
+    | "focus-unreadable" | "focus-unsupported" | "focus-preimage-unavailable"
+    | "focus-foreground-changed" | "focus-fullscreen" | "focus-game"
+    | "focus-show-blocked" | "focus-foreground-unproven" | "focus-superseded"
+    | "focus-native-refused";
+export type FocusDisposition =
+    | CalledDisposition
+    | { kind: "not-called"; reason: FocusNoCallReason };
 // One identity-bound visibility read for an arrival bracket: the
 // broker-owned observation watermark at the read, the lifetime match, the
 // native shown state at the read, and the separate native ineligibility
@@ -456,18 +469,30 @@ export interface WorldArrivalBracket {
 // proof, the readiness brackets (only explicit-command awaitShown grants
 // carry them; every other focus rides empty), and the original broker
 // dispatch-clock stamp. At most one latest-wins entry per effect id.
-export interface WorldFocusFeedback {
-    id: string;
-    target: string;
-    rev: string;
-    setter: FocusSetter;
-    reason: FocusReason;
-    pre: string | null;
-    post: string | null;
-    foregroundProven: boolean;
-    arrival: WorldArrivalBracket[];
-    attemptMs: string;
-}
+export type WorldFocusFeedback =
+    | {
+        id: string;
+        target: string;
+        rev: string;
+        disposition: CalledDisposition;
+        reason: FocusCalledReason;
+        pre: string | null;
+        post: string | null;
+        foregroundProven: boolean;
+        arrival: WorldArrivalBracket[];
+        attemptMs: string;
+    }
+    | {
+        id: string;
+        target: string;
+        rev: string;
+        disposition: { kind: "not-called"; reason: FocusNoCallReason };
+        pre: string | null;
+        post: string | null;
+        foregroundProven: boolean;
+        arrival: WorldArrivalBracket[];
+        attemptMs: string;
+    };
 // Uniform per-reply presentation (mirrors
 // tiler-core world_sizing::encode_presentation exactly): the tick-time
 // foreground token the shapes were computed for (the renderer revalidates
@@ -3621,12 +3646,70 @@ function encodeV4ReportFocusChanges(changes: FocusChanges | null, prefix: string
     return prefix + focusChanges + suffix;
 }
 
-const FOCUS_SETTERS = new Set(["accepted", "refused", "threw", "not-called"]);
-const FOCUS_REASONS = new Set([
+const FRAME_SETTERS = new Set(["accepted", "refused", "threw"]);
+const FOCUS_CALLED_REASONS = new Set([
     "", "identity-stale", "scope-held", "unreadable", "unsupported",
     "preimage-unavailable", "foreground-changed", "fullscreen", "game",
     "show-blocked", "focus-unproven", "superseded", "native-refused",
 ]);
+const FOCUS_NO_CALL_REASONS = new Set([
+    "focus-no-reason", "focus-identity-stale", "focus-scope-held",
+    "focus-unreadable", "focus-unsupported", "focus-preimage-unavailable",
+    "focus-foreground-changed", "focus-fullscreen", "focus-game",
+    "focus-show-blocked", "focus-foreground-unproven", "focus-superseded",
+    "focus-native-refused",
+]);
+
+function encodeV4CalledDisposition(d: unknown): string | null {
+    if (typeof d !== "object" || d === null || Array.isArray(d)) {
+        return null;
+    }
+    const o = d as Record<string, unknown>;
+    if (!hasExactKeys(o, ["kind", "setter"]) || o["kind"] !== "called") {
+        return null;
+    }
+    const setter = o["setter"];
+    if (typeof setter !== "string" || !FRAME_SETTERS.has(setter)) {
+        return null;
+    }
+    return `{"kind":"called","setter":${encodeV4String(setter)}}`;
+}
+
+function encodeV4MemberDisposition(d: unknown): string | null {
+    if (typeof d !== "object" || d === null || Array.isArray(d)) {
+        return null;
+    }
+    const o = d as Record<string, unknown>;
+    if (o["kind"] === "called") {
+        return encodeV4CalledDisposition(o);
+    }
+    if (o["kind"] === "already-at-target" && hasExactKeys(o, ["kind"])) {
+        return `{"kind":"already-at-target"}`;
+    }
+    return null;
+}
+
+function encodeV4FramePurpose(p: unknown): string | null {
+    if (typeof p !== "object" || p === null || Array.isArray(p)) {
+        return null;
+    }
+    const o = p as Record<string, unknown>;
+    if (o["kind"] === "layout" && hasExactKeys(o, ["kind"])) {
+        return `{"kind":"layout"}`;
+    }
+    if (o["kind"] === "float-placement" && hasExactKeys(o, ["kind", "op", "pre"])) {
+        const op = o["op"];
+        if (typeof op !== "string" || !isOpaqueId(op)) {
+            return null;
+        }
+        const pre = encodeV4RectTuple(o["pre"] as [number, number, number, number] | null);
+        if (pre === null) {
+            return null;
+        }
+        return `{"kind":"float-placement","op":${encodeV4String(op)},"pre":${pre}}`;
+    }
+    return null;
+}
 
 // Canonical v4 visibility-sample writer: the broker-owned observation
 // watermark plus nullable lifetime/visibility/minimized/hostHidden facts
@@ -3696,16 +3779,47 @@ export function encodeV4FocusFeedback(f: WorldFocusFeedback): string | null {
     if (typeof f !== "object" || f === null || Array.isArray(f)) {
         return null;
     }
+    const o = f as Record<string, unknown>;
     if (!isOpaqueId(f.id) || !isOpaqueId(f.target)) {
         return null;
     }
     if (typeof f.rev !== "string" || !isCanonicalU64(f.rev)) {
         return null;
     }
-    if (typeof f.setter !== "string" || !FOCUS_SETTERS.has(f.setter)) {
+    if (typeof f.disposition !== "object" || f.disposition === null || Array.isArray(f.disposition)) {
         return null;
     }
-    if (typeof f.reason !== "string" || !FOCUS_REASONS.has(f.reason)) {
+    const dispObj = f.disposition as Record<string, unknown>;
+    let dispFragment: string;
+    if (dispObj["kind"] === "called") {
+        if (!hasExactKeys(o, [
+            "id", "target", "rev", "disposition", "reason",
+            "pre", "post", "foregroundProven", "arrival", "attemptMs",
+        ])) {
+            return null;
+        }
+        const disp = encodeV4CalledDisposition(dispObj);
+        const reason = o["reason"];
+        if (disp === null || typeof reason !== "string" || !FOCUS_CALLED_REASONS.has(reason)) {
+            return null;
+        }
+        dispFragment = `"disposition":${disp},"reason":${encodeV4String(reason)}`;
+    } else if (dispObj["kind"] === "not-called") {
+        if (!hasExactKeys(o, [
+            "id", "target", "rev", "disposition",
+            "pre", "post", "foregroundProven", "arrival", "attemptMs",
+        ])) {
+            return null;
+        }
+        if (!hasExactKeys(dispObj, ["kind", "reason"])) {
+            return null;
+        }
+        const reason = dispObj["reason"];
+        if (typeof reason !== "string" || !FOCUS_NO_CALL_REASONS.has(reason)) {
+            return null;
+        }
+        dispFragment = `"disposition":{"kind":"not-called","reason":${encodeV4String(reason)}}`;
+    } else {
         return null;
     }
     const pre = encodeV4NullableId(f.pre);
@@ -3728,8 +3842,7 @@ export function encodeV4FocusFeedback(f: WorldFocusFeedback): string | null {
         return null;
     }
     return `{"id":${encodeV4String(f.id)},"target":${encodeV4String(f.target)},` +
-        `"rev":${encodeV4String(f.rev)},"setter":${encodeV4String(f.setter)},` +
-        `"reason":${encodeV4String(f.reason)},"pre":${pre},"post":${post},` +
+        `"rev":${encodeV4String(f.rev)},${dispFragment},"pre":${pre},"post":${post},` +
         `"foregroundProven":${encodeV4Bool(f.foregroundProven)},` +
         `"arrival":[${brackets.join(",")}],"attemptMs":${encodeV4String(f.attemptMs)}}`;
 }
@@ -3737,27 +3850,23 @@ export function encodeV4FocusFeedback(f: WorldFocusFeedback): string | null {
 // Retained mechanical attempt lanes ride verbatim in canonical key order.
 // Member/view rows carry approved v4 WorkspaceRefs; a row that cannot be
 // spelled canonically fails the whole report closed.
-function encodeV4FrameAttempt(a: WorldFrameAttempt): string | null {
+export function encodeV4FrameAttempt(a: WorldFrameAttempt): string | null {
+    if (typeof a !== "object" || a === null || Array.isArray(a)) {
+        return null;
+    }
+    if (!hasExactKeys(a as unknown as Record<string, unknown>, [
+        "win", "target", "disposition", "readback", "dpiBefore", "dpiAfter", "attemptMs", "purpose",
+    ])) {
+        return null;
+    }
     if (!isOpaqueId(a.win)) {
         return null;
     }
-    // Ordinary writes ride op "" (never an invented operation); explicit
-    // float placements ride their retained core operation id. Reuse the
-    // shared empty-or-id writer so bad nonempty ids fail closed.
-    const op = encodeV4EmptyOrId(a.op);
-    if (op === null) {
-        return null;
-    }
     const target = encodeV4RectTuple(a.target);
-    // readback/pre ride null when unreadable; only a bad rect fails.
+    const disposition = encodeV4CalledDisposition(a.disposition);
     const readback = encodeV4RectTuple(a.readback);
-    const pre = encodeV4RectTuple(a.pre);
-    if (target === null || readback === null || pre === null) {
-        return null;
-    }
-    // A pre-write frame without an operation has no core correlation and
-    // holds server-side: fail the row closed rather than invent an op.
-    if (a.op === "" && a.pre !== null) {
+    const purpose = encodeV4FramePurpose(a.purpose);
+    if (target === null || disposition === null || readback === null || purpose === null) {
         return null;
     }
     const dpiBefore = a.dpiBefore === null ? "null" : encodeV4Int(a.dpiBefore);
@@ -3765,11 +3874,13 @@ function encodeV4FrameAttempt(a: WorldFrameAttempt): string | null {
     if (dpiBefore === null || dpiAfter === null) {
         return null;
     }
+    if (typeof a.attemptMs !== "string" || !isCanonicalU64(a.attemptMs)) {
+        return null;
+    }
     return `{"kind":"frame","win":${encodeV4String(a.win)},"target":${target},` +
-        `"setter":${encodeV4String(a.setter)},"readback":${readback},` +
+        `"disposition":${disposition},"readback":${readback},` +
         `"dpiBefore":${dpiBefore},"dpiAfter":${dpiAfter},` +
-        `"attemptMs":${encodeV4String(a.attemptMs)},` +
-        `"op":${op},"pre":${pre}}`;
+        `"attemptMs":${encodeV4String(a.attemptMs)},"purpose":${purpose}}`;
 }
 
 // Canonical v4 member/view evidence writer: one WorkspaceRef object per
@@ -3796,35 +3907,59 @@ function encodeV4WorkspaceRef(value: WorldMemberRef, nativeOnly: boolean): strin
     return `{"kind":${encodeV4String(kind)},"out":${encodeV4String(out)},"ws":${encodeV4String(ws)}}`;
 }
 
-function encodeV4MemberAttempt(a: WorldMemberAttempt): string | null {
+export function encodeV4MemberAttempt(a: WorldMemberAttempt): string | null {
+    if (typeof a !== "object" || a === null || Array.isArray(a)) {
+        return null;
+    }
+    if (!hasExactKeys(a as unknown as Record<string, unknown>, [
+        "op", "win", "out", "ws", "disposition", "pre", "post", "attemptMs",
+    ])) {
+        return null;
+    }
     if (!isOpaqueId(a.op) || !isOpaqueId(a.win) || !isOpaqueId(a.out) || !isOpaqueId(a.ws)) {
         return null;
     }
+    const disposition = encodeV4MemberDisposition(a.disposition);
     const pre = a.pre === null ? "null" : encodeV4WorkspaceRef(a.pre, false);
     const post = a.post === null ? "null" : encodeV4WorkspaceRef(a.post, false);
-    if (pre === null || post === null) {
+    if (disposition === null || pre === null || post === null) {
+        return null;
+    }
+    if (typeof a.attemptMs !== "string" || !isCanonicalU64(a.attemptMs)) {
         return null;
     }
     return `{"kind":"member","op":${encodeV4String(a.op)},"win":${encodeV4String(a.win)},` +
         `"out":${encodeV4String(a.out)},"ws":${encodeV4String(a.ws)},` +
-        `"setter":${encodeV4String(a.setter)},"pre":${pre},"post":${post},` +
+        `"disposition":${disposition},"pre":${pre},"post":${post},` +
         `"attemptMs":${encodeV4String(a.attemptMs)}}`;
 }
 
-function encodeV4ViewAttempt(a: WorldViewAttempt): string | null {
+export function encodeV4ViewAttempt(a: WorldViewAttempt): string | null {
+    if (typeof a !== "object" || a === null || Array.isArray(a)) {
+        return null;
+    }
+    if (!hasExactKeys(a as unknown as Record<string, unknown>, [
+        "op", "out", "ws", "disposition", "pre", "post", "base", "attemptMs",
+    ])) {
+        return null;
+    }
     if (!isOpaqueId(a.op) || !isOpaqueId(a.out) || !isOpaqueId(a.ws)) {
         return null;
     }
+    const disposition = encodeV4CalledDisposition(a.disposition);
     const ref = (v: WorldViewRef | null): string | null =>
         (v === null ? "null" : encodeV4WorkspaceRef(v, true));
     const pre = ref(a.pre);
     const post = ref(a.post);
     const base = ref(a.base);
-    if (pre === null || post === null || base === null) {
+    if (disposition === null || pre === null || post === null || base === null) {
+        return null;
+    }
+    if (typeof a.attemptMs !== "string" || !isCanonicalU64(a.attemptMs)) {
         return null;
     }
     return `{"kind":"view","op":${encodeV4String(a.op)},"out":${encodeV4String(a.out)},` +
-        `"ws":${encodeV4String(a.ws)},"setter":${encodeV4String(a.setter)},` +
+        `"ws":${encodeV4String(a.ws)},"disposition":${disposition},` +
         `"pre":${pre},"post":${post},"base":${base},` +
         `"attemptMs":${encodeV4String(a.attemptMs)}}`;
 }
@@ -3832,11 +3967,16 @@ function encodeV4ViewAttempt(a: WorldViewAttempt): string | null {
 // Canonical v4 native-state attempt writer: the exact required keys in
 // canonical order. Any malformed shape fails the whole report closed:
 // bad window id, unknown property, non-boolean target, bad rev,
-// unknown setter, non-boolean-or-null pre/post, or a non-canonical
+// unknown disposition, non-boolean-or-null pre/post, or a non-canonical
 // stamp. `target` is never nullable; `pre`/`post` ride null only when
 // unreadable.
 export function encodeV4StateAttempt(a: WorldStateAttempt): string | null {
     if (typeof a !== "object" || a === null || Array.isArray(a)) {
+        return null;
+    }
+    if (!hasExactKeys(a as unknown as Record<string, unknown>, [
+        "win", "property", "target", "rev", "disposition", "pre", "post", "attemptMs",
+    ])) {
         return null;
     }
     if (!isOpaqueId(a.win)) {
@@ -3851,7 +3991,8 @@ export function encodeV4StateAttempt(a: WorldStateAttempt): string | null {
     if (typeof a.rev !== "string" || !isCanonicalU64(a.rev)) {
         return null;
     }
-    if (a.setter !== "accepted" && a.setter !== "refused" && a.setter !== "threw") {
+    const disposition = encodeV4CalledDisposition(a.disposition);
+    if (disposition === null) {
         return null;
     }
     const flag = (v: unknown): string | null =>
@@ -3866,7 +4007,7 @@ export function encodeV4StateAttempt(a: WorldStateAttempt): string | null {
     }
     return `{"kind":"state","win":${encodeV4String(a.win)},"property":${encodeV4String(a.property)},` +
         `"target":${encodeV4Bool(a.target)},"rev":${encodeV4String(a.rev)},` +
-        `"setter":${encodeV4String(a.setter)},"pre":${pre},"post":${post},` +
+        `"disposition":${disposition},"pre":${pre},"post":${post},` +
         `"attemptMs":${encodeV4String(a.attemptMs)}}`;
 }
 

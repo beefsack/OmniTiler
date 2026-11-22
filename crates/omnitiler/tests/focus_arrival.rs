@@ -381,7 +381,7 @@ fn send_follow_focus_plans_destination_home_with_transfer_after_shown() {
     // now may the command settle, and it must settle complete+proven.
     let feedback = format!(
         "{{\"id\":\"{}\",\"target\":\"win-a\",\"rev\":\"{}\",\
-          \"setter\":\"accepted\",\"reason\":\"\",\
+          \"disposition\":{{\"kind\":\"called\",\"setter\":\"accepted\"}},\"reason\":\"\",\
           \"pre\":\"win-b\",\"post\":\"win-a\",\"foregroundProven\":true,\
           \"arrival\":[{{\"win\":\"win-a\",\"obs\":\"4\",\
           \"before\":{{\"obs\":\"4\",\"lifetimeMatched\":true,\
@@ -419,7 +419,8 @@ fn send_follow_focus_plans_destination_home_with_transfer_after_shown() {
                 ),
                 &format!(
                     "{{\"kind\":\"member\",\"op\":\"{op}\",\"win\":\"win-a\",\
-                      \"out\":\"DP-1\",\"ws\":\"{dest}\",\"setter\":\"accepted\",\
+                      \"out\":\"DP-1\",\"ws\":\"{dest}\",\
+                      \"disposition\":{{\"kind\":\"called\",\"setter\":\"accepted\"}},\
                       \"pre\":{{\"kind\":\"logical\",\"out\":\"DP-1\",\"ws\":\"{home}\"}},\
                       \"post\":{{\"kind\":\"logical\",\"out\":\"DP-1\",\"ws\":\"{dest}\"}},\
                       \"attemptMs\":0}}"
@@ -593,7 +594,7 @@ fn selection_view_readback(issuing: &Value, focused: &str) -> String {
         "op": op,
         "out": "DP-1",
         "ws": request["ws"],
-        "setter": "accepted",
+        "disposition": {"kind": "called", "setter": "accepted"},
         "pre": source,
         "post": destination,
         "base": source,
@@ -719,7 +720,7 @@ fn selection_arrival_feedback(request: &Value, shown: &Value) -> Value {
         "id": request["id"],
         "target": request["target"],
         "rev": request["rev"],
-        "setter": "accepted",
+        "disposition": {"kind": "called", "setter": "accepted"},
         "reason": "",
         "pre": "win-c",
         "post": "win-t",

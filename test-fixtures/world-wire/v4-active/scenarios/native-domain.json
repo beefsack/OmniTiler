@@ -834,7 +834,6 @@
               "op": "op-1",
               "out": "out-a",
               "ws": "ws-2",
-              "setter": "accepted",
               "pre": {
                 "kind": "native",
                 "out": "out-a",
@@ -850,7 +849,11 @@
                 "out": "out-a",
                 "ws": "native-a"
               },
-              "attemptMs": "310"
+              "attemptMs": "310",
+              "disposition": {
+                "kind": "called",
+                "setter": "accepted"
+              }
             }
           ],
           "focusFeedback": [],
@@ -1239,7 +1242,6 @@
               "win": "win-a",
               "out": "out-a",
               "ws": "ws-2",
-              "setter": "accepted",
               "pre": {
                 "kind": "native",
                 "out": "out-a",
@@ -1250,7 +1252,11 @@
                 "out": "out-a",
                 "ws": "native-b"
               },
-              "attemptMs": "510"
+              "attemptMs": "510",
+              "disposition": {
+                "kind": "called",
+                "setter": "accepted"
+              }
             }
           ],
           "focusFeedback": [],

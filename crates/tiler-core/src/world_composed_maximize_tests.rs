@@ -915,13 +915,12 @@ fn composed_float_suppressed_pair_holds_clamp_without_retry() {
     clamped_report.frames = vec![FrameAttempt {
         window: WindowId("win-a".to_owned()),
         target: work_area(),
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         readback: Some(clamped),
         dpi_before: None,
         dpi_after: None,
         attempt_ms: 1000,
-        operation_id: None,
-        prewrite: None,
+        purpose: crate::world_report::FramePurpose::Layout,
     }];
     let reply = accepted(&mut engine, &clamped_report);
     let row = desire(&reply, "win-a");
@@ -960,7 +959,7 @@ fn fullscreen_applied_report(
         property: StateProperty::Fullscreen,
         target: true,
         revision,
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         pre: Some(false),
         post: Some(true),
         attempt_ms: 1,
@@ -1768,13 +1767,12 @@ fn composed_clamped_frame_readback_retains_bit() {
     clamped_report.frames = vec![FrameAttempt {
         window: WindowId("win-a".to_owned()),
         target: work_area(),
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         readback: Some(clamped),
         dpi_before: None,
         dpi_after: None,
         attempt_ms: 1000,
-        operation_id: None,
-        prewrite: None,
+        purpose: crate::world_report::FramePurpose::Layout,
     }];
     let reply = accepted(&mut engine, &clamped_report);
     assert!(
@@ -2725,13 +2723,12 @@ fn composed_float_clamped_frame_readback_retains_bit() {
     clamped_report.frames = vec![FrameAttempt {
         window: WindowId("win-a".to_owned()),
         target: work_area(),
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         readback: Some(clamped),
         dpi_before: None,
         dpi_after: None,
         attempt_ms: 1000,
-        operation_id: None,
-        prewrite: None,
+        purpose: crate::world_report::FramePurpose::Layout,
     }];
     let reply = accepted(&mut engine, &clamped_report);
     assert!(

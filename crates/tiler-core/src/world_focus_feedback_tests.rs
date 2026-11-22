@@ -7,8 +7,8 @@ use crate::ids::NativeWorkspaceId;
 use crate::world_engine::{KIND_REUSED, KIND_SNAPSHOT, WorldEngine, WorldOutcome};
 use crate::world_report::{
     ArrivalBracket, ArrivalLocation, FocusFeedback, MAX_ARRIVAL_BRACKETS_TOTAL,
-    MAX_WORLD_FOCUS_FEEDBACK, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
-    WorkspaceRef, WorldReportV4,
+    MAX_WORLD_FOCUS_FEEDBACK, VisibilityFact, VisibilityReason, VisibilitySample, WorkspaceRef,
+    WorldReportV4,
 };
 use crate::world_report_v4_checks::validate_report_v4_reason;
 use crate::world_v4_support_tests::{accepted, fact, rect, report_full, screen};
@@ -62,8 +62,10 @@ fn row(id: &str, target: &str, arrival: Vec<ArrivalBracket>) -> FocusFeedback {
         id: id.to_owned(),
         target: WindowId(target.to_owned()),
         revision: 7,
-        setter: VisibilitySetter::Accepted,
-        reason: VisibilityReason::Empty,
+        disposition: crate::world_report::FocusDisposition::Called {
+            setter: crate::world_report::FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        },
         pre: Some(WindowId("win-fore".to_owned())),
         post: None,
         foreground_proven: true,

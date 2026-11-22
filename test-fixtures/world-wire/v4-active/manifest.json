@@ -692,7 +692,7 @@
       "expectation": "valid-wire",
       "json": true,
       "canonical": true,
-      "note": "The codec requires op and pre keys: ordinary writes use empty op and null pre, not omission."
+      "note": "Ordinary frame writes use tagged layout purpose with no op or pre keys."
     },
     {
       "id": "report-attempt-member-logical",
@@ -3709,9 +3709,9 @@
       "expectation": "accepted-held-row",
       "json": true,
       "canonical": true,
-      "note": "Invalid value at /frameAttempts/0/op.",
+      "note": "Invalid value at /propertyAttempts/0/purpose/op.",
       "invalid": {
-        "pointer": "/propertyAttempts/0/op",
+        "pointer": "/propertyAttempts/0/purpose/op",
         "rule": "frame-missing-op",
         "source": "report-attempt-frame-ordinary"
       }
@@ -3724,9 +3724,9 @@
       "expectation": "accepted-held-row",
       "json": true,
       "canonical": true,
-      "note": "Invalid value at /frameAttempts/0/pre.",
+      "note": "Invalid value at /propertyAttempts/0/purpose/pre.",
       "invalid": {
-        "pointer": "/propertyAttempts/0/pre",
+        "pointer": "/propertyAttempts/0/purpose/pre",
         "rule": "frame-missing-pre",
         "source": "report-attempt-frame-ordinary"
       }
@@ -3739,9 +3739,9 @@
       "expectation": "accepted-held-row",
       "json": true,
       "canonical": true,
-      "note": "Invalid value at /frameAttempts/0/pre.",
+      "note": "Invalid value at /propertyAttempts/0/purpose/pre.",
       "invalid": {
-        "pointer": "/propertyAttempts/0/pre",
+        "pointer": "/propertyAttempts/0/purpose/pre",
         "rule": "frame-pre-without-op",
         "source": "report-attempt-frame-ordinary"
       }
@@ -3862,9 +3862,9 @@
       "expectation": "accepted-held-row",
       "json": true,
       "canonical": true,
-      "note": "Invalid value at /windows/0/lastWrite/setter.",
+      "note": "Invalid value at /propertyAttempts/0/disposition/setter.",
       "invalid": {
-        "pointer": "/propertyAttempts/0/setter",
+        "pointer": "/propertyAttempts/0/disposition/setter",
         "rule": "last-write-setter-token",
         "source": "report-last-write-accepted"
       }

@@ -425,7 +425,7 @@ fn preflight_state_attempt_diagnostic_bound_crossing_refuses_and_retry_accepts()
                 property: StateProperty::Above,
                 target: true,
                 revision: 9,
-                setter: FrameSetter::Accepted,
+                disposition: FrameSetter::Accepted,
                 pre: Some(false),
                 post: Some(true),
                 attempt_ms: 1,

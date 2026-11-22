@@ -403,7 +403,7 @@ fn state_attempt(
         property,
         target,
         revision,
-        setter: FrameSetter::Threw,
+        disposition: FrameSetter::Threw,
         pre: None,
         post: None,
         attempt_ms: 20,

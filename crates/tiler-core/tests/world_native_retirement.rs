@@ -2758,7 +2758,7 @@ fn idle_prune_fallback_prefers_known_echo_over_ring_head() {
         operation_id: "op-1".to_owned(),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: d2.clone(),
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         pre: Some(native_ref("d1")),
         post: Some(native_ref("d4")),
         baseline: Some(native_ref("d1")),

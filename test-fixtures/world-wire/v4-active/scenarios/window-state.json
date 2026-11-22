@@ -3570,10 +3570,13 @@
               "property": "sticky",
               "target": true,
               "rev": "2",
-              "setter": "accepted",
               "pre": false,
               "post": true,
-              "attemptMs": "250"
+              "attemptMs": "250",
+              "disposition": {
+                "kind": "called",
+                "setter": "accepted"
+              }
             }
           ],
           "focusFeedback": [],

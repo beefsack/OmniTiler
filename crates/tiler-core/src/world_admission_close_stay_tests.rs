@@ -1659,7 +1659,7 @@ fn select_hidden_stay_arrival_without_history_focuses_first_leaf() {
         window: WindowId("win-b".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: other.clone(),
-        setter: FrameSetter::Accepted.into(),
+        disposition: FrameSetter::Accepted.into(),
         pre: None,
         post: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
@@ -1916,7 +1916,7 @@ fn select_first_layout_sticky_skips_to_later_arrival() {
         window: WindowId("win-b".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: other.clone(),
-        setter: FrameSetter::Accepted.into(),
+        disposition: FrameSetter::Accepted.into(),
         pre: None,
         post: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),
@@ -1958,7 +1958,7 @@ fn select_first_layout_sticky_skips_to_later_arrival() {
         window: WindowId("win-a".to_owned()),
         target_output: OutputId("out-a".to_owned()),
         target_workspace: other.clone(),
-        setter: FrameSetter::Accepted.into(),
+        disposition: FrameSetter::Accepted.into(),
         pre: None,
         post: Some(WorkspaceRef::Logical {
             output: OutputId("out-a".to_owned()),

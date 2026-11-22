@@ -29,13 +29,12 @@ pub(crate) fn attempt(
     FrameAttempt {
         window: WindowId(window.to_owned()),
         target,
-        setter,
+        disposition: setter,
         readback,
         dpi_before: None,
         dpi_after: None,
         attempt_ms: ms,
-        operation_id: None,
-        prewrite: None,
+        purpose: crate::world_report::FramePurpose::Layout,
     }
 }
 
@@ -50,13 +49,12 @@ fn dpi_attempt(
     FrameAttempt {
         window: WindowId(window.to_owned()),
         target,
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         readback,
         dpi_before: before,
         dpi_after: after,
         attempt_ms: ms,
-        operation_id: None,
-        prewrite: None,
+        purpose: crate::world_report::FramePurpose::Layout,
     }
 }
 
@@ -1918,13 +1916,12 @@ fn async_clockless_or_dpi_changed_never_learns() {
             vec![FrameAttempt {
                 window: WindowId("w1".to_owned()),
                 target: baseline,
-                setter: FrameSetter::Accepted,
+                disposition: FrameSetter::Accepted,
                 readback: Some(baseline),
                 dpi_before: Some(96),
                 dpi_after: Some(120),
                 attempt_ms: 1000,
-                operation_id: None,
-                prewrite: None,
+                purpose: crate::world_report::FramePurpose::Layout,
             }],
             1000,
             true,
@@ -2099,13 +2096,12 @@ fn learned_ignores_dpi_refused_threw() {
                 vec![FrameAttempt {
                     window: WindowId("w1".to_owned()),
                     target: baseline,
-                    setter,
+                    disposition: setter,
                     readback,
                     dpi_before: before,
                     dpi_after: after,
                     attempt_ms: 1000,
-                    operation_id: None,
-                    prewrite: None,
+                    purpose: crate::world_report::FramePurpose::Layout,
                 }],
                 1000,
                 true,

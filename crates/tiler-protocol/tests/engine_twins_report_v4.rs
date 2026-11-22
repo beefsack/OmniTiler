@@ -13,8 +13,7 @@ use tiler_core::ids::NativeWorkspaceId;
 use tiler_core::world_report::{
     ArrivalBracket, ArrivalLocation, AuthorityScope, FocusFeedback, HeldScreenRow,
     PresentationRowV4, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, VisibilityFact,
-    VisibilityReason, VisibilitySample, VisibilitySetter, WorkspaceRef, WorldCommand,
-    WorldReportV4,
+    VisibilityReason, VisibilitySample, WorkspaceRef, WorldCommand, WorldReportV4,
 };
 use tiler_core::world_report_v4_checks::{
     grade_conflicting_windows_v4, report_digest_v4, validate_report_v4_reason,
@@ -471,8 +470,10 @@ fn v4_estimate_delta_matches_encoded_focus_feedback() {
         id: "fb-1".to_owned(),
         target: WindowId("win-a".to_owned()),
         revision: 7,
-        setter: VisibilitySetter::Accepted,
-        reason: VisibilityReason::Empty,
+        disposition: tiler_core::world_report::FocusDisposition::Called {
+            setter: tiler_core::world_report::FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        },
         pre: Some(WindowId("win-f".to_owned())),
         post: None,
         foreground_proven: true,
@@ -532,8 +533,9 @@ fn v4_estimate_delta_matches_encoded_focus_feedback() {
         id: "fb-2".to_owned(),
         target: WindowId("win-b".to_owned()),
         revision: 12345,
-        setter: VisibilitySetter::NotCalled,
-        reason: VisibilityReason::Unreadable,
+        disposition: tiler_core::world_report::FocusDisposition::NotCalled {
+            reason: tiler_core::world_report::FocusNoCallReason::Unreadable,
+        },
         pre: None,
         post: Some(WindowId("win-g".to_owned())),
         foreground_proven: false,

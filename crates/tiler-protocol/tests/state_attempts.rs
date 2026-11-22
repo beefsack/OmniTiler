@@ -53,7 +53,7 @@ fn state_row(
 ) -> serde_json::Value {
     serde_json::json!({
         "kind": "state", "win": win, "property": property, "target": target, "rev": rev,
-        "setter": setter, "pre": pre, "post": post, "attemptMs": attempt_ms,
+        "disposition": {"kind": "called", "setter": setter}, "pre": pre, "post": post, "attemptMs": attempt_ms,
     })
 }
 
@@ -70,14 +70,23 @@ fn immutable_state_rows_decode_through_the_typed_shape() {
     assert_eq!(rows[0]["property"], "fullscreen");
     assert_eq!(rows[0]["target"], false);
     assert_eq!(rows[0]["rev"], "1");
-    assert_eq!(rows[0]["setter"], "accepted");
+    assert_eq!(
+        rows[0]["disposition"],
+        serde_json::json!({"kind": "called", "setter": "accepted"})
+    );
     assert_eq!(rows[0]["pre"], true);
     assert_eq!(rows[0]["post"], false);
     assert_eq!(rows[1]["property"], "maximized");
     assert_eq!(rows[1]["target"], true);
-    assert_eq!(rows[1]["setter"], "refused");
+    assert_eq!(
+        rows[1]["disposition"],
+        serde_json::json!({"kind": "called", "setter": "refused"})
+    );
     assert_eq!(rows[2]["property"], "sticky");
-    assert_eq!(rows[2]["setter"], "threw");
+    assert_eq!(
+        rows[2]["disposition"],
+        serde_json::json!({"kind": "called", "setter": "threw"})
+    );
     assert_eq!(rows[2]["pre"], serde_json::Value::Null);
     assert_eq!(rows[2]["post"], serde_json::Value::Null);
     let above_true = fixture("report-attempt-above-true");
@@ -103,7 +112,7 @@ fn immutable_state_rows_decode_through_the_typed_shape() {
             property: StateProperty::Fullscreen,
             target: false,
             revision: 1,
-            setter: FrameSetter::Accepted,
+            disposition: FrameSetter::Accepted,
             pre: Some(true),
             post: Some(false),
             attempt_ms: 20,
@@ -128,7 +137,7 @@ fn immutable_state_rows_decode_through_the_typed_shape() {
             property: StateProperty::Above,
             target: true,
             revision: 1,
-            setter: FrameSetter::Accepted,
+            disposition: FrameSetter::Accepted,
             pre: Some(false),
             post: Some(true),
             attempt_ms: 20,
@@ -148,7 +157,7 @@ fn immutable_state_rows_decode_through_the_typed_shape() {
             .state_attempts
             .iter()
             .any(|attempt| attempt.property == StateProperty::Sticky
-                && attempt.setter == FrameSetter::Threw
+                && attempt.disposition == FrameSetter::Threw
                 && attempt.pre.is_none())
     );
 }
@@ -183,7 +192,7 @@ fn closed_shape_refuses_unknowns_and_bad_types() {
     // required.
     for (row, kind) in [
         (
-            serde_json::json!({"kind":"state","win":"win-a","property":"above","target":true,"rev":"20","setter":"accepted","pre":false,"post":true,"attemptMs":"20","extra":1}),
+            serde_json::json!({"kind":"state","win":"win-a","property":"above","target":true,"rev":"20","disposition":{"kind":"called","setter":"accepted"},"pre":false,"post":true,"attemptMs":"20","extra":1}),
             "unknown-field",
         ),
         // Unknown property/setter tokens refuse as unknown-value.
@@ -371,7 +380,7 @@ fn duplicates_refuse_per_window_property_across_revisions() {
         property: StateProperty::Above,
         target: true,
         revision: 1,
-        setter: FrameSetter::Accepted,
+        disposition: FrameSetter::Accepted,
         pre: Some(false),
         post: Some(true),
         attempt_ms: 20,
@@ -447,7 +456,7 @@ fn digest_separates_every_raw_field_so_changed_reuse_fences() {
     rev["rev"] = serde_json::Value::String("21".to_owned());
     cases.push(("rev", rev));
     let mut setter = row();
-    setter["setter"] = serde_json::json!("refused");
+    setter["disposition"]["setter"] = serde_json::json!("refused");
     cases.push(("setter", setter));
     let mut pre = row();
     pre["pre"] = serde_json::Value::Null;

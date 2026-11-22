@@ -44,7 +44,7 @@ fn attempt(
         property,
         target,
         revision,
-        setter,
+        disposition: setter,
         pre,
         post,
         attempt_ms: ms,

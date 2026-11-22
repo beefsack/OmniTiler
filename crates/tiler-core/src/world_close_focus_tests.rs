@@ -12,8 +12,8 @@ use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
     BatchSettlement, CommandResult, FocusFeedback, FocusRequestCause, PresentationIngressV4,
-    PresentationRowV4, ScreenReport, VisibilityReason, VisibilitySetter, WORLD_CONTRACT_VERSION_V4,
-    WindowFact, WorldCommand, WorldReportV4,
+    PresentationRowV4, ScreenReport, VisibilityReason, WORLD_CONTRACT_VERSION_V4, WindowFact,
+    WorldCommand, WorldReportV4,
 };
 use crate::world_run_v4::V4RunOutcome;
 
@@ -399,7 +399,7 @@ struct FeedbackRow<'a> {
     id: &'a str,
     target: &'a str,
     revision: u64,
-    setter: VisibilitySetter,
+    setter: Option<crate::world_report::FrameSetter>,
     reason: VisibilityReason,
     pre: Option<&'a str>,
     post: Option<&'a str>,
@@ -411,8 +411,51 @@ fn feedback_row(args: FeedbackRow<'_>) -> FocusFeedback {
         id: args.id.to_owned(),
         target: WindowId(args.target.to_owned()),
         revision: args.revision,
-        setter: args.setter,
-        reason: args.reason,
+        disposition: match args.setter {
+            Some(setter) => crate::world_report::FocusDisposition::Called {
+                setter,
+                reason: args.reason,
+            },
+            None => crate::world_report::FocusDisposition::NotCalled {
+                reason: match args.reason {
+                    VisibilityReason::Empty => crate::world_report::FocusNoCallReason::NoReason,
+                    VisibilityReason::IdentityStale => {
+                        crate::world_report::FocusNoCallReason::IdentityStale
+                    }
+                    VisibilityReason::ScopeHeld => {
+                        crate::world_report::FocusNoCallReason::ScopeHeld
+                    }
+                    VisibilityReason::Unreadable => {
+                        crate::world_report::FocusNoCallReason::Unreadable
+                    }
+                    VisibilityReason::Unsupported => {
+                        crate::world_report::FocusNoCallReason::Unsupported
+                    }
+                    VisibilityReason::PreimageUnavailable => {
+                        crate::world_report::FocusNoCallReason::PreimageUnavailable
+                    }
+                    VisibilityReason::ForegroundChanged => {
+                        crate::world_report::FocusNoCallReason::ForegroundChanged
+                    }
+                    VisibilityReason::Fullscreen => {
+                        crate::world_report::FocusNoCallReason::Fullscreen
+                    }
+                    VisibilityReason::Game => crate::world_report::FocusNoCallReason::Game,
+                    VisibilityReason::ShowBlocked => {
+                        crate::world_report::FocusNoCallReason::ShowBlocked
+                    }
+                    VisibilityReason::FocusUnproven => {
+                        crate::world_report::FocusNoCallReason::ForegroundUnproven
+                    }
+                    VisibilityReason::Superseded => {
+                        crate::world_report::FocusNoCallReason::Superseded
+                    }
+                    VisibilityReason::NativeRefused => {
+                        crate::world_report::FocusNoCallReason::NativeRefused
+                    }
+                },
+            },
+        },
         pre: args.pre.map(|id| WindowId(id.to_owned())),
         post: args.post.map(|id| WindowId(id.to_owned())),
         foreground_proven: args.proven,
@@ -1131,7 +1174,7 @@ fn mismatched_feedback_tuples_are_ignored() {
             id,
             target,
             revision,
-            setter: VisibilitySetter::Refused,
+            setter: Some(crate::world_report::FrameSetter::Refused),
             reason: VisibilityReason::NativeRefused,
             pre: Some("win-x"),
             post: Some("win-x"),
@@ -1181,7 +1224,7 @@ fn correlated_refusal_retires_pending_request() {
                 id: &issued.id,
                 target: "win-a",
                 revision: issued.issued_revision,
-                setter: VisibilitySetter::Refused,
+                setter: Some(crate::world_report::FrameSetter::Refused),
                 reason: VisibilityReason::NativeRefused,
                 pre: Some("win-x"),
                 post: Some("win-x"),
@@ -1209,7 +1252,7 @@ fn unproven_first_row_latches_against_later_refusal() {
         id: &issued.id,
         target: "win-a",
         revision: issued.issued_revision,
-        setter: VisibilitySetter::Accepted,
+        setter: Some(crate::world_report::FrameSetter::Accepted),
         reason: VisibilityReason::Empty,
         pre: Some("win-x"),
         post: Some("win-x"),
@@ -1231,7 +1274,7 @@ fn unproven_first_row_latches_against_later_refusal() {
         id: &issued.id,
         target: "win-a",
         revision: issued.issued_revision,
-        setter: VisibilitySetter::Refused,
+        setter: Some(crate::world_report::FrameSetter::Refused),
         reason: VisibilityReason::NativeRefused,
         pre: Some("win-x"),
         post: Some("win-x"),
@@ -1268,7 +1311,7 @@ fn safety_no_call_retires_pending_request() {
                 id: &issued.id,
                 target: "win-a",
                 revision: issued.issued_revision,
-                setter: VisibilitySetter::NotCalled,
+                setter: None,
                 reason: VisibilityReason::Fullscreen,
                 pre: None,
                 post: None,
@@ -1466,8 +1509,10 @@ fn hover_leave_and_return_mints_new_id() {
         id: old.id.clone(),
         target: WindowId("win-b".to_owned()),
         revision: old.issued_revision,
-        setter: VisibilitySetter::Accepted,
-        reason: VisibilityReason::Empty,
+        disposition: crate::world_report::FocusDisposition::Called {
+            setter: crate::world_report::FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        },
         pre: Some(WindowId("win-a".to_owned())),
         post: Some(WindowId("win-b".to_owned())),
         foreground_proven: true,
@@ -1780,8 +1825,10 @@ fn close_live_non_target_baseline_freezes_a_and_probes_act_from_a() {
         id: issued.id.clone(),
         target: WindowId("win-a".to_owned()),
         revision: issued.issued_revision,
-        setter: VisibilitySetter::Accepted,
-        reason: VisibilityReason::Empty,
+        disposition: crate::world_report::FocusDisposition::Called {
+            setter: crate::world_report::FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        },
         pre: Some(WindowId("win-c".to_owned())),
         post: Some(WindowId("win-c".to_owned())),
         foreground_proven: false,
@@ -2037,8 +2084,9 @@ fn trace_emits_retained_equality_and_terminal_retirements_for_admission_and_clos
             id: close_req.id.clone(),
             target: close_req.target.clone(),
             revision: close_req.issued_revision,
-            setter: VisibilitySetter::NotCalled,
-            reason: VisibilityReason::IdentityStale,
+            disposition: crate::world_report::FocusDisposition::NotCalled {
+                reason: crate::world_report::FocusNoCallReason::IdentityStale,
+            },
             pre: Some(WindowId("win-c".to_owned())),
             post: Some(WindowId("win-c".to_owned())),
             foreground_proven: false,
@@ -2056,7 +2104,7 @@ fn trace_emits_retained_equality_and_terminal_retirements_for_admission_and_clos
     assert_eq!(
         close_lines[0],
         format!(
-            "omnitiler:core:trace ev=focus-eval gen=gen-1 req=req-4 obs=4 rev=4 id={} target=win-a issuingRev={} cause=positive-close cmdSeq=- decision=no-call reason=identity-stale",
+            "omnitiler:core:trace ev=focus-eval gen=gen-1 req=req-4 obs=4 rev=4 id={} target=win-a issuingRev={} cause=positive-close cmdSeq=- decision=no-call reason=focus-identity-stale",
             close_req.id, close_req.issued_revision
         )
     );
@@ -2070,8 +2118,10 @@ fn trace_emits_retained_equality_and_terminal_retirements_for_admission_and_clos
             id: refused_req.id.clone(),
             target: refused_req.target.clone(),
             revision: refused_req.issued_revision,
-            setter: VisibilitySetter::Refused,
-            reason: VisibilityReason::NativeRefused,
+            disposition: crate::world_report::FocusDisposition::Called {
+                setter: crate::world_report::FrameSetter::Refused,
+                reason: VisibilityReason::NativeRefused,
+            },
             pre: Some(WindowId("win-c".to_owned())),
             post: Some(WindowId("win-c".to_owned())),
             foreground_proven: true,
@@ -2099,8 +2149,10 @@ fn trace_emits_retained_equality_and_terminal_retirements_for_admission_and_clos
             id: threw_req.id.clone(),
             target: threw_req.target.clone(),
             revision: threw_req.issued_revision,
-            setter: VisibilitySetter::Threw,
-            reason: VisibilityReason::Unsupported,
+            disposition: crate::world_report::FocusDisposition::Called {
+                setter: crate::world_report::FrameSetter::Threw,
+                reason: VisibilityReason::Unsupported,
+            },
             pre: Some(WindowId("win-c".to_owned())),
             post: Some(WindowId("win-c".to_owned())),
             foreground_proven: false,

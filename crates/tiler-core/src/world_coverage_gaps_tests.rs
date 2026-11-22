@@ -2388,7 +2388,7 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
             window: WindowId("w0".to_owned()),
             target_output: OutputId("out-b".to_owned()),
             target_workspace: view_a.clone(),
-            setter: FrameSetter::Refused.into(),
+            disposition: FrameSetter::Refused.into(),
             pre: Some(WorkspaceRef::Logical {
                 output: OutputId("out-a".to_owned()),
                 workspace: WorkspaceId(view_a.clone()),
@@ -2404,7 +2404,7 @@ fn floating_source_migration_refusal_after_ack_rolls_back() {
             window: WindowId("wf".to_owned()),
             target_output: OutputId("out-b".to_owned()),
             target_workspace: view_a.clone(),
-            setter: FrameSetter::Refused.into(),
+            disposition: FrameSetter::Refused.into(),
             pre: Some(WorkspaceRef::Logical {
                 output: OutputId("out-a".to_owned()),
                 workspace: WorkspaceId(view_a.clone()),
@@ -2757,7 +2757,7 @@ fn float_send_into_empty_and_occupied_trailings_stays_controlled() {
             window: WindowId("wf".to_owned()),
             target_output: OutputId("out-a".to_owned()),
             target_workspace: ring[1].clone(),
-            setter: FrameSetter::Accepted.into(),
+            disposition: FrameSetter::Accepted.into(),
             pre: None,
             post: Some(WorkspaceRef::Logical {
                 output: OutputId("out-a".to_owned()),
