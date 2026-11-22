@@ -234,7 +234,7 @@ function windowRow(win: string, out: string, ws: string): WorldReply["windows"][
         alloc: null, frame: null,
         frame_auth: "controlled", frame_hold: "",
         member_auth: "controlled", member_hold: "",
-        frame_op: "", clear_op: "", floating: false, float_origin: "",
+        frame_op: "", floating: false, float_origin: "",
         cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
     };
 }

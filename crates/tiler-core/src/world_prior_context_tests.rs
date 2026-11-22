@@ -504,7 +504,6 @@ fn homed_window(
         floating: false,
         float_origin: None,
         frame_operation: None,
-        clear_operation: None,
         command_seq: None,
         visibility: None,
         visibility_authority: ScopeAuthority::Untouched,

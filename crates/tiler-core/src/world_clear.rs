@@ -11,8 +11,9 @@ use crate::directional::WindowId;
 use crate::seed::EngineWindow;
 use crate::session::DomainKey;
 use crate::world_attempts::{PropertyAttempt, clear_accepted, clear_refused};
-use crate::world_engine::{RetainedClear, RetainedFloat, WorldEngine, WorldState};
-use crate::world_report::{OperationEvent, OperationOutcome, WorldCommand};
+use crate::world_engine::{RetainedFloat, WorldEngine, WorldState};
+use crate::world_report::{OperationEvent, OperationOutcome, StateProperty, WorldCommand};
+use crate::world_state::ClearProvenance;
 use crate::world_transaction::WorldTransaction;
 
 impl WorldState {
@@ -33,17 +34,22 @@ impl WorldState {
         for (window, kind) in self.settlement.operation_settled.keys() {
             slots.insert((window.0.as_str(), *kind));
         }
-        for retained in &self.settlement.retained_clears {
-            slots.insert((retained.window.0.as_str(), OperationKind::Clear));
-            if retained.float_route {
-                slots.insert((retained.window.0.as_str(), OperationKind::Float));
+        for binding in self.settlement.retained_states.values() {
+            match binding.clear_meta.as_ref() {
+                Some(ClearProvenance::Directional(meta)) => {
+                    slots.insert((binding.target.window.0.as_str(), OperationKind::Clear));
+                    if meta.float_route {
+                        slots.insert((binding.target.window.0.as_str(), OperationKind::Float));
+                    }
+                }
+                Some(ClearProvenance::Born(_)) => {
+                    slots.insert((binding.target.window.0.as_str(), OperationKind::Clear));
+                }
+                None => {}
             }
         }
         for retained in &self.settlement.retained_floats {
             slots.insert((retained.window.0.as_str(), OperationKind::Float));
-        }
-        for retained in &self.settlement.retained_born {
-            slots.insert((retained.window.0.as_str(), OperationKind::Clear));
         }
         let mut implicit_slots = 0usize;
         let mut no_focus_directional = false;
@@ -189,7 +195,20 @@ impl WorldTransaction<'_> {
             effective_domain, float_half_snap_rect, half_snap_constraints_ok,
         };
         use crate::world_report::TilingMode;
-        let mut keep: Vec<RetainedClear> = Vec::new();
+        let directional_keys: Vec<(WindowId, StateProperty)> = self
+            .world
+            .settlement
+            .retained_states
+            .iter()
+            .filter_map(|(key, binding)| {
+                matches!(binding.clear_meta, Some(ClearProvenance::Directional(_)))
+                    .then_some(key.clone())
+            })
+            .collect();
+        let mut keep: Vec<(
+            (WindowId, StateProperty),
+            crate::world_state::RetainedStateBinding,
+        )> = Vec::new();
         // Same-report supersession window (when this report carries a fresh
         // same-window intent): old bindings supersede before continuation,
         // but correlated evidence still stages above. Consumed/replayed
@@ -199,12 +218,30 @@ impl WorldTransaction<'_> {
         } else {
             current_command.and_then(crate::world_operations::command_window)
         };
-        for mut retained in std::mem::take(&mut self.world.settlement.retained_clears) {
+        for key in directional_keys {
+            let Some(mut binding) = self.world.settlement.retained_states.remove(&key) else {
+                continue;
+            };
+            let Some(ClearProvenance::Directional(mut retained)) = binding.clear_meta.take() else {
+                self.world.settlement.retained_states.insert(key, binding);
+                continue;
+            };
+            let window = binding.target.window.clone();
+            let push_keep =
+                |keep: &mut Vec<(
+                    (WindowId, StateProperty),
+                    crate::world_state::RetainedStateBinding,
+                )>,
+                 mut binding: crate::world_state::RetainedStateBinding,
+                 retained: crate::world_state::DirectionalClearMeta| {
+                    binding.clear_meta = Some(ClearProvenance::Directional(retained));
+                    keep.push((key.clone(), binding));
+                };
             // Explicit close prunes even across gaps.
-            if self.world.staged.closes.contains(&retained.window) {
+            if self.world.staged.closes.contains(&window) {
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearAbandonedClosed,
                     None,
                 );
@@ -216,10 +253,10 @@ impl WorldTransaction<'_> {
             // same-window intent drops the old binding (evidence already
             // staged above) and re-evaluates fresh in the command path.
             // No unwanted old move.
-            if supersede_window.as_ref() == Some(&retained.window) {
+            if supersede_window.as_ref() == Some(&window) {
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearSuperseded,
                     None,
                 );
@@ -230,39 +267,39 @@ impl WorldTransaction<'_> {
             if !self.world.staged.observation.inventory_complete
                 || self.world.staged.gesture_barrier
             {
-                if retained.pending.is_some() {
+                if binding.pending.is_some() {
                     retained.ambiguous = true;
                 }
-                keep.push(retained);
+                push_keep(&mut keep, binding, retained);
                 continue;
             }
             // Narrowly held rows and safety exclusions keep the binding:
             // live presence with no usable facts is never a departure,
             // and pending clears must not write an excluded window. Only
             // an explicit close prunes above.
-            if self.is_held_window(&retained.window) || self.is_excluded_window(&retained.window) {
-                if retained.pending.is_some() {
+            if self.is_held_window(&window) || self.is_excluded_window(&window) {
+                if binding.pending.is_some() {
                     retained.ambiguous = true;
                 }
-                keep.push(retained);
+                push_keep(&mut keep, binding, retained);
                 continue;
             }
-            let homing = self.staged_homing(&retained.window);
+            let homing = self.staged_homing(&window);
             let Some(home) = homing.clone() else {
                 // Complete inventory with no homing and no close: a
                 // complete departure/homing loss prunes the binding.
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearAbandonedHomingChanged,
                     Some("homing-loss"),
                 );
                 continue;
             };
-            let Some(fact) = self.world.staged.facts.get(&retained.window).cloned() else {
+            let Some(fact) = self.world.staged.facts.get(&window).cloned() else {
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearAbandonedHomingChanged,
                     Some("homing-loss"),
                 );
@@ -272,16 +309,16 @@ impl WorldTransaction<'_> {
             // without weakening the retained authority. Raw null overlay
             // already holds via the derived hold; unknown minimized holds
             // its dependent clear without revoking membership.
-            let derived_clear = self.derived_for(&retained.window);
+            let derived_clear = self.derived_for(&window);
             if derived_clear.hidden
                 || derived_clear.hold
                 || derived_clear.excluded
                 || fact.rect.is_none()
             {
-                if retained.pending.is_some() {
+                if binding.pending.is_some() {
                     retained.ambiguous = true;
                 }
-                keep.push(retained);
+                push_keep(&mut keep, binding, retained);
                 continue;
             }
             // Changed lifetime/home abandons: the proof no longer names the
@@ -289,7 +326,7 @@ impl WorldTransaction<'_> {
             if home != retained.home {
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearAbandonedHomingChanged,
                     None,
                 );
@@ -306,10 +343,10 @@ impl WorldTransaction<'_> {
                 .find(|domain| domain.key == retained.home)
                 .is_none_or(|domain| !domain.readable);
             if home_held {
-                if retained.pending.is_some() {
+                if binding.pending.is_some() {
                     retained.ambiguous = true;
                 }
-                keep.push(retained);
+                push_keep(&mut keep, binding, retained);
                 continue;
             }
             // Changed displayed view: unknown current or unknown baseline
@@ -317,16 +354,16 @@ impl WorldTransaction<'_> {
             let view = self.effective_view(&retained.home.output);
             match (&view, &retained.view) {
                 (None, _) | (_, None) => {
-                    if retained.pending.is_some() {
+                    if binding.pending.is_some() {
                         retained.ambiguous = true;
                     }
-                    keep.push(retained);
+                    push_keep(&mut keep, binding, retained);
                     continue;
                 }
                 (Some(current), Some(baseline)) if current != baseline => {
                     self.emit_operation(
                         retained.operation_id.clone(),
-                        retained.window.clone(),
+                        window.clone(),
                         OperationOutcome::ClearAbandonedViewChanged,
                         None,
                     );
@@ -346,16 +383,16 @@ impl WorldTransaction<'_> {
                 if original_focus.is_empty() {
                     // Unknown baseline plus unknown current: no
                     // contradiction, hold for later proof.
-                    if retained.pending.is_some() {
+                    if binding.pending.is_some() {
                         retained.ambiguous = true;
                     }
-                    keep.push(retained);
+                    push_keep(&mut keep, binding, retained);
                     continue;
                 }
-                if retained.pending.is_some() {
+                if binding.pending.is_some() {
                     retained.ambiguous = true;
                 }
-                keep.push(retained);
+                push_keep(&mut keep, binding, retained);
                 continue;
             }
             if original_focus.is_empty() {
@@ -365,10 +402,10 @@ impl WorldTransaction<'_> {
                 // intent must not survive known wrong focus to resume
                 // later. Only the exact bound subject permits
                 // continuation with accepted proof.
-                if current_focus != retained.window.0 {
+                if current_focus != window.0 {
                     self.emit_operation(
                         retained.operation_id.clone(),
-                        retained.window.clone(),
+                        window.clone(),
                         OperationOutcome::ClearAbandonedFocusChanged,
                         Some("non-subject-focus"),
                     );
@@ -378,16 +415,16 @@ impl WorldTransaction<'_> {
                 if current_focus != original_focus {
                     self.emit_operation(
                         retained.operation_id.clone(),
-                        retained.window.clone(),
+                        window.clone(),
                         OperationOutcome::ClearAbandonedFocusChanged,
                         None,
                     );
                     continue;
                 }
-                if current_focus != retained.window.0 {
+                if current_focus != window.0 {
                     self.emit_operation(
                         retained.operation_id.clone(),
-                        retained.window.clone(),
+                        window.clone(),
                         OperationOutcome::ClearAbandonedFocusChanged,
                         Some("baseline-non-subject"),
                     );
@@ -400,7 +437,7 @@ impl WorldTransaction<'_> {
             if fact.fullscreen == Some(true) {
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearAbandonedFullscreen,
                     None,
                 );
@@ -409,24 +446,24 @@ impl WorldTransaction<'_> {
             if derived_clear.overlay_maximized {
                 // Still maximized: never success. Proven refusal retires
                 // with no loop; anything else holds.
-                if retained
+                if binding
                     .pending
                     .as_ref()
-                    .and_then(PropertyAttempt::as_clear)
+                    .and_then(PropertyAttempt::as_state)
                     .is_some_and(clear_refused)
                 {
                     self.emit_operation(
                         retained.operation_id.clone(),
-                        retained.window.clone(),
+                        window.clone(),
                         OperationOutcome::ClearRefusedProven,
                         None,
                     );
                     continue;
                 }
-                if retained.pending.is_some() {
+                if binding.pending.is_some() {
                     retained.ambiguous = true;
                 }
-                keep.push(retained);
+                push_keep(&mut keep, binding, retained);
                 continue;
             }
             // Unmaximized, complete, readable facts: resume needs a
@@ -434,15 +471,15 @@ impl WorldTransaction<'_> {
             // staged attempt at all) abandons, never continues. Ambiguous
             // staged evidence (throw, accepted mismatch, unreadable proof)
             // holds with no retry below: it may yet be our own clear.
-            let Some(pending) = retained
+            let Some(pending) = binding
                 .pending
                 .as_ref()
-                .and_then(PropertyAttempt::as_clear)
+                .and_then(PropertyAttempt::as_state)
                 .cloned()
             else {
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearAbandonedExternalClear,
                     None,
                 );
@@ -451,7 +488,7 @@ impl WorldTransaction<'_> {
             if clear_refused(&pending) {
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearAbandonedExternalClear,
                     Some("refused-with-unmaximized"),
                 );
@@ -468,7 +505,7 @@ impl WorldTransaction<'_> {
                 // completing asynchronously. The canonical evidence already
                 // sits in the retained slot; only ambiguity is latched.
                 retained.ambiguous = true;
-                keep.push(retained);
+                push_keep(&mut keep, binding, retained);
                 continue;
             }
             // Proven: correlated accepted attempt plus truthful readable
@@ -485,7 +522,7 @@ impl WorldTransaction<'_> {
                 {
                     self.emit_operation(
                         retained.operation_id.clone(),
-                        retained.window.clone(),
+                        window.clone(),
                         OperationOutcome::ClearContinuationRefused,
                         Some("tiling-changed"),
                     );
@@ -500,10 +537,10 @@ impl WorldTransaction<'_> {
                     .find(|domain| domain.key == effective)
                     .is_none_or(|domain| !domain.readable);
                 if effective_held {
-                    if retained.pending.is_some() {
+                    if binding.pending.is_some() {
                         retained.ambiguous = true;
                     }
-                    keep.push(retained);
+                    push_keep(&mut keep, binding, retained);
                     continue;
                 }
                 let Some(screen) = self
@@ -515,7 +552,7 @@ impl WorldTransaction<'_> {
                 else {
                     self.emit_operation(
                         retained.operation_id.clone(),
-                        retained.window.clone(),
+                        window.clone(),
                         OperationOutcome::ClearContinuationRefused,
                         Some("unknown-output"),
                     );
@@ -524,7 +561,7 @@ impl WorldTransaction<'_> {
                 let Some(work) = screen.work_area else {
                     self.emit_operation(
                         retained.operation_id.clone(),
-                        retained.window.clone(),
+                        window.clone(),
                         OperationOutcome::ClearContinuationRefused,
                         Some("unknown-output"),
                     );
@@ -537,7 +574,7 @@ impl WorldTransaction<'_> {
                     // mutation, never a clamped gap.
                     self.emit_operation(
                         retained.operation_id.clone(),
-                        retained.window.clone(),
+                        window.clone(),
                         OperationOutcome::ClearContinuationRefused,
                         Some("invalid-geometry"),
                     );
@@ -547,7 +584,7 @@ impl WorldTransaction<'_> {
                 else {
                     self.emit_operation(
                         retained.operation_id.clone(),
-                        retained.window.clone(),
+                        window.clone(),
                         OperationOutcome::ClearContinuationRefused,
                         Some("invalid-geometry"),
                     );
@@ -559,7 +596,7 @@ impl WorldTransaction<'_> {
                 {
                     self.emit_operation(
                         retained.operation_id.clone(),
-                        retained.window.clone(),
+                        window.clone(),
                         OperationOutcome::ClearContinuationRefused,
                         Some("constraints"),
                     );
@@ -568,11 +605,11 @@ impl WorldTransaction<'_> {
                 self.world
                     .settlement
                     .retained_floats
-                    .retain(|held| held.window != retained.window);
+                    .retain(|held| held.window != window);
                 self.world.settlement.retained_floats.push(RetainedFloat {
                     operation_id: retained.operation_id.clone(),
                     command_seq: retained.command_seq,
-                    window: retained.window.clone(),
+                    window: window.clone(),
                     target: half,
                     source: fact.rect,
                     output: effective.output.clone(),
@@ -582,7 +619,7 @@ impl WorldTransaction<'_> {
                 });
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearContinuedFloat,
                     None,
                 );
@@ -601,7 +638,7 @@ impl WorldTransaction<'_> {
                 else {
                     self.emit_operation(
                         retained.operation_id.clone(),
-                        retained.window.clone(),
+                        window.clone(),
                         OperationOutcome::ClearContinuationRefused,
                         Some("invalid-direction"),
                     );
@@ -630,16 +667,16 @@ impl WorldTransaction<'_> {
                     .collect();
                 // Held home defers until authority returns.
                 if held_scopes.contains(&retained.home) {
-                    if retained.pending.is_some() {
+                    if binding.pending.is_some() {
                         retained.ambiguous = true;
                     }
-                    keep.push(retained);
+                    push_keep(&mut keep, binding, retained);
                     continue;
                 }
-                let Some(source_row) = owned.get(&retained.window).cloned() else {
+                let Some(source_row) = owned.get(&window).cloned() else {
                     self.emit_operation(
                         retained.operation_id.clone(),
-                        retained.window.clone(),
+                        window.clone(),
                         OperationOutcome::ClearContinuationRefused,
                         Some("unknown-window"),
                     );
@@ -655,7 +692,7 @@ impl WorldTransaction<'_> {
                 {
                     self.emit_operation(
                         retained.operation_id.clone(),
-                        retained.window.clone(),
+                        window.clone(),
                         OperationOutcome::ClearContinuationRefused,
                         Some("early-verdict"),
                     );
@@ -663,10 +700,10 @@ impl WorldTransaction<'_> {
                 }
                 // Held effective domain defers until authority returns.
                 if held_scopes.contains(&effective_now) {
-                    if retained.pending.is_some() {
+                    if binding.pending.is_some() {
                         retained.ambiguous = true;
                     }
-                    keep.push(retained);
+                    push_keep(&mut keep, binding, retained);
                     continue;
                 }
                 let command_seq: u64 = retained.command_seq;
@@ -678,7 +715,7 @@ impl WorldTransaction<'_> {
                     Err(_) => {
                         self.emit_operation(
                             retained.operation_id.clone(),
-                            retained.window.clone(),
+                            window.clone(),
                             OperationOutcome::ClearContinuationRefused,
                             Some("topology-unreadable"),
                         );
@@ -689,7 +726,7 @@ impl WorldTransaction<'_> {
                 let by_id: std::collections::BTreeMap<&WindowId, &EngineWindow> =
                     owned.iter().collect();
                 let applied = if let Some(target) = pinned {
-                    let window_name = retained.window.clone();
+                    let window_name = window.clone();
                     let command = crate::boundary::CoreCommand::Move {
                         window: window_name.clone(),
                         direction: direction_parsed,
@@ -708,7 +745,7 @@ impl WorldTransaction<'_> {
                     )
                 } else {
                     let command = crate::boundary::CoreCommand::Move {
-                        window: retained.window.clone(),
+                        window: window.clone(),
                         direction: direction_parsed,
                         cross_output_transfer: false,
                         same_axis_move: retained.same_axis,
@@ -722,16 +759,16 @@ impl WorldTransaction<'_> {
                     crate::world_commands::CommandApplied::Rejected { kind, .. }
                         if kind == crate::world_engine::KIND_SCOPE_HELD =>
                     {
-                        if retained.pending.is_some() {
+                        if binding.pending.is_some() {
                             retained.ambiguous = true;
                         }
-                        keep.push(retained);
+                        push_keep(&mut keep, binding, retained);
                         continue;
                     }
                     crate::world_commands::CommandApplied::Rejected { kind, .. } => {
                         self.emit_operation(
                             retained.operation_id.clone(),
-                            retained.window.clone(),
+                            window.clone(),
                             OperationOutcome::ClearContinuationRefused,
                             Some(kind),
                         );
@@ -741,12 +778,14 @@ impl WorldTransaction<'_> {
                 }
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearContinuedTiled,
                     None,
                 );
             }
         }
-        self.world.settlement.retained_clears = keep;
+        for (key, binding) in keep {
+            self.world.settlement.retained_states.insert(key, binding);
+        }
     }
 }

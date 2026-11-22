@@ -63,7 +63,6 @@ fn report(seq: u64, complete: bool) -> WorldReportV4 {
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         state_attempts: Vec::new(),
         visibility_attempts: Vec::new(),
@@ -1230,8 +1229,8 @@ fn ordinary_maximized_null_without_maximize_stays_controlled() {
         row_unknown.allocation.is_some(),
         "membership keeps allocation: {row_unknown:?}"
     );
-    assert_eq!(
-        row_unknown.clear_operation, None,
+    assert!(
+        !row_unknown.state.iter().any(|t| t.automatic_clear),
         "no clear on unknown: {row_unknown:?}"
     );
     let row_healthy = reply
@@ -1241,7 +1240,7 @@ fn ordinary_maximized_null_without_maximize_stays_controlled() {
         .expect("sibling row present");
     assert_eq!(row_healthy.membership_authority, ScopeAuthority::Controlled);
     assert_eq!(row_healthy.frame_authority, ScopeAuthority::Controlled);
-    assert_eq!(row_healthy.clear_operation, None);
+    assert!(!row_healthy.state.iter().any(|t| t.automatic_clear));
     assert!(
         reply
             .scopes
@@ -1251,7 +1250,12 @@ fn ordinary_maximized_null_without_maximize_stays_controlled() {
         reply.scopes
     );
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        !engine
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .any(|b| b.clear_meta.is_some()),
         "no retained clear"
     );
 
@@ -1319,7 +1323,9 @@ fn ordinary_maximized_null_without_maximize_stays_controlled() {
         held.windows
     );
     assert!(
-        held.windows.iter().all(|row| row.clear_operation.is_none()),
+        held.windows
+            .iter()
+            .all(|row| !row.state.iter().any(|t| t.automatic_clear)),
         "supported null authorizes no clear: {:?}",
         held.windows
     );

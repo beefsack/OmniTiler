@@ -735,9 +735,15 @@
       "file": "messages/report-attempt-clear.json",
       "family": "WorldReport",
       "direction": "adapter-to-core",
-      "expectation": "valid-wire",
+      "expectation": "reject-wire",
       "json": true,
-      "canonical": true
+      "canonical": true,
+      "invalid": {
+        "source": "report-attempt-state",
+        "pointer": "/propertyAttempts",
+        "rule": "retired-clear-attempt"
+      },
+      "note": "Retired kind:clear attempt refuses; automatic maximize clear uses state attempts."
     },
     {
       "id": "report-attempt-creation-omitted",
@@ -7388,12 +7394,6 @@
           "pointer": "/viewAttempts/0"
         }
       ],
-      "ClearAttempt": [
-        {
-          "fixture": "report-attempt-clear",
-          "pointer": "/clearAttempts/0"
-        }
-      ],
       "NativeCreationAttempt": [
         {
           "fixture": "report-attempt-creation-omitted",
@@ -10676,11 +10676,6 @@
     {
       "fixture": "reply-observe",
       "pointer": "/windows/0/float_origin",
-      "value": ""
-    },
-    {
-      "fixture": "reply-observe",
-      "pointer": "/windows/0/clear_op",
       "value": ""
     },
     {

@@ -847,8 +847,26 @@ impl WorldState {
             reply.ready,
             is_duplicate,
             self.settlement.retained_floats.len(),
-            self.settlement.retained_clears.len(),
-            self.settlement.retained_born.len(),
+            self.settlement
+                .retained_states
+                .values()
+                .filter(|b| {
+                    matches!(
+                        b.clear_meta,
+                        Some(crate::world_state::ClearProvenance::Directional(_))
+                    )
+                })
+                .count(),
+            self.settlement
+                .retained_states
+                .values()
+                .filter(|b| {
+                    matches!(
+                        b.clear_meta,
+                        Some(crate::world_state::ClearProvenance::Born(_))
+                    )
+                })
+                .count(),
             self.settlement.retained.len(),
             self.settlement.retained_creations.len(),
             self.settlement.retained_states.len(),

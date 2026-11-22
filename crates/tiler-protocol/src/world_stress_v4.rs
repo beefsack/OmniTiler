@@ -225,7 +225,6 @@ fn build_report_v4(
         frames: vec![],
         member_attempts: sim.next_attempts.clone(),
         view_attempts: vec![],
-        clear_attempts: vec![],
         creation_attempts: vec![],
         held_attempts: vec![],
         state_attempts: Vec::new(),
@@ -616,7 +615,6 @@ fn check_oracle_v4(
             || row.floating
             || row.float_origin.is_some()
             || row.frame_operation.is_some()
-            || row.clear_operation.is_some()
         {
             return Err(fail(
                 at,

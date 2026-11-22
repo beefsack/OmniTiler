@@ -140,7 +140,6 @@ fn report(
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         state_attempts: Vec::new(),
         visibility_attempts: Vec::new(),
@@ -4150,7 +4149,7 @@ fn after_ready_bad_screen_holds_only_affected_output() {
         "unreadable output must not publish writes: {bad:?}"
     );
     assert!(
-        bad.frame_operation.is_none() && bad.clear_operation.is_none(),
+        bad.frame_operation.is_none() && !bad.state.iter().any(|t| t.automatic_clear),
         "unreadable output must not emit frame/clear operations: {bad:?}"
     );
     assert!(

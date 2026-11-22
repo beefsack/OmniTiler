@@ -1382,53 +1382,18 @@ fn member_already_at_target_keeps_strict_shape_and_member_only_disposition() {
 }
 
 #[test]
-fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
-    use tiler_core::world_report::FrameSetter;
-    // Absent key backfills: predates-the-field adapters stay valid with no
-    // clear attempts.
-    let report = decode_request(&one_window_request()).expect("decodes");
-    assert!(report.clear_attempts.is_empty());
-    // Present keys decode to the typed mechanical shape: operation plus
-    // window correlation, setter disposition, and nullable immediate
-    // pre/post maximized proofs. No verdict rides the lane.
+fn retired_clear_attempts_refuse_and_directional_clear_uses_maximized_false_state_target() {
     let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
     value["propertyAttempts"] = serde_json::json!([{
         "kind": "clear",
         "op": "op-13", "win": "win-a", "setter": "accepted",
         "pre": true, "post": false, "attemptMs": "2000",
     }]);
-    let wire = value.to_string();
-    let report = decode_request(&wire).expect("clear attempts decode");
-    assert_eq!(report.clear_attempts.len(), 1);
-    let attempt = &report.clear_attempts[0];
-    assert_eq!(attempt.operation_id, "op-13");
-    assert_eq!(attempt.window.0, "win-a");
-    assert_eq!(attempt.setter, FrameSetter::Accepted);
-    assert_eq!(attempt.pre_maximized, Some(true));
-    assert_eq!(attempt.post_maximized, Some(false));
-    assert_eq!(attempt.attempt_ms, 2000);
-    // Null proofs stay unknown; duplicates refuse with fixed vocabulary.
-    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["propertyAttempts"] = serde_json::json!([{
-        "kind": "clear",
-        "op": "op-13", "win": "win-a", "setter": "threw",
-        "pre": null, "post": null, "attemptMs": "1",
-    }]);
-    let null_report = decode_request(&value.to_string()).expect("null proofs decode");
-    assert_eq!(null_report.clear_attempts[0].pre_maximized, None);
-    assert_eq!(null_report.clear_attempts[0].post_maximized, None);
-    let mut value: serde_json::Value = serde_json::from_str(&one_window_request()).expect("valid");
-    value["propertyAttempts"] = serde_json::json!([
-        {"kind": "clear", "op": "op-9", "win": "win-a", "setter": "accepted",
-         "pre": true, "post": false, "attemptMs": "1"},
-        {"kind": "clear", "op": "op-9", "win": "win-a", "setter": "accepted",
-         "pre": true, "post": false, "attemptMs": "2"},
-    ]);
-    let error = decode_request(&value.to_string()).expect_err("duplicate refuses");
-    assert_eq!(error.kind, "snapshot-invalid");
-    assert_eq!(error.message, "duplicate-clear-attempt");
-    // A maximized move through the engine publishes the one-shot clear
-    // desire under the originating op, and the canonical v4 writer encodes it.
+    let error = decode_request(&value.to_string()).expect_err("retired clear attempt refuses");
+    assert_eq!(error.kind, "unknown-value");
+
+    // A maximized move through the engine publishes a controlled maximized=false
+    // StateTarget with automaticClear=true, and the canonical v4 writer encodes it.
     let maximized_fact = "{\"win\":\"win-a\",\"out\":\"out\",\"rect\":[100,0,200,200],\
           \"fullscreen\":false,\"maximized\":true,\"sticky\":false,\
           \"minimized\":false,\
@@ -1460,8 +1425,6 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
     let mut engine = connected_engine(
         "gen-1",
         HostCapabilities {
-            // Fixtures carry native sticky and maximize facts; the lane
-            // under test is the native route.
             native_sticky: true,
             maximize: true,
             ..Default::default()
@@ -1476,11 +1439,25 @@ fn clear_attempts_decode_tolerantly_and_clear_op_round_trips() {
         .iter()
         .find(|row| row.lifetime.0 == "win-a")
         .expect("mover keeps a row");
-    assert_eq!(row.clear_operation.as_deref(), Some("op-13"));
+    assert!(
+        row.state.iter().any(|t| {
+            t.property == tiler_core::world_report::StateProperty::Maximized
+                && !t.value
+                && t.authority == tiler_core::world_report::ScopeAuthority::Controlled
+                && t.command_seq == Some(13)
+                && t.automatic_clear
+        }),
+        "expected controlled maximized=false automaticClear target, got {:?}",
+        row.state
+    );
     let wire = reply_wire(&reply);
     assert!(
-        wire.contains("\"clear_op\":\"op-13\""),
-        "clear desire round-trips, got {wire}"
+        !wire.contains("\"clear_op\""),
+        "clear_op must be absent: {wire}"
+    );
+    assert!(
+        wire.contains("\"automaticClear\":true"),
+        "automaticClear round-trips, got {wire}"
     );
     // Estimates bound the wider wire shape.
     let request_estimate = report_estimate_v4(&report);

@@ -16,24 +16,27 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{RetainedFloat, RetainedTransfer, WorldEngine, WorldOutcome};
 use crate::world_report::{
-    ClearAttempt, CommandRejectKind, CommandResult, FrameSetter, HoldReason, ScopeAuthority,
-    ScreenReport, TransferKind, TransferTarget, WindowFact, WorldCommand, WorldReportV4,
+    CommandRejectKind, CommandResult, FrameSetter, HoldReason, ScopeAuthority, ScreenReport,
+    StateAttempt, StateProperty, TransferKind, TransferTarget, WindowFact, WorldCommand,
+    WorldReportV4,
 };
 use crate::world_v4_support_tests::{accepted, fact, float_fact, report, report_full, screen};
 
 fn clear_attempt(
-    operation_id: &str,
+    rev_token: &str,
     window: &str,
     setter: FrameSetter,
     pre: Option<bool>,
     post: Option<bool>,
-) -> ClearAttempt {
-    ClearAttempt {
-        operation_id: operation_id.to_owned(),
+) -> StateAttempt {
+    StateAttempt {
         window: WindowId(window.to_owned()),
+        property: StateProperty::Maximized,
+        target: false,
+        revision: rev_token.parse::<u64>().unwrap_or(999_999),
         setter,
-        pre_maximized: pre,
-        post_maximized: post,
+        pre,
+        post,
         attempt_ms: 7,
     }
 }
@@ -44,7 +47,7 @@ fn report_clears(
     screens: Vec<ScreenReport>,
     windows: Vec<WindowFact>,
     focused: &str,
-    clears: Vec<ClearAttempt>,
+    clears: Vec<StateAttempt>,
 ) -> WorldReportV4 {
     let mut report = report_full(
         request_seq,
@@ -56,7 +59,7 @@ fn report_clears(
         None,
         None,
     );
-    report.clear_attempts = clears;
+    report.state_attempts = clears;
     report
 }
 
@@ -96,7 +99,15 @@ fn desire_op(reply: &crate::world_report::WorldReplyV4, window: &str) -> Option<
         .windows
         .iter()
         .find(|row| row.lifetime.0 == window)
-        .and_then(|row| row.clear_operation.clone())
+        .and_then(|row| {
+            row.state.iter().find(|t| {
+                t.property == StateProperty::Maximized
+                    && !t.value
+                    && t.automatic_clear
+                    && t.authority == ScopeAuthority::Controlled
+            })
+        })
+        .map(|_| reply.state_revision.to_string())
 }
 
 fn set_born_policy(
@@ -161,7 +172,10 @@ fn commandless_birth_mints_and_publishes_clear() {
         .tx(|tx| tx.born_operation_for(&WindowId("win-born".to_owned())))
         .expect("born binds");
     assert!(op.starts_with("op-born-"), "commandless id, got {op}");
-    assert_eq!(desire_op(&reply, "win-born").as_deref(), Some(op.as_str()));
+    assert_eq!(
+        desire_op(&reply, "win-born").as_deref(),
+        Some(reply.state_revision.to_string().as_str())
+    );
 }
 
 #[test]
@@ -359,14 +373,20 @@ fn disabled_explicit_directional_clear_unaffected() {
         0,
         "no automatic birth beside"
     );
-    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
-    assert_eq!(
-        engine.world.settlement.retained_clears[0].operation_id,
-        "op-13"
+    assert!(
+        engine
+            .world
+            .settlement
+            .retained_states
+            .get(&(WindowId("win-max".to_owned()), StateProperty::Maximized))
+            .is_some_and(|b| matches!(
+                &b.clear_meta,
+                Some(crate::world_state::ClearProvenance::Directional(m)) if m.operation_id == "op-13"
+            ))
     );
     assert_eq!(
         desire_op(&reply, "win-max").as_deref(),
-        Some("op-13"),
+        Some(reply.state_revision.to_string().as_str()),
         "directional clear still publishes while disabled"
     );
 }
@@ -688,7 +708,12 @@ fn fullscreen_birth_holds_then_exit_clears() {
     );
     assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1, "held exit binds");
     let op = desire_op(&second, "win-fs").expect("held exit desires");
-    assert!(op.starts_with("op-born-"));
+    assert!(
+        engine
+            .tx(|tx| tx.born_operation_for(&WindowId("win-fs".to_owned())))
+            .as_deref()
+            .is_some_and(|id| id.starts_with("op-born-"))
+    );
     // Proof retires the exit with no re-entry into the held set.
     let cleared = WindowFact {
         maximized: Some(false),
@@ -833,7 +858,7 @@ fn fixed_size_birth_floats_without_clear() {
         .find(|row| row.lifetime.0 == "win-fixed")
         .expect("fixed keeps a row");
     assert!(row.floating, "fixed floats beneath the overlay");
-    assert_eq!(row.clear_operation, None);
+    assert!(!row.state.iter().any(|t| t.automatic_clear));
 }
 
 #[test]
@@ -1086,7 +1111,7 @@ fn minimized_and_unreadable_hold_without_spend() {
             None,
         ),
     );
-    let op = desire_op(&first, "win-born").expect("desire rides");
+    let _op = desire_op(&first, "win-born").expect("desire rides");
     let minimized = WindowFact {
         minimized: Some(true),
         ..born_maximized("win-born", "out-a", 100)
@@ -1124,7 +1149,16 @@ fn minimized_and_unreadable_hold_without_spend() {
         ),
     );
     assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
-    assert_eq!(desire_op(&fourth, "win-born").as_deref(), Some(op.as_str()));
+    assert_eq!(
+        desire_op(&fourth, "win-born").as_deref(),
+        Some(fourth.state_revision.to_string().as_str())
+    );
+    assert_eq!(
+        engine
+            .tx(|tx| tx.born_operation_for(&WindowId("win-born".to_owned())))
+            .as_deref(),
+        Some("op-born-1")
+    );
 }
 
 #[test]
@@ -1266,7 +1300,12 @@ fn distinct_births_dedup_per_window() {
     assert_eq!(engine.tx(|tx| tx.born_retained_len()), 2);
     let opa = desire_op(&reply, "win-a").expect("a desires");
     let opb = desire_op(&reply, "win-b").expect("b desires");
-    assert_ne!(opa, opb);
+    assert_eq!(opa, reply.state_revision.to_string());
+    assert_eq!(opb, reply.state_revision.to_string());
+    assert_ne!(
+        engine.tx(|tx| tx.born_operation_for(&WindowId("win-a".to_owned()))),
+        engine.tx(|tx| tx.born_operation_for(&WindowId("win-b".to_owned()))),
+    );
     accepted(
         &mut engine,
         &report(
@@ -1337,8 +1376,13 @@ fn delayed_fixed_transition_abandons_without_retry() {
             None,
         ),
     );
-    let op = desire_op(&first, "win-born").expect("desire rides");
-    assert!(op.starts_with("op-born-"));
+    let _op = desire_op(&first, "win-born").expect("desire rides");
+    assert!(
+        engine
+            .tx(|tx| tx.born_operation_for(&WindowId("win-born".to_owned())))
+            .as_deref()
+            .is_some_and(|id| id.starts_with("op-born-"))
+    );
     let second = accepted(
         &mut engine,
         &report(
@@ -1613,8 +1657,10 @@ fn cohort_clear_publishes_held_property_tokens() {
             .find(|row| row.lifetime.0 == win)
             .expect("held cohort row");
         assert!(
-            row.clear_operation.is_some(),
-            "{win}: held row still carries the clear token"
+            row.state
+                .iter()
+                .any(|t| t.automatic_clear && t.authority == ScopeAuthority::Controlled),
+            "{win}: held row still carries the controlled automaticClear target"
         );
         assert_eq!(row.allocation, None, "{win}: no geometry write rides");
         assert!(
@@ -1652,7 +1698,13 @@ fn cohort_clear_settles_and_converges_frames() {
     let first = accepted(&mut engine, &cohort_report(1, 1));
     let opa = desire_op(&first, "win-a").expect("a desires");
     let opb = desire_op(&first, "win-b").expect("b desires");
-    assert_ne!(opa, opb, "distinct one-shot tokens");
+    assert_eq!(opa, first.state_revision.to_string());
+    assert_eq!(opb, first.state_revision.to_string());
+    assert_ne!(
+        engine.tx(|tx| tx.born_operation_for(&WindowId("win-a".to_owned()))),
+        engine.tx(|tx| tx.born_operation_for(&WindowId("win-b".to_owned()))),
+        "distinct one-shot tokens"
+    );
     let cleared_a = WindowFact {
         maximized: Some(false),
         ..fact("win-a", "out-a", 100)
@@ -2413,7 +2465,7 @@ fn mode_flip_does_not_reclear_retained_lifetime() {
             None,
         ),
     );
-    let op = desire_op(&first, "win-born").expect("desire rides");
+    let _op = desire_op(&first, "win-born").expect("desire rides");
     assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
     set_born_policy(
         &mut engine,
@@ -2438,7 +2490,7 @@ fn mode_flip_does_not_reclear_retained_lifetime() {
         engine
             .tx(|tx| tx.born_operation_for(&WindowId("win-born".to_owned())))
             .as_deref(),
-        Some(op.as_str()),
+        Some("op-born-1"),
         "flip never re-mints"
     );
     let restored = accepted(
@@ -2455,8 +2507,14 @@ fn mode_flip_does_not_reclear_retained_lifetime() {
     assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
     assert_eq!(
         desire_op(&restored, "win-born").as_deref(),
-        Some(op.as_str()),
+        Some(restored.state_revision.to_string().as_str()),
         "same token resumes, no second clear"
+    );
+    assert_eq!(
+        engine
+            .tx(|tx| tx.born_operation_for(&WindowId("win-born".to_owned())))
+            .as_deref(),
+        Some("op-born-1")
     );
 }
 
@@ -2527,8 +2585,14 @@ fn empty_native_free_migration_retires_echoless_born_clear_proceeds() {
     );
     assert_eq!(
         desire_op(&held, "win-born").as_deref(),
-        Some("op-born-1"),
+        Some(held.state_revision.to_string().as_str()),
         "empty native-free migration retires echoless, token proceeds"
+    );
+    assert_eq!(
+        engine
+            .tx(|tx| tx.born_operation_for(&WindowId("win-born".to_owned())))
+            .as_deref(),
+        Some("op-born-1")
     );
     engine.world.settlement.retained.clear();
     let recovered = accepted(
@@ -2679,7 +2743,12 @@ fn later_born_after_startup_clears_once_then_tiles() {
     );
     assert_eq!(desire_op(&later, "win-start"), None);
     let op = desire_op(&later, "win-later").expect("later born window clears once");
-    assert!(op.starts_with("op-born-"));
+    assert!(
+        engine
+            .tx(|tx| tx.born_operation_for(&WindowId("win-later".to_owned())))
+            .as_deref()
+            .is_some_and(|id| id.starts_with("op-born-"))
+    );
     assert_eq!(engine.tx(|tx| tx.born_retained_len()), 1);
     let cleared = accepted(
         &mut engine,
@@ -3219,4 +3288,82 @@ fn born_seq_exhaustion_refuses_without_adoption_or_wrap() {
     assert_eq!(engine.world.settlement.born_seq, u64::MAX);
     assert_eq!(engine.tx(|tx| tx.born_retained_len()), 0);
     assert_eq!(desire_op(&reply, "win-born"), None);
+}
+
+#[test]
+fn born_clear_uses_controlled_maximized_false_state_lane_and_feedback() {
+    let mut engine = born_clear_engine();
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![fact("win-existing", "out-a", 100)],
+            None,
+            None,
+        ),
+    );
+    let reply = accepted(
+        &mut engine,
+        &report(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![
+                fact("win-existing", "out-a", 100),
+                born_maximized("win-born", "out-a", 300),
+            ],
+            None,
+            None,
+        ),
+    );
+    let row = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-born")
+        .expect("win-born row");
+    let target = row
+        .state
+        .iter()
+        .find(|t| t.property == crate::world_report::StateProperty::Maximized)
+        .expect("controlled maximized=false state target");
+    assert!(!target.value);
+    assert_eq!(target.authority, ScopeAuthority::Controlled);
+    assert_eq!(target.command_seq, None);
+
+    let mut settle_report = report(
+        3,
+        3,
+        vec![screen("out-a", 0)],
+        vec![
+            fact("win-existing", "out-a", 100),
+            fact("win-born", "out-a", 300),
+        ],
+        None,
+        None,
+    );
+    settle_report.state_attempts = vec![crate::world_report::StateAttempt {
+        window: WindowId("win-born".to_owned()),
+        property: crate::world_report::StateProperty::Maximized,
+        target: false,
+        revision: reply.state_revision,
+        setter: FrameSetter::Accepted,
+        pre: Some(true),
+        post: Some(false),
+        attempt_ms: 7,
+    }];
+    let after = accepted(&mut engine, &settle_report);
+    let after_row = after
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-born")
+        .expect("win-born row");
+    assert!(
+        !after_row
+            .state
+            .iter()
+            .any(|t| t.property == crate::world_report::StateProperty::Maximized),
+        "retired born clear should not re-emit maximized state target"
+    );
 }

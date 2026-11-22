@@ -161,8 +161,8 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 - Requests and replies are independently <=4 MiB, validated before candidate
   mutation and checked against exact encoding before commit. No partial
   oversized state applies. Retain caps: screens and `actionOutputs` 16 each; windows/closed 10000 each;
-  unified `propertyAttempts` 1024 per kind (`frame`, `member`, `view`, `clear`,
-  `state`) and 10000 for `visibility` (15120 total); creation attempts 256;
+  unified `propertyAttempts` 1024 per kind (`frame`, `member`, `view`, `state`)
+  and 10000 for `visibility` (14096 total); creation attempts 256;
   native rows 4096 with <=256 ids per output; occupancy <=10000 per desktop;
   pager order and frame sources 1024 each; `intentRecords` and `intentDesired`
   <=10000 each; `focusFeedback` <=1024; at most four state targets per window;
@@ -432,7 +432,7 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 | `gestureIngress` | GestureIngress | omit/null | Existing native gesture lifecycle. |
 | `primary` | OutputId | omit | Host-designated primary, unknown if absent. |
 | `intentRecords` | IntentRecord[] | no | Opaque host storage return. |
-| `propertyAttempts` | PropertyAttempt[] | no | Required even when empty. Closed tagged union: `frame`, `member`, `view`, `clear`, `state`, `visibility`. Caps count all carried rows, including held rows: 1,024 per kind except 10,000 for `visibility`, 15,120 total. |
+| `propertyAttempts` | PropertyAttempt[] | no | Required even when empty. Closed tagged union: `frame`, `member`, `view`, `state`, `visibility`. Caps count all carried rows, including held rows: 1,024 per kind except 10,000 for `visibility`, 14,096 total. |
 | `focusFeedback` | FocusFeedback[] | no | Correlated native evidence for the retained focus request. |
 | `rendererInput` | RendererInput | yes | One exact core-drawn target per command. |
 | `rosterFeedback` | SharedRosterFeedback | omit, never null | Exact native setter evidence for the retained shared-roster plan; absent on all other routes. |
@@ -622,9 +622,10 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
   Preserve unknown hints; ordinary hint-dependent admission and explicit tile
   override remain held. Refuse float-to-tile convergence and constrained float
   placement while hints are unreadable, before authorizing a prerequisite
-  maximize-clear. Withhold outstanding dependent frame/float-route clear tokens
-  across a hint-read gap without cancelling their bindings or rearming spent
-  attempts; readable recovery resumes the same operation identity.
+  maximize-clear. Withhold outstanding dependent frame operations and
+  float-route maximize-false targets across a hint-read gap without cancelling
+  their bindings or rearming spent attempts; readable recovery resumes the
+  same operation identity.
 - Core applicability: evaluate only predicates whose native inputs are supplied
   by the connection; skip unsupported predicates, never turn null into false.
   Available managed=false excludes host-unmanaged candidates. Available native
@@ -1178,8 +1179,8 @@ that step's ordered proof and requiring the exact planned ID for removal.
   restore instead use explicit `frame/frame_auth` authority, including for a
   floating subject; no native-state target or extra wire bit is needed. The
   floating diagnostic never substitutes for or vetoes that explicit authority.
-  `float_origin:capacity` is diagnostic only. Existing clear/create/member/frame
-  lanes stay distinct.
+  `float_origin:capacity` is diagnostic only. Create, member, frame and state
+  authority stay distinct.
   [Desired-state baseline](world-contract-v3.md#4-desired-world-state-what-the-reply-authorizes),
   [state-centric decision](../decisions/contract.md#state-centric-contract).
 
@@ -1210,8 +1211,8 @@ that step's ordered proof and requiring the exact planned ID for removal.
 | | `alloc,frame` | Rect | yes | Existing allocation/effective frame. |
 | | `frame_auth,frame_hold,member_auth,member_hold` | authority/reason pairs | hold strings empty if none | Existing independent geometry/membership authority. |
 | | `frame_op` | Id | empty | One-shot explicit float placement. |
-| | `floating,float_origin,clear_op` | bool, FloatOrigin, Id | origin/op empty if none | Existing classification diagnostic and one-shot clear. |
-| | `cmdSeq` | Counter | yes | Explicit command correlation for frame/clear target; commandless birth clear has null. |
+| | `floating,float_origin` | bool, FloatOrigin | origin empty if none | Existing classification diagnostic. |
+| | `cmdSeq` | Counter | yes | Explicit command correlation for the frame target. |
 | | `visibility` | VisibilityTarget | yes | Composed visibility target, not row-presence permission. |
 | | `visibility_auth,visibility_hold` | authority/reason pair | reason empty if none | Independent visibility lane. |
 | | `state` | StateTarget[] | no | Independent native-state targets. |
@@ -1222,6 +1223,7 @@ that step's ordered proof and requiring the exact planned ID for removal.
 | | `value` | bool | no | Core-resolved target. |
 | | `auth,reason` | authority/reason pair | reason empty if none | This property only. |
 | | `cmdSeq` | Counter | yes | Command correlation, not parsed operation text. |
+| | `automaticClear` | literal `true` | omit otherwise | Allowed only on `maximized` with `value:false`. Selects the directional/born clear actuation guards; no operation ID. |
 | `TransferTarget` | `op,kind,win,out,ws,follow,held` | Id, TransferKind, WindowId, OutputId, WorkspaceId, bool, bool | win empty except window kind | Existing window/view/migration target shape. |
 | | `cmdSeq` | Counter | yes | Original command sequence, null for commandless work. |
 | | `parent` | Id | yes | Explicit parent operation id for a paired migration source-refill view; null everywhere else. Both `op` and `parent` are bounded opaque ids with no spelling guarantee; never parse or infer the relation from `op`. |
@@ -1244,6 +1246,17 @@ that step's ordered proof and requiring the exact planned ID for removal.
   controlled frame lane, never a maximized target, attempt or projected native
   fact. `CommandResult::Maximize` remains the existing shape and describes the
   core-resolved toggle, not native completion or independent write permission.
+
+- Directional and born maximize clears publish `state` targets with
+  `property:"maximized"`, `value:false`, and `automaticClear:true`. The
+  target's `cmdSeq` is the originating requester sequence for directional
+  clear and null for commandless born clear. KDE uses the synchronous
+  automatic-clear setter with fresh safety, homing and frame checks and no
+  preimage write; ordinary explicit maximize targets omit the marker and
+  keep the durable preimage executor. Native feedback does not echo the
+  marker. Renderer projections omit the automatic state target entirely.
+  Core retains the continuation and requester provenance; the
+  `operationSettled` kind and operation identity are unchanged.
 
 - Scope authority (`ScopeStatus`) and row authority (`WindowDesire`) are
   independent: scope authority gates scope-level actuation (including
@@ -1690,16 +1703,13 @@ that step's ordered proof and requiring the exact planned ID for removal.
 | `ViewAttempt` | `kind,op,out,ws,setter` | `"view"`, Id, OutputId, WorkspaceId, SetterOutcome | no | Output-scoped native selector evidence for existing parent/phase. |
 | | `pre,post,base` | WorkspaceRef with kind native | yes | Native before/after/observation baseline only. |
 | | `attemptMs` | Counter | no | Original stamp. |
-| `ClearAttempt` | `kind,op,win,setter` | `"clear"`, Id, WindowId, SetterOutcome | no | Maximize-clear operation and exact window lifetime. |
-| | `pre,post` | bool | yes | Observed maximize state immediately around call. |
-| | `attemptMs` | Counter | no | Original stamp. |
 | `StateAttempt` | `kind,win,property,target,rev` | `"state"`, WindowId, state property, bool, Counter | no | Exact core native-state target. |
 | | `setter` | SetterOutcome | no | Actual native call disposition. |
 | | `pre,post` | bool | yes | Observed property immediately around call. |
 | | `attemptMs` | Counter | no | Original stamp. |
 
-- Duplicate keys by kind: frame by `win`, membership and clear by
-  `(op,win)`, view by `op`, native state by `(win,property)`, visibility by
+- Duplicate keys by kind: frame by `win`, membership by `(op,win)`, view by
+  `op`, native state by `(win,property)`, visibility by
   `win`. Identifiable held rows count toward the same uniqueness checks.
   Ingress uniqueness applies even if the window is absent or close-only.
   A visibility duplicate refuses as `snapshot-invalid` with
@@ -1708,13 +1718,14 @@ that step's ordered proof and requiring the exact planned ID for removal.
   Identifiable malformed visibility evidence for a live or held window
   holds only that scope. Native state malformed or duplicate rows refuse
   rather than holding.
-- Decode by fixed kind/section order: frame, membership, view, clear,
-  separate creation, native state, visibility, then
-  separate focus feedback. Use producer order within each kind; the first
+- Decode by fixed kind/section order: frame, membership, view, separate
+  creation, native state, visibility, then separate focus feedback. Use
+  producer order within each kind; the first
   hard error wins. The input ordinal is for wire reconstruction, not
   settlement. Broker clock validation checks comparable canonical stamps
-  for frame, membership, view, clear and creation even on rows later held;
-  it does not add that check for native state or visibility.
+  for frame, membership, view and creation even on rows later held;
+  it does not add that check for native state (including automatic maximize
+  clears) or visibility. The retired `kind:"clear"` attempt refuses.
 
 - StateAttempt `rev` is the acted-on WorldReply publication's `rev`, not the later
   report's `obs` or `reqSeq`, nor the write's `attemptMs`. The adapter acts only
@@ -2127,7 +2138,7 @@ that step's ordered proof and requiring the exact planned ID for removal.
 | --- | --- |
 | `OutputDesire`, `TilingMode`, `FloatOrigin`, `TransferKind`, `ScopeAuthority`, `HoldReason` | [Desired rows](world-contract-v3.md#4-desired-world-state-what-the-reply-authorizes), [world_report.rs](../../crates/tiler-core/src/world_report.rs) |
 | `NativeObservation`, `NativeOccupancy`, `NativeCreationDesire`, `NativeCreationAttempt` | [Adoption](world-contract-v3.md#host-owned-adoption-amendment-tentative-2026-10-25), [world_report.rs](../../crates/tiler-core/src/world_report.rs) |
-| `FrameAttempt`, `ClearAttempt`, `OperationOutcome` | [Settlement](world-contract-v3.md#5-raw-attempts-and-settlement), [world_report.rs](../../crates/tiler-core/src/world_report.rs) |
+| `FrameAttempt`, `OperationOutcome` | [Settlement](world-contract-v3.md#5-raw-attempts-and-settlement), [world_report.rs](../../crates/tiler-core/src/world_report.rs) |
 | `WindowSizeHints`, `FixedSizePredicate` | [size_hints.rs](../../crates/tiler-core/src/size_hints.rs) |
 | `WorkspaceMode`, `MigrationSourceRefill`, `SwitchTarget`, `FreshPlacement`, `BornMaximized` | [Settings baseline](world-contract-v3.md#current-message-shapes-v3), [catalog](../../crates/tiler-core/src/settings_catalog.rs) |
 | `CommandResult::Float`, `CommandResult::Migration`, `CommandResult::Maximize`, `DirectionalOutcome` | [Results](world-contract-v3.md#current-message-shapes-v3), [world_report.rs](../../crates/tiler-core/src/world_report.rs), [world_directional.rs](../../crates/tiler-core/src/world_directional.rs) |

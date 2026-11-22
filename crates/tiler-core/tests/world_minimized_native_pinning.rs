@@ -169,7 +169,6 @@ fn report(
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
@@ -320,7 +319,6 @@ fn sticky_none_unknown_retained_as_minimized_hold_without_collapse() {
     assert_eq!(row.allocation, None);
     assert_eq!(row.effective_frame, None);
     assert_eq!(row.frame_operation, None);
-    assert_eq!(row.clear_operation, None);
 }
 
 #[test]
@@ -560,7 +558,6 @@ fn minimized_send_focus_and_directional_refuse_without_move() {
     assert_eq!(row.allocation, None, "no managed geometry");
     assert_eq!(row.effective_frame, None, "no placement");
     assert_eq!(row.frame_operation, None, "no placement token");
-    assert_eq!(row.clear_operation, None, "no clear token");
     // Explicit send of the minimized lifetime refuses without a flight.
     let mut send_report = report(
         3,

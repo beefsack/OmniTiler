@@ -221,9 +221,9 @@ fn v4_fixture_census_matches_contract() {
             .filter(|fixture| fixture.expectation == expectation)
             .count()
     };
-    assert_eq!(count("valid-wire"), 128, "valid-wire count");
+    assert_eq!(count("valid-wire"), 127, "valid-wire count");
     assert_eq!(count("accepted-held-row"), 81, "accepted-held-row count");
-    assert_eq!(count("reject-wire"), 83, "reject-wire count");
+    assert_eq!(count("reject-wire"), 84, "reject-wire count");
 }
 
 #[test]
@@ -233,7 +233,7 @@ fn v4_valid_wire_accepts() {
         .iter()
         .filter(|fixture| fixture.expectation == "valid-wire")
         .collect();
-    assert_eq!(valid.len(), 128);
+    assert_eq!(valid.len(), 127);
     for fixture in valid {
         let decoded = decode_ok(&fixture.file);
         assert_eq!(decoded.report.contract_version, 4, "{}", fixture.id);
@@ -655,7 +655,6 @@ fn attempt_schema(lane: AttemptLaneV4) -> &'static [&'static str] {
             "base",
             "attemptMs",
         ],
-        AttemptLaneV4::Clear => &["kind", "op", "win", "setter", "pre", "post", "attemptMs"],
         AttemptLaneV4::State => &[
             "kind",
             "win",
@@ -691,7 +690,6 @@ fn lane_key(lane: &str, row: &serde_json::Value) -> (&'static str, AttemptLaneV4
                 "frame" => AttemptLaneV4::Frame,
                 "member" => AttemptLaneV4::Member,
                 "view" => AttemptLaneV4::View,
-                "clear" => AttemptLaneV4::Clear,
                 "state" => AttemptLaneV4::State,
                 "visibility" => AttemptLaneV4::Visibility,
                 other => panic!("unexpected propertyAttempts kind {other}"),
@@ -1038,6 +1036,7 @@ fn expected_reject(rule: &str) -> (&'static str, &'static str) {
             ("snapshot-invalid", "arrival-host-mismatch")
         }
         "executable-missing" => ("malformed", "request is malformed"),
+        "retired-clear-attempt" => ("unknown-value", "request contains an unknown value"),
         other => panic!("reject table misses rule {other}"),
     }
 }
@@ -1132,7 +1131,7 @@ fn v4_reject_wire_refuses_then_repairs() {
         })
         .collect();
     rejects.sort_by(|left, right| left.file.cmp(&right.file));
-    assert_eq!(rejects.len(), 81, "non-host reject count");
+    assert_eq!(rejects.len(), 82, "non-host reject count");
     for fixture in rejects {
         let invalid = fixture.invalid.clone().expect("reject pins a pointer");
         let (kind, message) = expected_reject(&invalid.rule);
@@ -1394,24 +1393,6 @@ fn view_attempt_row(i: usize, held: bool) -> serde_json::Value {
     row
 }
 
-fn clear_attempt_row(i: usize, held: bool) -> serde_json::Value {
-    let mut row = serde_json::json!({
-        "kind": "clear",
-        "op": format!("clear-{i:05}"),
-        "win": format!("win-{i:05}"),
-        "setter": "refused",
-        "pre": true,
-        "post": true,
-        "attemptMs": "20",
-    });
-    if held {
-        row.as_object_mut()
-            .expect("object")
-            .insert("zzzExtra".to_owned(), serde_json::Value::Bool(true));
-    }
-    row
-}
-
 fn state_attempt_row(i: usize) -> serde_json::Value {
     serde_json::json!({
         "kind": "state",
@@ -1552,17 +1533,6 @@ fn v4_attempt_section_caps_count_held_rows() {
     let error = decode_report_v4(&doc.to_string()).expect_err("view cap+1 refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "section-over-cap");
-    let mut doc = fixture_value("messages/report-attempt-clear.json");
-    set_lane(
-        &mut doc,
-        "propertyAttempts",
-        (0..1025)
-            .map(|i| clear_attempt_row(i, i % 2 == 0))
-            .collect(),
-    );
-    let error = decode_report_v4(&doc.to_string()).expect_err("clear cap+1 refuses");
-    assert_eq!(error.kind, "snapshot-invalid");
-    assert_eq!(error.message, "section-over-cap");
 }
 
 #[test]
@@ -1624,12 +1594,11 @@ fn v4_visibility_attempt_cap_10000_accepts_mixed_and_10001_refuses() {
 }
 
 #[test]
-fn v4_unified_property_attempts_total_cap_15120_and_15121() {
-    let mut rows = Vec::with_capacity(15_121);
+fn v4_unified_property_attempts_total_cap_14096_and_14097() {
+    let mut rows = Vec::with_capacity(14_097);
     rows.extend((0..1024).map(|i| frame_attempt_row(i, false)));
     rows.extend((0..1024).map(|i| member_attempt_row(i, false)));
     rows.extend((0..1024).map(|i| view_attempt_row(i, false)));
-    rows.extend((0..1024).map(|i| clear_attempt_row(i, false)));
     rows.extend((0..1024).map(state_attempt_row));
     rows.extend((0..10_000).map(|i| visibility_attempt_row(i, false)));
 
@@ -1641,19 +1610,18 @@ fn v4_unified_property_attempts_total_cap_15120_and_15121() {
     assert_eq!(decoded.report.frames.len(), 1024);
     assert_eq!(decoded.report.member_attempts.len(), 1024);
     assert_eq!(decoded.report.view_attempts.len(), 1024);
-    assert_eq!(decoded.report.clear_attempts.len(), 1024);
     assert_eq!(decoded.report.state_attempts.len(), 1024);
     assert_eq!(decoded.report.visibility_attempts.len(), 10_000);
 
     // Earlier-precedence discriminator: a malformed frame row with a valid
-    // kind tag fails before later per-kind caps when total <= 15120, but
-    // 15121 refuses immediately at the initial total cap.
+    // kind tag fails before later per-kind caps when total <= 14096, but
+    // 14097 refuses immediately at the initial total cap.
     rows[0] = serde_json::json!({"kind": "frame"});
     let mut doc = fixture_value("messages/report-attempt-frame-ordinary.json");
     set_lane(&mut doc, "propertyAttempts", rows.clone());
     let wire = doc.to_string();
     assert!(wire.len() < tiler_protocol::world_protocol::WORLD_MAX_REQUEST_BYTES);
-    let error = decode_report_v4(&wire).expect_err("15120 with malformed frame refuses");
+    let error = decode_report_v4(&wire).expect_err("14096 with malformed frame refuses");
     assert_eq!(error.kind, "malformed");
     assert_eq!(error.message, "request is malformed");
 
@@ -2134,7 +2102,7 @@ fn v4_writer_round_trips_all_accepted_fixtures() {
             fixture.expectation == "valid-wire" || fixture.expectation == "accepted-held-row"
         })
         .collect();
-    assert_eq!(accepted.len(), 209, "accepted fixture count");
+    assert_eq!(accepted.len(), 208, "accepted fixture count");
     for fixture in accepted {
         let text = fixture_text(&fixture.file);
         let decoded = decode_report_v4(&text).expect("accepted fixture decodes");
@@ -2166,7 +2134,7 @@ fn v4_writer_non_canonical_fixture_is_the_escaping_input() {
             fixture.expectation == "valid-wire" || fixture.expectation == "accepted-held-row"
         })
         .collect();
-    assert_eq!(accepted.len(), 209, "accepted fixture count");
+    assert_eq!(accepted.len(), 208, "accepted fixture count");
     let non_canonical: Vec<&ManifestFixture> = accepted
         .iter()
         .filter(|fixture| !fixture.canonical)
@@ -3050,4 +3018,22 @@ fn raw_action_outputs_capped_at_max_world_screens() {
     let error = decode_report_v4(&over_cap.to_string()).expect_err("actionOutputs cap+1 refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "section-over-cap");
+}
+
+#[test]
+fn active_v4_rejects_retired_clear_attempt_kind() {
+    let mut doc = fixture_value("messages/report-observe.json");
+    doc["propertyAttempts"] = serde_json::json!([
+        {
+            "kind": "clear",
+            "op": "op-1",
+            "win": "win-a",
+            "setter": "accepted",
+            "pre": true,
+            "post": false,
+            "attemptMs": "20"
+        }
+    ]);
+    let error = decode_report_v4(&doc.to_string()).expect_err("retired kind=clear must refuse");
+    assert_eq!(error.kind, "unknown-value");
 }

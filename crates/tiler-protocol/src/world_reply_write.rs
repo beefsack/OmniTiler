@@ -145,6 +145,7 @@ fn write_output_desire_v4<S: ReplySink>(row: &OutputDesire, sink: &mut S) -> Res
 fn write_window_target_lanes<S: ReplySink>(
     row: &WindowDesire,
     obj: &mut ObjectWriter<'_, S>,
+    include_ops: bool,
 ) -> Result<()> {
     obj.field_opt_u64_str("cmdSeq", row.command_seq)?;
     obj.field("visibility", |s| match &row.visibility {
@@ -165,7 +166,13 @@ fn write_window_target_lanes<S: ReplySink>(
             .hold_reason()
             .map_or("", HoldReason::as_str),
     )?;
-    obj.field_array("state", &row.state, |target, s| {
+    let write_state_target = |target: &tiler_core::world_report::StateTarget, s: &mut S| {
+        if target.automatic_clear
+            && (target.property != tiler_core::world_report::StateProperty::Maximized
+                || target.value)
+        {
+            return Err(unknown_value());
+        }
         s.write_object(|st| {
             st.field_str("property", target.property.as_str())?;
             st.field_bool("value", target.value)?;
@@ -177,8 +184,28 @@ fn write_window_target_lanes<S: ReplySink>(
                     .hold_reason()
                     .map_or("", HoldReason::as_str),
             )?;
-            st.field_opt_u64_str("cmdSeq", target.command_seq)
+            st.field_opt_u64_str("cmdSeq", target.command_seq)?;
+            if target.automatic_clear {
+                st.field_bool("automaticClear", true)?;
+            }
+            Ok(())
         })
+    };
+    obj.field("state", |s| {
+        s.push_char('[');
+        let mut first = true;
+        for target in &row.state {
+            if !include_ops && target.automatic_clear {
+                continue;
+            }
+            if !first {
+                s.push_char(',');
+            }
+            first = false;
+            write_state_target(target, s)?;
+        }
+        s.push_char(']');
+        Ok(())
     })
 }
 
@@ -215,10 +242,7 @@ fn write_window_desire_v4<S: ReplySink>(
             "float_origin",
             row.float_origin.map_or("", FloatOrigin::as_str),
         )?;
-        if include_ops {
-            obj.field_str("clear_op", row.clear_operation.as_deref().unwrap_or(""))?;
-        }
-        write_window_target_lanes(row, obj)
+        write_window_target_lanes(row, obj, include_ops)
     })
 }
 
@@ -1019,7 +1043,7 @@ pub fn write_cached_projection_v4_prevalidated(
 
 /// Checked renderer projection writer over a borrowed [`WorldReplyV4`].
 /// Reuses the shared typed reply validator and typed row writers while
-/// stripping `frame_op` and `clear_op` from `windows` and retaining the exact
+/// stripping `frame_op` from `windows` and retaining the exact
 /// preview/authority fields in lexicographic object key order with `serde_json`
 /// string escaping.
 pub fn write_projection_reply_v4(

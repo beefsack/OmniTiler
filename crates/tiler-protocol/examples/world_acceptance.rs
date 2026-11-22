@@ -405,7 +405,6 @@ fn build_report_v4(
         frames: vec![],
         member_attempts: vec![],
         view_attempts: vec![],
-        clear_attempts: vec![],
         creation_attempts: vec![],
         held_attempts: vec![],
         state_attempts: Vec::new(),
@@ -887,7 +886,6 @@ fn check(case: &CaseFile, pairs: &[(WorldReportV4, WorldReplyV4)]) -> Result<Vec
                 || row.floating
                 || row.float_origin.is_some()
                 || row.frame_operation.is_some()
-                || row.clear_operation.is_some()
             {
                 return Err(fail(
                     at,

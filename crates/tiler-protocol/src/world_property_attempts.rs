@@ -6,11 +6,11 @@ use std::collections::BTreeSet;
 use tiler_core::bounds::is_opaque_id;
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::world_report::{
-    AttemptLaneV4, ClearAttempt, FrameAttempt, HeldAttemptRow, LastWritePath,
-    MAX_WORLD_CLEAR_ATTEMPTS, MAX_WORLD_FRAMES, MAX_WORLD_MEMBER_ATTEMPTS,
-    MAX_WORLD_PROPERTY_ATTEMPTS, MAX_WORLD_STATE_ATTEMPTS, MAX_WORLD_VIEW_ATTEMPTS,
-    MAX_WORLD_VISIBILITY_ATTEMPTS, MemberAttempt, MemberDisposition, StateAttempt, StateProperty,
-    ViewAttempt, VisibilityAttempt, VisibilityReason, VisibilitySetter,
+    AttemptLaneV4, FrameAttempt, HeldAttemptRow, LastWritePath, MAX_WORLD_FRAMES,
+    MAX_WORLD_MEMBER_ATTEMPTS, MAX_WORLD_PROPERTY_ATTEMPTS, MAX_WORLD_STATE_ATTEMPTS,
+    MAX_WORLD_VIEW_ATTEMPTS, MAX_WORLD_VISIBILITY_ATTEMPTS, MemberAttempt, MemberDisposition,
+    StateAttempt, StateProperty, ViewAttempt, VisibilityAttempt, VisibilityReason,
+    VisibilitySetter,
 };
 
 use crate::world_protocol::{
@@ -34,13 +34,12 @@ pub(crate) enum AttemptRowOutcome<T> {
     },
 }
 
-/// Decoded `propertyAttempts` prefix (`frame -> member -> view -> clear`)
+/// Decoded `propertyAttempts` prefix (`frame -> member -> view`)
 /// plus wire-order reconstruction metadata.
 pub(crate) struct DecodedPropertyPrefix {
     pub frames: Vec<FrameAttempt>,
     pub member_attempts: Vec<MemberAttempt>,
     pub view_attempts: Vec<ViewAttempt>,
-    pub clear_attempts: Vec<ClearAttempt>,
     pub held_attempts: Vec<HeldAttemptRow>,
     pub held_attempt_fields: Vec<(AttemptLaneV4, usize, HeldFields)>,
     pub property_attempt_order: Vec<AttemptLaneV4>,
@@ -78,7 +77,6 @@ pub(crate) fn decode_property_attempts_prefix(
     let mut frame_bucket = Vec::new();
     let mut member_bucket = Vec::new();
     let mut view_bucket = Vec::new();
-    let mut clear_bucket = Vec::new();
     let mut state_bucket = Vec::new();
     let mut visibility_bucket = Vec::new();
     let mut property_attempt_order = Vec::with_capacity(items.len());
@@ -99,10 +97,6 @@ pub(crate) fn decode_property_attempts_prefix(
                 "view" => {
                     view_bucket.push((ordinal, item));
                     AttemptLaneV4::View
-                }
-                "clear" => {
-                    clear_bucket.push((ordinal, item));
-                    AttemptLaneV4::Clear
                 }
                 "state" => {
                     state_bucket.push((ordinal, item));
@@ -167,27 +161,11 @@ pub(crate) fn decode_property_attempts_prefix(
         }
     }
 
-    if clear_bucket.len() > MAX_WORLD_CLEAR_ATTEMPTS {
-        return Err(section_over_cap());
-    }
-    let mut clear_attempts = Vec::new();
-    let mut seen_clears = BTreeSet::new();
-    for (ordinal, item) in clear_bucket {
-        match decode_clear_attempt_v4(item, ordinal, &mut seen_clears)? {
-            AttemptRowOutcome::Valid(attempt) => clear_attempts.push(attempt),
-            AttemptRowOutcome::Held { row, fields } => {
-                held_attempt_fields.push((AttemptLaneV4::Clear, row.ordinal, fields));
-                held_attempts.push(row);
-            }
-        }
-    }
-
     Ok((
         DecodedPropertyPrefix {
             frames,
             member_attempts,
             view_attempts,
-            clear_attempts,
             held_attempts,
             held_attempt_fields,
             property_attempt_order,
@@ -552,79 +530,6 @@ fn decode_view_attempt_v4(
     }
 }
 
-fn decode_clear_attempt(value: &serde_json::Value) -> Result<ClearAttempt> {
-    let map = as_object(value)?;
-    check_keys(
-        map,
-        &["kind", "op", "win", "setter", "pre", "post", "attemptMs"],
-    )?;
-    check_kind(map, "clear")?;
-    Ok(ClearAttempt {
-        operation_id: req_id(map, "op")?,
-        window: WindowId(req_id(map, "win")?),
-        setter: parse_frame_setter(req_str(map, "setter")?)?,
-        pre_maximized: opt_bool_or_null(map, "pre")?,
-        post_maximized: opt_bool_or_null(map, "post")?,
-        attempt_ms: req_u64_str(map, "attemptMs")?,
-    })
-}
-
-fn decode_clear_attempt_v4(
-    value: &serde_json::Value,
-    ordinal: usize,
-    seen_clears: &mut BTreeSet<(String, String)>,
-) -> Result<AttemptRowOutcome<ClearAttempt>> {
-    const SCHEMA: &[&str] = &["kind", "op", "win", "setter", "pre", "post", "attemptMs"];
-    let map = as_object(value)?;
-    let extra = map.keys().any(|key| !SCHEMA.contains(&key.as_str()));
-    match decode_clear_attempt(value) {
-        Ok(attempt) => {
-            let key = (attempt.operation_id.clone(), attempt.window.0.clone());
-            if !seen_clears.insert(key) {
-                return Err(WorldProtocolError {
-                    kind: KIND_SNAPSHOT,
-                    message: "duplicate-clear-attempt",
-                });
-            }
-            if extra {
-                let (row, fields) = held_attempt_row(
-                    AttemptLaneV4::Clear,
-                    ordinal,
-                    map,
-                    SCHEMA,
-                    vec![attempt.operation_id, attempt.window.0],
-                    attempt_hold_scope(map),
-                );
-                return Ok(AttemptRowOutcome::Held { row, fields });
-            }
-            Ok(AttemptRowOutcome::Valid(attempt))
-        }
-        Err(reason) => {
-            let (op, win) = attempt_identity(map, true, true);
-            match (op, win) {
-                (Some(op), Some(win)) => {
-                    if !seen_clears.insert((op.clone(), win.clone())) {
-                        return Err(WorldProtocolError {
-                            kind: KIND_SNAPSHOT,
-                            message: "duplicate-clear-attempt",
-                        });
-                    }
-                    let (row, fields) = held_attempt_row(
-                        AttemptLaneV4::Clear,
-                        ordinal,
-                        map,
-                        SCHEMA,
-                        vec![op, win],
-                        attempt_hold_scope(map),
-                    );
-                    Ok(AttemptRowOutcome::Held { row, fields })
-                }
-                _ => Err(reason),
-            }
-        }
-    }
-}
-
 /// Decode one raw native-state attempt row. Strict mechanical row: missing
 /// keys, unknown keys, unknown property/setter tokens, or bad decimal
 /// counters refuse.
@@ -802,24 +707,6 @@ fn encode_view_attempt_v4(row: &ViewAttempt) -> Result<String> {
     Ok(out)
 }
 
-fn encode_clear_attempt_v4(row: &ClearAttempt) -> Result<String> {
-    let mut out = String::new();
-    out.push_str("{\"kind\":\"clear\",\"op\":");
-    push_json_string(&mut out, &row.operation_id);
-    out.push_str(",\"win\":");
-    push_json_string(&mut out, &row.window.0);
-    out.push_str(",\"setter\":");
-    push_json_string(&mut out, row.setter.as_str());
-    out.push_str(",\"pre\":");
-    push_opt_bool(&mut out, &row.pre_maximized);
-    out.push_str(",\"post\":");
-    push_opt_bool(&mut out, &row.post_maximized);
-    out.push_str(",\"attemptMs\":\"");
-    out.push_str(&row.attempt_ms.to_string());
-    out.push_str("\"}");
-    Ok(out)
-}
-
 fn encode_state_attempt(row: &StateAttempt) -> Result<String> {
     let mut out = String::new();
     out.push_str("{\"kind\":\"state\",\"win\":");
@@ -902,7 +789,6 @@ pub(crate) fn encode_property_attempts_v4(
     let mut frames = report.frames.iter();
     let mut members = report.member_attempts.iter();
     let mut views = report.view_attempts.iter();
-    let mut clears = report.clear_attempts.iter();
     let mut states = report.state_attempts.iter();
     let mut visibilities = report.visibility_attempts.iter();
 
@@ -937,11 +823,6 @@ pub(crate) fn encode_property_attempts_v4(
                         .next()
                         .ok_or_else(|| snapshot_invalid("property-attempt-order-invalid"))?,
                 )?,
-                AttemptLaneV4::Clear => encode_clear_attempt_v4(
-                    clears
-                        .next()
-                        .ok_or_else(|| snapshot_invalid("property-attempt-order-invalid"))?,
-                )?,
                 AttemptLaneV4::State => encode_state_attempt(
                     states
                         .next()
@@ -961,7 +842,6 @@ pub(crate) fn encode_property_attempts_v4(
         || frames.next().is_some()
         || members.next().is_some()
         || views.next().is_some()
-        || clears.next().is_some()
         || states.next().is_some()
         || visibilities.next().is_some()
     {

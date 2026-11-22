@@ -491,7 +491,6 @@ const winRow = (
     frame_auth: auth, frame_hold: "",
     member_auth: auth, member_hold: "",
     frame_op: "",
-    clear_op: "",
     floating: false, float_origin: "",
     cmdSeq: null,
     visibility: null, visibility_auth: "untouched", visibility_hold: "",
@@ -528,7 +527,7 @@ describe("world fullscreen float toggle", () => {
         // the retained placement token, the sibling reflows into the gap.
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "1", {
             windows: [
-                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true }),
+                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", floating: true }),
                 winRow(WIN_B, TILE_B_FULL, "controlled"),
             ],
             result: { op: "toggle-float", win: WIN_A, rect: [...FLOAT_A] },
@@ -562,7 +561,7 @@ describe("world fullscreen float toggle", () => {
         let body = JSON.parse(call.payload) as Record<string, unknown>;
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "1", {
             windows: [
-                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true }),
+                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", floating: true }),
                 winRow(WIN_B, TILE_B_FULL, "controlled"),
             ],
             result: { op: "toggle-float", win: WIN_A, rect: [...FLOAT_A] },
@@ -611,7 +610,7 @@ describe("world fullscreen float toggle", () => {
         );
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "3", {
             windows: [
-                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-3", clear_op: "", floating: true }),
+                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-3", floating: true }),
                 winRow(WIN_B, TILE_B_FULL, "controlled"),
             ],
             result: { op: "toggle-float", win: WIN_A, rect: [...FLOAT_A] },
@@ -634,7 +633,7 @@ describe("world fullscreen float toggle", () => {
         let body = JSON.parse(call.payload) as Record<string, unknown>;
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "1", {
             windows: [
-                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true }),
+                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", floating: true }),
                 winRow(WIN_B, TILE_B_FULL, "controlled"),
             ],
             result: { op: "toggle-float", win: WIN_A, rect: [...FLOAT_A] },
@@ -650,7 +649,7 @@ describe("world fullscreen float toggle", () => {
         body = JSON.parse(call.payload) as Record<string, unknown>;
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "2", {
             windows: [
-                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true }),
+                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", floating: true }),
                 winRow(WIN_B, TILE_B_FULL, "controlled"),
             ],
             dragPreview: null,
@@ -673,7 +672,7 @@ describe("world fullscreen float toggle", () => {
         let body = JSON.parse(call.payload) as Record<string, unknown>;
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "1", {
             windows: [
-                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true }),
+                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", floating: true }),
                 winRow(WIN_B, TILE_B_FULL, "controlled"),
             ],
             result: { op: "toggle-float", win: WIN_A, rect: [...FLOAT_A] },
@@ -899,7 +898,7 @@ describe("world maximize toggle", () => {
         entry.requestFloat();
         h.runTimers();
         acceptMaximize(h, "1", [
-            winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true }),
+            winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", floating: true }),
             winRow(WIN_B, TILE_B_FULL, "controlled"),
         ], { op: "toggle-float", win: WIN_A, rect: [...FLOAT_A] });
         assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [], "float beneath fullscreen writes nothing");
@@ -909,13 +908,13 @@ describe("world maximize toggle", () => {
         const filed = JSON.parse(h.lastCall("QueueWorldCommand").payload) as Record<string, unknown>;
         assert.deepEqual(filed["command"], { op: "toggle-maximize", win: { currentFocus: true } });
         acceptMaximize(h, "2", [
-            winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true }),
+            winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", floating: true }),
             winRow(WIN_B, TILE_B_FULL, "controlled"),
         ], maximizeResult(true, true, false));
         assert.deepEqual(h.subjectNativeWrites(`{${WIN_A}}`), [], "descriptive take result writes nothing");
         nextAccept(h, "3", {
             windows: [
-                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true, state: [fullRow(false, "1"), maxRow(true, "1")] }),
+                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", floating: true, state: [fullRow(false, "1"), maxRow(true, "1")] }),
                 winRow(WIN_B, TILE_B_FULL, "controlled"),
             ],
         });
@@ -929,13 +928,13 @@ describe("world maximize toggle", () => {
         entry.requestMaximize();
         h.runTimers();
         acceptMaximize(h, "4", [
-            winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true }),
+            winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", floating: true }),
             winRow(WIN_B, TILE_B_FULL, "controlled"),
         ], maximizeResult(false, false, true));
         assert.equal(h.subjectNativeWrites(`{${WIN_A}}`).length, 2, "descriptive restore result writes nothing");
         nextAccept(h, "5", {
             windows: [
-                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true, state: [maxRow(false, "2")] }),
+                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", floating: true, state: [maxRow(false, "2")] }),
                 winRow(WIN_B, TILE_B_FULL, "controlled"),
             ],
         });
@@ -950,7 +949,7 @@ describe("world maximize toggle", () => {
         // A later rowless report reissues nothing and never fails labels.
         nextAccept(h, "6", {
             windows: [
-                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true }),
+                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", floating: true }),
                 winRow(WIN_B, TILE_B_FULL, "controlled"),
             ],
         });

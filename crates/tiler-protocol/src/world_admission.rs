@@ -391,7 +391,6 @@ mod tests {
             floating: false,
             float_origin: None,
             frame_operation: Some(format!("op-f-{i:05}-{}", "f".repeat(115))),
-            clear_operation: Some(format!("op-c-{i:05}-{}", "c".repeat(115))),
             command_seq: None,
             visibility: None,
             visibility_authority: ScopeAuthority::Untouched,
@@ -401,24 +400,28 @@ mod tests {
                     value: false,
                     authority: ScopeAuthority::Untouched,
                     command_seq: None,
+                    automatic_clear: false,
                 },
                 StateTarget {
                     property: StateProperty::Maximized,
                     value: false,
                     authority: ScopeAuthority::Untouched,
                     command_seq: None,
+                    automatic_clear: false,
                 },
                 StateTarget {
                     property: StateProperty::Sticky,
                     value: false,
                     authority: ScopeAuthority::Untouched,
                     command_seq: None,
+                    automatic_clear: false,
                 },
                 StateTarget {
                     property: StateProperty::Above,
                     value: false,
                     authority: ScopeAuthority::Untouched,
                     command_seq: None,
+                    automatic_clear: false,
                 },
             ],
         }
@@ -475,7 +478,7 @@ mod tests {
         // Historical legacy `reply_estimate_v4(&reply)` count captured before removal
         // for this exact witness (100 short afterShown members + 3241 pad_win rows).
         const HISTORICAL_LEGACY_ESTIMATE: usize = 4_239_352;
-        assert_eq!(reply.windows.len(), 3_241);
+        assert_eq!(reply.windows.len(), 3_634);
         assert_eq!(
             reply
                 .focus_request
@@ -484,8 +487,8 @@ mod tests {
                 .map(|shown| shown.members.len()),
             Some(100)
         );
-        // Exact serialized size after retiring the 13-byte `"effects":[],` member.
-        assert_eq!(exact, 4_192_826);
+        // Exact serialized size after retiring `"effects":[],` and per-row `"clear_op":null,`.
+        assert_eq!(exact, 4_191_822);
         assert!(
             exact.saturating_add(future_reserve) <= WORLD_MAX_REPLY_BYTES,
             "exact + future reserve must fit under 4 MiB"
@@ -707,7 +710,6 @@ mod tests {
             frames: Vec::new(),
             member_attempts: Vec::new(),
             view_attempts: Vec::new(),
-            clear_attempts: Vec::new(),
             creation_attempts: Vec::new(),
             held_attempts: Vec::new(),
             state_attempts: Vec::new(),

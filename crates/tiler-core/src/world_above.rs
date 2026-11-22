@@ -278,6 +278,7 @@ impl WorldTransaction<'_> {
                         home,
                         latched: false,
                     }),
+                    clear_meta: None,
                 },
             );
         }
@@ -301,6 +302,7 @@ impl WorldTransaction<'_> {
                         home,
                         latched: false,
                     }),
+                    clear_meta: None,
                 },
             );
         }
@@ -379,6 +381,7 @@ impl WorldTransaction<'_> {
                 value: binding.target.value,
                 authority,
                 command_seq: None,
+                automatic_clear: false,
             });
         }
     }
@@ -2169,6 +2172,7 @@ mod tests {
                     fullscreen_meta: None,
                     maximize_meta: None,
                     above_meta: None,
+                    clear_meta: None,
                 },
             );
         }
@@ -2265,6 +2269,7 @@ mod tests {
                     fullscreen_meta: None,
                     maximize_meta: None,
                     above_meta: None,
+                    clear_meta: None,
                 },
             );
         }

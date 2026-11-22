@@ -24,7 +24,7 @@
 //!   loses the outcome), and `ReadWorldPresentation` reads the cached
 //!   accepted presentation plus the current drop preview. One-shot lanes
 //!   (result, transfers, effects, settlements, warp) and native write
-//!   tokens (`frame_op`, `clear_op`) never enter the presentation cache;
+//!   tokens (`frame_op`) never enter the presentation cache;
 //!   only the renderer-only drop preview (paint `rect`, mover-home
 //!   `sourceOut`/`sourceWs`, insertion-neighbor `win`; or null) rides
 //!   alongside it so a renderer without take-lane authority can paint
@@ -100,7 +100,7 @@
 //!   Replies {"v":4,"outcome":"presentation","gen","req","rev","obs",
 //!   "scopes","workspaces","outputs","windows","presentation","preview"} from
 //!   the last accepted capture, or a not-ready rejection before the first
-//!   one. Window rows carry no frame_op/clear_op tokens. `preview` is the
+//!   one. Window rows carry no frame_op tokens. `preview` is the
 //!   renderer-only drop preview (paint `rect`, mover-home `sourceOut`/
 //!   `sourceWs`, insertion-neighbor `win`) when the cached reply carried a
 //!   drop preview, else null; every one-shot lane stays excluded.
@@ -2499,7 +2499,7 @@ fn attempt_ms_fits_clock(item: &serde_json::Value, clock: u64) -> bool {
 
 fn attempts_clock_valid(inner: &serde_json::Map<String, serde_json::Value>, clock: u64) -> bool {
     if let Some(items) = inner.get("propertyAttempts").and_then(|v| v.as_array()) {
-        for kind_name in ["frame", "member", "view", "clear"] {
+        for kind_name in ["frame", "member", "view"] {
             for item in items {
                 let Some(kind) = item.get("kind").and_then(|v| v.as_str()) else {
                     continue;
@@ -2717,7 +2717,7 @@ fn drag_preview_of(encoded: &str) -> Option<serde_json::Value> {
 
 /// Project one accepted reply for the presentation cache: snapshot plus
 /// presentation plus the renderer-only drop preview, with the native write
-/// tokens (`frame_op`, `clear_op`) stripped from every window row.
+/// tokens (`frame_op`) stripped from every window row.
 /// One-shot lanes (transfers, effects, settlements, warp) never enter, and
 /// `dragPreview` enters only through the carried `preview` (paint `rect`,
 /// mover-home source, insertion-neighbor window, producing-gesture identity
@@ -2733,7 +2733,14 @@ fn project_reply(encoded: &str, preview: Option<&CarriedPreview>) -> String {
         for row in rows {
             if let Some(map) = row.as_object_mut() {
                 map.remove("frame_op");
-                map.remove("clear_op");
+                if let Some(states) = map
+                    .get_mut("state")
+                    .and_then(serde_json::Value::as_array_mut)
+                {
+                    states.retain(|item| {
+                        item.get("automaticClear") != Some(&serde_json::json!(true))
+                    });
+                }
             }
         }
     }
@@ -3162,7 +3169,7 @@ mod tests {
     #[test]
     fn projection_drops_write_tokens_and_one_shot_lanes() {
         let reply = "{\"v\":4,\"rev\":\"3\",\"obs\":\"2\",\"scopes\":[],\"workspaces\":[],\
-            \"outputs\":[],\"windows\":[{\"win\":\"w\",\"frame_op\":\"op-1\",\"clear_op\":\"op-1\",\
+            \"outputs\":[],\"windows\":[{\"win\":\"w\",\"frame_op\":\"op-1\",\
             \"alloc\":null}],\"transfers\":[{}],\"effects\":[{}],\"dragPreview\":null,\
             \"operationSettled\":[{}],\"gestureSettled\":null,\"presentation\":{}}";
         let unproven = CarriedPreview::unproven(drag_preview_of(reply));
@@ -3170,7 +3177,6 @@ mod tests {
             serde_json::from_str(&project_reply(reply, unproven.as_ref())).expect("JSON");
         let window = &projection["windows"][0];
         assert!(window.get("frame_op").is_none());
-        assert!(window.get("clear_op").is_none());
         assert_eq!(window["win"], "w");
         for key in [
             "dragPreview",

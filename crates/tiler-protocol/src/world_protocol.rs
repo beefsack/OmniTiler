@@ -3983,7 +3983,6 @@ pub fn decode_report_v4_map(
     let frames = decoded_prefix.frames;
     let member_attempts = decoded_prefix.member_attempts;
     let view_attempts = decoded_prefix.view_attempts;
-    let clear_attempts = decoded_prefix.clear_attempts;
     let mut held_attempts = decoded_prefix.held_attempts;
     let mut held_attempt_fields = decoded_prefix.held_attempt_fields;
     let property_attempt_order = decoded_prefix.property_attempt_order;
@@ -4193,7 +4192,6 @@ pub fn decode_report_v4_map(
         frames,
         member_attempts,
         view_attempts,
-        clear_attempts,
         creation_attempts,
         held_attempts,
         presentation,
@@ -4493,7 +4491,11 @@ fn decode_visibility_target(value: &serde_json::Value) -> Result<VisibilityTarge
 
 fn decode_state_target(value: &serde_json::Value) -> Result<StateTarget> {
     let map = as_object(value)?;
-    check_keys(map, &["property", "value", "auth", "reason", "cmdSeq"])?;
+    check_keys_with_optional(
+        map,
+        &["property", "value", "auth", "reason", "cmdSeq"],
+        &["automaticClear"],
+    )?;
     let property = match req_str(map, "property")? {
         "fullscreen" => StateProperty::Fullscreen,
         "maximized" => StateProperty::Maximized,
@@ -4501,11 +4503,23 @@ fn decode_state_target(value: &serde_json::Value) -> Result<StateTarget> {
         "above" => StateProperty::Above,
         _ => return Err(unknown_value()),
     };
+    let target_value = req_bool(map, "value")?;
+    let automatic_clear = match map.get("automaticClear") {
+        None => false,
+        Some(raw) => {
+            let flag = raw.as_bool().ok_or_else(malformed)?;
+            if !flag || property != StateProperty::Maximized || target_value {
+                return Err(unknown_value());
+            }
+            true
+        }
+    };
     Ok(StateTarget {
         property,
-        value: req_bool(map, "value")?,
+        value: target_value,
         authority: decode_authority_pair(map, "auth", "reason")?,
         command_seq: opt_u64_or_null(map, "cmdSeq")?,
+        automatic_clear,
     })
 }
 
@@ -4526,7 +4540,6 @@ fn decode_window_desire(value: &serde_json::Value) -> Result<WindowDesire> {
             "frame_op",
             "floating",
             "float_origin",
-            "clear_op",
             "cmdSeq",
             "visibility",
             "visibility_auth",
@@ -4536,16 +4549,6 @@ fn decode_window_desire(value: &serde_json::Value) -> Result<WindowDesire> {
     )?;
     let frame_operation = {
         let text = req_str(map, "frame_op")?;
-        if text.is_empty() {
-            None
-        } else if is_opaque_id(text) {
-            Some(text.to_owned())
-        } else {
-            return Err(unknown_value());
-        }
-    };
-    let clear_operation = {
-        let text = req_str(map, "clear_op")?;
         if text.is_empty() {
             None
         } else if is_opaque_id(text) {
@@ -4589,7 +4592,6 @@ fn decode_window_desire(value: &serde_json::Value) -> Result<WindowDesire> {
         floating: req_bool(map, "floating")?,
         float_origin,
         frame_operation,
-        clear_operation,
         command_seq: opt_u64_or_null(map, "cmdSeq")?,
         visibility,
         visibility_authority: decode_authority_pair(map, "visibility_auth", "visibility_hold")?,

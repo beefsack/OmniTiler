@@ -318,7 +318,7 @@ describe("world adapter lifetime state", () => {
         assert.equal(state.markCreationSpent("op-native-1"), true, "spent resets with the generation");
     });
 
-    it("spends retained focus requests once with float/clear tokens and dispatch records", () => {
+    it("spends retained focus requests once with float tokens and dispatch records", () => {
         const state = bound();
         assert.equal(state.observeFocusEnvelope({
             id: "focus-1", target: "win-a", rev: "1", cause: "positive-close",
@@ -329,8 +329,6 @@ describe("world adapter lifetime state", () => {
         assert.equal(state.spendFocus("unknown"), false);
         assert.equal(state.markFloatSpent("op-3"), true);
         assert.equal(state.markFloatSpent("op-3"), false);
-        assert.equal(state.markClearSpent("op-4"), true);
-        assert.equal(state.markClearSpent("op-4"), false);
         state.markDispatched("op-9");
         assert.equal(state.isDispatched("op-9"), true);
         assert.equal(state.isDispatched("op-10"), false);

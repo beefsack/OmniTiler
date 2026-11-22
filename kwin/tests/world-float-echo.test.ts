@@ -251,7 +251,6 @@ function row(spec: RowSpec): Record<string, unknown> {
         frame_auth: spec.frame_auth, frame_hold: spec.frame_hold,
         member_auth: spec.member_auth, member_hold: spec.member_hold,
         frame_op: "", floating: spec.floating, float_origin: spec.float_origin,
-        clear_op: "",
         cmdSeq: null,
         visibility: null, visibility_auth: "untouched", visibility_hold: "",
         state: [],

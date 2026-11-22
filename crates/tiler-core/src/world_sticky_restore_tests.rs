@@ -252,7 +252,7 @@ fn sticky_dominates_float_lane_and_commits_exact_prior_without_ops() {
             .find(|row| row.lifetime.0 == win)
             .expect("float row");
         assert!(row.frame_operation.is_none(), "{row:?}");
-        assert!(row.clear_operation.is_none(), "{row:?}");
+        assert!(!row.state.iter().any(|t| t.automatic_clear), "{row:?}");
     }
     assert_eq!(
         engine
@@ -463,7 +463,7 @@ fn all_six_sticky_priors_admit_as_semantic_float_with_exact_prior() {
         );
         let row = row_for(&reply, "win-a").expect("float row");
         assert!(row.frame_operation.is_none(), "{row:?}");
-        assert!(row.clear_operation.is_none(), "{row:?}");
+        assert!(!row.state.iter().any(|t| t.automatic_clear), "{row:?}");
     }
 }
 
@@ -1463,7 +1463,7 @@ fn sticky_floating_first_appearance_then_reenable_keeps_provenance() {
     );
     let row = row_for(&reply, "win-n").expect("floating row");
     assert!(row.frame_operation.is_none(), "{row:?}");
-    assert!(row.clear_operation.is_none(), "{row:?}");
+    assert!(!row.state.iter().any(|t| t.automatic_clear), "{row:?}");
     // Re-enabling tiling keeps the sticky float with no geometry op.
     let reply = accepted(
         &mut engine,
@@ -1500,7 +1500,7 @@ fn sticky_floating_first_appearance_then_reenable_keeps_provenance() {
     );
     let row = row_for(&reply, "win-n").expect("float row");
     assert!(row.frame_operation.is_none(), "{row:?}");
-    assert!(row.clear_operation.is_none(), "{row:?}");
+    assert!(!row.state.iter().any(|t| t.automatic_clear), "{row:?}");
 }
 
 #[test]

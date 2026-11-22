@@ -143,7 +143,6 @@ fn report_full(
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
@@ -3129,6 +3128,7 @@ fn unit_p_intrinsic_reply_validation_enforces_semantics_and_host_capabilities() 
         value: true,
         authority: crate::world_report::ScopeAuthority::Controlled,
         command_seq: None,
+        automatic_clear: false,
     });
     assert_eq!(
         validate_reply_v4(&above_reply, engine.capabilities())
@@ -3170,6 +3170,7 @@ fn unit_p_intrinsic_reply_validation_enforces_semantics_and_host_capabilities() 
         value: true,
         authority: crate::world_report::ScopeAuthority::Controlled,
         command_seq: None,
+        automatic_clear: false,
     });
     assert_eq!(
         validate_reply_v4(&sticky_reply, engine.capabilities())

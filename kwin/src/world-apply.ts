@@ -27,6 +27,10 @@ import { WorldAdapterState, type FocusRequestRecord } from "./world-state";
 
 declare const __OMNITILER_TRACE__: string | undefined;
 
+// In-flight synchronous automatic maximize-clear keys per adapter state,
+// preventing reentrant double-invocation while clearMaximized runs.
+// Uses Map (deleted when empty) to avoid QV4 WeakMap.set hazard.
+
 // Bounded diagnostic cache (avoid WeakMap due to the QV4 WeakMap.set crash
 // hazard observed on asynchronous reply trace paths).
 let focusTraceLast: Map<WorldAdapterState, { record: FocusRequestRecord | null; key: string }>;
@@ -847,7 +851,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             }
             const row = reply.windows.find((w) => w.win === transfer.win);
             if (row !== undefined && row.out === transfer.out && row.ws === transfer.ws &&
-                !row.floating && row.frame_op === "" && row.clear_op === "" && row.state.length === 0 &&
+                !row.floating && row.frame_op === "" && row.state.length === 0 &&
                 row.frame_auth === "controlled" && row.frame_hold === "" &&
                 row.member_auth === "controlled" && row.member_hold === "" &&
                 (row.frame ?? row.alloc) !== null) {
@@ -1350,20 +1354,23 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
     if (result.stoppedMidApply) {
         return result;
     }
-    // 1c. Explicit retained maximize-clear: window rows carrying a stable
-    // core clear operation id (`clear_op`, `op-<cmdSeq>`) clear exactly
-    // once per operation through the native nonactivating setter
-    // (`setMaximize(false, false)`; Stages 3 authorizes real actuation).
-    // Every dispatch disposition rides the next report as one raw
-    // `ClearAttempt` (setter plus fresh pre/post maximized states); the
-    // core owns confirmation, proven refusal, ambiguity, and abandonment.
-    // Already-unmaximized is fresh observation, never an invented attempt:
-    // the token spends with no row. Vetoes and unreadable/gesture races
-    // hold unspent with no row, so a later readable reply retries the
-    // still-undispatched desire.
+    // 1c. Automatic maximize-clear (directional and born): window rows
+    // carrying a controlled `state` target `{property:"maximized",
+    // value:false, automaticClear:true}` clear through the native
+    // nonactivating setter (`setMaximize(false, false)`) using the
+    // executable reply root `rev` as authorization. Every dispatch
+    // disposition rides the next report as one raw `StateAttempt`
+    // (`kind:"state", property:"maximized", target:false, rev:reply.rev`);
+    // the core owns confirmation, proven refusal, ambiguity, and
+    // abandonment. Already-unmaximized is fresh observation, never an
+    // invented attempt. Vetoes and unreadable/gesture races hold with no
+    // row, so a later readable reply retries.
     for (const row of reply.windows as WorldReplyWindow[]) {
-        const op = row.clear_op ?? "";
-        if (op === "") {
+        const clearTarget = row.state.find(
+            (t) => t.property === "maximized" && t.value === false &&
+                t.auth === "controlled" && t.reason === "" && t.automaticClear === true,
+        );
+        if (clearTarget === undefined) {
             continue;
         }
         if (midApplyStopped(env, entryObs)) {
@@ -1376,16 +1383,10 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         }
         const observed = byWin.get(row.win);
         if (observed === undefined) {
-            // Window gone: spend the operation so a removed lifetime never
-            // wedges later replies. The core settles closed lifetimes from
-            // explicit close observation.
-            state.markClearSpent(op);
             continue;
         }
-        if (state.clearSpent.has(op)) {
-            // Already dispatched for this operation (including across
-            // duplicate replies): never re-actuate. The recorded attempt
-            // rides until the bound reply consumes it.
+        if (state.isAutoClearSpent(row.win, reply.rev)) {
+            // Already spent for this (or a newer) reply revision: never re-actuate.
             continue;
         }
         if (observation.gesture) {
@@ -1403,8 +1404,8 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             void error;
             safety = null;
         }
-        // Unreadable safety fails closed with a narrow unspent hold: the
-        // retained desire retries on a later readable reply.
+        // Unreadable safety fails closed with a narrow hold: the retained
+        // desire retries on a later readable reply.
         if (safety === null || safety.maximized === null) {
             result.held += 1;
             continue;
@@ -1412,32 +1413,25 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         const maximizedNow = safety.maximized;
         if (maximizedNow === false) {
             // Already unmaximized: fresh observation proves the outcome.
-            // Spend the token with no invented attempt; the core settles
-            // from the staged observation itself. The follow-up carries
-            // the fresh facts promptly.
-            state.markClearSpent(op);
+            // No invented attempt; the core settles from the staged
+            // observation itself. The follow-up carries the fresh facts.
             state.noteFollowup();
             continue;
         }
         if (safety.fullscreen === true) {
             // Fullscreen overlay veto: never clear under a fullscreen (game)
-            // lane. Unspent hold with no row: no setter ran and no post
-            // state was read, so there is nothing truthful to report. The
-            // fresh fullscreen fact rides the report and the core owns
-            // abandonment. A later readable reply retries.
+            // lane. Hold with no row: no setter ran and no post state was
+            // read, so there is nothing truthful to report.
             result.held += 1;
             continue;
         }
         if (safety.minimized === true || safety.sticky === true) {
             // Minimized/sticky lifetimes take no automatic clear write.
-            // Unspent hold: the retained desire retries on a later reply.
             result.held += 1;
             continue;
         }
         // Freshness of the dispatched observation: a homing that drifted
-        // since capture (or an unreadable one) holds unspent here (never
-        // a verdict, never a write); the frame-race gate below still
-        // guards the setter against a moved frame.
+        // since capture (or an unreadable one) holds here.
         let liveHome: { out: string; ws: string } | null = null;
         try {
             liveHome = env.readLiveMembership(observed.ref);
@@ -1450,8 +1444,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             continue;
         }
         // Manual-change race: the native frame left the observed frame.
-        // Never fight the user; hold unspent for the next stable
-        // observation.
+        // Never fight the user; hold for the next stable observation.
         let liveRect: { x: number; y: number; w: number; h: number } | null = null;
         try {
             liveRect = env.readLiveRect(observed.ref);
@@ -1467,17 +1460,13 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         }
         if (env.clearMaximized === undefined) {
             // No native clear capability in this host (offline doubles):
-            // hold unspent with no invented evidence.
+            // hold with no invented evidence.
             result.held += 1;
             continue;
         }
-        // Final freshness/identity/safety gate immediately before spending:
+        // Final freshness/identity/safety gate immediately before invoking:
         // re-read safety, homing, liveness, and the watermark after every
-        // veto and read above. A newer fullscreen/minimized/sticky flip,
-        // an unreadable re-read, a drifted homing, a vanished listing, or
-        // an advanced watermark holds unspent with no row — the clear
-        // intent (maximized, authorized above) stays retained core-side
-        // for a fresh reply. Never spends on a stale gate.
+        // veto and read above.
         let finalSafety: { minimized: boolean | null; fullscreen: boolean | null; maximized: boolean | null; sticky: boolean | null } | null = null;
         try {
             finalSafety = env.readLiveSafety(observed.ref);
@@ -1503,43 +1492,44 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             finalSafety === null || finalSafety.maximized !== true ||
             finalSafety.fullscreen === true || finalSafety.minimized === true || finalSafety.sticky === true ||
             finalHome === null || finalHome.out !== observed.out || finalHome.ws !== observed.ws ||
-            !finalListed || state.currentInvalid !== entryObs
+            !finalListed || !replyFresh(env, reply, entryObs)
         ) {
             result.held += 1;
             continue;
         }
-        // Spend the one-shot token BEFORE the native call: synchronous
-        // KWin signals make the call reentrant, and a reentrant apply
-        // must see the op as dispatched rather than firing a second
-        // clear. Throws and partial states stay core-owned ambiguity.
-        if (!state.markClearSpent(op)) {
+        if (state.isAutoClearSpent(row.win, reply.rev)) {
+            // Reentrant apply or prior delivery already spent this revision.
             continue;
         }
-        state.markDispatched(op);
+        state.markAutoClearSpent(row.win, reply.rev);
         let threw = false;
         let ok = false;
+        let post: boolean | null = null;
         try {
             ok = env.clearMaximized(observed.ref);
         } catch (error) {
             void error;
             threw = true;
         }
-        let post: boolean | null = null;
         try {
-            const safety = env.readLiveSafety(observed.ref);
-            post = safety === null ? null : safety.maximized;
+            const afterSafety = env.readLiveSafety(observed.ref);
+            post = afterSafety === null ? null : afterSafety.maximized;
         } catch (error) {
             void error;
             post = null;
         }
         // One native clear ran: the mechanical disposition plus the fresh
-        // pre/post maximized states rides the next report under the stable
-        // operation correlation. The setter alone never proves completion;
-        // the core settles from this evidence plus the fresh facts.
-        state.recordClearAttempt({
-            op, win: row.win,
+        // pre/post maximized states rides the next report on the state
+        // attempt lane authorized by the reply root rev.
+        state.recordStateAttempt({
+            win: row.win,
+            property: "maximized",
+            target: false,
+            rev: reply.rev,
             setter: threw ? "threw" : ok ? "accepted" : "refused",
-            pre: maximizedNow, post, attemptMs: stamp,
+            pre: maximizedNow,
+            post,
+            attemptMs: stamp,
         });
         if (ok && !threw) {
             result.clears += 1;

@@ -1171,30 +1171,35 @@ fn v4_reply_writer_refuses_unspellable() {
             value: false,
             authority: tiler_core::world_report::ScopeAuthority::Controlled,
             command_seq: None,
+            automatic_clear: false,
         },
         tiler_core::world_report::StateTarget {
             property: tiler_core::world_report::StateProperty::Maximized,
             value: false,
             authority: tiler_core::world_report::ScopeAuthority::Controlled,
             command_seq: None,
+            automatic_clear: false,
         },
         tiler_core::world_report::StateTarget {
             property: tiler_core::world_report::StateProperty::Sticky,
             value: false,
             authority: tiler_core::world_report::ScopeAuthority::Controlled,
             command_seq: None,
+            automatic_clear: false,
         },
         tiler_core::world_report::StateTarget {
             property: tiler_core::world_report::StateProperty::Above,
             value: false,
             authority: tiler_core::world_report::ScopeAuthority::Controlled,
             command_seq: None,
+            automatic_clear: false,
         },
         tiler_core::world_report::StateTarget {
             property: tiler_core::world_report::StateProperty::Fullscreen,
             value: true,
             authority: tiler_core::world_report::ScopeAuthority::Controlled,
             command_seq: None,
+            automatic_clear: false,
         },
     ];
     let cases: [(&str, &str, &str, DecodedReplyV4); 15] = [
@@ -1480,7 +1485,6 @@ fn v4_reply_cap_valid_near_4mib_windows_encodes_and_roundtrips() {
         floating: false,
         float_origin: None,
         frame_operation: Some(format!("op-f-{i:05}-{}", "f".repeat(115))),
-        clear_operation: Some(format!("op-c-{i:05}-{}", "c".repeat(115))),
         command_seq: None,
         visibility: None,
         visibility_authority: ScopeAuthority::Untouched,
@@ -1490,24 +1494,28 @@ fn v4_reply_cap_valid_near_4mib_windows_encodes_and_roundtrips() {
                 value: false,
                 authority: ScopeAuthority::Untouched,
                 command_seq: None,
+                automatic_clear: false,
             },
             StateTarget {
                 property: StateProperty::Maximized,
                 value: false,
                 authority: ScopeAuthority::Untouched,
                 command_seq: None,
+                automatic_clear: false,
             },
             StateTarget {
                 property: StateProperty::Sticky,
                 value: false,
                 authority: ScopeAuthority::Untouched,
                 command_seq: None,
+                automatic_clear: false,
             },
             StateTarget {
                 property: StateProperty::Above,
                 value: false,
                 authority: ScopeAuthority::Untouched,
                 command_seq: None,
+                automatic_clear: false,
             },
         ],
     };
@@ -1820,6 +1828,14 @@ fn legacy_projection_oracle(decoded: &DecodedReplyV4, producer: Option<(&str, &s
             if let Some(map) = row.as_object_mut() {
                 map.remove("frame_op");
                 map.remove("clear_op");
+                if let Some(states) = map
+                    .get_mut("state")
+                    .and_then(serde_json::Value::as_array_mut)
+                {
+                    states.retain(|item| {
+                        item.get("automaticClear") != Some(&serde_json::json!(true))
+                    });
+                }
             }
         }
     }
@@ -2054,6 +2070,67 @@ fn v4_bound_and_projection_match_stage5_fixtures_and_serde_oracle_byte_for_byte(
     let actual_rich_proj = write_projection_reply_v4(&rich.reply, None).expect("rich proj");
     let oracle_rich_proj = legacy_projection_oracle(&rich, None);
     assert_eq!(actual_rich_proj, oracle_rich_proj);
+}
+
+#[test]
+fn v4_bound_and_projection_strip_automatic_clear_state_target_only() {
+    use tiler_core::world_report::{ScopeAuthority, StateProperty, StateTarget};
+
+    let mut decoded = decode_ok("messages/reply-observe.json");
+    let win = decoded.reply.windows.first_mut().expect("fixture window");
+    win.state = vec![
+        StateTarget {
+            property: StateProperty::Above,
+            value: true,
+            authority: ScopeAuthority::Controlled,
+            command_seq: Some(11),
+            automatic_clear: false,
+        },
+        StateTarget {
+            property: StateProperty::Maximized,
+            value: false,
+            authority: ScopeAuthority::Controlled,
+            command_seq: Some(12),
+            automatic_clear: true,
+        },
+    ];
+    let bind = BrokerReplyBind {
+        source: "src-auto-clear-1",
+        native_invalid: 7,
+        clock: 123,
+        gesture_assoc: None,
+        gesture_settled_assoc: None,
+    };
+    let bound = write_bound_reply_v4(&decoded.reply, None, &bind).expect("bound reply");
+    assert_eq!(bound, legacy_bound_oracle(&decoded, None, &bind));
+    let bound_val: serde_json::Value = serde_json::from_str(&bound).expect("bound json");
+    let bound_state = bound_val["windows"][0]["state"]
+        .as_array()
+        .expect("bound state array");
+    assert_eq!(bound_state.len(), 2, "bound reply keeps both state targets");
+    assert_eq!(bound_state[0]["property"], "above");
+    assert!(bound_state[0].get("automaticClear").is_none());
+    assert_eq!(bound_state[1]["property"], "maximized");
+    assert_eq!(bound_state[1]["value"], false);
+    assert_eq!(bound_state[1]["automaticClear"], true);
+
+    let proj = write_projection_reply_v4(&decoded.reply, None).expect("projection reply");
+    assert_eq!(proj, legacy_projection_oracle(&decoded, None));
+    assert!(
+        !proj.contains("automaticClear"),
+        "projection must omit automaticClear marker and target: {proj}"
+    );
+    let proj_val: serde_json::Value = serde_json::from_str(&proj).expect("projection json");
+    let proj_state = proj_val["windows"][0]["state"]
+        .as_array()
+        .expect("projection state array");
+    assert_eq!(
+        proj_state.len(),
+        1,
+        "projection retains ordinary state target only"
+    );
+    assert_eq!(proj_state[0]["property"], "above");
+    assert_eq!(proj_state[0]["value"], true);
 }
 
 #[test]

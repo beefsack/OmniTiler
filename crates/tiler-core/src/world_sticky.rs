@@ -455,6 +455,7 @@ impl WorldTransaction<'_> {
                 fullscreen_meta: None,
                 maximize_meta: None,
                 above_meta: None,
+                clear_meta: None,
             },
         );
     }
@@ -694,6 +695,7 @@ impl WorldTransaction<'_> {
                 fullscreen_meta: None,
                 maximize_meta: None,
                 above_meta: None,
+                clear_meta: None,
             },
         );
         self.note_command(command_seq);
@@ -1956,6 +1958,7 @@ impl WorldTransaction<'_> {
                 value: binding.target.value,
                 authority,
                 command_seq: meta.command_seq,
+                automatic_clear: false,
             });
         }
     }

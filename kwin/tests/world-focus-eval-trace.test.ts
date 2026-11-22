@@ -24,7 +24,6 @@ const winRow = (winId: string, ws = "ws1", frame: [number, number, number, numbe
     frame_auth: "controlled", frame_hold: "",
     member_auth: "controlled", member_hold: "",
     frame_op: "",
-    clear_op: "",
     floating: false, float_origin: "",
     cmdSeq: null,
     visibility: null, visibility_auth: "untouched", visibility_hold: "",

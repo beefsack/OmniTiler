@@ -6,9 +6,10 @@
 //! only relocated for source size. Owns the born binding lifecycle: minting
 //! from first-seen maximized/fullscreen facts through the shared stateless
 //! [`crate::window_policy`] predicates (never reimplemented inline),
-//! publishing the one-shot `clear_operation` desire, and settling over the
-//! shared engine's canonical clear evidence plus the staged observation. No
-//! behavior change to the directional lane in [`crate::world_clear`].
+//! publishing the one-shot automatic `maximized: false` state desire, and
+//! settling over the shared engine's canonical state-attempt evidence plus the
+//! staged observation. No behavior change to the directional lane in
+//! [`crate::world_clear`].
 //!
 //! Two lanes, one binding shape:
 //! - Born lane: a post-startup first-seen maximized, non-fullscreen window on a
@@ -55,8 +56,10 @@ use crate::window_policy::{
     should_clear_maximize_at_admission_with_born_mode, should_hold_born_fullscreen,
 };
 use crate::world_attempts::{PropertyAttempt, clear_accepted, clear_refused};
-use crate::world_engine::RetainedBornClear;
-use crate::world_report::{OperationOutcome, TilingMode};
+use crate::world_report::{AttemptOutcome, OperationOutcome, StateProperty, TilingMode};
+use crate::world_state::{
+    BornClearMeta, ClearProvenance, RetainedStateBinding, RetainedStateTarget,
+};
 
 impl WorldTransaction<'_> {
     /// Next born operation identity. Monotonic within the generation, never
@@ -68,6 +71,26 @@ impl WorldTransaction<'_> {
         let next = self.world.settlement.born_seq.checked_add(1)?;
         self.world.settlement.born_seq = next;
         Some(format!("op-born-{next}"))
+    }
+
+    pub(crate) fn retire_superseded_born_clear(
+        &mut self,
+        window: &WindowId,
+        previous: Option<RetainedStateBinding>,
+    ) {
+        if let Some(RetainedStateBinding {
+            clear_meta: Some(ClearProvenance::Born(born)),
+            ..
+        }) = previous
+        {
+            self.world.settlement.born_attempted.insert(window.clone());
+            self.emit_operation(
+                born.operation_id,
+                window.clone(),
+                OperationOutcome::ClearSuperseded,
+                None,
+            );
+        }
     }
 
     /// Whether the window's own birth facts authorize a maximize-clear
@@ -87,7 +110,7 @@ impl WorldTransaction<'_> {
     /// facts; no `SafetyFacts` are invented. KWin lifecycle normalization
     /// closes deleted windows and omits application-handled windows before
     /// they become WindowFacts; no new core controllability field is used.
-    fn born_clear_authorized(
+    pub(crate) fn born_clear_authorized(
         &self,
         presentation_paused: bool,
         window: &WindowId,
@@ -193,37 +216,6 @@ impl WorldTransaction<'_> {
         true
     }
 
-    /// One-shot born `clear_operation` desire for one window, if a binding
-    /// is outstanding, undispatched, and its home still proves property
-    /// authority under the current report. The scope re-proof here covers
-    /// command-flipped workspaces in the same reply: settlement ran before
-    /// the command, so a toggle to floating in this report must not ride a
-    /// stale desire. The per-window re-proof covers same-report fact flips
-    /// (sticky/floating/fullscreen/fixed) and session float intent, so a
-    /// retained desire never publishes after its authority lapsed.
-    pub(crate) fn born_desire_for(
-        &self,
-        window: &WindowId,
-        presentation_paused: bool,
-    ) -> Option<String> {
-        // Neutral opt-in: without the automatic birth-clear capability no
-        // retained binding ever publishes, even if one somehow survived an
-        // opt-out or rebind report (mint drops them; this is the publish
-        // fence). The explicit directional lane never reads this gate.
-        if !self.connection.birth_clear() {
-            return None;
-        }
-        self.world
-            .settlement
-            .retained_born
-            .iter()
-            .find(|retained| retained.window == *window && retained.pending.is_none())
-            .filter(|retained| {
-                self.born_clear_authorized(presentation_paused, window, &retained.home)
-            })
-            .map(|retained| retained.operation_id.clone())
-    }
-
     /// Report-independent born-clear minting for the parallel v4 accepted
     /// run: the same sweep-time admission pass with no game-lane pause (v4
     /// carries no paused lane).
@@ -249,7 +241,10 @@ impl WorldTransaction<'_> {
         // explicit directional clear lane is untouched (separate retained
         // lane, separate settlement).
         if !self.connection.birth_clear() {
-            self.world.settlement.retained_born.clear();
+            self.world
+                .settlement
+                .retained_states
+                .retain(|_, binding| !matches!(binding.clear_meta, Some(ClearProvenance::Born(_))));
             self.world.settlement.born_attempted.clear();
             self.world.settlement.born_held_fullscreen.clear();
             self.world.settlement.born_floating_first.clear();
@@ -284,8 +279,10 @@ impl WorldTransaction<'_> {
             self.prune_born_lifetime(&closed);
             self.world
                 .settlement
-                .retained_born
-                .retain(|held| held.window != closed);
+                .retained_states
+                .retain(|(w, _), binding| {
+                    !(w == &closed && matches!(binding.clear_meta, Some(ClearProvenance::Born(_))))
+                });
         }
         // Complete-inventory departures prune every born lifetime set (the
         // same authoritative implicit-close signal the session converge
@@ -359,9 +356,8 @@ impl WorldTransaction<'_> {
             if self
                 .world
                 .settlement
-                .retained_born
-                .iter()
-                .any(|held| held.window == window)
+                .retained_states
+                .contains_key(&(window.clone(), StateProperty::Maximized))
             {
                 continue;
             }
@@ -473,13 +469,30 @@ impl WorldTransaction<'_> {
                 let Some(operation_id) = self.mint_born_operation_id() else {
                     continue;
                 };
-                self.world.settlement.retained_born.push(RetainedBornClear {
-                    operation_id,
-                    window,
-                    home,
-                    pending: None,
-                    ambiguous: false,
-                });
+                let revision = self.world.state_revision + 1;
+                self.world.settlement.retained_states.insert(
+                    (window.clone(), StateProperty::Maximized),
+                    RetainedStateBinding {
+                        target: RetainedStateTarget {
+                            window,
+                            property: StateProperty::Maximized,
+                            value: false,
+                            revision,
+                        },
+                        pending: None,
+                        spent: false,
+                        disposition: AttemptOutcome::Unattempted,
+                        sticky_meta: None,
+                        fullscreen_meta: None,
+                        maximize_meta: None,
+                        above_meta: None,
+                        clear_meta: Some(ClearProvenance::Born(BornClearMeta {
+                            operation_id,
+                            home,
+                            ambiguous: false,
+                        })),
+                    },
+                );
                 continue;
             }
             // Born lane: floating identities and fixed births float beneath
@@ -537,13 +550,30 @@ impl WorldTransaction<'_> {
                 let Some(operation_id) = self.mint_born_operation_id() else {
                     continue;
                 };
-                self.world.settlement.retained_born.push(RetainedBornClear {
-                    operation_id,
-                    window,
-                    home,
-                    pending: None,
-                    ambiguous: false,
-                });
+                let revision = self.world.state_revision + 1;
+                self.world.settlement.retained_states.insert(
+                    (window.clone(), StateProperty::Maximized),
+                    RetainedStateBinding {
+                        target: RetainedStateTarget {
+                            window,
+                            property: StateProperty::Maximized,
+                            value: false,
+                            revision,
+                        },
+                        pending: None,
+                        spent: false,
+                        disposition: AttemptOutcome::Unattempted,
+                        sticky_meta: None,
+                        fullscreen_meta: None,
+                        maximize_meta: None,
+                        above_meta: None,
+                        clear_meta: Some(ClearProvenance::Born(BornClearMeta {
+                            operation_id,
+                            home,
+                            ambiguous: false,
+                        })),
+                    },
+                );
             }
         }
     }
@@ -579,21 +609,47 @@ impl WorldTransaction<'_> {
         // covers direct settlement callers. Silent: no verdict attaches to
         // a lane that never ran.
         if !self.connection.birth_clear() {
-            self.world.settlement.retained_born.clear();
+            self.world
+                .settlement
+                .retained_states
+                .retain(|_, binding| !matches!(binding.clear_meta, Some(ClearProvenance::Born(_))));
             return;
         }
-        let mut keep: Vec<RetainedBornClear> = Vec::new();
-        for mut retained in std::mem::take(&mut self.world.settlement.retained_born) {
+        let born_keys: Vec<(WindowId, StateProperty)> = self
+            .world
+            .settlement
+            .retained_states
+            .iter()
+            .filter_map(|(key, binding)| {
+                matches!(binding.clear_meta, Some(ClearProvenance::Born(_))).then_some(key.clone())
+            })
+            .collect();
+        let mut keep: Vec<((WindowId, StateProperty), RetainedStateBinding)> = Vec::new();
+        for key in born_keys {
+            let Some(mut binding) = self.world.settlement.retained_states.remove(&key) else {
+                continue;
+            };
+            let Some(ClearProvenance::Born(mut retained)) = binding.clear_meta.take() else {
+                self.world.settlement.retained_states.insert(key, binding);
+                continue;
+            };
+            let window = binding.target.window.clone();
+            let push_keep = |keep: &mut Vec<((WindowId, StateProperty), RetainedStateBinding)>,
+                             mut binding: RetainedStateBinding,
+                             retained: BornClearMeta| {
+                binding.clear_meta = Some(ClearProvenance::Born(retained));
+                keep.push((key.clone(), binding));
+            };
             // Explicit close prunes even across gaps, and re-arms the id:
             // a replacement lifetime after this close may clear again.
-            if self.world.staged.closes.contains(&retained.window) {
+            if self.world.staged.closes.contains(&window) {
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearAbandonedClosed,
                     None,
                 );
-                self.prune_born_lifetime(&retained.window);
+                self.prune_born_lifetime(&window);
                 continue;
             }
             // Exact-correlated canonical evidence was staged by the clear
@@ -603,10 +659,10 @@ impl WorldTransaction<'_> {
             if !self.world.staged.observation.inventory_complete
                 || self.world.staged.gesture_barrier
             {
-                if retained.pending.is_some() {
+                if binding.pending.is_some() {
                     retained.ambiguous = true;
                 }
-                keep.push(retained);
+                push_keep(&mut keep, binding, retained);
                 continue;
             }
             // Narrowly held rows keep the binding with no desire: live
@@ -614,14 +670,14 @@ impl WorldTransaction<'_> {
             // exclusions keep the binding too (pending work must not
             // write/focus an excluded window); only an explicit close
             // prunes above.
-            if self.is_held_window(&retained.window) || self.is_excluded_window(&retained.window) {
-                if retained.pending.is_some() {
+            if self.is_held_window(&window) || self.is_excluded_window(&window) {
+                if binding.pending.is_some() {
                     retained.ambiguous = true;
                 }
-                keep.push(retained);
+                push_keep(&mut keep, binding, retained);
                 continue;
             }
-            let homing = self.staged_homing(&retained.window);
+            let homing = self.staged_homing(&window);
             let Some(home) = homing.clone() else {
                 // Complete inventory with no homing and no close: a
                 // complete departure. Drop the binding and prune every
@@ -629,24 +685,24 @@ impl WorldTransaction<'_> {
                 // first-seen instead of hitting stale marks.
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearAbandonedHomingChanged,
                     Some("homing-loss"),
                 );
-                self.prune_born_lifetime(&retained.window);
+                self.prune_born_lifetime(&window);
                 continue;
             };
-            let Some(fact) = self.world.staged.facts.get(&retained.window).cloned() else {
+            let Some(fact) = self.world.staged.facts.get(&window).cloned() else {
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearAbandonedHomingChanged,
                     Some("homing-loss"),
                 );
-                self.prune_born_lifetime(&retained.window);
+                self.prune_born_lifetime(&window);
                 continue;
             };
-            let derived_settle = self.derived_for(&retained.window);
+            let derived_settle = self.derived_for(&window);
             // Minimized/hidden or unreadable facts hold without weakening
             // the retained authority. Raw null overlay already holds via
             // the derived hold; unknown minimized holds its dependent
@@ -656,10 +712,10 @@ impl WorldTransaction<'_> {
                 || derived_settle.excluded
                 || fact.rect.is_none()
             {
-                if retained.pending.is_some() {
+                if binding.pending.is_some() {
                     retained.ambiguous = true;
                 }
-                keep.push(retained);
+                push_keep(&mut keep, binding, retained);
                 continue;
             }
             // Delayed fixed transition: a birth that reads fixed only after
@@ -673,13 +729,10 @@ impl WorldTransaction<'_> {
                     is_fixed_size_with(hints, self.connection.fixed_size_predicate_setting())
                 })
             {
-                self.world
-                    .settlement
-                    .born_attempted
-                    .insert(retained.window.clone());
+                self.world.settlement.born_attempted.insert(window.clone());
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearContinuationRefused,
                     Some("fixed"),
                 );
@@ -690,13 +743,10 @@ impl WorldTransaction<'_> {
             // is re-proven every report, so a retained desire never
             // outlives the flip.
             if derived_settle.sticky {
-                self.world
-                    .settlement
-                    .born_attempted
-                    .insert(retained.window.clone());
+                self.world.settlement.born_attempted.insert(window.clone());
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearContinuationRefused,
                     Some("sticky"),
                 );
@@ -713,23 +763,17 @@ impl WorldTransaction<'_> {
                     .settlement
                     .retained_floats
                     .iter()
-                    .any(|held| held.window == retained.window)
+                    .any(|held| held.window == window)
             {
                 self.world
                     .settlement
                     .born_floating_first
-                    .insert(retained.window.clone());
-                self.world
-                    .settlement
-                    .born_attempted
-                    .insert(retained.window.clone());
-                self.world
-                    .settlement
-                    .born_held_fullscreen
-                    .remove(&retained.window);
+                    .insert(window.clone());
+                self.world.settlement.born_attempted.insert(window.clone());
+                self.world.settlement.born_held_fullscreen.remove(&window);
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearContinuationRefused,
                     Some("floating"),
                 );
@@ -750,10 +794,10 @@ impl WorldTransaction<'_> {
                 .find(|domain| domain.key == retained.home)
                 .is_none_or(|domain| !domain.readable);
             if home_held {
-                if retained.pending.is_some() {
+                if binding.pending.is_some() {
                     retained.ambiguous = true;
                 }
-                keep.push(retained);
+                push_keep(&mut keep, binding, retained);
                 continue;
             }
             // A tiling flip to floating abandons with no clear and latches
@@ -766,18 +810,12 @@ impl WorldTransaction<'_> {
                 self.world
                     .settlement
                     .born_floating_first
-                    .insert(retained.window.clone());
-                self.world
-                    .settlement
-                    .born_attempted
-                    .insert(retained.window.clone());
-                self.world
-                    .settlement
-                    .born_held_fullscreen
-                    .remove(&retained.window);
+                    .insert(window.clone());
+                self.world.settlement.born_attempted.insert(window.clone());
+                self.world.settlement.born_held_fullscreen.remove(&window);
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearContinuationRefused,
                     Some("tiling-changed"),
                 );
@@ -791,10 +829,10 @@ impl WorldTransaction<'_> {
                 self.world
                     .settlement
                     .born_held_fullscreen
-                    .insert(retained.window.clone());
+                    .insert(window.clone());
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearAbandonedFullscreen,
                     None,
                 );
@@ -803,28 +841,25 @@ impl WorldTransaction<'_> {
             if derived_settle.overlay_maximized {
                 // Still maximized: never success. Proven refusal retires
                 // with no loop; anything else holds.
-                if retained
+                if binding
                     .pending
                     .as_ref()
-                    .and_then(PropertyAttempt::as_clear)
+                    .and_then(PropertyAttempt::as_state)
                     .is_some_and(clear_refused)
                 {
-                    self.world
-                        .settlement
-                        .born_attempted
-                        .insert(retained.window.clone());
+                    self.world.settlement.born_attempted.insert(window.clone());
                     self.emit_operation(
                         retained.operation_id.clone(),
-                        retained.window.clone(),
+                        window.clone(),
                         OperationOutcome::ClearRefusedProven,
                         None,
                     );
                     continue;
                 }
-                if retained.pending.is_some() {
+                if binding.pending.is_some() {
                     retained.ambiguous = true;
                 }
-                keep.push(retained);
+                push_keep(&mut keep, binding, retained);
                 continue;
             }
             // Unmaximized, complete, readable facts: resume needs a
@@ -833,32 +868,26 @@ impl WorldTransaction<'_> {
             // staged evidence (throw, accepted mismatch, unreadable proof)
             // holds with no retry: it may yet be our own clear completing
             // asynchronously.
-            let Some(pending) = retained
+            let Some(pending) = binding
                 .pending
                 .as_ref()
-                .and_then(PropertyAttempt::as_clear)
+                .and_then(PropertyAttempt::as_state)
                 .cloned()
             else {
-                self.world
-                    .settlement
-                    .born_attempted
-                    .insert(retained.window.clone());
+                self.world.settlement.born_attempted.insert(window.clone());
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearAbandonedExternalClear,
                     None,
                 );
                 continue;
             };
             if clear_refused(&pending) {
-                self.world
-                    .settlement
-                    .born_attempted
-                    .insert(retained.window.clone());
+                self.world.settlement.born_attempted.insert(window.clone());
                 self.emit_operation(
                     retained.operation_id.clone(),
-                    retained.window.clone(),
+                    window.clone(),
                     OperationOutcome::ClearAbandonedExternalClear,
                     Some("refused-with-unmaximized"),
                 );
@@ -868,19 +897,18 @@ impl WorldTransaction<'_> {
                 // Canonical evidence already sits in the retained slot; only
                 // ambiguity is latched.
                 retained.ambiguous = true;
-                keep.push(retained);
+                push_keep(&mut keep, binding, retained);
                 continue;
             }
             // Proven: correlated accepted attempt plus truthful readable
             // unmaximized facts. Retire silently with no continuation: the
             // window already rides its admitted session row, and the muted
             // operation never re-actuates.
-            self.world
-                .settlement
-                .born_attempted
-                .insert(retained.window.clone());
+            self.world.settlement.born_attempted.insert(window.clone());
         }
-        self.world.settlement.retained_born = keep;
+        for (key, binding) in keep {
+            self.world.settlement.retained_states.insert(key, binding);
+        }
     }
 }
 
@@ -888,16 +916,23 @@ impl WorldTransaction<'_> {
 #[cfg(test)]
 impl WorldTransaction<'_> {
     pub(crate) fn born_retained_len(&self) -> usize {
-        self.world.settlement.retained_born.len()
+        self.world
+            .settlement
+            .retained_states
+            .values()
+            .filter(|binding| matches!(binding.clear_meta, Some(ClearProvenance::Born(_))))
+            .count()
     }
 
     pub(crate) fn born_operation_for(&self, window: &WindowId) -> Option<String> {
         self.world
             .settlement
-            .retained_born
-            .iter()
-            .find(|held| held.window == *window)
-            .map(|held| held.operation_id.clone())
+            .retained_states
+            .get(&(window.clone(), StateProperty::Maximized))
+            .and_then(|binding| match binding.clear_meta.as_ref() {
+                Some(ClearProvenance::Born(meta)) => Some(meta.operation_id.clone()),
+                _ => None,
+            })
     }
 
     /// Total born lifetime marks (all sets plus outstanding bindings): the
@@ -908,6 +943,6 @@ impl WorldTransaction<'_> {
             + self.world.settlement.born_floating_first.len()
             + self.world.settlement.born_seen_nonfullscreen.len()
             + self.world.settlement.born_keep_overlay.len()
-            + self.world.settlement.retained_born.len()
+            + self.born_retained_len()
     }
 }

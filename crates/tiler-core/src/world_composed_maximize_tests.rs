@@ -2972,9 +2972,19 @@ fn composed_tiled_focus_crosses_adjacent_output() {
         );
         let row = desire(&reply, "win-a");
         assert_eq!(row.effective_frame, Some(work_area()));
-        assert_eq!(row.clear_operation, None, "no native clear minted");
+        assert!(
+            !row.state.iter().any(|t| t.automatic_clear),
+            "no native clear minted"
+        );
         assert!(row.state.is_empty(), "no native state target");
-        assert!(engine.world.settlement.retained_clears.is_empty());
+        assert!(
+            !engine
+                .world
+                .settlement
+                .retained_states
+                .values()
+                .any(|b| b.clear_meta.is_some())
+        );
     }
 }
 
@@ -3162,9 +3172,19 @@ fn composed_float_focus_crosses_to_remembered_target() {
         );
         let row = desire(&reply, "win-a");
         assert_eq!(row.effective_frame, Some(work_area()));
-        assert_eq!(row.clear_operation, None, "no native clear minted");
+        assert!(
+            !row.state.iter().any(|t| t.automatic_clear),
+            "no native clear minted"
+        );
         assert!(row.state.is_empty(), "no native state target");
-        assert!(engine.world.settlement.retained_clears.is_empty());
+        assert!(
+            !engine
+                .world
+                .settlement
+                .retained_states
+                .values()
+                .any(|b| b.clear_meta.is_some())
+        );
     }
 }
 
@@ -3567,7 +3587,12 @@ fn composed_tiled_move_clears_bit_without_native_clear() {
         "ordinary move clears the bit locally"
     );
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        !engine
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .any(|b| b.clear_meta.is_some()),
         "no native clear bound"
     );
     assert!(
@@ -3576,7 +3601,10 @@ fn composed_tiled_move_clears_bit_without_native_clear() {
     );
     expect_explicit_focus(&reply, "win-a", 2);
     let row = desire(&reply, "win-a");
-    assert_eq!(row.clear_operation, None, "no clear desire published");
+    assert!(
+        !row.state.iter().any(|t| t.automatic_clear),
+        "no clear desire published"
+    );
     assert_ne!(
         row.effective_frame,
         Some(work_area()),
@@ -3622,7 +3650,14 @@ fn composed_move_fullscreen_refuses_without_clear() {
             .contains(&WindowId("win-a".to_owned())),
         "fullscreen refusal retains the bit"
     );
-    assert!(engine.world.settlement.retained_clears.is_empty());
+    assert!(
+        !engine
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .any(|b| b.clear_meta.is_some())
+    );
 }
 
 #[test]
@@ -3722,9 +3757,16 @@ fn b9_float_unfloat_clears_bit_and_tiles() {
     }
     let row = desire(&reply, "win-a");
     assert!(!row.floating, "unfloat tiles");
-    assert_eq!(row.clear_operation, None);
+    assert!(!row.state.iter().any(|t| t.automatic_clear));
     assert_eq!(row.frame_operation, None);
-    assert!(engine.world.settlement.retained_clears.is_empty());
+    assert!(
+        !engine
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .any(|b| b.clear_meta.is_some())
+    );
 }
 
 #[test]
@@ -4414,12 +4456,20 @@ fn composed_float_move_constrained_halfsnap_restores_base_with_token() {
         "native parity: the overlay clears before ordinary policy, no remaximize"
     );
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        !engine
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .any(|b| b.clear_meta.is_some()),
         "no native clear bound"
     );
     let row = desire(&reply, "win-a");
     assert!(row.state.is_empty(), "no native state target");
-    assert_eq!(row.clear_operation, None, "no clear desire published");
+    assert!(
+        !row.state.iter().any(|t| t.automatic_clear),
+        "no clear desire published"
+    );
     assert_eq!(
         engine.world.settlement.retained_floats.len(),
         1,
@@ -4469,7 +4519,12 @@ fn composed_float_move_halfsnap_applies_half_token() {
         "ordinary composed float move clears the bit"
     );
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        !engine
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .any(|b| b.clear_meta.is_some()),
         "no native clear bound"
     );
     let half =
@@ -4526,7 +4581,12 @@ fn composed_float_move_unreadable_work_area_retains_bit_without_token() {
         engine.world.settlement.retained_floats
     );
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        !engine
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .any(|b| b.clear_meta.is_some()),
         "no deferred clear"
     );
     // Commandless recovery retains the bit: no autorecovery, no deferred
@@ -4545,7 +4605,14 @@ fn composed_float_move_unreadable_work_area_retains_bit_without_token() {
         "recovery retains the bit"
     );
     assert!(engine.world.settlement.retained_floats.is_empty());
-    assert!(engine.world.settlement.retained_clears.is_empty());
+    assert!(
+        !engine
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .any(|b| b.clear_meta.is_some())
+    );
     // A fresh move with readable geometry clears normally.
     let mut fresh_fact = cfact("win-a", "out-a", 0);
     fresh_fact.rect = Some(work_area());

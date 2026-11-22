@@ -16,7 +16,6 @@ import {
     type FrameSetter,
     type WorldAttemptLanes,
     type WorldAfterShown,
-    type WorldClearAttempt,
     type WorldCommand,
     type WorldCreationAttempt,
     type WorldFocusCause,
@@ -127,7 +126,6 @@ export interface CaptureFlight {
 const MAX_FRAME_ATTEMPTS = 1024;
 const MAX_MEMBER_ATTEMPTS = 1024;
 const MAX_VIEW_ATTEMPTS = 1024;
-const MAX_CLEAR_ATTEMPTS = 1024;
 // Latest-wins bound mirrors the core MAX_WORLD_STATE_ATTEMPTS cap: one
 // row per window property, oldest-first eviction past the cap so a report
 // can never refuse over-cap.
@@ -196,9 +194,12 @@ export class WorldAdapterState {
     // operation id (`frame_op`): the row token places exactly once, never
     // again for the same operation across duplicate or unrelated later
     // replies. Rows without the token (ordinary floats) never place.
-    // `clear_op` spends exactly once the same way.
     floatSpent = new Set<string>();
-    clearSpent = new Set<string>();
+    // Automatic maximize-clear dispatches spent for the current accepted
+    // revision (cleared on generation rotation and when acceptReply advances
+    // to a strictly newer accepted revision; independent of outbound
+    // attempt retirement). Armed immediately before the native clear call.
+    autoClearSpent = new Map<string, string>();
     // Last proven native targets, for last-moment external-input safety:
     // a repeat of the SAME operation after its subject demonstrably left
     // the proven target holds instead of re-actuating (never fights a user
@@ -228,7 +229,6 @@ export class WorldAdapterState {
     frameAttempts = new Map<string, WorldFrameAttempt>();
     memberAttempts = new Map<string, WorldMemberAttempt>();
     viewAttempts = new Map<string, WorldViewAttempt>();
-    clearAttempts = new Map<string, WorldClearAttempt>();
     // Raw native-state write/readback facts (latest-wins per window
     // property) drained into every report until a bound ready reply
     // consumes the delivered snapshot. Redelivery reuses the original
@@ -405,17 +405,6 @@ export class WorldAdapterState {
             return false;
         }
         this.floatSpent.add(key);
-        return true;
-    }
-
-    // Spend one explicit retained clear operation exactly once, like
-    // frame_op above. `clear_op` carries `op-<cmdSeq>`-shaped tokens for
-    // directional maximize-clear verdicts.
-    markClearSpent(key: string): boolean {
-        if (this.clearSpent.has(key)) {
-            return false;
-        }
-        this.clearSpent.add(key);
         return true;
     }
 
@@ -648,31 +637,6 @@ export class WorldAdapterState {
         return true;
     }
 
-    // Record one raw mechanical maximize-clear attempt. Latest-wins per
-    // (operation, window). Production records every dispatch disposition
-    // (accepted/refused/threw with fresh pre/post maximized states); the
-    // core owns confirmation, proven refusal, ambiguity, and abandonment.
-    recordClearAttempt(attempt: WorldClearAttempt): boolean {
-        const flagOk = (v: boolean | null): boolean => v === null || typeof v === "boolean";
-        if (
-            !isOpaqueId(attempt.op) || !isOpaqueId(attempt.win) ||
-            !isSetter(attempt.setter) || !isStamp(attempt.attemptMs) ||
-            !flagOk(attempt.pre) || !flagOk(attempt.post)
-        ) {
-            return false;
-        }
-        this.clearAttempts.set(`${attempt.op}\u0000${attempt.win}`, { ...attempt });
-        while (this.clearAttempts.size > MAX_CLEAR_ATTEMPTS) {
-            const oldest = this.clearAttempts.keys().next();
-            if (oldest.done === true) {
-                break;
-            }
-            this.clearAttempts.delete(oldest.value as string);
-        }
-        this.dirty = true;
-        return true;
-    }
-
     // Record one raw native-state attempt. Latest-wins per (window,
     // property): the core refuses two rows for one property as
     // duplicate-state-attempt, so a newer tuple for the same property
@@ -773,16 +737,6 @@ export class WorldAdapterState {
             .map((a) => ({ ...a }));
     }
 
-    clearAttemptsForReport(): WorldClearAttempt[] {
-        return [...this.clearAttempts.values()]
-            .sort((a, b) => {
-                const ka = `${a.op}\u0000${a.win}`;
-                const kb = `${b.op}\u0000${b.win}`;
-                return ka < kb ? -1 : ka > kb ? 1 : 0;
-            })
-            .map((a) => ({ ...a }));
-    }
-
     // Ordered retained native-state rows for the report lane (sorted by
     // window, property, target, then authorizing rev for determinism).
     // Rows are flat facts, so a shallow copy snapshots each row: later
@@ -867,16 +821,6 @@ export class WorldAdapterState {
                 retired += 1;
             }
         }
-        const sameClear = (a: WorldClearAttempt, b: WorldClearAttempt): boolean =>
-            a.op === b.op && a.win === b.win && a.setter === b.setter &&
-            a.pre === b.pre && a.post === b.post && a.attemptMs === b.attemptMs;
-        for (const sent of this.inFlight.delivered.clears) {
-            const live = this.clearAttempts.get(`${sent.op}\u0000${sent.win}`);
-            if (live !== undefined && sameClear(live, sent)) {
-                this.clearAttempts.delete(`${sent.op}\u0000${sent.win}`);
-                retired += 1;
-            }
-        }
         // State rows retire by exact full-row equality against the
         // delivered snapshot: a newer tuple for the same window property
         // never equals its predecessor, so it survives the older ack
@@ -905,6 +849,18 @@ export class WorldAdapterState {
             }
         }
         return retired;
+    }
+
+    isAutoClearSpent(win: string, rev: string): boolean {
+        const spent = this.autoClearSpent.get(win);
+        return spent !== undefined && compareU64(spent, rev) >= 0;
+    }
+
+    markAutoClearSpent(win: string, rev: string): void {
+        const prev = this.autoClearSpent.get(win);
+        if (prev === undefined || compareU64(rev, prev) > 0) {
+            this.autoClearSpent.set(win, rev);
+        }
     }
 
     nextSourceId(counter: string): string {
@@ -976,6 +932,7 @@ export class WorldAdapterState {
             this.focusChanges.incorporate(this.inFlight.focusChangesCut, reply.rev);
         }
         void dispatchWatermark;
+        this.autoClearSpent.clear();
         this.lastAcceptedRev = reply.rev;
         this.hasAccepted = true;
         this.lastReply = reply;
@@ -1035,7 +992,6 @@ export class WorldAdapterState {
                 frames: this.framesForReport(),
                 members: this.memberAttemptsForReport(),
                 views: this.viewAttemptsForReport(),
-                clears: this.clearAttemptsForReport(),
                 states: this.statesForReport(),
                 focus: this.focusFeedbacksForReport(),
             },
@@ -1092,7 +1048,7 @@ export class WorldAdapterState {
         this.focusCurrent = null;
         this.focusRetiredRev = "0";
         this.floatSpent.clear();
-        this.clearSpent.clear();
+        this.autoClearSpent.clear();
         this.appliedWindowTarget.clear();
         this.appliedViewTarget.clear();
         this.creationSpent.clear();
@@ -1101,7 +1057,6 @@ export class WorldAdapterState {
         this.frameAttempts.clear();
         this.memberAttempts.clear();
         this.viewAttempts.clear();
-        this.clearAttempts.clear();
         this.stateAttempts.clear();
         this.focusFeedbacks.clear();
         return true;

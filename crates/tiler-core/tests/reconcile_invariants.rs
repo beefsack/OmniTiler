@@ -219,7 +219,6 @@ fn synchronous_atomic_revision_and_public_reply_contract() {
             frames: Vec::new(),
             member_attempts: Vec::new(),
             view_attempts: Vec::new(),
-            clear_attempts: Vec::new(),
             creation_attempts: Vec::new(),
             held_attempts: Vec::new(),
             state_attempts: Vec::new(),

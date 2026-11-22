@@ -488,7 +488,6 @@ fn typed_report(generation: &str, seq: u64, focused: &str) -> WorldReportV4 {
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
@@ -798,7 +797,6 @@ fn run_typed_split(
         assert!(report.frames.is_empty());
         assert!(report.focus_feedback.is_empty());
         assert!(report.state_attempts.is_empty());
-        assert!(report.clear_attempts.is_empty());
         assert_eq!(report.focused_global, "win-a");
 
         let tr = handle_report_checked(&mut engine, &report, &[((i as u64) + 1, cmd.clone())]);

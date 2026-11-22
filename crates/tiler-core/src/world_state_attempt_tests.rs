@@ -68,6 +68,7 @@ fn insert(engine: &mut WorldEngine, window: &str, property: StateProperty, value
             fullscreen_meta: None,
             maximize_meta: None,
             above_meta: None,
+            clear_meta: None,
         },
     );
 }
@@ -1443,6 +1444,7 @@ fn bounds_upsert_and_lifecycle_cleanup() {
                 fullscreen_meta: None,
                 maximize_meta: None,
                 above_meta: None,
+                clear_meta: None,
             },
         );
     }
@@ -1520,6 +1522,7 @@ fn bounds_upsert_and_lifecycle_cleanup() {
                 fullscreen_meta: None,
                 maximize_meta: None,
                 above_meta: None,
+                clear_meta: None,
             });
     }
     engine.world.settlement.retained_states.insert(
@@ -1538,6 +1541,7 @@ fn bounds_upsert_and_lifecycle_cleanup() {
             fullscreen_meta: None,
             maximize_meta: None,
             above_meta: None,
+            clear_meta: None,
         },
     );
     assert_eq!(

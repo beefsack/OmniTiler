@@ -107,6 +107,7 @@ export interface WorldReplyStateTarget {
     auth: WorldScopeAuth;
     reason: WorldHoldReason;
     cmdSeq: string | null;
+    automaticClear?: true;
 }
 export interface WorldReplyWindow {
     win: string;
@@ -130,10 +131,7 @@ export interface WorldReplyWindow {
     // Diagnostic float origin: "" for ordinary floats and non-floats,
     // "capacity" for capacity floats. Provenance only, never behavior.
     float_origin: "" | "capacity";
-    // Explicit retained clear operation (`clear_op`) or "": directional
-    // maximize-clear verdicts spend exactly once like frame_op.
-    clear_op: string;
-    // Explicit command correlation for the published frame/clear target:
+    // Explicit command correlation for the published frame target:
     // non-null only with a published explicit retained operation token.
     // Quoted decimal on the wire, null when absent.
     cmdSeq: string | null;
@@ -389,18 +387,6 @@ export interface WorldViewAttempt {
     pre: WorldViewRef | null;
     post: WorldViewRef | null;
     base: WorldViewRef | null;
-    attemptMs: string;
-}
-// One normalized raw maximize-clear attempt: the mechanical facts behind a
-// single native nonactivating clear (fresh pre/post maximized states plus
-// the setter disposition). The core owns confirmation, proven refusal,
-// ambiguity, and abandonment; a setter boolean alone never proves arrival.
-export interface WorldClearAttempt {
-    op: string;
-    win: string;
-    setter: FrameSetter;
-    pre: boolean | null;
-    post: boolean | null;
     attemptMs: string;
 }
 // Closed native-state property vocabulary (world-contract.md
@@ -1377,7 +1363,10 @@ function parseStateTarget(value: unknown): WorldReplyStateTarget {
         throw new Error("state-keys");
     }
     const o = value as Record<string, unknown>;
-    if (!hasExactKeys(o, ["property", "value", "auth", "reason", "cmdSeq"])) {
+    const requiredKeys = ["property", "value", "auth", "reason", "cmdSeq"];
+    const hasAuto = "automaticClear" in o;
+    const expectedKeys = hasAuto ? [...requiredKeys, "automaticClear"] : requiredKeys;
+    if (!hasExactKeys(o, expectedKeys)) {
         throw new Error("state-keys");
     }
     if (typeof o["property"] !== "string" || !STATE_PROPERTIES.has(o["property"] as string)) {
@@ -1386,12 +1375,23 @@ function parseStateTarget(value: unknown): WorldReplyStateTarget {
     if (typeof o["value"] !== "boolean") {
         throw new Error("state-value");
     }
+    const property = o["property"] as WorldReplyStateTarget["property"];
+    const targetValue = o["value"] as boolean;
+    if (hasAuto) {
+        if (o["automaticClear"] !== true || property !== "maximized" || targetValue !== false) {
+            throw new Error("state-automatic-clear");
+        }
+    }
     const { auth, reason } = parseAuthorityPair(o, "auth", "reason");
-    return {
-        property: o["property"] as WorldReplyStateTarget["property"],
-        value: o["value"] as boolean, auth, reason,
+    const base: WorldReplyStateTarget = {
+        property,
+        value: targetValue, auth, reason,
         cmdSeq: optU64orNull(o["cmdSeq"]),
     };
+    if (hasAuto) {
+        base.automaticClear = true;
+    }
+    return base;
 }
 
 function parseWindowRow(e: unknown): WorldReplyWindow {
@@ -1402,7 +1402,7 @@ function parseWindowRow(e: unknown): WorldReplyWindow {
     if (!hasExactKeys(o, [
         "win", "out", "ws", "alloc", "frame",
         "frame_auth", "frame_hold", "member_auth", "member_hold",
-        "frame_op", "floating", "float_origin", "clear_op", "cmdSeq",
+        "frame_op", "floating", "float_origin", "cmdSeq",
         "visibility", "visibility_auth", "visibility_hold", "state",
     ])) {
         throw new Error("win-keys");
@@ -1410,7 +1410,6 @@ function parseWindowRow(e: unknown): WorldReplyWindow {
     if (
         !isOpaqueId(o["win"]) || !isOpaqueId(o["out"]) || !isOpaqueId(o["ws"]) ||
         (typeof o["frame_op"] !== "string" || (o["frame_op"] !== "" && !isOpaqueId(o["frame_op"]))) ||
-        (typeof o["clear_op"] !== "string" || (o["clear_op"] !== "" && !isOpaqueId(o["clear_op"]))) ||
         typeof o["floating"] !== "boolean" ||
         (o["float_origin"] !== "" && o["float_origin"] !== "capacity")
     ) {
@@ -1447,7 +1446,6 @@ function parseWindowRow(e: unknown): WorldReplyWindow {
         member_auth: memberPair.auth, member_hold: memberPair.reason,
         frame_op: o["frame_op"] as string,
         floating: o["floating"] as boolean, float_origin: o["float_origin"] as "" | "capacity",
-        clear_op: o["clear_op"] as string,
         cmdSeq: optU64orNull(o["cmdSeq"]),
         visibility,
         visibility_auth: visibilityPair.auth, visibility_hold: visibilityPair.reason,
@@ -1456,9 +1454,9 @@ function parseWindowRow(e: unknown): WorldReplyWindow {
 }
 
 // Presentation window row: the projection strips the retained write
-// tokens server-side (keys absent). Any carried frame_op/clear_op,
+// tokens server-side (keys absent). Any carried frame_op,
 // result, transfer, effect, or other one-shot lane here refuses.
-function parsePresentationWindowRow(e: unknown): Omit<WorldReplyWindow, "frame_op" | "clear_op"> {
+function parsePresentationWindowRow(e: unknown): Omit<WorldReplyWindow, "frame_op"> {
     if (typeof e !== "object" || e === null || Array.isArray(e)) {
         throw new Error("win");
     }
@@ -1466,10 +1464,12 @@ function parsePresentationWindowRow(e: unknown): Omit<WorldReplyWindow, "frame_o
     if ("frame_op" in rec || "clear_op" in rec) {
         throw new Error("presentation-write-token");
     }
-    const full = parseWindowRow({ ...rec, frame_op: "", clear_op: "" });
-    const { frame_op: _frameOp, clear_op: _clearOp, ...rest } = full;
+    const full = parseWindowRow({ ...rec, frame_op: "" });
+    if (full.state.some((t) => t.automaticClear === true)) {
+        throw new Error("presentation-write-token");
+    }
+    const { frame_op: _frameOp, ...rest } = full;
     void _frameOp;
-    void _clearOp;
     return rest;
 }
 
@@ -2531,7 +2531,7 @@ function parsePresentationReply(r: Record<string, unknown>, gen: string): WorldP
         const workspaces = (wsRaw as ReadonlyArray<unknown>).map(parseWorkspaceRow);
         const outputs = (outRaw as ReadonlyArray<unknown>).map(parseOutputRow);
         const stripped = (winRaw as ReadonlyArray<unknown>).map(parsePresentationWindowRow);
-        const windows: WorldReplyWindow[] = stripped.map((w) => ({ ...w, frame_op: "", clear_op: "" }));
+        const windows: WorldReplyWindow[] = stripped.map((w) => ({ ...w, frame_op: "" }));
         const presentation = parsePresentation(r["presentation"]);
         const preview = parsePreview(r["preview"]);
         return {
@@ -3311,7 +3311,6 @@ export interface WorldReportV4Input {
     readonly frameAttempts: ReadonlyArray<WorldFrameAttempt>;
     readonly memberAttempts: ReadonlyArray<WorldMemberAttempt>;
     readonly viewAttempts: ReadonlyArray<WorldViewAttempt>;
-    readonly clearAttempts: ReadonlyArray<WorldClearAttempt>;
     // Retained native-state evidence (empty when nothing was spent; the
     // wire lane is required so empty rides the literal empty array, never
     // an omission).
@@ -3327,7 +3326,6 @@ export interface WorldAttemptLanes {
     frames: WorldFrameAttempt[];
     members: WorldMemberAttempt[];
     views: WorldViewAttempt[];
-    clears: WorldClearAttempt[];
     states: WorldStateAttempt[];
     focus: WorldFocusFeedback[];
 }
@@ -3348,7 +3346,6 @@ export function incorporatedReportRows(closed: ReadonlyArray<string>, delivered:
     collect(delivered.frames, encodeV4FrameAttempt);
     collect(delivered.members, encodeV4MemberAttempt);
     collect(delivered.views, encodeV4ViewAttempt);
-    collect(delivered.clears, encodeV4ClearAttempt);
     collect(delivered.states, encodeV4StateAttempt);
     collect(delivered.focus, encodeV4FocusFeedback);
     return { closed: new Set(closed.map(encodeV4String)), attempts };
@@ -3364,7 +3361,6 @@ export function subtractIncorporatedAttempts(delivered: WorldAttemptLanes, incor
         frames: retain(delivered.frames, encodeV4FrameAttempt),
         members: retain(delivered.members, encodeV4MemberAttempt),
         views: retain(delivered.views, encodeV4ViewAttempt),
-        clears: retain(delivered.clears, encodeV4ClearAttempt),
         states: retain(delivered.states, encodeV4StateAttempt),
         focus: retain(delivered.focus, encodeV4FocusFeedback),
     };
@@ -3552,7 +3548,6 @@ export function freezeWorldReportV4InnerJson(input: Omit<WorldReportV4Input, "fo
         !pushPropertyRows(input.frameAttempts, encodeV4FrameAttempt) ||
         !pushPropertyRows(input.memberAttempts, encodeV4MemberAttempt) ||
         !pushPropertyRows(input.viewAttempts, encodeV4ViewAttempt) ||
-        !pushPropertyRows(input.clearAttempts, encodeV4ClearAttempt) ||
         !pushPropertyRows(input.stateAttempts, encodeV4StateAttempt)
     ) {
         return null;
@@ -3831,16 +3826,6 @@ function encodeV4ViewAttempt(a: WorldViewAttempt): string | null {
     return `{"kind":"view","op":${encodeV4String(a.op)},"out":${encodeV4String(a.out)},` +
         `"ws":${encodeV4String(a.ws)},"setter":${encodeV4String(a.setter)},` +
         `"pre":${pre},"post":${post},"base":${base},` +
-        `"attemptMs":${encodeV4String(a.attemptMs)}}`;
-}
-
-function encodeV4ClearAttempt(a: WorldClearAttempt): string | null {
-    if (!isOpaqueId(a.op) || !isOpaqueId(a.win)) {
-        return null;
-    }
-    const flag = (v: boolean | null): string => (v === null ? "null" : encodeV4Bool(v));
-    return `{"kind":"clear","op":${encodeV4String(a.op)},"win":${encodeV4String(a.win)},` +
-        `"setter":${encodeV4String(a.setter)},"pre":${flag(a.pre)},"post":${flag(a.post)},` +
         `"attemptMs":${encodeV4String(a.attemptMs)}}`;
 }
 

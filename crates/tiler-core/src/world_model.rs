@@ -1452,12 +1452,17 @@ impl WorldTransaction<'_> {
                 || r.source_workspace == candidate
                 || r.migration_refill.as_deref() == Some(candidate)
         }) || s
-            .retained_clears
-            .iter()
-            .any(|c| c.home.workspace.0 == candidate || c.view.as_deref() == Some(candidate))
-            || s.retained_born
-                .iter()
-                .any(|b| b.home.workspace.0 == candidate)
+            .retained_states
+            .values()
+            .any(|b| match b.clear_meta.as_ref() {
+                Some(crate::world_state::ClearProvenance::Directional(c)) => {
+                    c.home.workspace.0 == candidate || c.view.as_deref() == Some(candidate)
+                }
+                Some(crate::world_state::ClearProvenance::Born(b)) => {
+                    b.home.workspace.0 == candidate
+                }
+                None => false,
+            })
             || s.retained_creations
                 .iter()
                 .any(|c| c.logical_workspace == candidate)

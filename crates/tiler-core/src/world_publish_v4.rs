@@ -173,8 +173,16 @@ impl WorldTransaction<'_> {
                         crate::world_report::ScopeAuthority::Hold(HoldReason::Unreadable);
                 }
                 row.frame_operation = None;
-                row.clear_operation = None;
                 let hold = crate::world_report::ScopeAuthority::Hold(HoldReason::Unreadable);
+                for target in &mut row.state {
+                    if target.automatic_clear
+                        && target.property == crate::world_report::StateProperty::Maximized
+                        && !target.value
+                        && target.authority == crate::world_report::ScopeAuthority::Controlled
+                    {
+                        target.authority = hold;
+                    }
+                }
                 row.membership_authority = hold;
                 row.visibility = None;
                 row.visibility_authority = hold;

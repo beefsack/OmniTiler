@@ -48,7 +48,7 @@ function tiledRow(win: string, rect: [number, number, number, number] = [4, 4, 7
         alloc: [...rect], frame: [...rect],
         frame_auth: "controlled", frame_hold: "",
         member_auth: "controlled", member_hold: "",
-        frame_op: "", clear_op: "",
+        frame_op: "",
         floating: false, float_origin: "",
         cmdSeq: null,
         visibility: null, visibility_auth: "untouched", visibility_hold: "",

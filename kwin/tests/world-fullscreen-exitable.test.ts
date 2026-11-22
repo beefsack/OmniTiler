@@ -84,7 +84,6 @@ function windowRow(surface: object) {
         frameAttempts: [],
         memberAttempts: [],
         viewAttempts: [],
-        clearAttempts: [],
         stateAttempts: [],
         intentRecords: [],
     });

@@ -190,7 +190,6 @@ fn build_report(
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
@@ -351,7 +350,6 @@ fn host_owned_workspace_switch_and_return_preserves_fullscreen_and_focuses_cover
     assert_eq!(w1_away.visibility, None);
     assert_eq!(w1_away.visibility_authority, ScopeAuthority::Untouched);
     assert_eq!(w1_away.frame_operation, None);
-    assert_eq!(w1_away.clear_operation, None);
 
     // Observe arrival on N2 with w2 visible and focused.
     let mut w1_off = w1_fs;
@@ -398,7 +396,6 @@ fn host_owned_workspace_switch_and_return_preserves_fullscreen_and_focuses_cover
     assert_eq!(w1_ret.visibility, None);
     assert_eq!(w1_ret.visibility_authority, ScopeAuthority::Untouched);
     assert_eq!(w1_ret.frame_operation, None);
-    assert_eq!(w1_ret.clear_operation, None);
 }
 
 #[test]
@@ -577,7 +574,6 @@ fn workspace_tiling_toggle_off_and_on_preserves_fullscreen_without_automatic_eff
     assert_ne!(w1_off.frame_authority, ScopeAuthority::Controlled);
     assert!(w1_off.state.is_empty());
     assert_eq!(w1_off.frame_operation, None);
-    assert_eq!(w1_off.clear_operation, None);
     assert_eq!(off_reply.focus_request, None);
     assert_eq!(desire(&off_reply, "w2").allocation, None);
 
@@ -609,7 +605,6 @@ fn workspace_tiling_toggle_off_and_on_preserves_fullscreen_without_automatic_eff
     assert_ne!(w1_on.frame_authority, ScopeAuthority::Controlled);
     assert!(w1_on.state.is_empty(), "no unsolicited fullscreen write");
     assert_eq!(w1_on.frame_operation, None);
-    assert_eq!(w1_on.clear_operation, None);
     assert_eq!(on_reply.focus_request, None, "no automatic focus request");
     let w2_on = desire(&on_reply, "w2");
     assert!(w2_on.allocation.is_some(), "sibling w2 re-tiles");

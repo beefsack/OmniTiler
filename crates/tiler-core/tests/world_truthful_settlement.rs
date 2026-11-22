@@ -137,7 +137,6 @@ fn report(
         frames: Vec::new(),
         member_attempts,
         view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
@@ -1307,7 +1306,6 @@ fn retained_settlements_grant_no_extra_writes_or_spend_pending_obligations() {
             .iter()
             .find(|prev| prev.lifetime == row.lifetime)
             .expect("s2 window row");
-        assert_eq!(row.clear_operation, s2_row.clear_operation);
         assert_eq!(row.frame_operation, s2_row.frame_operation);
         assert_eq!(row.state, s2_row.state);
     }

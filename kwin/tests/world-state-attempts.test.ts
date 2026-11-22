@@ -348,7 +348,6 @@ describe("world state attempt report lane", () => {
             frameAttempts: [],
             memberAttempts: [],
             viewAttempts: [],
-            clearAttempts: [],
             stateAttempts: states,
             intentRecords: [],
         });
@@ -527,7 +526,6 @@ describe("world state attempt strict engine", () => {
                 frameAttempts: [],
                 memberAttempts: [],
                 viewAttempts: [],
-                clearAttempts: [],
                 stateAttempts: state.statesForReport(),
                 intentRecords: [],
             });

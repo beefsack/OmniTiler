@@ -12,8 +12,8 @@ use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::world_engine::EventIssue;
 use crate::world_report::{
-    ClearAttempt, FrameAttempt, FrameSetter, LastWritePath, MemberAttempt, MemberDisposition,
-    StateAttempt, StateProperty, TransferKind, ViewAttempt, VisibilityAttempt, VisibilityReason,
+    FrameAttempt, FrameSetter, LastWritePath, MemberAttempt, MemberDisposition, StateAttempt,
+    StateProperty, TransferKind, ViewAttempt, VisibilityAttempt, VisibilityReason,
     VisibilitySample, VisibilitySetter, WorkspaceRef, WorldCommand,
 };
 
@@ -94,21 +94,6 @@ pub(crate) struct StateAttemptEvidence {
     pub(crate) revision: u64,
     pub(crate) property: StateProperty,
     pub(crate) target: bool,
-    pub(crate) disposition: AttemptDisposition,
-    pub(crate) pre: Option<bool>,
-    pub(crate) post: Option<bool>,
-    pub(crate) attempt_ms: u64,
-}
-
-/// Closed canonical evidence for one maximize-clear. The target is
-/// structurally `maximized = false`: it is the meaning of the clear arm and
-/// is never carried as a second, forgeable bool. Correlation is the exact
-/// operation id plus window; pre/post and the stamp are the original raw
-/// facts, never a computed verdict.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ClearAttemptEvidence {
-    pub(crate) operation_id: String,
-    pub(crate) window: WindowId,
     pub(crate) disposition: AttemptDisposition,
     pub(crate) pre: Option<bool>,
     pub(crate) post: Option<bool>,
@@ -278,7 +263,6 @@ pub(crate) fn retain_frame_watermark(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PropertyAttempt {
     State(StateAttemptEvidence),
-    Clear(ClearAttemptEvidence),
     Member(MemberAttemptEvidence),
     View(ViewAttemptEvidence),
     Visibility(VisibilityAttemptEvidence),
@@ -298,19 +282,6 @@ impl PropertyAttempt {
             disposition: raw.setter.into(),
             pre: raw.pre,
             post: raw.post,
-            attempt_ms: raw.attempt_ms,
-        })
-    }
-
-    /// Normalize one raw wire clear attempt at the capture boundary. The
-    /// false target is structural to this arm; all other facts are verbatim.
-    pub(crate) fn from_clear_attempt(raw: &ClearAttempt) -> Self {
-        Self::Clear(ClearAttemptEvidence {
-            operation_id: raw.operation_id.clone(),
-            window: raw.window.clone(),
-            disposition: raw.setter.into(),
-            pre: raw.pre_maximized,
-            post: raw.post_maximized,
             attempt_ms: raw.attempt_ms,
         })
     }
@@ -377,15 +348,6 @@ impl PropertyAttempt {
     pub(crate) fn as_state(&self) -> Option<&StateAttemptEvidence> {
         match self {
             Self::State(evidence) => Some(evidence),
-            _ => None,
-        }
-    }
-
-    /// Typed clear access. A state (or any future arm) reads as absent, so
-    /// wrong-kind evidence can never satisfy a clear binding.
-    pub(crate) fn as_clear(&self) -> Option<&ClearAttemptEvidence> {
-        match self {
-            Self::Clear(evidence) => Some(evidence),
             _ => None,
         }
     }
@@ -476,14 +438,6 @@ where
 
 /// Exact op/window correlation for canonical clear evidence. Forged rows
 /// (operation or window mismatch) are never evidence: they read as absent.
-pub(crate) fn clear_evidence_matches(
-    evidence: &ClearAttemptEvidence,
-    operation_id: &str,
-    window: &WindowId,
-) -> bool {
-    evidence.operation_id == operation_id && evidence.window == *window
-}
-
 /// Exact op/window/target correlation for canonical membership evidence.
 /// Forged rows (operation, window or target mismatch) are never evidence: they
 /// read as absent.
@@ -530,7 +484,7 @@ pub(crate) fn visibility_evidence_matches(
 /// Proven clear refusal: an explicit native refusal with an unchanged readable
 /// maximized preimage. Anything else (accepted mismatch, throw, unreadable
 /// proof, moved preimage) latches ambiguity, never refusal.
-pub(crate) fn clear_refused(evidence: &ClearAttemptEvidence) -> bool {
+pub(crate) fn clear_refused(evidence: &StateAttemptEvidence) -> bool {
     evidence.disposition == AttemptDisposition::Refused
         && evidence.pre == Some(true)
         && evidence.post == Some(true)
@@ -540,7 +494,7 @@ pub(crate) fn clear_refused(evidence: &ClearAttemptEvidence) -> bool {
 /// asynchronously) against a readable maximized preimage. Never proof on its
 /// own: the staged observation must also show complete readable unmaximized
 /// facts (checked by the owning policy).
-pub(crate) fn clear_accepted(evidence: &ClearAttemptEvidence) -> bool {
+pub(crate) fn clear_accepted(evidence: &StateAttemptEvidence) -> bool {
     evidence.disposition == AttemptDisposition::Accepted && evidence.pre == Some(true)
 }
 
@@ -580,7 +534,7 @@ impl crate::world_transaction::WorldTransaction<'_> {
                 }
                 // Latest completed publication bounds incoming evidence.
                 let latest = self.world.state_revision;
-                self.correlate_retain_state_attempts(latest);
+                self.correlate_retain_state_attempts(latest, false);
                 self.evaluate_state_bindings();
             }
             PropertyAttemptPhase::Clears {
@@ -588,7 +542,8 @@ impl crate::world_transaction::WorldTransaction<'_> {
                 issue,
                 consumed,
             } => {
-                self.correlate_retain_clear_attempts();
+                let latest = self.world.state_revision;
+                self.correlate_retain_state_attempts(latest, true);
                 self.settle_clears(current_command, issue, consumed);
                 self.settle_born_clears();
             }
@@ -613,8 +568,12 @@ impl crate::world_transaction::WorldTransaction<'_> {
     /// identity and a revision inside [binding rev, latest published]. A held
     /// or incomplete receipt still records first: readability is a policy gate
     /// at proof time, not an intake filter. Spent bindings never reopen, so
-    /// later or contradictory rows cannot replace the retained row.
-    fn correlate_retain_state_attempts(&mut self, latest: u64) {
+    /// duplicate contradictory redeliveries obey the retained state first-match
+    /// fence and cannot replace the retained row; genuine replay must reuse the
+    /// original evidence. `automatic_only` restricts early intake in the Clears
+    /// phase to automatic-clear provenance (`clear_meta.is_some()`), leaving
+    /// ordinary explicit state intake at the States phase.
+    fn correlate_retain_state_attempts(&mut self, latest: u64, automatic_only: bool) {
         let attempts = &self.world.staged.observation.property_attempts;
         for attempt in attempts {
             let Some(evidence) = attempt.as_state() else {
@@ -630,6 +589,9 @@ impl crate::world_transaction::WorldTransaction<'_> {
             let Some(binding) = self.world.settlement.retained_states.get_mut(&key) else {
                 continue;
             };
+            if automatic_only != binding.clear_meta.is_some() {
+                continue;
+            }
             if binding.target.window != evidence.window
                 || binding.target.property != evidence.property
                 || binding.target.value != evidence.target
@@ -645,49 +607,6 @@ impl crate::world_transaction::WorldTransaction<'_> {
             if retain_candidate(attempt, &mut binding.pending, RetentionPolicy::FirstMatch) {
                 binding.spent = true;
             }
-        }
-    }
-
-    /// Correlate both clear owners with the replace-pending rule. Evidence
-    /// stages before any readability or authority hold, but an explicit close
-    /// prunes first, so no evidence is retained for a binding the policy
-    /// drops below. Exact op/window matching rejects forged rows.
-    fn correlate_retain_clear_attempts(&mut self) {
-        let attempts = &self.world.staged.observation.property_attempts;
-        let closes = &self.world.staged.closes;
-        for retained in &mut self.world.settlement.retained_clears {
-            if closes.contains(&retained.window) {
-                continue;
-            }
-            let operation_id = retained.operation_id.clone();
-            let window = retained.window.clone();
-            retain_matching_attempt(
-                attempts,
-                |attempt| {
-                    attempt.as_clear().is_some_and(|evidence| {
-                        clear_evidence_matches(evidence, &operation_id, &window)
-                    })
-                },
-                &mut retained.pending,
-                RetentionPolicy::ReplacePending,
-            );
-        }
-        for retained in &mut self.world.settlement.retained_born {
-            if closes.contains(&retained.window) {
-                continue;
-            }
-            let operation_id = retained.operation_id.clone();
-            let window = retained.window.clone();
-            retain_matching_attempt(
-                attempts,
-                |attempt| {
-                    attempt.as_clear().is_some_and(|evidence| {
-                        clear_evidence_matches(evidence, &operation_id, &window)
-                    })
-                },
-                &mut retained.pending,
-                RetentionPolicy::ReplacePending,
-            );
         }
     }
 
@@ -869,17 +788,19 @@ mod tests {
         WindowId(name.to_owned())
     }
 
-    fn clear(op: &str, win: &str, disposition: AttemptDisposition) -> PropertyAttempt {
-        PropertyAttempt::from_clear_attempt(&ClearAttempt {
-            operation_id: op.to_owned(),
+    fn state_with(rev: u64, win: &str, disposition: AttemptDisposition) -> PropertyAttempt {
+        PropertyAttempt::from_state_attempt(&StateAttempt {
             window: window(win),
+            revision: rev,
+            property: StateProperty::Maximized,
+            target: false,
             setter: match disposition {
                 AttemptDisposition::Accepted => FrameSetter::Accepted,
                 AttemptDisposition::Refused => FrameSetter::Refused,
                 AttemptDisposition::Threw => FrameSetter::Threw,
             },
-            pre_maximized: Some(true),
-            post_maximized: Some(true),
+            pre: Some(true),
+            post: Some(true),
             attempt_ms: 7,
         })
     }
@@ -900,7 +821,7 @@ mod tests {
     #[test]
     fn shared_slot_retain_honours_first_match_and_replace() {
         let first = state();
-        let second = clear("op-1", "win-a", AttemptDisposition::Accepted);
+        let second = state_with(2, "win-a", AttemptDisposition::Accepted);
         let mut slot = Some(first.clone());
         assert!(!retain_candidate(
             &second,
@@ -917,77 +838,18 @@ mod tests {
     }
 
     #[test]
-    fn mixed_state_and_clear_retain_only_the_matching_kind() {
+    fn first_match_keeps_first_and_replace_pending_takes_report_first() {
         let attempts = vec![
-            state(),
-            clear("op-1", "win-a", AttemptDisposition::Accepted),
+            state_with(1, "win-a", AttemptDisposition::Accepted),
+            state_with(1, "win-a", AttemptDisposition::Refused),
         ];
-        let mut clear_slot = None;
-        let staged = retain_matching_attempt(
-            &attempts,
-            |attempt| {
-                attempt.as_clear().is_some_and(|evidence| {
-                    clear_evidence_matches(evidence, "op-1", &window("win-a"))
-                })
-            },
-            &mut clear_slot,
-            RetentionPolicy::ReplacePending,
-        );
-        assert!(staged);
-        assert_eq!(
-            clear_slot
-                .as_ref()
-                .and_then(PropertyAttempt::as_clear)
-                .map(|e| e.operation_id.as_str()),
-            Some("op-1")
-        );
-        assert!(
-            clear_slot
-                .as_ref()
-                .and_then(PropertyAttempt::as_state)
-                .is_none()
-        );
-        let mut state_slot = None;
+        let mut first = Some(state_with(1, "win-a", AttemptDisposition::Threw));
         let staged = retain_matching_attempt(
             &attempts,
             |attempt| {
                 attempt
                     .as_state()
                     .is_some_and(|evidence| evidence.window == window("win-a"))
-            },
-            &mut state_slot,
-            RetentionPolicy::FirstMatch,
-        );
-        assert!(staged);
-        assert_eq!(
-            state_slot
-                .as_ref()
-                .and_then(PropertyAttempt::as_state)
-                .map(|e| e.attempt_ms),
-            Some(9)
-        );
-        assert!(
-            state_slot
-                .as_ref()
-                .and_then(PropertyAttempt::as_clear)
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn first_match_keeps_first_and_replace_pending_takes_report_first() {
-        let attempts = vec![
-            clear("op-1", "win-a", AttemptDisposition::Accepted),
-            clear("op-1", "win-a", AttemptDisposition::Refused),
-            state(),
-        ];
-        let mut first = Some(clear("op-1", "win-a", AttemptDisposition::Threw));
-        let staged = retain_matching_attempt(
-            &attempts,
-            |attempt| {
-                attempt.as_clear().is_some_and(|evidence| {
-                    clear_evidence_matches(evidence, "op-1", &window("win-a"))
-                })
             },
             &mut first,
             RetentionPolicy::FirstMatch,
@@ -996,17 +858,17 @@ mod tests {
         assert_eq!(
             first
                 .as_ref()
-                .and_then(PropertyAttempt::as_clear)
+                .and_then(PropertyAttempt::as_state)
                 .map(|e| e.disposition),
             Some(AttemptDisposition::Threw)
         );
-        let mut replaced = Some(clear("op-1", "win-a", AttemptDisposition::Threw));
+        let mut replaced = Some(state_with(1, "win-a", AttemptDisposition::Threw));
         let staged = retain_matching_attempt(
             &attempts,
             |attempt| {
-                attempt.as_clear().is_some_and(|evidence| {
-                    clear_evidence_matches(evidence, "op-1", &window("win-a"))
-                })
+                attempt
+                    .as_state()
+                    .is_some_and(|evidence| evidence.window == window("win-a"))
             },
             &mut replaced,
             RetentionPolicy::ReplacePending,
@@ -1015,25 +877,27 @@ mod tests {
         assert_eq!(
             replaced
                 .as_ref()
-                .and_then(PropertyAttempt::as_clear)
+                .and_then(PropertyAttempt::as_state)
                 .map(|e| e.disposition),
             Some(AttemptDisposition::Accepted)
         );
     }
 
     #[test]
-    fn normalized_clear_preserves_raw_facts_and_preimage_predicates() {
-        let raw = ClearAttempt {
-            operation_id: "op-9".to_owned(),
+    fn normalized_clear_state_preserves_raw_facts_and_preimage_predicates() {
+        let raw = StateAttempt {
             window: window("win-b"),
+            revision: 9,
+            property: StateProperty::Maximized,
+            target: false,
             setter: FrameSetter::Refused,
-            pre_maximized: Some(true),
-            post_maximized: Some(true),
+            pre: Some(true),
+            post: Some(true),
             attempt_ms: 42,
         };
-        let normalized = PropertyAttempt::from_clear_attempt(&raw);
-        let evidence = normalized.as_clear().expect("clear arm");
-        assert_eq!(evidence.operation_id, "op-9");
+        let normalized = PropertyAttempt::from_state_attempt(&raw);
+        let evidence = normalized.as_state().expect("state arm");
+        assert_eq!(evidence.revision, 9);
         assert_eq!(evidence.window, window("win-b"));
         assert_eq!(evidence.disposition, AttemptDisposition::Refused);
         assert_eq!((evidence.pre, evidence.post), (Some(true), Some(true)));
@@ -1229,15 +1093,13 @@ mod tests {
         // view arm can forge a membership no-call.
         let arms = [
             state(),
-            clear("op-c", "win-a", AttemptDisposition::Accepted),
             member("op-m", MemberDisposition::AlreadyAtTarget),
             view("op-v", FrameSetter::Accepted),
         ];
         for (index, arm) in arms.iter().enumerate() {
             assert_eq!(arm.as_state().is_some(), index == 0, "state arm {index}");
-            assert_eq!(arm.as_clear().is_some(), index == 1, "clear arm {index}");
-            assert_eq!(arm.as_member().is_some(), index == 2, "member arm {index}");
-            assert_eq!(arm.as_view().is_some(), index == 3, "view arm {index}");
+            assert_eq!(arm.as_member().is_some(), index == 1, "member arm {index}");
+            assert_eq!(arm.as_view().is_some(), index == 2, "view arm {index}");
         }
     }
 
@@ -1305,12 +1167,9 @@ mod tests {
         assert_eq!(evidence.prewrite, raw.prewrite);
         // No other arm can read frame evidence and vice versa.
         assert!(normalized.as_state().is_none());
-        assert!(normalized.as_clear().is_none());
         assert!(normalized.as_member().is_none());
         assert!(normalized.as_view().is_none());
-        for arm in [state(), clear("op-c", "win-a", AttemptDisposition::Refused)] {
-            assert!(arm.as_frame().is_none());
-        }
+        assert!(state().as_frame().is_none());
     }
 
     #[test]
@@ -1416,13 +1275,11 @@ mod tests {
         assert_eq!(evidence.post, raw.post);
         // No other arm can read visibility evidence and vice versa.
         assert!(normalized.as_state().is_none());
-        assert!(normalized.as_clear().is_none());
         assert!(normalized.as_member().is_none());
         assert!(normalized.as_view().is_none());
         assert!(normalized.as_frame().is_none());
         for arm in [
             state(),
-            clear("op-c", "win-a", AttemptDisposition::Refused),
             member("op-m", MemberDisposition::Accepted),
             view("op-v", FrameSetter::Accepted),
             frame(None, 42),
@@ -1492,7 +1349,6 @@ mod tests {
     fn wrong_kind_rows_never_satisfy_visibility_retention() {
         let attempts = vec![
             state(),
-            clear("op-c", "win-v", AttemptDisposition::Accepted),
             PropertyAttempt::from_visibility_attempt(&visibility_last(
                 VisibilitySetter::Accepted,
                 true,

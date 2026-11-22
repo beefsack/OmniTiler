@@ -105,7 +105,7 @@ fn restore_float_true_floats_at_native_frame_without_ops() {
     assert!(is_floated(&engine, "win-a"));
     let row = row_for(&reply, "win-a").expect("float row");
     assert!(row.frame_operation.is_none(), "{row:?}");
-    assert!(row.clear_operation.is_none(), "{row:?}");
+    assert!(!row.state.iter().any(|t| t.automatic_clear), "{row:?}");
 }
 
 #[test]
@@ -205,7 +205,7 @@ fn restore_tile_false_nonfixed_survives_hints_and_exclusion() {
     );
     let row = row_for(&reply, "win-a").expect("tiled row");
     assert!(row.frame_operation.is_none(), "{row:?}");
-    assert!(row.clear_operation.is_none(), "{row:?}");
+    assert!(!row.state.iter().any(|t| t.automatic_clear), "{row:?}");
 }
 
 #[test]
@@ -933,7 +933,7 @@ fn restored_true_float_durable_through_second_fact_and_exclusion() {
     );
     let row = row_for(&reply, "win-a").expect("float row");
     assert!(row.frame_operation.is_none(), "{row:?}");
-    assert!(row.clear_operation.is_none(), "{row:?}");
+    assert!(!row.state.iter().any(|t| t.automatic_clear), "{row:?}");
 
     // Automatic fixed float without a record never enters the explicit set.
     let reply = accepted(
@@ -1731,7 +1731,7 @@ fn floating_pending_false_survives_tiling_enable_as_explicit_tile() {
     );
     let row = row_for(&reply, "win-n").expect("floating row");
     assert!(row.frame_operation.is_none(), "{row:?}");
-    assert!(row.clear_operation.is_none(), "{row:?}");
+    assert!(!row.state.iter().any(|t| t.automatic_clear), "{row:?}");
 
     // Enabling tiling with fixed hints keeps the explicit tile override.
     let reply = accepted(
@@ -1879,7 +1879,7 @@ fn floating_pending_true_stays_intentional_across_tiling_changes() {
     );
     let row = row_for(&reply, "win-n").expect("floating row");
     assert!(row.frame_operation.is_none(), "{row:?}");
-    assert!(row.clear_operation.is_none(), "{row:?}");
+    assert!(!row.state.iter().any(|t| t.automatic_clear), "{row:?}");
 
     // Enabling tiling keeps the intentional float with no geometry op.
     let mut f = fact("win-n", "out-a", 400);
@@ -1918,7 +1918,7 @@ fn floating_pending_true_stays_intentional_across_tiling_changes() {
     );
     let row = row_for(&reply, "win-n").expect("float row");
     assert!(row.frame_operation.is_none(), "{row:?}");
-    assert!(row.clear_operation.is_none(), "{row:?}");
+    assert!(!row.state.iter().any(|t| t.automatic_clear), "{row:?}");
 }
 
 #[test]

@@ -96,39 +96,6 @@ pub(crate) struct RetainedFloat {
     pub(crate) pending: Option<PropertyAttempt>,
 }
 
-/// Retained directional maximize-clear: one outstanding authorized clear
-/// per window, keyed by the stable originating command operation identity
-/// (`op-<cmdSeq>`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RetainedClear {
-    pub(crate) operation_id: String,
-    pub(crate) command_seq: u64,
-    pub(crate) window: WindowId,
-    pub(crate) direction: String,
-    pub(crate) home: DomainKey,
-    pub(crate) view: Option<String>,
-    pub(crate) focus: String,
-    /// True when the original subject routes float (floating or sticky);
-    /// false for the tiled route.
-    pub(crate) float_route: bool,
-    /// Original same-axis mode for the tiled resume path.
-    pub(crate) same_axis: crate::directional::SameAxisMove,
-    pub(crate) pending: Option<PropertyAttempt>,
-    pub(crate) ambiguous: bool,
-}
-
-/// Retained commandless born maximize-clear: one outstanding authorized
-/// clear per born window, keyed by a stable core-minted operation identity
-/// (`op-born-<n>`), never a command sequence.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RetainedBornClear {
-    pub(crate) operation_id: String,
-    pub(crate) window: WindowId,
-    pub(crate) home: DomainKey,
-    pub(crate) pending: Option<PropertyAttempt>,
-    pub(crate) ambiguous: bool,
-}
-
 /// Retained host-owned native creation: one outstanding core-owned
 /// authorization for the adapter to create exactly one native desktop for
 /// one logical workspace.
@@ -148,8 +115,6 @@ pub(crate) struct SettlementState {
     pub(crate) retained: Vec<RetainedTransfer>,
     pub(crate) retained_floats: Vec<RetainedFloat>,
     pub(crate) retained_states: BTreeMap<(WindowId, StateProperty), RetainedStateBinding>,
-    pub(crate) retained_clears: Vec<RetainedClear>,
-    pub(crate) retained_born: Vec<RetainedBornClear>,
     pub(crate) born_seq: u64,
     pub(crate) born_attempted: BTreeSet<WindowId>,
     pub(crate) born_held_fullscreen: BTreeSet<WindowId>,
@@ -192,8 +157,6 @@ impl SettlementState {
             retained: Vec::new(),
             retained_floats: Vec::new(),
             retained_states: BTreeMap::new(),
-            retained_clears: Vec::new(),
-            retained_born: Vec::new(),
             born_seq: 0,
             born_attempted: BTreeSet::new(),
             born_held_fullscreen: BTreeSet::new(),
@@ -247,15 +210,16 @@ impl SettlementState {
     ) -> Option<&str> {
         match kind {
             OperationKind::Clear => self
-                .retained_clears
-                .iter()
-                .find(|retained| &retained.window == window)
-                .map(|retained| retained.operation_id.as_str())
-                .or_else(|| {
-                    self.retained_born
-                        .iter()
-                        .find(|retained| &retained.window == window)
-                        .map(|retained| retained.operation_id.as_str())
+                .retained_states
+                .get(&(window.clone(), StateProperty::Maximized))
+                .and_then(|binding| match binding.clear_meta.as_ref() {
+                    Some(crate::world_state::ClearProvenance::Directional(meta)) => {
+                        Some(meta.operation_id.as_str())
+                    }
+                    Some(crate::world_state::ClearProvenance::Born(meta)) => {
+                        Some(meta.operation_id.as_str())
+                    }
+                    None => None,
                 }),
             OperationKind::Float => self
                 .retained_floats
@@ -263,10 +227,16 @@ impl SettlementState {
                 .find(|retained| &retained.window == window)
                 .map(|retained| retained.operation_id.as_str())
                 .or_else(|| {
-                    self.retained_clears
-                        .iter()
-                        .find(|retained| &retained.window == window && retained.float_route)
-                        .map(|retained| retained.operation_id.as_str())
+                    self.retained_states
+                        .get(&(window.clone(), StateProperty::Maximized))
+                        .and_then(|binding| match binding.clear_meta.as_ref() {
+                            Some(crate::world_state::ClearProvenance::Directional(meta))
+                                if meta.float_route =>
+                            {
+                                Some(meta.operation_id.as_str())
+                            }
+                            _ => None,
+                        })
                 }),
         }
     }

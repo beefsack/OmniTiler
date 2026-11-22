@@ -146,7 +146,6 @@ fn report(
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
@@ -442,7 +441,6 @@ fn report_screens(
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
         state_attempts: Vec::new(),
         visibility_attempts: Vec::new(),
         focus_changes: None,
@@ -1063,7 +1061,7 @@ fn dialog_hints_null_stays_float_member_without_frame_write() {
     assert!(row.floating, "{row:?}");
     assert!(row.allocation.is_none(), "{row:?}");
     assert!(row.frame_operation.is_none(), "{row:?}");
-    assert!(row.clear_operation.is_none(), "{row:?}");
+    assert!(!row.state.iter().any(|t| t.automatic_clear), "{row:?}");
     assert_eq!(row.frame_authority, ScopeAuthority::Untouched, "{row:?}");
     // Scope holding the float stays controlled (no unreadable hold).
     assert!(
@@ -1284,13 +1282,18 @@ fn hints_null_float_move_refuses_without_side_effects() {
         engine.world.settlement.retained_floats
     );
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        !engine
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .any(|b| b.clear_meta.is_some()),
         "no clear kickoff: {:?}",
-        engine.world.settlement.retained_clears
+        engine.world.settlement.retained_states
     );
     let row = row_of(&reply, "win-d");
     assert!(row.frame_operation.is_none(), "{row:?}");
-    assert!(row.clear_operation.is_none(), "{row:?}");
+    assert!(!row.state.iter().any(|t| t.automatic_clear), "{row:?}");
     let healthy = row_of(&reply, "win-t");
     assert_eq!(
         healthy.membership_authority,
@@ -1346,9 +1349,14 @@ fn hints_null_float_move_refuses_without_side_effects() {
         other => panic!("expected directional refusal, got {other:?}"),
     }
     assert!(
-        cleared_engine.world.settlement.retained_clears.is_empty(),
+        !cleared_engine
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .any(|b| b.clear_meta.is_some()),
         "no clear kickoff: {:?}",
-        cleared_engine.world.settlement.retained_clears
+        cleared_engine.world.settlement.retained_states
     );
     assert!(
         cleared_engine.world.settlement.retained_floats.is_empty(),
@@ -1651,7 +1659,7 @@ fn retained_explicit_automatic_null_cycle_keeps_home() {
     let row = row_of(&reply, "win-e");
     assert!(row.floating, "{row:?}");
     assert_eq!(row.frame_operation.as_deref(), Some("op-11"), "{row:?}");
-    assert!(row.clear_operation.is_none(), "{row:?}");
+    assert!(!row.state.iter().any(|t| t.automatic_clear), "{row:?}");
     assert_eq!(
         explicit
             .world
@@ -1753,7 +1761,7 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
         row.frame_operation.is_none(),
         "withhold while null: {row:?}"
     );
-    assert!(row.clear_operation.is_none(), "{row:?}");
+    assert!(!row.state.iter().any(|t| t.automatic_clear), "{row:?}");
     assert_eq!(
         engine.world.settlement.retained_floats.len(),
         1,
@@ -1842,9 +1850,21 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
         }
         other => panic!("expected NeedClear, got {other:?}"),
     }
-    assert_eq!(
-        row_of(&reply, "win-m").clear_operation.as_deref(),
-        Some("op-12")
+    let clear_key = (
+        WindowId("win-m".to_owned()),
+        crate::world_report::StateProperty::Maximized,
+    );
+    let clear_rev = reply.state_revision;
+    assert!(
+        row_of(&reply, "win-m").state.iter().any(|t| {
+            t.property == crate::world_report::StateProperty::Maximized
+                && !t.value
+                && t.automatic_clear
+                && t.authority == ScopeAuthority::Controlled
+                && t.command_seq == Some(12)
+        }),
+        "expected controlled automaticClear target: {:?}",
+        row_of(&reply, "win-m").state
     );
     let max_nulled = WindowFact {
         maximized: Some(true),
@@ -1864,25 +1884,20 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
     );
     let row = row_of(&reply, "win-m");
     assert!(
-        row.clear_operation.is_none(),
+        !row.state
+            .iter()
+            .any(|t| t.automatic_clear && t.authority == ScopeAuthority::Controlled),
         "withhold clear while null: {row:?}"
     );
     assert!(row.frame_operation.is_none(), "{row:?}");
-    assert_eq!(
-        max_engine.world.settlement.retained_clears.len(),
-        1,
-        "{:?}",
-        max_engine.world.settlement.retained_clears
-    );
-    assert_eq!(
-        max_engine.world.settlement.retained_clears[0].operation_id,
-        "op-12"
-    );
-    assert!(
-        max_engine.world.settlement.retained_clears[0]
-            .pending
-            .is_none()
-    );
+    let binding = max_engine
+        .world
+        .settlement
+        .retained_states
+        .get(&clear_key)
+        .expect("retained clear binding");
+    assert_eq!(binding.target.revision, clear_rev);
+    assert!(binding.pending.is_none());
     let reply = accepted(
         &mut max_engine,
         &report(
@@ -1894,12 +1909,15 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
             None,
         ),
     );
-    assert_eq!(
-        row_of(&reply, "win-m").clear_operation.as_deref(),
-        Some("op-12"),
-        "same clear op resumes: {reply:?}"
+    assert!(
+        row_of(&reply, "win-m").state.iter().any(|t| {
+            t.automatic_clear
+                && t.authority == ScopeAuthority::Controlled
+                && t.command_seq == Some(12)
+        }),
+        "same clear binding resumes: {reply:?}"
     );
-    // A spent attempt stays spent across a null gap: never republished.
+    // A spent attempt stays spent across a null gap: never republished as controlled.
     let mut spent = report(
         5,
         5,
@@ -1908,26 +1926,36 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
         None,
         None,
     );
-    spent.clear_attempts = vec![crate::world_report::ClearAttempt {
-        operation_id: "op-12".to_owned(),
+    spent.state_attempts = vec![crate::world_report::StateAttempt {
         window: WindowId("win-m".to_owned()),
+        property: crate::world_report::StateProperty::Maximized,
+        target: false,
+        revision: clear_rev,
         setter: FrameSetter::Accepted,
-        pre_maximized: Some(true),
-        post_maximized: Some(true),
+        pre: Some(true),
+        post: Some(true),
         attempt_ms: 7,
     }];
     let reply = accepted(&mut max_engine, &spent);
     assert!(
-        row_of(&reply, "win-m").clear_operation.is_none(),
+        !row_of(&reply, "win-m")
+            .state
+            .iter()
+            .any(|t| t.automatic_clear && t.authority == ScopeAuthority::Controlled),
         "{:?}",
         row_of(&reply, "win-m")
     );
     assert!(
-        max_engine.world.settlement.retained_clears[0]
+        max_engine
+            .world
+            .settlement
+            .retained_states
+            .get(&clear_key)
+            .expect("retained clear")
             .pending
             .is_some(),
         "attempt staged: {:?}",
-        max_engine.world.settlement.retained_clears
+        max_engine.world.settlement.retained_states
     );
     let reply = accepted(
         &mut max_engine,
@@ -1941,7 +1969,10 @@ fn retained_float_tokens_withheld_while_hints_unreadable() {
         ),
     );
     assert!(
-        row_of(&reply, "win-m").clear_operation.is_none(),
+        !row_of(&reply, "win-m")
+            .state
+            .iter()
+            .any(|t| t.automatic_clear && t.authority == ScopeAuthority::Controlled),
         "{:?}",
         row_of(&reply, "win-m")
     );

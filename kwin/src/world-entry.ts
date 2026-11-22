@@ -856,20 +856,20 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 }
 
                 let frameOps = 0;
-                let clearOps = 0;
+                let autoClears = 0;
                 let stateTargets = 0;
                 let aboveTargets = 0;
                 const pendingWins: WorldReply["windows"] = [];
                 const idleWins: WorldReply["windows"] = [];
                 for (const w of parsed.windows) {
                     const hasFrameOp = w.frame_op !== "";
-                    const hasClearOp = w.clear_op !== "";
+                    const hasAutoClear = w.state.some((s) => s.automaticClear === true);
                     const hasState = w.state.length > 0;
                     if (hasFrameOp) {
                         frameOps += 1;
                     }
-                    if (hasClearOp) {
-                        clearOps += 1;
+                    if (hasAutoClear) {
+                        autoClears += 1;
                     }
                     if (hasState) {
                         stateTargets += w.state.length;
@@ -880,7 +880,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         }
                     }
                     const winXfers = xfersByWin.get(w.win);
-                    if (hasFrameOp || hasClearOp || hasState || w.cmdSeq !== null || (winXfers !== undefined && winXfers.length > 0)) {
+                    if (hasFrameOp || hasAutoClear || hasState || w.cmdSeq !== null || (winXfers !== undefined && winXfers.length > 0)) {
                         pendingWins.push(w);
                     } else {
                         idleWins.push(w);
@@ -891,7 +891,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                 const dragProjected = parsed.dragPreview !== null ? 1 : 0;
                 const projectedTargets =
                     frameOps +
-                    clearOps +
+                    autoClears +
                     stateTargets +
                     parsed.transfers.length +
                     parsed.nativeCreations.length +
@@ -908,7 +908,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     `ready=${traceDiagBool(parsed.ready)} consumed=${traceDiagBool(parsed.consumed)} ` +
                     `windows=${parsed.windows.length} shownWindows=${shownWindows.length} windowsOmitted=${windowsOmitted} ` +
                     `intentDesired=${parsed.intentDesired.length} ` +
-                    `projectedTargets=${projectedTargets} frameOps=${frameOps} clearOps=${clearOps} ` +
+                    `projectedTargets=${projectedTargets} frameOps=${frameOps} autoClears=${autoClears} ` +
                     `stateTargets=${stateTargets} aboveTargets=${aboveTargets} ` +
                     `transfers=${parsed.transfers.length} creations=${parsed.nativeCreations.length} ` +
                     `focusReq=${focusProjected} dragPreview=${dragProjected} ` +
@@ -941,7 +941,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         `frameAuth=${traceDiagAuth(w.frame_auth)} frameHold=${traceDiagHold(w.frame_hold)} ` +
                         `memberAuth=${traceDiagAuth(w.member_auth)} memberHold=${traceDiagHold(w.member_hold)} ` +
                         `frameOp=${w.frame_op !== "" ? traceDiagId(w.frame_op) : "-"} ` +
-                        `clearOp=${w.clear_op !== "" ? traceDiagId(w.clear_op) : "-"} ` +
+                        `autoClear=${w.state.some((s) => s.automaticClear === true) ? "1" : "-"} ` +
                         `cmdSeq=${w.cmdSeq !== null ? traceDiagStamp(w.cmdSeq) : "-"} ` +
                         `stateOps=${stateOpsStr} xferOps=${xferOpsStr}`,
                     );
@@ -1533,9 +1533,9 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                         `above=${traceDiagBool(wf.above)} below=${traceDiagBool(wf.below)}`;
                     break;
                 }
-                const core = row === null ? "core=-/-/- frameOp=- clearOp=- cmdSeq=- frameAuth=- frameHold=- memberAuth=- memberHold=-" :
+                const core = row === null ? "core=-/-/- frameOp=- autoClear=- cmdSeq=- frameAuth=- frameHold=- memberAuth=- memberHold=-" :
                     `core=${traceDiagBool(row.floating)}/${traceDiagRect(row.frame)}/${traceDiagRect(row.alloc)} ` +
-                    `frameOp=${row.frame_op !== "" ? "1" : "0"} clearOp=${row.clear_op !== "" ? "1" : "0"} ` +
+                    `frameOp=${row.frame_op !== "" ? "1" : "0"} autoClear=${row.state.some((s) => s.automaticClear === true) ? "1" : "0"} ` +
                     `cmdSeq=${cmdSeq} frameAuth=${traceDiagAuth(row.frame_auth)} ` +
                     `frameHold=${traceDiagHold(row.frame_hold)} memberAuth=${traceDiagAuth(row.member_auth)} ` +
                     `memberHold=${traceDiagHold(row.member_hold)}`;
@@ -6428,7 +6428,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     // frame and source homing are pre-actuation evidence.
                     logDropDiagnostics(parsed, fresh, flight);
                     // Born admission and the one-shot clear are core-owned
-                    // (N6): the reply's `clear_operation` desire rides the
+                    // (N6): the reply's automatic-clear state target rides the
                     // normal apply lane below with fresh pre/post proof.
                     // No adapter-side birth decision runs here.
                     {
@@ -7036,7 +7036,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             frames: state.framesForReport(),
             members: state.memberAttemptsForReport(),
             views: state.viewAttemptsForReport(),
-            clears: state.clearAttemptsForReport(),
             states: state.statesForReport(),
             focus: state.focusFeedbacksForReport(),
         };
@@ -7046,7 +7045,6 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
             frameAttempts: delivered.frames,
             memberAttempts: delivered.members,
             viewAttempts: delivered.views,
-            clearAttempts: delivered.clears,
             stateAttempts: delivered.states,
             focusFeedbacks: delivered.focus,
             ...(rosterFeedback?.gen === state.boundGen ? { rosterFeedback } : {}),

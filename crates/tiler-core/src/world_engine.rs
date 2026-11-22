@@ -177,7 +177,7 @@ pub(crate) struct ExcludedIntent {
 }
 
 pub(crate) use crate::world_settlement_state::{
-    RetainedBornClear, RetainedClear, RetainedFloat, RetainedNativeCreation, RetainedTransfer,
+    RetainedFloat, RetainedNativeCreation, RetainedTransfer,
 };
 
 /// Public bounded outcome of one [`WorldEngine::handle_report`] call: the

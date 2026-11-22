@@ -238,12 +238,6 @@ impl WorldEngine {
                 .map(crate::world_attempts::PropertyAttempt::from_state_attempt)
                 .chain(
                     report
-                        .clear_attempts
-                        .iter()
-                        .map(crate::world_attempts::PropertyAttempt::from_clear_attempt),
-                )
-                .chain(
-                    report
                         .member_attempts
                         .iter()
                         .map(crate::world_attempts::PropertyAttempt::from_member_attempt),

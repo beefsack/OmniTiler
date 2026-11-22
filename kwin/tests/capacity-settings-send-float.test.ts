@@ -93,7 +93,6 @@ describe("capacity settings connection carriage", () => {
             frameAttempts: [],
             memberAttempts: [],
             viewAttempts: [],
-            clearAttempts: [],
             stateAttempts: [],
             intentRecords: [{ win: "win-a", data: "schema2-opaque" }],
         });

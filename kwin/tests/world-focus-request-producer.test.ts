@@ -684,7 +684,6 @@ async function proveLatestOnly(h: Harness, dispatch: number, minted: Minted, opt
         frameAttempts: [],
         memberAttempts: [],
         viewAttempts: [],
-        clearAttempts: [],
         stateAttempts: [],
         focusFeedbacks: actualFeedback,
         intentRecords: [],

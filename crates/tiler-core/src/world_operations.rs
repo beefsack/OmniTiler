@@ -1193,9 +1193,9 @@ impl WorldTransaction<'_> {
             Some(DirectionalVerdict::NeedClear { window }) => {
                 // Fresh need: bind the original intent under the stable
                 // originating operation identity and publish a one-shot
-                // `clear_operation` desire (see publish). The adapter
-                // dispatches the native clear at most once and reports a
-                // correlated `ClearAttempt`; the commandless settlement
+                // automatic `maximized: false` state desire (see publish). The
+                // adapter dispatches the native clear at most once and reports
+                // a correlated `StateAttempt`; the commandless settlement
                 // resumes the original intent under this same identity on
                 // proof. Never a second command or child id. The newer
                 // intent supersedes any outstanding same-window float
@@ -1203,26 +1203,46 @@ impl WorldTransaction<'_> {
                 // reply never co-publishes a stale placement with the new
                 // clear.
                 let operation_id = format!("op-{command_seq}");
+                let revision = self.world.state_revision + 1;
                 self.world
                     .settlement
                     .retained_floats
                     .retain(|held| held.window != window);
-                self.world
-                    .settlement
-                    .retained_clears
-                    .push(crate::world_engine::RetainedClear {
-                        operation_id,
-                        command_seq,
-                        window: window.clone(),
-                        direction: direction.as_wire_str().to_owned(),
-                        home: home.clone(),
-                        view: view.clone(),
-                        focus: self.world.staged.observation.focused_global.clone(),
-                        float_route: source_row.floating || source_row.sticky,
-                        same_axis,
+                let previous = self.world.settlement.retained_states.insert(
+                    (
+                        window.clone(),
+                        crate::world_report::StateProperty::Maximized,
+                    ),
+                    crate::world_state::RetainedStateBinding {
+                        target: crate::world_state::RetainedStateTarget {
+                            window: window.clone(),
+                            property: crate::world_report::StateProperty::Maximized,
+                            value: false,
+                            revision,
+                        },
                         pending: None,
-                        ambiguous: false,
-                    });
+                        spent: false,
+                        disposition: crate::world_report::AttemptOutcome::Unattempted,
+                        sticky_meta: None,
+                        fullscreen_meta: None,
+                        maximize_meta: None,
+                        above_meta: None,
+                        clear_meta: Some(crate::world_state::ClearProvenance::Directional(
+                            crate::world_state::DirectionalClearMeta {
+                                operation_id,
+                                command_seq,
+                                direction: direction.as_wire_str().to_owned(),
+                                home: home.clone(),
+                                view: view.clone(),
+                                focus: self.world.staged.observation.focused_global.clone(),
+                                float_route: source_row.floating || source_row.sticky,
+                                same_axis,
+                                ambiguous: false,
+                            },
+                        )),
+                    },
+                );
+                self.retire_superseded_born_clear(&window, previous);
                 self.world.command_result = Some(CommandResult::Directional {
                     outcome: DirectionalOutcome::NeedClear,
                     target: Some(window),

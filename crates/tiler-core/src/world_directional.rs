@@ -32,10 +32,11 @@ pub enum DirectionalVerdict {
     },
     /// Move subject is maximized (non-fullscreen) on a tiled workspace:
     /// the core binds the original intent and publishes a one-shot
-    /// `clear_operation` desire under the originating op; the adapter
-    /// dispatches the native clear at most once and reports a correlated
-    /// `ClearAttempt`; the commandless core settlement resumes the original
-    /// intent on proof. Never a refusal by itself, never a second command.
+    /// automatic `maximized: false` state desire under the originating op;
+    /// the adapter dispatches the native clear at most once and reports a
+    /// correlated `StateAttempt`; the commandless core settlement resumes
+    /// the original intent on proof. Never a refusal by itself, never a
+    /// second command.
     NeedClear { window: WindowId },
 }
 

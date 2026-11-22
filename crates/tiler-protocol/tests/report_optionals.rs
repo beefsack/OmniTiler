@@ -18,8 +18,8 @@ use tiler_core::directional::WindowId;
 use tiler_core::geometry::Rect;
 use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
-    AttemptLaneV4, ClearAttempt, FrameAttempt, MemberAttempt, NativeCreationAttempt,
-    NativeWorkspaceFact, ViewAttempt, WorkspaceRef, WorldReportV4,
+    AttemptLaneV4, FrameAttempt, MemberAttempt, NativeCreationAttempt, NativeWorkspaceFact,
+    ViewAttempt, WorkspaceRef, WorldReportV4,
 };
 use tiler_core::world_report_v4_checks::report_digest_v4 as report_digest;
 use tiler_protocol::world_protocol::{
@@ -377,7 +377,6 @@ fn attempt_lanes_absent_empty_and_nonempty() {
     let frame_fixture: serde_json::Value = fixture_value("report-attempt-frame");
     let member_fixture: serde_json::Value = fixture_value("report-attempt-member-logical");
     let view_fixture: serde_json::Value = fixture_value("report-attempt-view-native");
-    let clear_fixture: serde_json::Value = fixture_value("report-attempt-clear");
     let creation_fixture: serde_json::Value = fixture_value("report-attempt-creation-id");
 
     // Absent creationAttempts backfills empty with presence false.
@@ -386,7 +385,6 @@ fn attempt_lanes_absent_empty_and_nonempty() {
     assert!(decoded.report.frames.is_empty());
     assert!(decoded.report.member_attempts.is_empty());
     assert!(decoded.report.view_attempts.is_empty());
-    assert!(decoded.report.clear_attempts.is_empty());
     assert!(decoded.report.creation_attempts.is_empty());
 
     // Explicit empty creationAttempts stays empty with presence true; the
@@ -424,11 +422,6 @@ fn attempt_lanes_absent_empty_and_nonempty() {
     viewed["propertyAttempts"] = view_fixture["propertyAttempts"].clone();
     let decoded = decode_both(&viewed.to_string());
     assert_eq!(decoded.report.view_attempts.len(), 2);
-
-    let mut cleared = base_value();
-    cleared["propertyAttempts"] = clear_fixture["propertyAttempts"].clone();
-    let decoded = decode_both(&cleared.to_string());
-    assert_eq!(decoded.report.clear_attempts.len(), 2);
 
     let mut created = base_value();
     created["creationAttempts"] = creation_fixture["creationAttempts"].clone();
@@ -516,12 +509,6 @@ fn opt_rect_text(rect: &Option<Rect>) -> String {
         .unwrap_or_else(|| "null".to_owned())
 }
 
-fn opt_bool_text(value: &Option<bool>) -> String {
-    value
-        .map(|set| set.to_string())
-        .unwrap_or_else(|| "null".to_owned())
-}
-
 fn workspace_ref_text(reference: &WorkspaceRef) -> String {
     match reference {
         WorkspaceRef::Logical { output, workspace } => format!(
@@ -594,19 +581,6 @@ fn render_view_attempt(attempt: &ViewAttempt) -> String {
         opt_workspace_ref_text(&attempt.pre),
         opt_workspace_ref_text(&attempt.post),
         opt_workspace_ref_text(&attempt.baseline),
-        attempt.attempt_ms,
-    )
-}
-
-fn render_clear_attempt(attempt: &ClearAttempt) -> String {
-    format!(
-        "{{\"kind\":\"clear\",\"op\":{},\"win\":{},\"setter\":\"{}\",\
-         \"pre\":{},\"post\":{},\"attemptMs\":\"{}\"}}",
-        wire_str(&attempt.operation_id),
-        wire_str(&attempt.window.0),
-        attempt.setter.as_str(),
-        opt_bool_text(&attempt.pre_maximized),
-        opt_bool_text(&attempt.post_maximized),
         attempt.attempt_ms,
     )
 }
@@ -900,38 +874,6 @@ fn optional_fragments_reconstruct_byte_exact() {
         "view group renders byte-exact"
     );
 
-    // Nonempty clear rows.
-    let clear_text = fixture_text("report-attempt-clear");
-    let clear_fixture: serde_json::Value = serde_json::from_str(&clear_text).expect("fixture JSON");
-    let mut cleared = base_value();
-    cleared["propertyAttempts"] = clear_fixture["propertyAttempts"].clone();
-    let decoded = decode_both(&cleared.to_string());
-    let rows = clear_fixture["propertyAttempts"].as_array().expect("array");
-    for (attempt, row) in decoded.report.clear_attempts.iter().zip(rows.iter()) {
-        let rendered = render_clear_attempt(attempt);
-        assert!(
-            clear_text.contains(&rendered),
-            "clear row renders byte-exact"
-        );
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&rendered).expect("fragment"),
-            *row,
-        );
-    }
-    let rendered_rows: Vec<String> = decoded
-        .report
-        .clear_attempts
-        .iter()
-        .map(render_clear_attempt)
-        .collect();
-    assert!(
-        clear_text.contains(&format!(
-            "\"propertyAttempts\":[{}]",
-            rendered_rows.join(",")
-        )),
-        "clear group renders byte-exact"
-    );
-
     // Nonempty creation row with correlated receipt.
     let creation_text = fixture_text("report-attempt-creation-id");
     let creation_fixture: serde_json::Value =
@@ -1118,17 +1060,14 @@ fn malformed_optionals_reject_identically_on_both_apis() {
     let (kind, _) = assert_same_rejection(&non_array_attempts.to_string());
     assert_eq!(kind, "malformed");
 
-    // clearAttempts: duplicates refuse.
-    let mut dup_clear = base_value();
-    dup_clear["propertyAttempts"] = serde_json::json!([
+    // Retired clear attempt kind refuses identically on both APIs.
+    let mut retired_clear = base_value();
+    retired_clear["propertyAttempts"] = serde_json::json!([
         {"kind": "clear", "op": "op-9", "win": "win-a", "setter": "accepted",
          "pre": true, "post": false, "attemptMs": "1"},
-        {"kind": "clear", "op": "op-9", "win": "win-a", "setter": "accepted",
-         "pre": true, "post": false, "attemptMs": "2"},
     ]);
-    let (kind, message) = assert_same_rejection(&dup_clear.to_string());
-    assert_eq!(kind, "snapshot-invalid");
-    assert_eq!(message, "duplicate-clear-attempt");
+    let (kind, _) = assert_same_rejection(&retired_clear.to_string());
+    assert_eq!(kind, "unknown-value");
 
     // creationAttempts: a wrong-typed receipt holds the identifiable
     // row on both APIs for the same v4 reason (tolerated, never a

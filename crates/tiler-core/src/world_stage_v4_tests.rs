@@ -56,7 +56,6 @@ fn report_v4(
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
@@ -294,7 +293,7 @@ fn v4_lane_order_with_held_presentation_last() {
         diagnostic: diagnostic("out-a", RowDiagnosticLane::Native, None),
     }];
     report.held_attempts = vec![HeldAttemptRow {
-        lane: AttemptLaneV4::Clear,
+        lane: AttemptLaneV4::State,
         ordinal: 0,
         identity: Vec::new(),
         has_native_ref: false,
@@ -865,6 +864,7 @@ fn v4_unsupported_attempt_does_not_settle() {
             fullscreen_meta: None,
             maximize_meta: None,
             above_meta: None,
+            clear_meta: None,
         },
     );
     let attempt = state_attempt("win-a", StateProperty::Sticky, true, 1);
@@ -1132,7 +1132,7 @@ fn v4_offroute_orders_before_presentation_last() {
         diagnostic: diagnostic("out-a", RowDiagnosticLane::Native, None),
     }];
     report.held_attempts = vec![HeldAttemptRow {
-        lane: AttemptLaneV4::Clear,
+        lane: AttemptLaneV4::State,
         ordinal: 0,
         identity: Vec::new(),
         has_native_ref: false,

@@ -172,7 +172,6 @@ fn report(
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
         creation_attempts: creations,
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
@@ -1837,7 +1836,6 @@ fn creation_triple_mismatch_is_invalid() {
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
         creation_attempts: vec![
             creation_attempt(
                 "op-native-1",

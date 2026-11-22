@@ -166,7 +166,7 @@ function acceptCapture(gen: string, envelope: Record<string, unknown>, rev: stri
             alloc: [10, 10, 300, 300], frame: [10, 10, 300, 300],
             frame_auth: "controlled", frame_hold: "",
             member_auth: "controlled", member_hold: "",
-            frame_op: "", clear_op: "",
+            frame_op: "",
             floating: false, float_origin: "",
             cmdSeq: null,
             visibility: null, visibility_auth: "untouched", visibility_hold: "",
@@ -613,6 +613,17 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         const withToken = JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")) as Record<string, unknown>;
         ((withToken["windows"] as Array<Record<string, unknown>>)[0] as Record<string, unknown>)["frame_op"] = "";
         assert.equal(parseWorldReply(JSON.stringify(withToken)), null, "frame_op refuses on the presentation lane");
+        const withAutoClear = JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")) as Record<string, unknown>;
+        ((withAutoClear["windows"] as Array<Record<string, unknown>>)[0] as Record<string, unknown>)["state"] = [
+            { property: "maximized", value: false, auth: "controlled", reason: "", cmdSeq: null, automaticClear: true },
+        ];
+        assert.equal(parseWorldReply(JSON.stringify(withAutoClear)), null, "automaticClear state target refuses on the presentation lane");
+        const withOrdinaryState = JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")) as Record<string, unknown>;
+        ((withOrdinaryState["windows"] as Array<Record<string, unknown>>)[0] as Record<string, unknown>)["state"] = [
+            { property: "maximized", value: false, auth: "controlled", reason: "", cmdSeq: "5" },
+        ];
+        const parsedOrdinary = parseWorldReply(JSON.stringify(withOrdinaryState));
+        assert.ok(parsedOrdinary !== null && !isWorldRejection(parsedOrdinary) && !isCoreWorldReply(parsedOrdinary) && !isWorldQueueReply(parsedOrdinary), "ordinary maximized=false state target passes presentation lane");
         // One-shot lanes refuse: result, transfers, effects, settlement.
         for (const lane of ["result", "transfers", "effects", "gestureSettled", "operationSettled", "warpCursor", "intentDesired", "switchSettled", "diagnostics"] as const) {
             const withLane = JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")) as Record<string, unknown>;

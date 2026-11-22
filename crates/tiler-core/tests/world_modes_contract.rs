@@ -129,7 +129,6 @@ fn report(
         frames: Vec::new(),
         member_attempts,
         view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),

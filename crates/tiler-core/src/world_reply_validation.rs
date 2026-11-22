@@ -168,9 +168,6 @@ fn validate_window_desire(row: &WindowDesire, host: Option<&HostCapabilities>) -
     if let Some(op) = row.frame_operation.as_deref() {
         check_id(op)?;
     }
-    if let Some(op) = row.clear_operation.as_deref() {
-        check_id(op)?;
-    }
     if let Some(visibility) = row.visibility.as_ref()
         && visibility.shown
         && visibility.fallback

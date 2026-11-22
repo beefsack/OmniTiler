@@ -2849,7 +2849,10 @@ fn v4_facts_project_fixed_minimized_overlay_and_safety() {
         "held kind membership holds"
     );
     assert_eq!(menu_row["frame_op"], "", "held kind writes no frame");
-    assert_eq!(menu_row["clear_op"], "", "held kind binds no clear");
+    assert!(
+        menu_row.get("clear_op").is_none(),
+        "held kind binds no clear"
+    );
     assert!(
         menu_row["state"].as_array().expect("state").is_empty(),
         "held kind desires no state write"
@@ -3059,11 +3062,12 @@ fn with_clear_attempts(inner: &str, attempts: &str) -> String {
     )
 }
 
-fn clear_attempt(op: &str, win: &str, setter: &str, pre: bool, post: Option<bool>) -> String {
+fn clear_attempt(rev: &str, win: &str, setter: &str, pre: bool, post: Option<bool>) -> String {
     let post_json = post.map_or("null".to_owned(), |v| v.to_string());
     format!(
-        "{{\"kind\":\"clear\",\"op\":\"{op}\",\"win\":\"{win}\",\"setter\":\"{setter}\",\
-          \"pre\":{pre},\"post\":{post_json},\"attemptMs\":\"0\"}}"
+        "{{\"kind\":\"state\",\"win\":\"{win}\",\"property\":\"maximized\",\"target\":false,\
+          \"rev\":\"{rev}\",\"setter\":\"{setter}\",\"pre\":{pre},\"post\":{post_json},\
+          \"attemptMs\":\"0\"}}"
     )
 }
 
@@ -3082,11 +3086,16 @@ fn with_closed(inner: &str, ids: &[&str]) -> String {
 /// boundary authorizes no `op-born-*` desire.
 fn assert_no_born_clear(reply: &serde_json::Value, context: &str) {
     for row in reply["windows"].as_array().expect("windows") {
-        let op = row["clear_op"].as_str().unwrap_or("");
-        assert!(
-            !op.starts_with("op-born-"),
-            "{context}: no born clear authorized, got {op}"
-        );
+        let has_born = row["state"].as_array().is_some_and(|targets| {
+            targets.iter().any(|t| {
+                t["property"] == "maximized"
+                    && t["value"] == false
+                    && t["auth"] == "controlled"
+                    && t["automaticClear"] == true
+                    && t["cmdSeq"].is_null()
+            })
+        });
+        assert!(!has_born, "{context}: no born clear authorized");
     }
 }
 
@@ -3100,11 +3109,17 @@ fn reply_row(reply: &serde_json::Value, win: &str) -> serde_json::Value {
         .clone()
 }
 
-fn clear_op_of(reply: &serde_json::Value, win: &str) -> String {
-    reply_row(reply, win)["clear_op"]
-        .as_str()
-        .expect("clear_op string")
-        .to_owned()
+fn controlled_auto_clear_rev<'a>(reply: &'a serde_json::Value, win: &str) -> Option<&'a str> {
+    let row = reply_row(reply, win);
+    let has_controlled_clear = row["state"].as_array().is_some_and(|targets| {
+        targets.iter().any(|t| {
+            t["property"] == "maximized"
+                && t["value"] == false
+                && t["auth"] == "controlled"
+                && t["automaticClear"] == true
+        })
+    });
+    has_controlled_clear.then(|| reply["rev"].as_str().expect("rev string"))
 }
 
 /// Maximized, non-fixed birth facts: full-work-area frame, ordinary
@@ -3138,7 +3153,7 @@ fn born_startup_maximized_survivor_keeps_overlay_and_later_born_clears() {
             .expect("accepted"),
     );
     assert_eq!(startup["ready"], true);
-    assert_eq!(clear_op_of(&startup, BORN_WIN_A), "");
+    assert_eq!(controlled_auto_clear_rev(&startup, BORN_WIN_A), None);
     let startup_row = reply_row(&startup, BORN_WIN_A);
     assert!(
         !startup_row["alloc"].is_null(),
@@ -3165,12 +3180,9 @@ fn born_startup_maximized_survivor_keeps_overlay_and_later_born_clears() {
             ))
             .expect("accepted"),
     );
-    assert_eq!(clear_op_of(&later, BORN_WIN_A), "");
-    let opb = clear_op_of(&later, BORN_WIN_B);
-    assert!(
-        opb.starts_with("op-born-"),
-        "later born clears once, got {opb}"
-    );
+    assert_eq!(controlled_auto_clear_rev(&later, BORN_WIN_A), None);
+    let rev_b = controlled_auto_clear_rev(&later, BORN_WIN_B);
+    assert!(rev_b.is_some(), "later born clears once, got {rev_b:?}");
 }
 
 #[test]
@@ -3209,24 +3221,17 @@ fn born_maximized_cohort_clears_and_settles_through_broker() {
             .expect("accepted"),
     );
     assert_eq!(first["ready"], true);
-    let opa = clear_op_of(&first, BORN_WIN_A);
-    let opb = clear_op_of(&first, BORN_WIN_B);
-    assert!(
-        opa.starts_with("op-born-"),
-        "commandless born id, got {opa}"
-    );
-    assert!(
-        opb.starts_with("op-born-"),
-        "commandless born id, got {opb}"
-    );
-    assert_ne!(opa, opb, "distinct one-shot tokens");
+    let opa = controlled_auto_clear_rev(&first, BORN_WIN_A).expect("born state rev present for A");
+    let opb = controlled_auto_clear_rev(&first, BORN_WIN_B).expect("born state rev present for B");
+    assert_eq!(opa, first["rev"].as_str().expect("rev"));
+    assert_eq!(opb, first["rev"].as_str().expect("rev"));
     for win in [BORN_WIN_A, BORN_WIN_B] {
         let row = reply_row(&first, win);
         assert!(row["alloc"].is_null(), "{win}: no geometry while held");
         assert_eq!(row["frame_auth"], "hold", "{win}: frame stays held");
         assert_eq!(row["member_auth"], "hold", "{win}: membership stays held");
         assert_eq!(row["frame_op"], "", "{win}: no frame write rides");
-        assert!(!row["clear_op"].as_str().expect("token").is_empty());
+        assert!(row.get("clear_op").is_none(), "{win}: clear_op retired");
     }
     let ws = reply_row(&first, BORN_WIN_A)["ws"]
         .as_str()
@@ -3254,8 +3259,8 @@ fn born_maximized_cohort_clears_and_settles_through_broker() {
         ),
         &format!(
             "{},{}",
-            clear_attempt(&opa, BORN_WIN_A, "accepted", true, Some(false)),
-            clear_attempt(&opb, BORN_WIN_B, "accepted", true, Some(false)),
+            clear_attempt(opa, BORN_WIN_A, "accepted", true, Some(false)),
+            clear_attempt(opb, BORN_WIN_B, "accepted", true, Some(false)),
         ),
     );
     let second = parse(
@@ -3263,8 +3268,16 @@ fn born_maximized_cohort_clears_and_settles_through_broker() {
             .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &second_inner))
             .expect("accepted"),
     );
-    assert_eq!(clear_op_of(&second, BORN_WIN_A), "", "proof retires a");
-    assert_eq!(clear_op_of(&second, BORN_WIN_B), "", "proof retires b");
+    assert_eq!(
+        controlled_auto_clear_rev(&second, BORN_WIN_A),
+        None,
+        "proof retires a"
+    );
+    assert_eq!(
+        controlled_auto_clear_rev(&second, BORN_WIN_B),
+        None,
+        "proof retires b"
+    );
     let scope = second["scopes"]
         .as_array()
         .expect("scopes")
@@ -3285,8 +3298,8 @@ fn born_maximized_cohort_clears_and_settles_through_broker() {
             .evaluate_capture(&capture(ADAPTER, &generation, 4, 4, &second_inner))
             .expect("accepted"),
     );
-    assert_eq!(clear_op_of(&third, BORN_WIN_A), "");
-    assert_eq!(clear_op_of(&third, BORN_WIN_B), "");
+    assert_eq!(controlled_auto_clear_rev(&third, BORN_WIN_A), None);
+    assert_eq!(controlled_auto_clear_rev(&third, BORN_WIN_B), None);
 }
 
 #[test]
@@ -3306,8 +3319,8 @@ fn born_fullscreen_first_exit_clears_under_both_modes() {
                 .expect("accepted"),
         );
         assert_eq!(
-            clear_op_of(&birth_reply, BORN_WIN_C),
-            "",
+            controlled_auto_clear_rev(&birth_reply, BORN_WIN_C),
+            None,
             "{mode}: fullscreen birth never clears"
         );
         let exit_inner = inner_report_birth(
@@ -3321,11 +3334,8 @@ fn born_fullscreen_first_exit_clears_under_both_modes() {
                 .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &exit_inner))
                 .expect("accepted"),
         );
-        let op = clear_op_of(&exit_reply, BORN_WIN_C);
-        assert!(
-            op.starts_with("op-born-"),
-            "{mode}: held exit binds, got {op}"
-        );
+        let op = controlled_auto_clear_rev(&exit_reply, BORN_WIN_C)
+            .unwrap_or_else(|| panic!("{mode}: held exit binds"));
         let settled_inner = with_clear_attempts(
             &inner_report_birth(
                 &[born_restored_row(BORN_WIN_C, UUID_A)],
@@ -3333,7 +3343,7 @@ fn born_fullscreen_first_exit_clears_under_both_modes() {
                 true,
                 &native,
             ),
-            &clear_attempt(&op, BORN_WIN_C, "accepted", true, Some(false)),
+            &clear_attempt(op, BORN_WIN_C, "accepted", true, Some(false)),
         );
         let settled = parse(
             &service
@@ -3341,8 +3351,8 @@ fn born_fullscreen_first_exit_clears_under_both_modes() {
                 .expect("accepted"),
         );
         assert_eq!(
-            clear_op_of(&settled, BORN_WIN_C),
-            "",
+            controlled_auto_clear_rev(&settled, BORN_WIN_C),
+            None,
             "{mode}: exit retires"
         );
     }
@@ -3370,8 +3380,8 @@ fn born_fixed_birth_and_fixed_exit_float_without_clear() {
     let row = reply_row(&reply, BORN_WIN_A);
     assert_eq!(row["floating"], true, "fixed birth floats");
     assert_eq!(
-        clear_op_of(&reply, BORN_WIN_A),
-        "",
+        controlled_auto_clear_rev(&reply, BORN_WIN_A),
+        None,
         "fixed birth never clears"
     );
     // Fullscreen birth, then a fixed exit: no clear, hold consumed.
@@ -3401,8 +3411,8 @@ fn born_fixed_birth_and_fixed_exit_float_without_clear() {
     let row = reply_row(&exit_reply, BORN_WIN_B);
     assert_eq!(row["floating"], true, "fixed exit floats automatic");
     assert_eq!(
-        clear_op_of(&exit_reply, BORN_WIN_B),
-        "",
+        controlled_auto_clear_rev(&exit_reply, BORN_WIN_B),
+        None,
         "fixed exit never clears"
     );
 }
@@ -3431,8 +3441,8 @@ fn born_keep_overlay_skips_birth_but_latches_per_lifetime() {
         "kept birth keeps its row"
     );
     assert_eq!(
-        clear_op_of(&kept, BORN_WIN_A),
-        "",
+        controlled_auto_clear_rev(&kept, BORN_WIN_A),
+        None,
         "keep mode never clears births"
     );
     // Flip the genuine setting back to tile-on-launch on the same
@@ -3466,8 +3476,8 @@ fn born_keep_overlay_skips_birth_but_latches_per_lifetime() {
             .expect("accepted"),
     );
     assert_eq!(
-        clear_op_of(&flipped, BORN_WIN_A),
-        "",
+        controlled_auto_clear_rev(&flipped, BORN_WIN_A),
+        None,
         "latched lifetime never reclears after the mode flips"
     );
 }
@@ -3505,8 +3515,7 @@ fn born_async_accepted_then_later_read_settles_without_reactuation() {
             ))
             .expect("accepted"),
     );
-    let op = clear_op_of(&first, BORN_WIN_A);
-    assert!(op.starts_with("op-born-"));
+    let op = controlled_auto_clear_rev(&first, BORN_WIN_A).expect("born state rev");
     // Accepted attempt, but the frame still reads maximized: hold, and the
     // spent operation withholds its desire on the follow-up.
     let second_inner = with_clear_attempts(
@@ -3516,7 +3525,7 @@ fn born_async_accepted_then_later_read_settles_without_reactuation() {
             true,
             &native,
         ),
-        &clear_attempt(&op, BORN_WIN_A, "accepted", true, Some(true)),
+        &clear_attempt(op, BORN_WIN_A, "accepted", true, Some(true)),
     );
     let second = parse(
         &service
@@ -3524,8 +3533,8 @@ fn born_async_accepted_then_later_read_settles_without_reactuation() {
             .expect("accepted"),
     );
     assert_eq!(
-        clear_op_of(&second, BORN_WIN_A),
-        "",
+        controlled_auto_clear_rev(&second, BORN_WIN_A),
+        None,
         "spent operation never re-actuates while maximized"
     );
     // Later readable restored facts retire the binding even though this
@@ -3546,7 +3555,7 @@ fn born_async_accepted_then_later_read_settles_without_reactuation() {
             ))
             .expect("accepted"),
     );
-    assert_eq!(clear_op_of(&third, BORN_WIN_A), "");
+    assert_eq!(controlled_auto_clear_rev(&third, BORN_WIN_A), None);
     assert!(
         !reply_row(&third, BORN_WIN_A)["alloc"].is_null(),
         "proven frames converge after the async clear lands"
@@ -3569,8 +3578,8 @@ fn born_async_accepted_then_later_read_settles_without_reactuation() {
             .expect("accepted"),
     );
     assert_eq!(
-        clear_op_of(&fourth, BORN_WIN_A),
-        "",
+        controlled_auto_clear_rev(&fourth, BORN_WIN_A),
+        None,
         "resolved lifetimes never re-clear"
     );
 }
@@ -3607,8 +3616,7 @@ fn born_refused_attempt_retires_without_retry() {
             ))
             .expect("accepted"),
     );
-    let op = clear_op_of(&first, BORN_WIN_A);
-    assert!(op.starts_with("op-born-"));
+    let op = controlled_auto_clear_rev(&first, BORN_WIN_A).expect("born state rev");
     let second_inner = with_clear_attempts(
         &inner_report_birth(
             &[born_maximized_row(BORN_WIN_A, UUID_A)],
@@ -3616,14 +3624,14 @@ fn born_refused_attempt_retires_without_retry() {
             true,
             &native,
         ),
-        &clear_attempt(&op, BORN_WIN_A, "refused", true, Some(true)),
+        &clear_attempt(op, BORN_WIN_A, "refused", true, Some(true)),
     );
     let second = parse(
         &service
             .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &second_inner))
             .expect("accepted"),
     );
-    assert_eq!(clear_op_of(&second, BORN_WIN_A), "");
+    assert_eq!(controlled_auto_clear_rev(&second, BORN_WIN_A), None);
     let third = parse(
         &service
             .evaluate_capture(&capture(
@@ -3640,7 +3648,11 @@ fn born_refused_attempt_retires_without_retry() {
             ))
             .expect("accepted"),
     );
-    assert_eq!(clear_op_of(&third, BORN_WIN_A), "", "refused never retries");
+    assert_eq!(
+        controlled_auto_clear_rev(&third, BORN_WIN_A),
+        None,
+        "refused never retries"
+    );
 }
 
 #[test]
@@ -3686,14 +3698,17 @@ fn born_safety_boundary_holds_non_normal_kind_and_holds_minimized() {
         "held kind membership holds"
     );
     assert_eq!(menu_row["frame_op"], "", "held kind writes no frame");
-    assert_eq!(menu_row["clear_op"], "", "held kind binds no clear");
+    assert!(
+        menu_row.get("clear_op").is_none(),
+        "held kind binds no clear"
+    );
     assert!(
         menu_row["state"].as_array().expect("state").is_empty(),
         "held kind desires no state write"
     );
     assert_eq!(
-        clear_op_of(&reply, BORN_WIN_B),
-        "",
+        controlled_auto_clear_rev(&reply, BORN_WIN_B),
+        None,
         "minimized proves no birth"
     );
 }
@@ -3854,8 +3869,8 @@ fn born_closed_retires_roster_slot_for_re_admission() {
             .expect("accepted"),
     );
     assert_eq!(
-        clear_op_of(&first, BORN_WIN_A),
-        "",
+        controlled_auto_clear_rev(&first, BORN_WIN_A),
+        None,
         "tiled admission clears nothing"
     );
     let tombstone = with_closed(&inner_report(&[], true, true, &native), &[BORN_WIN_A]);
@@ -3893,7 +3908,7 @@ fn born_closed_retires_roster_slot_for_re_admission() {
             .expect("accepted"),
     );
     assert!(
-        clear_op_of(&third, BORN_WIN_A).starts_with("op-born-"),
+        controlled_auto_clear_rev(&third, BORN_WIN_A).is_some(),
         "retired slot re-admits as a fresh lifetime"
     );
 }
@@ -5029,7 +5044,11 @@ fn service_capture_bound_and_projection_match_legacy_serde_bytes() {
         for row in rows {
             if let Some(m) = row.as_object_mut() {
                 m.remove("frame_op");
-                m.remove("clear_op");
+                if let Some(states) = m.get_mut("state").and_then(serde_json::Value::as_array_mut) {
+                    states.retain(|item| {
+                        item.get("automaticClear") != Some(&serde_json::json!(true))
+                    });
+                }
             }
         }
     }

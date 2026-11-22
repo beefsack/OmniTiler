@@ -298,7 +298,6 @@ function makeHarness(mode: ClearMode) {
         frame_auth: auth, frame_hold: "",
         member_auth: auth, member_hold: "",
         frame_op: "",
-        clear_op: "",
         floating: auth === "untouched", float_origin: "",
         cmdSeq: null,
         visibility: null, visibility_auth: "untouched", visibility_hold: "",

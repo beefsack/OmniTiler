@@ -200,7 +200,7 @@ function winRow(winId: string, ws: string, rect: [number, number, number, number
         alloc: [...rect], frame: [...rect],
         frame_auth: "controlled", frame_hold: "",
         member_auth: "controlled", member_hold: "",
-        frame_op: "", floating: false, float_origin: "", clear_op: "",
+        frame_op: "", floating: false, float_origin: "",
         cmdSeq: null,
         visibility: null, visibility_auth: "untouched", visibility_hold: "",
         state: [],

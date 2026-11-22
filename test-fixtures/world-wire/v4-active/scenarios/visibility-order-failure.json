@@ -311,7 +311,6 @@
               "frame_op": "",
               "floating": false,
               "float_origin": "",
-              "clear_op": "",
               "cmdSeq": null,
               "visibility": {
                 "shown": false,
@@ -345,7 +344,6 @@
               "frame_op": "",
               "floating": false,
               "float_origin": "",
-              "clear_op": "",
               "cmdSeq": null,
               "visibility": {
                 "shown": true,
@@ -688,7 +686,6 @@
               "frame_op": "",
               "floating": false,
               "float_origin": "",
-              "clear_op": "",
               "cmdSeq": null,
               "visibility": {
                 "shown": false,
@@ -722,7 +719,6 @@
               "frame_op": "",
               "floating": false,
               "float_origin": "",
-              "clear_op": "",
               "cmdSeq": null,
               "visibility": {
                 "shown": true,
@@ -1087,7 +1083,6 @@
               "frame_op": "",
               "floating": false,
               "float_origin": "",
-              "clear_op": "",
               "cmdSeq": null,
               "visibility": {
                 "shown": false,
@@ -1121,7 +1116,6 @@
               "frame_op": "",
               "floating": false,
               "float_origin": "",
-              "clear_op": "",
               "cmdSeq": null,
               "visibility": {
                 "shown": true,
@@ -1454,7 +1448,6 @@
               "frame_op": "",
               "floating": false,
               "float_origin": "",
-              "clear_op": "",
               "cmdSeq": null,
               "visibility": {
                 "shown": false,
@@ -1488,7 +1481,6 @@
               "frame_op": "",
               "floating": false,
               "float_origin": "",
-              "clear_op": "",
               "cmdSeq": null,
               "visibility": {
                 "shown": true,

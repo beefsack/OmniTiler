@@ -47,6 +47,41 @@ pub(crate) struct RetainedStateBinding {
     pub(crate) fullscreen_meta: Option<NativeFullscreenMeta>,
     pub(crate) maximize_meta: Option<NativeMaximizeMeta>,
     pub(crate) above_meta: Option<NativeAboveMeta>,
+    pub(crate) clear_meta: Option<ClearProvenance>,
+}
+
+/// Retained directional maximize-clear continuation metadata stored on the
+/// `(window, StateProperty::Maximized)` state binding (`target.value = false`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DirectionalClearMeta {
+    pub(crate) operation_id: String,
+    pub(crate) command_seq: u64,
+    pub(crate) direction: String,
+    pub(crate) home: DomainKey,
+    pub(crate) view: Option<String>,
+    pub(crate) focus: String,
+    /// True when the original subject routes float (floating or sticky);
+    /// false for the tiled route.
+    pub(crate) float_route: bool,
+    /// Original same-axis mode for the tiled resume path.
+    pub(crate) same_axis: crate::directional::SameAxisMove,
+    pub(crate) ambiguous: bool,
+}
+
+/// Retained commandless born maximize-clear metadata stored on the
+/// `(window, StateProperty::Maximized)` state binding (`target.value = false`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BornClearMeta {
+    pub(crate) operation_id: String,
+    pub(crate) home: DomainKey,
+    pub(crate) ambiguous: bool,
+}
+
+/// Provenance for maximize-to-false clear continuations on `retained_states`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ClearProvenance {
+    Directional(DirectionalClearMeta),
+    Born(BornClearMeta),
 }
 
 /// Typed native fullscreen command-sequence carrier. Separate from

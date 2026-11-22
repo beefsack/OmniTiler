@@ -96,7 +96,6 @@ fn report(
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
@@ -1856,6 +1855,7 @@ fn unavailable_pending_same_batch_refuses_then_newer_report_acts_on_observed_and
         value: true,
         authority: ScopeAuthority::Controlled,
         command_seq: Some(3),
+        automatic_clear: false,
     };
     let (acted_c, c_settlements) = run_batched(&mut engine, &r3, &[(3, toggle())]);
     assert_eq!(c_settlements.len(), 1);
@@ -2035,6 +2035,7 @@ fn unavailable_pending_newer_accepted_report_with_equal_observation_seq_acts_on_
                 value: true,
                 authority: ScopeAuthority::Controlled,
                 command_seq: Some(2),
+                automatic_clear: false,
             })),
         "acted_c must publish win-c Maximized controlled state with command_seq Some(2); got {:?}",
         acted_c.windows
@@ -2333,6 +2334,7 @@ fn send_follow_effect_preserves_command_focus_cursor() {
                 value: true,
                 authority: ScopeAuthority::Controlled,
                 command_seq: Some(3),
+                automatic_clear: false,
             })),
         "trailing implicit maximize must publish win-b Maximized; got {:?}",
         reply_follow.windows
@@ -2407,6 +2409,7 @@ fn send_stay_effect_preserves_command_focus_cursor() {
                 value: true,
                 authority: ScopeAuthority::Controlled,
                 command_seq: Some(3),
+                automatic_clear: false,
             })),
         "trailing implicit maximize must publish win-b Maximized; got {:?}",
         reply_stay.windows
@@ -2480,6 +2483,7 @@ fn move_directional_effect_preserves_command_focus_cursor() {
                 value: true,
                 authority: ScopeAuthority::Controlled,
                 command_seq: Some(3),
+                automatic_clear: false,
             })),
         "trailing implicit maximize must publish win-b Maximized; got {:?}",
         reply_move.windows

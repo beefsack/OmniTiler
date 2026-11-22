@@ -142,7 +142,6 @@ fn report_v4(
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
@@ -856,28 +855,40 @@ fn born_tokens_withhold_on_style_held_output() {
         .expect("win-c home");
     assert_eq!(home_a.output, OutputId("out-a".to_owned()));
     assert_eq!(home_c.output, OutputId("out-b".to_owned()));
-    engine
-        .world
-        .settlement
-        .retained_born
-        .push(crate::world_engine::RetainedBornClear {
-            operation_id: "op-born-a".to_owned(),
-            window: WindowId("win-a".to_owned()),
-            home: home_a,
-            pending: None,
-            ambiguous: false,
-        });
-    engine
-        .world
-        .settlement
-        .retained_born
-        .push(crate::world_engine::RetainedBornClear {
-            operation_id: "op-born-c".to_owned(),
-            window: WindowId("win-c".to_owned()),
-            home: home_c,
-            pending: None,
-            ambiguous: false,
-        });
+    for (win, op, home) in [
+        ("win-a", "op-born-a", home_a),
+        ("win-c", "op-born-c", home_c),
+    ] {
+        let win_id = WindowId(win.to_owned());
+        engine.world.settlement.retained_states.insert(
+            (
+                win_id.clone(),
+                crate::world_report::StateProperty::Maximized,
+            ),
+            crate::world_state::RetainedStateBinding {
+                target: crate::world_state::RetainedStateTarget {
+                    window: win_id,
+                    property: crate::world_report::StateProperty::Maximized,
+                    value: false,
+                    revision: 7,
+                },
+                pending: None,
+                spent: false,
+                disposition: crate::world_report::AttemptOutcome::Unattempted,
+                sticky_meta: None,
+                fullscreen_meta: None,
+                maximize_meta: None,
+                above_meta: None,
+                clear_meta: Some(crate::world_state::ClearProvenance::Born(
+                    crate::world_state::BornClearMeta {
+                        operation_id: op.to_owned(),
+                        home,
+                        ambiguous: false,
+                    },
+                )),
+            },
+        );
+    }
     let reply = engine.tx(|tx| tx.publish_v4(envelope(7), None, Vec::new(), &BTreeSet::new()));
     let row_a = reply
         .windows
@@ -889,11 +900,19 @@ fn born_tokens_withhold_on_style_held_output() {
         .iter()
         .find(|row| row.lifetime.0 == "win-c")
         .expect("win-c row");
-    assert_eq!(row_a.clear_operation, None, "held home withholds born");
-    assert_eq!(
-        row_c.clear_operation,
-        Some("op-born-c".to_owned()),
-        "clean home keeps born"
+    assert!(
+        !row_a
+            .state
+            .iter()
+            .any(|t| t.automatic_clear && t.authority == ScopeAuthority::Controlled),
+        "held home withholds born: {row_a:?}"
+    );
+    assert!(
+        row_c
+            .state
+            .iter()
+            .any(|t| t.automatic_clear && t.authority == ScopeAuthority::Controlled),
+        "clean home keeps born: {row_c:?}"
     );
 }
 
@@ -1967,7 +1986,16 @@ fn retained_born_clear_reserves_operation_slot_at_1024_cap() {
     );
     let _ = accepted_v4(&mut engine, &mint);
     assert_eq!(
-        engine.world.settlement.retained_born.len(),
+        engine
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .filter(|b| matches!(
+                b.clear_meta,
+                Some(crate::world_state::ClearProvenance::Born(_))
+            ))
+            .count(),
         1,
         "genuine born-clear retained"
     );
@@ -2122,10 +2150,19 @@ fn staged_automatic_born_clear_at_1024_cap_rejects_transactionally_without_wedgi
         matches!(under_outcome, V4RunOutcome::Accepted(_)),
         "expected acceptance at 1023 slots when born-clear mints 1024th slot, got {under_outcome:?}"
     );
-    assert_eq!(under_cap.world.settlement.retained_born.len(), 1);
-    assert_eq!(
-        under_cap.world.settlement.retained_born[0].window,
-        WindowId("born-over-cap".to_owned())
+    assert!(
+        under_cap
+            .world
+            .settlement
+            .retained_states
+            .get(&(
+                WindowId("born-over-cap".to_owned()),
+                crate::world_report::StateProperty::Maximized
+            ))
+            .is_some_and(|b| matches!(
+                b.clear_meta,
+                Some(crate::world_state::ClearProvenance::Born(_))
+            ))
     );
     assert_eq!(
         under_cap.world.operation_settle_slot_count(None, &[]),
@@ -2144,7 +2181,15 @@ fn staged_automatic_born_clear_at_1024_cap_rejects_transactionally_without_wedgi
         "expected section-over-cap for staged born-clear at 1024 cap, got {outcome:?}"
     );
     assert!(
-        engine.world.settlement.retained_born.is_empty(),
+        !engine
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .any(|b| matches!(
+                b.clear_meta,
+                Some(crate::world_state::ClearProvenance::Born(_))
+            )),
         "candidate discarded"
     );
     assert_eq!(
@@ -2168,10 +2213,12 @@ fn staged_pending_operation_future_gate_refusal_rolls_back_transactionally() {
         AdmissionGateDecision, CoreAdmissionGate, ExactInnerCheck, ExactInnerDecision,
         FutureReserveGateFacts, PreflightGateFacts,
     };
-    use crate::world_engine::RetainedBornClear;
     use crate::world_report::MAX_REPLY_OPERATIONS;
     use crate::world_report_v4_checks::report_digest_v4;
     use crate::world_run_v4::V4RunOutcome;
+    use crate::world_state::{
+        BornClearMeta, ClearProvenance, RetainedStateBinding, RetainedStateTarget,
+    };
 
     struct LocalFutureReserveGate {
         max_operation_slots: usize,
@@ -2303,20 +2350,35 @@ fn staged_pending_operation_future_gate_refusal_rolls_back_transactionally() {
     // 1,024-slot cap (31 <= 1,024), so the future gate observes 31 slots and
     // refuses transactionally with zero prepare/install/replay/revision changes.
     let mut staged_with_born = staged_without_born;
-    staged_with_born
-        .world
-        .settlement
-        .retained_born
-        .extend((0..30).map(|i| RetainedBornClear {
-            operation_id: format!("op-born-{i}"),
-            window: WindowId(format!("born-win-{i}")),
-            home: DomainKey {
-                output: OutputId("DP-1".to_owned()),
-                workspace: WorkspaceId("ws-1".to_owned()),
+    for i in 0..30 {
+        let win = WindowId(format!("born-win-{i}"));
+        staged_with_born.world.settlement.retained_states.insert(
+            (win.clone(), crate::world_report::StateProperty::Maximized),
+            RetainedStateBinding {
+                target: RetainedStateTarget {
+                    window: win,
+                    property: crate::world_report::StateProperty::Maximized,
+                    value: false,
+                    revision: 1,
+                },
+                pending: None,
+                spent: false,
+                disposition: crate::world_report::AttemptOutcome::Unattempted,
+                sticky_meta: None,
+                fullscreen_meta: None,
+                maximize_meta: None,
+                above_meta: None,
+                clear_meta: Some(ClearProvenance::Born(BornClearMeta {
+                    operation_id: format!("op-born-{i}"),
+                    home: DomainKey {
+                        output: OutputId("DP-1".to_owned()),
+                        workspace: WorkspaceId("ws-1".to_owned()),
+                    },
+                    ambiguous: false,
+                })),
             },
-            pending: None,
-            ambiguous: false,
-        }));
+        );
+    }
     let slot_count_with_born = staged_with_born
         .world
         .operation_settle_slot_count(None, &[]);
@@ -2364,7 +2426,12 @@ fn staged_pending_operation_future_gate_refusal_rolls_back_transactionally() {
     );
     assert_eq!(engine.state_revision(), rev_before, "revision unchanged");
     assert!(
-        engine.world.settlement.retained_born.is_empty(),
+        !engine
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .any(|b| matches!(b.clear_meta, Some(ClearProvenance::Born(_)))),
         "staged born obligations not installed"
     );
     assert!(
@@ -2899,7 +2966,7 @@ fn published_settlement_trace_operation_q1_q2_duplicate_late_toggle_and_reset() 
         direction: crate::directional::Direction::Right,
         same_axis: crate::directional::SameAxisMove::default(),
     });
-    let _ = accepted_v4(&mut clear_engine, &r_move);
+    let reply_move = accepted_v4(&mut clear_engine, &r_move);
 
     let mut r_clear_proof = report_v4(
         3,
@@ -2914,12 +2981,14 @@ fn published_settlement_trace_operation_q1_q2_duplicate_late_toggle_and_reset() 
         "win-max",
         ingress_v4("win-max"),
     );
-    r_clear_proof.clear_attempts = vec![crate::world_report::ClearAttempt {
-        operation_id: "op-2".to_owned(),
+    r_clear_proof.state_attempts = vec![crate::world_report::StateAttempt {
         window: WindowId("win-max".to_owned()),
+        property: crate::world_report::StateProperty::Maximized,
+        target: false,
+        revision: reply_move.state_revision,
         setter: crate::world_report::FrameSetter::Accepted,
-        pre_maximized: Some(true),
-        post_maximized: Some(false),
+        pre: Some(true),
+        post: Some(false),
         attempt_ms: 7,
     }];
     let clear_lines = crate::world_engine::with_settlement_trace_capture(|| {

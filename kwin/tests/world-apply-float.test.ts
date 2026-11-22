@@ -47,13 +47,13 @@ function loadReply(): WorldReply {
             {
                 win: "win-a", out: "out", ws: "ws-1", alloc: null, frame: [162, 122, 475, 355],
                 frame_auth: "untouched", frame_hold: "", member_auth: "untouched", member_hold: "",
-                frame_op: "op-1", floating: true, float_origin: "", clear_op: "", cmdSeq: null,
+                frame_op: "op-1", floating: true, float_origin: "", cmdSeq: null,
                 visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             },
             {
                 win: "win-b", out: "out", ws: "ws-1", alloc: [4, 4, 792, 592], frame: [4, 4, 792, 592],
                 frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "",
-                frame_op: "", floating: false, float_origin: "", clear_op: "", cmdSeq: null,
+                frame_op: "", floating: false, float_origin: "", cmdSeq: null,
                 visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             },
         ],

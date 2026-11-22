@@ -334,7 +334,6 @@ const winRow = (
     frame_auth: auth, frame_hold: "",
     member_auth: auth, member_hold: "",
     frame_op: "",
-    clear_op: "",
     floating: false, float_origin: "",
     cmdSeq: null,
     visibility: null, visibility_auth: "untouched", visibility_hold: "",
@@ -367,7 +366,7 @@ describe("world unfloat immediate retile", () => {
         );
         call.callback(h.accepted("gen-1", body["source"] as string, body["nativeInvalid"] as string, "1", {
             windows: [
-                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", clear_op: "", floating: true }),
+                winRow(WIN_A, FLOAT_A, "untouched", { frame_op: "op-1", floating: true }),
                 winRow(WIN_B, TILE_B_FULL, "controlled"),
             ],
             result: { op: "toggle-float", win: WIN_A, rect: FLOAT_A },

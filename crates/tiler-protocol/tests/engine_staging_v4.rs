@@ -197,7 +197,7 @@ fn permissive_engine() -> WorldEngine {
 #[test]
 fn v4_staging_conserves_all_accepted_reports() {
     let reports = accepted_reports();
-    assert_eq!(reports.len(), 209, "accepted WorldReport fixture count");
+    assert_eq!(reports.len(), 208, "accepted WorldReport fixture count");
     let engine = permissive_engine();
     for (id, report) in &reports {
         let census = engine.stage_report_v4_census(report);

@@ -674,7 +674,7 @@ fn rehandshake_float_save_restores_without_resave_or_placement() {
     assert!(is_floated(&engine, "win-a"));
     let row = row_for(&reply, "win-a").expect("float row");
     assert!(row.frame_operation.is_none(), "{row:?}");
-    assert!(row.clear_operation.is_none(), "{row:?}");
+    assert!(!row.state.iter().any(|t| t.automatic_clear), "{row:?}");
 }
 
 #[test]

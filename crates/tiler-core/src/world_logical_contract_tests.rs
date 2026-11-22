@@ -215,7 +215,6 @@ fn report_attempts(
         frames: Vec::new(),
         member_attempts,
         view_attempts,
-        clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),

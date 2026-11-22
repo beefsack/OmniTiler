@@ -213,7 +213,7 @@ function windowRow(win: string, out: string, ws: string): WorldReply["windows"][
         alloc: null, frame: null,
         frame_auth: "controlled", frame_hold: "",
         member_auth: "controlled", member_hold: "",
-        frame_op: "", clear_op: "", floating: false, float_origin: "",
+        frame_op: "", floating: false, float_origin: "",
         cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
     };
 }
@@ -265,7 +265,7 @@ function conversionMoveReply(): WorldReply {
         alloc: [0, 0, 800, 600], frame: [0, 0, 784, 584],
         frame_auth: "controlled", frame_hold: "",
         member_auth: "controlled", member_hold: "",
-        frame_op: "", clear_op: "", floating: false, float_origin: "",
+        frame_op: "", floating: false, float_origin: "",
         cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
     });
     return {
@@ -297,7 +297,7 @@ function conversionMoveReply(): WorldReply {
                 alloc: null, frame: null,
                 frame_auth: "untouched", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
-                frame_op: "", clear_op: "", floating: true, float_origin: "",
+                frame_op: "", floating: true, float_origin: "",
                 cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             },
             tiledRow("win-m"),
@@ -307,7 +307,7 @@ function conversionMoveReply(): WorldReply {
                 alloc: null, frame: null,
                 frame_auth: "hold", frame_hold: "minimized",
                 member_auth: "controlled", member_hold: "",
-                frame_op: "", clear_op: "", floating: false, float_origin: "",
+                frame_op: "", floating: false, float_origin: "",
                 cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             },
             {
@@ -315,7 +315,7 @@ function conversionMoveReply(): WorldReply {
                 alloc: null, frame: null,
                 frame_auth: "hold", frame_hold: "minimized",
                 member_auth: "controlled", member_hold: "",
-                frame_op: "", clear_op: "", floating: false, float_origin: "",
+                frame_op: "", floating: false, float_origin: "",
                 cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             },
         ],

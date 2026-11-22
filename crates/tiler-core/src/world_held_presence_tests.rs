@@ -240,19 +240,30 @@ fn born_binding_survives_hold_and_recovers_same_operation() {
             None,
         ),
     );
-    assert_eq!(engine.world.settlement.retained_born.len(), 1);
-    let operation = engine.world.settlement.retained_born[0]
-        .operation_id
-        .clone();
+    let born_key = (
+        WindowId("win-born".to_owned()),
+        crate::world_report::StateProperty::Maximized,
+    );
+    let born_binding = engine
+        .world
+        .settlement
+        .retained_states
+        .get(&born_key)
+        .expect("born clear binding");
+    assert!(matches!(
+        born_binding.clear_meta,
+        Some(crate::world_state::ClearProvenance::Born(_))
+    ));
+    let born_rev = born_binding.target.revision;
     let desire = reply
         .windows
         .iter()
         .find(|row| row.lifetime.0 == "win-born")
-        .and_then(|row| row.clear_operation.clone())
+        .and_then(|row| row.state.iter().find(|t| t.automatic_clear))
         .expect("birth desire");
-    assert_eq!(desire, operation);
+    assert_eq!(desire.authority, ScopeAuthority::Controlled);
 
-    // Held: binding kept, desire withheld, no remint.
+    // Held: binding kept, desire held (not controlled), no remint.
     let mut held_fact = fact("win-born", "out-a", 0);
     held_fact.maximized = Some(true);
     held_fact.title = Some(overlong_title());
@@ -269,21 +280,25 @@ fn born_binding_survives_hold_and_recovers_same_operation() {
             None,
         ),
     );
-    assert_eq!(engine.world.settlement.retained_born.len(), 1);
-    assert_eq!(
-        engine.world.settlement.retained_born[0].operation_id,
-        operation
-    );
+    let born_binding = engine
+        .world
+        .settlement
+        .retained_states
+        .get(&born_key)
+        .expect("born clear binding kept");
+    assert_eq!(born_binding.target.revision, born_rev);
     assert!(
         reply
             .windows
             .iter()
             .find(|row| row.lifetime.0 == "win-born")
-            .and_then(|row| row.clear_operation.clone())
-            .is_none()
+            .is_none_or(|row| !row
+                .state
+                .iter()
+                .any(|t| t.automatic_clear && t.authority == ScopeAuthority::Controlled))
     );
 
-    // Recovery republishes the same operation, never a new binding.
+    // Recovery republishes the same binding revision, never a new binding.
     let mut recovered = fact("win-born", "out-a", 0);
     recovered.maximized = Some(true);
     let reply = accepted(
@@ -299,20 +314,20 @@ fn born_binding_survives_hold_and_recovers_same_operation() {
             None,
         ),
     );
-    assert_eq!(engine.world.settlement.retained_born.len(), 1);
-    assert_eq!(
-        engine.world.settlement.retained_born[0].operation_id,
-        operation
-    );
-    assert_eq!(
-        reply
-            .windows
-            .iter()
-            .find(|row| row.lifetime.0 == "win-born")
-            .and_then(|row| row.clear_operation.clone())
-            .as_deref(),
-        Some(operation.as_str())
-    );
+    let born_binding = engine
+        .world
+        .settlement
+        .retained_states
+        .get(&born_key)
+        .expect("born clear binding kept");
+    assert_eq!(born_binding.target.revision, born_rev);
+    let desire = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-born")
+        .and_then(|row| row.state.iter().find(|t| t.automatic_clear))
+        .expect("recovered birth desire");
+    assert_eq!(desire.authority, ScopeAuthority::Controlled);
 }
 
 #[test]
@@ -588,7 +603,7 @@ fn known_exclusion_never_members_or_controls() {
     assert_eq!(row.membership_authority, ScopeAuthority::Untouched);
     assert_eq!(row.frame_authority, ScopeAuthority::Untouched);
     assert!(row.frame_operation.is_none());
-    assert!(row.clear_operation.is_none());
+    assert!(!row.state.iter().any(|t| t.automatic_clear));
 
     // Tiled-hint recovery tiles controlled with an allocation. A fresh
     // excluded window recovers straight to tiled: the fixed latch above

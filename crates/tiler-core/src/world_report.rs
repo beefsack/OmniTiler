@@ -96,9 +96,6 @@ pub const MAX_WORLD_MEMBER_ATTEMPTS: usize = 1024;
 /// Bound on mechanical view attempts per report (one latest-wins row per
 /// owning view phase at most).
 pub const MAX_WORLD_VIEW_ATTEMPTS: usize = 1024;
-/// Bound on mechanical maximize-clear attempts per report (one latest-wins
-/// row per retained clear operation at most).
-pub const MAX_WORLD_CLEAR_ATTEMPTS: usize = 1024;
 /// Bound on mechanical native creation attempts per report (one latest-wins
 /// row per outstanding creation operation at most).
 pub const MAX_WORLD_CREATION_ATTEMPTS: usize = 256;
@@ -108,9 +105,9 @@ pub const MAX_WORLD_STATE_ATTEMPTS: usize = 1024;
 /// Bound on mechanical visibility attempts per report (one latest-wins row
 /// per window at most, matching the window fact ceiling).
 pub const MAX_WORLD_VISIBILITY_ATTEMPTS: usize = 10_000;
-/// Total bound on `propertyAttempts` per report across all six kinds
-/// (5 * 1024 + 10_000), including held rows.
-pub const MAX_WORLD_PROPERTY_ATTEMPTS: usize = 15_120;
+/// Total bound on `propertyAttempts` per report across all five kinds
+/// (4 * 1024 + 10_000), including held rows.
+pub const MAX_WORLD_PROPERTY_ATTEMPTS: usize = 14_096;
 /// Bound on the presentation native order per report (same lifetime
 /// alphabet as windows): the adapter's top-to-bottom stacking snapshot.
 pub const MAX_PRESENTATION_ORDER: usize = 1024;
@@ -579,6 +576,7 @@ pub struct StateTarget {
     pub value: bool,
     pub authority: ScopeAuthority,
     pub command_seq: Option<u64>,
+    pub automatic_clear: bool,
 }
 
 /// Per-property window authority: floats/excluded/game rows may authorize
@@ -614,18 +612,10 @@ pub struct WindowDesire {
     /// outstanding for this window; cleared on confirmation, proven refusal,
     /// external supersession, close, newer intent, or generation reset.
     pub frame_operation: Option<String>,
-    /// Explicit retained maximize-clear operation (`op-<cmdSeq>`) authorizing
-    /// exactly one nonactivating clear for this window. `None` (empty on the
-    /// wire) authorizes nothing. Set only while a retained directional clear
-    /// is outstanding and undispatched for this window; cleared on dispatch
-    /// (spent before the write), proven refusal, external supersession,
-    /// close, newer intent, or generation reset. Never re-actuated.
-    pub clear_operation: Option<String>,
-    /// Explicit command correlation for the published frame/clear target:
+    /// Explicit command correlation for the published frame target:
     /// `Some` only with a published explicit retained operation token from
     /// the originating command, never a parsed id and never the latest
-    /// report sequence. `None` with no published token; born commandless
-    /// clears publish no sequence.
+    /// report sequence. `None` with no published token.
     pub command_seq: Option<u64>,
     /// Composed visibility target, if any. `None` on every row until the
     /// visibility lane migrates.
@@ -889,31 +879,6 @@ pub struct ViewAttempt {
     pub pre: Option<WorkspaceRef>,
     pub post: Option<WorkspaceRef>,
     pub baseline: Option<WorkspaceRef>,
-    pub attempt_ms: u64,
-}
-
-/// One normalized raw maximize-clear attempt: the mechanical facts behind a
-/// single native nonactivating clear for one retained directional clear
-/// operation. The adapter checks mechanical authority/freshness/lifetime
-/// gates, clears, re-reads maximized state, and reports; the core derives
-/// confirmation (unmaximized proof), proven refusal, ambiguity, and external
-/// supersession from this evidence plus the staged observation. Never a
-/// policy conclusion: no outcome verdict rides here.
-///
-/// - `operation_id` is the retained clear operation (`op-<cmdSeq>`). Exact
-///   match on operation id plus window.
-/// - `pre_maximized`/`post_maximized` are the live maximized states
-///   immediately before/after the write (`None` = unreadable). Only an
-///   explicit refusal with an unchanged readable `Some(true)` preimage
-///   proves refusal; anything else latches ambiguity.
-/// - `attempt_ms` matches [`FrameAttempt::attempt_ms`] idempotency.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClearAttempt {
-    pub operation_id: String,
-    pub window: WindowId,
-    pub setter: FrameSetter,
-    pub pre_maximized: Option<bool>,
-    pub post_maximized: Option<bool>,
     pub attempt_ms: u64,
 }
 
@@ -1344,7 +1309,6 @@ pub enum AttemptLaneV4 {
     Frame,
     Member,
     View,
-    Clear,
     State,
     Visibility,
     Creation,
@@ -1358,7 +1322,6 @@ impl AttemptLaneV4 {
             Self::Frame => "frame",
             Self::Member => "member",
             Self::View => "view",
-            Self::Clear => "clear",
             Self::State => "state",
             Self::Visibility => "visibility",
             Self::Creation => "creation",
@@ -1490,9 +1453,6 @@ pub struct WorldReportV4 {
     /// Mechanical view attempts (at most one latest-wins entry per owning
     /// view phase).
     pub view_attempts: Vec<ViewAttempt>,
-    /// Mechanical maximize-clear attempts (at most one latest-wins entry
-    /// per retained clear operation).
-    pub clear_attempts: Vec<ClearAttempt>,
     /// Mechanical native creation attempts (at most one latest-wins entry
     /// per outstanding creation operation).
     pub creation_attempts: Vec<NativeCreationAttempt>,
@@ -2285,13 +2245,13 @@ impl OperationKind {
 /// Terminal retained-operation lifecycle outcome (maximize clear continuation
 /// or frame-proven float completion), retained latest-wins per `(win, kind)`
 /// until replacement or owner departure.
-/// Pending desire rides the `clear_operation`/`frame_operation` row, actual
-/// raw attempts ride the `world-apply` diag (`clears`/`frames`),
-/// ambiguous/gap holds emit nothing (the binding persists with its desire
-/// withheld). A `ClearContinuedTiled`/`ClearContinuedFloat` event means the
-/// original clear intent resumed under the original op, never that the
-/// final frame arrived; only `FloatFrameProven` means native observation
-/// confirmed the retained float target.
+/// Pending desire rides the automatic `maximized: false` state target or
+/// `frame_operation` row, actual raw attempts ride the `world-apply` diag
+/// (`clears`/`frames`), ambiguous/gap holds emit nothing (the binding persists
+/// with its desire withheld). A `ClearContinuedTiled`/`ClearContinuedFloat`
+/// event means the original clear intent resumed under the original op, never
+/// that the final frame arrived; only `FloatFrameProven` means native
+/// observation confirmed the retained float target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationOutcome {
     ClearContinuedTiled,
@@ -2558,10 +2518,10 @@ pub enum CommandResult {
     /// it; `cause` carries the narrow refusal cause when one applies.
     /// Tiled success carries no result: the snapshot, transfers, and focus
     /// effects ARE the outcome. A need-clear result publishes a one-shot
-    /// `clear_operation` desire under the originating op; the adapter
-    /// dispatches the native clear at most once and reports a correlated
-    /// clear attempt, and the commandless core settlement resumes the
-    /// original intent under the same op on proof.
+    /// automatic `maximized: false` state desire under the originating op; the
+    /// adapter dispatches the native clear at most once and reports a
+    /// correlated state attempt, and the commandless core settlement resumes
+    /// the original intent under the same op on proof.
     Directional {
         outcome: crate::world_directional::DirectionalOutcome,
         target: Option<WindowId>,

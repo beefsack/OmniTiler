@@ -270,7 +270,6 @@ async function roundtrip(
         frameAttempts: [],
         memberAttempts: [],
         viewAttempts: [],
-        clearAttempts: [],
         stateAttempts: [],
         intentRecords: [],
         ...(feedback === undefined ? {} : { rosterFeedback: feedback }),

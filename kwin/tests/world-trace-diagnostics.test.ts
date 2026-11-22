@@ -246,7 +246,7 @@ function winRow(win: string, over: Record<string, unknown> = {}): Record<string,
     return {
         win, out: OUT, ws: WS, alloc: null, frame: null,
         frame_auth: "untouched", frame_hold: "", member_auth: "untouched", member_hold: "",
-        frame_op: "", floating: false, float_origin: "", clear_op: "", cmdSeq: null,
+        frame_op: "", floating: false, float_origin: "", cmdSeq: null,
         visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
         ...over,
     };

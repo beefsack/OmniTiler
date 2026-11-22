@@ -16,13 +16,13 @@ use crate::world_report::{
     ArrivalLocation, AuthorityScope, HeldAttemptRow, MAX_ARRIVAL_BRACKETS_TOTAL,
     MAX_BATCH_COMMANDS, MAX_IDENTITY_TEXT_BYTES, MAX_INTENT_RECORDS, MAX_METADATA_TEXT_BYTES,
     MAX_NATIVE_OCCUPANTS_PER_DESKTOP, MAX_NATIVE_PER_OUTPUT, MAX_PRESENTATION_ORDER,
-    MAX_WORLD_CLEAR_ATTEMPTS, MAX_WORLD_CLOSED, MAX_WORLD_CREATION_ATTEMPTS, MAX_WORLD_FACTS,
-    MAX_WORLD_FOCUS_FEEDBACK, MAX_WORLD_FRAMES, MAX_WORLD_MEMBER_ATTEMPTS, MAX_WORLD_NATIVE,
-    MAX_WORLD_PROPERTY_ATTEMPTS, MAX_WORLD_SCREENS, MAX_WORLD_STATE_ATTEMPTS,
-    MAX_WORLD_VIEW_ATTEMPTS, MAX_WORLD_VISIBILITY_ATTEMPTS, PresentationRowV4, RenderTarget,
-    RowDiagnosticKind, VisibilityAttempt, WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef,
-    WorldCommand, WorldReportV4, check_screen_structure, check_window_structure,
-    conflicting_window, gradable_screen, gradable_window, graded_held_row, graded_held_window_row,
+    MAX_WORLD_CLOSED, MAX_WORLD_CREATION_ATTEMPTS, MAX_WORLD_FACTS, MAX_WORLD_FOCUS_FEEDBACK,
+    MAX_WORLD_FRAMES, MAX_WORLD_MEMBER_ATTEMPTS, MAX_WORLD_NATIVE, MAX_WORLD_PROPERTY_ATTEMPTS,
+    MAX_WORLD_SCREENS, MAX_WORLD_STATE_ATTEMPTS, MAX_WORLD_VIEW_ATTEMPTS,
+    MAX_WORLD_VISIBILITY_ATTEMPTS, PresentationRowV4, RenderTarget, RowDiagnosticKind,
+    VisibilityAttempt, WORLD_CONTRACT_VERSION_V4, WindowFact, WorkspaceRef, WorldCommand,
+    WorldReportV4, check_screen_structure, check_window_structure, conflicting_window,
+    gradable_screen, gradable_window, graded_held_row, graded_held_window_row,
     hidden_window_id_violation, valid_command,
 };
 
@@ -136,11 +136,6 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
             .saturating_add(held_in_lane(report, AttemptLaneV4::View))
             > MAX_WORLD_VIEW_ATTEMPTS
         || report
-            .clear_attempts
-            .len()
-            .saturating_add(held_in_lane(report, AttemptLaneV4::Clear))
-            > MAX_WORLD_CLEAR_ATTEMPTS
-        || report
             .creation_attempts
             .len()
             .saturating_add(held_in_lane(report, AttemptLaneV4::Creation))
@@ -159,8 +154,6 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
             .saturating_add(held_in_lane(report, AttemptLaneV4::Member))
             .saturating_add(report.view_attempts.len())
             .saturating_add(held_in_lane(report, AttemptLaneV4::View))
-            .saturating_add(report.clear_attempts.len())
-            .saturating_add(held_in_lane(report, AttemptLaneV4::Clear))
             .saturating_add(report.state_attempts.len())
             .saturating_add(report.visibility_attempts.len())
             .saturating_add(held_in_lane(report, AttemptLaneV4::Visibility))
@@ -562,17 +555,6 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
         }
     }
     {
-        let mut seen_clears = BTreeSet::new();
-        for attempt in &report.clear_attempts {
-            if !is_opaque_id(&attempt.operation_id) || !is_opaque_id(&attempt.window.0) {
-                return Some("clear-window-invalid");
-            }
-            if !seen_clears.insert((attempt.operation_id.clone(), attempt.window.0.clone())) {
-                return Some("duplicate-clear-attempt");
-            }
-        }
-    }
-    {
         let mut seen_states = BTreeSet::new();
         for attempt in &report.state_attempts {
             if !is_opaque_id(&attempt.window.0) {
@@ -611,7 +593,6 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
         let property_valid = report.frames.len()
             + report.member_attempts.len()
             + report.view_attempts.len()
-            + report.clear_attempts.len()
             + report.state_attempts.len()
             + report.visibility_attempts.len();
         let property_held = report
@@ -1251,7 +1232,6 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         frames,
         member_attempts,
         view_attempts,
-        clear_attempts,
         creation_attempts,
         held_attempts,
         state_attempts,
@@ -1581,32 +1561,6 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
                 .baseline
                 .as_ref()
                 .map(workspace_ref_fingerprint)
-                .unwrap_or_default(),
-        );
-        sep(&mut hash);
-        feed(&mut hash, &attempt.attempt_ms.to_string());
-        sep(&mut hash);
-    }
-    for attempt in clear_attempts {
-        feed(&mut hash, &attempt.operation_id);
-        sep(&mut hash);
-        feed(&mut hash, &attempt.window.0);
-        sep(&mut hash);
-        feed(&mut hash, attempt.setter.as_str());
-        sep(&mut hash);
-        feed(
-            &mut hash,
-            &attempt
-                .pre_maximized
-                .map(|v| if v { "1" } else { "0" }.to_owned())
-                .unwrap_or_default(),
-        );
-        sep(&mut hash);
-        feed(
-            &mut hash,
-            &attempt
-                .post_maximized
-                .map(|v| if v { "1" } else { "0" }.to_owned())
                 .unwrap_or_default(),
         );
         sep(&mut hash);

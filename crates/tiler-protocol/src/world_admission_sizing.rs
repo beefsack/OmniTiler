@@ -239,15 +239,6 @@ pub fn report_estimate_v4_with_residual(
             + workspace_ref_option_len(&attempt.baseline)
             + u64_len(attempt.attempt_ms);
     }
-    for attempt in &report.clear_attempts {
-        bytes += 77
-            + json_string_len(&attempt.operation_id)
-            + json_string_len(&attempt.window.0)
-            + json_string_len(attempt.setter.as_str())
-            + 5
-            + 5
-            + u64_len(attempt.attempt_ms);
-    }
     for attempt in &report.state_attempts {
         bytes += 94
             + json_string_len(&attempt.window.0)

@@ -79,7 +79,6 @@ fn default_window() -> WindowDesire {
         frame_operation: None,
         floating: false,
         float_origin: None,
-        clear_operation: None,
         command_seq: None,
         visibility: Some(VisibilityTarget {
             shown: true,
@@ -600,24 +599,28 @@ pub fn valid_reply_cases() -> Vec<(&'static str, DecodedReplyV4)> {
                         value: false,
                         authority: ScopeAuthority::Controlled,
                         command_seq: Some(1),
+                        automatic_clear: false,
                     },
                     StateTarget {
                         property: StateProperty::Maximized,
                         value: true,
                         authority: ScopeAuthority::Hold(HoldReason::RefusedTarget),
                         command_seq: None,
+                        automatic_clear: false,
                     },
                     StateTarget {
                         property: StateProperty::Sticky,
                         value: false,
                         authority: ScopeAuthority::Untouched,
                         command_seq: None,
+                        automatic_clear: false,
                     },
                     StateTarget {
                         property: StateProperty::Above,
                         value: true,
                         authority: ScopeAuthority::Controlled,
                         command_seq: None,
+                        automatic_clear: false,
                     },
                 ];
             }),
@@ -627,8 +630,14 @@ pub fn valid_reply_cases() -> Vec<(&'static str, DecodedReplyV4)> {
             obs_with(|d| {
                 let w = &mut d.reply.windows[0];
                 w.frame_authority = ScopeAuthority::Untouched;
-                w.clear_operation = Some("clear-a".to_owned());
                 w.command_seq = Some(1);
+                w.state = vec![StateTarget {
+                    property: StateProperty::Maximized,
+                    value: false,
+                    authority: ScopeAuthority::Controlled,
+                    command_seq: Some(1),
+                    automatic_clear: true,
+                }];
             }),
         ),
         (
@@ -636,8 +645,14 @@ pub fn valid_reply_cases() -> Vec<(&'static str, DecodedReplyV4)> {
             obs_with(|d| {
                 let w = &mut d.reply.windows[0];
                 w.frame_authority = ScopeAuthority::Untouched;
-                w.clear_operation = Some("birth-a".to_owned());
                 w.command_seq = None;
+                w.state = vec![StateTarget {
+                    property: StateProperty::Maximized,
+                    value: false,
+                    authority: ScopeAuthority::Controlled,
+                    command_seq: None,
+                    automatic_clear: true,
+                }];
             }),
         ),
         (
@@ -728,6 +743,7 @@ pub fn valid_reply_cases() -> Vec<(&'static str, DecodedReplyV4)> {
                     value: true,
                     authority: ScopeAuthority::Controlled,
                     command_seq: Some(1),
+                    automatic_clear: false,
                 }];
             }),
         ),
@@ -1095,6 +1111,7 @@ pub fn valid_reply_cases() -> Vec<(&'static str, DecodedReplyV4)> {
                     value: true,
                     authority: ScopeAuthority::Controlled,
                     command_seq: None,
+                    automatic_clear: false,
                 }];
             }),
         ),
@@ -1107,6 +1124,7 @@ pub fn valid_reply_cases() -> Vec<(&'static str, DecodedReplyV4)> {
                     value: false,
                     authority: ScopeAuthority::Controlled,
                     command_seq: None,
+                    automatic_clear: false,
                 }];
             }),
         ),
@@ -1139,6 +1157,7 @@ pub fn contextual_reject_cases() -> Vec<(&'static str, DecodedReplyV4)> {
                     value: true,
                     authority: ScopeAuthority::Controlled,
                     command_seq: None,
+                    automatic_clear: false,
                 }];
             }),
         ),
@@ -1156,6 +1175,7 @@ pub fn contextual_reject_cases() -> Vec<(&'static str, DecodedReplyV4)> {
                     value: true,
                     authority: ScopeAuthority::Controlled,
                     command_seq: Some(1),
+                    automatic_clear: false,
                 }];
             }),
         ),

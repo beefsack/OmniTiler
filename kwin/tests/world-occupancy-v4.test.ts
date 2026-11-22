@@ -220,7 +220,6 @@ describe("native occupancy encoding", () => {
             frameAttempts: [],
             memberAttempts: [],
             viewAttempts: [],
-            clearAttempts: [],
             stateAttempts: [],
             intentRecords: [],
         });

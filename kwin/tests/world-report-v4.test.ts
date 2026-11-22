@@ -304,7 +304,6 @@ describe("v4 screen physical identity", () => {
                 frameAttempts: [],
                 memberAttempts: [],
                 viewAttempts: [],
-                clearAttempts: [],
                 stateAttempts: [],
                 intentRecords: [],
             }), null, `bad manufacturer ${String(bad).slice(0, 8)} must fail closed`);
@@ -321,7 +320,6 @@ function buildInner(surface: object, focusChanges: FocusChanges | null = null) {
         frameAttempts: [],
         memberAttempts: [],
         viewAttempts: [],
-        clearAttempts: [],
         stateAttempts: [],
         intentRecords: [],
     });
@@ -526,7 +524,6 @@ describe("v4 inner report shape", () => {
             frameAttempts: [],
             memberAttempts: [],
             viewAttempts: [],
-            clearAttempts: [],
         stateAttempts: [],
             intentRecords: [],
         });
@@ -595,7 +592,6 @@ describe("v4 cursorHit scoping", () => {
             frameAttempts: [],
             memberAttempts: [],
             viewAttempts: [],
-            clearAttempts: [],
             stateAttempts: [],
             intentRecords: [],
         });
@@ -646,7 +642,6 @@ describe("v4 cursorHit scoping", () => {
             frameAttempts: [],
             memberAttempts: [],
             viewAttempts: [],
-            clearAttempts: [],
             stateAttempts: [],
             intentRecords: [],
         });
@@ -668,7 +663,6 @@ describe("v4 frame attempt lane", () => {
             frameAttempts: frames as never,
             memberAttempts: [],
             viewAttempts: [],
-            clearAttempts: [],
         stateAttempts: [],
             intentRecords: [],
         });
@@ -758,7 +752,6 @@ describe("v4 member/view attempt lanes", () => {
             frameAttempts: [],
             memberAttempts: members as never,
             viewAttempts: views as never,
-            clearAttempts: [],
         stateAttempts: [],
             intentRecords: [],
         });
@@ -906,7 +899,6 @@ describe("v4 local frame witness (adapter-local watermark)", () => {
             frameAttempts: [],
             memberAttempts: [],
             viewAttempts: [],
-            clearAttempts: [],
         stateAttempts: [],
             intentRecords: [],
         });
@@ -1015,7 +1007,6 @@ describe("v4 foregroundKnown provenance bit", () => {
             frameAttempts: [],
             memberAttempts: [],
             viewAttempts: [],
-            clearAttempts: [],
             stateAttempts: [],
             intentRecords: [],
         });

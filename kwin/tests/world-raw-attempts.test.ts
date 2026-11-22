@@ -278,9 +278,9 @@ describe("world raw mechanical attempts", () => {
                     { out: "out-2", view: "w2", mode: "tiled", hold: "" },
                 ];
                 reply["windows"] = [
-                    { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
-                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
-                    { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [10, 10, 100, 100], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [10, 10, 100, 100], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
             });
             // Round 2: a member move with follow (win-a to out-2, target
@@ -300,10 +300,10 @@ describe("world raw mechanical attempts", () => {
                     { out: "out-2", view: "w2", mode: "tiled", hold: "" },
                 ];
                 reply["windows"] = [
-                    { win: "win-a", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
-                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 400, 300], frame: [800, 0, 400, 300], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "op-clear-1", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
-                    { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [300, 200, 250, 180], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "op-float-1", clear_op: "", floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
-                    { win: "win-d", out: "out-1", ws: "w1", alloc: [100, 100, 50, 50], frame: [100, 100, 50, 50], frame_auth: "untouched", frame_hold: "", member_auth: "untouched", member_hold: "", frame_op: "", clear_op: "op-clear-2", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-a", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 400, 300], frame: [800, 0, 400, 300], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [{ property: "maximized", value: false, auth: "controlled", reason: "", cmdSeq: null, automaticClear: true }] },
+                    { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [300, 200, 250, 180], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "op-float-1", floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-d", out: "out-1", ws: "w1", alloc: [100, 100, 50, 50], frame: [100, 100, 50, 50], frame_auth: "untouched", frame_hold: "", member_auth: "untouched", member_hold: "", frame_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [{ property: "maximized", value: false, auth: "controlled", reason: "", cmdSeq: null, automaticClear: true }] },
                 ];
                 const d1 = { kind: "existing", native: "d1" } as const;
                 const d2 = { kind: "existing", native: "d2" } as const;
@@ -340,15 +340,15 @@ describe("world raw mechanical attempts", () => {
             const frames = propAttempts.filter((r) => r["kind"] === "frame");
             assert.ok(!propAttempts.some((r) => r["kind"] === "member" || r["kind"] === "view"),
                 "typed roster steps never masquerade as legacy property attempts");
-            const clears = propAttempts.filter((r) => r["kind"] === "clear");
+            const clears = propAttempts.filter((r) => r["kind"] === "state");
             const diag = `logs=${JSON.stringify(flow.logs)} wins=${JSON.stringify(inner["windows"])}`;
             assert.ok(Array.isArray(frames) && frames.length === 3, `three frame attempts ride, got ${JSON.stringify(frames)} ${diag}`);
             assert.deepEqual([...flow.currents], [["out-1", "d1"], ["out-2", "d2"]]);
-            assert.ok(Array.isArray(clears) && clears.length === 1, `one clear attempt rides, got ${JSON.stringify(clears)} ${diag}`);
+            assert.ok(Array.isArray(clears) && clears.length === 1, `one state clear attempt rides, got ${JSON.stringify(clears)} ${diag}`);
             assert.deepEqual(
                 clears[0],
-                { kind: "clear", op: "op-clear-2", win: "win-d", setter: "accepted", pre: true, post: false, attemptMs: "1" },
-                "native nonactivating clear with fresh pre/post proof; the already-clear token spends silently",
+                { kind: "state", win: "win-d", property: "maximized", target: false, rev: "2", setter: "accepted", pre: true, post: false, attemptMs: "1" },
+                "native nonactivating clear with fresh pre/post proof; the already-clear window emits no row",
             );
             // Tiled sweep: ordinary write (empty op, no prewrite), real
             // target plus immediate readback, nullable DPI, write stamp.
@@ -398,7 +398,7 @@ describe("world raw mechanical attempts", () => {
                 reply["windows"] = [
                     { win: "win-a", out: "out-2", ws: "w2", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200],
                         frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
-                        frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null,
+                        frame_op: "", floating: false, float_origin: "", cmdSeq: null,
                         visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
                 reply["transfers"] = [
@@ -520,8 +520,8 @@ describe("world raw mechanical attempts", () => {
                     { out: "out-2", view: "w1", mode: "tiled", hold: "" },
                 ];
                 reply["windows"] = [
-                    { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
-                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
             });
             flow.fire("desktopsChanged");
@@ -536,7 +536,7 @@ describe("world raw mechanical attempts", () => {
                     { out: "out-2", view: "w1", mode: "tiled", hold: "" },
                 ];
                 reply["windows"] = [
-                    { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
                 reply["transfers"] = [
                     { op: "op-at-target", kind: "window", win: "win-a", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null },
@@ -586,7 +586,7 @@ describe("world raw mechanical attempts", () => {
             // recreate the row: the dispatch fence still owns the op.
             accept(flow, "4", (reply) => {
                 reply["windows"] = [
-                    { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
                 reply["transfers"] = [
                     { op: "op-at-target", kind: "window", win: "win-a", out: "out-1", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null },
@@ -620,9 +620,9 @@ describe("world raw mechanical attempts", () => {
                     { out: "out-2", view: "w1", mode: "tiled", hold: "" },
                 ];
                 reply["windows"] = [
-                    { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
-                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
-                    { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [10, 10, 100, 100], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-a", out: "out-1", ws: "w1", alloc: [0, 0, 200, 200], frame: [0, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [10, 10, 100, 100], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
                 ];
             });
             flow.fire("desktopsChanged");
@@ -633,10 +633,10 @@ describe("world raw mechanical attempts", () => {
                     { out: "out-2", view: "w1", mode: "tiled", hold: "" },
                 ];
                 reply["windows"] = [
-                    { win: "win-a", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
-                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 400, 300], frame: [800, 0, 400, 300], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", clear_op: "op-clear-1", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
-                    { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [300, 200, 250, 180], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "op-float-1", clear_op: "", floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
-                    { win: "win-d", out: "out-1", ws: "w1", alloc: null, frame: null, frame_auth: "hold", frame_hold: "unreadable", member_auth: "hold", member_hold: "unreadable", frame_op: "", clear_op: "op-clear-2", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-a", out: "out-2", ws: "w2", alloc: [800, 0, 200, 200], frame: [800, 0, 200, 200], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-b", out: "out-2", ws: "w2", alloc: [800, 0, 400, 300], frame: [800, 0, 400, 300], frame_auth: "controlled", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [{ property: "maximized", value: false, auth: "controlled", reason: "", cmdSeq: null, automaticClear: true }] },
+                    { win: "win-c", out: "out-1", ws: "w1", alloc: [10, 10, 100, 100], frame: [300, 200, 250, 180], frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "", frame_op: "op-float-1", floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [] },
+                    { win: "win-d", out: "out-1", ws: "w1", alloc: null, frame: null, frame_auth: "hold", frame_hold: "unreadable", member_auth: "hold", member_hold: "unreadable", frame_op: "", floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [{ property: "maximized", value: false, auth: "controlled", reason: "", cmdSeq: null, automaticClear: true }] },
                 ];
                 reply["transfers"] = [
                     { op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: true, held: false, cmdSeq: null, parent: null },
@@ -648,12 +648,12 @@ describe("world raw mechanical attempts", () => {
             const payload = JSON.parse(lastPayload(flow, "DescribeWorld")) as Record<string, unknown>;
             const inner = payload["report"] as Record<string, unknown>;
             const propAttempts = inner["propertyAttempts"] as Array<Record<string, unknown>>;
-            const clears = propAttempts.filter((r) => r["kind"] === "clear");
+            const clears = propAttempts.filter((r) => r["kind"] === "state");
             const diag = `logs=${JSON.stringify(flow.logs)} wins=${JSON.stringify(inner["windows"])}`;
-            assert.ok(Array.isArray(clears) && clears.length === 1, `one clear attempt rides from the held row, got ${JSON.stringify(clears)} ${diag}`);
+            assert.ok(Array.isArray(clears) && clears.length === 1, `one state clear attempt rides from the held row, got ${JSON.stringify(clears)} ${diag}`);
             assert.deepEqual(
                 clears[0],
-                { kind: "clear", op: "op-clear-2", win: "win-d", setter: "accepted", pre: true, post: false, attemptMs: "1" },
+                { kind: "state", win: "win-d", property: "maximized", target: false, rev: "2", setter: "accepted", pre: true, post: false, attemptMs: "1" },
                 "held scope authorizes the property clear with fresh pre/post proof",
             );
         } finally {
@@ -904,7 +904,7 @@ describe("world empty migration controlled scope", () => {
         (reply.windows as Array<Record<string, unknown>>).push({
             win: "win-m", out: "out-b", ws: "w1", alloc: null, frame: null,
             frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
-            frame_op: "", clear_op: "", floating: false, float_origin: "",
+            frame_op: "", floating: false, float_origin: "",
             cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
         });
         const state = new WorldAdapterState("adapter-a", "owner-a");
@@ -1088,7 +1088,7 @@ describe("world setter attempt correspondence", () => {
                 [{
                     win: "win-a", out: "out-1", ws: "w1", alloc: null, frame: null,
                     frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
-                    frame_op: "", clear_op: "", floating: false, float_origin: "",
+                    frame_op: "", floating: false, float_origin: "",
                     cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 }],
                 [{ op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false, cmdSeq: null, parent: null }],
@@ -1158,13 +1158,13 @@ describe("world setter attempt correspondence", () => {
                     {
                         win: "win-m", out: "out-b", ws: "w1", alloc: null, frame: null,
                         frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
-                        frame_op: "", clear_op: "", floating: false, float_origin: "",
+                        frame_op: "", floating: false, float_origin: "",
                         cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                     },
                     {
                         win: "win-n", out: "out-b", ws: "w9", alloc: null, frame: null,
                         frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
-                        frame_op: "", clear_op: "", floating: false, float_origin: "",
+                        frame_op: "", floating: false, float_origin: "",
                         cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                     },
                 ],
@@ -1226,7 +1226,7 @@ describe("world setter attempt correspondence", () => {
                 [{
                     win: "win-a", out: "out-1", ws: "w1", alloc: null, frame: null,
                     frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
-                    frame_op: "", clear_op: "", floating: false, float_origin: "",
+                    frame_op: "", floating: false, float_origin: "",
                     cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 }],
                 [{ op: "op-9", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false, cmdSeq: null, parent: null }],
@@ -1307,7 +1307,7 @@ describe("world setter attempt correspondence", () => {
                 [{
                     win: "win-q", out: "out-b", ws: "w1", alloc: null, frame: null,
                     frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
-                    frame_op: "", clear_op: "", floating: false, float_origin: "",
+                    frame_op: "", floating: false, float_origin: "",
                     cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 }],
                 [{ op: "op-10", kind: "migration", win: "", out: "out-b", ws: "w1", follow: false, held: false, cmdSeq: null, parent: null }],
@@ -1376,7 +1376,7 @@ describe("world setter attempt correspondence", () => {
                 [{
                     win: "win-a", out: "out-1", ws: "w1", alloc: null, frame: null,
                     frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
-                    frame_op: "", clear_op: "", floating: false, float_origin: "",
+                    frame_op: "", floating: false, float_origin: "",
                     cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 }],
                 [{ op: "op-new", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: false, cmdSeq: null, parent: null }],
@@ -1422,7 +1422,7 @@ describe("world setter attempt correspondence", () => {
             [{
                 win: "win-a", out: "out-1", ws: "w1", alloc: null, frame: null,
                 frame_auth: "untouched", frame_hold: "", member_auth: "controlled", member_hold: "",
-                frame_op: "", clear_op: "", floating: false, float_origin: "",
+                frame_op: "", floating: false, float_origin: "",
                 cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             }],
             [{ op: "op-new", kind: "window", win: "win-a", out: "out-2", ws: "w2", follow: false, held: true, cmdSeq: null, parent: null }],
@@ -1549,8 +1549,12 @@ describe("world clear attempt correspondence", () => {
                 [{
                     win: "win-c", out: "out-1", ws: "w1", alloc: null, frame: null,
                     frame_auth: "untouched", frame_hold: "", member_auth: "untouched", member_hold: "",
-                    frame_op: "", clear_op: "op-clear-1", floating: false, float_origin: "",
-                    cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
+                    frame_op: "", floating: false, float_origin: "",
+                    cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "",
+                    state: [{
+                        property: "maximized", value: false, auth: "controlled", reason: "",
+                        cmdSeq: null, automaticClear: true,
+                    }],
                 }],
                 [],
                 [],
@@ -1613,57 +1617,179 @@ describe("world clear attempt correspondence", () => {
         const { env, calls } = clearEnv(state, { maximized: true, clear: "accept" });
         const result = applyWorldReply(env);
         assert.equal(calls(), 1, "exactly one native clear");
-        assert.deepEqual(state.clearAttemptsForReport(), [{
-            op: "op-clear-1", win: "win-c", setter: "accepted", pre: true, post: false, attemptMs: "9",
+        assert.deepEqual(state.statesForReport(), [{
+            win: "win-c", property: "maximized", target: false, rev: "1",
+            setter: "accepted", pre: true, post: false, attemptMs: "9",
         }], "accepted disposition with fresh pre/post maximized states");
         assert.equal(result.clears, 1, "accepted dispatch counts the clear write");
         assert.equal(result.held, 0, "proven clear holds nothing");
-        assert.equal(state.isDispatched("op-clear-1"), true, "dispatch recorded once");
-        // A duplicate reply never re-actuates the spent operation.
+        // A duplicate reply at the same rev never re-actuates.
         const again = applyWorldReply(env);
         assert.equal(calls(), 1, "no second native clear");
         assert.equal(again.clears, 0);
-        assert.equal(state.clearAttemptsForReport().length, 1, "no duplicate attempt row");
+        assert.equal(state.statesForReport().length, 1, "no duplicate attempt row");
     });
 
-    it("spends without an attempt when already unmaximized", () => {
+    it("records no attempt when already unmaximized", () => {
         const state = boundClear();
         const { env, calls } = clearEnv(state, { maximized: false, clear: "accept" });
         const result = applyWorldReply(env);
         assert.equal(calls(), 0, "no native call for an already-clear window");
-        assert.ok(state.clearSpent.has("op-clear-1"), "token spent so the desire never wedges");
-        assert.deepEqual(state.clearAttemptsForReport(), [], "fresh observation is the proof: no invented row");
+        assert.deepEqual(state.statesForReport(), [], "fresh observation is the proof: no invented row");
         assert.equal(result.clears, 0);
         assert.equal(result.held, 0);
     });
 
-    it("records refused with unchanged proof and never repeats", () => {
+    it("records refused with unchanged proof and never repeats at the same rev", () => {
         const state = boundClear();
         const { env, calls } = clearEnv(state, { maximized: true, clear: "refuse" });
         const result = applyWorldReply(env);
         assert.equal(calls(), 1, "the refused setter still ran once");
-        assert.deepEqual(state.clearAttemptsForReport(), [{
-            op: "op-clear-1", win: "win-c", setter: "refused", pre: true, post: true, attemptMs: "9",
+        assert.deepEqual(state.statesForReport(), [{
+            win: "win-c", property: "maximized", target: false, rev: "1",
+            setter: "refused", pre: true, post: true, attemptMs: "9",
         }], "refused disposition keeps the unchanged pre/post proof");
         assert.equal(result.clears, 0, "refused dispatch earns no write credit");
         assert.ok(result.held >= 1, "unproven clear holds");
         const again = applyWorldReply(env);
-        assert.equal(calls(), 1, "spent refusal never re-actuates");
+        assert.equal(calls(), 1, "same-rev refusal never re-actuates");
         assert.equal(again.clears, 0);
     });
 
-    it("records threw with best-known proof and never repeats", () => {
+    it("does not re-actuate when a reentrant apply completes the same-rev refusal during native reads", () => {
+        const state = boundClear();
+        let reentered = false;
+        let outerEnv: Parameters<typeof applyWorldReply>[0] | null = null;
+        const { env, calls } = clearEnv(state, {
+            maximized: true,
+            clear: "refuse",
+            onRect: () => {
+                if (!reentered && outerEnv !== null) {
+                    reentered = true;
+                    applyWorldReply(outerEnv);
+                }
+            },
+        });
+        outerEnv = env;
+        const result = applyWorldReply(env);
+        assert.equal(reentered, true, "reentrant apply ran during readLiveRect");
+        assert.equal(calls(), 1, "outer apply must not call clearMaximized a second time after reentrant refusal");
+        assert.deepEqual(state.statesForReport(), [{
+            win: "win-c", property: "maximized", target: false, rev: "1",
+            setter: "refused", pre: true, post: true, attemptMs: "9",
+        }], "single refused attempt preserved");
+        assert.equal(result.clears, 0);
+    });
+
+    it("does not replay same-rev automatic clear after retiring delivered refusal feedback", () => {
+        const state = boundClear();
+        const { env, calls } = clearEnv(state, { maximized: true, clear: "refuse" });
+        const first = applyWorldReply(env);
+        assert.equal(calls(), 1, "initial refused setter ran once");
+        assert.equal(first.clears, 0);
+        assert.equal(state.statesForReport().length, 1, "refused attempt queued for delivery");
+
+        const flight = state.beginCapture("src-retire", null);
+        assert.notEqual(flight, null, "capture flight captures delivered state attempt");
+        assert.equal(state.ackDelivered("src-retire", true), 1, "delivered refusal retires cleanly");
+        state.releaseFlight("src-retire");
+        assert.deepEqual(state.statesForReport(), [], "outbound state attempt buffer is now empty");
+
+        const replay = applyWorldReply(env);
+        assert.equal(calls(), 1, "replayed same-rev reply must not re-invoke clearMaximized after retirement");
+        assert.equal(replay.clears, 0);
+        assert.deepEqual(state.statesForReport(), [], "no second attempt fabricated on replay");
+    });
+
+    it("releases previous-revision automatic-clear spent bookkeeping when acceptReply advances to a newer revision", () => {
+        const state = boundClear();
+        const { env, calls } = clearEnv(state, { maximized: true, clear: "refuse" });
+        const f1 = state.beginCapture("src-1", null);
+        assert.ok(f1 !== null);
+        const reply1 = parseWorldReply(JSON.stringify({
+            v: 4,
+            ...(env.reply as unknown as Record<string, unknown>),
+            req: "src-1",
+            source: "src-1",
+            obs: "1",
+            rev: "1",
+            clock: "9",
+            presentation: DISABLED_PRESENTATION,
+        }));
+        assert.ok(reply1 !== null && isCoreWorldReply(reply1));
+        assert.deepEqual(state.acceptReply(reply1, "src-1", f1.watermark), { applied: true, reason: "accepted" });
+
+        applyWorldReply({ ...env, reply: reply1, dispatchWatermark: f1.watermark });
+        assert.equal(calls(), 1, "initial rev 1 clear ran once");
+        assert.equal(state.autoClearSpent.size, 1, "rev 1 spent entry recorded");
+        assert.equal(state.isAutoClearSpent("win-c", "1"), true);
+
+        // Same-rev ack retirement preserves spent bookkeeping.
+        const fAck = state.beginCapture("src-ack", null);
+        assert.ok(fAck !== null);
+        assert.equal(state.ackDelivered("src-ack", true), 1);
+        state.releaseFlight("src-ack");
+        assert.equal(state.autoClearSpent.size, 1, "same-rev ack preserves spent entry");
+        assert.equal(state.isAutoClearSpent("win-c", "1"), true);
+        applyWorldReply({ ...env, reply: reply1, dispatchWatermark: f1.watermark });
+        assert.equal(calls(), 1, "same-rev replay after ack does not re-invoke");
+
+        // Rejected stale-rev acceptReply must not clear spent bookkeeping.
+        const fStale = state.beginCapture("src-stale", null);
+        assert.ok(fStale !== null);
+        const staleReply = parseWorldReply(JSON.stringify({
+            v: 4,
+            ...(env.reply as unknown as Record<string, unknown>),
+            req: "src-stale",
+            source: "src-stale",
+            obs: "1",
+            rev: "1",
+            clock: "9",
+            presentation: DISABLED_PRESENTATION,
+        }));
+        assert.ok(staleReply !== null && isCoreWorldReply(staleReply));
+        assert.deepEqual(state.acceptReply(staleReply, "src-stale", fStale.watermark), { applied: false, reason: "stale-rev" });
+        state.releaseFlight("src-stale");
+        assert.equal(state.autoClearSpent.size, 1, "rejected stale acceptReply preserves spent entry");
+
+        // Advancing to strictly newer accepted rev releases previous rev's spent entries.
+        const f2 = state.beginCapture("src-2", null);
+        assert.ok(f2 !== null);
+        const reply2 = parseWorldReply(JSON.stringify({
+            v: 4,
+            ...(env.reply as unknown as Record<string, unknown>),
+            req: "src-2",
+            source: "src-2",
+            obs: "2",
+            rev: "2",
+            clock: "10",
+            presentation: DISABLED_PRESENTATION,
+        }));
+        assert.ok(reply2 !== null && isCoreWorldReply(reply2));
+        assert.deepEqual(state.acceptReply(reply2, "src-2", f2.watermark), { applied: true, reason: "accepted" });
+        assert.equal(state.autoClearSpent.size, 0, "cross-revision acceptReply releases previous rev spent bookkeeping");
+        assert.equal(state.isAutoClearSpent("win-c", "2"), false);
+
+        // Applying rev 2 dispatches once and tracks only the current rev.
+        applyWorldReply({ ...env, reply: reply2, dispatchWatermark: f2.watermark });
+        assert.equal(calls(), 2, "newer accepted rev dispatches automatic clear once");
+        assert.equal(state.autoClearSpent.size, 1, "spent map holds only current rev entry");
+        assert.equal(state.isAutoClearSpent("win-c", "2"), true);
+    });
+
+    it("records threw with best-known proof and never repeats at the same rev", () => {
         const state = boundClear();
         const { env, calls } = clearEnv(state, { maximized: true, clear: "throw" });
         const result = applyWorldReply(env);
         assert.equal(calls(), 1, "the throwing setter ran once");
-        assert.deepEqual(state.clearAttemptsForReport(), [{
-            op: "op-clear-1", win: "win-c", setter: "threw", pre: true, post: true, attemptMs: "9",
+        assert.deepEqual(state.statesForReport(), [{
+            win: "win-c", property: "maximized", target: false, rev: "1",
+            setter: "threw", pre: true, post: true, attemptMs: "9",
         }], "throw keeps the best-known unchanged proof, never fabricated arrival");
         assert.equal(result.clears, 0);
         assert.ok(result.held >= 1);
         const again = applyWorldReply(env);
-        assert.equal(calls(), 1, "spent throw never re-actuates");
+        assert.equal(calls(), 1, "same-rev throw never re-actuates");
         assert.equal(again.clears, 0);
     });
 
@@ -1672,8 +1798,7 @@ describe("world clear attempt correspondence", () => {
         const { env, calls } = clearEnv(state, { maximized: true, fullscreen: true, clear: "accept" });
         const result = applyWorldReply(env);
         assert.equal(calls(), 0, "game/fullscreen lane never takes a clear write");
-        assert.deepEqual(state.clearAttemptsForReport(), [], "no setter ran and no post state was read: no row");
-        assert.ok(!state.clearSpent.has("op-clear-1"), "veto spends nothing; the core owns abandonment");
+        assert.deepEqual(state.statesForReport(), [], "no setter ran and no post state was read: no row");
         assert.ok(result.held >= 1);
         // A later readable reply retries the still-undispatched desire.
         const readable = clearEnv(state, { maximized: true, clear: "accept" });
@@ -1699,16 +1824,15 @@ describe("world clear attempt correspondence", () => {
         });
         const result = applyWorldReply(env);
         assert.equal(calls(), 0, "flipped gate runs no native setter");
-        assert.ok(!state.clearSpent.has("op-clear-1"), "flipped gate spends nothing");
-        assert.deepEqual(state.clearAttemptsForReport(), [], "flipped gate records no row");
+        assert.deepEqual(state.statesForReport(), [], "flipped gate records no row");
         assert.ok(result.held >= 1);
-        assert.ok(!state.isDispatched("op-clear-1"), "no dispatch recorded");
         // A fresh reply with stable safety dispatches exactly once.
         const readable = clearEnv(state, { maximized: true, clear: "accept" });
         const retry = applyWorldReply(readable.env);
         assert.equal(readable.calls(), 1, "stable safety dispatches the retained desire");
-        assert.deepEqual(state.clearAttemptsForReport(), [{
-            op: "op-clear-1", win: "win-c", setter: "accepted", pre: true, post: false, attemptMs: "9",
+        assert.deepEqual(state.statesForReport(), [{
+            win: "win-c", property: "maximized", target: false, rev: "1",
+            setter: "accepted", pre: true, post: false, attemptMs: "9",
         }], "fresh proof rides the next report");
         assert.equal(retry.clears, 1);
     });
@@ -1730,8 +1854,7 @@ describe("world clear attempt correspondence", () => {
         });
         const result = applyWorldReply(env);
         assert.equal(calls(), 0, "advanced watermark runs no native setter");
-        assert.ok(!state.clearSpent.has("op-clear-1"), "advanced watermark spends nothing");
-        assert.deepEqual(state.clearAttemptsForReport(), [], "advanced watermark records no row");
+        assert.deepEqual(state.statesForReport(), [], "advanced watermark records no row");
         assert.ok(result.held >= 1);
         // A fresh capture (new watermark) dispatches exactly once.
         const readable = clearEnv(state, { maximized: true, clear: "accept" });
@@ -1752,8 +1875,7 @@ describe("world clear attempt correspondence", () => {
             const { env, calls } = clearEnv(state, opts);
             const result = applyWorldReply(env);
             assert.equal(calls(), 0, `no native call for gap ${JSON.stringify(opts)}`);
-            assert.ok(!state.clearSpent.has("op-clear-1"), `gap stays unspent: ${JSON.stringify(opts)}`);
-            assert.deepEqual(state.clearAttemptsForReport(), [], `no invented row: ${JSON.stringify(opts)}`);
+            assert.deepEqual(state.statesForReport(), [], `no invented row: ${JSON.stringify(opts)}`);
             assert.ok(result.held >= 1);
             // The undispatched desire retries on a readable reply.
             const readable = clearEnv(state, { maximized: true, clear: "accept" });
@@ -1763,14 +1885,13 @@ describe("world clear attempt correspondence", () => {
         }
     });
 
-    it("resets spent clear tokens on generation rotation", () => {
+    it("resets retained state attempts on generation rotation", () => {
         const state = boundClear();
         const first = clearEnv(state, { maximized: true, clear: "accept" });
         applyWorldReply(first.env);
         assert.equal(first.calls(), 1);
         state.onDiscovery("gen-2", "adapter-a");
-        assert.ok(!state.clearSpent.has("op-clear-1"), "rotation clears the spent set");
-        assert.ok(!state.isDispatched("op-clear-1"), "rotation clears the dispatch record");
+        assert.deepEqual(state.statesForReport(), [], "rotation clears retained state attempts");
         const second = clearEnv(state, { maximized: true, clear: "accept" });
         const out = applyWorldReply({
             ...second.env,
@@ -1792,7 +1913,7 @@ describe("world clear attempt correspondence", () => {
             return parsed;
         };
 
-        it("fresh accepted operationSettled and switchSettled grant no extra clear writes and preserve spend fences", () => {
+        it("fresh accepted operationSettled and switchSettled grant no extra clear writes and retire delivered state attempts", () => {
             const state = boundClear();
             const { env, calls } = clearEnv(state, { maximized: true, clear: "refuse" });
             let switchCalls = 0;
@@ -1818,18 +1939,18 @@ describe("world clear attempt correspondence", () => {
             assert.equal(calls(), 1, "baseline clear setter ran once");
             assert.equal(switchCalls, 0, "no switchView call before fresh accepted outcome application");
             assert.equal(first.clears, 0, "refused clear leaves window maximized (still needing setter)");
-            assert.ok(state.clearSpent.has("op-clear-1"), "clear token spent before fresh reply");
-            assert.ok(state.isDispatched("op-clear-1"), "dispatch fence recorded before fresh reply");
-            assert.equal(state.clearAttemptsForReport().length, 1, "nonempty clear attempt recorded");
+            assert.equal(state.statesForReport().length, 1, "nonempty state attempt recorded");
 
             // Fresh bound ready reply carrying scripted valid operationSettled
-            // (clear + float) and switchSettled payloads with the same desire
-            // and native maximized=true state still needing a setter.
+            // (clear + float) and switchSettled payloads with the settled
+            // automatic clear removed from windows[].state.
             const f2 = state.beginCapture("src-2", null);
             assert.ok(f2 !== null);
-            assert.equal(f2.delivered.clears.length, 1);
+            assert.equal(f2.delivered.states.length, 1);
+            const settledWindows = reply1.windows.map((w) => ({ ...w, state: [] }));
             const reply2 = mustWorldReply({
                 ...(countedEnv.reply as unknown as Record<string, unknown>),
+                windows: settledWindows,
                 req: "src-2",
                 source: "src-2",
                 obs: "2",
@@ -1848,9 +1969,7 @@ describe("world clear attempt correspondence", () => {
             assert.equal(calls(), 1, "fresh accepted outcomes grant zero extra clear calls");
             assert.equal(switchCalls, 0, "fresh accepted outcomes grant zero switchView calls");
             assert.equal(second.clears, 0);
-            assert.ok(state.clearSpent.has("op-clear-1"), "clear spend fence persists");
-            assert.ok(state.isDispatched("op-clear-1"), "dispatch fence persists");
-            assert.deepEqual(state.clearAttemptsForReport(), [], "exact delivered equality retires old unchanged clear receipt");
+            assert.deepEqual(state.statesForReport(), [], "exact delivered equality retires old unchanged state receipt");
         });
 
         it("fresh accepted outcomes grant no extra float writes and never replace or retire newer same-key frame receipts", () => {
@@ -1865,7 +1984,7 @@ describe("world clear attempt correspondence", () => {
                     [{
                         win: "win-a", out: "out-1", ws: "w1", alloc: null, frame: [10, 20, 300, 200],
                         frame_auth: "untouched", frame_hold: "", member_auth: "untouched", member_hold: "",
-                        frame_op: "op-float-1", clear_op: "", floating: true, float_origin: "",
+                        frame_op: "op-float-1", floating: true, float_origin: "",
                         cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                         ...winOver,
                     }],

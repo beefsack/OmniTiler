@@ -238,7 +238,7 @@ function winRow(win: string, ws: string): Record<string, unknown> {
         alloc: [10, 10, 300, 300], frame: [10, 10, 300, 300],
         frame_auth: "controlled", frame_hold: "",
         member_auth: "controlled", member_hold: "",
-        frame_op: "", floating: false, float_origin: "", clear_op: "",
+        frame_op: "", floating: false, float_origin: "",
         cmdSeq: null,
         visibility: { shown: true, rev: "1", fallback: false },
         visibility_auth: "controlled", visibility_hold: "",

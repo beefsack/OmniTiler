@@ -282,7 +282,7 @@ fn n5_hidden_ordinary_retained_without_layout() {
     let row = accepted_row("win-h", true, false, true, false, false, false);
     assert_eq!(row["alloc"], Value::Null, "no allocation");
     assert_eq!(row["frame"], Value::Null, "no frame");
-    assert_eq!(row["clear_op"], json!(""), "no clear");
+    assert!(row.get("clear_op").is_none(), "clear_op retired");
 }
 
 #[test]
@@ -317,7 +317,7 @@ fn n5_minimized_ordinary_retained_without_layout() {
     let row = accepted_row("win-m", false, true, true, false, false, false);
     assert_eq!(row["alloc"], Value::Null, "no allocation");
     assert_eq!(row["frame"], Value::Null, "no frame");
-    assert_eq!(row["clear_op"], json!(""), "no clear");
+    assert!(row.get("clear_op").is_none(), "clear_op retired");
 }
 
 #[test]
@@ -392,7 +392,7 @@ fn n5_hidden_minimized_share_workspace_occupancy() {
         assert_eq!(row["alloc"], Value::Null, "{win} no allocation");
         assert_eq!(row["frame"], Value::Null, "{win} no frame");
         assert_eq!(row["frame_op"], json!(""), "{win} no frame write");
-        assert_eq!(row["clear_op"], json!(""), "{win} no clear");
+        assert!(row.get("clear_op").is_none(), "{win} clear_op retired");
     }
     let visible = row_of(&reply, "win-a");
     assert_eq!(visible["ws"], json!("ws-1"), "visible stays homed");
@@ -702,7 +702,7 @@ fn n5_migrate_moves_hidden_and_minimized_without_geometry() {
         assert_eq!(row["alloc"], Value::Null, "{win} no allocation");
         assert_eq!(row["frame"], Value::Null, "{win} no frame");
         assert_eq!(row["frame_op"], json!(""), "{win} no frame write");
-        assert_eq!(row["clear_op"], json!(""), "{win} no clear");
+        assert!(row.get("clear_op").is_none(), "{win} clear_op retired");
     }
     // The visible member moves with geometry on the same workspace.
     let moved = row_of(&drain, "win-a");

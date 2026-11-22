@@ -37,8 +37,20 @@ fn v4_writer_spells_crafted_target_lanes_with_exact_bytes() {
     // estimate covering it. The legacy escape-heavy lifetime is not
     // stageable here: the v4 opaque-id gate (`is_opaque_id`, `[A-Za-z0-9-_.]`
     // max 128, enforced by the v4 writer) refuses it as `unknown-value`.
+    let mut observe_json: serde_json::Value =
+        serde_json::from_str(&fixture_text("reply-observe")).expect("observe json");
+    if let Some(windows) = observe_json
+        .get_mut("windows")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for row in windows {
+            if let Some(obj) = row.as_object_mut() {
+                obj.remove("clear_op");
+            }
+        }
+    }
     let mut decoded: DecodedReplyV4 =
-        decode_reply_v4(&fixture_text("reply-observe")).expect("observe decodes");
+        decode_reply_v4(&observe_json.to_string()).expect("observe decodes");
     decoded.reply.windows = vec![
         WindowDesire {
             lifetime: WindowId("win-a".to_owned()),
@@ -51,7 +63,6 @@ fn v4_writer_spells_crafted_target_lanes_with_exact_bytes() {
             floating: false,
             float_origin: None,
             frame_operation: None,
-            clear_operation: None,
             command_seq: None,
             visibility: None,
             visibility_authority: ScopeAuthority::Untouched,
@@ -68,7 +79,6 @@ fn v4_writer_spells_crafted_target_lanes_with_exact_bytes() {
             floating: false,
             float_origin: None,
             frame_operation: None,
-            clear_operation: None,
             command_seq: Some(u64::MAX),
             visibility: Some(VisibilityTarget {
                 shown: false,
@@ -82,18 +92,21 @@ fn v4_writer_spells_crafted_target_lanes_with_exact_bytes() {
                     value: true,
                     authority: ScopeAuthority::Controlled,
                     command_seq: None,
+                    automatic_clear: false,
                 },
                 StateTarget {
                     property: StateProperty::Fullscreen,
                     value: false,
                     authority: ScopeAuthority::Hold(HoldReason::RefusedTarget),
                     command_seq: Some(1),
+                    automatic_clear: false,
                 },
                 StateTarget {
                     property: StateProperty::Maximized,
                     value: true,
                     authority: ScopeAuthority::Hold(HoldReason::IncompleteInventory),
                     command_seq: Some(u64::MAX),
+                    automatic_clear: false,
                 },
             ],
         },
@@ -139,8 +152,20 @@ fn v4_writer_spells_crafted_target_lanes_with_exact_bytes() {
 
 #[test]
 fn max_legal_target_lane_width_combinations_match_exact_bytes() {
+    let mut observe_json: serde_json::Value =
+        serde_json::from_str(&fixture_text("reply-observe")).expect("observe json");
+    if let Some(windows) = observe_json
+        .get_mut("windows")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for row in windows {
+            if let Some(obj) = row.as_object_mut() {
+                obj.remove("clear_op");
+            }
+        }
+    }
     let mut decoded: DecodedReplyV4 =
-        decode_reply_v4(&fixture_text("reply-observe")).expect("observe decodes");
+        decode_reply_v4(&observe_json.to_string()).expect("observe decodes");
 
     let lane_window = |command_seq, visibility, visibility_authority, state| WindowDesire {
         lifetime: WindowId("win-a".to_owned()),
@@ -153,7 +178,6 @@ fn max_legal_target_lane_width_combinations_match_exact_bytes() {
         floating: false,
         float_origin: None,
         frame_operation: None,
-        clear_operation: None,
         command_seq,
         visibility,
         visibility_authority,
@@ -219,24 +243,28 @@ fn max_legal_target_lane_width_combinations_match_exact_bytes() {
         value: false,
         authority: max_hold,
         command_seq: Some(u64::MAX),
+        automatic_clear: false,
     };
     let fullscreen_max = StateTarget {
         property: StateProperty::Fullscreen,
         value: false,
         authority: max_hold,
         command_seq: Some(u64::MAX),
+        automatic_clear: false,
     };
     let maximized_max = StateTarget {
         property: StateProperty::Maximized,
         value: false,
         authority: max_hold,
         command_seq: Some(u64::MAX),
+        automatic_clear: false,
     };
     let above_commandless_max = StateTarget {
         property: StateProperty::Above,
         value: false,
         authority: max_hold,
         command_seq: None,
+        automatic_clear: false,
     };
 
     // 1-row sticky-only max: 296.
@@ -322,12 +350,14 @@ fn max_legal_target_lane_width_combinations_match_exact_bytes() {
                             value: false,
                             authority,
                             command_seq: seq,
+                            automatic_clear: false,
                         },
                         StateTarget {
                             property: StateProperty::Above,
                             value: true,
                             authority,
                             command_seq: None,
+                            automatic_clear: false,
                         },
                     ],
                 ),
@@ -341,9 +371,21 @@ fn max_legal_target_lane_width_combinations_match_exact_bytes() {
 }
 
 #[test]
-fn v4_writer_spells_clear_op_and_untouched_target_lanes() {
+fn v4_writer_spells_automatic_clear_state_target_and_rejects_invalid_combinations() {
+    let mut observe_json: serde_json::Value =
+        serde_json::from_str(&fixture_text("reply-observe")).expect("observe json");
+    if let Some(windows) = observe_json
+        .get_mut("windows")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for row in windows {
+            if let Some(obj) = row.as_object_mut() {
+                obj.remove("clear_op");
+            }
+        }
+    }
     let mut decoded: DecodedReplyV4 =
-        decode_reply_v4(&fixture_text("reply-observe")).expect("observe decodes");
+        decode_reply_v4(&observe_json.to_string()).expect("observe decodes");
     let base = || WindowDesire {
         lifetime: WindowId("win-a".to_owned()),
         output: OutputId("out".to_owned()),
@@ -355,46 +397,121 @@ fn v4_writer_spells_clear_op_and_untouched_target_lanes() {
         floating: false,
         float_origin: None,
         frame_operation: None,
-        clear_operation: None,
         command_seq: None,
         visibility: None,
         visibility_authority: ScopeAuthority::Untouched,
         state: Vec::new(),
     };
-    let cases = [
+    // Valid automaticClear: true on maximized=false (directional with cmdSeq and born without).
+    for (command_seq, expected_state) in [
         (
-            Some("op-13"),
             Some(13),
-            "\"clear_op\":\"op-13\",\"cmdSeq\":\"13\",\"visibility\":null,\
-             \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\"state\":[]",
+            "\"state\":[{\"property\":\"maximized\",\"value\":false,\
+             \"auth\":\"controlled\",\"reason\":\"\",\"cmdSeq\":\"13\",\"automaticClear\":true}]",
         ),
         (
             None,
-            Some(13),
-            "\"clear_op\":\"\",\"cmdSeq\":\"13\",\"visibility\":null,\
-             \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\"state\":[]",
+            "\"state\":[{\"property\":\"maximized\",\"value\":false,\
+             \"auth\":\"controlled\",\"reason\":\"\",\"cmdSeq\":null,\"automaticClear\":true}]",
         ),
-        (
-            Some("op-born-1"),
-            None,
-            "\"clear_op\":\"op-born-1\",\"cmdSeq\":null,\"visibility\":null,\
-             \"visibility_auth\":\"untouched\",\"visibility_hold\":\"\",\"state\":[]",
-        ),
-    ];
-    for (clear_op, command_seq, expected_tail) in cases {
+    ] {
         let mut row = base();
-        row.clear_operation = clear_op.map(str::to_owned);
         row.command_seq = command_seq;
+        row.state.push(StateTarget {
+            property: StateProperty::Maximized,
+            value: false,
+            authority: ScopeAuthority::Controlled,
+            command_seq,
+            automatic_clear: true,
+        });
         decoded.reply.windows = vec![row];
         let wire = encode_reply_v4(&decoded).expect("reply encodes");
         assert_eq!(
             wire.len(),
             count_reply_v4(&decoded.reply).expect("protocol count succeeds"),
         );
-        assert_eq!(decode_reply_v4(&wire).expect("reply round-trips"), decoded,);
+        assert_eq!(decode_reply_v4(&wire).expect("reply round-trips"), decoded);
         assert!(
-            wire.contains(expected_tail),
-            "missing exact tail {expected_tail} in {wire}"
+            wire.contains(expected_state),
+            "missing exact state {expected_state} in {wire}"
+        );
+        assert!(
+            !wire.contains("\"clear_op\""),
+            "clear_op must be absent: {wire}"
+        );
+    }
+    // Ordinary maximized=false omits automaticClear.
+    let mut ordinary = base();
+    ordinary.state.push(StateTarget {
+        property: StateProperty::Maximized,
+        value: false,
+        authority: ScopeAuthority::Controlled,
+        command_seq: Some(13),
+        automatic_clear: false,
+    });
+    decoded.reply.windows = vec![ordinary];
+    let ordinary_wire = encode_reply_v4(&decoded).expect("ordinary encodes");
+    assert!(
+        !ordinary_wire.contains("automaticClear"),
+        "omitted for ordinary: {ordinary_wire}"
+    );
+
+    // Writer rejects automatic_clear=true for maximized=true and non-maximized properties.
+    for (property, value) in [
+        (StateProperty::Maximized, true),
+        (StateProperty::Fullscreen, false),
+        (StateProperty::Sticky, false),
+        (StateProperty::Above, false),
+    ] {
+        let mut bad = base();
+        bad.state.push(StateTarget {
+            property,
+            value,
+            authority: ScopeAuthority::Controlled,
+            command_seq: None,
+            automatic_clear: true,
+        });
+        decoded.reply.windows = vec![bad];
+        assert!(
+            encode_reply_v4(&decoded).is_err(),
+            "writer must reject automatic_clear on {property:?}={value}"
+        );
+    }
+
+    // Strict reader rejects automaticClear: false, null, non-bool, maximized=true, and non-maximized.
+    let mut valid_row = base();
+    valid_row.state.push(StateTarget {
+        property: StateProperty::Maximized,
+        value: false,
+        authority: ScopeAuthority::Controlled,
+        command_seq: None,
+        automatic_clear: true,
+    });
+    decoded.reply.windows = vec![valid_row];
+    let valid_wire = encode_reply_v4(&decoded).expect("valid encodes");
+    for mut_fn in [
+        Box::new(|s: &mut serde_json::Value| {
+            s["automaticClear"] = serde_json::json!(false);
+        }) as Box<dyn Fn(&mut serde_json::Value)>,
+        Box::new(|s: &mut serde_json::Value| {
+            s["automaticClear"] = serde_json::Value::Null;
+        }),
+        Box::new(|s: &mut serde_json::Value| {
+            s["automaticClear"] = serde_json::json!("true");
+        }),
+        Box::new(|s: &mut serde_json::Value| {
+            s["value"] = serde_json::json!(true);
+        }),
+        Box::new(|s: &mut serde_json::Value| {
+            s["property"] = serde_json::json!("fullscreen");
+        }),
+    ] {
+        let mut doc: serde_json::Value = serde_json::from_str(&valid_wire).expect("json");
+        mut_fn(&mut doc["windows"][0]["state"][0]);
+        assert!(
+            decode_reply_v4(&doc.to_string()).is_err(),
+            "reader must reject invalid automaticClear: {}",
+            doc["windows"][0]["state"][0]
         );
     }
 }
@@ -436,7 +553,6 @@ fn immutable_fixtures_decode_to_code_spelled_target_suffix() {
             floating: false,
             float_origin: None,
             frame_operation: None,
-            clear_operation: None,
             command_seq: test_opt_cmdseq(row.get("cmdSeq"), name),
             visibility: match row.get("visibility") {
                 None | Some(serde_json::Value::Null) => None,
@@ -495,6 +611,10 @@ fn immutable_fixtures_decode_to_code_spelled_target_suffix() {
                         name,
                     ),
                     command_seq: test_opt_cmdseq(target.get("cmdSeq"), name),
+                    automatic_clear: target
+                        .get("automaticClear")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
                 })
                 .collect(),
         };

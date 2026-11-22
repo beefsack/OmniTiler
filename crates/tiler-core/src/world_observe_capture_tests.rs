@@ -13,20 +13,19 @@ use crate::intent_data::{IntentData, encode_intent_data};
 use crate::seed::EngineWindow;
 use crate::session::DomainKey;
 use crate::world_engine::{
-    EventIssue, ExcludedIntent, RetainedBornClear, RetainedTransfer, StagedDomain,
-    StagedObservation, WorldEngine,
+    EventIssue, ExcludedIntent, RetainedTransfer, StagedDomain, StagedObservation, WorldEngine,
 };
 use crate::world_gesture::GestureOutcome;
 use crate::world_members::MemberState;
 use crate::world_report::{
-    ArrivalBracket, ArrivalLocation, AttemptLaneV4, AttemptOutcome, AuthorityScope, ClearAttempt,
-    EffectCause, FocusFeedback, FrameAttempt, FrameSetter, HeldAttemptRow, HeldNativeRow,
-    HeldScreenRow, HeldWindowRow, HoldReason, IntentRecord, LastWritePath, MemberAttempt,
-    NativeCreationAttempt, NativeObservation, NativeOccupancy, NativeWorkspaceFact, OneShotEffect,
-    OutputIdentity, PresentationIngressV4, PresentationRowV4, RenderTarget, RendererInput,
-    RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScreenReport,
-    StateAttempt, StateProperty, SwitchOutcome, TransferKind, TransferTarget, ViewAttempt,
-    VisibilityAttempt, VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
+    ArrivalBracket, ArrivalLocation, AttemptLaneV4, AttemptOutcome, AuthorityScope, EffectCause,
+    FocusFeedback, FrameAttempt, FrameSetter, HeldAttemptRow, HeldNativeRow, HeldScreenRow,
+    HeldWindowRow, HoldReason, IntentRecord, LastWritePath, MemberAttempt, NativeCreationAttempt,
+    NativeObservation, NativeOccupancy, NativeWorkspaceFact, OneShotEffect, OutputIdentity,
+    PresentationIngressV4, PresentationRowV4, RenderTarget, RendererInput, RowDiagnostic,
+    RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScreenReport, StateAttempt,
+    StateProperty, SwitchOutcome, TransferKind, TransferTarget, ViewAttempt, VisibilityAttempt,
+    VisibilityFact, VisibilityReason, VisibilitySample, VisibilitySetter,
     WORLD_CONTRACT_VERSION_V4, WindowDesire, WindowFact, WorkspaceRef, WorldCommand, WorldReplyV4,
     WorldReportV4,
 };
@@ -166,17 +165,6 @@ fn view_row(operation: &str) -> ViewAttempt {
         post: None,
         baseline: None,
         attempt_ms: 13,
-    }
-}
-
-fn clear_row(operation: &str, window: &str) -> ClearAttempt {
-    ClearAttempt {
-        operation_id: operation.to_owned(),
-        window: WindowId(window.to_owned()),
-        setter: FrameSetter::Accepted,
-        pre_maximized: Some(true),
-        post_maximized: Some(true),
-        attempt_ms: 14,
     }
 }
 
@@ -433,7 +421,6 @@ struct RichLanes {
     frames: Vec<FrameAttempt>,
     member: Vec<MemberAttempt>,
     view: Vec<ViewAttempt>,
-    clear: Vec<ClearAttempt>,
     creation: Vec<NativeCreationAttempt>,
     state: Vec<StateAttempt>,
     feedback: Vec<FocusFeedback>,
@@ -478,7 +465,6 @@ fn rich_lanes() -> RichLanes {
         frames: vec![frame_row("win-a"), frame_row("win-b")],
         member: vec![member_row("op-11", "win-a"), member_row("op-12", "win-b")],
         view: vec![view_row("op-view-1"), view_row("op-view-2")],
-        clear: vec![clear_row("op-3", "win-a"), clear_row("op-4", "win-b")],
         creation: vec![
             creation_row("op-native-1", "ws-1", "out-a"),
             creation_row("op-native-2", "ws-2", "out-b"),
@@ -611,28 +597,6 @@ fn assert_conservation(captured: &StagedObservation, lanes: &RichLanes, seq: u64
             .collect::<Vec<_>>(),
         vec!["op-view-1".to_owned(), "op-view-2".to_owned()]
     );
-    let canonical_clears: Vec<crate::world_attempts::PropertyAttempt> = captured
-        .property_attempts
-        .iter()
-        .filter(|attempt| attempt.as_clear().is_some())
-        .cloned()
-        .collect();
-    assert_eq!(
-        canonical_clears,
-        lanes
-            .clear
-            .iter()
-            .map(crate::world_attempts::PropertyAttempt::from_clear_attempt)
-            .collect::<Vec<_>>()
-    );
-    assert_eq!(
-        canonical_clears
-            .iter()
-            .filter_map(crate::world_attempts::PropertyAttempt::as_clear)
-            .map(|evidence| evidence.operation_id.clone())
-            .collect::<Vec<_>>(),
-        vec!["op-3".to_owned(), "op-4".to_owned()]
-    );
     assert_eq!(captured.creation_attempts, lanes.creation);
     assert_eq!(
         captured
@@ -726,7 +690,6 @@ fn rich_v4(seq: u64, lanes: RichLanes) -> WorldReportV4 {
         frames: lanes.frames,
         member_attempts: lanes.member,
         view_attempts: lanes.view,
-        clear_attempts: lanes.clear,
         creation_attempts: lanes.creation,
         held_attempts: lanes.held_attempts,
         state_attempts: lanes.state,
@@ -1452,7 +1415,6 @@ fn v4_capture_keeps_original_rows_through_capability_grading() {
         frames: vec![frame_row("win-b")],
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
@@ -1546,6 +1508,7 @@ fn insert_state_binding(engine: &mut WorldEngine, window: &str) {
             fullscreen_meta: None,
             maximize_meta: None,
             above_meta: None,
+            clear_meta: None,
         },
     );
 }
@@ -1727,7 +1690,6 @@ fn report_v4_simple(
         frames: Vec::new(),
         member_attempts: Vec::new(),
         view_attempts: Vec::new(),
-        clear_attempts: Vec::new(),
         creation_attempts: Vec::new(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
@@ -3842,7 +3804,6 @@ fn warp_row(
         floating: false,
         float_origin: None,
         frame_operation: None,
-        clear_operation: None,
         command_seq: None,
         visibility: None,
         visibility_authority: ScopeAuthority::Untouched,
@@ -3993,7 +3954,7 @@ fn warp_staged_clamp_and_last_effect_parity() {
 // native/view proofs where the callee still takes one. No conversion, no
 // runtime change, no new files.
 fn settle_engine_4b2d() -> WorldEngine {
-    WorldEngine::new_test_bound_with_capabilities(
+    let mut engine = WorldEngine::new_test_bound_with_capabilities(
         "gen-1",
         "adapter-1",
         HostCapabilities {
@@ -4003,7 +3964,9 @@ fn settle_engine_4b2d() -> WorldEngine {
             ..Default::default()
         },
     )
-    .expect("generation")
+    .expect("generation");
+    engine.world.state_revision = 1;
+    engine
 }
 
 /// TEST-ONLY staged join seed: ring, views, homing, and one readable
@@ -4059,7 +4022,7 @@ fn stage_attempts_4b2d(
     complete: bool,
     barrier: bool,
     held: Vec<HeldWindowRow>,
-    clears: Vec<ClearAttempt>,
+    clears: Vec<StateAttempt>,
     members: Vec<MemberAttempt>,
     view_attempts: Vec<ViewAttempt>,
     frames: Vec<FrameAttempt>,
@@ -4072,7 +4035,7 @@ fn stage_attempts_4b2d(
     v4report.foreground_known = !focused.is_empty();
     v4report.inventory_complete = complete;
     v4report.gesture_barrier = barrier;
-    v4report.clear_attempts = clears;
+    v4report.state_attempts = clears;
     v4report.member_attempts = members;
     v4report.view_attempts = view_attempts;
     v4report.frames = frames;
@@ -4149,18 +4112,20 @@ fn max_fact_4b2d(window: &str) -> WindowFact {
 }
 
 fn clear_4b2d(
-    operation: &str,
+    revision: u64,
     window: &str,
     setter: FrameSetter,
     pre: Option<bool>,
     post: Option<bool>,
-) -> ClearAttempt {
-    ClearAttempt {
-        operation_id: operation.to_owned(),
+) -> StateAttempt {
+    StateAttempt {
         window: WindowId(window.to_owned()),
+        property: StateProperty::Maximized,
+        target: false,
+        revision,
         setter,
-        pre_maximized: pre,
-        post_maximized: post,
+        pre,
+        post,
         attempt_ms: 7,
     }
 }
@@ -4225,37 +4190,65 @@ fn frame_4b2d(
 }
 
 fn seed_clear_4b2d(engine: &mut WorldEngine, operation: &str) {
-    engine
-        .world
-        .settlement
-        .retained_clears
-        .push(crate::world_engine::RetainedClear {
-            operation_id: operation.to_owned(),
-            command_seq: 13,
-            window: WindowId("win-a".to_owned()),
-            direction: "right".to_owned(),
-            home: home_key("out-a"),
-            view: Some("ws-1".to_owned()),
-            focus: "win-a".to_owned(),
-            float_route: false,
-            same_axis: crate::directional::SameAxisMove::default(),
+    engine.world.settlement.retained_states.insert(
+        (WindowId("win-a".to_owned()), StateProperty::Maximized),
+        RetainedStateBinding {
+            target: RetainedStateTarget {
+                window: WindowId("win-a".to_owned()),
+                property: StateProperty::Maximized,
+                value: false,
+                revision: 1,
+            },
             pending: None,
-            ambiguous: false,
-        });
+            spent: false,
+            disposition: AttemptOutcome::Unattempted,
+            sticky_meta: None,
+            fullscreen_meta: None,
+            maximize_meta: None,
+            above_meta: None,
+            clear_meta: Some(crate::world_state::ClearProvenance::Directional(
+                crate::world_state::DirectionalClearMeta {
+                    operation_id: operation.to_owned(),
+                    command_seq: 13,
+                    direction: "right".to_owned(),
+                    home: home_key("out-a"),
+                    view: Some("ws-1".to_owned()),
+                    focus: "win-a".to_owned(),
+                    float_route: false,
+                    same_axis: crate::directional::SameAxisMove::default(),
+                    ambiguous: false,
+                },
+            )),
+        },
+    );
 }
 
 fn seed_born_4b2d(engine: &mut WorldEngine, operation: &str) {
-    engine
-        .world
-        .settlement
-        .retained_born
-        .push(crate::world_engine::RetainedBornClear {
-            operation_id: operation.to_owned(),
-            window: WindowId("win-a".to_owned()),
-            home: home_key("out-a"),
+    engine.world.settlement.retained_states.insert(
+        (WindowId("win-a".to_owned()), StateProperty::Maximized),
+        RetainedStateBinding {
+            target: RetainedStateTarget {
+                window: WindowId("win-a".to_owned()),
+                property: StateProperty::Maximized,
+                value: false,
+                revision: 1,
+            },
             pending: None,
-            ambiguous: false,
-        });
+            spent: false,
+            disposition: AttemptOutcome::Unattempted,
+            sticky_meta: None,
+            fullscreen_meta: None,
+            maximize_meta: None,
+            above_meta: None,
+            clear_meta: Some(crate::world_state::ClearProvenance::Born(
+                crate::world_state::BornClearMeta {
+                    operation_id: operation.to_owned(),
+                    home: home_key("out-a"),
+                    ambiguous: false,
+                },
+            )),
+        },
+    );
 }
 
 fn seed_window_transfer_4b2d(engine: &mut WorldEngine, operation: &str) {
@@ -4519,23 +4512,37 @@ fn seed_native_views_4b2d(engine: &mut WorldEngine) {
 }
 
 fn seed_float_clear_4b2d(engine: &mut WorldEngine, operation: &str) {
-    engine
-        .world
-        .settlement
-        .retained_clears
-        .push(crate::world_engine::RetainedClear {
-            operation_id: operation.to_owned(),
-            command_seq: 13,
-            window: WindowId("win-a".to_owned()),
-            direction: "right".to_owned(),
-            home: home_key("out-a"),
-            view: Some("ws-1".to_owned()),
-            focus: "win-a".to_owned(),
-            float_route: true,
-            same_axis: crate::directional::SameAxisMove::default(),
+    engine.world.settlement.retained_states.insert(
+        (WindowId("win-a".to_owned()), StateProperty::Maximized),
+        RetainedStateBinding {
+            target: RetainedStateTarget {
+                window: WindowId("win-a".to_owned()),
+                property: StateProperty::Maximized,
+                value: false,
+                revision: 1,
+            },
             pending: None,
-            ambiguous: false,
-        });
+            spent: false,
+            disposition: AttemptOutcome::Unattempted,
+            sticky_meta: None,
+            fullscreen_meta: None,
+            maximize_meta: None,
+            above_meta: None,
+            clear_meta: Some(crate::world_state::ClearProvenance::Directional(
+                crate::world_state::DirectionalClearMeta {
+                    operation_id: operation.to_owned(),
+                    command_seq: 13,
+                    direction: "right".to_owned(),
+                    home: home_key("out-a"),
+                    view: Some("ws-1".to_owned()),
+                    focus: "win-a".to_owned(),
+                    float_route: true,
+                    same_axis: crate::directional::SameAxisMove::default(),
+                    ambiguous: false,
+                },
+            )),
+        },
+    );
 }
 
 fn seed_float_4b2d(
@@ -4566,13 +4573,7 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
     // Exact staged refusal retires even though the passed report
     // carries no attempts and names the wrong focus/view.
     let mut engine = settle_engine_4b2d();
-    let refused = clear_4b2d(
-        "op-1",
-        "win-a",
-        FrameSetter::Refused,
-        Some(true),
-        Some(true),
-    );
+    let refused = clear_4b2d(1, "win-a", FrameSetter::Refused, Some(true), Some(true));
     stage_attempts_4b2d(
         &mut engine,
         1,
@@ -4598,7 +4599,12 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
         })
     });
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        !engine
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .any(|b| b.clear_meta.is_some()),
         "staged refusal retires despite contradictory report"
     );
     assert!(
@@ -4618,23 +4624,11 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
     for (what, forged) in [
         (
             "wrong-op",
-            clear_4b2d(
-                "op-X",
-                "win-a",
-                FrameSetter::Refused,
-                Some(true),
-                Some(true),
-            ),
+            clear_4b2d(99, "win-a", FrameSetter::Refused, Some(true), Some(true)),
         ),
         (
             "wrong-window",
-            clear_4b2d(
-                "op-1",
-                "win-b",
-                FrameSetter::Refused,
-                Some(true),
-                Some(true),
-            ),
+            clear_4b2d(1, "win-b", FrameSetter::Refused, Some(true), Some(true)),
         ),
     ] {
         let mut forged_engine = settle_engine_4b2d();
@@ -4663,7 +4657,13 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
             })
         });
         assert_eq!(
-            forged_engine.world.settlement.retained_clears.len(),
+            forged_engine
+                .world
+                .settlement
+                .retained_states
+                .values()
+                .filter(|b| b.clear_meta.is_some())
+                .count(),
             1,
             "{what} holds"
         );
@@ -4672,7 +4672,12 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
             "{what} emits nothing"
         );
         assert!(
-            forged_engine.world.settlement.retained_clears[0]
+            forged_engine
+                .world
+                .settlement
+                .retained_states
+                .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
+                .expect("retained clear")
                 .pending
                 .is_none(),
             "{what} stages nothing"
@@ -4714,7 +4719,7 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
             barrier,
             held,
             vec![clear_4b2d(
-                "op-1",
+                1,
                 "win-a",
                 FrameSetter::Refused,
                 Some(true),
@@ -4735,7 +4740,13 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
             })
         });
         assert_eq!(
-            gated.world.settlement.retained_clears.len(),
+            gated
+                .world
+                .settlement
+                .retained_states
+                .values()
+                .filter(|b| b.clear_meta.is_some())
+                .count(),
             1,
             "{what} holds"
         );
@@ -4744,7 +4755,14 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
             "{what} emits nothing"
         );
         assert!(
-            gated.world.settlement.retained_clears[0].pending.is_some(),
+            gated
+                .world
+                .settlement
+                .retained_states
+                .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
+                .expect("retained clear")
+                .pending
+                .is_some(),
             "{what} latches evidence before the hold"
         );
         // Readable recovery carries no fresh attempt: the latch
@@ -4773,7 +4791,12 @@ fn settle_clear_uses_staged_lane_not_passed_report() {
             })
         });
         assert!(
-            gated.world.settlement.retained_clears.is_empty(),
+            !gated
+                .world
+                .settlement
+                .retained_states
+                .values()
+                .any(|b| b.clear_meta.is_some()),
             "{what} recovers readable"
         );
         assert!(
@@ -4805,7 +4828,7 @@ fn settle_born_uses_staged_lane_with_gates_and_recovery() {
         false,
         Vec::new(),
         vec![clear_4b2d(
-            "op-born-1",
+            1,
             "win-a",
             FrameSetter::Refused,
             Some(true),
@@ -4826,7 +4849,12 @@ fn settle_born_uses_staged_lane_with_gates_and_recovery() {
         })
     });
     assert!(
-        engine.world.settlement.retained_born.is_empty(),
+        !engine
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .any(|b| b.clear_meta.is_some()),
         "staged refusal retires"
     );
     assert!(
@@ -4844,23 +4872,11 @@ fn settle_born_uses_staged_lane_with_gates_and_recovery() {
     for (what, forged) in [
         (
             "wrong-op",
-            clear_4b2d(
-                "op-born-X",
-                "win-a",
-                FrameSetter::Refused,
-                Some(true),
-                Some(true),
-            ),
+            clear_4b2d(99, "win-a", FrameSetter::Refused, Some(true), Some(true)),
         ),
         (
             "wrong-window",
-            clear_4b2d(
-                "op-born-1",
-                "win-b",
-                FrameSetter::Refused,
-                Some(true),
-                Some(true),
-            ),
+            clear_4b2d(1, "win-b", FrameSetter::Refused, Some(true), Some(true)),
         ),
     ] {
         let mut forged_engine = settle_engine_4b2d();
@@ -4889,7 +4905,13 @@ fn settle_born_uses_staged_lane_with_gates_and_recovery() {
             })
         });
         assert_eq!(
-            forged_engine.world.settlement.retained_born.len(),
+            forged_engine
+                .world
+                .settlement
+                .retained_states
+                .values()
+                .filter(|b| b.clear_meta.is_some())
+                .count(),
             1,
             "{what} holds"
         );
@@ -4932,7 +4954,7 @@ fn settle_born_uses_staged_lane_with_gates_and_recovery() {
             barrier,
             held,
             vec![clear_4b2d(
-                "op-born-1",
+                1,
                 "win-a",
                 FrameSetter::Refused,
                 Some(true),
@@ -4953,12 +4975,25 @@ fn settle_born_uses_staged_lane_with_gates_and_recovery() {
             })
         });
         assert_eq!(
-            gated.world.settlement.retained_born.len(),
+            gated
+                .world
+                .settlement
+                .retained_states
+                .values()
+                .filter(|b| b.clear_meta.is_some())
+                .count(),
             1,
             "{what} holds"
         );
         assert!(
-            gated.world.settlement.retained_born[0].pending.is_some(),
+            gated
+                .world
+                .settlement
+                .retained_states
+                .get(&(WindowId("win-a".to_owned()), StateProperty::Maximized))
+                .expect("retained born")
+                .pending
+                .is_some(),
             "{what} latches evidence before the hold"
         );
         stage_attempts_4b2d(
@@ -4985,7 +5020,12 @@ fn settle_born_uses_staged_lane_with_gates_and_recovery() {
             })
         });
         assert!(
-            gated.world.settlement.retained_born.is_empty(),
+            !gated
+                .world
+                .settlement
+                .retained_states
+                .values()
+                .any(|b| b.clear_meta.is_some()),
             "{what} recovers readable"
         );
     }
@@ -6354,15 +6394,7 @@ fn settle_views_pre_refused_reads_staged_screens_not_passed_report() {
 #[test]
 fn settle_clear_focus_view_home_read_staged_not_passed_report() {
     use crate::world_report::OperationOutcome;
-    let refused = || {
-        clear_4b2d(
-            "op-1",
-            "win-a",
-            FrameSetter::Refused,
-            Some(true),
-            Some(true),
-        )
-    };
+    let refused = || clear_4b2d(1, "win-a", FrameSetter::Refused, Some(true), Some(true));
     // Staged focus divergence abandons even though the passed report
     // names the bound subject: the staged gate fires before refusal.
     let mut engine = settle_engine_4b2d();
@@ -6394,7 +6426,12 @@ fn settle_clear_focus_view_home_read_staged_not_passed_report() {
         })
     });
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        !engine
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .any(|b| b.clear_meta.is_some()),
         "staged focus divergence retires"
     );
     assert!(
@@ -6443,7 +6480,12 @@ fn settle_clear_focus_view_home_read_staged_not_passed_report() {
         })
     });
     assert!(
-        viewed.world.settlement.retained_clears.is_empty(),
+        !viewed
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .any(|b| b.clear_meta.is_some()),
         "staged view divergence retires"
     );
     assert!(
@@ -6484,7 +6526,12 @@ fn settle_clear_focus_view_home_read_staged_not_passed_report() {
         })
     });
     assert!(
-        homed.world.settlement.retained_clears.is_empty(),
+        !homed
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .any(|b| b.clear_meta.is_some()),
         "staged home divergence retires"
     );
     assert!(
@@ -6516,7 +6563,7 @@ fn settle_clear_float_continuation_uses_staged_geometry() {
         false,
         Vec::new(),
         vec![clear_4b2d(
-            "op-1",
+            1,
             "win-a",
             FrameSetter::Accepted,
             Some(true),
@@ -6541,7 +6588,12 @@ fn settle_clear_float_continuation_uses_staged_geometry() {
         })
     });
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        !engine
+            .world
+            .settlement
+            .retained_states
+            .values()
+            .any(|b| b.clear_meta.is_some()),
         "proven clear continues"
     );
     assert!(
@@ -7161,17 +7213,7 @@ fn stage_born(engine: &mut WorldEngine, complete: bool, barrier: bool) {
 
 fn seed_born_desire(engine: &mut WorldEngine, complete: bool, barrier: bool) {
     stage_born(engine, complete, barrier);
-    engine
-        .world
-        .settlement
-        .retained_born
-        .push(RetainedBornClear {
-            operation_id: "op-born-1".to_owned(),
-            window: WindowId("win-a".to_owned()),
-            home: home_key("out-a"),
-            pending: None,
-            ambiguous: false,
-        });
+    seed_born_4b2d(engine, "op-born-1");
 }
 
 fn touching_migration() -> RetainedTransfer {
@@ -7207,38 +7249,43 @@ fn touching_migration() -> RetainedTransfer {
 #[test]
 fn staged_born_authorization_gates_read_staged() {
     let id = WindowId("win-a".to_owned());
+    let home = home_key("out-a");
     // Control: staged complete with no barrier desires (no blanket
     // inventory gate).
     let mut engine = born_engine();
     seed_born_desire(&mut engine, true, false);
-    assert_eq!(
-        engine.tx_ro(|tx| tx.born_desire_for(&id, false)),
-        Some("op-born-1".to_owned()),
+    assert!(
+        engine
+            .tx_ro(|tx| !tx.world.staged.gesture_barrier
+                && tx.born_clear_authorized(false, &id, &home)),
         "staged complete desires"
     );
     // Staged barrier vetoes on a staged barrier rail.
     let mut engine = born_engine();
     seed_born_desire(&mut engine, true, true);
-    assert_eq!(
-        engine.tx_ro(|tx| tx.born_desire_for(&id, false)),
-        None,
+    assert!(
+        !engine
+            .tx_ro(|tx| !tx.world.staged.gesture_barrier
+                && tx.born_clear_authorized(false, &id, &home)),
         "staged barrier holds"
     );
     // Touching migration: staged incomplete holds; staged complete desires.
     let mut engine = born_engine();
     seed_born_desire(&mut engine, false, false);
     engine.world.settlement.retained.push(touching_migration());
-    assert_eq!(
-        engine.tx_ro(|tx| tx.born_desire_for(&id, false)),
-        None,
+    assert!(
+        !engine
+            .tx_ro(|tx| !tx.world.staged.gesture_barrier
+                && tx.born_clear_authorized(false, &id, &home)),
         "touching gap holds"
     );
     // Restage staged complete through the real intake (retained binding
     // and touching migration survive): staged complete desires.
     stage_born(&mut engine, true, false);
-    assert_eq!(
-        engine.tx_ro(|tx| tx.born_desire_for(&id, false)),
-        Some("op-born-1".to_owned()),
+    assert!(
+        engine
+            .tx_ro(|tx| !tx.world.staged.gesture_barrier
+                && tx.born_clear_authorized(false, &id, &home)),
         "staged complete desires under touching migration"
     );
     // v4 carries no presentation pause lane: the paused sub-case is retired.
@@ -8987,6 +9034,7 @@ fn fullscreen_binding(engine: &mut WorldEngine, window: &str, home: &DomainKey, 
             }),
             maximize_meta: None,
             above_meta: None,
+            clear_meta: None,
         },
     );
 }
@@ -9003,7 +9051,6 @@ fn desire_row(window: &str, output: &str, workspace: &str) -> WindowDesire {
         floating: false,
         float_origin: None,
         frame_operation: None,
-        clear_operation: None,
         command_seq: None,
         visibility: None,
         visibility_authority: ScopeAuthority::Untouched,
@@ -9435,6 +9482,7 @@ fn sticky_binding(engine: &mut WorldEngine, window: &str, home: &DomainKey, comm
             fullscreen_meta: None,
             maximize_meta: None,
             above_meta: None,
+            clear_meta: None,
         },
     );
 }
@@ -9460,6 +9508,7 @@ fn maximize_binding(engine: &mut WorldEngine, window: &str, home: &DomainKey, co
                 clear_fullscreen: false,
             }),
             above_meta: None,
+            clear_meta: None,
         },
     );
 }
@@ -9765,6 +9814,7 @@ fn staged_above_health_fallback_holds_rows_over_contra() {
                     home: home_key("out-a"),
                     latched: false,
                 }),
+                clear_meta: None,
             },
         );
         engine
@@ -9900,6 +9950,7 @@ fn staged_native_sticky_followup_uses_staged_gates_and_original_seq() {
                 fullscreen_meta: None,
                 maximize_meta: None,
                 above_meta: None,
+                clear_meta: None,
             },
         );
         (engine, v4report)
@@ -10028,6 +10079,7 @@ fn v4_staged_native_sticky_refused_proven_rolls_back_with_original_seq() {
                 fullscreen_meta: None,
                 maximize_meta: None,
                 above_meta: None,
+                clear_meta: None,
             },
         );
         engine

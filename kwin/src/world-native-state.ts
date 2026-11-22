@@ -940,13 +940,17 @@ export function createNativeStateExecutor(deps: NativeStateExecutorDeps): Native
             // Clearing first: any listed-window property missing at ANY
             // authority clears spent (even empty state). Hold/untouched
             // presence protects. Whole-window absence never reaches here.
-            const present = new Set(row.state.map((t) => t.property));
+            const present = new Set(
+                row.state.filter((t) => t.automaticClear !== true).map((t) => t.property),
+            );
             for (const prop of STATE_PROPERTIES) {
                 if (!present.has(prop)) {
                     latest.delete(laneKey(win, prop));
                 }
             }
-            const eligible = row.state.filter((t) => t.auth === "controlled" && t.reason === "");
+            const eligible = row.state.filter(
+                (t) => t.auth === "controlled" && t.reason === "" && t.automaticClear !== true,
+            );
             if (eligible.length === 0) {
                 continue;
             }

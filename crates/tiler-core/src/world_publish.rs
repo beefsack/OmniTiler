@@ -314,9 +314,12 @@ impl WorldTransaction<'_> {
         let born_held: BTreeSet<DomainKey> = self
             .world
             .settlement
-            .retained_born
-            .iter()
-            .map(|held| held.home.clone())
+            .retained_states
+            .values()
+            .filter_map(|binding| match binding.clear_meta.as_ref() {
+                Some(crate::world_state::ClearProvenance::Born(meta)) => Some(meta.home.clone()),
+                _ => None,
+            })
             .collect();
         // Homed lifetimes in readable, unheld, non-floating scopes carry
         // live rows. Minimized and held-scope rows never shadow a live row
@@ -469,7 +472,6 @@ impl WorldTransaction<'_> {
                         frame_authority: ScopeAuthority::Untouched,
                         membership_authority: membership_authority(&window.window),
                         frame_operation: None,
-                        clear_operation: None,
                         floating: true,
                         float_origin: None,
                         command_seq: None,
@@ -494,7 +496,6 @@ impl WorldTransaction<'_> {
                         frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),
                         membership_authority: membership_authority(window),
                         frame_operation: None,
-                        clear_operation: None,
                         floating: true,
                         float_origin: None,
                         command_seq: None,
@@ -558,17 +559,6 @@ impl WorldTransaction<'_> {
                         {
                             continue;
                         }
-                        // Held scopes authorize no frame/member write, but
-                        // an outstanding born clear still rides its token:
-                        // maximize-clear is a property transition proven by
-                        // the window's own birth facts, not a geometry
-                        // write, so the adapter can consume it while the
-                        // geometry hold stands. The narrow style hold
-                        // withholds even this token on its output.
-                        let clear_operation = self.born_desire_for(
-                            &window.window,
-                            Self::style_born_paused(born_paused, style_held_output, &window.output),
-                        );
                         windows.push(WindowDesire {
                             lifetime: window.window.clone(),
                             output: window.output.clone(),
@@ -578,7 +568,6 @@ impl WorldTransaction<'_> {
                             frame_authority: ScopeAuthority::Hold(reason),
                             membership_authority: ScopeAuthority::Hold(reason),
                             frame_operation: None,
-                            clear_operation,
                             floating: false,
                             float_origin: None,
                             command_seq: None,
@@ -586,6 +575,18 @@ impl WorldTransaction<'_> {
                             visibility_authority: ScopeAuthority::Untouched,
                             state: Vec::new(),
                         });
+                        if let Some(desire) = windows.last_mut() {
+                            self.decorate_automatic_clear_target(
+                                desire,
+                                crate::world_maximize::AutomaticClearRoute::HeldBorn {
+                                    born_paused: Self::style_born_paused(
+                                        born_paused,
+                                        style_held_output,
+                                        &window.output,
+                                    ),
+                                },
+                            );
+                        }
                     }
                     for window in &domain.minimized {
                         if live.contains(&window.0)
@@ -603,7 +604,6 @@ impl WorldTransaction<'_> {
                             frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),
                             membership_authority: ScopeAuthority::Hold(reason),
                             frame_operation: None,
-                            clear_operation: None,
                             floating: false,
                             float_origin: None,
                             command_seq: None,
@@ -628,7 +628,6 @@ impl WorldTransaction<'_> {
                             frame_authority: ScopeAuthority::Hold(reason),
                             membership_authority: ScopeAuthority::Hold(reason),
                             frame_operation: None,
-                            clear_operation: None,
                             floating: false,
                             float_origin: None,
                             command_seq: None,
@@ -680,7 +679,6 @@ impl WorldTransaction<'_> {
                                 ScopeAuthority::Controlled
                             },
                             frame_operation: None,
-                            clear_operation: None,
                             floating: false,
                             float_origin: None,
                             command_seq: None,
@@ -830,19 +828,6 @@ impl WorldTransaction<'_> {
                 }
                 let fullscreen = fullscreen_windows.contains(geometry.window.0.as_str());
                 emitted.insert(geometry.window.0.clone());
-                // Retained directional clear desire: same one-shot
-                // `clear_operation` token as the exception route below.
-                // Withheld on gesture barriers, membership holds, and
-                // minimized/unreadable facts, and after the attempt is
-                // spent (never re-actuated). Born bindings share the
-                // lane: a born window already rides its admitted session
-                // row, so the desire rides here until proof retires it.
-                let fact_unreadable = self
-                    .world
-                    .staged
-                    .facts
-                    .get(&geometry.window)
-                    .is_none_or(|fact| fact.minimized == Some(true) || fact.rect.is_none());
                 // `maximized: null` with unsupported caps is the
                 // contract-valid absent value (macOS provisional
                 // contract): ordinary admission, never an unknown hold.
@@ -894,31 +879,6 @@ impl WorldTransaction<'_> {
                     geometry.rect
                 };
                 let work_missing = composed_active && work_area.is_none();
-                let (clear_operation, command_seq) = if self.world.staged.gesture_barrier
-                    || fact_unreadable
-                    || unknown_maximized
-                    || self.is_held_window(&geometry.window)
-                    || self.is_excluded_window(&geometry.window)
-                {
-                    (None, None)
-                } else {
-                    match self
-                        .world
-                        .settlement
-                        .retained_clears
-                        .iter()
-                        .find(|retained| {
-                            retained.window == geometry.window && retained.pending.is_none()
-                        }) {
-                        Some(retained) => (
-                            Some(retained.operation_id.clone()),
-                            Some(retained.command_seq),
-                        ),
-                        // Born commandless clears ride the token lane
-                        // with no command correlation.
-                        None => (self.born_desire_for(&geometry.window, born_paused), None),
-                    }
-                };
                 // Core-owned frame policy (stage 3a) over the actually
                 // published frame: the composed work-area overlay, else the
                 // tile allocation. An exact desired match clears retained
@@ -980,14 +940,19 @@ impl WorldTransaction<'_> {
                     },
                     // Tiled rows never carry a float-placement token.
                     frame_operation: None,
-                    clear_operation,
-                    command_seq,
+                    command_seq: None,
                     visibility: None,
                     visibility_authority: ScopeAuthority::Untouched,
                     state: Vec::new(),
                     floating: false,
                     float_origin: None,
                 });
+                if let Some(desire) = windows.last_mut() {
+                    self.decorate_automatic_clear_target(
+                        desire,
+                        crate::world_maximize::AutomaticClearRoute::ControlledTile { born_paused },
+                    );
+                }
             }
             // Exception rows (floats, fullscreen, maximized, sticky, game
             // overlays): no automatic frame, focus, stacking, or membership
@@ -1086,51 +1051,6 @@ impl WorldTransaction<'_> {
                     .layout()
                     .is_capacity_float(&key, &window)
                     .then_some(FloatOrigin::Capacity);
-                // One-shot clear token: never re-actuated once spent; the
-                // settlement owns every verdict. A float-route clear is
-                // also withheld while hints are unreadable (its
-                // continuation could not authorize); the binding survives.
-                let fact_unreadable = self
-                    .world
-                    .staged
-                    .facts
-                    .get(&window)
-                    .is_none_or(|fact| fact.minimized == Some(true) || fact.rect.is_none());
-                let directional = self
-                    .world
-                    .settlement
-                    .retained_clears
-                    .iter()
-                    .find(|retained| retained.window == window && retained.pending.is_none());
-                let float_blocked = directional.is_some_and(|retained| retained.float_route)
-                    && staged
-                        .facts
-                        .get(&window)
-                        .is_none_or(|fact| fact.hints.is_none());
-                let (clear_operation, clear_seq) = if self.world.staged.gesture_barrier
-                    || fact_unreadable
-                    || float_blocked
-                    || self.is_held_window(&window)
-                    || self.is_excluded_window(&window)
-                {
-                    (None, None)
-                } else {
-                    match directional {
-                        Some(retained) => (
-                            Some(retained.operation_id.clone()),
-                            Some(retained.command_seq),
-                        ),
-                        // Born commandless clears ride the token lane
-                        // with no command correlation.
-                        None => (self.born_desire_for(&window, born_paused), None),
-                    }
-                };
-                // Single command slot for the row. The clear->float continuation
-                // resumes under the originating operation id, so the normal
-                // case carries one sequence for both tokens. A later
-                // NeedClear supersedes any retained same-window float at
-                // mint, so a stale placement never rides alongside the new
-                // clear; the slot carries the surviving token.
                 // Core-composed maximize on a float base: the owned bit
                 // selects the truthful output work area under a `Controlled`
                 // frame lane (plain floats stay `Untouched`). The session
@@ -1214,7 +1134,7 @@ impl WorldTransaction<'_> {
                     frame_operation = None;
                     frame_seq = None;
                 }
-                let command_seq = frame_seq.or(clear_seq);
+                let command_seq = frame_seq;
                 let membership_authority = if self.style_flight_held(style_held_output, &window) {
                     ScopeAuthority::Hold(HoldReason::Unreadable)
                 } else if in_flight
@@ -1245,7 +1165,6 @@ impl WorldTransaction<'_> {
                     },
                     membership_authority,
                     frame_operation,
-                    clear_operation,
                     command_seq,
                     visibility: None,
                     visibility_authority: ScopeAuthority::Untouched,
@@ -1253,6 +1172,14 @@ impl WorldTransaction<'_> {
                     floating: true,
                     float_origin,
                 });
+                if let Some(desire) = windows.last_mut() {
+                    self.decorate_automatic_clear_target(
+                        desire,
+                        crate::world_maximize::AutomaticClearRoute::ControlledException {
+                            born_paused,
+                        },
+                    );
+                }
             }
             // Minimized lifetimes (D23 slots): explicit rows with no managed
             // geometry, never silent absence and never an inferred close.
@@ -1293,7 +1220,6 @@ impl WorldTransaction<'_> {
                         ScopeAuthority::Controlled
                     },
                     frame_operation: None,
-                    clear_operation: None,
                     floating: false,
                     float_origin: None,
                     command_seq: None,
@@ -1369,7 +1295,6 @@ impl WorldTransaction<'_> {
                     ScopeAuthority::Controlled
                 },
                 frame_operation: None,
-                clear_operation: None,
                 floating: false,
                 float_origin: None,
                 command_seq: None,
@@ -1466,7 +1391,6 @@ impl WorldTransaction<'_> {
                     None => ScopeAuthority::Controlled,
                 },
                 frame_operation: None,
-                clear_operation: None,
                 floating: false,
                 float_origin: None,
                 command_seq: None,
@@ -1561,9 +1485,6 @@ impl WorldTransaction<'_> {
             if live.contains(&window.0) || !emitted.insert(window.0.clone()) {
                 continue;
             }
-            // Like the fresh-seed held rows above: no frame/member write,
-            // but an outstanding born clear still rides its token.
-            let clear_operation = self.born_desire_for(window, born_paused);
             windows.push(WindowDesire {
                 lifetime: window.clone(),
                 output: key.output.clone(),
@@ -1573,7 +1494,6 @@ impl WorldTransaction<'_> {
                 frame_authority: ScopeAuthority::Hold(reason),
                 membership_authority: ScopeAuthority::Hold(reason),
                 frame_operation: None,
-                clear_operation,
                 floating: false,
                 float_origin: None,
                 command_seq: None,
@@ -1581,6 +1501,12 @@ impl WorldTransaction<'_> {
                 visibility_authority: ScopeAuthority::Untouched,
                 state: Vec::new(),
             });
+            if let Some(desire) = windows.last_mut() {
+                self.decorate_automatic_clear_target(
+                    desire,
+                    crate::world_maximize::AutomaticClearRoute::HeldBorn { born_paused },
+                );
+            }
         }
         for window in layout.exception_windows(key) {
             if self.is_excluded_window(window) {
@@ -1589,7 +1515,6 @@ impl WorldTransaction<'_> {
             if live.contains(&window.0) || !emitted.insert(window.0.clone()) {
                 continue;
             }
-            let clear_operation = self.born_desire_for(window, born_paused);
             windows.push(WindowDesire {
                 lifetime: window.clone(),
                 output: key.output.clone(),
@@ -1599,7 +1524,6 @@ impl WorldTransaction<'_> {
                 frame_authority: ScopeAuthority::Hold(reason),
                 membership_authority: ScopeAuthority::Hold(reason),
                 frame_operation: None,
-                clear_operation,
                 floating: false,
                 float_origin: None,
                 command_seq: None,
@@ -1607,6 +1531,12 @@ impl WorldTransaction<'_> {
                 visibility_authority: ScopeAuthority::Untouched,
                 state: Vec::new(),
             });
+            if let Some(desire) = windows.last_mut() {
+                self.decorate_automatic_clear_target(
+                    desire,
+                    crate::world_maximize::AutomaticClearRoute::HeldBorn { born_paused },
+                );
+            }
         }
         for window in layout.minimized_windows(key) {
             if self.is_excluded_window(window) {
@@ -1624,7 +1554,6 @@ impl WorldTransaction<'_> {
                 frame_authority: ScopeAuthority::Hold(HoldReason::Minimized),
                 membership_authority: ScopeAuthority::Hold(reason),
                 frame_operation: None,
-                clear_operation: None,
                 floating: false,
                 float_origin: None,
                 command_seq: None,

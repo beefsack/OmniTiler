@@ -250,7 +250,6 @@ function makeHarness(scopeClass?: string | readonly string[], opts: { floatInten
             member_auth: "controlled",
             member_hold: "",
             frame_op: "",
-            clear_op: "",
             floating: false,
             float_origin: "",
             cmdSeq: null,
@@ -859,10 +858,10 @@ describe("dev fixture-only deterministic omission and preview-reply skip", () =>
 
             const receipt0 = h.logs.find((l) => l.startsWith(`omnitiler:world:trace ev=describe-receipt gen=gen-1 req=${req0} `));
             assert.ok(receipt0 !== undefined, "zero-projected-targets describe-receipt logged");
-            assert.match(receipt0, /rev=1 obs=1 .*windows=1 shownWindows=1 windowsOmitted=0 intentDesired=0 projectedTargets=0 frameOps=0 clearOps=0 stateTargets=0 aboveTargets=0 transfers=0 creations=0 focusReq=0 dragPreview=0 switchPending=absent gesturePending=absent/);
+            assert.match(receipt0, /rev=1 obs=1 .*windows=1 shownWindows=1 windowsOmitted=0 intentDesired=0 projectedTargets=0 frameOps=0 autoClears=0 stateTargets=0 aboveTargets=0 transfers=0 creations=0 focusReq=0 dragPreview=0 switchPending=absent gesturePending=absent/);
             const winRow0 = h.logs.find((l) => l.startsWith(`omnitiler:world:trace ev=describe-window gen=gen-1 req=${req0} `));
             assert.ok(winRow0 !== undefined, "zero-pending describe-window logged");
-            assert.match(winRow0, /rev=1 obs=1 win=win-a floating=0 floatOrigin=- wsMode=tiled out=out ws=wl-1 frame=10,20,300,400 alloc=10,20,300,400 .*frameOp=- clearOp=- cmdSeq=- stateOps=- xferOps=-$/);
+            assert.match(winRow0, /rev=1 obs=1 win=win-a floating=0 floatOrigin=- wsMode=tiled out=out ws=wl-1 frame=10,20,300,400 alloc=10,20,300,400 .*frameOp=- autoClear=- cmdSeq=- stateOps=- xferOps=-$/);
             assert.deepEqual(h.geometryWrites, ["10,20,300,400"]);
             h.calls.length = 0;
             h.geometryWrites.length = 0;
@@ -887,7 +886,6 @@ describe("dev fixture-only deterministic omission and preview-reply skip", () =>
                     member_auth: "controlled",
                     member_hold: "",
                     frame_op: "",
-                    clear_op: "",
                     floating: true,
                     float_origin: "",
                     cmdSeq: null,
@@ -902,10 +900,10 @@ describe("dev fixture-only deterministic omission and preview-reply skip", () =>
 
             const receiptAbove = h.logs.find((l) => l.startsWith(`omnitiler:world:trace ev=describe-receipt gen=gen-1 req=${reqAbove} `));
             assert.ok(receiptAbove !== undefined);
-            assert.match(receiptAbove, /rev=2 obs=2 .*projectedTargets=1 frameOps=0 clearOps=0 stateTargets=1 aboveTargets=1 transfers=0 creations=0 focusReq=0 dragPreview=0 switchPending=absent gesturePending=absent/);
+            assert.match(receiptAbove, /rev=2 obs=2 .*projectedTargets=1 frameOps=0 autoClears=0 stateTargets=1 aboveTargets=1 transfers=0 creations=0 focusReq=0 dragPreview=0 switchPending=absent gesturePending=absent/);
             const winRowAbove = h.logs.find((l) => l.startsWith(`omnitiler:world:trace ev=describe-window gen=gen-1 req=${reqAbove} `));
             assert.ok(winRowAbove !== undefined);
-            assert.match(winRowAbove, /win=win-a floating=1 floatOrigin=- wsMode=floating out=out ws=wl-1 frame=30,40,250,260 alloc=- .*frameOp=- clearOp=- cmdSeq=- stateOps=above=1@controlled:-#42 xferOps=-$/);
+            assert.match(winRowAbove, /win=win-a floating=1 floatOrigin=- wsMode=floating out=out ws=wl-1 frame=30,40,250,260 alloc=- .*frameOp=- autoClear=- cmdSeq=- stateOps=above=1@controlled:-#42 xferOps=-$/);
             h.calls.length = 0;
             h.geometryWrites.length = 0;
             h.logs.length = 0;
@@ -932,14 +930,13 @@ describe("dev fixture-only deterministic omission and preview-reply skip", () =>
                     member_auth: "controlled",
                     member_hold: "",
                     frame_op: "op-frame-1",
-                    clear_op: "op-clear-2",
                     floating: true,
                     float_origin: "capacity",
                     cmdSeq: "99",
                     visibility: null,
                     visibility_auth: "untouched",
                     visibility_hold: "",
-                    state: [],
+                    state: [{ property: "maximized", value: false, auth: "controlled", reason: "", cmdSeq: "99", automaticClear: true }],
                 }],
                 transfers: [{ op: "op-xfer-3", kind: "window", win: "win-a", out: "out", ws: "wl-1", follow: true, held: false, cmdSeq: "100", parent: null }],
                 nativeCreations: [{ op: "op-create-4", ws: "wl-2", out: "out" }],
@@ -951,12 +948,12 @@ describe("dev fixture-only deterministic omission and preview-reply skip", () =>
 
             const receiptMulti = h.logs.find((l) => l.startsWith(`omnitiler:world:trace ev=describe-receipt gen=gen-1 req=${reqMulti} `));
             assert.ok(receiptMulti !== undefined, "describe-receipt emitted before dev-skip");
-            assert.match(receiptMulti, /rev=3 obs=3 .*intentDesired=1 projectedTargets=6 frameOps=1 clearOps=1 stateTargets=0 aboveTargets=0 transfers=1 creations=1 focusReq=1 dragPreview=1 switchPending=absent gesturePending=absent/);
+            assert.match(receiptMulti, /rev=3 obs=3 .*intentDesired=1 projectedTargets=7 frameOps=1 autoClears=1 stateTargets=1 aboveTargets=0 transfers=1 creations=1 focusReq=1 dragPreview=1 switchPending=absent gesturePending=absent/);
             assert.ok(h.logs.some((l) => l.startsWith(`omnitiler:world:trace ev=settlement-receipt gen=gen-1 req=${reqMulti} rev=3 obs=3 `)));
             assert.ok(h.logs.some((l) => l.startsWith(`omnitiler:world:trace ev=reply-skipped stage=dev-skip gen=gen-1 req=${reqMulti} rev=3 obs=3 `)));
             const winRowMulti = h.logs.find((l) => l.startsWith(`omnitiler:world:trace ev=describe-window gen=gen-1 req=${reqMulti} `));
             assert.ok(winRowMulti !== undefined);
-            assert.match(winRowMulti, /floatOrigin=capacity .*frameOp=op-frame-1 clearOp=op-clear-2 cmdSeq=99 stateOps=- xferOps=window:op-xfer-3:active#100$/);
+            assert.match(winRowMulti, /floatOrigin=capacity .*frameOp=op-frame-1 autoClear=1 cmdSeq=99 stateOps=maximized=0@controlled:-#99 xferOps=window:op-xfer-3:active#100$/);
             assert.ok(h.logs.some((l) => l.includes(`ev=describe-op lane=transfer gen=gen-1 req=${reqMulti} rev=3 obs=3 op=op-xfer-3 kind=window win=win-a`)));
             assert.ok(h.logs.some((l) => l.includes(`ev=describe-op lane=creation gen=gen-1 req=${reqMulti} rev=3 obs=3 op=op-create-4 out=out ws=wl-2`)));
             assert.ok(h.logs.some((l) => l.includes(`ev=describe-op lane=focus gen=gen-1 req=${reqMulti} rev=3 obs=3 op=focus-5 target=win-a`)));

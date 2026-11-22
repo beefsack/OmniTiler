@@ -792,7 +792,7 @@ describe("world entry discovery and observation", () => {
                 alloc: [10, 10, 300, 300], frame: [10, 10, 300, 300],
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
-                frame_op: "", clear_op: "",
+                frame_op: "",
                 floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             }],
         });
@@ -854,7 +854,7 @@ describe("world entry discovery and observation", () => {
                 alloc: [50, 50, 300, 300], frame: [50, 50, 300, 300],
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
-                frame_op: "", clear_op: "",
+                frame_op: "",
                 floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             }],
         }));
@@ -973,7 +973,7 @@ describe("world entry discovery and observation", () => {
                 alloc: [0, 0, 100, 100], frame: [0, 0, 100, 100],
                 frame_auth: "hold", frame_hold: "unreadable",
                 member_auth: "hold", member_hold: "unreadable",
-                frame_op: "", clear_op: "",
+                frame_op: "",
                 floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             }],
         }));
@@ -1451,7 +1451,7 @@ describe("world entry discovery and observation", () => {
                 alloc: null, frame: null,
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "hold", member_hold: "refused-target",
-                frame_op: "", clear_op: "",
+                frame_op: "",
                 floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             }],
         }));
@@ -1511,7 +1511,7 @@ describe("world entry discovery and observation", () => {
                     alloc: [11, 11, 300, 300], frame: [11, 11, 300, 300],
                     frame_auth: "controlled", frame_hold: "",
                     member_auth: "controlled", member_hold: "",
-                    frame_op: "", clear_op: "",
+                    frame_op: "",
                     floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 },
                 {
@@ -1519,7 +1519,7 @@ describe("world entry discovery and observation", () => {
                     alloc: [22, 22, 300, 300], frame: [22, 22, 300, 300],
                     frame_auth: "hold", frame_hold: "gesture-barrier",
                     member_auth: "controlled", member_hold: "",
-                    frame_op: "", clear_op: "",
+                    frame_op: "",
                     floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 },
             ],
@@ -1669,7 +1669,7 @@ describe("world entry discovery and observation", () => {
                 alloc: null, frame: null,
                 frame_auth: "untouched", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
-                frame_op: "", clear_op: "",
+                frame_op: "",
                 floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             }],
         }));
@@ -1689,7 +1689,7 @@ describe("world entry discovery and observation", () => {
                 alloc: null, frame: null,
                 frame_auth: "untouched", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
-                frame_op: "", clear_op: "",
+                frame_op: "",
                 floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             }],
         }));
@@ -2479,7 +2479,7 @@ describe("world entry all-mode native coverage", () => {
                     alloc: [10, 10, 300, 300], frame: [10, 10, 300, 300],
                     frame_auth: "controlled", frame_hold: "",
                     member_auth: "controlled", member_hold: "",
-                    frame_op: "", clear_op: "",
+                    frame_op: "",
                     floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
                 }],
             }));
@@ -3888,7 +3888,7 @@ describe("world entry float-intent reconcile controls", () => {
         alloc: null, frame: null,
         frame_auth: "untouched", frame_hold: "",
         member_auth: "controlled", member_hold: "",
-        frame_op: "", clear_op: "",
+        frame_op: "",
         floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
         ...extra,
     });
@@ -3898,7 +3898,7 @@ describe("world entry float-intent reconcile controls", () => {
         alloc: null, frame: null,
         frame_auth: "controlled", frame_hold: "",
         member_auth: "controlled", member_hold: "",
-        frame_op: "", clear_op: "",
+        frame_op: "",
         floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
         ...extra,
     });
@@ -4115,7 +4115,7 @@ describe("world entry trace probe", () => {
                 alloc: frame, frame,
                 frame_auth: "controlled", frame_hold: "",
                 member_auth: "controlled", member_hold: "",
-                frame_op: "", clear_op: "",
+                frame_op: "",
                 floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
             }],
         }));
@@ -4206,7 +4206,7 @@ describe("world entry trace probe", () => {
             alloc: frame, frame,
             frame_auth: "controlled", frame_hold: "",
             member_auth: "controlled", member_hold: "",
-            frame_op: "", clear_op: "",
+            frame_op: "",
             floating: false, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
         };
     }
@@ -5242,7 +5242,7 @@ describe("world entry rapid batch (KDE FIFO + latest-world)", () => {
         alloc: null, frame: null,
         frame_auth: "untouched", frame_hold: "",
         member_auth: "controlled", member_hold: "",
-        frame_op: "", clear_op: "",
+        frame_op: "",
         floating: true, float_origin: "", cmdSeq: null, visibility: null, visibility_auth: "untouched", visibility_hold: "", state: [],
     });
 

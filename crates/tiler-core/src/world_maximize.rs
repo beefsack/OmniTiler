@@ -44,6 +44,25 @@ use crate::world_report::{
 use crate::world_state::{MAX_RETAINED_STATE_BINDINGS, NativeFullscreenMeta, NativeMaximizeMeta};
 use crate::world_transaction::WorldTransaction;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AutomaticClearRoute {
+    /// Route that never authorizes automatic clear (floating scopes, minimized,
+    /// flights, fallback rows).
+    None,
+    /// Held fresh-seed or held tile/exception row: born clear only via
+    /// `born_clear_authorized(born_paused, ...)`; no directional tokens and no
+    /// outer controlled-route fact/unknown checks.
+    HeldBorn { born_paused: bool },
+    /// Controlled tile row: directional or born, gated by gesture_barrier,
+    /// fact_unreadable, unknown_maximized, is_held_window, is_excluded_window
+    /// (does not check unreadable float hints).
+    ControlledTile { born_paused: bool },
+    /// Controlled exception row: directional or born, gated by gesture_barrier,
+    /// fact_unreadable, float_blocked (unreadable float hints for float_route),
+    /// is_held_window, is_excluded_window (does not check unknown_maximized).
+    ControlledException { born_paused: bool },
+}
+
 fn refused(kind: &'static str, message: &'static str) -> CommandApplied {
     CommandApplied::Rejected { kind, message }
 }
@@ -156,11 +175,12 @@ impl WorldTransaction<'_> {
                     }),
                     maximize_meta: None,
                     above_meta: None,
+                    clear_meta: None,
                 },
             );
         }
         if need_max {
-            self.world.settlement.retained_states.insert(
+            let previous = self.world.settlement.retained_states.insert(
                 max_key,
                 crate::world_state::RetainedStateBinding {
                     target: crate::world_state::RetainedStateTarget {
@@ -180,8 +200,10 @@ impl WorldTransaction<'_> {
                         clear_fullscreen: decision.clear_fullscreen,
                     }),
                     above_meta: None,
+                    clear_meta: None,
                 },
             );
+            self.retire_superseded_born_clear(window, previous);
         } else if self
             .world
             .settlement
@@ -191,7 +213,8 @@ impl WorldTransaction<'_> {
         {
             // Already maximized: cancel the obsolete opposite maximize
             // binding; no extra maximize write.
-            self.world.settlement.retained_states.remove(&max_key);
+            let previous = self.world.settlement.retained_states.remove(&max_key);
+            self.retire_superseded_born_clear(window, previous);
         }
         if !decision.clear_fullscreen
             && self
@@ -390,6 +413,7 @@ impl WorldTransaction<'_> {
                     }),
                     maximize_meta: None,
                     above_meta: None,
+                    clear_meta: None,
                 },
             );
             // A new explicit max-on revokes the obsolete same-window float
@@ -543,6 +567,156 @@ impl WorldTransaction<'_> {
     /// resumes without a new command. A missing, superseded, mismatched, or spent-failed clear leg holds maximize
     /// while raw fullscreen stays true, as does a later fullscreen entry
     /// that supersedes the paired clear. Spent bindings never reauthorize.
+    pub(crate) fn decorate_automatic_clear_target(
+        &self,
+        desire: &mut WindowDesire,
+        route: AutomaticClearRoute,
+    ) {
+        if !self
+            .connection
+            .capabilities()
+            .is_some_and(|caps| caps.maximize)
+        {
+            return;
+        }
+        let window = desire.lifetime.clone();
+        let Some(binding) = self
+            .world
+            .settlement
+            .retained_states
+            .get(&(window.clone(), StateProperty::Maximized))
+        else {
+            return;
+        };
+        let Some(clear_meta) = binding.clear_meta.as_ref() else {
+            return;
+        };
+        if desire
+            .state
+            .iter()
+            .any(|row| row.property == StateProperty::Maximized)
+        {
+            return;
+        }
+        match clear_meta {
+            crate::world_state::ClearProvenance::Directional(meta) => {
+                let derived = self.derived_for(&window);
+                let excluded_lane =
+                    self.is_excluded_window(&window) || derived.excluded || derived.own_excluded;
+                let fact = self.world.staged.facts.get(&window);
+                let fact_unreadable =
+                    fact.is_none_or(|fact| fact.minimized == Some(true) || fact.rect.is_none());
+                let unknown_maximized = fact.is_none_or(|fact| fact.maximized.is_none());
+                let float_blocked =
+                    meta.float_route && fact.is_none_or(|fact| fact.hints.is_none());
+                let controlled = match route {
+                    AutomaticClearRoute::ControlledTile { .. } => {
+                        !binding.spent
+                            && binding.pending.is_none()
+                            && !self.world.staged.gesture_barrier
+                            && !fact_unreadable
+                            && !unknown_maximized
+                            && !self.is_held_window(&window)
+                            && !self.is_excluded_window(&window)
+                    }
+                    AutomaticClearRoute::ControlledException { .. } => {
+                        !binding.spent
+                            && binding.pending.is_none()
+                            && !self.world.staged.gesture_barrier
+                            && !fact_unreadable
+                            && !float_blocked
+                            && !self.is_held_window(&window)
+                            && !self.is_excluded_window(&window)
+                    }
+                    AutomaticClearRoute::None | AutomaticClearRoute::HeldBorn { .. } => false,
+                };
+                let authority = if controlled {
+                    ScopeAuthority::Controlled
+                } else if excluded_lane {
+                    ScopeAuthority::Untouched
+                } else if self.world.staged.gesture_barrier {
+                    ScopeAuthority::Hold(HoldReason::GestureBarrier)
+                } else if !self.world.staged.observation.inventory_complete {
+                    ScopeAuthority::Hold(HoldReason::IncompleteInventory)
+                } else if fact.is_some_and(|fact| fact.minimized == Some(true)) {
+                    ScopeAuthority::Hold(HoldReason::Minimized)
+                } else if let Some(reason) = self.world.hold_reasons.get(&meta.home).copied() {
+                    ScopeAuthority::Hold(reason)
+                } else {
+                    ScopeAuthority::Hold(HoldReason::Unreadable)
+                };
+                desire.state.push(StateTarget {
+                    property: StateProperty::Maximized,
+                    value: false,
+                    authority,
+                    command_seq: Some(meta.command_seq),
+                    automatic_clear: true,
+                });
+            }
+            crate::world_state::ClearProvenance::Born(meta) => {
+                if !self.connection.birth_clear() {
+                    return;
+                }
+                let derived = self.derived_for(&window);
+                let excluded_lane =
+                    self.is_excluded_window(&window) || derived.excluded || derived.own_excluded;
+                let fact = self.world.staged.facts.get(&window);
+                let fact_unreadable =
+                    fact.is_none_or(|fact| fact.minimized == Some(true) || fact.rect.is_none());
+                let unknown_maximized = fact.is_none_or(|fact| fact.maximized.is_none());
+                let controlled = match route {
+                    AutomaticClearRoute::HeldBorn { born_paused } => {
+                        !binding.spent
+                            && binding.pending.is_none()
+                            && self.born_clear_authorized(born_paused, &window, &meta.home)
+                    }
+                    AutomaticClearRoute::ControlledTile { born_paused } => {
+                        !binding.spent
+                            && binding.pending.is_none()
+                            && !self.world.staged.gesture_barrier
+                            && !fact_unreadable
+                            && !unknown_maximized
+                            && !self.is_held_window(&window)
+                            && !self.is_excluded_window(&window)
+                            && self.born_clear_authorized(born_paused, &window, &meta.home)
+                    }
+                    AutomaticClearRoute::ControlledException { born_paused } => {
+                        !binding.spent
+                            && binding.pending.is_none()
+                            && !self.world.staged.gesture_barrier
+                            && !fact_unreadable
+                            && !self.is_held_window(&window)
+                            && !self.is_excluded_window(&window)
+                            && self.born_clear_authorized(born_paused, &window, &meta.home)
+                    }
+                    AutomaticClearRoute::None => false,
+                };
+                let authority = if controlled {
+                    ScopeAuthority::Controlled
+                } else if excluded_lane {
+                    ScopeAuthority::Untouched
+                } else if self.world.staged.gesture_barrier {
+                    ScopeAuthority::Hold(HoldReason::GestureBarrier)
+                } else if !self.world.staged.observation.inventory_complete {
+                    ScopeAuthority::Hold(HoldReason::IncompleteInventory)
+                } else if fact.is_some_and(|fact| fact.minimized == Some(true)) {
+                    ScopeAuthority::Hold(HoldReason::Minimized)
+                } else if let Some(reason) = self.world.hold_reasons.get(&meta.home).copied() {
+                    ScopeAuthority::Hold(reason)
+                } else {
+                    ScopeAuthority::Hold(HoldReason::Unreadable)
+                };
+                desire.state.push(StateTarget {
+                    property: StateProperty::Maximized,
+                    value: false,
+                    authority,
+                    command_seq: None,
+                    automatic_clear: true,
+                });
+            }
+        }
+    }
+
     pub(crate) fn decorate_native_maximize_state(
         &self,
         held_scopes: &std::collections::BTreeSet<DomainKey>,
@@ -565,9 +739,6 @@ impl WorldTransaction<'_> {
             else {
                 continue;
             };
-            let Some(meta) = binding.maximize_meta.as_ref() else {
-                continue;
-            };
             if desire
                 .state
                 .iter()
@@ -575,6 +746,13 @@ impl WorldTransaction<'_> {
             {
                 continue;
             }
+            if binding.clear_meta.is_some() {
+                self.decorate_automatic_clear_target(desire, AutomaticClearRoute::None);
+                continue;
+            }
+            let Some(meta) = binding.maximize_meta.as_ref() else {
+                continue;
+            };
             let home = self.staged_homing(&window).unwrap_or(meta.home.clone());
             let derived = self.derived_for(&window);
             let excluded_lane =
@@ -699,6 +877,7 @@ impl WorldTransaction<'_> {
                 value: binding.target.value,
                 authority,
                 command_seq: Some(meta.command_seq),
+                automatic_clear: false,
             });
         }
     }

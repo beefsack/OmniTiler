@@ -3586,6 +3586,7 @@ fn insert_generic_binding(
             fullscreen_meta: None,
             maximize_meta: None,
             above_meta: None,
+            clear_meta: None,
         },
     );
 }

@@ -17,21 +17,65 @@ use crate::world_v4_support_tests::{
     report_full, screen,
 };
 
+fn retained_clears(engine: &WorldEngine) -> Vec<&crate::world_state::DirectionalClearMeta> {
+    engine
+        .world
+        .settlement
+        .retained_states
+        .values()
+        .filter_map(|b| match &b.clear_meta {
+            Some(crate::world_state::ClearProvenance::Directional(meta)) => Some(meta),
+            _ => None,
+        })
+        .collect()
+}
+
+fn clear_op(row: &crate::world_report::WindowDesire) -> Option<String> {
+    row.state
+        .iter()
+        .find(|t| {
+            t.property == crate::world_report::StateProperty::Maximized
+                && !t.value
+                && t.automatic_clear
+                && t.authority == ScopeAuthority::Controlled
+        })
+        .map(|t| match t.command_seq {
+            Some(seq) => format!("op-{seq}"),
+            None => "op-born".to_owned(),
+        })
+}
+
+fn clear_attempt_rev(
+    revision: u64,
+    window: &str,
+    setter: crate::world_report::FrameSetter,
+    pre: Option<bool>,
+    post: Option<bool>,
+) -> crate::world_report::StateAttempt {
+    crate::world_report::StateAttempt {
+        window: WindowId(window.to_owned()),
+        property: crate::world_report::StateProperty::Maximized,
+        target: false,
+        revision,
+        setter,
+        pre,
+        post,
+        attempt_ms: 7,
+    }
+}
+
 fn clear_attempt(
     operation_id: &str,
     window: &str,
     setter: crate::world_report::FrameSetter,
     pre: Option<bool>,
     post: Option<bool>,
-) -> crate::world_report::ClearAttempt {
-    crate::world_report::ClearAttempt {
-        operation_id: operation_id.to_owned(),
-        window: WindowId(window.to_owned()),
-        setter,
-        pre_maximized: pre,
-        post_maximized: post,
-        attempt_ms: 7,
-    }
+) -> crate::world_report::StateAttempt {
+    let revision = match operation_id {
+        "op-forged" | "op-wrong" | "op-stale" => 999_999,
+        _ => 2,
+    };
+    clear_attempt_rev(revision, window, setter, pre, post)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -41,7 +85,7 @@ fn report_clears(
     screens: Vec<ScreenReport>,
     windows: Vec<WindowFact>,
     focused: &str,
-    clears: Vec<crate::world_report::ClearAttempt>,
+    clears: Vec<crate::world_report::StateAttempt>,
 ) -> WorldReportV4 {
     let mut report = report_full(
         request_seq,
@@ -53,7 +97,7 @@ fn report_clears(
         None,
         None,
     );
-    report.clear_attempts = clears;
+    report.state_attempts = clears;
     report
 }
 
@@ -107,13 +151,10 @@ fn commandless_clear_continuation_float() {
         outcome_str(&settlements[0].result),
         Some("move-maximize-clear")
     );
-    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    assert_eq!(retained_clears(&engine).len(), 1);
+    assert_eq!(retained_clears(&engine)[0].operation_id, "op-13");
     assert_eq!(
-        engine.world.settlement.retained_clears[0].operation_id,
-        "op-13"
-    );
-    assert_eq!(
-        desire(&reply, "win-max").clear_operation.as_deref(),
+        clear_op(desire(&reply, "win-max")).as_deref(),
         Some("op-13"),
         "exactly one clear desire under the original op"
     );
@@ -137,7 +178,7 @@ fn commandless_clear_continuation_float() {
         ),
     );
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        retained_clears(&engine).is_empty(),
         "proof consumes the binding exactly once"
     );
     assert_eq!(engine.world.settlement.retained_floats.len(), 1);
@@ -149,7 +190,8 @@ fn commandless_clear_continuation_float() {
     assert_eq!(row.frame_operation.as_deref(), Some("op-13"));
     assert_eq!(row.effective_frame, Some(rect(404, 8, 388, 544)));
     assert_eq!(
-        row.clear_operation, None,
+        clear_op(row),
+        None,
         "spent before any second dispatch: no re-actuation"
     );
     assert!(
@@ -237,7 +279,7 @@ fn tiled_maximize_publishes_clear_before_attempt() {
         Some("move-maximize-clear")
     );
     assert_eq!(
-        desire(&reply, "win-max").clear_operation.as_deref(),
+        clear_op(desire(&reply, "win-max")).as_deref(),
         Some("op-13"),
         "tiled rows publish the retained pending-none clear token under the original op"
     );
@@ -291,7 +333,7 @@ fn commandless_clear_continuation_tiled() {
         outcome_str(&settlements[0].result),
         Some("move-maximize-clear")
     );
-    assert!(!engine.world.settlement.retained_clears[0].float_route);
+    assert!(!retained_clears(&engine)[0].float_route);
     let (reply, follow_settlements) = accepted_with_settlements(
         &mut engine,
         &report_clears(
@@ -310,7 +352,7 @@ fn commandless_clear_continuation_tiled() {
         ),
     );
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        retained_clears(&engine).is_empty(),
         "proof consumes the binding exactly once"
     );
     assert!(
@@ -377,7 +419,7 @@ fn clear_external_clear_alone_abandons_without_continuation() {
             }),
         ),
     );
-    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    assert_eq!(retained_clears(&engine).len(), 1);
     let reply = accepted(
         &mut engine,
         &report_clears(
@@ -390,7 +432,7 @@ fn clear_external_clear_alone_abandons_without_continuation() {
         ),
     );
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        retained_clears(&engine).is_empty(),
         "external clear abandons the binding"
     );
     assert!(
@@ -473,7 +515,7 @@ fn clear_refusal_retires_and_still_maximized_holds() {
         ),
     );
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        retained_clears(&engine).is_empty(),
         "proven refusal retires with no loop"
     );
     assert!(
@@ -481,7 +523,7 @@ fn clear_refusal_retires_and_still_maximized_holds() {
         "refusal authorizes nothing"
     );
     assert_eq!(
-        desire(&reply, "win-max").clear_operation,
+        clear_op(desire(&reply, "win-max")),
         None,
         "spent desire never re-actuates"
     );
@@ -495,7 +537,7 @@ fn clear_refusal_retires_and_still_maximized_holds() {
     );
     // Rebind, then hold on still-maximized accepted evidence that
     // proves no transition: the binding stays, the desire withholds.
-    accepted(
+    let bind_reply = accepted(
         &mut engine,
         &report_full(
             4,
@@ -520,8 +562,8 @@ fn clear_refusal_retires_and_still_maximized_holds() {
             vec![screen("out-a", 0)],
             vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
             "win-max",
-            vec![clear_attempt(
-                "op-15",
+            vec![clear_attempt_rev(
+                bind_reply.state_revision,
                 "win-max",
                 FrameSetter::Accepted,
                 Some(true),
@@ -530,12 +572,12 @@ fn clear_refusal_retires_and_still_maximized_holds() {
         ),
     );
     assert_eq!(
-        engine.world.settlement.retained_clears.len(),
+        retained_clears(&engine).len(),
         1,
         "still-maximized holds with the binding intact"
     );
     assert_eq!(
-        desire(&reply, "win-max").clear_operation,
+        clear_op(desire(&reply, "win-max")),
         None,
         "no re-actuation after an attempt"
     );
@@ -611,13 +653,13 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
         ),
     );
     assert_eq!(
-        engine.world.settlement.retained_clears.len(),
+        retained_clears(&engine).len(),
         1,
         "throw latches ambiguity with no retry"
     );
-    assert!(engine.world.settlement.retained_clears[0].ambiguous);
+    assert!(retained_clears(&engine)[0].ambiguous);
     assert_eq!(
-        desire(&reply, "win-max").clear_operation,
+        clear_op(desire(&reply, "win-max")),
         None,
         "spent operation never re-actuates"
     );
@@ -638,15 +680,12 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
         ),
     );
     assert_eq!(
-        engine.world.settlement.retained_clears.len(),
+        retained_clears(&engine).len(),
         1,
         "ambiguous hold persists with binding and pending unchanged"
     );
-    assert!(engine.world.settlement.retained_clears[0].ambiguous);
-    assert_eq!(
-        engine.world.settlement.retained_clears[0].operation_id,
-        "op-13"
-    );
+    assert!(retained_clears(&engine)[0].ambiguous);
+    assert_eq!(retained_clears(&engine)[0].operation_id, "op-13");
     assert!(
         engine.world.settlement.retained_floats.is_empty(),
         "no continuation without accepted proof, got {:?}",
@@ -680,7 +719,7 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
             same_axis: crate::directional::SameAxisMove::default(),
         }),
     );
-    fresh.clear_attempts = Vec::new();
+    fresh.state_attempts = Vec::new();
     let (outcome, settlements) = engine.handle_report(&fresh, &[]);
     let WorldOutcome::Accepted(reply) = outcome else {
         panic!("expected accepted report, got {outcome:?}");
@@ -712,7 +751,7 @@ fn clear_ambiguous_throw_holds_without_retry_then_fresh_intent_supersedes() {
         Some("move-float-applied"),
         "fresh intent works independently under its own op"
     );
-    assert_eq!(engine.world.settlement.retained_clears.len(), 0);
+    assert_eq!(retained_clears(&engine).len(), 0);
     assert_eq!(engine.world.settlement.retained_floats.len(), 1);
     assert_eq!(
         engine.world.settlement.retained_floats[0].operation_id,
@@ -782,7 +821,7 @@ fn clear_unknown_current_focus_holds_not_abandons() {
         ),
     );
     assert_eq!(
-        engine.world.settlement.retained_clears.len(),
+        retained_clears(&engine).len(),
         1,
         "unknown current focus holds with identities preserved"
     );
@@ -843,7 +882,7 @@ fn clear_empty_original_focus_abandons_on_known_other() {
             }),
         ),
     );
-    assert_eq!(engine.world.settlement.retained_clears[0].focus, "");
+    assert_eq!(retained_clears(&engine)[0].focus, "");
     // Unknown current focus holds first (no contradiction yet).
     let reply = accepted(
         &mut engine,
@@ -862,13 +901,10 @@ fn clear_empty_original_focus_abandons_on_known_other() {
             )],
         ),
     );
+    assert_eq!(retained_clears(&engine).len(), 1, "unknown holds");
     assert_eq!(
-        engine.world.settlement.retained_clears.len(),
-        1,
-        "unknown holds"
-    );
-    assert_eq!(
-        engine.world.settlement.retained_clears[0].focus, "",
+        retained_clears(&engine)[0].focus,
+        "",
         "retained focus stays immutable, never latched"
     );
     assert!(reply.operation_settled.is_empty());
@@ -886,7 +922,7 @@ fn clear_empty_original_focus_abandons_on_known_other() {
         ),
     );
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        retained_clears(&engine).is_empty(),
         "known wrong focus retires promptly"
     );
     assert!(
@@ -965,7 +1001,7 @@ fn clear_unknown_baseline_subject_focus_continues() {
             )],
         ),
     );
-    assert!(engine.world.settlement.retained_clears.is_empty());
+    assert!(retained_clears(&engine).is_empty());
     assert_eq!(engine.world.settlement.retained_floats.len(), 1);
     assert_eq!(
         engine.world.settlement.retained_floats[0].operation_id,
@@ -1026,10 +1062,7 @@ fn clear_known_non_subject_baseline_retires_promptly() {
             }),
         ),
     );
-    assert_eq!(
-        engine.world.settlement.retained_clears[0].focus,
-        "win-target"
-    );
+    assert_eq!(retained_clears(&engine)[0].focus, "win-target");
     // Unchanged non-subject focus still retires: never its subject's.
     let reply = accepted(
         &mut engine,
@@ -1049,7 +1082,7 @@ fn clear_known_non_subject_baseline_retires_promptly() {
         ),
     );
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        retained_clears(&engine).is_empty(),
         "non-subject baseline retires promptly, never lingers"
     );
     assert!(
@@ -1134,10 +1167,7 @@ fn clear_changed_focus_view_domain_abandons() {
             )],
         ),
     );
-    assert!(
-        engine.world.settlement.retained_clears.is_empty(),
-        "focus change abandons"
-    );
+    assert!(retained_clears(&engine).is_empty(), "focus change abandons");
     assert!(
         engine.world.settlement.retained_floats.is_empty(),
         "no continuation raced"
@@ -1164,7 +1194,7 @@ fn clear_changed_focus_view_domain_abandons() {
         .get("out-a")
         .expect("ring retained")
         .iter()
-        .find(|id| Some(*id) != engine.world.settlement.retained_clears[0].view.as_ref())
+        .find(|id| Some(*id) != retained_clears(&engine)[0].view.as_ref())
         .expect("spare workspace exists")
         .clone();
     let selected = report_full(
@@ -1198,10 +1228,7 @@ fn clear_changed_focus_view_domain_abandons() {
             )],
         ),
     );
-    assert!(
-        engine.world.settlement.retained_clears.is_empty(),
-        "view change abandons"
-    );
+    assert!(retained_clears(&engine).is_empty(), "view change abandons");
     assert!(
         engine.world.settlement.retained_floats.is_empty(),
         "no continuation raced"
@@ -1239,7 +1266,7 @@ fn clear_changed_focus_view_domain_abandons() {
         ),
     );
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        retained_clears(&engine).is_empty(),
         "homing change abandons"
     );
     assert!(
@@ -1295,7 +1322,7 @@ fn clear_close_prunes_and_abandoned_binding_never_reapplies() {
             }),
         ),
     );
-    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    assert_eq!(retained_clears(&engine).len(), 1);
     // Explicit close prunes even with a correlated attempt attached.
     let mut closed = report_clears(
         3,
@@ -1313,10 +1340,7 @@ fn clear_close_prunes_and_abandoned_binding_never_reapplies() {
     );
     closed.closed = vec![WindowId("win-max".to_owned())];
     accepted(&mut engine, &closed);
-    assert!(
-        engine.world.settlement.retained_clears.is_empty(),
-        "close prunes"
-    );
+    assert!(retained_clears(&engine).is_empty(), "close prunes");
     assert!(
         engine.world.settlement.retained_floats.is_empty(),
         "close settles"
@@ -1345,11 +1369,8 @@ fn clear_close_prunes_and_abandoned_binding_never_reapplies() {
         outcome_str(&settlements[0].result),
         Some("move-maximize-clear")
     );
-    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
-    assert_eq!(
-        engine.world.settlement.retained_clears[0].operation_id,
-        "op-15"
-    );
+    assert_eq!(retained_clears(&engine).len(), 1);
+    assert_eq!(retained_clears(&engine)[0].operation_id, "op-15");
 }
 
 #[test]
@@ -1390,10 +1411,7 @@ fn clear_same_window_new_intent_supersedes_without_consuming() {
             }),
         ),
     );
-    assert_eq!(
-        engine.world.settlement.retained_clears[0].operation_id,
-        "op-13"
-    );
+    assert_eq!(retained_clears(&engine)[0].operation_id, "op-13");
     // A same-window move in another direction supersedes: the old op
     // never continues, the fresh intent binds under its own op.
     let (_reply, settlements) = accepted_with_settlements(
@@ -1418,12 +1436,9 @@ fn clear_same_window_new_intent_supersedes_without_consuming() {
         outcome_str(&settlements[0].result),
         Some("move-maximize-clear")
     );
-    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
-    assert_eq!(
-        engine.world.settlement.retained_clears[0].operation_id,
-        "op-14"
-    );
-    assert_eq!(engine.world.settlement.retained_clears[0].direction, "left");
+    assert_eq!(retained_clears(&engine).len(), 1);
+    assert_eq!(retained_clears(&engine)[0].operation_id, "op-14");
+    assert_eq!(retained_clears(&engine)[0].direction, "left");
     // Proof for the SUPERSEDED op-13 can never continue anything. The
     // subject is still maximized (op-14 never dispatched), so op-14
     // holds untouched while the stale op-13 proof reads as absent.
@@ -1444,11 +1459,7 @@ fn clear_same_window_new_intent_supersedes_without_consuming() {
             )],
         ),
     );
-    assert_eq!(
-        engine.world.settlement.retained_clears.len(),
-        1,
-        "op-14 survives"
-    );
+    assert_eq!(retained_clears(&engine).len(), 1, "op-14 survives");
     assert!(
         engine.world.settlement.retained_floats.is_empty(),
         "superseded op-13 proof authorizes nothing, got {:?}",
@@ -1505,7 +1516,7 @@ fn clear_same_report_proof_and_new_intent_supersedes_before_continuation() {
             }),
         ),
     );
-    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    assert_eq!(retained_clears(&engine).len(), 1);
     // Same report: old proof + fresh same-window move right (op-14).
     // Facts unmaximized, so the fresh intent needs no clear and runs
     // tiled; the old op-13 must never resume.
@@ -1523,7 +1534,7 @@ fn clear_same_report_proof_and_new_intent_supersedes_before_continuation() {
             same_axis: crate::directional::SameAxisMove::default(),
         }),
     );
-    both.clear_attempts = vec![clear_attempt(
+    both.state_attempts = vec![clear_attempt(
         "op-13",
         "win-max",
         crate::world_report::FrameSetter::Accepted,
@@ -1558,7 +1569,7 @@ fn clear_same_report_proof_and_new_intent_supersedes_before_continuation() {
         reply.transfers
     );
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        retained_clears(&engine).is_empty(),
         "fresh unmaximized intent binds no clear, old superseded"
     );
 }
@@ -1621,7 +1632,7 @@ fn clear_same_report_core_command_supersedes_before_continuation() {
             same_axis: crate::directional::SameAxisMove::default(),
         }),
     );
-    both.clear_attempts = vec![clear_attempt(
+    both.state_attempts = vec![clear_attempt(
         "op-13",
         "win-max",
         crate::world_report::FrameSetter::Accepted,
@@ -1700,7 +1711,7 @@ fn clear_consumed_replay_does_not_supersede() {
             same_axis: crate::directional::SameAxisMove::default(),
         }),
     );
-    replay.clear_attempts = vec![clear_attempt(
+    replay.state_attempts = vec![clear_attempt(
         "op-13",
         "win-max",
         crate::world_report::FrameSetter::Accepted,
@@ -1771,7 +1782,7 @@ fn clear_send_supersedes_without_consuming() {
             }),
         ),
     );
-    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    assert_eq!(retained_clears(&engine).len(), 1);
     let reply = accepted(
         &mut engine,
         &report_full(
@@ -1790,7 +1801,7 @@ fn clear_send_supersedes_without_consuming() {
         ),
     );
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        retained_clears(&engine).is_empty(),
         "same-window send supersedes the binding"
     );
     assert!(
@@ -1848,7 +1859,7 @@ fn clear_same_report_refused_intent_still_supersedes() {
             }),
         ),
     );
-    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    assert_eq!(retained_clears(&engine).len(), 1);
     // Same report: old accepted proof plus a fresh same-window move on
     // a now-fullscreen subject. The new command refuses
     // (`move-refused-fullscreen`), yet the old binding still
@@ -1872,7 +1883,7 @@ fn clear_same_report_refused_intent_still_supersedes() {
             same_axis: crate::directional::SameAxisMove::default(),
         }),
     );
-    both.clear_attempts = vec![clear_attempt(
+    both.state_attempts = vec![clear_attempt(
         "op-13",
         "win-max",
         crate::world_report::FrameSetter::Accepted,
@@ -1911,7 +1922,7 @@ fn clear_same_report_refused_intent_still_supersedes() {
         "refused continuation authorizes nothing"
     );
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        retained_clears(&engine).is_empty(),
         "refused fresh intent binds no clear and old is gone"
     );
 }
@@ -1956,7 +1967,7 @@ fn clear_held_and_unreadable_withhold_without_weakening() {
         ),
     );
     assert_eq!(
-        desire(&reply, "win-max").clear_operation.as_deref(),
+        clear_op(desire(&reply, "win-max")).as_deref(),
         Some("op-13")
     );
     // Gap inventory holds with the desire withheld.
@@ -1977,12 +1988,12 @@ fn clear_held_and_unreadable_withhold_without_weakening() {
     gapped.inventory_complete = false;
     let reply = accepted(&mut engine, &gapped);
     assert_eq!(
-        engine.world.settlement.retained_clears.len(),
+        retained_clears(&engine).len(),
         1,
         "gap holds with identities preserved"
     );
     assert_eq!(
-        desire(&reply, "win-max").clear_operation,
+        clear_op(desire(&reply, "win-max")),
         None,
         "gap withholds the desire"
     );
@@ -1997,9 +2008,9 @@ fn clear_held_and_unreadable_withhold_without_weakening() {
     );
     gestured.gesture_barrier = true;
     let reply = accepted(&mut engine, &gestured);
-    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    assert_eq!(retained_clears(&engine).len(), 1);
     assert_eq!(
-        desire(&reply, "win-max").clear_operation,
+        clear_op(desire(&reply, "win-max")),
         None,
         "gesture withholds the desire"
     );
@@ -2071,7 +2082,7 @@ fn clear_held_domain_defers_continuation_until_authority_returns() {
         ),
     );
     assert_eq!(
-        engine.world.settlement.retained_clears.len(),
+        retained_clears(&engine).len(),
         1,
         "held defers, never drops"
     );
@@ -2097,7 +2108,7 @@ fn clear_held_domain_defers_continuation_until_authority_returns() {
             Vec::new(),
         ),
     );
-    assert!(engine.world.settlement.retained_clears.is_empty());
+    assert!(retained_clears(&engine).is_empty());
     assert_eq!(engine.world.settlement.retained_floats.len(), 1);
     assert!(
         reply.operation_settled.iter().any(|event| {
@@ -2178,10 +2189,7 @@ fn clear_continuation_refusal_observable_with_original_op() {
             )],
         ),
     );
-    assert!(
-        engine.world.settlement.retained_clears.is_empty(),
-        "refusal retires"
-    );
+    assert!(retained_clears(&engine).is_empty(), "refusal retires");
     assert!(
         engine.world.settlement.retained_floats.is_empty(),
         "refused continuation authorizes nothing"
@@ -2249,7 +2257,7 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
         Some("focus-float-retained")
     );
     assert!(
-        engine.world.settlement.retained_clears.is_empty(),
+        retained_clears(&engine).is_empty(),
         "focus fences without binding a clear"
     );
     let (_reply, settlements) = accepted_with_settlements(
@@ -2274,9 +2282,12 @@ fn maximized_clear_continuation_binds_lifetime_domain_view_focus() {
         outcome_str(&settlements[0].result),
         Some("move-maximize-clear")
     );
-    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
-    let retained = &engine.world.settlement.retained_clears[0];
-    assert_eq!(retained.window, WindowId("win-max".to_owned()));
+    assert_eq!(retained_clears(&engine).len(), 1);
+    let retained = retained_clears(&engine)[0];
+    assert!(engine.world.settlement.retained_states.contains_key(&(
+        WindowId("win-max".to_owned()),
+        crate::world_report::StateProperty::Maximized
+    )));
     assert_eq!(retained.direction, "right");
     assert_eq!(retained.operation_id, "op-13");
     // Unknown windows refuse stale with the preserved cause instead of
@@ -2389,7 +2400,7 @@ fn sticky_maximize_publishes_clear_before_attempt() {
         Some("move-maximize-clear")
     );
     assert_eq!(
-        desire(&reply, "win-sticky").clear_operation.as_deref(),
+        clear_op(desire(&reply, "win-sticky")).as_deref(),
         Some("op-13"),
         "sticky rows publish the retained pending-none clear token"
     );
@@ -2539,9 +2550,23 @@ fn desire_cmdseq_explicit_clear_retained_across_observation_only_replies() {
         ),
     );
     let row = desire(&reply, "win-max");
-    assert_eq!(row.clear_operation.as_deref(), Some("op-13"));
-    assert_eq!(row.command_seq, Some(13), "explicit token carries origin");
-    // No new visibility or state authority on any branch.
+    let target = row
+        .state
+        .iter()
+        .find(|t| {
+            t.property == crate::world_report::StateProperty::Maximized
+                && !t.value
+                && t.automatic_clear
+                && t.authority == ScopeAuthority::Controlled
+        })
+        .expect("controlled automatic maximized=false target");
+    assert_eq!(
+        target.command_seq,
+        Some(13),
+        "explicit token carries origin"
+    );
+    assert_eq!(row.command_seq, None, "frame command_seq stays empty");
+    // No new visibility or non-clear state authority on any branch.
     for row in &reply.windows {
         assert_eq!(
             row.visibility, None,
@@ -2554,7 +2579,9 @@ fn desire_cmdseq_explicit_clear_retained_across_observation_only_replies() {
             "no visibility authority: {}",
             row.lifetime.0
         );
-        assert!(row.state.is_empty(), "no state targets: {}", row.lifetime.0);
+        if row.lifetime.0 != "win-max" {
+            assert!(row.state.is_empty(), "no state targets: {}", row.lifetime.0);
+        }
     }
     // Observation-only reply: same facts, no command. The token and its
     // typed sequence persist; nothing re-mints from the report sequence.
@@ -2570,15 +2597,24 @@ fn desire_cmdseq_explicit_clear_retained_across_observation_only_replies() {
         ),
     );
     let row = desire(&reply, "win-max");
-    assert_eq!(row.clear_operation.as_deref(), Some("op-13"));
+    let target = row
+        .state
+        .iter()
+        .find(|t| {
+            t.property == crate::world_report::StateProperty::Maximized
+                && !t.value
+                && t.automatic_clear
+                && t.authority == ScopeAuthority::Controlled
+        })
+        .expect("controlled automatic maximized=false target");
     assert_eq!(
-        row.command_seq,
+        target.command_seq,
         Some(13),
         "retained across observation-only"
     );
+    assert_eq!(row.command_seq, None);
     assert_eq!(row.visibility, None);
     assert_eq!(row.visibility_authority, ScopeAuthority::Untouched);
-    assert!(row.state.is_empty());
 }
 
 #[test]
@@ -2619,7 +2655,14 @@ fn desire_cmdseq_cleared_with_withheld_or_spent_token() {
             }),
         ),
     );
-    assert_eq!(desire(&reply, "win-max").command_seq, Some(13));
+    assert_eq!(
+        desire(&reply, "win-max")
+            .state
+            .iter()
+            .find(|t| t.automatic_clear && t.authority == ScopeAuthority::Controlled)
+            .and_then(|t| t.command_seq),
+        Some(13)
+    );
     // Gapped inventory stages the dispatched attempt as pending before
     // any hold and withholds the spent desire with identities preserved.
     let mut gapped = report_clears(
@@ -2628,8 +2671,8 @@ fn desire_cmdseq_cleared_with_withheld_or_spent_token() {
         vec![screen("out-a", 0)],
         vec![maximized(), float_fact("win-target", "out-a", 300, 100)],
         "win-max",
-        vec![clear_attempt(
-            "op-13",
+        vec![clear_attempt_rev(
+            reply.state_revision,
             "win-max",
             crate::world_report::FrameSetter::Accepted,
             Some(true),
@@ -2638,13 +2681,9 @@ fn desire_cmdseq_cleared_with_withheld_or_spent_token() {
     );
     gapped.inventory_complete = false;
     let reply = accepted(&mut engine, &gapped);
-    assert_eq!(
-        engine.world.settlement.retained_clears.len(),
-        1,
-        "gap keeps the binding"
-    );
+    assert_eq!(retained_clears(&engine).len(), 1, "gap keeps the binding");
     let row = desire(&reply, "win-max");
-    assert_eq!(row.clear_operation, None);
+    assert_eq!(clear_op(row), None);
     assert_eq!(row.command_seq, None, "withheld token carries no sequence");
     // Gesture barrier withholds the same way.
     let mut gestured = report_clears(
@@ -2657,9 +2696,9 @@ fn desire_cmdseq_cleared_with_withheld_or_spent_token() {
     );
     gestured.gesture_barrier = true;
     let reply = accepted(&mut engine, &gestured);
-    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    assert_eq!(retained_clears(&engine).len(), 1);
     let row = desire(&reply, "win-max");
-    assert_eq!(row.clear_operation, None);
+    assert_eq!(clear_op(row), None);
     assert_eq!(row.command_seq, None, "withheld token carries no sequence");
     // Dispatched attempt, still maximized (no proof): the token is spent
     // while the binding holds ambiguous, so no sequence publishes.
@@ -2681,12 +2720,12 @@ fn desire_cmdseq_cleared_with_withheld_or_spent_token() {
         ),
     );
     assert_eq!(
-        engine.world.settlement.retained_clears.len(),
+        retained_clears(&engine).len(),
         1,
         "unproven holds, never retires"
     );
     let row = desire(&reply, "win-max");
-    assert_eq!(row.clear_operation, None, "spent token never re-actuates");
+    assert_eq!(clear_op(row), None, "spent token never re-actuates");
     assert_eq!(row.command_seq, None, "spent token carries no sequence");
 }
 
@@ -2732,7 +2771,14 @@ fn desire_cmdseq_float_continuation_preserves_original_seq() {
             }),
         ),
     );
-    assert_eq!(desire(&reply, "win-max").command_seq, Some(13));
+    assert_eq!(
+        desire(&reply, "win-max")
+            .state
+            .iter()
+            .find(|t| t.automatic_clear && t.authority == ScopeAuthority::Controlled)
+            .and_then(|t| t.command_seq),
+        Some(13)
+    );
     // Commandless proof resumes the half-snap: the spent clear withdraws
     // while the continued float keeps the original sequence.
     let reply = accepted(
@@ -2743,8 +2789,8 @@ fn desire_cmdseq_float_continuation_preserves_original_seq() {
             vec![screen("out-a", 0)],
             vec![cleared(), float_fact("win-target", "out-a", 300, 100)],
             "win-max",
-            vec![clear_attempt(
-                "op-13",
+            vec![clear_attempt_rev(
+                reply.state_revision,
                 "win-max",
                 crate::world_report::FrameSetter::Accepted,
                 Some(true),
@@ -2755,7 +2801,7 @@ fn desire_cmdseq_float_continuation_preserves_original_seq() {
     let row = desire(&reply, "win-max");
     assert_eq!(row.frame_operation.as_deref(), Some("op-13"));
     assert_eq!(row.command_seq, Some(13), "continuation keeps original seq");
-    assert_eq!(row.clear_operation, None, "spent clear never re-actuates");
+    assert_eq!(clear_op(row), None, "spent clear never re-actuates");
     assert!(
         row.floating,
         "continued float still publishes floating: {row:?}"
@@ -2786,7 +2832,7 @@ fn desire_cmdseq_float_continuation_preserves_original_seq() {
     );
     let row = desire(&reply, "win-max");
     assert_eq!(row.frame_operation, None);
-    assert_eq!(row.clear_operation, None);
+    assert_eq!(clear_op(row), None);
     assert_eq!(row.command_seq, None, "confirmed desire withdraws sequence");
     assert!(
         row.floating,
@@ -2907,15 +2953,12 @@ fn desire_cmdseq_born_clear_is_commandless() {
         ),
     );
     let row = desire(&reply, "win-born");
-    let op = row
-        .clear_operation
-        .clone()
-        .expect("born binds a clear token");
-    assert!(op.starts_with("op-born-"), "commandless id, got {op}");
+    let op = clear_op(row).expect("born binds a clear target");
+    assert_eq!(op, "op-born");
     assert_eq!(row.command_seq, None, "born clear carries no sequence");
     assert_eq!(row.visibility, None);
     assert_eq!(row.visibility_authority, ScopeAuthority::Untouched);
-    assert!(row.state.is_empty());
+    assert_eq!(row.state.len(), 1);
     // Observation-only reply retains the token, still commandless.
     let reply = accepted(
         &mut engine,
@@ -2932,7 +2975,7 @@ fn desire_cmdseq_born_clear_is_commandless() {
         ),
     );
     let row = desire(&reply, "win-born");
-    assert_eq!(row.clear_operation.as_deref(), Some(op.as_str()));
+    assert_eq!(clear_op(row).as_deref(), Some(op.as_str()));
     assert_eq!(row.command_seq, None, "retained born stays commandless");
 }
 
@@ -3038,21 +3081,30 @@ fn newer_clear_intent_supersedes_retained_float_placement() {
         engine.world.settlement.retained_floats.is_empty(),
         "newer clear intent drops the stale placement"
     );
-    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    assert_eq!(retained_clears(&engine).len(), 1);
     let row = desire(&reply, "win-a");
     assert_eq!(
         row.frame_operation, None,
         "no stale placement alongside the new clear: {row:?}"
     );
+    let target = row
+        .state
+        .iter()
+        .find(|t| {
+            t.property == crate::world_report::StateProperty::Maximized
+                && !t.value
+                && t.automatic_clear
+                && t.authority == ScopeAuthority::Controlled
+        })
+        .expect("only the new clear target publishes");
     assert_eq!(
-        row.clear_operation.as_deref(),
-        Some("op-13"),
-        "only the new clear token publishes"
+        target.command_seq,
+        Some(13),
+        "state target carries the surviving token, got {row:?}"
     );
     assert_eq!(
-        row.command_seq,
-        Some(13),
-        "slot carries the surviving token, got {row:?}"
+        row.command_seq, None,
+        "no frame command_seq alongside clear"
     );
 }
 
@@ -3100,11 +3152,8 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             }),
         ),
     );
-    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
-    assert_eq!(
-        engine.world.settlement.retained_clears[0].operation_id,
-        "op-13"
-    );
+    assert_eq!(retained_clears(&engine).len(), 1);
+    assert_eq!(retained_clears(&engine)[0].operation_id, "op-13");
 
     // Settle clear -> ClearContinuedFloat under op-13, and float resumes under op-13.
     let continued = accepted(
@@ -3124,7 +3173,7 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             )],
         ),
     );
-    assert!(engine.world.settlement.retained_clears.is_empty());
+    assert!(retained_clears(&engine).is_empty());
     assert_eq!(engine.world.settlement.retained_floats.len(), 1);
     assert_eq!(
         engine.world.settlement.retained_floats[0].operation_id,
@@ -3199,13 +3248,10 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             }),
         ),
     );
-    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    assert_eq!(retained_clears(&engine).len(), 1);
+    assert_eq!(retained_clears(&engine)[0].operation_id, "op-14");
     assert_eq!(
-        engine.world.settlement.retained_clears[0].operation_id,
-        "op-14"
-    );
-    assert_eq!(
-        desire(&p2_admitted, "win-max").clear_operation.as_deref(),
+        clear_op(desire(&p2_admitted, "win-max")).as_deref(),
         Some("op-14")
     );
     assert_eq!(
@@ -3226,17 +3272,14 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             None,
         ),
     );
-    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
-    assert_eq!(
-        engine.world.settlement.retained_clears[0].operation_id,
-        "op-14"
-    );
+    assert_eq!(retained_clears(&engine).len(), 1);
+    assert_eq!(retained_clears(&engine)[0].operation_id, "op-14");
     assert_eq!(
         while_pending.operation_settled, float_done.operation_settled,
         "Q1: predecessor clear outcome remains while P2 is pending"
     );
     assert_eq!(
-        desire(&while_pending, "win-max").clear_operation.as_deref(),
+        clear_op(desire(&while_pending, "win-max")).as_deref(),
         Some("op-14")
     );
     assert_eq!(desire(&while_pending, "win-max").frame_operation, None);
@@ -3267,7 +3310,7 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
         refused_settlements[0].result,
         Some(CommandResult::Rejected { .. })
     ));
-    assert_eq!(engine.world.settlement.retained_clears.len(), 1);
+    assert_eq!(retained_clears(&engine).len(), 1);
     assert_eq!(refused_cmd.operation_settled, float_done.operation_settled);
 
     // Settle P2 via external clear -> replaces (win-max, clear) with op-14 while
@@ -3287,7 +3330,7 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
             Vec::new(),
         ),
     );
-    assert!(engine.world.settlement.retained_clears.is_empty());
+    assert!(retained_clears(&engine).is_empty());
     assert!(p2_settled.operation_settled.iter().any(|ev| {
         ev.window.0 == "win-max"
             && ev.kind == OperationKind::Clear
@@ -3409,7 +3452,7 @@ fn q1_operation_clear_and_float_predecessor_remains_through_successor_pending() 
         desire(&f_pending, "win-subject").frame_operation.as_deref(),
         Some("op-22")
     );
-    assert_eq!(desire(&f_pending, "win-subject").clear_operation, None);
+    assert_eq!(clear_op(desire(&f_pending, "win-subject")), None);
 
     // Arrival at P2's target replaces (win-subject, float) with op-22.
     let p2_arrived = WindowFact {
@@ -3723,9 +3766,9 @@ fn q2_operation_settled_retains_holds_minimize_incomplete_and_prunes_departure_w
         "reused handle cannot inherit departed outcome: {:?}",
         reused.operation_settled
     );
-    assert_eq!(desire(&reused, "win-max").clear_operation, None);
+    assert_eq!(clear_op(desire(&reused, "win-max")), None);
     assert_eq!(desire(&reused, "win-max").frame_operation, None);
-    assert!(engine.world.settlement.retained_clears.is_empty());
+    assert!(retained_clears(&engine).is_empty());
     assert!(engine.world.settlement.retained_floats.is_empty());
 
     // 5. Explicit close (even under incomplete inventory) prunes win-other;
@@ -3758,5 +3801,466 @@ fn q2_operation_settled_retains_holds_minimize_incomplete_and_prunes_departure_w
     assert_eq!(
         OperationOutcome::FloatFrameProven.as_str(),
         "float-frame-proven"
+    );
+}
+
+#[test]
+fn directional_clear_uses_controlled_maximized_false_state_lane_and_feedback() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let maximized = || WindowFact {
+        maximized: Some(true),
+        ..fact("win-max", "out-a", 100)
+    };
+    let cleared = || WindowFact {
+        maximized: Some(false),
+        ..maximized()
+    };
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![maximized(), fact("win-other", "out-a", 400)],
+            None,
+            None,
+        ),
+    );
+    let (reply, settlements) = accepted_with_settlements(
+        &mut engine,
+        &report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![maximized(), fact("win-other", "out-a", 400)],
+            Vec::new(),
+            "win-max",
+            Some(13),
+            Some(WorldCommand::MoveDirectional {
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
+                direction: crate::directional::Direction::Left,
+                same_axis: crate::directional::SameAxisMove::default(),
+            }),
+        ),
+    );
+    assert_eq!(settlements.len(), 1);
+    assert_eq!(
+        outcome_str(&settlements[0].result),
+        Some("move-maximize-clear")
+    );
+    let target = desire(&reply, "win-max")
+        .state
+        .iter()
+        .find(|t| t.property == crate::world_report::StateProperty::Maximized)
+        .expect("controlled maximized=false state target");
+    assert!(!target.value);
+    assert_eq!(target.authority, ScopeAuthority::Controlled);
+    assert_eq!(target.command_seq, Some(13));
+
+    let mut settle_report = report_full(
+        3,
+        3,
+        vec![screen("out-a", 0)],
+        vec![cleared(), fact("win-other", "out-a", 400)],
+        Vec::new(),
+        "win-max",
+        None,
+        None,
+    );
+    settle_report.state_attempts = vec![crate::world_report::StateAttempt {
+        window: WindowId("win-max".to_owned()),
+        property: crate::world_report::StateProperty::Maximized,
+        target: false,
+        revision: reply.state_revision,
+        setter: crate::world_report::FrameSetter::Accepted,
+        pre: Some(true),
+        post: Some(false),
+        attempt_ms: 7,
+    }];
+    let after = accepted(&mut engine, &settle_report);
+    assert!(
+        after.operation_settled.iter().any(|ev| {
+            ev.window.0 == "win-max"
+                && ev.kind == crate::world_report::OperationKind::Clear
+                && ev.operation_id == "op-13"
+                && ev.outcome == crate::world_report::OperationOutcome::ClearContinuedTiled
+        }),
+        "expected ClearContinuedTiled settlement, got {:?}",
+        after.operation_settled
+    );
+}
+
+#[test]
+fn held_scope_withholds_directional_clear_while_eligible_born_publishes_controlled() {
+    let mut engine = WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities {
+            birth_clear: true,
+            native_sticky: true,
+            maximize: true,
+            ..Default::default()
+        },
+    )
+    .expect("generation");
+    let maximized = || WindowFact {
+        maximized: Some(true),
+        ..fact("win-max", "out-a", 100)
+    };
+    let _ = accepted(
+        &mut engine,
+        &report_full(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![maximized(), fact("win-other", "out-a", 400)],
+            Vec::new(),
+            "win-max",
+            None,
+            None,
+        ),
+    );
+    // Mint a directional clear on win-max while the scope is controlled.
+    let (reply_dir, _) = accepted_with_settlements(
+        &mut engine,
+        &report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![maximized(), fact("win-other", "out-a", 400)],
+            Vec::new(),
+            "win-max",
+            Some(13),
+            Some(WorldCommand::MoveDirectional {
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
+                direction: crate::directional::Direction::Left,
+                same_axis: crate::directional::SameAxisMove::default(),
+            }),
+        ),
+    );
+    let dir_target = desire(&reply_dir, "win-max")
+        .state
+        .iter()
+        .find(|t| t.property == crate::world_report::StateProperty::Maximized)
+        .expect("controlled directional target");
+    assert_eq!(dir_target.authority, ScopeAuthority::Controlled);
+    assert!(dir_target.automatic_clear);
+
+    // A born-maximized window arrives on the same scope, placing the scope
+    // under a geometry hold (HeldBorn route for retained rows): the eligible
+    // born clear still publishes Controlled, while the directional clear on
+    // the same held scope must NOT publish Controlled.
+    let mut born_win = maximized();
+    born_win.window = WindowId("win-born".to_owned());
+    let reply_held = accepted(
+        &mut engine,
+        &report_full(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![maximized(), fact("win-other", "out-a", 400), born_win],
+            Vec::new(),
+            "win-max",
+            None,
+            None,
+        ),
+    );
+    let born_target = desire(&reply_held, "win-born")
+        .state
+        .iter()
+        .find(|t| t.property == crate::world_report::StateProperty::Maximized)
+        .expect("born target on held scope");
+    assert_eq!(born_target.authority, ScopeAuthority::Controlled);
+    assert!(born_target.automatic_clear);
+    let held_dir_target = desire(&reply_held, "win-max")
+        .state
+        .iter()
+        .find(|t| t.property == crate::world_report::StateProperty::Maximized)
+        .expect("diagnostic directional target on held scope");
+    assert_ne!(
+        held_dir_target.authority,
+        ScopeAuthority::Controlled,
+        "held scope must not authorize directional automatic clear"
+    );
+    assert!(held_dir_target.automatic_clear);
+}
+
+#[test]
+fn explicit_toggle_maximize_sets_automatic_clear_false() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let maximized = || WindowFact {
+        maximized: Some(true),
+        ..fact("win-max", "out-a", 100)
+    };
+    let _ = accepted(
+        &mut engine,
+        &report_full(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![maximized(), fact("win-other", "out-a", 400)],
+            Vec::new(),
+            "win-max",
+            None,
+            None,
+        ),
+    );
+    let reply = accepted(
+        &mut engine,
+        &report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![maximized(), fact("win-other", "out-a", 400)],
+            Vec::new(),
+            "win-max",
+            Some(21),
+            Some(WorldCommand::ToggleMaximize {
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
+            }),
+        ),
+    );
+    let target = desire(&reply, "win-max")
+        .state
+        .iter()
+        .find(|t| t.property == crate::world_report::StateProperty::Maximized)
+        .expect("explicit maximize target");
+    assert!(!target.value);
+    assert_eq!(target.authority, ScopeAuthority::Controlled);
+    assert_eq!(target.command_seq, Some(21));
+    assert!(
+        !target.automatic_clear,
+        "ordinary explicit maximize(false) must keep automatic_clear=false"
+    );
+}
+
+#[test]
+fn born_collision_directional_need_clear_retires_born_with_clear_superseded_and_no_remint() {
+    let mut engine = WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities {
+            birth_clear: true,
+            native_sticky: true,
+            maximize: true,
+            ..Default::default()
+        },
+    )
+    .expect("generation");
+    let _ = engine.apply_test_settings(
+        1,
+        vec![(
+            "bornMaximized".to_owned(),
+            crate::connection::RawSettingValue::String("tile-on-launch".to_owned()),
+        )],
+    );
+    let max_win = || WindowFact {
+        maximized: Some(true),
+        ..fact("win-max", "out-a", 0)
+    };
+    let _ = accepted(
+        &mut engine,
+        &report_full(
+            0,
+            0,
+            vec![screen("out-a", 0)],
+            vec![fact("win-other", "out-a", 400)],
+            Vec::new(),
+            "win-other",
+            None,
+            None,
+        ),
+    );
+    let born_reply = accepted(
+        &mut engine,
+        &report_full(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![max_win(), fact("win-other", "out-a", 400)],
+            Vec::new(),
+            "win-max",
+            None,
+            None,
+        ),
+    );
+    let born_op = engine
+        .tx(|tx| tx.born_operation_for(&WindowId("win-max".to_owned())))
+        .expect("retained born clear binding");
+    let born_target = desire(&born_reply, "win-max")
+        .state
+        .iter()
+        .find(|t| t.property == crate::world_report::StateProperty::Maximized)
+        .expect("born maximize target");
+    assert!(born_target.automatic_clear);
+    assert_eq!(born_target.command_seq, None);
+
+    let reply = accepted(
+        &mut engine,
+        &report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![max_win(), fact("win-other", "out-a", 400)],
+            Vec::new(),
+            "win-max",
+            Some(21),
+            Some(WorldCommand::MoveDirectional {
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
+                direction: crate::directional::Direction::Right,
+                same_axis: crate::directional::SameAxisMove::default(),
+            }),
+        ),
+    );
+    assert!(
+        reply.operation_settled.iter().any(|ev| {
+            ev.operation_id == born_op
+                && ev.window == WindowId("win-max".to_owned())
+                && ev.outcome == crate::world_report::OperationOutcome::ClearSuperseded
+                && ev.cause.is_none()
+        }),
+        "directional NeedClear must retire superseded born binding under its original op: {:?}",
+        reply.operation_settled
+    );
+    assert_eq!(
+        engine.tx(|tx| tx.born_operation_for(&WindowId("win-max".to_owned()))),
+        None
+    );
+    let dir_target = desire(&reply, "win-max")
+        .state
+        .iter()
+        .find(|t| t.property == crate::world_report::StateProperty::Maximized)
+        .expect("directional clear target");
+    assert!(dir_target.automatic_clear);
+    assert_eq!(dir_target.command_seq, Some(21));
+
+    // Follow-up report must not remint a born binding.
+    let _ = accepted(
+        &mut engine,
+        &report_full(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![max_win(), fact("win-other", "out-a", 400)],
+            Vec::new(),
+            "win-max",
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        engine.tx(|tx| tx.born_operation_for(&WindowId("win-max".to_owned()))),
+        None
+    );
+}
+
+#[test]
+fn born_collision_toggle_maximize_retires_born_with_clear_superseded_and_no_remint() {
+    let mut engine = WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities {
+            birth_clear: true,
+            native_sticky: true,
+            maximize: true,
+            ..Default::default()
+        },
+    )
+    .expect("generation");
+    let _ = engine.apply_test_settings(
+        1,
+        vec![(
+            "bornMaximized".to_owned(),
+            crate::connection::RawSettingValue::String("tile-on-launch".to_owned()),
+        )],
+    );
+    let max_win = || WindowFact {
+        maximized: Some(true),
+        ..fact("win-max", "out-a", 0)
+    };
+    let _ = accepted(
+        &mut engine,
+        &report_full(
+            0,
+            0,
+            vec![screen("out-a", 0)],
+            vec![fact("win-other", "out-a", 400)],
+            Vec::new(),
+            "win-other",
+            None,
+            None,
+        ),
+    );
+    let _ = accepted(
+        &mut engine,
+        &report_full(
+            1,
+            1,
+            vec![screen("out-a", 0)],
+            vec![max_win(), fact("win-other", "out-a", 400)],
+            Vec::new(),
+            "win-max",
+            None,
+            None,
+        ),
+    );
+    let born_op = engine
+        .tx(|tx| tx.born_operation_for(&WindowId("win-max".to_owned())))
+        .expect("retained born clear binding");
+
+    let reply = accepted(
+        &mut engine,
+        &report_full(
+            2,
+            2,
+            vec![screen("out-a", 0)],
+            vec![max_win(), fact("win-other", "out-a", 400)],
+            Vec::new(),
+            "win-max",
+            Some(22),
+            Some(WorldCommand::ToggleMaximize {
+                window: crate::directional::WindowSubject::Window(WindowId("win-max".to_owned())),
+            }),
+        ),
+    );
+    assert!(
+        reply.operation_settled.iter().any(|ev| {
+            ev.operation_id == born_op
+                && ev.window == WindowId("win-max".to_owned())
+                && ev.outcome == crate::world_report::OperationOutcome::ClearSuperseded
+                && ev.cause.is_none()
+        }),
+        "ToggleMaximize must retire superseded born binding under its original op: {:?}",
+        reply.operation_settled
+    );
+    assert_eq!(
+        engine.tx(|tx| tx.born_operation_for(&WindowId("win-max".to_owned()))),
+        None
+    );
+    let explicit_target = desire(&reply, "win-max")
+        .state
+        .iter()
+        .find(|t| t.property == crate::world_report::StateProperty::Maximized)
+        .expect("explicit maximize target");
+    assert!(!explicit_target.automatic_clear);
+    assert_eq!(explicit_target.command_seq, Some(22));
+
+    // Follow-up report must not remint a born binding.
+    let _ = accepted(
+        &mut engine,
+        &report_full(
+            3,
+            3,
+            vec![screen("out-a", 0)],
+            vec![max_win(), fact("win-other", "out-a", 400)],
+            Vec::new(),
+            "win-max",
+            None,
+            None,
+        ),
+    );
+    assert_eq!(
+        engine.tx(|tx| tx.born_operation_for(&WindowId("win-max".to_owned()))),
+        None
     );
 }
