@@ -193,10 +193,16 @@ export interface ConnectionError {
     readonly gen: string;
 }
 
-// Bounded error on the connection lane: the broker-bound rejection
-// {v,outcome,kind,message,gen,source,nativeInvalid,clock,gestureAssoc,gestureSettledAssoc}.
-// Both associations are always null here (never a fabricated binding).
-export function parseConnectionError(text: string): ConnectionError | null {
+const SETUP_ERROR_KEYS = ["gen", "kind", "message", "outcome", "v"] as const;
+const BOUND_ERROR_KEYS = [
+    "clock", "gen", "gestureAssoc", "gestureSettledAssoc", "kind",
+    "message", "nativeInvalid", "outcome", "source", "v",
+] as const;
+
+function parseErrorEnvelope(
+    text: string,
+    wantKeys: ReadonlyArray<string>,
+): { record: Record<string, unknown>; error: ConnectionError } | null {
     if (utf8ByteLength(text) > WORLD_MAX_REPLY_BYTES) {
         return null;
     }
@@ -212,8 +218,7 @@ export function parseConnectionError(text: string): ConnectionError | null {
     }
     const r = value as Record<string, unknown>;
     const keys = [...Object.keys(r)].sort();
-    const want = ["clock", "gen", "gestureAssoc", "gestureSettledAssoc", "kind", "message", "nativeInvalid", "outcome", "source", "v"].sort();
-    if (keys.length !== want.length || !keys.every((k, i) => k === want[i])) {
+    if (keys.length !== wantKeys.length || !keys.every((k, i) => k === wantKeys[i])) {
         return null;
     }
     if (r["v"] !== WORLD_CONNECTION_VERSION || r["outcome"] !== "rejected") {
@@ -229,6 +234,29 @@ export function parseConnectionError(text: string): ConnectionError | null {
     if (typeof gen !== "string" || gen.length > 64 || (gen !== "" && !isGenerationId(gen))) {
         return null;
     }
+    return {
+        record: r,
+        error: { kind: r["kind"] as string, message: r["message"] as string, gen: gen as string },
+    };
+}
+
+// Unbound error on the connection setup lane (DiscoverWorld):
+// strict five-key {v,outcome,kind,message,gen} without capture watermark,
+// clock, or gesture binding.
+export function parseSetupError(text: string): ConnectionError | null {
+    const parsed = parseErrorEnvelope(text, SETUP_ERROR_KEYS);
+    return parsed === null ? null : parsed.error;
+}
+
+// Broker-bound rejection on capture, take, and wait paths:
+// {v,outcome,kind,message,gen,source,nativeInvalid,clock,gestureAssoc,gestureSettledAssoc}.
+// Both associations are always null here (never a fabricated binding).
+export function parseConnectionError(text: string): ConnectionError | null {
+    const parsed = parseErrorEnvelope(text, BOUND_ERROR_KEYS);
+    if (parsed === null) {
+        return null;
+    }
+    const r = parsed.record;
     if (r["source"] !== "") {
         return null;
     }
@@ -241,7 +269,7 @@ export function parseConnectionError(text: string): ConnectionError | null {
     if (r["gestureAssoc"] !== null || r["gestureSettledAssoc"] !== null) {
         return null;
     }
-    return { kind: r["kind"] as string, message: r["message"] as string, gen: gen as string };
+    return parsed.error;
 }
 
 function isIdentityText(value: unknown): value is string {

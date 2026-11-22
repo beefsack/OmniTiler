@@ -396,15 +396,15 @@ impl PlannerEndpoint {
         let caller = header.sender().map(ToString::to_string);
         let Some(caller) = caller.as_deref() else {
             emit_plan_early_exit(PlanEarlyExit::Unauthorized);
-            return Ok(self.world.error_body("unauthorized", "unauthorized"));
+            return Ok(self.world.setup_error_body("unauthorized", "unauthorized"));
         };
         if !verify_planner_caller(emitter.connection(), caller).await {
             emit_plan_early_exit(PlanEarlyExit::Unauthorized);
-            return Ok(self.world.error_body("unauthorized", "unauthorized"));
+            return Ok(self.world.setup_error_body("unauthorized", "unauthorized"));
         }
         if let Err(reason) = authorize_intent_sender(emitter.connection(), caller).await {
             emit_plan_early_exit(PlanEarlyExit::Unauthorized);
-            return Ok(self.world.error_body(reason, reason));
+            return Ok(self.world.setup_error_body(reason, reason));
         }
         let reply = match self.world.discover(&request) {
             Ok(reply) => reply,

@@ -232,6 +232,17 @@ impl WorldService {
         self.run_broker(|broker| broker.discover_connection(request))
     }
 
+    /// Unbound in-band rejection body for connection setup (`DiscoverWorld`)
+    /// carrying `{v,outcome,kind,message,gen}`. Poison degrades to an empty
+    /// generation rather than failing.
+    #[must_use]
+    pub fn setup_error_body(&self, kind: &str, message: &str) -> String {
+        match self.backend.lock() {
+            Ok(backend) => backend.broker.setup_error_body(kind, message),
+            Err(_) => tiler_protocol::world_protocol::encode_error(kind, message, ""),
+        }
+    }
+
     /// Bounded in-band rejection body bound to the serving generation.
     /// Poison degrades to an empty generation rather than failing.
     #[must_use]

@@ -80,7 +80,7 @@
 - Evidence: [connection discriminator](../spec/reference-outcomes.md#v4-broker-connection-discriminator), [KDE port obligations](../porting/kde-port-notes.md#v4-connection-and-recovery).
 
 ### Fresh handshake and wait recovery
-- Decision: every handshake reaches core and starts fresh, including the same producer lifetime. Remove same-lifetime broker rebind. KWin handshakes only when unbound or after `generation-mismatch`; a bound host-deadline timeout only re-arms the wait. Wait rejects stale generation before producer identity or supersession so a restarted service triggers reconnect.
+- Decision: every handshake reaches core and starts fresh, including the same producer lifetime. Remove same-lifetime broker rebind. KWin handshakes only when unbound or after `generation-mismatch`; a bound host-deadline timeout only re-arms the wait. Wait rejects stale generation before producer identity or supersession so a restarted service triggers reconnect. Connection setup uses the five-key unbound rejection, not the capture binding. A settings `generation-mismatch` starts a fresh handshake and settings exchange rather than a settings retry.
 - Why: core handshake is the sole lifetime reset, and an idle watchdog timeout is not a new connection.
 - Rejected: same-lifetime rediscovery without reset and resetting on every bound wait timeout.
 - Assumes / revisit if: the KDE port must prove restart/watchdog recovery live; no offline result establishes native recovery.

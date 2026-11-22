@@ -281,6 +281,7 @@ import {
     parseConnectionError,
     parseHandshakeReply,
     parseSettingsReply,
+    parseSetupError,
 } from "./world-connection";
 import { normalizeScopeClassList, readBakedScopeClass, windowMatchesScopeClass } from "./scope-class";
 
@@ -4208,7 +4209,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     const parsed = parseHandshakeReply(reply);
                     if (parsed === null) {
-                        const failure = parseConnectionError(reply);
+                        const failure = parseSetupError(reply);
                         if (failure !== null) {
                             log(`omnitiler:world:discover-rejected kind=${token(failure.kind)} recovery=rearm`);
                         } else {
@@ -4532,7 +4533,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
                     }
                     const parsed = parseSettingsReply(reply);
                     if (parsed === null) {
-                        const failure = parseConnectionError(reply);
+                        const failure = parseSetupError(reply);
                         if (failure !== null && failure.kind === "generation-mismatch") {
                             pendingSettings = null;
                             if (state.boundGen === gen) {

@@ -8,6 +8,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { startWorldAdapterEntry } from "../src/world-entry";
+import { WorldBridge } from "./world-producer-harness";
 import { isOpaqueId } from "../src/world-seq";
 import {
     KWIN_UNAVAILABLE_FACTS,
@@ -20,6 +21,7 @@ import {
     parseConnectionError,
     parseHandshakeReply,
     parseSettingsReply,
+    parseSetupError,
 } from "../src/world-connection";
 
 const GEN = "gen-1";
@@ -244,6 +246,17 @@ describe("v4 connection codecs (handshake + settings)", () => {
         });
         assert.equal(parseConnectionError(JSON.stringify({ v: 4, outcome: "rejected", kind: "x", message: "m", gen: GEN })), null);
     });
+    it("setup errors strictly accept five-key unbound errors and reject bound or extra keys", () => {
+        const fiveKey = JSON.stringify({ v: 4, outcome: "rejected", kind: "generation-mismatch", message: "generation mismatch", gen: GEN });
+        assert.deepEqual(parseSetupError(fiveKey), {
+            kind: "generation-mismatch", message: "generation mismatch", gen: GEN,
+        });
+        assert.equal(parseSetupError(boundMismatch(GEN)), null);
+        assert.equal(
+            parseSetupError(JSON.stringify({ v: 4, outcome: "rejected", kind: "malformed", message: "m", gen: GEN, extra: 1 })),
+            null,
+        );
+    });
 
     it("native pid maps -1 to the own token, positives to decimal Id text, else null", () => {
         assert.equal(mapNativePid(-1), OWN_PROCESS_ID_TOKEN);
@@ -290,6 +303,7 @@ function startFlow() {
     };
     const calls: Call[] = [];
     const timers: Array<{ delay: number; cb: () => void }> = [];
+    const logs: string[] = [];
     const handle = startWorldAdapterEntry({
         options: { perOutputVirtualDesktops: true },
         workspace: surface,
@@ -314,13 +328,13 @@ function startFlow() {
             timers.push({ delay, cb });
             return () => undefined;
         },
-        log: () => undefined,
+        log: (line) => { logs.push(line); },
         gestureActive: () => false,
         registerShortcutFn: () => true,
         readWorkspaceModeFn: () => "per-output-local",
     });
     assert.ok(handle !== null);
-    return { handle: handle as NonNullable<typeof handle>, calls, timers };
+    return { handle: handle as NonNullable<typeof handle>, calls, timers, logs };
 }
 
 function discoverCalls(calls: Call[], method: string): Call[] {
@@ -486,5 +500,117 @@ describe("entry connection sequencing (K1a)", () => {
         assert.equal(hsBody["type"], "handshake");
         assert.equal(hsBody["v"], 4);
         flow.handle.stop();
+    });
+});
+
+describe("PW-IN-01: unbound setup rejections and KDE rediscovery", () => {
+    it("broker DiscoverWorld emits strict five-key errors for stale settings and codec rejection while DescribeWorld stays bound", async () => {
+        const bridge = WorldBridge.start();
+        try {
+            const hs1 = buildHandshakeRequest("adapter-a", "hs-1", ownApplicationIdentity(), defaultKwinCapabilities());
+            assert.ok(hs1 !== null);
+            const r1 = parseHandshakeReply(await bridge.send("DiscoverWorld", hs1));
+            assert.ok(r1 !== null && r1.gen !== null && r1.kind === "");
+            const gen1 = r1.gen;
+
+            const hs2 = buildHandshakeRequest("adapter-b", "hs-2", ownApplicationIdentity(), defaultKwinCapabilities());
+            assert.ok(hs2 !== null);
+            const r2 = parseHandshakeReply(await bridge.send("DiscoverWorld", hs2));
+            assert.ok(r2 !== null && r2.gen !== null && r2.kind === "");
+            const gen2 = r2.gen;
+            assert.notEqual(gen1, gen2);
+
+            const staleSettings = buildSettingsRequest("adapter-a", gen1, "set-stale", "1", [["gap", 8]]);
+            assert.ok(staleSettings !== null);
+            const mismatchReply = await bridge.send("DiscoverWorld", staleSettings);
+            const mismatchObj = JSON.parse(mismatchReply) as Record<string, unknown>;
+            assert.deepEqual(
+                Object.keys(mismatchObj).sort(),
+                ["gen", "kind", "message", "outcome", "v"],
+                "stale settings rejection must use exact five-key unbound shape",
+            );
+            assert.equal(mismatchObj["v"], 4);
+            assert.equal(mismatchObj["outcome"], "rejected");
+            assert.equal(mismatchObj["kind"], "generation-mismatch");
+            assert.equal(mismatchObj["gen"], gen2);
+
+            const codecReply = await bridge.send("DiscoverWorld", "{not-json");
+            const codecObj = JSON.parse(codecReply) as Record<string, unknown>;
+            assert.deepEqual(
+                Object.keys(codecObj).sort(),
+                ["gen", "kind", "message", "outcome", "v"],
+                "DiscoverWorld codec rejection must use exact five-key unbound shape",
+            );
+            assert.equal(codecObj["v"], 4);
+            assert.equal(codecObj["outcome"], "rejected");
+            assert.equal(codecObj["kind"], "malformed");
+            assert.equal(codecObj["gen"], gen2);
+
+            const captureCodecReply = await bridge.send("DescribeWorld", "{not-json");
+            const captureErr = parseConnectionError(captureCodecReply);
+            assert.ok(captureErr !== null, "DescribeWorld codec rejection keeps bound ten-key shape");
+            assert.equal(captureErr.kind, "malformed");
+        } finally {
+            await bridge.close();
+        }
+    });
+
+    it("production KDE entry rediscovers with fresh handshake and settings on real broker settings mismatch", async () => {
+        const bridge = WorldBridge.start();
+        const flow = startFlow();
+        try {
+            const firstHs = discoverCalls(flow.calls, "DiscoverWorld")[0] as Call;
+            const firstHsReply = await bridge.send("DiscoverWorld", firstHs.payload);
+            firstHs.callback(firstHsReply);
+
+            const afterHs = discoverCalls(flow.calls, "DiscoverWorld");
+            assert.equal(afterHs.length, 2, "initial handshake triggers settings send");
+            const firstSettings = afterHs[1] as Call;
+            assert.equal((JSON.parse(firstSettings.payload) as Record<string, unknown>)["type"], "settings");
+
+            // Advance broker generation out-of-band so the in-flight settings request is stale.
+            const displaceHs = buildHandshakeRequest("other-adapter", "displace-1", ownApplicationIdentity(), defaultKwinCapabilities());
+            assert.ok(displaceHs !== null);
+            const displaceReply = parseHandshakeReply(await bridge.send("DiscoverWorld", displaceHs));
+            assert.ok(displaceReply !== null && displaceReply.gen !== null && displaceReply.kind === "");
+
+            const realMismatchReply = await bridge.send("DiscoverWorld", firstSettings.payload);
+            firstSettings.callback(realMismatchReply);
+
+            // Discriminate immediate rediscovery from dirty retry:
+            // rediscovery immediately sends a fresh handshake on DiscoverWorld and logs recovery=rediscover;
+            // dirty retry would not send a handshake and would log settings-malformed.
+            const afterMismatch = discoverCalls(flow.calls, "DiscoverWorld");
+            assert.equal(afterMismatch.length, 3, "settings mismatch must immediately issue a fresh handshake");
+            const secondHs = afterMismatch[2] as Call;
+            const secondHsBody = JSON.parse(secondHs.payload) as Record<string, unknown>;
+            assert.equal(secondHsBody["type"], "handshake", "rediscovery must send handshake, not retry settings");
+            assert.ok(
+                flow.logs.some((l) => l.includes("generation-mismatch recovery=rediscover")),
+                "expected generation-mismatch recovery=rediscover log",
+            );
+            assert.ok(
+                !flow.logs.some((l) => l.includes("settings-malformed")),
+                "must not fall through to settings-malformed dirty retry",
+            );
+
+            // Complete the fresh handshake and settings through the real broker.
+            const secondHsReply = await bridge.send("DiscoverWorld", secondHs.payload);
+            secondHs.callback(secondHsReply);
+            const afterSecondHs = discoverCalls(flow.calls, "DiscoverWorld");
+            assert.equal(afterSecondHs.length, 4, "fresh handshake triggers fresh settings");
+            const secondSettings = afterSecondHs[3] as Call;
+            const secondSettingsBody = JSON.parse(secondSettings.payload) as Record<string, unknown>;
+            assert.equal(secondSettingsBody["type"], "settings");
+            const secondSettingsReply = await bridge.send("DiscoverWorld", secondSettings.payload);
+            secondSettings.callback(secondSettingsReply);
+            assert.ok(
+                flow.logs.some((l) => l.includes("omnitiler:world:settings status=accepted")),
+                "fresh settings after rediscovery must be accepted",
+            );
+        } finally {
+            flow.handle.stop();
+            await bridge.close();
+        }
     });
 });

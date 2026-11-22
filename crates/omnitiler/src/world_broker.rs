@@ -708,15 +708,17 @@ impl WorldBroker {
                 if e.0 == "oversized" {
                     return Err(BrokerError::Oversized);
                 }
-                return Ok(self.error_body("malformed", "request is malformed"));
+                return Ok(self.setup_error_body("malformed", "request is malformed"));
             }
         };
         if reply.len() > max_reply_bytes {
             return Err(BrokerError::Oversized);
         }
-        if let Ok(handshake) = tiler_protocol::connection_protocol::decode_handshake_reply(&reply)
-            && handshake.kind.is_none()
-        {
+        if let Ok(handshake) = tiler_protocol::connection_protocol::decode_handshake_reply(&reply) {
+            if let Some(kind) = handshake.kind {
+                let k = kind.as_str();
+                return Ok(self.setup_error_body(k, k));
+            }
             // Every successful handshake resets, including the first
             // one whose generation equals the construction seed.
             let displaced = self.take_parked_waiter();
@@ -747,6 +749,14 @@ impl WorldBroker {
             self.capture_lifetime = Some(handshake.adapter);
         }
         Ok(reply)
+    }
+
+    /// Unbound in-band rejection for connection setup (`DiscoverWorld`)
+    /// carrying `{v,outcome,kind,message,gen}` without capture watermark,
+    /// clock, or gesture binding.
+    #[must_use]
+    pub fn setup_error_body(&self, kind: &str, message: &str) -> String {
+        encode_error(kind, message, self.generation())
     }
 
     /// Bounded in-band rejection bound to the serving generation, with the

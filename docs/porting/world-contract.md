@@ -1952,6 +1952,18 @@ that step's ordered proof and requiring the exact planned ID for removal.
 | | `message` | fixed bounded token/text | no | Non-echoing diagnostic, never payload bytes. |
 | | `gen` | generation | empty if unavailable | Existing generation sentinel. |
 
+- In-band connection setup failures on `DiscoverWorld` (handshake and
+  settings, including codec and authorization rejections) use exactly
+  these five keys. They carry no capture source, watermark, clock or
+  gesture associations. Transport failures without an in-band reply are
+  unchanged.
+  Authorization failures retain their transport reasons (`unauthorized`,
+  `namespace-unavailable`, `not-kwin-owner`).
+  A `generation-mismatch` settings rejection causes KDE to start a fresh
+  handshake and then send settings for the newly granted generation, not
+  retry the rejected generation's settings. Capture-path rejections keep
+  their broker binding; the raw error envelope is unchanged.
+
 - `ProtocolKind` retains `malformed,oversized,snapshot-invalid,unknown-field,unknown-value,unsupported-version`
   and core envelope/fencing kinds `owner-invalid,correlation-invalid,generation-mismatch,observation-stale,request-superseded,request-reused,reply-oversize,revision-exhausted,creation-exhausted`.
   `owner-invalid` describes unauthorized connection ownership, not a revived
