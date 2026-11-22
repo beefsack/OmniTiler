@@ -190,9 +190,18 @@
 //! Stage 3 timestamp transport (specified here, implemented there): raw
 //! attempt `attemptMs` values MUST be broker-epoch milliseconds learned from
 //! the last capture response `clock` field (0 means unreported epoch and
-//! never suppresses). The broker refuses any `attemptMs` above the dispatch
-//! clock (`snapshot-invalid`/`attempt-clock-invalid`); timestamps at or below
-//! the clock pass through to core unchanged. The broker never adjusts,
+//! never suppresses). After strict decode, one typed pass over
+//! `&mut decoded.report` retains `attempt_ms <= clock` in place for `frame`
+//! (`Some`), `member`, `view`, `state`, and `creation` (skipping null frame
+//! `attempt_ms`, `attempt_id`, and unstamped `visibility`): timestamps at or
+//! below the clock pass through to core unchanged, while identifiable
+//! future-stamped rows are ignored as evidence (cannot settle) so valid
+//! siblings still apply. Already-held codec rows and their residuals remain
+//! untouched. The broker-owned decoded report is transient for local dispatch
+//! only: exact replay and `source-reused` detection compare the original
+//! envelope bytes before decode, and each fresh source receives a fresh
+//! broker `reqSeq`, so ignoring clock-invalid rows never mutates raw capture
+//! bytes or conflates distinct requests. The broker never adjusts,
 //! interpolates, or manufactures attempt evidence: unknown stays unknown,
 //! and no synthetic stamp ever proves native completion or arrival.
 
@@ -889,7 +898,7 @@ impl WorldBroker {
         // before sequencing. A malformed lane remembers an exact-replay
         // rejection and never installs map state. The staged map installs only with an accepted
         // `FreshOutcome::Reply` below; every other outcome (rejection,
-        // decode failure, attempt-clock refusal, engine rejection)
+        // decode failure, engine rejection)
         // discards the staged mutation so a malformed report with a valid
         // native lane can never retire sources or spend identity/revision.
         let mut staged_gesture_map = self.gesture_map.clone();
@@ -959,7 +968,7 @@ impl WorldBroker {
         if compact_json_exceeds_limit(&parsed.inner, WORLD_MAX_REQUEST_BYTES) {
             return Err(BrokerError::Oversized);
         }
-        let plain_decoded = match decode_report_v4_map(&parsed.inner) {
+        let mut plain_decoded = match decode_report_v4_map(&parsed.inner) {
             Ok(decoded) => decoded,
             Err(error) => {
                 return self.remember_rejection(
@@ -971,17 +980,12 @@ impl WorldBroker {
                 );
             }
         };
-        // The gate above decoded without mutation; the identical typed
-        // report dispatches below through the batched core lane.
-        if !attempts_clock_valid(&parsed.inner, clock) {
-            return self.remember_rejection(
-                &parsed,
-                envelope,
-                "snapshot-invalid",
-                "attempt-clock-invalid",
-                clock,
-            );
-        }
+        // The gate above decoded without mutation; ignore any identifiable
+        // future-stamped attempt rows in place on the transient decoded report
+        // before dispatching through the batched core lane. Replay and
+        // source-reuse remain anchored to the original envelope bytes above,
+        // and each fresh source carries a fresh broker reqSeq.
+        gate_decoded_attempts_by_clock(&mut plain_decoded.report, clock);
         // Parked FIFO batch: snapshot the whole queue for this fresh
         // capture. Commands arriving during this dispatch stay parked for
         // the next capture. Every entry is already a typed WorldCommand
@@ -2480,47 +2484,40 @@ fn encode_result_value(
     serde_json::from_str(&encoded).unwrap_or(serde_json::Value::Null)
 }
 
-/// Foreign-epoch guard over the mechanical attempt lanes: every present
-/// canonical `attemptMs` must fit the dispatch clock. Malformed stamps are
-/// the codec's business; only comparable stamps gate here. Never adjusts or
-/// manufactures evidence.
-fn attempt_ms_fits_clock(item: &serde_json::Value, clock: u64) -> bool {
-    let Some(stamp) = item.get("attemptMs").and_then(|v| v.as_str()) else {
-        return true;
-    };
-    if !is_canonical_u64(stamp) {
-        return true;
-    }
-    let Ok(value) = stamp.parse::<u64>() else {
-        return true;
-    };
-    value <= clock
-}
-
-fn attempts_clock_valid(inner: &serde_json::Map<String, serde_json::Value>, clock: u64) -> bool {
-    if let Some(items) = inner.get("propertyAttempts").and_then(|v| v.as_array()) {
-        for kind_name in ["frame", "member", "view"] {
-            for item in items {
-                let Some(kind) = item.get("kind").and_then(|v| v.as_str()) else {
-                    continue;
-                };
-                if kind != kind_name {
-                    continue;
-                }
-                if !attempt_ms_fits_clock(item, clock) {
-                    return false;
-                }
-            }
-        }
-    }
-    if let Some(items) = inner.get("creationAttempts").and_then(|v| v.as_array()) {
-        for item in items {
-            if !attempt_ms_fits_clock(item, clock) {
-                return false;
-            }
-        }
-    }
-    true
+/// One typed stamp comparison pass over decoded attempt evidence against the
+/// authoritative bound broker dispatch `clock`.
+///
+/// Retains `attempt_ms <= clock` in place for `frame` (`Some`), `member`,
+/// `view`, `state`, and `creation`. Null frame `attempt_ms` is skipped,
+/// `attempt_id` is identity only, and `visibility` is unstamped. Identifiable
+/// rows with `attempt_ms > clock` are ignored as evidence (cannot settle)
+/// while valid siblings remain; already-held codec rows and protocol
+/// residuals stay untouched.
+///
+/// The decoded report is transient for local core dispatch only: the broker
+/// enforces byte-exact replay / `source-reused` against the original envelope
+/// before decode and assigns a fresh `reqSeq` to each fresh source, so
+/// ignoring clock-invalid rows never mutates raw capture bytes or conflates
+/// distinct requests.
+fn gate_decoded_attempts_by_clock(
+    report: &mut tiler_core::world_report::WorldReportV4,
+    clock: u64,
+) {
+    report
+        .frames
+        .retain(|attempt| attempt.attempt_ms.is_none_or(|ms| ms <= clock));
+    report
+        .member_attempts
+        .retain(|attempt| attempt.attempt_ms <= clock);
+    report
+        .view_attempts
+        .retain(|attempt| attempt.attempt_ms <= clock);
+    report
+        .state_attempts
+        .retain(|attempt| attempt.attempt_ms <= clock);
+    report
+        .creation_attempts
+        .retain(|attempt| attempt.attempt_ms <= clock);
 }
 
 fn queue_reply(
@@ -3668,66 +3665,362 @@ mod tests {
     }
 
     #[test]
-    fn foreign_epoch_attempts_refuse_above_the_clock() {
-        let inner: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str::<serde_json::Value>(
-                "{\"propertyAttempts\":[{\"kind\":\"frame\",\"attemptMs\":\"9\"}]}",
-            )
-            .expect("object")
-            .as_object()
-            .expect("map")
-            .clone();
-        assert!(attempts_clock_valid(&inner, 9));
-        assert!(!attempts_clock_valid(&inner, 8));
-        // Null attemptMs is clockless and comparable to nothing.
-        let null_stamp: serde_json::Map<String, serde_json::Value> = serde_json::from_str::<
-            serde_json::Value,
-        >(
-            "{\"propertyAttempts\":[{\"kind\":\"frame\",\"attemptId\":\"1\",\"attemptMs\":null}]}",
-        )
-        .expect("object")
-        .as_object()
-        .expect("map")
-        .clone();
-        assert!(attempts_clock_valid(&null_stamp, 0));
-        // Visibility and state rows have no attemptMs clock gate.
-        let vis_state: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str::<serde_json::Value>(
-                "{\"propertyAttempts\":[{\"kind\":\"visibility\",\"attemptMs\":\"9\"},{\"kind\":\"state\",\"attemptMs\":\"9\"}]}",
-            )
-            .expect("object")
-            .as_object()
-            .expect("map")
-            .clone();
-        assert!(attempts_clock_valid(&vis_state, 0));
-        // The creation lane gates exactly like the stamped propertyAttempt kinds.
-        let created: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str::<serde_json::Value>(
-                "{\"creationAttempts\":[{\"attemptMs\":\"9\"}]}",
-            )
-            .expect("object")
-            .as_object()
-            .expect("map")
-            .clone();
-        assert!(attempts_clock_valid(&created, 9));
-        assert!(!attempts_clock_valid(&created, 8));
-        // Missing lanes and unparseable stamps are the codec's business.
-        let empty: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str::<serde_json::Value>("{}")
-                .expect("object")
+    fn typed_clock_gate_checks_all_stamped_lanes_skips_null_and_visibility_and_preserves_identity()
+    {
+        let decode_with_attempts = |property_attempts: &str, creation_attempts: &str| {
+            let win_a = test_window_json("win-a");
+            let json = format!(
+                "{{\"v\":4,\"adapter\":\"ad-1\",\"gen\":\"g-1\",\"obs\":\"1\",\"reqSeq\":\"1\",\
+                \"req\":\"r-1\",\"cmdSeq\":null,\"command\":null,\"monotonicMs\":\"9\",\
+                \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+                \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+                \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
+                \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
+                \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+                \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
+                \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
+                \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
+                \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\"],\
+                \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}}],\
+                \"witness\":null,\"foregroundOut\":null}},\
+                \"intentRecords\":[],\"propertyAttempts\":{property_attempts},\
+                \"creationAttempts\":{creation_attempts},\"focusFeedback\":[],\
+                \"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null}}"
+            );
+            let map = serde_json::from_str::<serde_json::Value>(&json)
+                .expect("json")
                 .as_object()
-                .expect("map")
+                .expect("obj")
                 .clone();
-        assert!(attempts_clock_valid(&empty, 0));
-        let junk: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str::<serde_json::Value>(
-                "{\"propertyAttempts\":[{\"kind\":\"frame\",\"attemptMs\":\"xx\"}]}",
-            )
-            .expect("object")
-            .as_object()
-            .expect("map")
-            .clone();
-        assert!(attempts_clock_valid(&junk, 0));
+            decode_report_v4_map(&map).expect("decoded report")
+        };
+
+        // 1. Boundary control: attemptMs == clock passes on all 5 stamped lanes
+        // (frame Some, member, view, state, creation), plus frame None + huge
+        // attemptId and unstamped visibility.
+        let prop_ok = "[{\"kind\":\"frame\",\"win\":\"win-a\",\"target\":[0,0,200,200],\
+            \"disposition\":{\"kind\":\"called\",\"setter\":\"accepted\"},\"readback\":null,\
+            \"dpiBefore\":null,\"dpiAfter\":null,\"attemptId\":\"999\",\"attemptMs\":\"9\",\"purpose\":{\"kind\":\"layout\"}},\
+            {\"kind\":\"frame\",\"win\":\"win-b\",\"target\":[0,0,200,200],\
+            \"disposition\":{\"kind\":\"called\",\"setter\":\"accepted\"},\"readback\":null,\
+            \"dpiBefore\":null,\"dpiAfter\":null,\"attemptId\":\"999\",\"attemptMs\":null,\"purpose\":{\"kind\":\"layout\"}},\
+            {\"kind\":\"member\",\"op\":\"op-m\",\"win\":\"win-a\",\"out\":\"DP-1\",\"ws\":\"ws-1\",\
+            \"disposition\":{\"kind\":\"called\",\"setter\":\"accepted\"},\"pre\":null,\"post\":null,\"attemptMs\":\"9\"},\
+            {\"kind\":\"view\",\"op\":\"op-v\",\"out\":\"DP-1\",\"ws\":\"ws-1\",\
+            \"disposition\":{\"kind\":\"called\",\"setter\":\"accepted\"},\"pre\":null,\"post\":null,\"base\":null,\"attemptMs\":\"9\"},\
+            {\"kind\":\"state\",\"win\":\"win-a\",\"property\":\"fullscreen\",\"target\":true,\"rev\":\"1\",\
+            \"disposition\":{\"kind\":\"called\",\"setter\":\"accepted\"},\"pre\":false,\"post\":true,\"attemptMs\":\"9\"},\
+            {\"kind\":\"visibility\",\"win\":\"win-a\",\"target\":true,\"revision\":\"1\",\"path\":\"staged\",\
+            \"disposition\":{\"kind\":\"called\",\"setter\":\"accepted\"},\"reason\":\"\",\"pre\":null,\"post\":null}]";
+        let create_ok = "[{\"op\":\"op-c\",\"ws\":\"ws-2\",\"out\":\"DP-1\",\
+            \"setter\":\"accepted\",\"before\":[],\"after\":[],\
+            \"created\":null,\"attemptMs\":\"9\"}]";
+        let mut at_clock = decode_with_attempts(prop_ok, create_ok);
+        gate_decoded_attempts_by_clock(&mut at_clock.report, 9);
+        assert_eq!(at_clock.report.frames.len(), 2);
+        assert_eq!(at_clock.report.frames[0].attempt_id, 999);
+        assert_eq!(at_clock.report.frames[0].attempt_ms, Some(9));
+        assert_eq!(at_clock.report.frames[1].attempt_id, 999);
+        assert_eq!(at_clock.report.frames[1].attempt_ms, None);
+        assert_eq!(at_clock.report.member_attempts.len(), 1);
+        assert_eq!(at_clock.report.view_attempts.len(), 1);
+        assert_eq!(at_clock.report.state_attempts.len(), 1);
+        assert_eq!(at_clock.report.creation_attempts.len(), 1);
+        assert_eq!(at_clock.report.visibility_attempts.len(), 1);
+        assert!(at_clock.report.held_attempts.is_empty());
+
+        // 2. Clock == 8: all 5 stamped rows (attemptMs == 9) are ignored in
+        // place without synthesizing held_attempts or mutating residuals;
+        // null frame attemptMs (win-b, with attemptId == 999) and unstamped
+        // visibility survive.
+        let mut above_clock = decode_with_attempts(prop_ok, create_ok);
+        let residual_before = above_clock.residual.clone();
+        gate_decoded_attempts_by_clock(&mut above_clock.report, 8);
+        assert_eq!(above_clock.report.frames.len(), 1);
+        assert_eq!(above_clock.report.frames[0].window.0, "win-b");
+        assert_eq!(above_clock.report.frames[0].attempt_ms, None);
+        assert_eq!(above_clock.report.frames[0].attempt_id, 999);
+        assert!(above_clock.report.member_attempts.is_empty());
+        assert!(above_clock.report.view_attempts.is_empty());
+        assert!(above_clock.report.state_attempts.is_empty());
+        assert!(above_clock.report.creation_attempts.is_empty());
+        assert_eq!(above_clock.report.visibility_attempts.len(), 1);
+        assert!(above_clock.report.held_attempts.is_empty());
+        assert_eq!(above_clock.residual, residual_before);
+
+        // 3. Already codec-held rows and their original residual stay
+        // untouched while valid siblings survive and future-stamped rows are
+        // ignored.
+        let prop_with_held = "[{\"kind\":\"frame\",\"win\":\"win-a\",\"target\":[0,0,200,200],\
+            \"disposition\":{\"kind\":\"called\",\"setter\":\"accepted\"},\"readback\":null,\
+            \"dpiBefore\":null,\"dpiAfter\":null,\"attemptId\":\"999\",\"attemptMs\":\"9\",\"purpose\":{\"kind\":\"layout\"}},\
+            {\"kind\":\"frame\",\"win\":\"win-c\",\"target\":[0,0,200,200],\
+            \"disposition\":{\"kind\":\"called\",\"setter\":\"accepted\"},\"readback\":null,\
+            \"dpiBefore\":null,\"dpiAfter\":null,\"attemptId\":\"2\",\"attemptMs\":\"9\",\"purpose\":{\"kind\":\"layout\"},\"extra\":1},\
+            {\"kind\":\"frame\",\"win\":\"win-b\",\"target\":[0,0,200,200],\
+            \"disposition\":{\"kind\":\"called\",\"setter\":\"accepted\"},\"readback\":null,\
+            \"dpiBefore\":null,\"dpiAfter\":null,\"attemptId\":\"999\",\"attemptMs\":\"8\",\"purpose\":{\"kind\":\"layout\"}}]";
+        let mut with_held = decode_with_attempts(prop_with_held, "[]");
+        let held_before = with_held.report.held_attempts.clone();
+        let held_residual_before = with_held.residual.clone();
+        assert_eq!(held_before.len(), 1);
+        gate_decoded_attempts_by_clock(&mut with_held.report, 8);
+        assert_eq!(with_held.report.frames.len(), 1);
+        assert_eq!(with_held.report.frames[0].window.0, "win-b");
+        assert_eq!(with_held.report.frames[0].attempt_id, 999);
+        assert_eq!(with_held.report.frames[0].attempt_ms, Some(8));
+        assert_eq!(with_held.report.held_attempts, held_before);
+        assert_eq!(with_held.residual, held_residual_before);
+    }
+
+    fn bound_test_broker() -> (WorldBroker, &'static str, String) {
+        let mut broker = WorldBroker::new();
+        let adapter = "kwin-stamp-gate-1";
+        let hs = format!(
+            "{{\"type\":\"handshake\",\"v\":4,\"adapter\":\"{adapter}\",\"req\":\"hs-1\",\
+              \"applicationIdentity\":{{\"appId\":null,\"executable\":\"/usr/bin/kwin\",\
+              \"processId\":\"pid-own-1\"}},\
+              \"capabilities\":{{\"hostOwned\":false,\"equalCount\":false,\"sharedNativeRoster\":false,\"birthClear\":false,\
+              \"nativeSelectorScope\":\"per-output\",\"windowSuppression\":false,\
+              \"maximize\":true,\"fullscreen\":true,\"nativeSticky\":true,\"above\":false,\
+              \"warp\":false,\"tiledFloatTransfer\":false,\"unavailableFacts\":[]}}}}"
+        );
+        let _ = broker.discover_connection(&hs).expect("handshake");
+        let generation = broker.generation().to_owned();
+        let _ = broker
+            .discover_connection(&settings_message(adapter, &generation, "set-1"))
+            .expect("settings");
+        (broker, adapter, generation)
+    }
+
+    fn test_window_json(win: &str) -> String {
+        format!(
+            "{{\"win\":\"{win}\",\"out\":\"DP-1\",\"rect\":[0,0,200,200],\
+            \"fullscreen\":false,\"maximized\":false,\"sticky\":false,\"minimized\":false,\
+            \"hints\":{{\"minW\":null,\"minH\":null,\"maxW\":null,\"maxH\":null}},\
+            \"hostHidden\":false,\"privileged\":false,\"managed\":true,\"acceptsInput\":true,\
+            \"activationInhibited\":false,\"toolWindow\":false,\"owned\":false,\"transient\":false,\
+            \"modal\":false,\"resizable\":true,\"above\":false,\"below\":false,\"owner\":null,\
+            \"parent\":null,\"role\":null,\"appId\":null,\"executable\":null,\
+            \"processId\":\"pid-foreign-1\",\"class\":\"Synthetic\",\"title\":null,\
+            \"type\":\"normal\",\"activationPolicy\":\"regular\",\"layer\":0,\
+            \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
+            \"visibility\":{{\"visible\":true,\"suppressionOwned\":null}}}}"
+        )
+    }
+
+    fn bound_capture_env(
+        adapter: &str,
+        generation: &str,
+        source_seq: u64,
+        property_attempts_json: &str,
+    ) -> String {
+        let win_a = test_window_json("win-a");
+        let win_b = test_window_json("win-b");
+        let inner = format!(
+            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+            \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
+            \"windows\":[{win_a},{win_b}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
+            \"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\
+            \"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\
+            \"presentation\":{{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\
+            \"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\
+            \"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[\"win-a\",\"win-b\"],\
+            \"pagerFrames\":[{{\"win\":\"win-a\",\"live\":[0,0,200,200]}},{{\"win\":\"win-b\",\"live\":[0,0,200,200]}}],\
+            \"witness\":null,\"foregroundOut\":null}},\
+            \"intentRecords\":[],\"propertyAttempts\":{property_attempts_json},\"focusFeedback\":[],\
+            \"focusChanges\":null,\"rendererInput\":null,\
+            \"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}}"
+        );
+        format!(
+            "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
+            \"source\":\"src-{source_seq}-t\",\"sourceSeq\":\"{source_seq}\",\"nativeInvalid\":\"{source_seq}\",\
+            \"report\":{inner}}}"
+        )
+    }
+
+    #[test]
+    fn bound_capture_future_state_stamp_cannot_settle_while_valid_sibling_applies() {
+        let (mut broker, adapter, generation) = bound_test_broker();
+        // Seed win-a and win-b.
+        let seed_env = bound_capture_env(adapter, &generation, 1, "[]");
+        let _ = broker.dispatch_capture(&seed_env).expect("seed");
+        // Queue toggle-fullscreen for win-a so core publishes a state desire.
+        let q = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"cli-1\",\"clientCmd\":\"1\",\
+              \"command\":{{\"op\":\"toggle-fullscreen\",\"win\":\"win-a\"}}}}"
+        );
+        let q_reply = broker
+            .queue_command("cli-1", &q)
+            .expect("queue toggle-fullscreen");
+        assert!(
+            q_reply.contains("\"queued\""),
+            "expected queued reply, got {q_reply}"
+        );
+        let issue_env = bound_capture_env(adapter, &generation, 2, "[]");
+        let issued: serde_json::Value =
+            serde_json::from_str(&broker.dispatch_capture(&issue_env).expect("issue"))
+                .expect("JSON");
+        let rev = issued["rev"].as_str().expect("rev string").to_owned();
+        let has_win_a_fullscreen = |reply: &serde_json::Value| -> bool {
+            reply["windows"].as_array().is_some_and(|wins| {
+                wins.iter().any(|w| {
+                    w["win"] == "win-a"
+                        && w["state"].as_array().is_some_and(|states| {
+                            states
+                                .iter()
+                                .any(|s| s["property"] == "fullscreen" && s["value"] == true)
+                        })
+                })
+            })
+        };
+        assert!(
+            has_win_a_fullscreen(&issued),
+            "expected pending fullscreen state desire for win-a, got {issued}"
+        );
+
+        // Send a future-stamped refused state attempt for win-a (which would
+        // retire the desire if accepted) alongside a valid sibling frame
+        // attempt for win-b.
+        let future_ms = "9999999999999";
+        let attempts = format!(
+            "[{{\"kind\":\"state\",\"win\":\"win-a\",\"property\":\"fullscreen\",\"target\":true,\
+              \"rev\":\"{rev}\",\"disposition\":{{\"kind\":\"called\",\"setter\":\"refused\"}},\"pre\":false,\"post\":false,\"attemptMs\":\"{future_ms}\"}},\
+              {{\"kind\":\"frame\",\"win\":\"win-b\",\"target\":[0,0,200,200],\
+              \"disposition\":{{\"kind\":\"called\",\"setter\":\"accepted\"}},\"readback\":[0,0,200,200],\"dpiBefore\":null,\"dpiAfter\":null,\
+              \"attemptId\":\"1\",\"attemptMs\":\"0\",\"purpose\":{{\"kind\":\"layout\"}}}}]"
+        );
+        let env = bound_capture_env(adapter, &generation, 3, &attempts);
+        let reply: serde_json::Value =
+            serde_json::from_str(&broker.dispatch_capture(&env).expect("dispatch")).expect("JSON");
+        assert!(
+            reply.get("outcome").is_none() || reply["outcome"] != "rejected",
+            "expected accepted capture, got {reply}"
+        );
+        // Because the future state attempt cannot settle, the fullscreen desire
+        // for win-a must remain controlled (not held/refused).
+        assert!(
+            reply["windows"].as_array().is_some_and(|wins| {
+                wins.iter().any(|w| {
+                    w["win"] == "win-a"
+                        && w["state"].as_array().is_some_and(|states| {
+                            states.iter().any(|s| {
+                                s["property"] == "fullscreen"
+                                    && s["value"] == true
+                                    && s["auth"] == "controlled"
+                            })
+                        })
+                })
+            }),
+            "future state stamp must not settle/refuse win-a fullscreen desire, got {reply}"
+        );
+    }
+
+    #[test]
+    fn bound_capture_identifiable_future_frame_and_held_row_do_not_sink_valid_sibling() {
+        let (mut broker, adapter, generation) = bound_test_broker();
+        let seed_env = bound_capture_env(adapter, &generation, 1, "[]");
+        let _ = broker.dispatch_capture(&seed_env).expect("seed");
+        let q = format!(
+            "{{\"v\":4,\"gen\":\"{generation}\",\"client\":\"cli-1\",\"clientCmd\":\"1\",\
+              \"command\":{{\"op\":\"toggle-fullscreen\",\"win\":\"win-a\"}}}}"
+        );
+        let q_reply = broker
+            .queue_command("cli-1", &q)
+            .expect("queue toggle-fullscreen");
+        assert!(
+            q_reply.contains("\"queued\""),
+            "expected queued reply, got {q_reply}"
+        );
+        let issue_env = bound_capture_env(adapter, &generation, 2, "[]");
+        let issued: serde_json::Value =
+            serde_json::from_str(&broker.dispatch_capture(&issue_env).expect("issue"))
+                .expect("JSON");
+        let rev = issued["rev"].as_str().expect("rev string").to_owned();
+        assert!(
+            issued["windows"].as_array().is_some_and(|wins| {
+                wins.iter().any(|w| {
+                    w["win"] == "win-a"
+                        && w["state"].as_array().is_some_and(|states| {
+                            states.iter().any(|s| {
+                                s["property"] == "fullscreen"
+                                    && s["value"] == true
+                                    && s["auth"] == "controlled"
+                            })
+                        })
+                })
+            }),
+            "expected pending controlled fullscreen desire for win-a, got {issued}"
+        );
+
+        // Combine an identifiable future-stamped frame row (win-a), an
+        // identifiable codec-held frame row (win-c), a valid null-stamped
+        // frame row (win-b), and a valid in-epoch refused state sibling
+        // (win-a). The valid state sibling must settle and move win-a's
+        // fullscreen desire to auth:hold.
+        let future_ms = "9999999999999";
+        let attempts = format!(
+            "[{{\"kind\":\"frame\",\"win\":\"win-a\",\"target\":[0,0,200,200],\
+              \"disposition\":{{\"kind\":\"called\",\"setter\":\"accepted\"}},\"readback\":[0,0,200,200],\"dpiBefore\":null,\"dpiAfter\":null,\
+              \"attemptId\":\"1\",\"attemptMs\":\"{future_ms}\",\"purpose\":{{\"kind\":\"layout\"}}}},\
+              {{\"kind\":\"frame\",\"win\":\"win-c\",\"target\":[0,0,200,200],\
+              \"disposition\":{{\"kind\":\"called\",\"setter\":\"accepted\"}},\"readback\":null,\"dpiBefore\":null,\"dpiAfter\":null,\
+              \"attemptId\":\"2\",\"attemptMs\":\"{future_ms}\",\"purpose\":{{\"kind\":\"layout\"}},\"extra\":1}},\
+              {{\"kind\":\"frame\",\"win\":\"win-b\",\"target\":[0,0,200,200],\
+              \"disposition\":{{\"kind\":\"called\",\"setter\":\"accepted\"}},\"readback\":[0,0,200,200],\"dpiBefore\":null,\"dpiAfter\":null,\
+              \"attemptId\":\"{future_ms}\",\"attemptMs\":null,\"purpose\":{{\"kind\":\"layout\"}}}},\
+              {{\"kind\":\"state\",\"win\":\"win-a\",\"property\":\"fullscreen\",\"target\":true,\
+              \"rev\":\"{rev}\",\"disposition\":{{\"kind\":\"called\",\"setter\":\"refused\"}},\"pre\":false,\"post\":false,\"attemptMs\":\"0\"}}]"
+        );
+        let env = bound_capture_env(adapter, &generation, 3, &attempts);
+        let reply: serde_json::Value =
+            serde_json::from_str(&broker.dispatch_capture(&env).expect("dispatch")).expect("JSON");
+        assert!(
+            reply.get("outcome").is_none() || reply["outcome"] != "rejected",
+            "expected accepted capture (not whole-capture refusal), got {reply}"
+        );
+        assert!(
+            reply.get("rev").and_then(|v| v.as_str()).is_some(),
+            "expected normal bound reply with rev, got {reply}"
+        );
+        assert!(
+            reply["windows"].as_array().is_some_and(|wins| {
+                wins.iter().any(|w| {
+                    w["win"] == "win-a"
+                        && w["state"].as_array().is_some_and(|states| {
+                            states.iter().any(|s| {
+                                s["property"] == "fullscreen"
+                                    && s["value"] == true
+                                    && s["auth"] == "hold"
+                            })
+                        })
+                })
+            }),
+            "valid in-epoch state sibling must settle win-a fullscreen desire to auth:hold, got {reply}"
+        );
+    }
+
+    #[test]
+    fn bound_capture_unidentified_hard_invalid_row_keeps_whole_capture_refusal_precedence() {
+        let (mut broker, adapter, generation) = bound_test_broker();
+        let future_ms = "9999999999999";
+        let attempts = format!(
+            "[{{\"kind\":\"frame\",\"win\":\"win-a\",\"target\":[0,0,200,200],\
+              \"disposition\":{{\"kind\":\"called\",\"setter\":\"accepted\"}},\"readback\":[0,0,200,200],\"dpiBefore\":null,\"dpiAfter\":null,\
+              \"attemptId\":\"1\",\"attemptMs\":\"{future_ms}\",\"purpose\":{{\"kind\":\"layout\"}}}},\
+              {{\"kind\":\"frame\",\"target\":[0,0,200,200],\
+              \"disposition\":{{\"kind\":\"called\",\"setter\":\"accepted\"}},\"readback\":null,\"dpiBefore\":null,\"dpiAfter\":null,\
+              \"attemptId\":\"2\",\"attemptMs\":\"0\",\"purpose\":{{\"kind\":\"layout\"}}}}]"
+        );
+        let env = bound_capture_env(adapter, &generation, 1, &attempts);
+        let reply: serde_json::Value =
+            serde_json::from_str(&broker.dispatch_capture(&env).expect("dispatch")).expect("JSON");
+        assert_eq!(reply["outcome"], "rejected");
+        assert_ne!(
+            reply["message"], "attempt-clock-invalid",
+            "codec shape/identity refusal must take precedence over clock gate"
+        );
     }
 
     #[test]

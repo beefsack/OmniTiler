@@ -1775,15 +1775,22 @@ that step's ordered proof and requiring the exact planned ID for removal.
   A frame with valid call evidence but malformed purpose is held; a frame
   without valid called disposition refuses. Malformed focus feedback refuses.
   Neither the retired flat attempt fields nor a held frame can settle a write.
-- Decode by fixed kind/section order: frame, membership, view, separate
-  creation, native state, visibility, then separate focus feedback. Use
-  producer order within each kind; the first
-  hard error wins. The input ordinal is for wire reconstruction, not
-  settlement. Broker clock validation checks comparable canonical stamps
-  for frame, membership, view and creation even on rows later held; a null
-  frame stamp has nothing to compare. It does not add that check for native
-  state (including automatic maximize clears) or visibility. The retired
-  `kind:"clear"` attempt refuses.
+- Decode `propertyAttempts` in this order: frame, membership, view, native
+  state, visibility. Decode the separate creation section next and focus
+  feedback after it. Use producer order within each kind; the first hard
+  error wins. The input ordinal is for wire reconstruction, not settlement.
+  The retired `kind:"clear"` attempt refuses.
+- On the bound broker capture path, compare the original `attemptMs` on
+  frame, membership, view, native state (including automatic maximize
+  clears), and creation evidence with the authoritative dispatch clock.
+  Stamps at or below the clock are eligible for settlement, subject to
+  each lane's other rules. A null frame stamp is skipped; frame `attemptId`
+  is not a clock, and visibility has no stamp. Ignore identifiable typed
+  evidence stamped above the clock: it cannot settle a write, but valid
+  siblings still apply. An already-held codec row stays held. Hard shape
+  and identity errors refuse the capture before clock filtering. The
+  broker does not adjust stamps or the clock, or change exact capture
+  replay identity. The separate focus-feedback lane is unchanged.
 
 - StateAttempt `rev` is the acted-on WorldReply publication's `rev`, not the later
   report's `obs` or `reqSeq`, nor the write's `attemptMs`. The adapter acts only

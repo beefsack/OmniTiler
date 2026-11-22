@@ -1407,7 +1407,7 @@ fn actuator_reply_carries_no_terminal_result_but_presentation_hides_tokens() {
 }
 
 #[test]
-fn foreign_epoch_attempt_stamps_refuse_above_the_dispatch_clock() {
+fn foreign_epoch_attempt_stamps_ignored_above_the_dispatch_clock() {
     let (service, generation) = discovered_service();
     let inner = inner_report(&[], true, false, "");
     // A baseline capture publishes the broker clock.
@@ -1418,29 +1418,50 @@ fn foreign_epoch_attempt_stamps_refuse_above_the_dispatch_clock() {
     );
     let clock = baseline["clock"].as_str().expect("dispatch clock");
     assert!(is_canonical_u64(clock));
-    // A raw attempt stamped past the dispatch clock (foreign epoch) refuses;
-    // the stream and queue stay untouched.
+    assert_eq!(baseline["rev"], "1");
+    // A raw attempt stamped past the dispatch clock (foreign epoch) is ignored
+    // as evidence while the capture itself is accepted and advances revision.
     let future_attempt = "{\"kind\":\"frame\",\"win\":\"win-001\",\"target\":[0,0,100,100],\
           \"disposition\":{\"kind\":\"called\",\"setter\":\"accepted\"},\
           \"readback\":[0,0,100,100],\"dpiBefore\":null,\"dpiAfter\":null,\
           \"attemptId\":\"1\",\"attemptMs\":\"18446744073709551615\",\"purpose\":{\"kind\":\"layout\"}}"
         .to_owned();
     let future_inner = inner_report_with_attempts(&[], true, false, "", &future_attempt, false);
-    let refused = parse(
+    let future_env = capture(ADAPTER, &generation, 2, 2, &future_inner);
+    let accepted_future = parse(&service.evaluate_capture(&future_env).expect("accepted"));
+    assert_ne!(accepted_future["outcome"], "rejected");
+    assert_eq!(accepted_future["rev"], "2");
+    assert!(
+        accepted_future["clock"]
+            .as_str()
+            .is_some_and(is_canonical_u64)
+    );
+    // Byte-identical redelivery of the same source replays the exact response.
+    let replayed = parse(&service.evaluate_capture(&future_env).expect("replay"));
+    assert_eq!(replayed, accepted_future);
+    // Changing only a field of the ignored attempt (frame target) with the
+    // same stamp and source refuses as source-reused, proving omitted facts
+    // are not conflated at the replay boundary.
+    let changed_attempt = "{\"kind\":\"frame\",\"win\":\"win-001\",\"target\":[0,0,200,200],\
+          \"disposition\":{\"kind\":\"called\",\"setter\":\"accepted\"},\
+          \"readback\":[0,0,100,100],\"dpiBefore\":null,\"dpiAfter\":null,\
+          \"attemptId\":\"1\",\"attemptMs\":\"18446744073709551615\",\"purpose\":{\"kind\":\"layout\"}}"
+        .to_owned();
+    let changed_inner = inner_report_with_attempts(&[], true, false, "", &changed_attempt, false);
+    let reused = parse(
         &service
-            .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &future_inner))
+            .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &changed_inner))
             .expect("in-band"),
     );
-    assert_eq!(refused["outcome"], "rejected");
-    assert_eq!(refused["kind"], "snapshot-invalid");
-    assert!(refused["clock"].as_str().is_some_and(is_canonical_u64));
-    // The next valid capture still starts from the untouched revision.
-    let accepted = parse(
+    assert_eq!(reused["outcome"], "rejected");
+    assert_eq!(reused["kind"], "source-reused");
+    // The next valid capture continues from the advanced revision.
+    let next = parse(
         &service
             .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &inner))
             .expect("accepted"),
     );
-    assert_eq!(accepted["rev"], "2");
+    assert_eq!(next["rev"], "3");
 }
 
 #[test]

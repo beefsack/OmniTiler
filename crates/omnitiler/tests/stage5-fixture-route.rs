@@ -133,8 +133,9 @@ fn assert_recorded_append(chain: &str, initial: &serde_json::Value, followup: &s
 }
 
 /// Maximum recorded `attemptMs` over pre-read replay bodies across the
-/// exact five mechanical attempt lanes the broker's foreign-epoch guard
-/// checks. Bounded so the settle sleep can never wait unboundedly.
+/// five stamped attempt lanes the broker clock gate checks (`frame`,
+/// `member`, `view`, `state`, and `creation`). Bounded so the settle sleep
+/// can never wait unboundedly.
 fn clock_settle_ms(chain: &str, replay: &[(&str, String)]) -> u64 {
     let mut max = 0u64;
     for (_envelope, body) in replay {
@@ -143,7 +144,7 @@ fn clock_settle_ms(chain: &str, replay: &[(&str, String)]) -> u64 {
         if let Some(items) = report["propertyAttempts"].as_array() {
             for item in items {
                 let kind = item["kind"].as_str().unwrap_or("");
-                if matches!(kind, "frame" | "member" | "view" | "clear")
+                if matches!(kind, "frame" | "member" | "view" | "state")
                     && let Some(stamp) = item["attemptMs"].as_str()
                     && let Ok(ms) = stamp.parse::<u64>()
                 {
