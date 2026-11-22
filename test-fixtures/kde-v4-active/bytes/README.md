@@ -2,7 +2,9 @@
 
 Byte-exact production payloads recorded by `kwin/tests/world-bytes.test.ts`
 in generator mode (`UPDATE_KDE_V4_BYTE_FIXTURES=1`) through the real entry
-plus the genuine `raw_world_eval` engine. Never hand-edited.
+plus the genuine `tiler-protocol` `world_eval` engine (merged from the former
+`raw_world_eval` with byte parity, [record](../../../docs/changes/archive/broker-b-eval.md)).
+Never hand-edited.
 
 Boundary vs the preserved historical `test-fixtures/kde-v4/bytes` family:
 

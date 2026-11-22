@@ -537,9 +537,10 @@ unchanged. See the [expansion record](../../docs/changes/archive/live-fixture-ap
 
 ### KDE with OmniTiler active
 
-Use `just dev-on --scope-class OmniTilerTestWindow` (and `just dev-off` for
-teardown) under the [live guide](../../docs/live-kwin-testing.md). Unscoped runs
-manage unrelated normal windows too.
+Pick the [live guide](../../docs/live-kwin-testing.md)'s mode: isolated
+(default) uses `just dev-on --scope-class OmniTilerTestWindow` on appended
+desktops; real-session runs use unscoped `just dev-on`, which also manages
+unrelated normal windows. Tear down with `just dev-off`.
 Native Wayland and X11/XWayland integration exercised tiled admission/reflow,
 fixed-size floats, native modes, decorations and backend-specific controls;
 protected non-fixture geometry/state remained unchanged.

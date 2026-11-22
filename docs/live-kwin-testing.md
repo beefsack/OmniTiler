@@ -15,11 +15,20 @@ how, not extra gates.
   User windows may be tiled or moved and existing desktops used, created or
   removed by the tiler; no restoration is required.
 - Use fixture windows as the test subjects because they can be controlled and
-  queried, but never add procedure to avoid the current KDE/KWin environment,
-  existing windows or existing desktops (no roster inventories, no appending
-  test workspaces past the existing roster, no isolation workarounds). Scope
-  dev mode to the fixture class only when a leg needs foreign windows
-  unmanaged; otherwise run it unscoped.
+  queried. Add no isolation procedure beyond the isolated mode below.
+- Two modes (user 2026-11-23). State one per leg in the plan; no re-checks
+  between legs.
+  - Isolated (default): `just dev-on --scope-class OmniTilerTestWindow`, with
+    fixture windows on desktops the run appends past the roster. Use for
+    tiling, roster moves, maximize, focus between fixtures and regression
+    retests.
+  - Real session: unscoped `just dev-on` on the existing desktops and
+    windows. Fixture windows stay the driven subjects; user windows are the
+    real-world load. Use when the outcome depends on foreign windows or real
+    apps, before release or dogfooding, and to reproduce bugs from daily use.
+  - Neither mode inventories windows or desktops, checks that appended
+    desktops are empty, or restores anything beyond removing the run's own
+    appended desktops. A removal that refuses or fails is reported and left.
 - Hard limits: never close or kill user windows; no display configuration
   changes; no writes to the user's stored tiler settings.
 - Physical input through `ydotool`/`ydotoold` is allowed; stop a daemon the
@@ -40,14 +49,24 @@ how, not extra gates.
 First live run (from the repo root inside the devenv shell):
 
 1. Start the fixture in a terminal: `cargo run --locked -p tiler-live-fixture -- serve`
-2. Start the tiler: `just dev-on` (add `--scope-class OmniTilerTestWindow` only when the leg needs foreign windows unmanaged)
-3. Drive windows with `tiler-live-fixture send` (or `scripts/kde-scenarios.mjs`).
-4. Teardown: copy dev logs, run `just dev-off`, and stop anything the run started (fixture server, any `ydotool` daemon).
+2. Start the tiler in the leg's mode: `just dev-on --scope-class OmniTilerTestWindow` (isolated) or `just dev-on` (real session).
+3. Isolated: open a channel with `createKwinScriptChannel` and call `appendTestDesktop` (`scripts/kde-live-helpers.mjs`) once per desktop the leg needs; each call makes its new desktop current, so fixture windows opened next land on it.
+4. Drive windows with `tiler-live-fixture send` (or `scripts/kde-scenarios.mjs`).
+5. Teardown: copy dev logs, let the fixture windows exit, call `removeTestDesktop` for each appended desktop (isolated), run `just dev-off`, and stop anything the run started (fixture server, any `ydotool` daemon).
 
-- Fixture windows may share workspaces and desktops with user windows; no
-  occupancy inventory or dedicated test workspace is required.
+- Real-session fixture windows may share desktops with user windows; no
+  occupancy inventory is required.
 - With `--scope-class`, foreign windows stay unmanaged. Foreign apps are only
   for app-specific investigations after trying the fixture.
+- Scoped runs hold shared-roster steps (send/follow, per-output numbered
+  select) on desktops shared with foreign windows: Describe shows
+  `frameHold=unreadable memberHold=unreadable` and the transfer `held=1`.
+  This is the intended residual-occupancy hold. Isolated roster legs append
+  every desktop they touch; legs that need shared desktops run in real-session
+  mode.
+- `appendTestDesktop` writes `workspace.currentDesktop`. Its effect with
+  per-output virtual desktops on more than one output is not yet live-checked;
+  the first isolated run on such a setup records which outputs switch.
 - Full fixture protocol, flags, and `observed`/`unsupported` semantics: [fixture README](../crates/tiler-live-fixture/README.md).
 
 ## Live Tooling (User 2026-11-17)
@@ -116,6 +135,7 @@ First live run (from the repo root inside the devenv shell):
 - Use `tiler-live-fixture` (`list`/`get` for observed state, retaining `unknown`/`unsupported`), or disposable Qt clients (`kwrite`, `kcalc`, `kolourpaint`, or a genuine fixed-size Qt client) when needed.
 - Protocol claims use `scripts/kde-scenarios.mjs` correlated logs plus native readback of owned state. Do not run `dbus-monitor` (over-captures foreign traffic).
 - `ReadWorldPresentation` strips operation lanes and native write tokens; use full correlated `Describe` replies to check pending operations.
+- Do not inject synthetic captures, malformed sections or future-stamped rows into the live broker: they compete with the active KWin producer and can advance its sequence floor or publish synthetic facts. Decode precedence and stamp holding are offline-only proofs.
 - Wayland fixture `visible:null` is unknown, and KWin `hidden=false` alone does not prove a window is shown on the current desktop/activity. Membership exclusion is not hide/reveal evidence; leave unsupported outcomes TBD.
 - `invokeShortcut` bypasses the xkb layer and cannot prove physical shortcut delivery; use physical input (for example via `ydotool`) with matching state evidence.
 - Related procedures and optional tools (not routine gates): [live oscillation verification](live-oscillation-verification.md), `kwin/tests/baseline-check/`, `kwin/tests/fixture-attribution/`, and `kwin/tests/visibility-probe/`.

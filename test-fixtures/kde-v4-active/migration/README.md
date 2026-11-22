@@ -1,6 +1,7 @@
 # Recorded disjoint migration fixtures, active family (genuine v4 core bytes)
 
-Recorded from the retained real `WorldEngine` (`raw_world_eval`, default
+Recorded from the retained real `WorldEngine` (`tiler-protocol` `world_eval`,
+merged from the former `raw_world_eval` with byte parity, default
 config) against the same synthetic offline producer as the historical
 family: two outputs (`out-a`/`out-b`), one native desktop each
 (`wa1`/`wb1`), `win-a` on `out-a`, `win-b` on `out-b`, focused `win-a`.
@@ -10,7 +11,7 @@ test-only `MiniBroker` transport shim
 (`kwin/tests/world-wire-harness.ts`). Produced by the bounded recorder
 module `kwin/tests/world-migration-record.ts` (standalone CLI
 `kwin/tests/world-migration-record-cli.ts`; production
-`startWorldAdapterEntry` + genuine `raw_world_eval` + `createMiniBroker`)
+`startWorldAdapterEntry` + genuine `world_eval` + `createMiniBroker`)
 through the production `requestWorkspaceMigrate("right")` route.
 
 Retained input sequence (mirrors the historical README):

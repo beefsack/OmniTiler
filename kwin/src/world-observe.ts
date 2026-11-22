@@ -915,7 +915,9 @@ export function captureWorldObservation(env: ObserveEnv): WorldObservation | nul
         }
         // Scoped runs exclude foreign windows from observation entirely
         // (like non-normal windows): the core never sees them, so it never
-        // manages, commands, or effects them. Never an unreadable hold.
+        // manages, commands, or effects them. Native occupancy below still
+        // counts them, so a shared-roster step on a desktop they share holds
+        // as unproved residual occupancy.
         if (!windowMatchesScopeClass(readProp, ref, scope)) {
             continue;
         }

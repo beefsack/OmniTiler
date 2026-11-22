@@ -396,6 +396,8 @@ void everyFieldTabAndWidgetMapping(KWin::ScriptConfigModule &module)
     CHECK(previewLabel != nullptr);
     if (previewLabel != nullptr) {
         CHECK(previewLabel->text() == QStringLiteral("Drop-target preview color:"));
+        CHECK(previewLabel->buddy() != nullptr);
+        CHECK(previewLabel->buddy() == module.widget()->findChild<QWidget *>(QStringLiteral("kcfg_DragPreviewColor")));
     }
     CHECK(module.widget()->findChild<QWidget *>(QStringLiteral("kcfg_DragPreviewColor")) != nullptr);
     CHECK(module.widget()->findChild<QWidget *>(QStringLiteral("kcfg_BorderWidth")) != nullptr);

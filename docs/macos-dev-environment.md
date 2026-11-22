@@ -138,9 +138,10 @@ zbus/D-Bus integration), not a supported Mac target; `tiler-windows`
 is the Windows adapter. This is a supported-gate boundary, not a claim
 that every excluded crate necessarily fails to compile on macOS.
 
-The commands below define the intended macOS gate after its v2 port, not a
-current passing result. Earlier native evidence predates the core boundary
-replacement; retain it as history and rerun affected acceptance after porting.
+The commands below define the intended macOS gate after its v4 port, not a
+current passing result; see the [port's current state](changes/v4-phase3-macos-port.md#current-state-and-rebase-onto-the-current-core-2026-11-23).
+Earlier native evidence predates the core boundary replacement; retain it as
+history and rerun affected acceptance after porting.
 
 ```zsh
 mise exec -- cargo build --locked -p tiler-core -p tiler-protocol -p tiler-macos

@@ -68,15 +68,19 @@ just reload      # rebuild and swap only the recorded worktree Planner
 just dev-off     # unload exact script, stop recorded Planner, re-enable packaged script
 ```
 
-Agent-driven fixture runs should stay scoped: `just dev --scope-class
-OmniTilerTestWindow [--scope-class ...]` (or the `dev-on` equivalent).
+Fixture runs follow the [testing posture](live-kwin-testing.md#testing-posture-user-2026-11-15)
+modes: isolated (the default) scopes with `just dev --scope-class
+OmniTilerTestWindow [--scope-class ...]` (or the `dev-on` equivalent) on
+appended desktops; real-session runs stay unscoped.
 Each flag carries an identity (or comma-joined allowlist) and repeated flags
 accumulate, so the filter is exactly the listed identities, repeatably.
 Only windows whose `resourceClass` is listed are managed (on Wayland this
 is the `app_id`; the fixture uses `OmniTilerTestWindow` for both).
-Scoped-out windows never enter the world report, so the core never sees
-them: no tiling, no commands, no focus or stacking effects touch foreign
-windows. Empty (default) keeps the unchanged whole-world behavior. Any
+Scoped-out windows never enter the world report's window facts: no tiling,
+no commands, no focus or stacking effects touch foreign windows. They still
+count toward native desktop occupancy, so shared-roster steps (send/follow,
+numbered select with per-output desktops) on desktops they share hold as
+unproved residual occupancy. Empty (default) keeps the unchanged whole-world behavior. Any
 malformed entry fails closed before any mutation, and the allowlist bakes
 into the dev bundle build. An explicit scope on an already-up session is
 rejected outright (the live scope is not provable); changing scope requires
@@ -178,6 +182,16 @@ rejected outright (the live scope is not provable); changing scope requires
   `isScriptLoaded`, recorded script ID, and installed unit state. It also
   reports `dev mode: UP`, `DOWN`, `SPLIT`, or `UNKNOWN`; `UP` requires both a
   verified worktree Planner and loaded controller.
+
+### Offline checks
+
+CI (`.github/workflows/ci.yml`) is the baseline. Before handing off a core or
+KDE change, also run, inside the devenv shell:
+
+- `cargo fmt --all -- --check`, then `cargo clippy --locked --all-targets -p tiler-core -p tiler-protocol -p omnitiler -- -D warnings` and `cargo test --locked --all-targets -p tiler-core -p tiler-protocol -p omnitiler -- --test-threads=1`.
+- `cargo build --offline -p tiler-protocol --example world_eval` before `npm --prefix kwin run typecheck` and `npm --prefix kwin test`; KWin tests and recorders spawn the built evaluator.
+- The native leg of `kwin/tests/world-coordinate-closure.test.ts` runs only when both `OMNITILER_GESTURE_TEST_BIN` and `OMNITILER_PRES_TEST_BIN` point at the built `omnitiler-gesture-lifecycle-test` and `omnitiler-active-border-presentation-test` (native-effect build with `BUILD_TESTING=ON`); setting only one fails.
+- Frozen fixture roots stay byte-identical to `ff6eaddc`: `git diff --quiet ff6eaddc -- test-fixtures/world-wire/v4 test-fixtures/stage5 test-fixtures/stage5-v4 test-fixtures/kde-v4`. No CI job checks this.
 
 ### Isolated fixture intent storage
 

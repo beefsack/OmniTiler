@@ -41,6 +41,75 @@
   remain unchanged. Native/release scope stays in the [macOS 0.1 gate](../decisions/macos.md#macos-0-1-scope-and-gate)
   and [remaining port acceptance](macos-world-v2-port.md#original-backlog-lines-1767-1959).
 
+## Current state and rebase onto the current core (2026-11-23)
+
+This section is the starting point; it supersedes the status lines above and
+the slice-1 evidence below for planning.
+
+- **Stale evidence.** The [slice 1 evidence](#slice-1-implementation-and-evidence)
+  and the [suppressed admission focus blocker](#blocker-suppressed-admission-focus-changes-the-next-implicit-subject)
+  predate the core changes in the table below. Treat both as unverified. Core
+  has since moved to one retained focus settlement owner and removed reply
+  `effects`, so the blocker may be resolved or changed; re-run its minimal
+  case after the build is restored and before acting on it.
+- **Build.** At `dfb70175`, a Linux `cargo check --offline --locked -p tiler-macos`
+  fails with 77 errors, all core/protocol API drift; `--all-targets` adds 7
+  from the `tiler-windows` dev-dependency (`HostCaps`/`FieldDef.capabilities`,
+  `59a4e77b`). Code under `cfg(target_os = "macos")` adds an unknown number on
+  a macOS host. The pre-port review's 80-error macOS build predates these changes.
+- **No broker.** `tiler-macos` depends on `tiler-core` and `tiler-protocol`
+  only, so broker-side protocol work (PW-BR-*), the KDE renderer read
+  (PW-OUT-04) and the shared-roster slot route (PW-ROSTER-01; macOS is to
+  declare `sharedNativeRoster: false`) need no macOS change.
+- **KDE reference.** Most changes below landed with their KDE producer and
+  consumer in the same commit; `git show <commit> -- kwin/` is the worked
+  example. `877409e8` and `01eba77d` are core/protocol-only (KDE talks to the
+  broker over the wire); use the Rust call sites in that commit instead.
+
+| Change | Commit | Compile symptom in `tiler-macos` | Kind | Backlog item |
+| --- | --- | --- | --- | --- |
+| Retained drag preview split from command outcomes | `9a4c2125` | `WorldReplyV4.command_result`, `CommandResult::DragPreview` (`drag_fixture.rs`, `world_runtime.rs`) | Mechanical: read `reply.drag_preview` | macOS: adopt retained `dragPreview` and command `result` removal |
+| Typed command IDs and subjects | `877409e8` | `WorldCommand::Implicit`, `WindowSubject`/`WorkspaceId`/`FocusDirectionalSubject` mismatches, `.0` on `WindowSubject` (`world_command_map.rs`, `workspace_send.rs`) | Mechanical | C5 typed boundary adoption on macOS and Windows |
+| One validated prepared transition per report | `dbdb2dd6` | `.0` on `TransitionResult` (`world_dispatch.rs`, `workspace_select.rs`, `drag_fixture.rs`) | Mechanical | macOS: verify single report ingress and flag removal |
+| Unified v4 property attempts | `cb6a31e9` | `WindowFact.last_write`, `ReportWireOptionals.*_attempts_present`, `DecodedReportV4.property_attempt_order` (`world_builder.rs`, `runtime_core.rs`, `world_dispatch.rs`) | Producer rewrite: emit one `propertyAttempts` section | C5 typed boundary adoption on macOS and Windows |
+| Held presentation evidence at wire ingress | `01eba77d` | `DecodedReportV4.residual` | Mechanical | none |
+| Wire cleanup (unreachable decode, writer checks) | `bdefeef6` | `ReplyWireOptionals`, `DecodedReplyV4.wire` (`world_dispatch.rs`) | Mechanical: derive from the typed reply | none |
+| Reply `effects` removed (PW-OUT-03) | `fa60a5f3` | `WorldReplyV4.effects` (`world_sequencer.rs`) | Mechanical | macOS: re-verify unified retained focus after core reconciliation |
+| Settings catalog host exposure flags removed | `59a4e77b` | `HostCaps`, `FieldDef.capabilities` (`tiler-windows` dev-dependency) | Mechanical | none |
+| Automatic maximize clear via `state.maximized` (PW-EV-02) | `d253fe52` | `ClearAttempt`, `WorldReportV4.clear_attempts`, `WorldEngine::new_test_bound_with_capabilities` (`world_builder.rs`, `world_dispatch.rs`, `drag_fixture.rs`) | Delete the clear lane; macOS reports native `maximized: null` (M4), so no state-lane attempt replaces it | macOS maximize (M4) |
+| Tagged attempt dispositions and frame purposes (PW-EV-04) | `92505653` | `VisibilitySetter`, `FocusFeedback.setter`/`.reason`, `FrameAttempt.setter`/`.prewrite`/`.operation_id`, `MemberAttempt`/`ViewAttempt.setter` (`runtime_native.rs`, `runtime_thread.rs`, `runtime_worker.rs`, `world_dispatch.rs`, `world_runtime.rs`, `diag_cause.rs`) | Needs native mapping: each AX/Space call result to the tagged disposition, each frame write to its purpose, per the [contract](../porting/world-contract.md#raw-attempts-and-settlement); record the mapping | macOS: adopt retained settlement outcomes |
+| Explicit frame attempt identity, nullable `attemptMs` (PW-EV-06) | `fc6e3935` | `Option<u64>` mismatch (`world_runtime.rs`) | Mechanical, but never send a zero or invented clock | none |
+
+Changes that compile but still need macOS behaviour, each with its own
+backlog item: declare `sharedNativeRoster`; unified retained focus; pending-focus
+command subjects; retained settlement outcomes; retained `intentDesired`
+(needs a host storage decision, M3); switch and fallback removals; no-space
+removal; perpendicular focus recency; batch 3 admission; best-effort
+admission; settings-key parity and the 16-output `actionOutputs` cap
+(PW-IN-03, PW-IN-06; `fa60a5f3`).
+
+### Starter brief
+
+1. **Restore the build.** Mechanical edits only, following the table and the
+   KDE side of each commit. Record a table of error group, change, commit and
+   files touched. Do not add aliases, shims or compatibility conversions, and
+   do not weaken or delete assertions to make tests compile; port the test to
+   the current shape or list it as blocked. The macOS test and clippy gates
+   build the `tiler-windows` dev-dependency, so repair its 7 catalog errors
+   the same mechanical way (`git show 59a4e77b -- crates/tiler-kde-settings-exporter`).
+2. **Offline gates.** Run the [allowlisted macOS gates](../macos-dev-environment.md#4-prove-the-portable-offline-cargo-baseline-allowlist-only)
+   and report pass/fail counts per suite. Classify each failure as stale
+   expectation, adoption gap (name the backlog item) or defect.
+3. **Native smoke.** Under the [live guide](../live-macos-testing.md), the
+   signed fixture bundle with exact scope on ordinary admission/reflow only
+   (slice 1's native floor). Then re-run the suppressed admission focus
+   minimal case.
+
+Stop and write up instead of implementing when a change needs a product or
+contract decision, any `tiler-core` or `tiler-protocol` change, the shared
+host-settled geometry design, or M3 storage. Record findings in this section
+and update the matching backlog items.
+
 ## Pre-port review outcomes (2026-11-10)
 
 - Records-only outcome: the approved choices below amend existing policy;

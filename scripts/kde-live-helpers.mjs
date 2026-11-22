@@ -118,6 +118,44 @@ export function joinFixtureWindows(snapshots, native) {
   return out;
 }
 
+// Isolated live mode (docs/live-kwin-testing.md): one desktop appended past the
+// roster per run and made current so fixture windows open on it, removed at
+// teardown. Removal refuses while any window is a member, so it never
+// relocates windows; an already-absent desktop is a no-op.
+export async function appendTestDesktop(channel, name = "omnitiler-test") {
+  if (!channel || typeof channel.run !== "function") { fail("appendTestDesktop: channel.run required"); }
+  if (typeof name !== "string" || !name) { fail("appendTestDesktop: name required"); }
+  const body = [
+    "var before=arr(ws.desktops).map(did);",
+    "ws.createDesktop(before.length," + JSON.stringify(name) + ");",
+    "var fresh=arr(ws.desktops).filter(function(d){return before.indexOf(did(d))<0;});",
+    "if(fresh.length!==1)throw Error(\"append uncorrelated\");",
+    "ws.currentDesktop=fresh[0];",
+    "if(did(ws.currentDesktop)!==did(fresh[0]))throw Error(\"appended desktop not current\");",
+    "emit({id:did(fresh[0])});",
+  ].join("\n");
+  const result = await channel.run(KWIN_FIXTURE_PREAMBLE + body, "desktop-append");
+  if (!result || typeof result.id !== "string" || !result.id) { fail("appendTestDesktop: need {id} result"); }
+  return result.id;
+}
+
+export async function removeTestDesktop(channel, id) {
+  if (!channel || typeof channel.run !== "function") { fail("removeTestDesktop: channel.run required"); }
+  if (typeof id !== "string" || !id) { fail("removeTestDesktop: id required"); }
+  const body = [
+    "var id=" + JSON.stringify(id) + ";",
+    "var d=arr(ws.desktops).filter(function(x){return did(x)===id;});",
+    "if(d.length===0){emit({removed:false});return;}",
+    "var occ=arr(ws.windowList()).filter(function(w){return arr(w.desktops).some(function(x){return did(x)===id;});});",
+    "if(occ.length>0)throw Error(\"desktop occupied by \"+occ.length+\" window(s)\");",
+    "ws.removeDesktop(d[0]);",
+    "emit({removed:true});",
+  ].join("\n");
+  const result = await channel.run(KWIN_FIXTURE_PREAMBLE + body, "desktop-remove");
+  if (!result || typeof result.removed !== "boolean") { fail("removeTestDesktop: need {removed} result"); }
+  return result.removed;
+}
+
 export async function createKwinScriptChannel(opts) {
   opts = opts || {};
   const evidenceDir = opts.evidenceDir;

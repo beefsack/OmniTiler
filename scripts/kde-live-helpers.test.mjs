@@ -10,6 +10,7 @@ import {
   createKwinScriptChannel, KwinChannelError, generateHelperSource,
   KWIN_CHANNEL_PLUGIN_PREFIX, KWIN_CHANNEL_MARK, KWIN_CHANNEL_CURSOR_BODY,
   KWIN_FIXTURE_PREAMBLE, readFixtureState, joinFixtureWindows,
+  appendTestDesktop, removeTestDesktop,
 } from "./kde-live-helpers.mjs";
 
 const EVID_DIR = "/evidence/results";
@@ -757,4 +758,50 @@ test("preamble arr decoder accepts empty/valid and rejects invalid/overbound", (
     "({length:4097})", "({length:'2',0:'a',1:'b'})"]) {
     assert.throws(() => run(bad), /bad list/, bad);
   }
+});
+
+function desktopWorkspace() {
+  const ws = fakeNativeWorkspace();
+  let n = 0;
+  ws.desktops = ws.desktops.slice();
+  ws.created = [];
+  ws.createDesktop = (pos, name) => {
+    ws.created.push({ pos, name });
+    ws.desktops.splice(pos, 0, { id: "d-new" + String(++n) });
+  };
+  ws.removeDesktop = (d) => { ws.desktops.splice(ws.desktops.indexOf(d), 1); };
+  return ws;
+}
+
+test("appendTestDesktop appends past the roster and returns the fresh id", async () => {
+  const ws = desktopWorkspace();
+  assert.equal(await appendTestDesktop(vmChannel(ws), "run-a"), "d-new1");
+  assert.deepEqual(ws.created, [{ pos: 1, name: "run-a" }]);
+  assert.deepEqual(ws.desktops.map((d) => d.id), ["d1", "d-new1"]);
+  assert.equal(ws.currentDesktop.id, "d-new1");
+});
+
+test("appendTestDesktop rejects an uncorrelated append", async () => {
+  const ws = desktopWorkspace();
+  ws.createDesktop = () => {};
+  await assert.rejects(appendTestDesktop(vmChannel(ws)), /append uncorrelated/);
+});
+
+test("removeTestDesktop removes an empty run desktop and no-ops when absent", async () => {
+  const ws = desktopWorkspace();
+  const id = await appendTestDesktop(vmChannel(ws));
+  assert.equal(await removeTestDesktop(vmChannel(ws), id), true);
+  assert.deepEqual(ws.desktops.map((d) => d.id), ["d1"]);
+  assert.equal(await removeTestDesktop(vmChannel(ws), id), false);
+});
+
+test("removeTestDesktop refuses while any window is a member", async () => {
+  const ws = desktopWorkspace();
+  const id = await appendTestDesktop(vmChannel(ws));
+  const fresh = ws.desktops.find((d) => d.id === id);
+  const list = ws.windowList();
+  list[0].desktops = [fresh];
+  ws.windowList = () => list;
+  await assert.rejects(removeTestDesktop(vmChannel(ws), id), /desktop occupied by 1 window/);
+  assert.ok(ws.desktops.includes(fresh));
 });
