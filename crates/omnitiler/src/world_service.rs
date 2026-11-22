@@ -950,7 +950,7 @@ mod tests {
     }
 
     #[test]
-    fn broker_keys_inside_report_refuse_with_source_binding() {
+    fn forbidden_capture_facts_keys_refuse_with_source_binding() {
         let service = WorldService::new();
         // The serving generation comes from the handshake: the first
         // handshake binds the lifetime and mints its generation.
@@ -961,19 +961,24 @@ mod tests {
         )
         .expect("valid JSON");
         let generation = discovery["gen"].as_str().expect("gen").to_owned();
-        let envelope = format!(
-            "{{\"v\":4,\"adapter\":\"adapter-1\",\"gen\":\"{generation}\",\
-            \"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\
-            \"report\":{{\"v\":4,\"obs\":\"1\"}}}}"
-        );
-        // Broker-owned keys inside the report refuse before dispatch:
-        // exactly one sequencing namespace exists.
-        let reply = service.evaluate_capture(&envelope).expect("in-band");
-        let parsed: serde_json::Value = serde_json::from_str(&reply).expect("valid JSON");
-        assert_eq!(parsed["outcome"], "rejected");
-        assert_eq!(parsed["kind"], "unknown-field");
-        assert_eq!(parsed["source"], "src-1");
-        assert_eq!(parsed["nativeInvalid"], "1");
+        for facts in [
+            r#"{"v":4}"#,
+            r#"{"cmdSeq":null}"#,
+            r#"{"command":null}"#,
+            r#"{"v":4,"obs":"1"}"#,
+        ] {
+            let envelope = format!(
+                "{{\"v\":4,\"adapter\":\"adapter-1\",\"gen\":\"{generation}\",\
+                \"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\
+                \"report\":{facts}}}"
+            );
+            let reply = service.evaluate_capture(&envelope).expect("in-band");
+            let parsed: serde_json::Value = serde_json::from_str(&reply).expect("valid JSON");
+            assert_eq!(parsed["outcome"], "rejected");
+            assert_eq!(parsed["kind"], "unknown-field", "{facts}");
+            assert_eq!(parsed["source"], "src-1");
+            assert_eq!(parsed["nativeInvalid"], "1");
+        }
     }
 
     #[test]
@@ -1479,7 +1484,7 @@ mod tests {
             ),
         };
         format!(
-            "{{\"v\":4,\
+            "{{\
               \"screens\":[{{\"out\":\"out-a\",\"full\":[0,0,800,600],\"work\":[0,0,800,560],\
               \"complete\":true,\"scale\":1,\
               \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}},\
@@ -1795,7 +1800,7 @@ mod tests {
 
         let make_inner = |gesture: bool, native_gesture: &str, cursor: &str, witness: &str| {
             format!(
-                "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+                "{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
                 \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
                 \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
                 \"windows\":[{win_1},{win_2}],\"closed\":[],\"native\":[],\"focused\":\"win-1\",\
@@ -2165,7 +2170,7 @@ mod tests {
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
             \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
         let plain_inner = format!(
-            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            "{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
@@ -2316,7 +2321,7 @@ mod tests {
             ))
             .expect("settings");
 
-        let plain_inner = "{\"v\":4,\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
+        let plain_inner = "{\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
         let cap1 = format!(
             "{{\"v\":4,\"adapter\":\"kwin-test\",\"gen\":\"{generation}\",\"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\"report\":{plain_inner}}}"
         );
@@ -2390,7 +2395,7 @@ mod tests {
             ))
             .expect("settings");
 
-        let plain_inner = "{\"v\":4,\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
+        let plain_inner = "{\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
         let cap1 = format!(
             "{{\"v\":4,\"adapter\":\"kwin-test\",\"gen\":\"{generation}\",\"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\"report\":{plain_inner}}}"
         );
@@ -2464,7 +2469,7 @@ mod tests {
             ))
             .expect("settings");
 
-        let plain_inner = "{\"v\":4,\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
+        let plain_inner = "{\"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}],\"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\"complete\":true,\"gesture\":false,\"cursor\":null,\"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{\"foreground\":\"\",\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"hostHidden\":false,\"hiddenWorkspace\":false,\"frame\":null,\"chordHeld\":false,\"moveWindow\":\"\",\"pagerOrder\":[],\"pagerFrames\":[],\"witness\":null,\"foregroundOut\":null},\"intentRecords\":[],\"propertyAttempts\":[],\"focusFeedback\":[],\"focusChanges\":null,\"rendererInput\":null,\"gestureIngress\":null,\"nativeGesture\":null,\"cursorWindow\":null,\"nativeInvalidWitness\":null}";
 
         // Queue a failing command (focus unknown window) -> settles as Failed("focus-unknown").
         service

@@ -693,7 +693,7 @@ describe("world entry discovery and observation", () => {
         assert.ok(typeof req["sourceSeq"] === "string" && (req["sourceSeq"] as string).length > 0);
         assert.equal(req["command"], undefined, "captures never carry an inline command");
         const inner = req["report"] as Record<string, unknown>;
-        assert.equal(inner["v"], 4);
+        assert.ok(!("v" in inner), "inner capture facts carry no nested v");
         for (const key of ["owner", "adapter", "gen", "obs", "reqSeq", "req", "cmdSeq", "command", "monotonicMs", "mode", "views", "hostOwned", "equalCount", "predicate", "refill", "defaultTiled"]) {
             assert.ok(!(key in inner), `inner report carries no ${key}`);
         }

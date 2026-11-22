@@ -2872,7 +2872,7 @@ mod tests {
     // strict v4 presentation ingress plus `rendererInput`, no `views` or
     // settings keys. The broker stamps the sequencing namespace.
     fn capture_inner() -> String {
-        "{\"v\":4,\
+        "{\
           \"screens\":[{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
           \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
           \"identity\":{\"manufacturer\":null,\"model\":null,\"serial\":null,\
@@ -3299,7 +3299,7 @@ mod tests {
         };
         format!(
             "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\"source\":\"{source}\",\"sourceSeq\":\"{seq}\",\"nativeInvalid\":\"{seq}\",\
-            \"report\":{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+            \"report\":{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":\"Synthetic\",\"model\":\"Panel\",\"serial\":\"s-1\",\"connector\":\"DP-1\"}}}}],\
             \"windows\":[{},{}],\"closed\":[],\"native\":[],\"focused\":\"{focused}\",\"foregroundKnown\":true,\"complete\":true,\"gesture\":false,\"cursor\":null,\
             \"actionForeground\":null,\"actionCached\":null,\"actionOutputs\":[\"DP-1\"],\"presentation\":{{\"foreground\":\"\",\"minimized\":false,\

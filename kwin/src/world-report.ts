@@ -3586,8 +3586,7 @@ export function freezeWorldReportV4InnerJson(input: Omit<WorldReportV4Input, "fo
     if (!foregroundKnown && observation.focusedGlobal !== "") {
         return null;
     }
-    const prefix = `{"v":${WORLD_CONTRACT_VERSION},` +
-        `"screens":[${screens.join(",")}],"windows":[${windows.join(",")}],"closed":[`;
+    const prefix = `{"screens":[${screens.join(",")}],"windows":[${windows.join(",")}],"closed":[`;
     const beforeFocus = `],"native":[${native.join(",")}],` +
         `"focused":${focused},"foregroundKnown":${encodeV4Bool(foregroundKnown)},"focusChanges":`;
     const suffix = `,"complete":${encodeV4Bool(observation.complete)},` +

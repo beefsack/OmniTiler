@@ -65,7 +65,7 @@ fn bare_window_json(id: &str, rect: &str) -> String {
 
 fn inner_report(windows: &[String]) -> String {
     format!(
-        "{{\"v\":4,\
+        "{{\
           \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
           \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
           \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\

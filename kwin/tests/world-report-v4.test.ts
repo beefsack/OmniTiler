@@ -428,7 +428,7 @@ describe("v4 inner report shape", () => {
     it("emits the exact top-level key order without the broker namespace", () => {
         const { value } = buildInner(makeSurface([makeWin({})]));
         assert.deepEqual(Object.keys(value), [
-            "v", "screens", "windows", "closed", "native", "focused",
+            "screens", "windows", "closed", "native", "focused",
             "foregroundKnown",
             "focusChanges",
             "complete", "gesture", "cursor", "actionForeground",
@@ -437,7 +437,7 @@ describe("v4 inner report shape", () => {
             "rendererInput", "nativeGesture", "cursorWindow", "cursorHit",
             "nativeInvalidWitness",
         ]);
-        assert.equal(value["v"], 4);
+        assert.ok(!("v" in value), "nested v must be absent from capture facts");
         for (const brokerKey of ["adapter", "gen", "obs", "reqSeq", "req", "cmdSeq", "command", "monotonicMs"]) {
             assert.ok(!(brokerKey in value), `broker-owned ${brokerKey} must be absent`);
         }

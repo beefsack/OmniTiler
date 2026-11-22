@@ -46,12 +46,12 @@
 //!   capture can ever apply again.
 //! capture:  {"v":4,"adapter":A,"gen":G,"source":S,"sourceSeq":Q,
 //!            "nativeInvalid":"N","report":{...}}
-//!   `report` is the full normalized v4 observation (see
-//!   `tiler_protocol::world_protocol::decode_report_v4` for the exact
-//!   required/optional keys, including `rendererInput` and `focusChanges`)
-//!   without broker-owned keys (`owner`, `adapter`, `gen`, `obs`, `reqSeq`,
-//!   `req`, `cmdSeq`, `command`, `monotonicMs`): carrying any of them refuses
-//!   as unknown-field. `adapter` is the producer capture
+//!   `report` holds unversioned capture facts. The broker constructs the
+//!   standalone v4 observation (see `tiler_protocol::world_protocol::decode_report_v4`
+//!   for its required/optional keys, including `rendererInput` and `focusChanges`).
+//!   A nested `v` or any broker stamp (`adapter`, `gen`, `obs`, `reqSeq`,
+//!   `req`, `cmdSeq`, `command`, `monotonicMs`) refuses as `unknown-field`.
+//!   `adapter` is the producer capture
 //!   lifetime bound at discovery (undiscovered lifetimes refuse, and only
 //!   one lifetime is ever bound); `gen` must equal the serving generation
 //!   (stale generations refuse without applying). `source` is the
@@ -234,8 +234,8 @@ pub const MAX_SETTLED_RESULTS: usize = 1024;
 /// high-water and risk re-execution).
 pub const MAX_COMMAND_CLIENTS: usize = 1024;
 
-/// Keys the broker stamps itself; carrying any of them inside the inner
-/// capture report refuses as `unknown-field`.
+/// Stamp keys other than the version derived from the envelope. Carrying
+/// any of them inside the capture facts refuses as `unknown-field`.
 const BROKER_KEYS: [&str; 8] = [
     "adapter",
     "gen",
@@ -1327,6 +1327,7 @@ impl WorldBroker {
         request_seq: u64,
         clock: u64,
     ) {
+        inner.insert("v".to_owned(), serde_json::Value::from(BROKER_VERSION));
         inner.insert("adapter".to_owned(), json_string(adapter));
         inner.insert("gen".to_owned(), json_string(self.generation()));
         inner.insert("obs".to_owned(), json_string(&observation_seq.to_string()));
@@ -2015,10 +2016,10 @@ fn compact_json_exceeds_limit(map: &Map<String, serde_json::Value>, limit: usize
 }
 
 /// Strict v4 capture envelope parse: exact keys
-/// (`v,adapter,gen,source,sourceSeq,nativeInvalid,report`), v4 versions in
-/// both layers, opaque lifetime, generation alphabet, opaque source
-/// correlation, canonical per-lifetime source sequence, canonical watermark,
-/// object report, and no broker-owned key inside the report.
+/// (`v,adapter,gen,source,sourceSeq,nativeInvalid,report`), v4 outer version,
+/// opaque lifetime, generation alphabet, opaque source correlation, canonical
+/// per-lifetime source sequence, canonical watermark, object report carrying
+/// capture facts only (no nested `v` and no broker-owned stamp key).
 /// Outer-envelope failures bind empty/zero; inner-report failures still bind
 /// the parsed source watermark so the actuator can fence the rejection.
 fn parse_capture_envelope(envelope: &str) -> Result<ParsedCapture, CaptureFailure> {
@@ -2091,14 +2092,7 @@ fn parse_capture_envelope(envelope: &str) -> Result<ParsedCapture, CaptureFailur
         Some(serde_json::Value::Object(inner)) => inner,
         _ => return Err(bound(source, "malformed", "request is malformed")),
     };
-    if inner.get("v").and_then(serde_json::Value::as_u64) != Some(u64::from(BROKER_VERSION)) {
-        return Err(bound(
-            source,
-            "unsupported-version",
-            "unsupported contract version",
-        ));
-    }
-    if BROKER_KEYS.iter().any(|k| inner.contains_key(*k)) {
+    if inner.contains_key("v") || BROKER_KEYS.iter().any(|k| inner.contains_key(*k)) {
         return Err(bound(
             source,
             "unknown-field",
@@ -3045,6 +3039,74 @@ mod tests {
     }
 
     #[test]
+    fn capture_envelope_facts_only_and_version_precedence() {
+        // Wrong outer v fails first as blind unsupported-version even if
+        // report carries nested v or broker-owned stamps.
+        for bad_outer in [
+            r#"{"v":3,"adapter":"a-1","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":4,"obs":"1"}}"#,
+            r#"{"v":null,"adapter":"a-1","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{}}"#,
+        ] {
+            let failure = parse_capture_envelope(bad_outer).expect_err("bad outer v refuses");
+            assert_eq!(failure.kind, "unsupported-version");
+            assert_eq!(failure.source, "");
+            assert_eq!(failure.native_invalid, 0);
+        }
+
+        // Valid outer fields/watermark: nested v (even 4 or null) is a bound unknown-field.
+        for inner in [r#"{"v":4}"#, r#"{"v":null}"#, r#"{"v":3}"#] {
+            let env = format!(
+                r#"{{"v":4,"adapter":"a-1","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{inner}}}"#
+            );
+            let failure = parse_capture_envelope(&env).expect_err("nested v refuses");
+            assert_eq!(failure.kind, "unknown-field");
+            assert_eq!(failure.message, "request contains an unknown field");
+            assert_eq!(failure.source, "src-1");
+            assert_eq!(failure.native_invalid, 3);
+        }
+
+        // Each broker-owned stamp key inside report is a bound unknown-field.
+        for key in BROKER_KEYS {
+            let env = format!(
+                r#"{{"v":4,"adapter":"a-1","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{{"{key}":null}}}}"#
+            );
+            let failure = parse_capture_envelope(&env).expect_err("broker key refuses");
+            assert_eq!(failure.kind, "unknown-field");
+            assert_eq!(failure.message, "request contains an unknown field");
+            assert_eq!(failure.source, "src-1");
+            assert_eq!(failure.native_invalid, 3);
+        }
+
+        // Nested v combined with broker-owned stamps is the same bound unknown-field.
+        let combo = r#"{"v":4,"adapter":"a-1","gen":"w-1","source":"src-1","sourceSeq":"1","nativeInvalid":"3","report":{"v":4,"cmdSeq":null,"command":null,"obs":"1"}}"#;
+        let failure = parse_capture_envelope(combo).expect_err("nested v + stamps refuses");
+        assert_eq!(failure.kind, "unknown-field");
+        assert_eq!(failure.message, "request contains an unknown field");
+        assert_eq!(failure.source, "src-1");
+        assert_eq!(failure.native_invalid, 3);
+
+        // Facts-only capture succeeds through parse_capture_envelope and real v4 dispatch.
+        let (mut broker, adapter, generation) = bound_test_broker();
+        let facts_inner = r#"{"screens":[{"out":"DP-1","full":[0,0,1920,1080],"work":[0,0,1920,1040],"complete":true,"scale":1,"identity":{"manufacturer":null,"model":null,"serial":null,"connector":null}}],"windows":[],"closed":[],"native":[],"focused":"","foregroundKnown":true,"complete":true,"gesture":false,"cursor":null,"actionForeground":null,"actionCached":null,"actionOutputs":["DP-1"],"presentation":{"foreground":"","minimized":false,"maximized":false,"fullscreen":false,"hostHidden":false,"hiddenWorkspace":false,"frame":null,"chordHeld":false,"moveWindow":"","pagerOrder":[],"pagerFrames":[],"witness":null,"foregroundOut":null},"intentRecords":[],"propertyAttempts":[],"focusFeedback":[],"focusChanges":null,"rendererInput":null,"gestureIngress":null,"nativeGesture":null,"cursorWindow":null,"nativeInvalidWitness":null}"#;
+        let env = format!(
+            r#"{{"v":4,"adapter":"{adapter}","gen":"{generation}","source":"src-facts-1","sourceSeq":"1","nativeInvalid":"1","report":{facts_inner}}}"#
+        );
+        let parsed = parse_capture_envelope(&env).expect("facts-only envelope parses");
+        assert!(!parsed.inner.contains_key("v"));
+        let reply = broker
+            .dispatch_capture(&env)
+            .expect("facts-only capture dispatches");
+        let reply_json: serde_json::Value = serde_json::from_str(&reply).expect("valid json");
+        assert_eq!(reply_json["v"], 4);
+        assert_eq!(reply_json["source"], "src-facts-1");
+        assert_eq!(reply_json["nativeInvalid"], "1");
+        assert_eq!(reply_json["req"], "src-facts-1");
+        assert!(
+            reply_json.get("error").is_none(),
+            "unexpected error: {reply}"
+        );
+    }
+
+    #[test]
     fn sender_namespace_rejects_non_unique_names() {
         assert!(valid_sender(":1.42").is_some());
         assert!(valid_sender("").is_none());
@@ -3818,7 +3880,7 @@ mod tests {
         let win_a = test_window_json("win-a");
         let win_b = test_window_json("win-b");
         let inner = format!(
-            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            "{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":[{win_a},{win_b}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
@@ -4134,7 +4196,7 @@ mod tests {
         // Seed one observation-only capture so win-a is admitted and ready
         // before opening the gesture.
         let seed_inner = format!(
-            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            "{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
@@ -4156,7 +4218,7 @@ mod tests {
         let _ = broker.dispatch_capture(&seed_env).expect("seed");
 
         let open_inner = format!(
-            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            "{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
@@ -4197,6 +4259,7 @@ mod tests {
         cmd_inner.remove("nativeInvalidWitness");
         let cmd_obs = broker.take_observation_seq().expect("obs").to_string();
         let cmd_req = broker.take_request_seq().expect("req").to_string();
+        cmd_inner.insert("v".to_owned(), serde_json::Value::from(BROKER_VERSION));
         cmd_inner.insert("adapter".to_owned(), json_string(adapter));
         cmd_inner.insert("gen".to_owned(), json_string(&generation));
         cmd_inner.insert("obs".to_owned(), json_string(&cmd_obs));
@@ -4303,7 +4366,7 @@ mod tests {
         let idle_env = format!(
             "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
             \"source\":\"src-4-t\",\"sourceSeq\":\"5\",\"nativeInvalid\":\"5\",\
-            \"report\":{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            \"report\":{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\
@@ -4364,7 +4427,7 @@ mod tests {
         let seed_env = format!(
             "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
             \"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\
-            \"report\":{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            \"report\":{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":{wins},\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
@@ -4392,7 +4455,7 @@ mod tests {
         let start_env = format!(
             "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
             \"source\":\"src-2\",\"sourceSeq\":\"2\",\"nativeInvalid\":\"2\",\
-            \"report\":{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            \"report\":{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":{wins},\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
@@ -4415,7 +4478,7 @@ mod tests {
         let update_env = format!(
             "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\
             \"source\":\"src-3\",\"sourceSeq\":\"3\",\"nativeInvalid\":\"3\",\
-            \"report\":{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            \"report\":{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":{wins},\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
@@ -4459,6 +4522,7 @@ mod tests {
         unproven_inner.remove("nativeInvalidWitness");
         let obs4 = broker.take_observation_seq().expect("obs4").to_string();
         let req4 = broker.take_request_seq().expect("req4").to_string();
+        unproven_inner.insert("v".to_owned(), serde_json::Value::from(BROKER_VERSION));
         unproven_inner.insert("adapter".to_owned(), json_string(adapter));
         unproven_inner.insert("gen".to_owned(), json_string(&generation));
         unproven_inner.insert("obs".to_owned(), json_string(&obs4));
@@ -4590,7 +4654,7 @@ mod tests {
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
             \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
         let inner = format!(
-            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            "{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
@@ -4680,7 +4744,7 @@ mod tests {
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
             \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
         let inner = format!(
-            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            "{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
@@ -4803,7 +4867,7 @@ mod tests {
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
             \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
         let inner = format!(
-            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            "{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
@@ -4950,7 +5014,7 @@ mod tests {
             \"fullscreenOwner\":null,\"fullscreenExitable\":null,\"suppressionAvailable\":null,\
             \"visibility\":{\"visible\":true,\"suppressionOwned\":null}}";
         let inner = format!(
-            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+            "{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
             \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
             \"windows\":[{win_a}],\"closed\":[],\"native\":[],\"focused\":\"win-a\",\"foregroundKnown\":true,\
@@ -5190,7 +5254,7 @@ mod tests {
 
         let fixed_width_report = |win: &str| {
             format!(
-                "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+                "{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
                 \"identity\":{{\"manufacturer\":\"Synthetic\",\"model\":\"Panel\",\"serial\":\"s-1\",\"connector\":\"DP-1\"}}}}],\
                 \"windows\":[{{\"win\":\"{win}\",\"out\":\"DP-1\",\"rect\":[0,0,400,400],\"minimized\":false,\"maximized\":false,\"fullscreen\":false,\"sticky\":false,\
                 \"hints\":{{\"minW\":400,\"minH\":100,\"maxW\":400,\"maxH\":900}},\"hostHidden\":false,\"privileged\":false,\"managed\":true,\"acceptsInput\":true,\
@@ -5373,7 +5437,7 @@ mod tests {
             }
             format!(
                 "{{\"v\":4,\"adapter\":\"{adapter}\",\"gen\":\"{generation}\",\"source\":\"{source}\",\"sourceSeq\":\"{seq}\",\"nativeInvalid\":\"1\",\
-                \"report\":{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
+                \"report\":{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
                 \"identity\":{{\"manufacturer\":\"Synthetic\",\"model\":\"Panel\",\"serial\":\"s-1\",\"connector\":\"DP-1\"}}}}],\
                 \"windows\":[{windows}],\"closed\":[],\"native\":[],\"focused\":\"w-{seq}-0\",\"foregroundKnown\":true,\"complete\":true,\"gesture\":false,\"cursor\":[100,100],\
                 \"actionForeground\":\"DP-1\",\"actionCached\":\"DP-1\",\"actionOutputs\":[\"DP-1\"],\"presentation\":{{\"foreground\":\"w-{seq}-0\",\"minimized\":false,\
@@ -5761,7 +5825,7 @@ mod tests {
         let cap_env = format!(
             "{{\"v\":4,\"adapter\":\"b6-adapter\",\"gen\":\"{generation}\",\
               \"source\":\"src-1\",\"sourceSeq\":\"1\",\"nativeInvalid\":\"1\",\
-              \"report\":{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
+              \"report\":{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
               \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
               \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
               \"windows\":[],\"closed\":[],\"native\":[],\"focused\":\"\",\"foregroundKnown\":false,\

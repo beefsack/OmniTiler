@@ -218,6 +218,7 @@ mod tests {
         for broker_only in ["nativeGesture", "cursorWindow", "nativeInvalidWitness"] {
             map.remove(broker_only);
         }
+        map.insert("v".to_owned(), json!(4));
         map.insert("adapter".to_owned(), adapter);
         map.insert("gen".to_owned(), json!(generation));
         map.insert("obs".to_owned(), json!("1"));

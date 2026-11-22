@@ -234,7 +234,7 @@ export function createMiniBroker(): MiniBroker {
             // stripped before the strict core decode, exactly like the
             // production broker. Absent keys pass through.
             const raw = envelope["report"] as Record<string, unknown>;
-            for (const brokerKey of ["adapter", "gen", "obs", "reqSeq", "req", "cmdSeq", "command", "monotonicMs"]) {
+            for (const brokerKey of ["v", "adapter", "gen", "obs", "reqSeq", "req", "cmdSeq", "command", "monotonicMs"]) {
                 if (brokerKey in raw) {
                     throw new Error(`inner report must not carry broker-owned ${brokerKey}`);
                 }
@@ -260,6 +260,7 @@ export function createMiniBroker(): MiniBroker {
                 settlements.push({ ...entry, cmdSeq: cmdSeqValue, result: null, failedKind: null, settled: false, collected: false });
             }
             return JSON.stringify({
+                v: 4,
                 ...inner,
                 adapter: envelope["adapter"],
                 gen: envelope["gen"],

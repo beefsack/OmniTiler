@@ -313,7 +313,8 @@ function discover(h: Harness, gen = "gen-1"): void {
     const auto = h.lastCall("DescribeWorld");
     const autoBody = JSON.parse(auto.payload);
     assert.equal(autoBody["command"], undefined, "captures never carry an inline command");
-    assert.equal((autoBody["report"] as Record<string, unknown>)["v"], 4);
+    assert.equal(autoBody["v"], 4);
+    assert.ok(!("v" in (autoBody["report"] as Record<string, unknown>)));
     auto.callback(accept(gen, autoBody.source, autoBody.nativeInvalid, "0"));
 }
 

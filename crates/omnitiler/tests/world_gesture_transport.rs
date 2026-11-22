@@ -42,7 +42,7 @@ fn window_json(id: &str, rect: &str) -> String {
 
 fn inner_report(windows: &[String]) -> String {
     format!(
-        "{{\"v\":4,\
+        "{{\
           \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
           \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
           \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
@@ -1620,7 +1620,7 @@ fn unit_i_broker_gesture_transfer_128_byte_window_and_underlay_agreement() {
 
     let two_screen_report = |windows: &[String], native: &str| -> String {
         format!(
-            "{{\"v\":4,\
+            "{{\
               \"screens\":[\
                 {{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}},\
                 {{\"out\":\"DP-2\",\"full\":[1920,0,1920,1080],\"work\":[1920,0,1920,1040],\"complete\":true,\"scale\":1,\"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}\

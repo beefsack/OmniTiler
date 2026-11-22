@@ -492,9 +492,10 @@ describe("world ordinary frame engine carrier", () => {
             assert.ok(isCanonicalU64Text(firstStamped["reqSeq"]), "reqSeq is canonical");
             assert.ok(isCanonicalU64Text(firstStamped["monotonicMs"]), "monotonicMs is canonical");
             const report = firstEnvelope["report"] as Record<string, unknown>;
+            assert.ok(!("v" in report), "capture facts omit nested v");
             const { nativeGesture: _droppedGesture, cursorWindow: _droppedCursor, nativeInvalidWitness: _droppedWitness, ...reportRest } =
                 report as Record<string, unknown> & { nativeGesture?: unknown; cursorWindow?: unknown; nativeInvalidWitness?: unknown };
-            const brokerKeys = new Set(["adapter", "gen", "obs", "reqSeq", "req", "cmdSeq", "command", "monotonicMs"]);
+            const brokerKeys = new Set(["v", "adapter", "gen", "obs", "reqSeq", "req", "cmdSeq", "command", "monotonicMs"]);
             const stampedRest: Record<string, unknown> = {};
             for (const [key, value] of Object.entries(firstStamped)) {
                 if (!brokerKeys.has(key)) {

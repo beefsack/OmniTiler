@@ -98,7 +98,7 @@ describe("capacity settings connection carriage", () => {
         });
         assert.ok(json !== null, "genuine v4 producer bytes encode");
         const body = JSON.parse(json as string) as Record<string, unknown>;
-        assert.equal(body["v"], 4);
+        assert.ok(!("v" in body), "inner capture facts carry no nested v");
         for (const key of ["anchorFallback", "noSpaceResult", "gap", "outer", "mode", "sameAxis", "refill", "defaultTiled", "predicate", "bornMaximized"]) {
             assert.ok(!(key in body), `v4 inner report carries no ${key}`);
         }

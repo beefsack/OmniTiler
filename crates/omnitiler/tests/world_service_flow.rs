@@ -100,7 +100,7 @@ fn inner_report_with_attempts(
         native.to_owned()
     };
     format!(
-        "{{\"v\":4,\
+        "{{\
           \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
           \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
           \"identity\":{{\"manufacturer\":null,\"model\":null,\
@@ -4570,7 +4570,7 @@ const UUID_D: &str = "6ba7b812-9dad-11d1-80b4-00c04fd430c8";
 /// DiscoverWorld short wire key instead.
 fn two_output_all_mode_inner(window: &str) -> String {
     format!(
-        "{{\"v\":4,\
+        "{{\
           \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
           \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
           \"identity\":{{\"manufacturer\":null,\"model\":null,\
@@ -5103,7 +5103,7 @@ fn checked_broker_publishes_x16392_and_recaptures_closed_half_open_bounds() {
               \"occupancy\":[{{\"native\":\"{UUID_A}\",\"count\":null}}]}}"
         );
         format!(
-            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":{screen_rect},\"work\":{screen_rect},\
+            "{{\"screens\":[{{\"out\":\"DP-1\",\"full\":{screen_rect},\"work\":{screen_rect},\
               \"complete\":true,\"scale\":1,\"identity\":{{\"manufacturer\":null,\"model\":null,\
               \"serial\":null,\"connector\":null}}}}],\
               \"windows\":[{}],\"closed\":[],\"native\":[{native}],\"focused\":\"win-a\",\"foregroundKnown\":true,\
@@ -5209,7 +5209,7 @@ fn typed_and_checked_broker_match_unreadable_output_hold_beside_healthy_neighbor
           \"occupancy\":[{{\"native\":\"{UUID_B}\",\"count\":null}}]}}"
     );
     let ready_report = format!(
-        "{{\"v\":4,\"screens\":[\
+        "{{\"screens\":[\
           {{\"out\":\"DP-1\",\"full\":[0,0,800,600],\"work\":[0,0,800,600],\"complete\":true,\"scale\":1,\
             \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}},\
           {{\"out\":\"DP-2\",\"full\":[800,0,800,600],\"work\":[800,0,800,600],\"complete\":true,\"scale\":1,\
@@ -5245,7 +5245,7 @@ fn typed_and_checked_broker_match_unreadable_output_hold_beside_healthy_neighbor
     // Compare against typed WorldEngine on the same decoded report.
     let wrap_flat = |inner: &str, seq: u64| -> String {
         inner.replacen(
-            "{\"v\":4,",
+            "{",
             &format!(
                 "{{\"v\":4,\"adapter\":\"{ADAPTER}\",\"gen\":\"gen-1\",\
                   \"obs\":\"{seq}\",\"reqSeq\":\"{seq}\",\"req\":\"req-{seq}\",\
@@ -5389,7 +5389,7 @@ fn projected_tiled_windows_order_matches_bytewise_lifetime_across_12_leaves_over
         let seq = u64::try_from(idx + 1).expect("seq");
         windows_json.push(window_json(id, "[0,0,400,300]", Some(UUID_A)));
         let inner = format!(
-            "{{\"v\":4,\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1600,1200],\
+            "{{\"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1600,1200],\
               \"work\":[0,0,1600,1200],\"complete\":true,\"scale\":1,\
               \"identity\":{{\"manufacturer\":null,\"model\":null,\"serial\":null,\"connector\":null}}}}],\
               \"windows\":[{}],\"closed\":[],\"native\":[{native_1}],\"focused\":\"{id}\",\
@@ -5518,7 +5518,7 @@ fn global_unique_swap_minimized_incoming_and_outgoing_over_checked_broker() {
     let make_inner = |windows: &[String], focused: &str| -> String {
         let windows_json = windows.join(",");
         format!(
-            "{{\"v\":4,\
+            "{{\
               \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
               \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
               \"identity\":{{\"manufacturer\":null,\"model\":null,\
@@ -5718,7 +5718,7 @@ fn global_unique_swap_float_carries_member_auth_without_frame_write_over_checked
     let make_inner = |windows: &[String], focused: &str| -> String {
         let windows_json = windows.join(",");
         format!(
-            "{{\"v\":4,\
+            "{{\
               \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
               \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
               \"identity\":{{\"manufacturer\":null,\"model\":null,\
@@ -5989,7 +5989,7 @@ fn edge_output_unrepresentable_underlay_hides_without_blocking_ready_or_neighbor
     let windows = format!("{win_a},{win_b},{win_c}");
     let make_inner = |obs: u64| {
         format!(
-            "{{\"v\":4,\
+            "{{\
               \"screens\":[\
                 {{\"out\":\"DP-1\",\"full\":[-32768,0,1920,1080],\
                   \"work\":[-32768,0,1920,1040],\"complete\":true,\"scale\":1,\
@@ -6097,7 +6097,7 @@ fn migration_refill_parent_carries_through_issuing_and_retained_checked_broker()
         let win_b = window_json("win-b1", "[1920,0,1920,1040]", Some(UUID_C))
             .replace("\"out\":\"DP-1\"", "\"out\":\"DP-2\"");
         format!(
-            "{{\"v\":4,\
+            "{{\
               \"screens\":[{{\"out\":\"DP-1\",\"full\":[0,0,1920,1080],\
               \"work\":[0,0,1920,1040],\"complete\":true,\"scale\":1,\
               \"identity\":{{\"manufacturer\":null,\"model\":null,\

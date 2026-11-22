@@ -380,10 +380,13 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         const flow = startFlow();
         discoverFlow(flow);
         const auto = lastCall(flow.calls, "DescribeWorld");
-        const inner = (JSON.parse(auto.payload) as Record<string, unknown>)["report"] as Record<string, unknown>;
-        // The exact v4 producer shape: version 4, genuine native facts, no
-        // broker namespace, no retired v3 keys, no classifier verdicts.
-        assert.equal(inner["v"], 4);
+        const envelope = JSON.parse(auto.payload) as Record<string, unknown>;
+        const inner = envelope["report"] as Record<string, unknown>;
+        // The exact v4 producer shape: outer envelope carries v:4, inner report
+        // carries genuine capture facts only (no nested v, no broker namespace,
+        // no retired v3 keys, no classifier verdicts).
+        assert.equal(envelope["v"], 4);
+        assert.ok(!("v" in inner), "inner capture facts carry no nested v");
         assert.ok(Array.isArray(inner["screens"]) && Array.isArray(inner["windows"]) && Array.isArray(inner["native"]));
         for (const key of BROKER_KEYS) {
             assert.ok(!(key in inner), `inner report carries no ${key}`);
@@ -640,7 +643,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         const coreShaped = parseWorldReply(acceptCapture("gen-1", {
             v: 4, adapter: "test-adapter", gen: "gen-1",
             source: "src-1", sourceSeq: "1", nativeInvalid: "1",
-            report: { v: 4 },
+            report: {},
         }, "1"));
         assert.ok(coreShaped !== null && isCoreWorldReply(coreShaped));
     });

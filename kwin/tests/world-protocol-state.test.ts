@@ -154,10 +154,10 @@ describe("world-report commands and reply parsing", () => {
         assert.equal(parseWorldReply("not json"), null);
     });
 
-    it("builds strict v4 envelopes with no broker keys inside the report", () => {
-        const inner = buildCaptureEnvelope("a-1", "gen-1", "src-1", "1", "4", '{"v":4}');
+    it("builds strict v4 envelopes with facts only inside the report", () => {
+        const inner = buildCaptureEnvelope("a-1", "gen-1", "src-1", "1", "4", '{"screens":[]}');
         assert.deepEqual(JSON.parse(inner), {
-            v: 4, adapter: "a-1", gen: "gen-1", source: "src-1", sourceSeq: "1", nativeInvalid: "4", report: { v: 4 },
+            v: 4, adapter: "a-1", gen: "gen-1", source: "src-1", sourceSeq: "1", nativeInvalid: "4", report: { screens: [] },
         });
         assert.deepEqual(JSON.parse(buildDiscoveryRequest("a-1", "disc-9")), { v: 4, adapter: "a-1", req: "disc-9" });
         assert.deepEqual(
