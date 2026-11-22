@@ -43,7 +43,7 @@ class WorldBridge {
         this.proc = proc;
         const stdout = proc.stdout;
         if (stdout === null || stdout === undefined) {
-            throw new Error("raw_world_eval stdout unavailable");
+            throw new Error("world_eval stdout unavailable");
         }
         createInterface({ input: stdout }).on("line", (line: string) => {
             this.waiters.shift()?.resolve(line);
@@ -55,7 +55,7 @@ class WorldBridge {
             this.failAll(error instanceof Error ? error : new Error(String(error)));
         });
         proc.on("close", (code, signal) => {
-            this.failAll(new Error(`raw_world_eval exited with code ${String(code)} signal=${signal} stderr=${this.stderrTail.slice(-2000)}`));
+            this.failAll(new Error(`world_eval exited with code ${String(code)} signal=${signal} stderr=${this.stderrTail.slice(-2000)}`));
         });
     }
 
@@ -70,7 +70,7 @@ class WorldBridge {
 
     static start(): WorldBridge {
         return new WorldBridge(
-            spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
+            spawn("cargo", ["run", "--offline", "-q", "-p", "tiler-protocol", "--example", "world_eval"], {
                 stdio: ["pipe", "pipe", "pipe"],
             }),
         );
@@ -81,7 +81,7 @@ class WorldBridge {
             return Promise.reject(new Error(this.dead));
         }
         if (this.proc.exitCode !== null || this.proc.signalCode !== null) {
-            return Promise.reject(new Error("raw_world_eval process already exited"));
+            return Promise.reject(new Error("world_eval process already exited"));
         }
         const line = JSON.stringify({ method, body: payload });
         return new Promise<string>((resolve, reject) => {

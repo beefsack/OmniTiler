@@ -2,7 +2,7 @@
 // handshake/settings and DescribeWorld payloads must equal the checked-in
 // artifacts under test-fixtures/kde-v4-active/bytes, and the recorded
 // Observe reply must strict-parse and apply through the production entry
-// via the genuine Rust engine (raw_world_eval).
+// via the genuine Rust engine (world_eval).
 // UPDATE_KDE_V4_BYTE_FIXTURES=1 writes ONLY the named new files below;
 // normal runs assert exactly. The historical test-fixtures/kde-v4/bytes
 // family is preserved untouched. Legacy test-fixtures/world-wire artifacts
@@ -396,7 +396,7 @@ class WorldBridge {
         this.proc = proc;
         const stdout = proc.stdout;
         if (stdout === null || stdout === undefined) {
-            throw new Error("raw_world_eval stdout unavailable");
+            throw new Error("world_eval stdout unavailable");
         }
         createInterface({ input: stdout }).on("line", (line: string) => {
             this.waiters.shift()?.resolve(line);
@@ -408,7 +408,7 @@ class WorldBridge {
             }
         });
         proc.on("close", (code, signal) => {
-            const failure = new Error(`raw_world_eval exited code=${String(code)} signal=${String(signal)}`);
+            const failure = new Error(`world_eval exited code=${String(code)} signal=${String(signal)}`);
             while (this.waiters.length > 0) {
                 this.waiters.shift()?.reject(failure);
             }
@@ -417,7 +417,7 @@ class WorldBridge {
 
     static start(): WorldBridge {
         return new WorldBridge(
-            spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
+            spawn("cargo", ["run", "--offline", "-q", "-p", "tiler-protocol", "--example", "world_eval"], {
                 cwd: repoRoot(),
                 stdio: ["pipe", "pipe", "pipe"],
             }),

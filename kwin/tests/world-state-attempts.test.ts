@@ -2,7 +2,7 @@
 // maximized/sticky/above typing, strict canonical encoding, retained
 // delivery/ack plumbing, and strict-codec acceptance. Offline only:
 // in-memory state plus genuine producer bytes through the retained real
-// `WorldEngine` (`raw_world_eval`). This unit retains evidence only: no
+// `WorldEngine` (`world_eval`). This unit retains evidence only: no
 // native state spending happens here (no fullscreen/maximized/sticky/
 // above writes), so the apply loop records nothing yet. Included in
 // `npm test`.
@@ -407,7 +407,7 @@ describe("world state attempt strict engine", () => {
             this.proc = proc;
             const stdout = proc.stdout;
             if (stdout === null || stdout === undefined) {
-                throw new Error("raw_world_eval stdout unavailable");
+                throw new Error("world_eval stdout unavailable");
             }
             createInterface({ input: stdout }).on("line", (line: string) => {
                 this.waiters.shift()?.resolve(line);
@@ -417,7 +417,7 @@ describe("world state attempt strict engine", () => {
             });
             proc.on("error", (error) => this.failAll(error instanceof Error ? error : new Error(String(error))));
             proc.on("close", (code, signal) => {
-                this.failAll(new Error(`raw_world_eval exited with code ${String(code)} signal=${String(signal)} stderr=${this.stderrTail.slice(-2000)}`));
+                this.failAll(new Error(`world_eval exited with code ${String(code)} signal=${String(signal)} stderr=${this.stderrTail.slice(-2000)}`));
             });
         }
         private failAll(error: Error): void {
@@ -430,7 +430,7 @@ describe("world state attempt strict engine", () => {
         }
         static start(): WorldBridge {
             return new WorldBridge(
-                spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
+                spawn("cargo", ["run", "--offline", "-q", "-p", "tiler-protocol", "--example", "world_eval"], {
                     cwd: repoRoot(),
                     stdio: ["pipe", "pipe", "pipe"],
                 }),
@@ -441,7 +441,7 @@ describe("world state attempt strict engine", () => {
                 return Promise.reject(new Error(this.dead));
             }
             if (this.proc.exitCode !== null || this.proc.signalCode !== null) {
-                return Promise.reject(new Error("raw_world_eval process already exited"));
+                return Promise.reject(new Error("world_eval process already exited"));
             }
             return new Promise<string>((resolvePromise, rejectPromise) => {
                 this.waiters.push({ resolve: resolvePromise, reject: rejectPromise });

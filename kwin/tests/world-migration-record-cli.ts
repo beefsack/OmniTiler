@@ -5,7 +5,7 @@
 // import the recorder never execute CLI side effects.
 //
 // Run through the declared development environment, with fresh output paths:
-//   cargo build --offline -p omnitiler --example raw_world_eval
+//   cargo build --offline -p tiler-protocol --example world_eval
 //   kwin/node_modules/.bin/esbuild kwin/tests/world-migration-record-cli.ts --bundle --platform=node --format=cjs --target=es2020 --outfile="$RECORDER_JS"
 //   node "$RECORDER_JS" --out-dir "$OUT_DIR" [--bridge-binary "$BRIDGE_BIN"]
 // BRIDGE_BIN follows Cargo's configured target directory. An existing output

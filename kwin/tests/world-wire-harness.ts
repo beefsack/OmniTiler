@@ -11,7 +11,7 @@
 // becomes a hard RED instead of a false GREEN.
 //
 // The production broker owns one sequencing namespace plus the bound
-// response correlation; `raw_world_eval` is a retained strict `WorldEngine`
+// response correlation; `world_eval` is a retained strict `WorldEngine`
 // with no broker in front of it, so this file performs exactly the
 // broker-owned transport stamping the tests need and nothing else:
 //

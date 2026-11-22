@@ -965,7 +965,7 @@ Source: package O.
   needs to guard the TypeScript side; that scope is right.
 - Type drift: TS contract unions, parser and encoder are hand-written mirrors
   of the Rust types. Protection is fixture bytes, strict TS parsing and the
-  `raw_world_eval` bridge, which cover exercised variants only. A Rust variant
+  engine-only evaluator bridge, which cover exercised variants only. A Rust variant
   no fixture exercises would first fail at runtime as a rejected reply. v4
   changes most of the wire (R1, R3, R4, R8, R13), so the whole mirror will be
   rewritten anyway.
@@ -4322,7 +4322,7 @@ git status --short
 - D: macOS inline builder tests assemble native contexts/observed windows and assert screen geometry, native order/current, completeness and no invented logical views (`crates/tiler-macos/src/world_builder.rs:871-903`); retained HiddenApp facts also pass real builder plus real engine (`:2009-2021,2081-2094`). Inline dispatch tests run real `consume_world_reply` and assert frame emission, held-reply no-write behavior and recovery (`crates/tiler-macos/src/world_dispatch.rs:2941-2947,3127-3203`).
 - D: macOS has a scripted `FakeBackend: SelectionBackend` inside `runtime_thread.rs`, modeling native create/select/readback (`crates/tiler-macos/src/runtime_thread.rs:4641-4728`). The trailing-job test drives reply-authorized creation/select through that backend, stages native attempts through real jobs/report construction, then calls the engine for settlement (`:4771-4772,4794-4833,4839-4871,4882-4957`). Separate offline completion tests assert setter outcomes do not claim arrival (`crates/tiler-macos/src/world_runtime_tests.rs:1-4,389-408`). U: A universal macOS fake AX host covering every reply effect was not established.
 - D: KDE's TS `makeHarness()` tests native-shaped screen/window/workspace capture, not preclassified `WindowFact` rows (`kwin/tests/world-entry.test.ts:370-395`). Rust raw-projection tests cover fixed classification, frame/client hint conversion and a separate `kde-raw-corpus.json` (`crates/omnitiler/src/kde_raw.rs:665-695,772-779`). Rust service tests construct capture envelopes and exercise service report/reply flow (`crates/omnitiler/tests/world_service_flow.rs:56-126,194-233`); native reply application is tested in the TS fixture consumers in O(1), not by Rust service tests writing KWin windows.
-- D: Additional KWin scenarios use `world-wire-harness.ts`/`createMiniBroker` plus the Rust `raw_world_eval` bridge. This stamps transport while real Rust normalizes/executes reports; it explicitly excludes D-Bus/KWin and real broker auth/replay semantics (`kwin/tests/world-wire-harness.ts:1-15,54-57,97,125-130`; `kwin/tests/world-entry.test.ts:1619-1625,1650-1654`). I: This is dynamic TS-to-core scenario coverage, not a shared all-platform harness or proof of native compositor settlement.
+- D: Additional KWin scenarios use `world-wire-harness.ts`/`createMiniBroker` plus the Rust engine-only evaluator bridge. This stamps transport while real Rust normalizes/executes reports; it explicitly excludes D-Bus/KWin and real broker auth/replay semantics (`kwin/tests/world-wire-harness.ts:1-15,54-57,97,125-130`; `kwin/tests/world-entry.test.ts:1619-1625,1650-1654`). I: This is dynamic TS-to-core scenario coverage, not a shared all-platform harness or proof of native compositor settlement.
 
 ### O(4). Cross-language drift protection
 

@@ -1206,7 +1206,7 @@
   filter, not a policy owner. Native identity/recovery seams were unchanged by
   this slice. It changed no core/protocol/Windows/effect source or dependency
   toolchain; the service added only an existing workspace core-crate dependency.
-- Integration tests use `raw_world_eval`, which includes the actual Rust
+- At this stage, integration tests used the engine-only evaluator, which included the Rust
   normalizer before strict decode/engine evaluation. The initially added TS
   classifier mirror was deleted, not accepted as another oracle. Rust's
   captured-shape corpus has 28 rows; actual broker flow tests own rejection,

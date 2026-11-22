@@ -1,6 +1,6 @@
 // Disjoint migration family recorder: replays the
 // `test-fixtures/kde-v4-active/migration` input sequence through the
-// production entry plus the genuine `raw_world_eval` engine and the
+// production entry plus the genuine `world_eval` engine and the
 // test-only `MiniBroker` shim: handshake/settings, seed capture,
 // migrate-directional queue, drain capture, take. Writes active equivalents
 // to an explicit fresh OUTDIR outside the repo. Pure exported module with no
@@ -8,7 +8,7 @@
 // entry is `world-migration-record-cli.ts`.
 //
 // Run through the declared development environment, with fresh output paths:
-//   cargo build --offline -p omnitiler --example raw_world_eval
+//   cargo build --offline -p tiler-protocol --example world_eval
 //   kwin/node_modules/.bin/esbuild kwin/tests/world-migration-record-cli.ts --bundle --platform=node --format=cjs --target=es2020 --outfile="$RECORDER_JS"
 //   node "$RECORDER_JS" --out-dir "$OUT_DIR" [--bridge-binary "$BRIDGE_BIN"]
 // BRIDGE_BIN follows Cargo's configured target directory. An existing output
@@ -41,7 +41,7 @@ function repoRoot(): string {
 }
 
 export function defaultMigrationBridgeBinary(): string {
-    return join(repoRoot(), "target", "debug", "examples", "raw_world_eval");
+    return join(repoRoot(), "target", "debug", "examples", "world_eval");
 }
 
 export interface MigrationRecordOptions {

@@ -161,7 +161,7 @@ Done: no active consumer referenced the 12 detached v3 vectors (36,361 bytes); t
 
 ### PW-BR-05 — Keep both offline evidence routes
 
-`crates/omnitiler/examples/raw_world_eval.rs:3-15,52-113` drives decoded reports and typed settlements without a broker; `crates/omnitiler/examples/broker_world_eval.rs:85-107` drives the real queue, capture and read endpoints. `kwin/tests/world-bytes.test.ts:399-426` uses the former; `kwin/tests/world-stage5-fixture.test.ts:5-43,840-` and `world-producer-harness.ts:33-62` use the latter. They detect different failures, so do not erase typed-vs-transport coverage to consolidate executables. Consumer effect if removed: offline direct or real broker endpoint evidence is lost. Risk medium; no deletion proposed; no dependency. Sharing local harness mechanics is cleanup, not a new wire path.
+[`world_eval`](../../crates/tiler-protocol/examples/world_eval.rs) drives decoded reports and typed dispositions without a broker; [`broker_world_eval`](../../crates/omnitiler/examples/broker_world_eval.rs) drives the real queue, capture and read endpoints. `kwin/tests/world-bytes.test.ts` uses the former; `kwin/tests/world-stage5-fixture.test.ts` and `kwin/tests/world-producer-harness.ts` use the latter. They detect different failures, so do not trade away typed-vs-transport coverage. Sharing local harness mechanics is cleanup, not a new wire path.
 
 ### PW-BR-06 — Keep the broker's two invalidation identities separate
 
@@ -192,4 +192,4 @@ KDE logs settlements and diagnostics (`kwin/src/world-entry.ts:745-768`); pager 
 
 - C8 facade, test support, names and unstamped internal helper consolidation; not separate wire paths.
 - Shared spawn/NDJSON helper across the Rust-backed KDE tests, where runners retain the distinct evidence routes described above.
-- `crates/tiler-protocol/examples/world_eval.rs` overlaps the richer raw evaluator; historical commands and timing reports reference it. Review runner ownership before removing it; neither the direct raw evidence route nor the real broker route is redundant (PW-BR-05).
+- The engine-only examples were consolidated under `crates/tiler-protocol/examples/world_eval.rs`; PW-BR-05 still preserves both the direct engine and real broker routes.

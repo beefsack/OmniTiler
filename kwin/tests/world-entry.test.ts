@@ -2577,7 +2577,7 @@ const TILE_DATA = "{\"v\":1,\"float\":false,\"stickyPrior\":null}";
 describe("world entry restart float-intent preservation", () => {
     for (const holdMode of ["scoped", "global"] as const) {
     it(`holds settled float across a genuinely held first engine reply (${holdMode} hold)`, { timeout: 120000 }, async () => {
-        // Producer-shaped replay through the real WorldEngine (raw_world_eval,
+        // Producer-shaped replay through the real WorldEngine (world_eval,
         // same bridge as the migration engine test): no hand-built replies on the asserted paths.
         // Scoped hold is genuinely native: clientArea returns null for ws-1,
         // which world-observe turns into an explicit domain hold
@@ -2604,7 +2604,7 @@ describe("world entry restart float-intent preservation", () => {
             resolve: (reply: string) => void;
             reject: (error: Error) => void;
         }
-        const proc = spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
+        const proc = spawn("cargo", ["run", "--offline", "-q", "-p", "tiler-protocol", "--example", "world_eval"], {
             cwd: repoRoot(),
             stdio: ["pipe", "pipe", "pipe"],
         });
@@ -2630,10 +2630,10 @@ describe("world entry restart float-intent preservation", () => {
             failEngine(error);
         });
         proc.on("exit", (code: number | null, signal: string | null) => {
-            failEngine(new Error(`raw_world_eval exited code=${String(code)} signal=${String(signal)} stderr=${stderrChunks.join("").slice(0, 500)}`));
+            failEngine(new Error(`world_eval exited code=${String(code)} signal=${String(signal)} stderr=${stderrChunks.join("").slice(0, 500)}`));
         });
         const stdout = proc.stdout;
-        assert.ok(stdout !== null && stdout !== undefined, "raw_world_eval stdout unavailable");
+        assert.ok(stdout !== null && stdout !== undefined, "world_eval stdout unavailable");
         const lines = createInterface({ input: stdout });
         lines.on("line", (line: string) => {
             waiters.shift()?.resolve(line);
@@ -2648,7 +2648,7 @@ describe("world entry restart float-intent preservation", () => {
                 if (index >= 0) {
                     waiters.splice(index, 1);
                 }
-                rejectPromise(new Error(`raw_world_eval timeout method=${method}`));
+                rejectPromise(new Error(`world_eval timeout method=${method}`));
             }, 15000);
             waiters.push({
                 resolve: (reply: string) => {
@@ -3048,12 +3048,12 @@ describe("world entry restart float-intent preservation", () => {
 describe("world entry script-restart sequence handover", () => {
     it("rotation hands a fresh generation and engine to the new producer lifetime", { timeout: 120000 }, async () => {
         // Producer-shaped restart replay through the real WorldEngine behind
-        // one raw_world_eval process (like production): the first
+        // one world_eval process (like production): the first
         // producer advances request+command watermarks with a float + fixed
         // tile seed, then the restarted producer discovers as a NEW
         // lifetime. Like the real WorldBroker::discovery_body, the new
         // lifetime rotates onto a fresh generation and a fresh engine
-        // (raw_world_eval rebinds both on DiscoverWorld): the old generation
+        // (world_eval rebinds both on DiscoverWorld): the old generation
         // refuses outright, queued/settled state from the old world is
         // gone, and the saved default reseeds the fresh engine.
         const { spawn } = await import("node:child_process");
@@ -3074,7 +3074,7 @@ describe("world entry script-restart sequence handover", () => {
             resolve: (reply: string) => void;
             reject: (error: Error) => void;
         }
-        const proc = spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
+        const proc = spawn("cargo", ["run", "--offline", "-q", "-p", "tiler-protocol", "--example", "world_eval"], {
             cwd: repoRoot(),
             stdio: ["pipe", "pipe", "pipe"],
         });
@@ -3100,10 +3100,10 @@ describe("world entry script-restart sequence handover", () => {
             failEngine(error);
         });
         proc.on("exit", (code: number | null, signal: string | null) => {
-            failEngine(new Error(`raw_world_eval exited code=${String(code)} signal=${String(signal)} stderr=${stderrChunks.join("").slice(0, 500)}`));
+            failEngine(new Error(`world_eval exited code=${String(code)} signal=${String(signal)} stderr=${stderrChunks.join("").slice(0, 500)}`));
         });
         const stdout = proc.stdout;
-        assert.ok(stdout !== null && stdout !== undefined, "raw_world_eval stdout unavailable");
+        assert.ok(stdout !== null && stdout !== undefined, "world_eval stdout unavailable");
         const lines = createInterface({ input: stdout });
         lines.on("line", (line: string) => {
             waiters.shift()?.resolve(line);
@@ -3118,7 +3118,7 @@ describe("world entry script-restart sequence handover", () => {
                 if (index >= 0) {
                     waiters.splice(index, 1);
                 }
-                rejectPromise(new Error(`raw_world_eval timeout method=${method}`));
+                rejectPromise(new Error(`world_eval timeout method=${method}`));
             }, 15000);
             waiters.push({
                 resolve: (reply: string) => {
@@ -3542,7 +3542,7 @@ describe("world entry script-restart sequence handover", () => {
             // Producer 2: script restart with a fresh production-minted
             // incarnation as a NEW producer lifetime. Like the real
             // WorldBroker::discovery_body, the restart rotates onto a fresh
-            // generation and a fresh engine (raw_world_eval rebinds both on its
+            // generation and a fresh engine (world_eval rebinds both on its
             // own DiscoverWorld, which the restart sends).
             const adapter2 = mintAdapterIncarnation();
             assert.notEqual(adapter2, adapter1, "restart mints a fresh stream");
@@ -4554,7 +4554,7 @@ describe("world entry trace probe", () => {
 // Production-entry focus-feedback regression through the real decoder:
 // a populated workspace select files via the production
 // requestWorkspaceSelect -> cmdSelectNumbered callback, drains through
-// MiniBroker stamping plus raw_world_eval, and settles one terminal
+// MiniBroker stamping plus world_eval, and settles one terminal
 // switch event. Healthy shown witness proves focus; a missing windowAt
 // (witness null with healthy setter+foreground) fails it exactly once
 // with no upgrade on retry. No hand-built replies on asserted paths.
@@ -4593,7 +4593,7 @@ describe("world entry focus feedback production regression", () => {
             resolve: (reply: string) => void;
             reject: (error: Error) => void;
         }
-        const proc = spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
+        const proc = spawn("cargo", ["run", "--offline", "-q", "-p", "tiler-protocol", "--example", "world_eval"], {
             cwd: repoRoot(),
             stdio: ["pipe", "pipe", "pipe"],
         });
@@ -4619,10 +4619,10 @@ describe("world entry focus feedback production regression", () => {
             failEngine(error);
         });
         proc.on("exit", (code: number | null, signal: string | null) => {
-            failEngine(new Error(`raw_world_eval exited code=${String(code)} signal=${String(signal)} stderr=${stderrChunks.join("").slice(0, 500)}`));
+            failEngine(new Error(`world_eval exited code=${String(code)} signal=${String(signal)} stderr=${stderrChunks.join("").slice(0, 500)}`));
         });
         const stdout = proc.stdout;
-        assert.ok(stdout !== null && stdout !== undefined, "raw_world_eval stdout unavailable");
+        assert.ok(stdout !== null && stdout !== undefined, "world_eval stdout unavailable");
         const lines = createInterface({ input: stdout });
         lines.on("line", (line: string) => {
             waiters.shift()?.resolve(line);
@@ -4637,7 +4637,7 @@ describe("world entry focus feedback production regression", () => {
                 if (index >= 0) {
                     waiters.splice(index, 1);
                 }
-                rejectPromise(new Error(`raw_world_eval timeout method=${method}`));
+                rejectPromise(new Error(`world_eval timeout method=${method}`));
             }, 15000);
             waiters.push({
                 resolve: (reply: string) => {

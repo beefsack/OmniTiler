@@ -1,11 +1,17 @@
 //! v4 line-delimited world evaluation transcript: the durable
-//! `tests/data/world_eval_v4.jsonl` envelope transcript (no v3 envelopes)
-//! through the same per-line dispatch the `world_eval` example serves on
-//! stdin/stdout. This test drives that dispatch in-process over the
-//! fixture lines and asserts each leg; it does not spawn the example
-//! subprocess. Run the example over the same file directly with
-//! `cargo run -q -p tiler-protocol --example world_eval` to observe the
-//! true stdin/stdout path.
+//! `tests/data/world_eval_v4.jsonl` envelope transcript (no v3 envelopes).
+//! This test drives its own in-process dispatch over the fixture lines using
+//! the typed v4 API (`route_connection_request`, `decode_request`,
+//! `WorldEngine::handle_report_with_gate_and_prepare` with
+//! `ProtocolAdmissionGate`, and `encode_reply`/`decode_reply_v4`) and asserts
+//! each leg. It is independent of the `world_eval` example and does not spawn
+//! it. To observe the stdin/stdout path over the same file, run from the
+//! repository root:
+//!
+//! ```sh
+//! cargo run -q -p tiler-protocol --example world_eval \
+//!   < crates/tiler-protocol/tests/data/world_eval_v4.jsonl
+//! ```
 
 use tiler_core::connection::ProtocolKind;
 use tiler_protocol::connection_protocol::{

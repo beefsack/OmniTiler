@@ -32,7 +32,7 @@ class WorldBridge {
         this.proc = proc;
         const stdout = proc.stdout;
         if (stdout === null || stdout === undefined) {
-            throw new Error("raw_world_eval stdout unavailable");
+            throw new Error("world_eval stdout unavailable");
         }
         createInterface({ input: stdout }).on("line", (line: string) => {
             this.waiters.shift()?.resolve(line);
@@ -48,7 +48,7 @@ class WorldBridge {
             }
         });
         proc.on("close", (code, signal) => {
-            const err = new Error(`raw_world_eval exited ${String(code)}/${String(signal)}`);
+            const err = new Error(`world_eval exited ${String(code)}/${String(signal)}`);
             if (this.dead === null) {
                 this.dead = err.message;
             }
@@ -59,7 +59,7 @@ class WorldBridge {
     }
     static start(): WorldBridge {
         return new WorldBridge(
-            spawn("cargo", ["run", "--offline", "-q", "-p", "omnitiler", "--example", "raw_world_eval"], {
+            spawn("cargo", ["run", "--offline", "-q", "-p", "tiler-protocol", "--example", "world_eval"], {
                 stdio: ["pipe", "pipe", "pipe"],
             }),
         );
