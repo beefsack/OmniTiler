@@ -86,36 +86,212 @@ pub struct SharedRosterPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RosterReadback {
+    Order(Vec<String>),
+    Home(NativeHome),
+    Current(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RosterStepStatus {
+    Applied,
+    Appended,
+    Refused,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RosterStepFeedback {
+    pub status: RosterStepStatus,
+    pub before: Option<RosterReadback>,
+    pub after: Option<RosterReadback>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RosterFeedback {
     pub operation_id: String,
     pub generation: String,
     pub revision: u64,
-    pub steps: BTreeMap<String, RosterStepProof>,
+    pub steps: BTreeMap<String, RosterStepFeedback>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RosterStepProof {
+enum LatchedStepProof {
     Applied,
     Appended(String),
-    Refused,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RefusedSlotTarget {
+    Existing(String),
+    AppendIndex(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RefusedRosterWork {
+    baseline: SettledRoster,
+    baseline_currents: BTreeMap<OutputId, String>,
+    existing_slots: Vec<String>,
+    append_count: usize,
+    members: Vec<(WindowId, NativeHome, OutputId, RefusedSlotTarget)>,
+    views: Vec<(OutputId, String, RefusedSlotTarget)>,
+    removals: Vec<String>,
+    transfer_ids: BTreeSet<String>,
+}
+
+struct RosterPlanCandidate<'a> {
+    baseline: &'a SettledRoster,
+    baseline_currents: &'a BTreeMap<OutputId, String>,
+    slots: &'a [RosterSlot],
+    members: &'a [RosterMemberStep],
+    views: &'a [RosterViewStep],
+    removals: &'a [RosterRemovalStep],
+    transfer_ids: &'a BTreeSet<String>,
+}
+
+impl RefusedRosterWork {
+    pub(crate) fn from_pending(pending: &PendingRoster) -> Self {
+        let plan = &pending.plan;
+        let slot_target = |slot: &RosterSlot| match slot {
+            RosterSlot::Existing(native) => RefusedSlotTarget::Existing(native.clone()),
+            RosterSlot::Append(step) => {
+                let index = plan
+                    .slots
+                    .iter()
+                    .position(|entry| matches!(entry, RosterSlot::Append(id) if id == step))
+                    .unwrap_or(usize::MAX);
+                RefusedSlotTarget::AppendIndex(index)
+            }
+        };
+        let mut existing_slots = Vec::new();
+        let mut append_count = 0;
+        for slot in &plan.slots {
+            match slot {
+                RosterSlot::Existing(native) => existing_slots.push(native.clone()),
+                RosterSlot::Append(_) => append_count += 1,
+            }
+        }
+        Self {
+            baseline: plan.baseline.clone(),
+            baseline_currents: plan.baseline_currents.clone(),
+            existing_slots,
+            append_count,
+            members: plan
+                .members
+                .iter()
+                .map(|step| {
+                    (
+                        step.window.clone(),
+                        step.before.clone(),
+                        step.output.clone(),
+                        slot_target(&step.target),
+                    )
+                })
+                .collect(),
+            views: plan
+                .views
+                .iter()
+                .map(|step| {
+                    (
+                        step.output.clone(),
+                        step.before.clone(),
+                        slot_target(&step.target),
+                    )
+                })
+                .collect(),
+            removals: plan
+                .removals
+                .iter()
+                .map(|step| step.native.clone())
+                .collect(),
+            transfer_ids: pending.transfer_ids.clone(),
+        }
+    }
+
+    fn matches(&self, candidate: &RosterPlanCandidate<'_>) -> bool {
+        if self.baseline != *candidate.baseline
+            || self.baseline_currents != *candidate.baseline_currents
+            || self.transfer_ids != *candidate.transfer_ids
+            || self.members.len() != candidate.members.len()
+            || self.views.len() != candidate.views.len()
+            || self.removals.len() != candidate.removals.len()
+        {
+            return false;
+        }
+        let mut existing_idx = 0;
+        let mut append_count = 0;
+        for slot in candidate.slots {
+            match slot {
+                RosterSlot::Existing(native) => {
+                    if self.existing_slots.get(existing_idx) != Some(native) {
+                        return false;
+                    }
+                    existing_idx += 1;
+                }
+                RosterSlot::Append(_) => append_count += 1,
+            }
+        }
+        if existing_idx != self.existing_slots.len() || append_count != self.append_count {
+            return false;
+        }
+        let target_matches =
+            |expected: &RefusedSlotTarget, actual: &RosterSlot| match (expected, actual) {
+                (RefusedSlotTarget::Existing(a), RosterSlot::Existing(b)) => a == b,
+                (RefusedSlotTarget::AppendIndex(idx), RosterSlot::Append(step)) => {
+                    matches!(candidate.slots.get(*idx), Some(RosterSlot::Append(id)) if id == step)
+                }
+                _ => false,
+            };
+        self.members
+            .iter()
+            .zip(candidate.members)
+            .all(|((win, before, out, target), step)| {
+                win == &step.window
+                    && before == &step.before
+                    && out == &step.output
+                    && target_matches(target, &step.target)
+            })
+            && self
+                .views
+                .iter()
+                .zip(candidate.views)
+                .all(|((out, before, target), step)| {
+                    out == &step.output
+                        && before == &step.before
+                        && target_matches(target, &step.target)
+                })
+            && self
+                .removals
+                .iter()
+                .zip(candidate.removals)
+                .all(|(native, step)| native == &step.native)
+    }
 }
 
 #[derive(Debug, Clone)]
-struct PendingRoster {
+pub(crate) struct PendingRoster {
     plan: SharedRosterPlan,
-    proofs: BTreeMap<String, RosterStepProof>,
+    proofs: BTreeMap<String, LatchedStepProof>,
     transfer_ids: BTreeSet<String>,
+    refused: bool,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RosterState {
     settled: Option<SettledRoster>,
     pending: Option<PendingRoster>,
+    last_refused: Option<RefusedRosterWork>,
     padding_views: BTreeMap<OutputId, String>,
 }
 
 impl RosterState {
     pub(crate) fn plan(&self) -> Option<&SharedRosterPlan> {
+        self.pending
+            .as_ref()
+            .filter(|pending| !pending.refused)
+            .map(|pending| &pending.plan)
+    }
+
+    pub(crate) fn pending_plan(&self) -> Option<&SharedRosterPlan> {
         self.pending.as_ref().map(|pending| &pending.plan)
     }
 
@@ -188,7 +364,7 @@ impl WorldTransaction<'_> {
 
     pub(crate) fn shared_output_write_held(&self, output: &OutputId) -> bool {
         let state = &self.world.settlement;
-        if let Some(plan) = state.shared_roster.plan() {
+        if let Some(plan) = state.shared_roster.pending_plan() {
             return plan.views.iter().any(|view| view.output == *output)
                 || plan
                     .members
@@ -196,13 +372,23 @@ impl WorldTransaction<'_> {
                     .any(|member| member.before.output == *output || member.output == *output);
         }
         state.retained.iter().any(|transfer| {
+            let suppressed = state
+                .shared_roster
+                .last_refused
+                .as_ref()
+                .is_some_and(|refused| {
+                    refused.transfer_ids.contains(&transfer.target.operation_id)
+                });
+            if suppressed && !matches!(transfer.target.kind, TransferKind::Migration) {
+                return false;
+            }
             transfer.source_output == *output || transfer.target.target_output == *output
         })
     }
 
     /// Pre-plan view remains descriptive truth until the plan proves.
     pub(crate) fn unproved_shared_view(&self, output: &OutputId) -> Option<String> {
-        if let Some(plan) = self.world.settlement.shared_roster.plan() {
+        if let Some(plan) = self.world.settlement.shared_roster.pending_plan() {
             return self.settled_slot_logical(output, plan.baseline_currents.get(output)?);
         }
         let current = self
@@ -251,7 +437,7 @@ impl WorldTransaction<'_> {
                 })
             })
             .or_else(|| {
-                let plan = self.world.settlement.shared_roster.plan()?;
+                let plan = self.world.settlement.shared_roster.pending_plan()?;
                 let step = plan.members.iter().find(|step| &step.window == window)?;
                 Some(DomainKey {
                     output: step.before.output.clone(),
@@ -279,7 +465,7 @@ impl WorldTransaction<'_> {
         self.world
             .settlement
             .shared_roster
-            .plan()
+            .pending_plan()
             .is_some_and(|plan| {
                 plan.members.iter().any(|step| {
                     step.window == fact.window
@@ -293,7 +479,7 @@ impl WorldTransaction<'_> {
         self.world
             .settlement
             .shared_roster
-            .plan()
+            .pending_plan()
             .is_some_and(|plan| {
                 plan.baseline_currents
                     .get(output)
@@ -938,6 +1124,29 @@ impl WorldTransaction<'_> {
             })
             .collect();
 
+        if (!preceding.is_empty() || !removals.is_empty())
+            && self
+                .world
+                .settlement
+                .shared_roster
+                .last_refused
+                .as_ref()
+                .is_some_and(|refused| {
+                    refused.matches(&RosterPlanCandidate {
+                        baseline: &baseline,
+                        baseline_currents: &currents,
+                        slots: &slots,
+                        members: &members,
+                        views: &views,
+                        removals: &removals,
+                        transfer_ids: &transfer_ids,
+                    })
+                })
+        {
+            return;
+        }
+        self.world.settlement.shared_roster.last_refused = None;
+
         for (out, ring) in &mut rings {
             if append_spares.contains(out) {
                 let Some(id) =
@@ -1018,6 +1227,7 @@ impl WorldTransaction<'_> {
                 },
                 proofs: BTreeMap::new(),
                 transfer_ids,
+                refused: false,
             });
         }
     }

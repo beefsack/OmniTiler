@@ -8,8 +8,8 @@ use tiler_core::connection::{HostCapabilities, NativeSelectorScope};
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::world_report::{MAX_REPLY_WINDOWS, MAX_WORLD_SCREENS};
 use tiler_core::world_roster::{
-    NativeHome, RosterFeedback, RosterMemberStep, RosterRemovalStep, RosterSlot, RosterStepProof,
-    RosterViewStep, SettledRoster, SharedRosterPlan,
+    NativeHome, RosterFeedback, RosterMemberStep, RosterReadback, RosterRemovalStep, RosterSlot,
+    RosterStepFeedback, RosterStepStatus, RosterViewStep, SettledRoster, SharedRosterPlan,
 };
 
 use crate::world_protocol::{
@@ -395,26 +395,12 @@ pub(crate) fn validate_plan(plan: &SharedRosterPlan) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Readback {
-    Order(Vec<String>),
-    Home(NativeHome),
-    Current(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct StepReadback {
-    step: String,
-    before: Option<Readback>,
-    after: Option<Readback>,
-}
-
-/// Checked wire evidence. Replay additionally compares the actual pre/post
-/// snapshots and carried step order, not just the reduced core proofs.
+/// Checked wire evidence. Carries exact typed pre/post readbacks through to
+/// core and preserves wire step order for exact replay/re-encoding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RosterFeedbackWire {
     proof: RosterFeedback,
-    readbacks: Vec<StepReadback>,
+    step_order: Vec<String>,
 }
 
 impl RosterFeedbackWire {
@@ -434,15 +420,16 @@ impl RosterFeedbackWire {
             obj.field_str("op", &self.proof.operation_id)?;
             obj.field_str("gen", &self.proof.generation)?;
             obj.field_u64_str("rev", self.proof.revision)?;
-            obj.field_array("steps", &self.readbacks, |row, s| {
+            obj.field_array("steps", &self.step_order, |step, s| {
+                let row = &self.proof.steps[step];
                 s.write_object(|o| {
-                    o.field_str("step", &row.step)?;
+                    o.field_str("step", step)?;
                     o.field_str(
                         "status",
-                        match self.proof.steps[&row.step] {
-                            RosterStepProof::Applied => "applied",
-                            RosterStepProof::Appended(_) => "appended",
-                            RosterStepProof::Refused => "refused",
+                        match row.status {
+                            RosterStepStatus::Applied => "applied",
+                            RosterStepStatus::Appended => "appended",
+                            RosterStepStatus::Refused => "refused",
                         },
                     )?;
                     o.field("before", |s| write_readback(s, row.before.as_ref()))?;
@@ -453,7 +440,7 @@ impl RosterFeedbackWire {
     }
 }
 
-fn readback(value: &Value) -> Result<Option<Readback>> {
+fn readback(value: &Value) -> Result<Option<RosterReadback>> {
     if value.is_null() {
         return Ok(None);
     }
@@ -461,18 +448,18 @@ fn readback(value: &Value) -> Result<Option<Readback>> {
     let result = match req_str(row, "kind")? {
         "order" => {
             check_keys(row, &["kind", "order"])?;
-            Readback::Order(ids(&row["order"], MAX_SLOTS)?)
+            RosterReadback::Order(ids(&row["order"], MAX_SLOTS)?)
         }
         "home" => {
             check_keys(row, &["kind", "out", "native"])?;
-            Readback::Home(NativeHome {
+            RosterReadback::Home(NativeHome {
                 output: OutputId(req_id(row, "out")?),
                 native: req_id(row, "native")?,
             })
         }
         "current" => {
             check_keys(row, &["kind", "native"])?;
-            Readback::Current(req_id(row, "native")?)
+            RosterReadback::Current(req_id(row, "native")?)
         }
         _ => return Err(unknown_value()),
     };
@@ -488,7 +475,7 @@ pub(crate) fn decode_feedback(value: &Value) -> Result<RosterFeedbackWire> {
         steps: BTreeMap::new(),
     };
     let steps = items(&row["steps"], MAX_STEPS)?;
-    let mut readbacks = Vec::with_capacity(steps.len());
+    let mut step_order = Vec::with_capacity(steps.len());
     for item in steps {
         let item = object(item, &["step", "status", "before", "after"])?;
         let step = correlation(item, "step")?;
@@ -503,15 +490,15 @@ pub(crate) fn decode_feedback(value: &Value) -> Result<RosterFeedbackWire> {
         let invalid = || snapshot_invalid("roster-readback-invalid");
         let status = match req_str(item, "status")? {
             "appended" => match (&before, &after) {
-                (Some(Readback::Order(before)), Some(Readback::Order(after)))
+                (Some(RosterReadback::Order(before)), Some(RosterReadback::Order(after)))
                     if after.len() == before.len() + 1 && after.starts_with(before) =>
                 {
-                    RosterStepProof::Appended(after[before.len()].clone())
+                    RosterStepStatus::Appended
                 }
                 _ => return Err(invalid()),
             },
             "applied" => match (&before, &after) {
-                (Some(Readback::Order(before)), Some(Readback::Order(after)))
+                (Some(RosterReadback::Order(before)), Some(RosterReadback::Order(after)))
                     if !after.is_empty() && before.len() == after.len() + 1 && {
                         let mut rest = after.iter().peekable();
                         for id in before {
@@ -522,30 +509,36 @@ pub(crate) fn decode_feedback(value: &Value) -> Result<RosterFeedbackWire> {
                         rest.next().is_none()
                     } =>
                 {
-                    RosterStepProof::Applied
+                    RosterStepStatus::Applied
                 }
-                (Some(Readback::Home(before)), Some(Readback::Home(after))) if before != after => {
-                    RosterStepProof::Applied
-                }
-                (Some(Readback::Current(before)), Some(Readback::Current(after)))
+                (Some(RosterReadback::Home(before)), Some(RosterReadback::Home(after)))
                     if before != after =>
                 {
-                    RosterStepProof::Applied
+                    RosterStepStatus::Applied
+                }
+                (Some(RosterReadback::Current(before)), Some(RosterReadback::Current(after)))
+                    if before != after =>
+                {
+                    RosterStepStatus::Applied
                 }
                 _ => return Err(invalid()),
             },
-            "refused" if same_kind => RosterStepProof::Refused,
+            "refused" if same_kind => RosterStepStatus::Refused,
             "refused" => return Err(invalid()),
             _ => return Err(unknown_value()),
         };
-        insert(&mut proof.steps, step.clone(), status)?;
-        readbacks.push(StepReadback {
-            step,
-            before,
-            after,
-        });
+        insert(
+            &mut proof.steps,
+            step.clone(),
+            RosterStepFeedback {
+                status,
+                before,
+                after,
+            },
+        )?;
+        step_order.push(step);
     }
-    Ok(RosterFeedbackWire { proof, readbacks })
+    Ok(RosterFeedbackWire { proof, step_order })
 }
 
 fn write_ids<'a, S: ReplySink>(
@@ -579,21 +572,21 @@ fn home_fields<S: ReplySink>(obj: &mut ObjectWriter<'_, S>, home: &NativeHome) -
     obj.field_str("native", &home.native)
 }
 
-fn write_readback<S: ReplySink>(sink: &mut S, readback: Option<&Readback>) -> Result<()> {
+fn write_readback<S: ReplySink>(sink: &mut S, readback: Option<&RosterReadback>) -> Result<()> {
     let Some(readback) = readback else {
         sink.push_str("null");
         return Ok(());
     };
     sink.write_object(|obj| match readback {
-        Readback::Order(order) => {
+        RosterReadback::Order(order) => {
             obj.field_str("kind", "order")?;
             obj.field("order", |s| write_ids(s, order))
         }
-        Readback::Home(home) => {
+        RosterReadback::Home(home) => {
             obj.field_str("kind", "home")?;
             home_fields(obj, home)
         }
-        Readback::Current(native) => {
+        RosterReadback::Current(native) => {
             obj.field_str("kind", "current")?;
             obj.field_str("native", native)
         }

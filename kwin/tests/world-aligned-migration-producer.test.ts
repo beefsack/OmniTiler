@@ -1087,16 +1087,17 @@ describe("world migration producer", () => {
             deliver();
             await h.settle();
             const held = publication(h);
-            assert.ok(held.rosterPlan);
-            assert.equal(held.rosterPlan.op, move.plan.op, "missing lifetime cannot prove the pending epoch");
-            assert.deepEqual(held.rosterPlan.baseline, move.plan.baseline, "the retained epoch stays the preflight epoch");
+            assert.equal(held.rosterPlan, undefined, "refused plan is terminal and must not be re-emitted");
             assert.ok(held.transfers.some((row) => row.kind === "migration" && row.ws === logical));
             const sourceView = held.outputs.find((row) => row.out === RIGHT);
             assert.equal(sourceView?.view, logical, "unproved plan cannot release the original source view");
             assert.notEqual(sourceView?.hold, "", "source view stays held, not a native write grant");
-            const index = held.rosterPlan.baseline.order.findIndex((id) => id === sourceNative);
-            assert.equal(held.rosterPlan.baseline.projections.find((row) => row.out === RIGHT)?.rows[index], logical,
-                "preflight logical identity still belongs to the settled source slot");
+            assert.ok(sourceNative, "source native desktop must be readable");
+            assert.equal(
+                held.workspaces.find((row) => row.out === RIGHT && row.id === logical)?.bind,
+                sourceNative,
+                "post-refusal publication keeps settled source binding",
+            );
             assert.deepEqual(h.desktops.map((desk) => desk.id), order);
             assert.deepEqual(writeOffsets(h), counts, "no replay or dependent writes after close");
             assert.equal(migrateCommands(h).length, 1);

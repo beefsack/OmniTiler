@@ -1,4 +1,9 @@
-use super::{PendingRoster, RosterFeedback, RosterSlot, RosterStepProof};
+use std::collections::BTreeMap;
+
+use super::{
+    LatchedStepProof, PendingRoster, RefusedRosterWork, RosterFeedback, RosterReadback, RosterSlot,
+    RosterStepFeedback, RosterStepStatus,
+};
 use crate::world_staged::StagedReport;
 use crate::world_transaction::WorldTransaction;
 
@@ -11,12 +16,22 @@ impl WorldTransaction<'_> {
         if roster.settled.as_ref() != Some(&pending.plan.baseline) {
             return;
         }
+        let was_refused = pending.refused;
         if let Some(feedback) = feedback.filter(|feedback| {
             feedback.operation_id == pending.plan.operation_id
                 && feedback.generation == pending.plan.generation
                 && feedback.revision == pending.plan.revision
         }) {
             merge_feedback(pending, feedback);
+        }
+        if pending.refused {
+            if can_recover_refused(pending, &self.world.staged) {
+                if !was_refused {
+                    roster.last_refused = Some(RefusedRosterWork::from_pending(pending));
+                }
+                roster.pending = None;
+            }
+            return;
         }
         // A complete prefix can land before the full readback. Keep it for
         // the next accepted observation without requiring feedback redelivery.
@@ -40,85 +55,234 @@ impl WorldTransaction<'_> {
     }
 }
 
+fn dependencies_proved(proofs: &BTreeMap<String, LatchedStepProof>, deps: &[String]) -> bool {
+    deps.iter().all(|dep| {
+        matches!(
+            proofs.get(dep),
+            Some(LatchedStepProof::Applied | LatchedStepProof::Appended(_))
+        )
+    })
+}
+
+fn resolve_slot_from_proofs<'a>(
+    proofs: &'a BTreeMap<String, LatchedStepProof>,
+    slot: &'a RosterSlot,
+) -> Option<&'a str> {
+    match slot {
+        RosterSlot::Existing(native) => Some(native),
+        RosterSlot::Append(step) => match proofs.get(step) {
+            Some(LatchedStepProof::Appended(native)) => Some(native),
+            _ => None,
+        },
+    }
+}
+
 fn merge_feedback(pending: &mut PendingRoster, feedback: &RosterFeedback) {
+    if pending.refused {
+        return;
+    }
     let plan = &pending.plan;
     let proofs = &mut pending.proofs;
+
+    // Refused readbacks may be null or show partial state and are never
+    // success receipts. Any correlated refusal on a step belonging to this
+    // plan is terminal for the epoch even if earlier steps are missing or
+    // mismatched; unknown step IDs are ignored.
+    let has_refused = plan
+        .slots
+        .iter()
+        .filter_map(|slot| match slot {
+            RosterSlot::Append(step) => Some(step.as_str()),
+            RosterSlot::Existing(_) => None,
+        })
+        .chain(plan.members.iter().map(|step| step.step_id.as_str()))
+        .chain(plan.views.iter().map(|step| step.step_id.as_str()))
+        .chain(plan.removals.iter().map(|step| step.step_id.as_str()))
+        .any(|step_id| {
+            feedback
+                .steps
+                .get(step_id)
+                .is_some_and(|row| row.status == RosterStepStatus::Refused)
+        });
+    if has_refused {
+        pending.refused = true;
+        return;
+    }
+
     // Appends have an implicit dependency on the preceding append: its
     // fresh ID is the preimage of the next ordered slot.
+    let mut order = plan.baseline.native_order.clone();
     for slot in &plan.slots {
         let RosterSlot::Append(step) = slot else {
             continue;
         };
         match proofs.get(step) {
-            Some(RosterStepProof::Appended(_)) => continue,
+            Some(LatchedStepProof::Appended(native)) => {
+                order.push(native.clone());
+                continue;
+            }
             Some(_) => break,
             None => {}
         }
         match feedback.steps.get(step) {
-            Some(RosterStepProof::Appended(native))
-                if !native.is_empty()
-                    && !plan.baseline.native_order.contains(native)
-                    && !proofs.values().any(|proof| {
-                        matches!(proof, RosterStepProof::Appended(other) if other == native)
-                    }) =>
+            Some(RosterStepFeedback {
+                status: RosterStepStatus::Appended,
+                before: Some(RosterReadback::Order(before)),
+                after: Some(RosterReadback::Order(after)),
+            }) if before == &order
+                && after.len() == order.len() + 1
+                && after.starts_with(&order) =>
             {
-                proofs.insert(step.clone(), RosterStepProof::Appended(native.clone()));
-            }
-            Some(RosterStepProof::Refused) => {
-                proofs.insert(step.clone(), RosterStepProof::Refused);
-                break;
+                let native = &after[order.len()];
+                if !native.is_empty() && !order.contains(native) {
+                    proofs.insert(step.clone(), LatchedStepProof::Appended(native.clone()));
+                    order.push(native.clone());
+                } else {
+                    break;
+                }
             }
             _ => break,
         }
     }
 
     // Use the execution order, not the feedback map's key order. A missing
-    // or refused prerequisite cannot authorize the dependent proof.
-    for (step, dependencies) in plan
-        .members
-        .iter()
-        .map(|step| (&step.step_id, &step.dependencies))
-        .chain(
-            plan.views
-                .iter()
-                .map(|step| (&step.step_id, &step.dependencies)),
-        )
-        .chain(
-            plan.removals
-                .iter()
-                .map(|step| (&step.step_id, &step.dependencies)),
-        )
-    {
-        if proofs.contains_key(step)
-            || !dependencies.iter().all(|dep| {
-                matches!(
-                    proofs.get(dep),
-                    Some(RosterStepProof::Applied | RosterStepProof::Appended(_))
-                )
-            })
-        {
+    // prerequisite cannot authorize the dependent proof.
+    for step in &plan.members {
+        if proofs.contains_key(&step.step_id) || !dependencies_proved(proofs, &step.dependencies) {
             continue;
         }
-        match feedback.steps.get(step) {
-            Some(RosterStepProof::Applied) => {
-                proofs.insert(step.clone(), RosterStepProof::Applied);
+        let Some(target) = resolve_slot_from_proofs(proofs, &step.target) else {
+            continue;
+        };
+        if let Some(RosterStepFeedback {
+            status: RosterStepStatus::Applied,
+            before: Some(RosterReadback::Home(before)),
+            after: Some(RosterReadback::Home(after)),
+        }) = feedback.steps.get(&step.step_id)
+            && *before == step.before
+            && after.output == step.output
+            && after.native == target
+            && before != after
+        {
+            proofs.insert(step.step_id.clone(), LatchedStepProof::Applied);
+        }
+    }
+
+    for step in &plan.views {
+        if proofs.contains_key(&step.step_id) || !dependencies_proved(proofs, &step.dependencies) {
+            continue;
+        }
+        let Some(target) = resolve_slot_from_proofs(proofs, &step.target) else {
+            continue;
+        };
+        if let Some(RosterStepFeedback {
+            status: RosterStepStatus::Applied,
+            before: Some(RosterReadback::Current(before)),
+            after: Some(RosterReadback::Current(after)),
+        }) = feedback.steps.get(&step.step_id)
+            && before == &step.before
+            && after == target
+            && before != after
+        {
+            proofs.insert(step.step_id.clone(), LatchedStepProof::Applied);
+        }
+    }
+
+    let mut removal_order = order;
+    for step in &plan.removals {
+        match proofs.get(&step.step_id) {
+            Some(LatchedStepProof::Applied) => {
+                removal_order.retain(|id| id != &step.native);
+                continue;
             }
-            Some(RosterStepProof::Refused) => {
-                proofs.insert(step.clone(), RosterStepProof::Refused);
+            Some(_) => break,
+            None => {}
+        }
+        if !dependencies_proved(proofs, &step.dependencies) || !removal_order.contains(&step.native)
+        {
+            break;
+        }
+        let mut expected_after = removal_order.clone();
+        expected_after.retain(|id| id != &step.native);
+        if expected_after.is_empty() {
+            break;
+        }
+        match feedback.steps.get(&step.step_id) {
+            Some(RosterStepFeedback {
+                status: RosterStepStatus::Applied,
+                before: Some(RosterReadback::Order(before)),
+                after: Some(RosterReadback::Order(after)),
+            }) if before == &removal_order && after == &expected_after => {
+                proofs.insert(step.step_id.clone(), LatchedStepProof::Applied);
+                removal_order = expected_after;
             }
-            _ => {}
+            _ => break,
         }
     }
 }
 
-fn resolve_slot<'a>(pending: &'a PendingRoster, slot: &'a RosterSlot) -> Option<&'a str> {
-    match slot {
-        RosterSlot::Existing(native) => Some(native),
-        RosterSlot::Append(step) => match pending.proofs.get(step) {
-            Some(RosterStepProof::Appended(native)) => Some(native),
-            _ => None,
-        },
+fn can_recover_refused(pending: &PendingRoster, staged: &StagedReport) -> bool {
+    let observation = &staged.observation;
+    if !observation.inventory_complete
+        || observation.observation_seq <= pending.plan.observation_seq
+        || !staged.held_screens.is_empty()
+        || !staged.held_native.is_empty()
+        || !staged.held_windows.is_empty()
+        || staged.screens.is_empty()
+        || !staged.screens.iter().all(|screen| screen.complete)
+    {
+        return false;
     }
+    let Some(first) = observation.native.first() else {
+        return false;
+    };
+    if first.native_order.is_empty() {
+        return false;
+    }
+    let order = first.native_order.as_slice();
+    // Every live non-closed window must have a known home/sticky status so
+    // partial membership is fully established before replanning.
+    let mut counts: BTreeMap<&str, u32> = order.iter().map(|id| (id.as_str(), 0)).collect();
+    for fact in &observation.raw_windows {
+        if staged.closes.contains(&fact.window) {
+            continue;
+        }
+        if fact.output.is_none() {
+            return false;
+        }
+        match fact.sticky {
+            Some(true) => {}
+            Some(false) => {
+                let Some(native) = fact.native_workspace.as_deref() else {
+                    return false;
+                };
+                let Some(count) = counts.get_mut(native) else {
+                    return false;
+                };
+                *count = count.saturating_add(1);
+            }
+            None => return false,
+        }
+    }
+    staged.screens.iter().all(|screen| {
+        observation.native.iter().any(|entry| {
+            entry.output == screen.output
+                && entry.native_order.as_slice() == order
+                && entry
+                    .current_native
+                    .as_ref()
+                    .is_some_and(|current| order.contains(current))
+                && order.iter().all(|native| {
+                    entry.occupancy.iter().any(|occ| {
+                        occ.native == *native && occ.count == counts.get(native.as_str()).copied()
+                    })
+                })
+        })
+    })
+}
+
+fn resolve_slot<'a>(pending: &'a PendingRoster, slot: &'a RosterSlot) -> Option<&'a str> {
+    resolve_slot_from_proofs(&pending.proofs, slot)
 }
 
 fn proved_order<'a>(pending: &PendingRoster, staged: &'a StagedReport) -> Option<&'a [String]> {
@@ -133,7 +297,7 @@ fn proved_order<'a>(pending: &PendingRoster, staged: &'a StagedReport) -> Option
     {
         return None;
     }
-    let applied = |step| matches!(pending.proofs.get(step), Some(RosterStepProof::Applied));
+    let applied = |step| matches!(pending.proofs.get(step), Some(LatchedStepProof::Applied));
     if !plan.removals.iter().all(|step| applied(&step.step_id))
         || !plan.views.iter().all(|step| applied(&step.step_id))
         || !plan.members.iter().all(|step| {

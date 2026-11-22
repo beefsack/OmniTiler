@@ -127,7 +127,7 @@ fn decode_both(json: &str) -> DecodedReportV4 {
 #[test]
 fn roster_feedback_preserves_exact_readbacks_and_replay_identity() {
     use serde_json::{Value, json};
-    use tiler_core::world_roster::RosterStepProof;
+    use tiler_core::world_roster::{RosterReadback, RosterStepFeedback, RosterStepStatus};
     use tiler_protocol::world_admission::handle_report_decoded_checked;
     use tiler_protocol::world_protocol::{decode_report_v4, encode_report_v4};
 
@@ -162,7 +162,14 @@ fn roster_feedback_preserves_exact_readbacks_and_replay_identity() {
     assert_eq!(reencoded["rosterFeedback"], value["rosterFeedback"]);
     assert_eq!(
         decoded.roster_feedback().unwrap().proof().steps["append-1"],
-        RosterStepProof::Appended("d2".to_owned())
+        RosterStepFeedback {
+            status: RosterStepStatus::Appended,
+            before: Some(RosterReadback::Order(vec!["d1".to_owned()])),
+            after: Some(RosterReadback::Order(vec![
+                "d1".to_owned(),
+                "d2".to_owned()
+            ])),
+        }
     );
 
     for (path, bad) in [
@@ -199,10 +206,10 @@ fn roster_feedback_preserves_exact_readbacks_and_replay_identity() {
         handle_report_decoded_checked(&mut engine, &decoded, &[]).outcome,
         WorldOutcome::Duplicate(_)
     ));
-    // Same core proof map, distinct actual setter evidence.
+    // Distinct actual setter evidence reaches core unchanged and rejects replay reuse.
     value["rosterFeedback"]["steps"][2]["before"]["native"] = json!("d3");
     let changed = decode_report_v4(&value.to_string()).unwrap();
-    assert_eq!(
+    assert_ne!(
         decoded.roster_feedback().unwrap().proof(),
         changed.roster_feedback().unwrap().proof()
     );

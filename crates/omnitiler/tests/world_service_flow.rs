@@ -453,6 +453,445 @@ fn shared_roster_append_feedback_settles_and_replays_the_bound_publication() {
     assert_eq!(service.evaluate_capture(&first).unwrap(), publication);
 }
 
+fn assert_shared_roster_member_view_mismatch_cannot_settle(case: &str) {
+    use serde_json::json;
+
+    let service = WorldService::new();
+    let handshake = handshake_req(ADAPTER, "shared-roster-mismatch")
+        .replace("\"equalCount\":false", "\"equalCount\":true")
+        .replace(
+            "\"sharedNativeRoster\":false",
+            "\"sharedNativeRoster\":true",
+        );
+    let discovery = parse(&service.discover(&handshake).expect("handshake"));
+    let generation = discovery["gen"].as_str().expect("generation").to_owned();
+    service
+        .discover(&settings_req(ADAPTER, &generation, "settings-roster"))
+        .expect("settings");
+    let native = |order: &[&str], current: &str, occ: &[(&str, u32)]| {
+        json!({
+            "out": "DP-1",
+            "order": order,
+            "current": current,
+            "occupancy": occ.iter().map(|(n, c)| json!({"native": n, "count": c})).collect::<Vec<_>>()
+        })
+        .to_string()
+    };
+    let base_windows = [
+        window_json("win-a", "[0,0,400,300]", Some(UUID_A)),
+        window_json("win-b", "[400,0,400,300]", Some(UUID_A)),
+    ];
+    let boot = inner_report(
+        &base_windows,
+        true,
+        true,
+        &native(&[UUID_A, UUID_B], UUID_A, &[(UUID_A, 2), (UUID_B, 0)]),
+    )
+    .replace(
+        "\"focused\":\"\",\"foregroundKnown\":false",
+        "\"focused\":\"win-a\",\"foregroundKnown\":true",
+    );
+    let boot_reply = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &boot))
+            .expect("boot"),
+    );
+    assert!(boot_reply.get("rosterPlan").is_none(), "{boot_reply}");
+    let req = queue_req(
+        &generation,
+        "roster-test",
+        "1",
+        "{\"op\":\"send-numbered\",\"win\":\"win-a\",\"source\":{\"explicit\":\"DP-1\"},\"index\":2,\"follow\":true}",
+    );
+    service
+        .queue_command(SENDER_A, &req)
+        .expect("queue send-numbered");
+    let planned = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &boot))
+            .expect("plan"),
+    );
+    let plan = &planned["rosterPlan"];
+    let append_step = plan["slots"][2]["step"]
+        .as_str()
+        .unwrap_or_else(|| panic!("append step in {planned}"));
+    let member_step = plan["members"][0]["step"].as_str().expect("member step");
+    let view_step = plan["views"][0]["step"].as_str().expect("view step");
+    let arrived_windows = [
+        window_json("win-a", "[0,0,400,300]", Some(UUID_B)),
+        window_json("win-b", "[400,0,400,300]", Some(UUID_A)),
+    ];
+    let mut bad = parse(&inner_report(
+        &arrived_windows,
+        true,
+        true,
+        &native(
+            &[UUID_A, UUID_B, UUID_C],
+            UUID_B,
+            &[(UUID_A, 1), (UUID_B, 1), (UUID_C, 0)],
+        ),
+    ));
+    let (member_before, member_after, view_before, view_after) = if case == "wrong-kind" {
+        (
+            json!({"kind": "current", "native": UUID_A}),
+            json!({"kind": "current", "native": UUID_B}),
+            json!({"kind": "home", "out": "DP-1", "native": UUID_A}),
+            json!({"kind": "home", "out": "DP-1", "native": UUID_B}),
+        )
+    } else {
+        (
+            json!({"kind": "home", "out": "DP-1", "native": UUID_A}),
+            json!({"kind": "home", "out": "DP-1", "native": UUID_C}),
+            json!({"kind": "current", "native": UUID_A}),
+            json!({"kind": "current", "native": UUID_C}),
+        )
+    };
+    bad["rosterFeedback"] = json!({
+        "op": plan["op"], "gen": plan["gen"], "rev": plan["rev"],
+        "steps": [
+            {"step": append_step, "status": "appended",
+             "before": {"kind": "order", "order": [UUID_A, UUID_B]},
+             "after": {"kind": "order", "order": [UUID_A, UUID_B, UUID_C]}},
+            {"step": member_step, "status": "applied", "before": member_before, "after": member_after},
+            {"step": view_step, "status": "applied", "before": view_before, "after": view_after},
+        ]
+    });
+    let reply = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &bad.to_string()))
+            .expect("bad feedback reply"),
+    );
+    assert_eq!(
+        reply["rosterPlan"]["op"], plan["op"],
+        "{case} must not settle epoch: {reply}"
+    );
+}
+
+#[test]
+fn shared_roster_wrong_append_order_feedback_cannot_settle_epoch() {
+    use serde_json::json;
+
+    let service = WorldService::new();
+    let handshake = handshake_req(ADAPTER, "shared-roster-order")
+        .replace("\"equalCount\":false", "\"equalCount\":true")
+        .replace(
+            "\"sharedNativeRoster\":false",
+            "\"sharedNativeRoster\":true",
+        );
+    let discovery = parse(&service.discover(&handshake).expect("handshake"));
+    let generation = discovery["gen"].as_str().expect("generation").to_owned();
+    service
+        .discover(&settings_req(ADAPTER, &generation, "settings-roster"))
+        .expect("settings");
+    let native = |order: &[&str], current: &str, occ: &[(&str, u32)]| {
+        json!({
+            "out": "DP-1",
+            "order": order,
+            "current": current,
+            "occupancy": occ.iter().map(|(n, c)| json!({"native": n, "count": c})).collect::<Vec<_>>()
+        })
+        .to_string()
+    };
+    let windows = [window_json("win-roster", "[0,0,400,300]", Some(UUID_A))];
+    let first = inner_report(
+        &windows,
+        true,
+        true,
+        &native(&[UUID_A], UUID_A, &[(UUID_A, 1)]),
+    );
+    let pub1 = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &first))
+            .expect("append plan"),
+    );
+    let plan = &pub1["rosterPlan"];
+    let step = plan["slots"][1]["step"].as_str().expect("append step");
+    let mut wrong_order = parse(&inner_report(
+        &windows,
+        true,
+        true,
+        &native(&[UUID_A, UUID_B], UUID_A, &[(UUID_A, 1), (UUID_B, 0)]),
+    ));
+    wrong_order["rosterFeedback"] = json!({
+        "op": plan["op"], "gen": plan["gen"], "rev": plan["rev"],
+        "steps": [{
+            "step": step, "status": "appended",
+            "before": {"kind": "order", "order": [UUID_C]},
+            "after": {"kind": "order", "order": [UUID_C, UUID_B]}
+        }]
+    });
+    let reply = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                &generation,
+                2,
+                2,
+                &wrong_order.to_string(),
+            ))
+            .expect("wrong order reply"),
+    );
+    assert_eq!(
+        reply["rosterPlan"]["op"], plan["op"],
+        "wrong preimage order must not settle append: {reply}"
+    );
+}
+
+#[test]
+fn shared_roster_wrong_kind_feedback_cannot_settle_epoch() {
+    assert_shared_roster_member_view_mismatch_cannot_settle("wrong-kind");
+}
+
+#[test]
+fn shared_roster_wrong_target_feedback_cannot_settle_epoch() {
+    assert_shared_roster_member_view_mismatch_cannot_settle("wrong-target");
+}
+
+#[test]
+fn shared_roster_correct_proof_with_delayed_observation_settles_on_arrival() {
+    use serde_json::json;
+
+    let service = WorldService::new();
+    let handshake = handshake_req(ADAPTER, "shared-roster-delayed")
+        .replace("\"equalCount\":false", "\"equalCount\":true")
+        .replace(
+            "\"sharedNativeRoster\":false",
+            "\"sharedNativeRoster\":true",
+        );
+    let discovery = parse(&service.discover(&handshake).expect("handshake"));
+    let generation = discovery["gen"].as_str().expect("generation");
+    service
+        .discover(&settings_req(ADAPTER, generation, "settings-roster"))
+        .expect("settings");
+    let windows = [window_json("win-roster", "[0,0,400,300]", Some(UUID_A))];
+    let native = |order: &[&str]| {
+        json!({
+            "out": "DP-1", "order": order, "current": UUID_A,
+            "occupancy": order.iter().map(|n| json!({"native": n, "count": u8::from(*n == UUID_A)})).collect::<Vec<_>>()
+        })
+        .to_string()
+    };
+    let first = inner_report(&windows, true, true, &native(&[UUID_A]));
+    let pub1 = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, generation, 1, 1, &first))
+            .expect("append plan"),
+    );
+    let plan = &pub1["rosterPlan"];
+    let step = plan["slots"][1]["step"].as_str().expect("append step");
+
+    // Feedback arrives while observation still shows the pre-append order.
+    let mut proof_early = parse(&first);
+    proof_early["rosterFeedback"] = json!({
+        "op": plan["op"], "gen": plan["gen"], "rev": plan["rev"],
+        "steps": [{
+            "step": step, "status": "appended",
+            "before": {"kind": "order", "order": [UUID_A]},
+            "after": {"kind": "order", "order": [UUID_A, UUID_B]}
+        }]
+    });
+    let waiting = parse(
+        &service
+            .evaluate_capture(&capture(
+                ADAPTER,
+                generation,
+                2,
+                2,
+                &proof_early.to_string(),
+            ))
+            .expect("early proof"),
+    );
+    assert_eq!(waiting["rosterPlan"]["op"], plan["op"]);
+
+    // Later fresh observation without redelivered feedback settles the epoch.
+    let arrived = inner_report(&windows, true, true, &native(&[UUID_A, UUID_B]));
+    let settled = parse(
+        &service
+            .evaluate_capture(&capture(ADAPTER, generation, 3, 3, &arrived))
+            .expect("delayed arrival"),
+    );
+    assert!(settled.get("rosterPlan").is_none(), "{settled}");
+}
+
+#[test]
+fn shared_roster_refusal_and_partial_application_replan_from_fresh_observation() {
+    use serde_json::json;
+
+    let setup = || {
+        let service = WorldService::new();
+        let handshake = handshake_req(ADAPTER, "shared-roster-refusal")
+            .replace("\"equalCount\":false", "\"equalCount\":true")
+            .replace(
+                "\"sharedNativeRoster\":false",
+                "\"sharedNativeRoster\":true",
+            );
+        let discovery = parse(&service.discover(&handshake).expect("handshake"));
+        let generation = discovery["gen"].as_str().expect("generation").to_owned();
+        service
+            .discover(&settings_req(ADAPTER, &generation, "settings-roster"))
+            .expect("settings");
+        (service, generation)
+    };
+    let native = |order: &[&str], current: &str, occ: &[(&str, u32)]| {
+        json!({
+            "out": "DP-1",
+            "order": order,
+            "current": current,
+            "occupancy": occ.iter().map(|(n, c)| json!({"native": n, "count": c})).collect::<Vec<_>>()
+        })
+        .to_string()
+    };
+
+    // 1) Refusal on incomplete observation holds recovery (and stops publishing
+    //    the refused plan), then a fresh complete observation replans a new op.
+    {
+        let (service, generation) = setup();
+        let windows = [window_json("win-roster", "[0,0,400,300]", Some(UUID_A))];
+        let first = inner_report(
+            &windows,
+            true,
+            true,
+            &native(&[UUID_A], UUID_A, &[(UUID_A, 1)]),
+        );
+        let pub1 = parse(
+            &service
+                .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &first))
+                .expect("append plan"),
+        );
+        let plan = &pub1["rosterPlan"];
+        let step = plan["slots"][1]["step"].as_str().expect("append step");
+
+        let mut incomplete_refusal = parse(&inner_report(
+            &windows,
+            false,
+            true,
+            &native(&[UUID_A], UUID_A, &[(UUID_A, 1)]),
+        ));
+        incomplete_refusal["rosterFeedback"] = json!({
+            "op": plan["op"], "gen": plan["gen"], "rev": plan["rev"],
+            "steps": [{
+                "step": step, "status": "refused",
+                "before": {"kind": "order", "order": [UUID_A]},
+                "after": {"kind": "order", "order": [UUID_A]}
+            }]
+        });
+        let held = parse(
+            &service
+                .evaluate_capture(&capture(
+                    ADAPTER,
+                    &generation,
+                    2,
+                    2,
+                    &incomplete_refusal.to_string(),
+                ))
+                .expect("incomplete refusal"),
+        );
+        assert!(
+            held.get("rosterPlan").is_none(),
+            "refused plan must not be re-emitted while waiting for fresh complete observation: {held}"
+        );
+
+        let fresh = parse(
+            &service
+                .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &first))
+                .expect("fresh recovery"),
+        );
+        let replanned = fresh
+            .get("rosterPlan")
+            .expect("fresh complete observation should replan");
+        assert_ne!(
+            replanned["op"], plan["op"],
+            "replanned epoch must mint a new op"
+        );
+    }
+
+    // 2) Partial application (append applied, member refused) replans from
+    //    the fresh observation's actual partial order without re-appending.
+    {
+        let (service, generation) = setup();
+        let base_windows = [
+            window_json("win-a", "[0,0,400,300]", Some(UUID_A)),
+            window_json("win-b", "[400,0,400,300]", Some(UUID_A)),
+        ];
+        let boot = inner_report(
+            &base_windows,
+            true,
+            true,
+            &native(&[UUID_A, UUID_B], UUID_A, &[(UUID_A, 2), (UUID_B, 0)]),
+        )
+        .replace(
+            "\"focused\":\"\",\"foregroundKnown\":false",
+            "\"focused\":\"win-a\",\"foregroundKnown\":true",
+        );
+        service
+            .evaluate_capture(&capture(ADAPTER, &generation, 1, 1, &boot))
+            .expect("boot");
+        let req = queue_req(
+            &generation,
+            "roster-test",
+            "1",
+            "{\"op\":\"send-numbered\",\"win\":\"win-a\",\"source\":{\"explicit\":\"DP-1\"},\"index\":2,\"follow\":true}",
+        );
+        service
+            .queue_command(SENDER_A, &req)
+            .expect("queue send-numbered");
+        let planned = parse(
+            &service
+                .evaluate_capture(&capture(ADAPTER, &generation, 2, 2, &boot))
+                .expect("plan"),
+        );
+        let plan = &planned["rosterPlan"];
+        let append_step = plan["slots"][2]["step"]
+            .as_str()
+            .unwrap_or_else(|| panic!("append step in {planned}"));
+        let member_step = plan["members"][0]["step"].as_str().expect("member step");
+
+        let mut partial = parse(&inner_report(
+            &base_windows,
+            true,
+            true,
+            &native(
+                &[UUID_A, UUID_B, UUID_C],
+                UUID_A,
+                &[(UUID_A, 2), (UUID_B, 0), (UUID_C, 0)],
+            ),
+        ));
+        partial["rosterFeedback"] = json!({
+            "op": plan["op"], "gen": plan["gen"], "rev": plan["rev"],
+            "steps": [
+                {"step": append_step, "status": "appended",
+                 "before": {"kind": "order", "order": [UUID_A, UUID_B]},
+                 "after": {"kind": "order", "order": [UUID_A, UUID_B, UUID_C]}},
+                {"step": member_step, "status": "refused",
+                 "before": {"kind": "home", "out": "DP-1", "native": UUID_A},
+                 "after": {"kind": "home", "out": "DP-1", "native": UUID_A}},
+            ]
+        });
+        let replanned = parse(
+            &service
+                .evaluate_capture(&capture(ADAPTER, &generation, 3, 3, &partial.to_string()))
+                .expect("partial refusal"),
+        );
+        let next_plan = replanned
+            .get("rosterPlan")
+            .expect("should replan remaining member/view work from actual partial state");
+        assert_ne!(next_plan["op"], plan["op"]);
+        assert_eq!(
+            next_plan["baseline"]["order"],
+            json!([UUID_A, UUID_B, UUID_C]),
+            "replan baseline must reflect actual partial order: {next_plan}"
+        );
+        assert!(
+            next_plan["slots"]
+                .as_array()
+                .expect("slots")
+                .iter()
+                .all(|slot| slot["kind"] == "existing"),
+            "no re-append when partial append already landed: {next_plan}"
+        );
+    }
+}
+
 #[test]
 fn invalidation_watermark_is_monotonic_per_adapter() {
     let (service, generation) = discovered_service();

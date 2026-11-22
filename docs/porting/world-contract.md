@@ -824,11 +824,16 @@ see [scope and portability](../decisions/workspaces.md#workspace-scope-vocabular
   Expected echoes do not waive freshness or external-input fences.
 - Async arrival, refusal, ambiguity or external input stops dependent work.
   The adapter reports the actual prefix and readbacks, without substitution,
-  rollback or autonomous recovery. Core correlates attempts against the
-  pending plan and its settled baseline rather than translating intermediate
-  facts through desired bindings. Advance the affected epoch only with exact
-  native order, same-lifetime membership and view proof. A failed or unproved
-  step does not release a migration source or reinterpret a window through the
+  rollback or autonomous recovery. Core matches each receipt's readbacks to
+  the exact pending step, including kind, preimage, target and dependencies,
+  before retaining it. It independently requires fresh native order,
+  occupancy, same-lifetime membership and view proof before settling the plan.
+  A refusal ends that operation's write authority. Replan only from fresh
+  observation establishing the actual state, including any applied prefix;
+  refusal is not evidence that the original roster is intact. When the
+  refusal arrives with sufficient recovery evidence, do not immediately
+  issue equivalent native work against the same state. An unproved step
+  does not release a migration source or reinterpret a window through the
   desired mapping. A settled replay emits no mutations; unchanged publications
   never renew spent or possibly executed steps.
 
@@ -861,9 +866,11 @@ Readbacks preserve the setter's actual pre/post snapshots. `appended`
 requires two orders whose only change is one fresh tail ID. `applied`
 requires matching non-null readback kinds and either a changed home, a
 changed current, or an order with exactly one deletion and preserved
-survivor order. `refused` may carry `null` for an unavailable readback.
-Core receives the resulting status (including the derived appended ID)
-and separately checks the report's observed native facts.
+survivor order. `refused` may carry `null` for an unavailable readback;
+it ends the correlated plan, but its readbacks are not success receipts.
+Core receives the typed status and both readbacks. It checks success
+readbacks against the exact plan step, deriving an appended ID only from
+that step's ordered proof and requiring the exact planned ID for removal.
 
 ## Commands and results
 

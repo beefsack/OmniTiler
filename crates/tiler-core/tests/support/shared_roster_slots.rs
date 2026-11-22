@@ -9,7 +9,10 @@ use tiler_core::connection::SettingsDiagnosticKind;
 use tiler_core::directional::{WindowSubject, WorkspaceId};
 use tiler_core::world_engine::WorldOutcome;
 use tiler_core::world_report::{SendSource, TransferKind, WorldReplyV4};
-use tiler_core::world_roster::{RosterFeedback, RosterSlot, RosterStepProof, SharedRosterPlan};
+use tiler_core::world_roster::{
+    NativeHome, RosterFeedback, RosterReadback, RosterSlot, RosterStepFeedback, RosterStepStatus,
+    SharedRosterPlan,
+};
 
 const ORDER: &[&str] = &["d1", "d2", "d3"];
 const DP: &str = "out-a";
@@ -98,7 +101,7 @@ fn member_workspace<'a>(reply: &'a WorldReplyV4, window: &str) -> &'a str {
 
 fn feedback(
     plan: &SharedRosterPlan,
-    steps: impl IntoIterator<Item = (String, RosterStepProof)>,
+    steps: impl IntoIterator<Item = (String, RosterStepFeedback)>,
 ) -> RosterFeedback {
     RosterFeedback {
         operation_id: plan.operation_id.clone(),
@@ -106,6 +109,131 @@ fn feedback(
         revision: plan.revision,
         steps: steps.into_iter().collect(),
     }
+}
+
+fn appended_step(before: &[&str], after: &[&str]) -> RosterStepFeedback {
+    RosterStepFeedback {
+        status: RosterStepStatus::Appended,
+        before: Some(RosterReadback::Order(
+            before.iter().map(|s| (*s).to_owned()).collect(),
+        )),
+        after: Some(RosterReadback::Order(
+            after.iter().map(|s| (*s).to_owned()).collect(),
+        )),
+    }
+}
+
+fn applied_home_step(
+    before_out: &str,
+    before_native: &str,
+    after_out: &str,
+    after_native: &str,
+) -> RosterStepFeedback {
+    RosterStepFeedback {
+        status: RosterStepStatus::Applied,
+        before: Some(RosterReadback::Home(NativeHome {
+            output: output(before_out),
+            native: before_native.to_owned(),
+        })),
+        after: Some(RosterReadback::Home(NativeHome {
+            output: output(after_out),
+            native: after_native.to_owned(),
+        })),
+    }
+}
+
+fn applied_view_step(before: &str, after: &str) -> RosterStepFeedback {
+    RosterStepFeedback {
+        status: RosterStepStatus::Applied,
+        before: Some(RosterReadback::Current(before.to_owned())),
+        after: Some(RosterReadback::Current(after.to_owned())),
+    }
+}
+
+fn applied_removal_step(before: &[&str], after: &[&str]) -> RosterStepFeedback {
+    RosterStepFeedback {
+        status: RosterStepStatus::Applied,
+        before: Some(RosterReadback::Order(
+            before.iter().map(|s| (*s).to_owned()).collect(),
+        )),
+        after: Some(RosterReadback::Order(
+            after.iter().map(|s| (*s).to_owned()).collect(),
+        )),
+    }
+}
+
+fn refused_step(
+    before: Option<RosterReadback>,
+    after: Option<RosterReadback>,
+) -> RosterStepFeedback {
+    RosterStepFeedback {
+        status: RosterStepStatus::Refused,
+        before,
+        after,
+    }
+}
+
+fn exact_plan_feedback(plan: &SharedRosterPlan, appended_ids: &[&str]) -> RosterFeedback {
+    let mut order = plan.baseline.native_order.clone();
+    let mut appended = std::collections::BTreeMap::new();
+    let mut steps = std::collections::BTreeMap::new();
+    let mut append_iter = appended_ids.iter();
+    for slot in &plan.slots {
+        if let RosterSlot::Append(step) = slot {
+            let native = (*append_iter.next().expect("appended id")).to_owned();
+            let before = order.clone();
+            order.push(native.clone());
+            appended.insert(step.clone(), native);
+            steps.insert(
+                step.clone(),
+                RosterStepFeedback {
+                    status: RosterStepStatus::Appended,
+                    before: Some(RosterReadback::Order(before)),
+                    after: Some(RosterReadback::Order(order.clone())),
+                },
+            );
+        }
+    }
+    let resolve = |slot: &RosterSlot| match slot {
+        RosterSlot::Existing(native) => native.clone(),
+        RosterSlot::Append(step) => appended[step].clone(),
+    };
+    for member in &plan.members {
+        steps.insert(
+            member.step_id.clone(),
+            RosterStepFeedback {
+                status: RosterStepStatus::Applied,
+                before: Some(RosterReadback::Home(member.before.clone())),
+                after: Some(RosterReadback::Home(NativeHome {
+                    output: member.output.clone(),
+                    native: resolve(&member.target),
+                })),
+            },
+        );
+    }
+    for view in &plan.views {
+        steps.insert(
+            view.step_id.clone(),
+            RosterStepFeedback {
+                status: RosterStepStatus::Applied,
+                before: Some(RosterReadback::Current(view.before.clone())),
+                after: Some(RosterReadback::Current(resolve(&view.target))),
+            },
+        );
+    }
+    for removal in &plan.removals {
+        let before = order.clone();
+        order.retain(|id| id != &removal.native);
+        steps.insert(
+            removal.step_id.clone(),
+            RosterStepFeedback {
+                status: RosterStepStatus::Applied,
+                before: Some(RosterReadback::Order(before)),
+                after: Some(RosterReadback::Order(order.clone())),
+            },
+        );
+    }
+    feedback(plan, steps)
 }
 
 fn apply_feedback(
@@ -253,18 +381,7 @@ fn reference_send(stayer: bool) {
         native_order.push("d4");
         homes.push(("stayer", DP, "d1"));
     }
-    let applied = feedback(
-        &plan,
-        appends
-            .into_iter()
-            .map(|id| (id, RosterStepProof::Appended("d4".to_owned())))
-            .chain(
-                plan.members
-                    .iter()
-                    .map(|step| (step.step_id.clone(), RosterStepProof::Applied)),
-            )
-            .chain([(view.step_id.clone(), RosterStepProof::Applied)]),
-    );
+    let applied = exact_plan_feedback(&plan, if stayer { &["d4"] } else { &[] });
     let arrival = capture(3, &native_order, [a_target, "d1"], &homes);
     let settled = apply_feedback(&mut engine, &arrival, &applied);
     assert_no_legacy_roster_mutations(&settled);
@@ -371,26 +488,34 @@ fn partial_apply_and_late_contradictory_feedback_do_not_relabel_members() {
     let partial = feedback(
         &plan,
         [
-            (b.step_id.clone(), RosterStepProof::Applied),
-            (a.step_id.clone(), RosterStepProof::Refused),
+            (b.step_id.clone(), applied_home_step(DP, "d2", DP, "d1")),
+            (a.step_id.clone(), refused_step(None, None)),
         ],
     );
     let observed = apply_feedback(&mut engine, &prefix, &partial);
     assert_no_legacy_roster_mutations(&observed);
-    for id in ["a", "b", "c"] {
-        assert_eq!(member_workspace(&observed, id), member_workspace(&boot, id));
-    }
+    assert_eq!(
+        member_workspace(&observed, "a"),
+        member_workspace(&boot, "a")
+    );
+    assert_eq!(
+        member_workspace(&observed, "c"),
+        member_workspace(&boot, "c")
+    );
     assert_eq!(published_view(&observed, DP), published_view(&boot, DP));
-    if let Some(focus) = observed.focus_request.as_ref() {
-        assert_eq!(Some(focus), plan.focus.as_ref());
-    }
-    assert_eq!(engine.settled_shared_roster(), Some(&plan.baseline));
+    // Refusal terminated the original plan epoch; a fresh plan is replanned from the actual state.
+    let replanned = engine
+        .desired_shared_roster_plan()
+        .expect("replan from partial state")
+        .clone();
+    assert_ne!(replanned.operation_id, plan.operation_id);
 
+    // Late contradictory feedback for the terminated plan cannot advance it.
     let late = feedback(
         &plan,
         [
-            (a.step_id.clone(), RosterStepProof::Applied),
-            (view.step_id.clone(), RosterStepProof::Applied),
+            (a.step_id.clone(), applied_home_step(DP, "d1", DP, "d2")),
+            (view.step_id.clone(), applied_view_step("d1", "d2")),
         ],
     );
     let purported_final = capture(
@@ -402,8 +527,8 @@ fn partial_apply_and_late_contradictory_feedback_do_not_relabel_members() {
     let held = apply_feedback(&mut engine, &purported_final, &late);
     assert_no_legacy_roster_mutations(&held);
     assert_eq!(engine.settled_shared_roster(), Some(&plan.baseline));
+    assert_eq!(engine.desired_shared_roster_plan(), Some(&replanned));
     assert_eq!(member_workspace(&held, "a"), member_workspace(&boot, "a"));
-    assert_eq!(member_workspace(&held, "b"), member_workspace(&boot, "b"));
     assert_eq!(published_view(&held, DP), published_view(&boot, DP));
 }
 
@@ -508,7 +633,7 @@ fn shrink_removes_only_proved_empty_surplus_and_settles_on_absence() {
         panic!("one removal: {plan:?}")
     };
     assert_eq!(remove.native, "unviewed-empty");
-    let removed = feedback(&plan, [(remove.step_id.clone(), RosterStepProof::Applied)]);
+    let removed = exact_plan_feedback(&plan, &[]);
     let still_present = capture(2, &oversized, ["d1", "d1"], homes);
     apply_feedback(&mut engine, &still_present, &removed);
     assert_eq!(engine.settled_shared_roster(), Some(&plan.baseline));
@@ -584,10 +709,7 @@ fn append_selects_the_real_spare_but_next_can_materialize_existing_padding() {
 
     let homes = &[("a", DP, "d1"), ("b", DP, "d2"), ("c", HDMI, "d1")];
     let at_spare = capture(3, ORDER, ["d1", "d2"], homes);
-    let proof = feedback(
-        &plan,
-        [(plan.views[0].step_id.clone(), RosterStepProof::Applied)],
-    );
+    let proof = exact_plan_feedback(&plan, &[]);
     let on_spare = apply_feedback(&mut engine, &at_spare, &proof);
     assert_eq!(published_view(&on_spare, HDMI), Some(spare));
     let mut next = capture(4, ORDER, ["d1", "d2"], homes);
@@ -613,10 +735,7 @@ fn append_selects_the_real_spare_but_next_can_materialize_existing_padding() {
     );
     assert_eq!(next_plan.slots, plan.slots);
     assert!(next_plan.members.is_empty());
-    let next_proof = feedback(
-        &next_plan,
-        [(next_plan.views[0].step_id.clone(), RosterStepProof::Applied)],
-    );
+    let next_proof = exact_plan_feedback(&next_plan, &[]);
     let landed = apply_feedback(
         &mut engine,
         &capture(5, ORDER, ["d1", "d3"], homes),
@@ -796,12 +915,7 @@ fn two_output_selectors_share_one_plan_without_moving_members() {
         assert_eq!(view.before, "d1");
         assert_eq!(view.target, RosterSlot::Existing("d2".to_owned()));
     }
-    let applied = feedback(
-        &plan,
-        plan.views
-            .iter()
-            .map(|view| (view.step_id.clone(), RosterStepProof::Applied)),
-    );
+    let applied = exact_plan_feedback(&plan, &[]);
     let homes = &[("a", DP, "d1"), ("b", DP, "d2"), ("c", HDMI, "d1")];
     let settled = apply_feedback(
         &mut engine,
@@ -888,17 +1002,7 @@ fn migration_reuses_assigned_backing_and_waits_for_proof_before_source_release()
             assert_eq!(plan.views[0].target, moved.target);
             assert!(plan.views[0].dependencies.contains(&moved.step_id));
             assert!(plan.views[0].dependencies.contains(&occupant.step_id));
-            let proof = feedback(
-                &plan,
-                [(append.clone(), RosterStepProof::Appended("d4".to_owned()))]
-                    .into_iter()
-                    .chain(
-                        plan.members
-                            .iter()
-                            .map(|step| (step.step_id.clone(), RosterStepProof::Applied)),
-                    )
-                    .chain([(plan.views[0].step_id.clone(), RosterStepProof::Applied)]),
-            );
+            let proof = exact_plan_feedback(&plan, &["d4"]);
             let arrived = &[
                 ("a", DP, "d1"),
                 ("b", HDMI, "d2"),
@@ -924,8 +1028,8 @@ fn migration_reuses_assigned_backing_and_waits_for_proof_before_source_release()
         let refused = feedback(
             &plan,
             [
-                (append.clone(), RosterStepProof::Appended("d4".to_owned())),
-                (occupant.step_id.clone(), RosterStepProof::Refused),
+                (append.clone(), appended_step(ORDER, &new_order)),
+                (occupant.step_id.clone(), refused_step(None, None)),
             ],
         );
         let held = apply_feedback(
@@ -934,7 +1038,21 @@ fn migration_reuses_assigned_backing_and_waits_for_proof_before_source_release()
             &refused,
         );
         assert_no_legacy_roster_mutations(&held);
-        assert_eq!(engine.settled_shared_roster(), Some(&baseline));
+        let recovered = engine
+            .settled_shared_roster()
+            .expect("fresh observation recovers partial order");
+        assert_eq!(recovered.native_order, new_order);
+        assert_ne!(recovered.epoch, baseline.epoch);
+        let replanned = engine
+            .desired_shared_roster_plan()
+            .expect("replan remaining migration from partial state");
+        assert_ne!(replanned.operation_id, plan.operation_id);
+        assert!(
+            replanned
+                .slots
+                .iter()
+                .all(|slot| matches!(slot, RosterSlot::Existing(_)))
+        );
         assert_eq!(member_workspace(&held, "b"), source);
         assert_eq!(member_workspace(&held, "d"), dest_resident);
         assert_eq!(published_view(&held, HDMI), published_view(&boot, HDMI));
@@ -974,17 +1092,7 @@ fn stale_request_and_mismatched_feedback_cannot_advance_a_pending_epoch() {
         .desired_shared_roster_plan()
         .expect("send plan")
         .clone();
-    let applied = feedback(
-        &plan,
-        plan.members
-            .iter()
-            .map(|step| (step.step_id.clone(), RosterStepProof::Applied))
-            .chain(
-                plan.views
-                    .iter()
-                    .map(|step| (step.step_id.clone(), RosterStepProof::Applied)),
-            ),
-    );
+    let applied = exact_plan_feedback(&plan, &[]);
     let stale = engine
         .handle_report_with_roster_feedback_and_prepare(
             &baseline_capture,
@@ -1184,5 +1292,455 @@ fn unmanaged_sibling_occupant_still_fences_stayer_append() {
     assert!(
         engine.desired_shared_roster_plan().is_none(),
         "unmanaged sibling occupant must remain fenced"
+    );
+}
+
+#[test]
+fn wrong_kind_wrong_target_and_ordered_identity_cannot_settle_epoch() {
+    // 1) Wrong kind and wrong target on member + view steps, plus wrong preimage order on append.
+    for case in ["wrong-kind", "wrong-target", "wrong-append-order"] {
+        let mut engine = slot_engine();
+        accepted(&mut engine, &reference_capture(1, true));
+        let mut send = reference_capture(2, true);
+        send_append(&mut send, 0, true);
+        accepted(&mut engine, &send);
+        let plan = engine
+            .desired_shared_roster_plan()
+            .expect("stayer append plan")
+            .clone();
+        let [_, _, _, RosterSlot::Append(append_step)] = plan.slots.as_slice() else {
+            panic!("expected append step: {plan:?}");
+        };
+        let member = &plan.members[0];
+        let view = &plan.views[0];
+        let new_order = ["d1", "d2", "d3", "d4"];
+        let arrived = capture(
+            3,
+            &new_order,
+            ["d3", "d1"],
+            &[
+                ("a", DP, "d3"),
+                ("stayer", DP, "d1"),
+                ("b", DP, "d2"),
+                ("c", HDMI, "d1"),
+            ],
+        );
+        let bad = match case {
+            "wrong-kind" => feedback(
+                &plan,
+                [
+                    (append_step.clone(), appended_step(ORDER, &new_order)),
+                    (member.step_id.clone(), applied_view_step("d1", "d3")),
+                    (view.step_id.clone(), applied_home_step(DP, "d1", DP, "d3")),
+                ],
+            ),
+            "wrong-target" => feedback(
+                &plan,
+                [
+                    (append_step.clone(), appended_step(ORDER, &new_order)),
+                    (
+                        member.step_id.clone(),
+                        applied_home_step(DP, "d1", DP, "d4"),
+                    ),
+                    (view.step_id.clone(), applied_view_step("d1", "d4")),
+                ],
+            ),
+            _ => feedback(
+                &plan,
+                [
+                    (
+                        append_step.clone(),
+                        appended_step(&["d2", "d1", "d3"], &["d2", "d1", "d3", "d4"]),
+                    ),
+                    (
+                        member.step_id.clone(),
+                        applied_home_step(DP, "d1", DP, "d3"),
+                    ),
+                    (view.step_id.clone(), applied_view_step("d1", "d3")),
+                ],
+            ),
+        };
+        apply_feedback(&mut engine, &arrived, &bad);
+        assert_eq!(
+            engine.desired_shared_roster_plan(),
+            Some(&plan),
+            "{case} must not settle epoch"
+        );
+        assert_eq!(engine.settled_shared_roster(), Some(&plan.baseline));
+    }
+
+    // 2) Wrong removal identity/order cannot settle a shrink plan.
+    {
+        let mut engine = slot_engine();
+        let oversized = ["d1", "d2", "d3", "unviewed-empty"];
+        let homes = &[("a", DP, "d1"), ("b", DP, "d2"), ("c", HDMI, "d1")];
+        accepted(&mut engine, &capture(1, &oversized, ["d1", "d1"], homes));
+        let plan = engine
+            .desired_shared_roster_plan()
+            .expect("shrink plan")
+            .clone();
+        let remove = &plan.removals[0];
+        let wrong_removal = feedback(
+            &plan,
+            [(
+                remove.step_id.clone(),
+                applied_removal_step(&oversized, &["d1", "d2", "unviewed-empty"]),
+            )],
+        );
+        apply_feedback(
+            &mut engine,
+            &capture(2, ORDER, ["d1", "d1"], homes),
+            &wrong_removal,
+        );
+        assert_eq!(
+            engine.desired_shared_roster_plan(),
+            Some(&plan),
+            "wrong removal identity must not settle shrink"
+        );
+        assert_eq!(engine.settled_shared_roster(), Some(&plan.baseline));
+    }
+}
+
+#[test]
+fn correct_proof_with_delayed_observation_settles_without_redelivery() {
+    let mut engine = slot_engine();
+    accepted(&mut engine, &reference_capture(1, true));
+    let mut send = reference_capture(2, true);
+    send_append(&mut send, 0, true);
+    accepted(&mut engine, &send);
+    let plan = engine
+        .desired_shared_roster_plan()
+        .expect("stayer append plan")
+        .clone();
+    let proof = exact_plan_feedback(&plan, &["d4"]);
+
+    // Exact proof arrives before the native observation reflects the change.
+    apply_feedback(&mut engine, &reference_capture(3, true), &proof);
+    assert_eq!(engine.desired_shared_roster_plan(), Some(&plan));
+
+    // Later fresh observation without redelivered feedback settles the epoch.
+    let new_order = ["d1", "d2", "d3", "d4"];
+    let arrived = capture(
+        4,
+        &new_order,
+        ["d3", "d1"],
+        &[
+            ("a", DP, "d3"),
+            ("stayer", DP, "d1"),
+            ("b", DP, "d2"),
+            ("c", HDMI, "d1"),
+        ],
+    );
+    let settled = accepted(&mut engine, &arrived);
+    assert_no_legacy_roster_mutations(&settled);
+    assert!(engine.desired_shared_roster_plan().is_none());
+    assert_eq!(
+        engine
+            .settled_shared_roster()
+            .expect("settled")
+            .native_order,
+        new_order
+    );
+}
+
+#[test]
+fn refusal_is_terminal_and_recovers_only_from_fresh_complete_observation() {
+    let mut engine = slot_engine();
+    let oversized = ["d1", "d2", "d3", "unviewed-empty"];
+    let homes = &[("a", DP, "d1"), ("b", DP, "d2"), ("c", HDMI, "d1")];
+    accepted(&mut engine, &capture(1, &oversized, ["d1", "d1"], homes));
+    let plan = engine
+        .desired_shared_roster_plan()
+        .expect("shrink plan")
+        .clone();
+    let remove = &plan.removals[0];
+
+    // Refusal on an incomplete observation terminates the plan (never re-emitted)
+    // but cannot authorize recovery yet.
+    let mut incomplete = capture(2, &oversized, ["d1", "d1"], homes);
+    incomplete.inventory_complete = false;
+    let refused = feedback(&plan, [(remove.step_id.clone(), refused_step(None, None))]);
+    apply_feedback(&mut engine, &incomplete, &refused);
+    assert!(
+        engine.desired_shared_roster_plan().is_none(),
+        "refused plan must not be re-emitted"
+    );
+    assert_eq!(engine.settled_shared_roster(), Some(&plan.baseline));
+
+    // Fresh complete observation showing the surplus already gone recovers cleanly
+    // with no held writes and no new plan.
+    let recovered = accepted(&mut engine, &capture(3, ORDER, ["d1", "d1"], homes));
+    assert_no_legacy_roster_mutations(&recovered);
+    assert!(engine.desired_shared_roster_plan().is_none());
+    assert_eq!(
+        engine
+            .settled_shared_roster()
+            .expect("recovered")
+            .native_order,
+        ORDER
+    );
+}
+
+#[test]
+fn partial_application_then_refusal_replans_from_actual_partial_state() {
+    let mut engine = slot_engine();
+    accepted(&mut engine, &reference_capture(1, true));
+    let mut send = reference_capture(2, true);
+    send_append(&mut send, 0, true);
+    accepted(&mut engine, &send);
+    let plan = engine
+        .desired_shared_roster_plan()
+        .expect("stayer append plan")
+        .clone();
+    let [_, _, _, RosterSlot::Append(append_step)] = plan.slots.as_slice() else {
+        panic!("expected append step: {plan:?}");
+    };
+    let member = &plan.members[0];
+    let view = &plan.views[0];
+    let new_order = ["d1", "d2", "d3", "d4"];
+
+    // Append and member succeeded; view was refused. Fresh observation shows the
+    // actual partial state (d4 appended, window a on d3, DP still viewing d1).
+    let partial_feedback = feedback(
+        &plan,
+        [
+            (append_step.clone(), appended_step(ORDER, &new_order)),
+            (
+                member.step_id.clone(),
+                applied_home_step(DP, "d1", DP, "d3"),
+            ),
+            (
+                view.step_id.clone(),
+                refused_step(
+                    Some(RosterReadback::Current("d1".to_owned())),
+                    Some(RosterReadback::Current("d1".to_owned())),
+                ),
+            ),
+        ],
+    );
+    let partial_obs = capture(
+        3,
+        &new_order,
+        ["d1", "d1"],
+        &[
+            ("a", DP, "d3"),
+            ("stayer", DP, "d1"),
+            ("b", DP, "d2"),
+            ("c", HDMI, "d1"),
+        ],
+    );
+    let reply = apply_feedback(&mut engine, &partial_obs, &partial_feedback);
+    assert_no_legacy_roster_mutations(&reply);
+    assert_eq!(
+        engine
+            .settled_shared_roster()
+            .expect("settled partial order")
+            .native_order,
+        new_order
+    );
+    if let Some(next_plan) = engine.desired_shared_roster_plan() {
+        assert_ne!(next_plan.operation_id, plan.operation_id);
+        assert_eq!(next_plan.baseline.native_order, new_order);
+        assert!(
+            next_plan
+                .slots
+                .iter()
+                .all(|slot| matches!(slot, RosterSlot::Existing(_)))
+        );
+    }
+}
+
+#[test]
+fn refusal_with_missing_or_mismatched_prefix_is_still_terminal_and_unknown_step_ignored() {
+    let mut engine = slot_engine();
+    accepted(&mut engine, &reference_capture(1, true));
+    let mut send = reference_capture(2, true);
+    send_append(&mut send, 0, true);
+    accepted(&mut engine, &send);
+    let plan = engine
+        .desired_shared_roster_plan()
+        .expect("stayer append plan")
+        .clone();
+    let view = &plan.views[0];
+
+    // An unknown step ID with Refused must not terminate the pending plan.
+    let unknown_refusal = feedback(
+        &plan,
+        [("unknown-step-id".to_owned(), refused_step(None, None))],
+    );
+    apply_feedback(&mut engine, &reference_capture(3, true), &unknown_refusal);
+    assert_eq!(
+        engine.desired_shared_roster_plan(),
+        Some(&plan),
+        "unknown step refusal must be ignored"
+    );
+
+    // A correlated Refused on a dependent step (view) must terminate the epoch
+    // even when prerequisite append/member steps are missing from feedback.
+    let mut incomplete = reference_capture(4, true);
+    incomplete.inventory_complete = false;
+    let missing_prefix_refusal =
+        feedback(&plan, [(view.step_id.clone(), refused_step(None, None))]);
+    apply_feedback(&mut engine, &incomplete, &missing_prefix_refusal);
+    assert!(
+        engine.desired_shared_roster_plan().is_none(),
+        "refused plan must not be re-emitted before fresh complete observation"
+    );
+
+    // Later fresh complete observation recovers and replans a new op.
+    accepted(&mut engine, &reference_capture(5, true));
+    let replanned = engine
+        .desired_shared_roster_plan()
+        .expect("fresh complete observation should replan");
+    assert_ne!(replanned.operation_id, plan.operation_id);
+}
+
+#[test]
+fn refusal_recovery_rejects_unknown_window_home_and_mismatched_occupancy() {
+    let mut engine = slot_engine();
+    let oversized = ["d1", "d2", "d3", "unviewed-empty"];
+    let homes = &[("a", DP, "d1"), ("b", DP, "d2"), ("c", HDMI, "d1")];
+    accepted(&mut engine, &capture(1, &oversized, ["d1", "d1"], homes));
+    let plan = engine
+        .desired_shared_roster_plan()
+        .expect("shrink plan")
+        .clone();
+    let remove = &plan.removals[0];
+
+    // Trigger refusal on an observation where a live window has unknown native home.
+    let mut unknown_home = capture(2, ORDER, ["d1", "d1"], homes);
+    unknown_home
+        .windows
+        .iter_mut()
+        .find(|w| w.window.0 == "a")
+        .expect("window a")
+        .native_workspace = tiler_core::world_report::NativeWorkspaceFact::Null;
+    let refused = feedback(&plan, [(remove.step_id.clone(), refused_step(None, None))]);
+    apply_feedback(&mut engine, &unknown_home, &refused);
+    assert!(engine.desired_shared_roster_plan().is_none());
+    assert_eq!(
+        engine.settled_shared_roster(),
+        Some(&plan.baseline),
+        "unknown per-window home must not authorize refusal recovery"
+    );
+
+    // Mismatched occupancy total also cannot authorize recovery.
+    let mut bad_occ = capture(3, ORDER, ["d1", "d1"], homes);
+    for native in &mut bad_occ.native {
+        native.occupancy[0].count = Some(99);
+    }
+    accepted(&mut engine, &bad_occ);
+    assert!(engine.desired_shared_roster_plan().is_none());
+    assert_eq!(
+        engine.settled_shared_roster(),
+        Some(&plan.baseline),
+        "mismatched occupancy must not authorize refusal recovery"
+    );
+
+    // Fresh complete observation with reconciled homes and occupancy recovers.
+    accepted(&mut engine, &capture(4, ORDER, ["d1", "d1"], homes));
+    assert!(engine.desired_shared_roster_plan().is_none());
+    assert_eq!(
+        engine
+            .settled_shared_roster()
+            .expect("recovered")
+            .native_order,
+        ORDER
+    );
+}
+
+#[test]
+fn unrecovered_refusal_suppresses_plan_while_preserving_scoped_guards() {
+    let mut engine = slot_engine();
+    let boot = accepted(&mut engine, &reference_capture(1, true));
+    let mut send = reference_capture(2, true);
+    send_append(&mut send, 0, true);
+    accepted(&mut engine, &send);
+    let plan = engine
+        .desired_shared_roster_plan()
+        .expect("stayer append plan")
+        .clone();
+    let view = &plan.views[0];
+
+    // Refusal on an incomplete observation that already shows intermediate
+    // member/view movement on DP: publication must suppress the old plan while
+    // keeping DP's view/home on the settled baseline and holding DP writes.
+    let mut incomplete_intermediate = capture(
+        3,
+        ORDER,
+        ["d3", "d1"],
+        &[
+            ("a", DP, "d3"),
+            ("stayer", DP, "d1"),
+            ("b", DP, "d2"),
+            ("c", HDMI, "d1"),
+        ],
+    );
+    incomplete_intermediate.inventory_complete = false;
+    let refused = feedback(&plan, [(view.step_id.clone(), refused_step(None, None))]);
+    let reply = apply_feedback(&mut engine, &incomplete_intermediate, &refused);
+    assert!(
+        engine.desired_shared_roster_plan().is_none(),
+        "refused plan must be suppressed before recovery"
+    );
+    let dp_boot_view = &boot
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == DP)
+        .expect("DP boot output")
+        .logical_view;
+    let dp_reply = reply
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == DP)
+        .expect("DP reply output");
+    assert_eq!(
+        &dp_reply.logical_view, dp_boot_view,
+        "unrecovered refusal must keep baseline view instead of intermediate d3"
+    );
+    assert_eq!(
+        member_workspace(&reply, "a"),
+        member_workspace(&boot, "a"),
+        "unrecovered refusal must keep baseline home for moved member"
+    );
+    assert!(
+        reply
+            .windows
+            .iter()
+            .filter(|row| row.output.0 == DP)
+            .all(|row| row.frame_authority != tiler_core::world_report::ScopeAuthority::Controlled),
+        "unrecovered refusal must keep DP frame writes held"
+    );
+}
+
+#[test]
+fn recovered_suppressed_transfer_does_not_hold_output_writes_indefinitely() {
+    let mut engine = slot_engine();
+    accepted(&mut engine, &reference_capture(1, true));
+    let mut send = reference_capture(2, true);
+    send_append(&mut send, 0, true);
+    accepted(&mut engine, &send);
+    let plan = engine
+        .desired_shared_roster_plan()
+        .expect("stayer append plan")
+        .clone();
+    let view = &plan.views[0];
+
+    // Refusal on a fresh complete observation with unchanged native state
+    // recovers and suppresses duplicate replanning of the same refused work.
+    // Unrelated frame writes on DP must not stay held indefinitely.
+    let refused = feedback(&plan, [(view.step_id.clone(), refused_step(None, None))]);
+    let reply = apply_feedback(&mut engine, &reference_capture(3, true), &refused);
+    assert!(
+        engine.desired_shared_roster_plan().is_none(),
+        "identical refused work must not immediately replan"
+    );
+    assert!(
+        reply
+            .windows
+            .iter()
+            .filter(|row| row.output.0 == DP)
+            .any(|row| row.frame_authority == tiler_core::world_report::ScopeAuthority::Controlled),
+        "recovered suppressed transfer must not hold DP frame writes indefinitely"
     );
 }
