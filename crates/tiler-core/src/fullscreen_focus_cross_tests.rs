@@ -167,16 +167,7 @@ fn admit(layout: &mut WorldLayout, d: &OutputDomain, w: &str) {
     let mut o0 = obs_for(layout, &k, &BTreeMap::new());
     o0.push(tiled(w, &d.id.0, &d.workspace.0));
     layout
-        .admit_window(
-            &k,
-            &win_id,
-            crate::session::ExceptionFlags::none(),
-            None,
-            placement,
-            false,
-            false,
-            &o0,
-        )
+        .admit_window(&k, &win_id, placement, false, false, &o0)
         .expect("admit");
 }
 fn focused_window(layout: &WorldLayout, domain: &DomainKey) -> WindowId {

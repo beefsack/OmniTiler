@@ -94,23 +94,6 @@ pub fn group_underlay_outer_rect(
     }
 }
 
-#[must_use]
-pub fn group_focus_eligible(
-    has_window: bool,
-    deleted: bool,
-    minimized: bool,
-    fullscreen: bool,
-    hidden: bool,
-    maximized: bool,
-) -> bool {
-    has_window && !deleted && !minimized && !fullscreen && !hidden && !maximized
-}
-
-#[must_use]
-pub fn group_visible(has_group: bool, modifier_held: bool, focus_eligible: bool) -> bool {
-    has_group && modifier_held && focus_eligible
-}
-
 /// Movement-only underlay chord: both Win and Shift held. Extra modifiers are
 /// allowed (callers fold only these two), and either press order works because
 /// this is level-observed, never edge-sequenced.
@@ -481,34 +464,6 @@ mod tests {
                 expected
             );
         }
-    }
-
-    #[test]
-    fn group_focus_eligibility() {
-        // (has, deleted, minimized, fullscreen, hidden, maximized) -> eligible.
-        let cases = [
-            ((true, false, false, false, false, false), true),
-            ((false, false, false, false, false, false), false),
-            ((true, true, false, false, false, false), false),
-            ((true, false, true, false, false, false), false),
-            ((true, false, false, true, false, false), false),
-            ((true, false, false, false, true, false), false),
-            ((true, false, false, false, false, true), false),
-        ];
-        for ((has, deleted, min, fs, hidden, max), want) in cases {
-            assert_eq!(
-                group_focus_eligible(has, deleted, min, fs, hidden, max),
-                want
-            );
-        }
-    }
-
-    #[test]
-    fn group_visibility() {
-        assert!(group_visible(true, true, true));
-        assert!(!group_visible(false, true, true));
-        assert!(!group_visible(true, false, true));
-        assert!(!group_visible(true, true, false));
     }
 
     #[test]

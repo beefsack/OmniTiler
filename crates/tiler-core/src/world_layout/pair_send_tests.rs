@@ -738,7 +738,7 @@ fn all_layout_node_ids(layout: &WorldLayout) -> std::collections::BTreeSet<NodeI
 
 #[test]
 fn alloc_send_to_occupied_shares_counter() {
-    use crate::session::{ExceptionFlags, ObservedWindow};
+    use crate::session::ObservedWindow;
     let source = ws_key("out-1", "ws-1");
     let target = ws_key("out-1", "ws-2");
     let source_desc = domain_desc(&source, std_bounds(), 0);
@@ -774,8 +774,6 @@ fn alloc_send_to_occupied_shares_counter() {
         .admit_window(
             &source,
             &win("a"),
-            ExceptionFlags::none(),
-            None,
             wide,
             false,
             false,
@@ -786,8 +784,6 @@ fn alloc_send_to_occupied_shares_counter() {
         .admit_window(
             &source,
             &win("b"),
-            ExceptionFlags::none(),
-            None,
             wide,
             false,
             false,
@@ -798,8 +794,6 @@ fn alloc_send_to_occupied_shares_counter() {
         .admit_window(
             &target,
             &win("d"),
-            ExceptionFlags::none(),
-            None,
             wide,
             false,
             false,
@@ -836,7 +830,7 @@ fn alloc_send_to_occupied_shares_counter() {
 
 #[test]
 fn alloc_send_fallback_burns_and_never_reissues_on_repeat() {
-    use crate::session::{ExceptionFlags, ObservedWindow};
+    use crate::session::ObservedWindow;
     let source = ws_key("o", "ws-1");
     let target = ws_key("o", "ws-2");
     let tight_bounds = Rect {
@@ -885,8 +879,6 @@ fn alloc_send_fallback_burns_and_never_reissues_on_repeat() {
         .admit_window(
             &target,
             &win("a"),
-            ExceptionFlags::none(),
-            None,
             wide,
             false,
             false,
@@ -897,8 +889,6 @@ fn alloc_send_fallback_burns_and_never_reissues_on_repeat() {
         .admit_window(
             &target,
             &win("b"),
-            ExceptionFlags::none(),
-            None,
             wide,
             false,
             false,
@@ -909,8 +899,6 @@ fn alloc_send_fallback_burns_and_never_reissues_on_repeat() {
         .admit_window(
             &target,
             &win("c"),
-            ExceptionFlags::none(),
-            None,
             tall,
             false,
             false,
@@ -925,8 +913,6 @@ fn alloc_send_fallback_burns_and_never_reissues_on_repeat() {
         .admit_window(
             &source,
             &win("d"),
-            ExceptionFlags::none(),
-            None,
             Rect {
                 x: 0,
                 y: 0,
@@ -1017,8 +1003,6 @@ fn alloc_send_fallback_burns_and_never_reissues_on_repeat() {
         .admit_window(
             &source,
             &win("d"),
-            ExceptionFlags::none(),
-            None,
             Rect {
                 x: 0,
                 y: 0,
@@ -1049,7 +1033,7 @@ fn alloc_send_fallback_burns_and_never_reissues_on_repeat() {
 
 #[test]
 fn alloc_pair_split_uses_shared_counter_for_new_groups() {
-    use crate::session::{ExceptionFlags, ObservedWindow};
+    use crate::session::ObservedWindow;
     let source = ws_key("out-1", "ws-1");
     let target = ws_key("out-1", "ws-2");
     let source_desc = domain_desc(&source, std_bounds(), 0);
@@ -1086,8 +1070,6 @@ fn alloc_pair_split_uses_shared_counter_for_new_groups() {
         .admit_window(
             &source,
             &win("win-1"),
-            ExceptionFlags::none(),
-            None,
             placed,
             false,
             false,
@@ -1098,8 +1080,6 @@ fn alloc_pair_split_uses_shared_counter_for_new_groups() {
         .admit_window(
             &source,
             &win("win-2"),
-            ExceptionFlags::none(),
-            None,
             placed,
             false,
             false,
@@ -1110,8 +1090,6 @@ fn alloc_pair_split_uses_shared_counter_for_new_groups() {
         .admit_window(
             &target,
             &win("win-t"),
-            ExceptionFlags::none(),
-            None,
             placed,
             false,
             false,
@@ -1140,8 +1118,6 @@ fn alloc_pair_split_uses_shared_counter_for_new_groups() {
         .admit_window(
             &source,
             &win("win-3"),
-            ExceptionFlags::none(),
-            None,
             placed,
             false,
             false,

@@ -1608,11 +1608,6 @@ fn removal_redistributes_proportionally() {
 }
 
 #[test]
-fn half_split_grants_equal_shares() {
-    assert_eq!(half_split(), [0.5, 0.5]);
-}
-
-#[test]
 fn sizing_fails_closed_on_malformed_input() {
     assert_eq!(insert_shares(&[], 0), None);
     assert_eq!(insert_shares(&[0.5, 0.0], 1), None);

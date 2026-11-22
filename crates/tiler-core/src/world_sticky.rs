@@ -259,7 +259,6 @@ impl WorldTransaction<'_> {
     /// `SetSticky`/`ToggleSticky`: `Some(value)` sets, `None` toggles.
     pub(crate) fn execute_sticky_command(
         &mut self,
-        issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
         desired_some: Option<bool>,
@@ -297,7 +296,6 @@ impl WorldTransaction<'_> {
         }
         if self.sticky_route() == StickyRoute::Native {
             return self.execute_native_sticky_command(
-                issue,
                 command_seq,
                 window,
                 desired_some,
@@ -310,21 +308,12 @@ impl WorldTransaction<'_> {
             Some(value) => value,
             None => !self.sticky_current(window).unwrap_or(false),
         };
-        self.run_sticky_transition(
-            issue,
-            command_seq,
-            window,
-            &src,
-            &dest,
-            desired,
-            held_scopes,
-        )
+        self.run_sticky_transition(command_seq, window, &src, &dest, desired, held_scopes)
     }
 
     #[allow(clippy::too_many_arguments)]
     fn execute_native_sticky_command(
         &mut self,
-        issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
         desired_some: Option<bool>,
@@ -362,7 +351,7 @@ impl WorldTransaction<'_> {
             _ => {}
         }
         if desired {
-            self.run_native_sticky_on(issue, command_seq, window, src, dest, held_scopes)
+            self.run_native_sticky_on(command_seq, window, src, dest, held_scopes)
         } else {
             self.run_native_sticky_off(command_seq, window, src, dest, false)
         }
@@ -534,7 +523,6 @@ impl WorldTransaction<'_> {
     #[allow(clippy::too_many_arguments)]
     fn run_native_sticky_on(
         &mut self,
-        issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
         src: &DomainKey,
@@ -589,8 +577,7 @@ impl WorldTransaction<'_> {
             self.note_command(command_seq);
             return CommandApplied::NoEffect;
         }
-        let applied =
-            self.run_sticky_transition(issue, command_seq, window, src, dest, true, held_scopes);
+        let applied = self.run_sticky_transition(command_seq, window, src, dest, true, held_scopes);
         match (&applied, &self.world.command_result) {
             (CommandApplied::NoEffect, None) => {}
             _ => return applied,
@@ -719,7 +706,6 @@ impl WorldTransaction<'_> {
     /// the actual native write. Unsupported route keeps StateUnsupported.
     pub(crate) fn execute_sticky_toggle_float(
         &mut self,
-        issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
         held_scopes: &BTreeSet<DomainKey>,
@@ -759,7 +745,7 @@ impl WorldTransaction<'_> {
             Ok(found) => found,
             Err(rejected) => return rejected,
         };
-        self.run_sticky_toggle_float(issue, command_seq, window, &src, &dest, held_scopes)
+        self.run_sticky_toggle_float(command_seq, window, &src, &dest, held_scopes)
     }
 
     /// Composed sticky clear-and-tile on the current workspace. Classification
@@ -778,7 +764,6 @@ impl WorldTransaction<'_> {
     #[allow(clippy::too_many_arguments)]
     fn run_sticky_toggle_float(
         &mut self,
-        issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
         src: &DomainKey,
@@ -843,8 +828,6 @@ impl WorldTransaction<'_> {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
         if dest_floating {
-            let owner = issue.owner.clone();
-            let correlation = issue.correlation.clone();
             let mut held = held_scopes.clone();
             let mut affected = vec![src.clone()];
             if dest != src {
@@ -858,7 +841,7 @@ impl WorldTransaction<'_> {
                 let Some(domain) = domains.iter().find(|domain| domain.key == *key) else {
                     return refused(KIND_OPERATION, MSG_OPERATION);
                 };
-                staged.sweep_domain(domain, &owner, &correlation, &mut held);
+                staged.sweep_domain(domain, &mut held);
             }
             if affected.iter().any(|key| held.contains(key)) {
                 return refused(KIND_OPERATION, MSG_OPERATION);
@@ -905,8 +888,6 @@ impl WorldTransaction<'_> {
         if !floated_carrier {
             // Ordinary carrier: converge the current-workspace re-tile
             // through sweeps over both affected scopes.
-            let owner = issue.owner.clone();
-            let correlation = issue.correlation.clone();
             let domains = staged.world.staged.domains.clone();
             let mut affected = vec![src.clone()];
             if dest != src {
@@ -920,7 +901,7 @@ impl WorldTransaction<'_> {
                 let Some(domain) = domains.iter().find(|domain| domain.key == *key) else {
                     return refused(KIND_OPERATION, MSG_OPERATION);
                 };
-                staged.sweep_domain(domain, &owner, &correlation, &mut held);
+                staged.sweep_domain(domain, &mut held);
             }
             if affected.iter().any(|key| held.contains(key)) {
                 return refused(KIND_OPERATION, MSG_OPERATION);
@@ -965,13 +946,11 @@ impl WorldTransaction<'_> {
         }
         // Sweep the tiled source for survivor reflow before the explicit
         // tile lands at the destination; a held source refuses atomically.
-        let owner = issue.owner.clone();
-        let correlation = issue.correlation.clone();
         if dest != src && !staged.world.floating_scopes.contains(src) {
             let domains = staged.world.staged.domains.clone();
             if let Some(source_domain) = domains.iter().find(|domain| domain.key == *src) {
                 let mut held = held_scopes.clone();
-                staged.sweep_domain(source_domain, &owner, &correlation, &mut held);
+                staged.sweep_domain(source_domain, &mut held);
                 if held.contains(src) || held.contains(dest) {
                     return refused(KIND_OPERATION, MSG_OPERATION);
                 }
@@ -1019,7 +998,6 @@ impl WorldTransaction<'_> {
     #[allow(clippy::too_many_arguments)]
     fn run_sticky_transition(
         &mut self,
-        issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         window: &WindowId,
         src: &DomainKey,
@@ -1182,8 +1160,6 @@ impl WorldTransaction<'_> {
         if staged.staged_homing(window).as_ref() != Some(dest) {
             return refused(KIND_OPERATION, MSG_OPERATION);
         }
-        let owner = issue.owner.clone();
-        let correlation = issue.correlation.clone();
         let mut held = held_scopes.clone();
         let mut affected = vec![src.clone()];
         if dest != src {
@@ -1197,7 +1173,7 @@ impl WorldTransaction<'_> {
             let Some(domain) = domains.iter().find(|domain| domain.key == *key) else {
                 return refused(KIND_OPERATION, MSG_OPERATION);
             };
-            staged.sweep_domain(domain, &owner, &correlation, &mut held);
+            staged.sweep_domain(domain, &mut held);
         }
         if affected.iter().any(|key| held.contains(key)) {
             return refused(KIND_OPERATION, MSG_OPERATION);
@@ -1351,7 +1327,6 @@ impl WorldTransaction<'_> {
         &mut self,
         key: &(WindowId, crate::world_report::StateProperty),
         meta: &NativeStickyMeta,
-        issue: &crate::world_engine::EventIssue,
         held_scopes: &BTreeSet<DomainKey>,
     ) {
         if !self.world.staged.observation.inventory_complete || self.world.staged.gesture_barrier {
@@ -1488,8 +1463,6 @@ impl WorldTransaction<'_> {
         if staged.staged_homing(&window).as_ref() != Some(&home) {
             return;
         }
-        let owner = issue.owner.clone();
-        let correlation = issue.correlation.clone();
         let mut held = held_scopes.clone();
         let mut affected = vec![home.clone()];
         if meta.dest != home {
@@ -1503,7 +1476,7 @@ impl WorldTransaction<'_> {
             let Some(domain) = domains.iter().find(|domain| domain.key == *key) else {
                 return;
             };
-            staged.sweep_domain(domain, &owner, &correlation, &mut held);
+            staged.sweep_domain(domain, &mut held);
         }
         if affected.iter().any(|key| held.contains(key)) {
             return;
@@ -1559,11 +1532,7 @@ impl WorldTransaction<'_> {
     /// highwater gate blocks unrelated newer commands. Non-state ordinary
     /// same-window overrides supersede a pending rollback only where the
     /// fresh save actually wins at publisher merge.
-    pub(crate) fn run_native_sticky_followups(
-        &mut self,
-        issue: &crate::world_engine::EventIssue,
-        held_scopes: &BTreeSet<DomainKey>,
-    ) {
+    pub(crate) fn run_native_sticky_followups(&mut self, held_scopes: &BTreeSet<DomainKey>) {
         if self.sticky_route() != StickyRoute::Native {
             return;
         }
@@ -1590,7 +1559,7 @@ impl WorldTransaction<'_> {
                 continue;
             }
             if disposition == AttemptOutcome::RefusedProven {
-                self.run_native_sticky_rollback_for(&key, &meta, issue, held_scopes);
+                self.run_native_sticky_rollback_for(&key, &meta, held_scopes);
                 continue;
             }
             if disposition != AttemptOutcome::Applied {
@@ -1682,17 +1651,9 @@ impl WorldTransaction<'_> {
             let pre_desire = self.world.intent.intent_desired.get(&window).cloned();
             let pre_result = self.world.command_result.clone();
             let applied = if meta.is_toggle_float_clear {
-                self.run_sticky_toggle_float(
-                    issue,
-                    cmd_seq,
-                    &window,
-                    &meta.home,
-                    &meta.dest,
-                    held_scopes,
-                )
+                self.run_sticky_toggle_float(cmd_seq, &window, &meta.home, &meta.dest, held_scopes)
             } else {
                 self.run_sticky_transition(
-                    issue,
                     cmd_seq,
                     &window,
                     &meta.home,

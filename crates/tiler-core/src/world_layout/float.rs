@@ -173,8 +173,6 @@ impl WorldLayout {
                 Some(&candidate),
                 admission_counter,
                 subject,
-                ExceptionFlags::none(),
-                None,
                 placement,
                 true,
                 true,

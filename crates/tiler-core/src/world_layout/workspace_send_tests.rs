@@ -21,9 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::directional::{Axis, Capability, Node, NodeId, OutputId, Rule, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::seed::EngineWindow;
-use crate::session::{
-    DomainKey, ExceptionBehavior, ExceptionFlags, ObservedWindow, OutputDomain, RefusalKind,
-};
+use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, RefusalKind};
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::WorldEngine;
 use crate::world_report::{
@@ -136,8 +134,6 @@ fn admit(layout: &mut WorldLayout, w: &str, o: &str, ws: &str, pw: i32, ph: i32)
         .admit_window(
             &k,
             &win(w),
-            ExceptionFlags::none(),
-            None,
             Rect {
                 x: 0,
                 y: 0,
@@ -158,25 +154,7 @@ fn defer_exception(layout: &mut WorldLayout, w: &str, o: &str, ws: &str, flags: 
             .domains
             .insert(k.clone(), DomainLayout::new(bounds(), 0, 0));
     }
-    let mut row = tiled(w, o, ws);
-    row.floating = flags.floating;
-    row.fullscreen = flags.fullscreen;
-    row.maximized = flags.maximized;
-    row.sticky = flags.sticky;
-    let mut obs = domain_observed(layout, &k);
-    obs.push(row);
-    layout
-        .admit_window(
-            &k,
-            &win(w),
-            flags,
-            Some(ExceptionBehavior::Defer),
-            bounds(),
-            false,
-            false,
-            &obs,
-        )
-        .expect("defer");
+    layout.seed_exception_for_test(&k, &win(w), flags);
 }
 
 fn send(

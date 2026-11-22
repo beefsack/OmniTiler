@@ -12,7 +12,7 @@
 use crate::directional::{Node, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::seed::EngineWindow;
-use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, RefusalKind};
+use crate::session::{DomainKey, ObservedWindow, OutputDomain, RefusalKind};
 use crate::size_hints::WindowSizeHints;
 use crate::world_layout::{LayoutFailure, PairOperationContext, PairSendKind, WorldLayout};
 use std::collections::{BTreeMap, BTreeSet};
@@ -172,8 +172,6 @@ fn admit_with(layout: &mut WorldLayout, window: &str, suppress: bool, hints: Win
         .admit_window(
             &k,
             &WindowId(window.to_owned()),
-            ExceptionFlags::none(),
-            None,
             Rect {
                 x: 0,
                 y: 0,
@@ -1585,8 +1583,6 @@ fn explicit_admit_floats_fixed_as_deferred_without_geometry() {
         .admit_window(
             &key(),
             &WindowId("win-f".to_owned()),
-            ExceptionFlags::none(),
-            None,
             Rect {
                 x: 0,
                 y: 0,
@@ -1625,8 +1621,6 @@ fn failed_propose_stages_nothing() {
         .admit_window(
             &key(),
             &WindowId("win-f".to_owned()),
-            ExceptionFlags::none(),
-            None,
             // Degenerate bounds refuse before anything stages.
             Rect {
                 x: 0,
@@ -1679,8 +1673,6 @@ fn optout_keeps_original_refusals_and_tiles_fixed() {
         .admit_window(
             &key(),
             &WindowId("win-o".to_owned()),
-            ExceptionFlags::none(),
-            None,
             Rect {
                 x: 0,
                 y: 0,

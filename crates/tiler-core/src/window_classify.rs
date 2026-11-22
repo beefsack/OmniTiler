@@ -542,27 +542,3 @@ pub fn classify_window(input: ClassifyInput<'_>) -> ClassifiedWindow {
         border_only,
     }
 }
-
-/// Convenience classification for tests and session lanes that carry no
-/// session context: newcomer admission with no overrides and no known
-/// own process.
-#[must_use]
-pub fn classify_newcomer(
-    fact: &WindowFact,
-    unavailable: &[FactName],
-    fixed_predicate: FixedSizePredicate,
-) -> ClassifiedWindow {
-    classify_window(ClassifyInput {
-        fact,
-        unavailable,
-        fixed_predicate,
-        maximize_supported: true,
-        native_sticky_supported: true,
-        retained_tiled: false,
-        automatic_fixed: false,
-        tile_override: false,
-        explicit_float: false,
-        semantic_sticky: false,
-        own_process_id: None,
-    })
-}

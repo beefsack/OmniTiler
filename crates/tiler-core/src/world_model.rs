@@ -9,7 +9,6 @@ use crate::world_transaction::WorldTransaction;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::directional::{OutputId, WindowId, WorkspaceId};
-use crate::ids::{CorrelationId, OwnerId};
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain};
 #[cfg(test)]
@@ -1960,8 +1959,6 @@ impl WorldTransaction<'_> {
     pub(crate) fn sweep_domain(
         &mut self,
         domain: &StagedDomain,
-        _owner: &OwnerId,
-        _correlation: &CorrelationId,
         held_scopes: &mut BTreeSet<DomainKey>,
     ) {
         let key = domain.key.clone();
@@ -1983,7 +1980,7 @@ impl WorldTransaction<'_> {
             held_scopes.insert(key);
             return;
         };
-        if self.defer_gesture_repair(domain, &inset, _owner, _correlation, held_scopes) {
+        if self.defer_gesture_repair(domain, &inset, held_scopes) {
             return;
         }
         // Gap/bounds changes adopt through the topology-preserving
@@ -2143,8 +2140,6 @@ impl WorldTransaction<'_> {
         &mut self,
         domain: &StagedDomain,
         inset: &OutputDomain,
-        _owner: &OwnerId,
-        _correlation: &CorrelationId,
         held_scopes: &mut BTreeSet<DomainKey>,
     ) -> bool {
         if !self.world.staged.gesture_barrier {
@@ -2194,8 +2189,6 @@ impl WorldTransaction<'_> {
     /// releases and ordinary failures are never resurrected.
     pub(crate) fn resweep_retiled(
         &mut self,
-        owner: &OwnerId,
-        correlation: &CorrelationId,
         held_scopes: &mut BTreeSet<DomainKey>,
         was_floating: &BTreeSet<DomainKey>,
     ) {
@@ -2211,7 +2204,7 @@ impl WorldTransaction<'_> {
             {
                 continue;
             }
-            self.sweep_domain(domain, owner, correlation, held_scopes);
+            self.sweep_domain(domain, held_scopes);
         }
     }
 

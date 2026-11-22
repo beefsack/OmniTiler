@@ -20,7 +20,7 @@ use crate::bounds::is_gap;
 use crate::directional::{NodeId, WindowId};
 use crate::geometry::Rect;
 use crate::seed::{EngineWindow, observed_window_from_engine, order_spatial_with_focus_last};
-use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, RefusalKind};
+use crate::session::{DomainKey, ObservedWindow, OutputDomain, RefusalKind};
 use crate::size_hints::{FixedSizePredicate, WindowSizeHints};
 
 use super::fit::is_fixed_candidate;
@@ -313,8 +313,6 @@ impl WorldLayout {
                 Some(original),
                 admission_counter,
                 anchor,
-                ExceptionFlags::none(),
-                None,
                 placement,
                 false,
                 false,

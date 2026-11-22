@@ -1,5 +1,5 @@
 use crate::directional::{Node, OutputId, WorkspaceId};
-use crate::session::{ExceptionBehavior, ExceptionFlags, RefusalKind};
+use crate::session::{ExceptionFlags, RefusalKind};
 use crate::size_hints::WindowSizeHints;
 
 use super::super::state::DomainLayout;
@@ -68,8 +68,6 @@ fn builder_leaves_retained_state_untouched_until_install() {
             Some(&seed),
             counter,
             &WindowId("w2".to_owned()),
-            ExceptionFlags::none(),
-            None,
             Rect {
                 x: 0,
                 y: 0,
@@ -113,8 +111,6 @@ fn builder_revision_refusal_keeps_state_but_burns_allocator() {
         Some(&seed),
         42,
         &WindowId("w2".to_owned()),
-        ExceptionFlags::none(),
-        None,
         Rect {
             x: 0,
             y: 0,
@@ -178,76 +174,6 @@ fn flagged_observed(id: &str, flags: ExceptionFlags) -> ObservedWindow {
 }
 
 #[test]
-fn explicit_defer_maximize_only_preserves_flags_slotless() {
-    let k = key();
-    let mut layout = empty_domain_layout();
-    let max_only = ExceptionFlags {
-        floating: false,
-        fullscreen: false,
-        maximized: true,
-        sticky: false,
-    };
-    let win = WindowId("win-max".to_owned());
-    let outcome = layout
-        .admit_window(
-            &k,
-            &win,
-            max_only,
-            Some(ExceptionBehavior::Defer),
-            Rect {
-                x: 0,
-                y: 0,
-                w: 100,
-                h: 50,
-            },
-            false,
-            false,
-            &[flagged_observed("win-max", max_only)],
-        )
-        .expect("maximize-only defer admits");
-    assert!(outcome.admitted_leaf.is_none());
-    assert!(outcome.geometry.is_empty());
-    let domain = layout.domain(&k).expect("domain");
-    assert!(domain.leaves.is_empty());
-    assert_eq!(domain.exceptions.get(&win).map(|e| e.flags), Some(max_only));
-}
-
-#[test]
-fn explicit_defer_floating_maximized_preserves_flags_slotless() {
-    let k = key();
-    let mut layout = empty_domain_layout();
-    let combo = ExceptionFlags {
-        floating: true,
-        fullscreen: false,
-        maximized: true,
-        sticky: false,
-    };
-    let win = WindowId("win-float-max".to_owned());
-    let outcome = layout
-        .admit_window(
-            &k,
-            &win,
-            combo,
-            Some(ExceptionBehavior::Defer),
-            Rect {
-                x: 0,
-                y: 0,
-                w: 100,
-                h: 50,
-            },
-            false,
-            false,
-            &[flagged_observed("win-float-max", combo)],
-        )
-        .expect("floating+max defer admits");
-    assert!(outcome.admitted_leaf.is_none());
-    assert!(outcome.geometry.is_empty());
-    let domain = layout.domain(&k).expect("domain");
-    assert!(domain.leaves.is_empty());
-    assert_eq!(domain.exceptions.get(&win).map(|e| e.flags), Some(combo));
-}
-
-#[test]
 fn normal_maximized_only_carrier_admits_tiled_with_alloc() {
     let k = key();
     let mut layout = empty_domain_layout();
@@ -262,8 +188,6 @@ fn normal_maximized_only_carrier_admits_tiled_with_alloc() {
         .admit_window(
             &k,
             &win,
-            ExceptionFlags::none(),
-            None,
             Rect {
                 x: 0,
                 y: 0,
@@ -292,12 +216,6 @@ fn admit_binding_mismatch_stays_refused() {
         w: 100,
         h: 50,
     };
-    let max_only = ExceptionFlags {
-        floating: false,
-        fullscreen: false,
-        maximized: true,
-        sticky: false,
-    };
     let float_only = ExceptionFlags {
         floating: true,
         fullscreen: false,
@@ -305,31 +223,11 @@ fn admit_binding_mismatch_stays_refused() {
         sticky: false,
     };
 
-    // Maximized-only observed with floating exception selected -> PartialObservation.
-    let err = layout
-        .admit_window(
-            &k,
-            &WindowId("win-a".to_owned()),
-            float_only,
-            Some(ExceptionBehavior::Defer),
-            bounds,
-            false,
-            false,
-            &[flagged_observed("win-a", max_only)],
-        )
-        .unwrap_err();
-    assert_eq!(
-        err,
-        LayoutFailure::Semantics(RefusalKind::PartialObservation)
-    );
-
-    // Floating observed with no exceptions selected -> PartialObservation.
+    // Floating observed on ordinary route -> PartialObservation.
     let err = layout
         .admit_window(
             &k,
             &WindowId("win-b".to_owned()),
-            ExceptionFlags::none(),
-            None,
             bounds,
             false,
             false,
@@ -339,24 +237,6 @@ fn admit_binding_mismatch_stays_refused() {
     assert_eq!(
         err,
         LayoutFailure::Semantics(RefusalKind::PartialObservation)
-    );
-
-    // Maximized-only observed with maximized exception and no behavior -> ExceptionBehaviorUnselected.
-    let err = layout
-        .admit_window(
-            &k,
-            &WindowId("win-c".to_owned()),
-            max_only,
-            None,
-            bounds,
-            false,
-            false,
-            &[flagged_observed("win-c", max_only)],
-        )
-        .unwrap_err();
-    assert_eq!(
-        err,
-        LayoutFailure::Semantics(RefusalKind::ExceptionBehaviorUnselected)
     );
 }
 
@@ -395,8 +275,6 @@ fn alloc_ordinary_remove_never_reissues() {
         .admit_window(
             &k,
             &w1,
-            ExceptionFlags::none(),
-            None,
             bounds,
             false,
             false,
@@ -407,8 +285,6 @@ fn alloc_ordinary_remove_never_reissues() {
         .admit_window(
             &k,
             &w2,
-            ExceptionFlags::none(),
-            None,
             bounds,
             false,
             false,
@@ -440,8 +316,6 @@ fn alloc_ordinary_remove_never_reissues() {
         .admit_window(
             &k,
             &w3,
-            ExceptionFlags::none(),
-            None,
             bounds,
             false,
             false,
@@ -501,8 +375,6 @@ fn alloc_cap_fallback_burns_tried_serials() {
         .admit_window(
             &k,
             &WindowId("a".to_owned()),
-            ExceptionFlags::none(),
-            None,
             placed,
             false,
             false,
@@ -513,8 +385,6 @@ fn alloc_cap_fallback_burns_tried_serials() {
         .admit_window(
             &k,
             &WindowId("b".to_owned()),
-            ExceptionFlags::none(),
-            None,
             placed,
             false,
             false,
@@ -530,8 +400,6 @@ fn alloc_cap_fallback_burns_tried_serials() {
         .admit_window(
             &k,
             &WindowId("c".to_owned()),
-            ExceptionFlags::none(),
-            None,
             placed,
             false,
             false,
@@ -564,8 +432,6 @@ fn alloc_cap_fallback_burns_tried_serials() {
         .admit_window(
             &k,
             &WindowId("c".to_owned()),
-            ExceptionFlags::none(),
-            None,
             placed,
             false,
             false,
@@ -596,8 +462,6 @@ fn alloc_exhausted_ordinary_refuses_instead_of_floating() {
         .admit_window(
             &k,
             &w1,
-            ExceptionFlags::none(),
-            None,
             bounds,
             false,
             false,
@@ -610,8 +474,6 @@ fn alloc_exhausted_ordinary_refuses_instead_of_floating() {
         .admit_window(
             &k,
             &w2,
-            ExceptionFlags::none(),
-            None,
             bounds,
             false,
             false,

@@ -741,7 +741,7 @@ impl WorldTransaction<'_> {
                 held_scopes,
             ),
             Some(GestureIntent::MoveDrop { .. }) | Some(GestureIntent::PointerResize { .. }) => {
-                self.gesture_float_release(issue, &retained, release_frame, held_scopes)
+                self.gesture_float_release(&retained, release_frame, held_scopes)
             }
             None => {
                 // No change (or a cursor-less move): snap back with no
@@ -1044,7 +1044,6 @@ impl WorldTransaction<'_> {
     /// frame already moved, so the commit only records it.
     fn gesture_float_release(
         &mut self,
-        issue: &crate::world_engine::EventIssue,
         retained: &RetainedGesture,
         release_frame: crate::geometry::Rect,
         held_scopes: &mut BTreeSet<DomainKey>,
@@ -1105,8 +1104,6 @@ impl WorldTransaction<'_> {
             // the existing sweep, mirroring the report sweep tail: the
             // stale home scope reconciles empty and the empty
             // destination reconciles its observed carrier.
-            let owner = issue.owner.clone();
-            let correlation = issue.correlation.clone();
             let domains = self.world.staged.domains.clone();
             for domain in &domains {
                 if domain.key != target_key && domain.key != retained.home {
@@ -1115,7 +1112,7 @@ impl WorldTransaction<'_> {
                 if !domain.readable {
                     continue;
                 }
-                self.sweep_domain(domain, &owner, &correlation, held_scopes);
+                self.sweep_domain(domain, held_scopes);
             }
             self.settle_intent_admissions();
             return GestureOutcome::Settled { committed: false };

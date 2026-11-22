@@ -2185,7 +2185,7 @@ fn domain_drag_group_ids(
 
 #[test]
 fn alloc_drag_wrap_mints_next_serial() {
-    use crate::session::{ExceptionFlags, ObservedWindow};
+    use crate::session::ObservedWindow;
     let bounds = Rect {
         x: 0,
         y: 0,
@@ -2217,16 +2217,7 @@ fn alloc_drag_wrap_mints_next_serial() {
             .map(|n| obs_win(n))
             .collect();
         layout
-            .admit_window(
-                &key,
-                &win(name),
-                ExceptionFlags::none(),
-                None,
-                bounds,
-                false,
-                false,
-                &obs_list,
-            )
+            .admit_window(&key, &win(name), bounds, false, false, &obs_list)
             .expect("admit");
     }
     assert_eq!(layout.group_alloc.next_value(), 2);
@@ -2339,7 +2330,7 @@ fn alloc_discarded_session_trial_burns_serial() {
 
 #[test]
 fn alloc_drag_group_edge_wrap_burns_trial_and_live() {
-    use crate::session::{ExceptionFlags, ObservedWindow};
+    use crate::session::ObservedWindow;
     let (mut layout, desc, key, obs) = gap_nested_layout();
     layout.group_alloc = crate::world_layout::GroupAllocator::test_with_next(2);
     let (inner_rect, _, leaf_rects) = inner_v_group_geom(&layout, &key);
@@ -2409,8 +2400,6 @@ fn alloc_drag_group_edge_wrap_burns_trial_and_live() {
         .admit_window(
             &key,
             &win("w1"),
-            ExceptionFlags::none(),
-            None,
             Rect {
                 x: 0,
                 y: 0,

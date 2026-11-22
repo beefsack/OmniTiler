@@ -10,5 +10,8 @@ ryu = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 
+[dev-dependencies]
+tiler-core = { path = "../tiler-core", features = ["test-support"] }
+
 [lints]
 workspace = true

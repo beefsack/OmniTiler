@@ -93,8 +93,6 @@ fn one_by_one_exhaustion_floats_with_stable_replay_and_close_clear() {
         .admit_window(
             &key,
             &WindowId("b".to_owned()),
-            ExceptionFlags::none(),
-            None,
             placement(1, 1),
             false,
             false,
@@ -163,8 +161,6 @@ fn explicit_unfloat_retries_once_without_false_override() {
         .admit_window(
             &key,
             &WindowId("b".to_owned()),
-            ExceptionFlags::none(),
-            None,
             placement(1, 1),
             false,
             false,
@@ -258,8 +254,6 @@ fn shrink_evicts_newest_first_with_protections_and_mru_focus() {
         .admit_window(
             &key,
             &WindowId("c".to_owned()),
-            ExceptionFlags::none(),
-            None,
             placement(120, 40),
             true,
             false,

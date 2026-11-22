@@ -721,12 +721,6 @@ impl ScopeHistory {
         self.shared_previous.clone()
     }
 
-    /// Discard the shared history.
-    pub fn discard_shared(&mut self) {
-        self.shared_previous = None;
-        self.shared_baseline = None;
-    }
-
     fn validate_output(&mut self, output: &str, scope: &[String]) {
         if let Some(prev) = self.previous.get(output).cloned()
             && !scope.iter().any(|id| id == &prev)

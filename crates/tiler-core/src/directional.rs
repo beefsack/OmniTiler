@@ -1785,12 +1785,5 @@ pub fn remove_shares(existing: &[f64], index: usize) -> Option<Vec<f64>> {
     )
 }
 
-/// Half-half new-group shares. Source: `cosmicHalfSplit` (upstream
-/// `Data::new_group`).
-#[must_use]
-pub const fn half_split() -> [f64; 2] {
-    [0.5, 0.5]
-}
-
 #[cfg(test)]
 mod tests;

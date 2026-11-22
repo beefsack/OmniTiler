@@ -8,7 +8,7 @@
 use crate::world_transaction::WorldTransaction;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::contract::DivergenceKind;
+use crate::contract::{REVISION_EXHAUSTED_KIND, REVISION_EXHAUSTED_MESSAGE};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::seed::EngineWindow;
 use crate::session::{DomainKey, OutputDomain, RefusalKind};
@@ -1115,10 +1115,9 @@ fn map_pair_send_failure(err: PairOperationFailure) -> (&'static str, &'static s
         PairOperationFailure::Layout(LayoutFailure::Semantics(kind)) => {
             (kind.as_str(), kind.message())
         }
-        PairOperationFailure::Layout(LayoutFailure::RevisionLimit { .. }) => (
-            DivergenceKind::RevisionExhausted.as_str(),
-            DivergenceKind::RevisionExhausted.message(),
-        ),
+        PairOperationFailure::Layout(LayoutFailure::RevisionLimit { .. }) => {
+            (REVISION_EXHAUSTED_KIND, REVISION_EXHAUSTED_MESSAGE)
+        }
         PairOperationFailure::SeedFailed => ("seed-failed", OBSERVATION_MESSAGE),
     }
 }

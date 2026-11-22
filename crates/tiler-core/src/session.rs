@@ -87,12 +87,6 @@ impl ExceptionFlags {
     }
 }
 
-/// Explicit caller-selected behavior for an observed exception window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExceptionBehavior {
-    Defer,
-}
-
 /// One adapter-observed window with explicit exception flags plus the
 /// ephemeral client size hints (AR12).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,7 +166,6 @@ pub enum RefusalKind {
     MalformedInput,
     MalformedTopology,
     PartialObservation,
-    ExceptionBehaviorUnselected,
     Unchanged,
     PairBelowMinimum,
 }
@@ -194,7 +187,6 @@ impl RefusalKind {
             Self::MalformedInput => "malformed-input",
             Self::MalformedTopology => "malformed-topology",
             Self::PartialObservation => "partial-observation",
-            Self::ExceptionBehaviorUnselected => "exception-behavior-unselected",
             Self::Unchanged => "unchanged",
             Self::PairBelowMinimum => "pair-below-minimum",
         }
@@ -218,9 +210,6 @@ impl RefusalKind {
             Self::MalformedInput => "command or observation input is malformed",
             Self::MalformedTopology => "topology or shares are malformed or not projectable",
             Self::PartialObservation => "observation does not cover the known window set",
-            Self::ExceptionBehaviorUnselected => {
-                "exception window requires an explicit behavior selection"
-            }
             Self::Unchanged => "command would not change session state",
             Self::PairBelowMinimum => "resize pair is below the minimum size",
         }

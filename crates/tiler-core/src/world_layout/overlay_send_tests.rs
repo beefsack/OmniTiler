@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::directional::{NodeId, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::seed::EngineWindow;
-use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, OutputDomain};
+use crate::session::{DomainKey, ObservedWindow, OutputDomain};
 use crate::size_hints::WindowSizeHints;
 
 use super::outcome::PairSendKind;
@@ -134,8 +134,6 @@ fn admit(layout: &mut WorldLayout, w: &str, o: &str, ws: &str) {
         .admit_window(
             &k,
             &win(w),
-            ExceptionFlags::none(),
-            None,
             Rect {
                 x: 0,
                 y: 0,

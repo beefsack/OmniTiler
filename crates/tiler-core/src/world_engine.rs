@@ -32,8 +32,7 @@
 //!
 //! Budget: the 4 MiB request estimate gates before any convergence; a
 //! conservative reply upper bound gates before any mutation; the staged
-//! reply is then measured with the independent core v4 byte-count twin
-//! [`reply_exact_bytes_v4`](crate::world_sizing_v4::reply_exact_bytes_v4)
+//! reply is then measured against the v4 reply byte budget
 //! before commit. Overflow discards the staged candidate and leaves
 //! sessions, retained transfers, ordering, and command consumption exactly
 //! as before: only reports that pass every cheap gate pay for one engine
@@ -366,6 +365,7 @@ pub struct WorldEngine {
 }
 
 impl WorldEngine {
+    #[cfg(any(test, feature = "test-support", feature = "structural-bench"))]
     #[doc(hidden)]
     pub fn new_test_bound(generation_seed: &str, adapter: &str) -> Option<Self> {
         Self::new_test_bound_with_capabilities(
@@ -382,6 +382,7 @@ impl WorldEngine {
         )
     }
 
+    #[cfg(any(test, feature = "test-support", feature = "structural-bench"))]
     #[doc(hidden)]
     pub fn new_test_bound_with_capabilities(
         generation_seed: &str,
@@ -396,6 +397,7 @@ impl WorldEngine {
         )
     }
 
+    #[cfg(any(test, feature = "test-support", feature = "structural-bench"))]
     #[doc(hidden)]
     pub fn new_test_bound_with_initial_settings(
         generation_seed: &str,
@@ -449,6 +451,7 @@ impl WorldEngine {
         Some(engine)
     }
 
+    #[cfg(any(test, feature = "test-support", feature = "structural-bench"))]
     #[doc(hidden)]
     pub fn new_test_host_owned(generation_seed: &str, adapter: &str) -> Option<Self> {
         let capabilities = HostCapabilities {
@@ -463,6 +466,7 @@ impl WorldEngine {
         Self::new_test_bound_with_capabilities(generation_seed, adapter, capabilities)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn new_test_host_owned_equal_count(generation_seed: &str, adapter: &str) -> Option<Self> {
         let capabilities = HostCapabilities {
@@ -477,6 +481,7 @@ impl WorldEngine {
         Self::new_test_bound_with_capabilities(generation_seed, adapter, capabilities)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn apply_test_settings(
         &mut self,
@@ -693,6 +698,7 @@ impl WorldEngine {
 
     /// Test-only accessor returning window IDs of normalized visibility
     /// attempts staged on the latest observation.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn staged_visibility_attempt_windows_for_test(&self) -> Vec<WindowId> {
         self.world
             .staged
@@ -927,28 +933,24 @@ impl WorldEngine {
         out
     }
 
-    /// Adapter routing projection: retained previous-view history per output
-    /// (observed views only, never desires).
-    #[must_use]
-    pub fn logical_previous(&self, output: &str) -> Option<String> {
-        self.world.workspace.history.previous(output)
-    }
-
-    /// Accept one complete v4 report plus the parked FIFO command batch
-    /// drained inside the same capture/run/publication. This is the sole
-    /// public report ingress: the caller supplies the typed v4 report and
-    /// the ordered `(command sequence, command)` pairs, and the admitted
-    /// boundary owns admission (bound owner plus request correlation)
-    /// before delegating to the internal v4 run. An empty `queued` preserves
-    /// the existing inline report-command semantics. Returns the single
-    /// admission outcome plus one per-command settlement index-aligned with
-    /// `queued`. Any refusal adopts nothing, settles nothing, and returns
-    /// empty settlements so the caller reparks the whole batch. Missing
-    /// bound owner refuses as owner-invalid; an invalid request correlation
-    /// refuses as correlation-invalid.
+    /// Structural test and `structural-bench`-only report ingress: accept one
+    /// complete v4 report plus the parked FIFO command batch drained inside
+    /// the same capture/run/publication, using structural admission only (no
+    /// wire/reply size gating). Production callers use the prepared
+    /// gate-checked interfaces
+    /// ([`WorldEngine::handle_report_with_gate_and_prepare`] and
+    /// [`WorldEngine::handle_report_with_roster_feedback_and_prepare`]).
     ///
-    /// Structural admission only (no wire/reply size gating); available only
-    /// in tests or explicit `structural-bench` builds.
+    /// The caller supplies the typed v4 report and the ordered
+    /// `(command sequence, command)` pairs, and the admitted boundary owns
+    /// admission (bound owner plus request correlation) before delegating to
+    /// the internal v4 run. An empty `queued` preserves the existing inline
+    /// report-command semantics. Returns the single admission outcome plus
+    /// one per-command settlement index-aligned with `queued`. Any refusal
+    /// adopts nothing, settles nothing, and returns empty settlements so the
+    /// caller reparks the whole batch. Missing bound owner refuses as
+    /// owner-invalid; an invalid request correlation refuses as
+    /// correlation-invalid.
     #[cfg(any(test, feature = "structural-bench"))]
     pub fn handle_report(
         &mut self,

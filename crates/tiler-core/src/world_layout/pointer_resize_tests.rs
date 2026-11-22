@@ -14,7 +14,7 @@ use crate::contract::ResizeMode;
 use crate::cosmic_v1;
 use crate::directional::{Axis, Direction, Node, OutputId, SameAxisMove, WindowId, WorkspaceId};
 use crate::geometry::Rect;
-use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, RefusalKind};
+use crate::session::{DomainKey, ObservedWindow, OutputDomain, RefusalKind};
 use crate::size_hints::WindowSizeHints;
 
 use super::outcome::{AdmissionOutcome, LayoutFailure, PointerCornerResizeOutcome, ResizeOutcome};
@@ -143,16 +143,7 @@ impl PointerResizeRig {
             .or_insert_with(|| DomainLayout::new(desc.bounds, desc.gap, 0));
         let obs = self.domain_observed(&k, vec![tiled(window, "out-1", "ws-1")]);
         self.layout
-            .admit_window(
-                &k,
-                &win(window),
-                ExceptionFlags::none(),
-                None,
-                placement(horiz),
-                false,
-                false,
-                &obs,
-            )
+            .admit_window(&k, &win(window), placement(horiz), false, false, &obs)
             .unwrap_or_else(|e| panic!("admit {window}: {e:?}"))
     }
 

@@ -68,6 +68,7 @@ pub enum FitDeclineReason {
     MinInfeasible,
 }
 
+#[cfg(test)]
 impl FitDeclineReason {
     /// Stable token for this decline reason.
     #[must_use]
@@ -94,7 +95,8 @@ impl FitDeclineReason {
 /// trees by construction. The Engine fits through
 /// [`try_recursive_cut_fit_with_centre_count_and_alloc`] with the
 /// generation-shared allocator so fitted groups never reissue serials.
-pub fn try_recursive_cut_fit(
+#[cfg(test)]
+fn try_recursive_cut_fit(
     domain: &OutputDomain,
     windows: &[EngineWindow],
 ) -> Result<(Node, Vec<WindowLink>), FitDeclineReason> {
@@ -103,18 +105,17 @@ pub fn try_recursive_cut_fit(
 
 /// Fit plus the committed centre-split count (0 for clean fits).
 /// Standalone pure wrapper; see [`try_recursive_cut_fit`].
-pub fn try_recursive_cut_fit_with_centre_count(
+#[cfg(test)]
+fn try_recursive_cut_fit_with_centre_count(
     domain: &OutputDomain,
     windows: &[EngineWindow],
 ) -> Result<(Node, Vec<WindowLink>, usize), FitDeclineReason> {
     try_recursive_cut_fit_with_centre_count_and_alloc(domain, windows, &GroupAllocator::new())
 }
 
-/// Engine generation-shared fit: identical to
-/// [`try_recursive_cut_fit_with_centre_count`] except group ids draw from
-/// the generation-shared allocator, burning serials even when the fitted
-/// tree is discarded (declined or commit-failed) so removed ids are never
-/// reissued.
+/// Fit using the generation-shared group allocator, burning serials even
+/// when the fitted tree is discarded (declined or commit-failed) so removed
+/// ids are never reissued.
 pub(crate) fn try_recursive_cut_fit_with_centre_count_and_alloc(
     domain: &OutputDomain,
     windows: &[EngineWindow],

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::directional::{Axis, Node, NodeId, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
-use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, RefusalKind};
+use crate::session::{DomainKey, ObservedWindow, OutputDomain, RefusalKind};
 use crate::size_hints::WindowSizeHints;
 
 use super::outcome::{LayoutFailure, OrientationOutcome};
@@ -88,16 +88,7 @@ fn admit_in(layout: &mut WorldLayout, window: &str, placement: Rect) {
     }
     let obs = complete_observed(layout, vec![tiled_observed(window)]);
     layout
-        .admit_window(
-            &k,
-            &win(window),
-            ExceptionFlags::none(),
-            None,
-            placement,
-            false,
-            false,
-            &obs,
-        )
+        .admit_window(&k, &win(window), placement, false, false, &obs)
         .expect("admit");
 }
 

@@ -412,7 +412,7 @@ impl WorldTransaction<'_> {
             held_scopes.insert(key.clone());
         }
         self.capture_excluded_intent();
-        self.run_native_sticky_followups(issue, &held_scopes);
+        self.run_native_sticky_followups(&held_scopes);
         let domains = self.world.staged.domains.clone();
         for domain in &domains {
             if held_window_scopes.contains(&domain.key) {
@@ -446,7 +446,7 @@ impl WorldTransaction<'_> {
                 held_scopes.insert(domain.key.clone());
                 continue;
             }
-            self.sweep_domain(domain, &issue.owner, &issue.correlation, &mut held_scopes);
+            self.sweep_domain(domain, &mut held_scopes);
         }
         self.settle_intent_admissions();
         {
@@ -496,12 +496,7 @@ impl WorldTransaction<'_> {
             GestureOutcome::Settled { committed, .. } => {
                 if committed {
                     let was_floating = self.world.floating_scopes.clone();
-                    self.resweep_retiled(
-                        &issue.owner,
-                        &issue.correlation,
-                        &mut held_scopes,
-                        &was_floating,
-                    );
+                    self.resweep_retiled(&mut held_scopes, &was_floating);
                     self.build_staged_domains();
                     self.settle_intent_admissions();
                 }
@@ -706,12 +701,7 @@ impl WorldTransaction<'_> {
             }
             match applied {
                 CommandApplied::Effect(effect) => {
-                    self.resweep_retiled(
-                        &issue.owner,
-                        &issue.correlation,
-                        &mut held_scopes,
-                        &was_floating,
-                    );
+                    self.resweep_retiled(&mut held_scopes, &was_floating);
                     let result = self.world.command_result.take();
                     self.build_staged_domains();
                     self.settle_intent_admissions();
@@ -728,12 +718,7 @@ impl WorldTransaction<'_> {
                     last_bookkeeping = Some(dispatched);
                 }
                 CommandApplied::NoEffect => {
-                    self.resweep_retiled(
-                        &issue.owner,
-                        &issue.correlation,
-                        &mut held_scopes,
-                        &was_floating,
-                    );
+                    self.resweep_retiled(&mut held_scopes, &was_floating);
                     self.build_staged_domains();
                     self.settle_intent_admissions();
                     self.sync_toggle_float_command(dispatched.as_ref());

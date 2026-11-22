@@ -690,7 +690,7 @@ fn rmov10_group_neighbor_wrap_shares_under_both_modes() {
 fn alloc_move_wrap_mints_shared_serial() {
     use crate::directional::{OutputId, WorkspaceId};
     use crate::seed::EngineWindow;
-    use crate::session::{ExceptionFlags, OutputDomain};
+    use crate::session::OutputDomain;
     use crate::size_hints::WindowSizeHints;
     use crate::world_layout::{PairMoveOutcome, PairOperationContext};
     use std::collections::{BTreeMap, BTreeSet};
@@ -774,24 +774,13 @@ fn alloc_move_wrap_mints_shared_serial() {
             .map(|n| obs_in(n, &k1))
             .collect();
         layout
-            .admit_window(
-                &k1,
-                &win(name),
-                ExceptionFlags::none(),
-                None,
-                bounds1,
-                false,
-                false,
-                &list,
-            )
+            .admit_window(&k1, &win(name), bounds1, false, false, &list)
             .expect("admit source");
     }
     layout
         .admit_window(
             &k2,
             &win("win-4"),
-            ExceptionFlags::none(),
-            None,
             Rect {
                 x: 0,
                 y: 0,
@@ -926,8 +915,6 @@ fn alloc_move_wrap_mints_shared_serial() {
         .admit_window(
             &k1,
             &win("win-3"),
-            ExceptionFlags::none(),
-            None,
             bounds1,
             false,
             false,

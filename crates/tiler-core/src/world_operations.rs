@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::boundary::CoreCommand;
 use crate::bounds::is_opaque_id;
-use crate::contract::DivergenceKind;
+use crate::contract::{REVISION_EXHAUSTED_KIND, REVISION_EXHAUSTED_MESSAGE};
 use crate::directional::{
     Axis, Direction, OutputId, SameAxisMove, WindowId, WindowSubject, WorkspaceId,
 };
@@ -238,7 +238,7 @@ impl WorldTransaction<'_> {
             | CoreCommand::ToggleOrientation { .. }
             | CoreCommand::DragDrop { .. }
             | CoreCommand::DragPreview { .. } => {
-                self.run_local_operation(issue, command_seq, command, by_id, held_scopes)
+                self.run_local_operation(command_seq, command, by_id, held_scopes)
             }
         }
     }
@@ -1575,7 +1575,7 @@ impl WorldTransaction<'_> {
                 };
             };
             if source_key == domain_key {
-                return self.run_local_operation(issue, command_seq, command, by_id, held_scopes);
+                return self.run_local_operation(command_seq, command, by_id, held_scopes);
             }
             return self.operation_drag_pair(
                 issue,
@@ -1601,10 +1601,10 @@ impl WorldTransaction<'_> {
             }
         };
         let Some(source_key) = source else {
-            return self.run_local_operation(issue, command_seq, command, by_id, held_scopes);
+            return self.run_local_operation(command_seq, command, by_id, held_scopes);
         };
         if source_key == domain_key {
-            return self.run_local_operation(issue, command_seq, command, by_id, held_scopes);
+            return self.run_local_operation(command_seq, command, by_id, held_scopes);
         }
         self.operation_drag_pair(
             issue,
@@ -1848,7 +1848,6 @@ impl WorldTransaction<'_> {
     /// resizes, float toggles, and local/singleton drag preview/drop.
     pub(crate) fn run_local_operation(
         &mut self,
-        issue: &crate::world_engine::EventIssue,
         command_seq: u64,
         command: &CoreCommand,
         _by_id: &BTreeMap<&WindowId, &EngineWindow>,
@@ -1911,12 +1910,7 @@ impl WorldTransaction<'_> {
                 // through the native hold path; unsupported keeps
                 // refusing here instead of partially transitioning.
                 if self.sticky_route() != crate::world_sticky::StickyRoute::Unsupported {
-                    return self.execute_sticky_toggle_float(
-                        issue,
-                        command_seq,
-                        &window_id,
-                        held_scopes,
-                    );
+                    return self.execute_sticky_toggle_float(command_seq, &window_id, held_scopes);
                 }
                 return CommandApplied::Rejected {
                     kind: KIND_OPERATION,
@@ -2796,8 +2790,8 @@ fn reject_layout_failure(err: LayoutFailure) -> CommandApplied {
             message: kind.message(),
         },
         LayoutFailure::RevisionLimit { .. } => CommandApplied::Rejected {
-            kind: DivergenceKind::RevisionExhausted.as_str(),
-            message: DivergenceKind::RevisionExhausted.message(),
+            kind: REVISION_EXHAUSTED_KIND,
+            message: REVISION_EXHAUSTED_MESSAGE,
         },
     }
 }

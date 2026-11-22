@@ -13,9 +13,7 @@ use crate::directional::{
 };
 use crate::geometry::Rect;
 use crate::seed::EngineWindow;
-use crate::session::{
-    DesiredGeometry, DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, RefusalKind,
-};
+use crate::session::{DesiredGeometry, DomainKey, ObservedWindow, OutputDomain, RefusalKind};
 use crate::size_hints::WindowSizeHints;
 
 use super::outcome::{LayoutFailure, PairMoveOutcome, PairOperationFailure};
@@ -186,16 +184,7 @@ impl TwoOutputRig {
         });
         observed.sort_by(|a, b| a.window.0.cmp(&b.window.0));
         self.layout
-            .admit_window(
-                &k,
-                &win(window),
-                ExceptionFlags::none(),
-                None,
-                placement_bounds,
-                false,
-                false,
-                &observed,
-            )
+            .admit_window(&k, &win(window), placement_bounds, false, false, &observed)
             .expect("admit");
     }
 

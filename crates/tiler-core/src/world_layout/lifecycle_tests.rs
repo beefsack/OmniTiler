@@ -15,18 +15,15 @@
 //!   `owner_mismatch_diverges`,
 //!   `dispatch_binds_identity_intent_capability_and_affected_ids`,
 //!   `acknowledge_divergence_clears_pending_desired`,
-//!   `verify_divergence_clears_pending_desired`, and the `Reconciler`
-//!   tampered-plan check in `lifecycle_policy_version_bound_and_rejected_when_tampered`
-//!   (the `POLICY_VERSION`/`LIFECYCLE_POLICY_VERSION` constant check is retained).
+//!   `verify_divergence_clears_pending_desired`, and
+//!   `lifecycle_policy_version_bound_and_rejected_when_tampered`.
 
 use std::collections::{BTreeMap, BTreeSet};
-
-use crate::contract::{LIFECYCLE_POLICY_VERSION, POLICY_VERSION};
 
 use crate::cosmic_v1::{proportional_insertion_shares, proportional_removal_shares};
 use crate::directional::{Axis, Node, NodeId, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
-use crate::session::{DomainKey, ExceptionBehavior, ExceptionFlags, ObservedWindow, RefusalKind};
+use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, RefusalKind};
 use crate::size_hints::WindowSizeHints;
 
 use super::outcome::{AdmissionOutcome, LayoutFailure};
@@ -53,21 +50,6 @@ fn tiled_observed(window: &str, output: &str, workspace: &str) -> ObservedWindow
         output: OutputId(output.to_owned()),
         workspace: WorkspaceId(workspace.to_owned()),
         floating: false,
-        fullscreen: false,
-        maximized: false,
-        sticky: false,
-        fixed_auto: false,
-        fixed_suppress: false,
-        hints: WindowSizeHints::none(),
-    }
-}
-
-fn exception_observed(window: &str, output: &str, workspace: &str) -> ObservedWindow {
-    ObservedWindow {
-        window: win(window),
-        output: OutputId(output.to_owned()),
-        workspace: WorkspaceId(workspace.to_owned()),
-        floating: true,
         fullscreen: false,
         maximized: false,
         sticky: false,
@@ -119,16 +101,7 @@ fn admit(
     ensure_domain(layout, &k, 120, 80);
     let obs = domain_observed(layout, &k, vec![tiled_observed(window, output, workspace)]);
     layout
-        .admit_window(
-            &k,
-            &win(window),
-            ExceptionFlags::none(),
-            None,
-            bounds,
-            false,
-            false,
-            &obs,
-        )
+        .admit_window(&k, &win(window), bounds, false, false, &obs)
         .unwrap_or_else(|e| panic!("admit {window} failed: {e:?}"))
 }
 
@@ -462,16 +435,7 @@ fn duplicate_unknown_crossdomain_partial_malformed_refused_without_corruption() 
     // Duplicate.
     let obs = domain_observed(&layout, &k, Vec::new());
     assert_eq!(
-        layout.admit_window(
-            &k,
-            &win("win-1"),
-            ExceptionFlags::none(),
-            None,
-            placement(120, 80),
-            false,
-            false,
-            &obs,
-        ),
+        layout.admit_window(&k, &win("win-1"), placement(120, 80), false, false, &obs,),
         Err(LayoutFailure::Semantics(RefusalKind::DuplicateWindow))
     );
 
@@ -487,8 +451,6 @@ fn duplicate_unknown_crossdomain_partial_malformed_refused_without_corruption() 
         layout.admit_window(
             &key("out-9", "ws-9"),
             &win("win-2"),
-            ExceptionFlags::none(),
-            None,
             placement(120, 80),
             false,
             false,
@@ -503,8 +465,6 @@ fn duplicate_unknown_crossdomain_partial_malformed_refused_without_corruption() 
         layout.admit_window(
             &key("out-1", "ws-9"),
             &win("win-2"),
-            ExceptionFlags::none(),
-            None,
             placement(120, 80),
             false,
             false,
@@ -519,8 +479,6 @@ fn duplicate_unknown_crossdomain_partial_malformed_refused_without_corruption() 
         layout.admit_window(
             &k,
             &win("win-2"),
-            ExceptionFlags::none(),
-            None,
             placement(120, 80),
             false,
             false,
@@ -538,16 +496,7 @@ fn duplicate_unknown_crossdomain_partial_malformed_refused_without_corruption() 
     // Malformed placement bounds.
     let obs2 = domain_observed(&layout, &k, vec![tiled_observed("win-2", "out-1", "ws-1")]);
     assert_eq!(
-        layout.admit_window(
-            &k,
-            &win("win-2"),
-            ExceptionFlags::none(),
-            None,
-            placement(0, 80),
-            false,
-            false,
-            &obs2,
-        ),
+        layout.admit_window(&k, &win("win-2"), placement(0, 80), false, false, &obs2,),
         Err(LayoutFailure::Semantics(RefusalKind::MalformedInput))
     );
 
@@ -560,47 +509,17 @@ fn duplicate_unknown_crossdomain_partial_malformed_refused_without_corruption() 
 }
 
 #[test]
-fn exception_flags_fail_closed_until_behavior_selected() {
+fn ordinary_admission_preserves_existing_exception() {
     let mut layout = WorldLayout::new();
     let k = key("out-1", "ws-1");
     ensure_domain(&mut layout, &k, 120, 80);
-    let obs = vec![exception_observed("win-9", "out-1", "ws-1")];
     let flags = ExceptionFlags {
         floating: true,
         fullscreen: false,
         maximized: false,
         sticky: false,
     };
-    assert_eq!(
-        layout.admit_window(
-            &k,
-            &win("win-9"),
-            flags,
-            None,
-            placement(120, 80),
-            false,
-            false,
-            &obs,
-        ),
-        Err(LayoutFailure::Semantics(
-            RefusalKind::ExceptionBehaviorUnselected
-        ))
-    );
-
-    let outcome = layout
-        .admit_window(
-            &k,
-            &win("win-9"),
-            flags,
-            Some(ExceptionBehavior::Defer),
-            placement(120, 80),
-            false,
-            false,
-            &obs,
-        )
-        .expect("deferred admits");
-    assert!(outcome.geometry.is_empty());
-    assert!(outcome.admitted_leaf.is_none());
+    layout.seed_exception_for_test(&k, &win("win-9"), flags);
     assert!(layout.is_exception(&k, &win("win-9")));
     assert!(leaves_of(&layout, &k).is_empty());
 
@@ -836,12 +755,6 @@ fn errors_are_redacted_and_bounded() {
 }
 
 #[test]
-fn policy_version_constants_stay_pinned() {
-    assert_eq!(LIFECYCLE_POLICY_VERSION, 1);
-    assert_eq!(POLICY_VERSION, 1);
-}
-
-#[test]
 fn two_workspaces_on_same_output_are_isolated() {
     let mut layout = WorldLayout::new();
     let ka = key("out-1", "ws-a");
@@ -880,25 +793,13 @@ fn deferred_removal_commits_without_topology_effect() {
     let mut layout = WorldLayout::new();
     let k = key("out-1", "ws-1");
     ensure_domain(&mut layout, &k, 120, 80);
-    let obs = vec![exception_observed("win-9", "out-1", "ws-1")];
     let flags = ExceptionFlags {
         floating: true,
         fullscreen: false,
         maximized: false,
         sticky: false,
     };
-    layout
-        .admit_window(
-            &k,
-            &win("win-9"),
-            flags,
-            Some(ExceptionBehavior::Defer),
-            placement(120, 80),
-            false,
-            false,
-            &obs,
-        )
-        .expect("deferred admits");
+    layout.seed_exception_for_test(&k, &win("win-9"), flags);
     assert!(layout.is_exception(&k, &win("win-9")));
     admit(&mut layout, "win-1", "out-1", "ws-1", placement(120, 80));
     assert_eq!(leaves_of(&layout, &k), vec!["win-1".to_string()]);
@@ -909,29 +810,6 @@ fn deferred_removal_commits_without_topology_effect() {
     assert_eq!(layout.exception_count(&k), 0);
     assert_eq!(leaves_of(&layout, &k), vec!["win-1".to_string()]);
     assert_eq!(layout.focus_leaf(&k).cloned(), focus_before);
-}
-
-#[test]
-fn inconsistent_exception_behavior_is_malformed() {
-    let mut layout = WorldLayout::new();
-    let k = key("out-1", "ws-1");
-    ensure_domain(&mut layout, &k, 120, 80);
-    let obs = vec![tiled_observed("win-1", "out-1", "ws-1")];
-    assert_eq!(
-        layout.admit_window(
-            &k,
-            &win("win-1"),
-            ExceptionFlags::none(),
-            Some(ExceptionBehavior::Defer),
-            placement(120, 80),
-            false,
-            false,
-            &obs,
-        ),
-        Err(LayoutFailure::Semantics(RefusalKind::MalformedInput))
-    );
-    admit(&mut layout, "win-1", "out-1", "ws-1", placement(120, 80));
-    assert_eq!(leaves_of(&layout, &k), vec!["win-1".to_string()]);
 }
 
 #[test]

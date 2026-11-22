@@ -12,7 +12,7 @@ use crate::contract::ResizeMode;
 use crate::directional::{Direction, Node, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::seed::EngineWindow;
-use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, RefusalKind};
+use crate::session::{DomainKey, ObservedWindow, OutputDomain, RefusalKind};
 use crate::world_layout::{
     LayoutFailure, LocalOperationContext, LocalOperationFailure, PairOperationContext, WorldLayout,
 };
@@ -95,8 +95,6 @@ fn admit_to(layout: &mut WorldLayout, d: &OutputDomain, window: &str) {
         .admit_window(
             &k,
             &WindowId(window.to_owned()),
-            ExceptionFlags::none(),
-            None,
             placement(),
             false,
             false,

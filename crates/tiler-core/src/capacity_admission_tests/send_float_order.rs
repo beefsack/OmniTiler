@@ -33,8 +33,6 @@ fn send_exhausted_floats_mover_with_exact_frame() {
                 .admit_window(
                     &key1,
                     &WindowId("b".to_owned()),
-                    ExceptionFlags::none(),
-                    None,
                     placement(120, 40),
                     false,
                     false,

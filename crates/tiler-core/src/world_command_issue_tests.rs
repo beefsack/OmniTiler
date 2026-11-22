@@ -15,7 +15,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::boundary::CoreCommand;
 use crate::connection::HostCapabilities;
 use crate::directional::{OutputId, SameAxisMove, WindowId, WorkspaceId};
-use crate::ids::{CorrelationId, OwnerId};
 use crate::seed::EngineWindow;
 use crate::session::DomainKey;
 use crate::size_hints::WindowSizeHints;
@@ -311,13 +310,8 @@ fn sticky_transition_uses_issue_owner_with_ownerless_connection() {
     // planning joins; seed the retained homing/domain join post
     // staging, mirroring accepted-run assembly.
     seed_command_domain(&mut engine);
-    let issue = EventIssue {
-        owner: OwnerId::parse("adapter-1").expect("owner"),
-        correlation: CorrelationId::parse("req-7").expect("correlation"),
-    };
     match engine.tx(|tx| {
         tx.execute_sticky_command(
-            &issue,
             7,
             &WindowId("win-a".to_owned()),
             Some(true),
@@ -400,13 +394,9 @@ fn sticky_toggle_float_clear_restages_staged_facts_only() {
         .intent
         .pending_intent
         .insert(win.clone(), IntentData::new(None, None));
-    // No report is ever passed to the helper: the explicit issue is
-    // the only identity input, staged state the only content input.
-    let issue = EventIssue {
-        owner: OwnerId::parse("adapter-1").expect("owner"),
-        correlation: CorrelationId::parse("req-7").expect("correlation"),
-    };
-    match engine.tx(|tx| tx.execute_sticky_toggle_float(&issue, 7, &win, &BTreeSet::new())) {
+    // No report is ever passed to the helper: staged state is the only
+    // content input.
+    match engine.tx(|tx| tx.execute_sticky_toggle_float(7, &win, &BTreeSet::new())) {
         CommandApplied::NoEffect => {}
         CommandApplied::Rejected { kind, message } => panic!(
             "staged toggle-float clear must succeed with no report input, got {kind} {message}"
@@ -498,13 +488,9 @@ fn sticky_composed_transition_restages_staged_facts_only() {
         .intent
         .pending_intent
         .insert(win.clone(), IntentData::new(None, None));
-    // No report is ever passed to the helper: the explicit issue is
-    // the only identity input, staged state the only content input.
-    let issue = EventIssue {
-        owner: OwnerId::parse("adapter-1").expect("owner"),
-        correlation: CorrelationId::parse("req-7").expect("correlation"),
-    };
-    match engine.tx(|tx| tx.execute_sticky_command(&issue, 7, &win, Some(true), &BTreeSet::new())) {
+    // No report is ever passed to the helper: staged state is the only
+    // content input.
+    match engine.tx(|tx| tx.execute_sticky_command(7, &win, Some(true), &BTreeSet::new())) {
         CommandApplied::NoEffect => {}
         CommandApplied::Rejected { kind, message } => {
             panic!("staged composed ON must succeed with no report input, got {kind} {message}")
@@ -555,10 +541,6 @@ fn local_toggle_orientation_uses_issue_owner_with_ownerless_connection() {
     // only, from staged state with no report input), mirroring
     // accepted-run assembly.
     engine.tx(|tx| tx.build_staged_domains());
-    let issue = EventIssue {
-        owner: OwnerId::parse("adapter-1").expect("owner"),
-        correlation: CorrelationId::parse("req-7").expect("correlation"),
-    };
     let mut owned: Vec<EngineWindow> = Vec::new();
     for domain in &engine.world.staged.domains {
         owned.extend(domain.windows.iter().cloned());
@@ -570,7 +552,7 @@ fn local_toggle_orientation_uses_issue_owner_with_ownerless_connection() {
             "win-a".to_owned(),
         )),
     };
-    match engine.tx(|tx| tx.run_local_operation(&issue, 7, &command, &by_id, &BTreeSet::new())) {
+    match engine.tx(|tx| tx.run_local_operation(7, &command, &by_id, &BTreeSet::new())) {
         CommandApplied::NoEffect => {
             assert_eq!(
                 engine.world.command_highwater,
@@ -1901,7 +1883,6 @@ fn local_preconvergence_persists_after_invalid_direction_refusal() {
     seed_ring_views(&mut engine);
     engine.tx(|tx| tx.build_staged_domains());
 
-    let issue = test_issue(&bootstrap);
     let owned: Vec<EngineWindow> = engine
         .world
         .staged
@@ -1913,7 +1894,6 @@ fn local_preconvergence_persists_after_invalid_direction_refusal() {
         owned.iter().map(|row| (&row.window, row)).collect();
     let initial = engine.tx(|tx| {
         tx.run_local_operation(
-            &issue,
             1,
             &CoreCommand::ToggleOrientation {
                 window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
@@ -1959,7 +1939,6 @@ fn local_preconvergence_persists_after_invalid_direction_refusal() {
         owned.iter().map(|row| (&row.window, row)).collect();
     let refused = engine.tx(|tx| {
         tx.run_local_operation(
-            &issue,
             2,
             &CoreCommand::Resize {
                 window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
@@ -2005,7 +1984,6 @@ fn local_composed_maximize_rollback_and_pointer_half_pair_refusal() {
     seed_ring_views(&mut engine);
     engine.tx(|tx| tx.build_staged_domains());
 
-    let issue = test_issue(&bootstrap);
     let owned: Vec<EngineWindow> = engine
         .world
         .staged
@@ -2018,7 +1996,6 @@ fn local_composed_maximize_rollback_and_pointer_half_pair_refusal() {
 
     let floated = engine.tx(|tx| {
         tx.run_local_operation(
-            &issue,
             1,
             &CoreCommand::ToggleFloat {
                 window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
@@ -2044,7 +2021,6 @@ fn local_composed_maximize_rollback_and_pointer_half_pair_refusal() {
     let empty_by_id = BTreeMap::new();
     let refused = engine.tx(|tx| {
         tx.run_local_operation(
-            &issue,
             2,
             &CoreCommand::ToggleFloat {
                 window: crate::directional::WindowSubject::Window(crate::directional::WindowId(
@@ -2064,7 +2040,6 @@ fn local_composed_maximize_rollback_and_pointer_half_pair_refusal() {
 
     let same_axis_pair = engine.tx(|tx| {
         tx.run_local_operation(
-            &issue,
             3,
             &CoreCommand::PointerResize {
                 window: crate::directional::WindowId("win-b".to_owned()),

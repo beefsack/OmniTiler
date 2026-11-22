@@ -135,15 +135,6 @@ impl WindowSizeHints {
             Axis::Vertical => self.meaningful_min_h(),
         }
     }
-
-    /// Maximum along `axis`, if meaningful.
-    #[must_use]
-    pub fn max_for_axis(self, axis: Axis) -> Option<i32> {
-        match axis {
-            Axis::Horizontal => self.meaningful_max_w(),
-            Axis::Vertical => self.meaningful_max_h(),
-        }
-    }
 }
 
 /// Keep only positive, in-bound hint values.

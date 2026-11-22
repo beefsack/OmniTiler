@@ -33,8 +33,8 @@ pub(crate) struct AdmissionOutcome {
     pub(crate) base_revision: u64,
     /// Accepted revision after the operation (`base_revision + 1`).
     pub(crate) revision: u64,
-    /// Bound leaf for a successful tiled admission; `None` for a deferred
-    /// exception, automatic fixed membership float or capacity float.
+    /// Bound leaf for a successful tiled admission; `None` for an automatic
+    /// fixed membership float or capacity float.
     pub(crate) admitted_leaf: Option<NodeId>,
     /// Complete hinted geometry in child order; empty for every exception
     /// branch. A tolerated fullscreen-only subject is stripped from this
@@ -180,10 +180,10 @@ impl From<LayoutFailure> for LocalOperationFailure {
 pub(crate) enum LayoutFailure {
     Semantics(RefusalKind),
     /// The base revision has reached the bound. The outer operation boundary
-    /// must map this to `DivergenceKind::RevisionExhausted`'s existing kind
-    /// ("revision-exhausted") and message ("revision bound reached"), as the
-    /// old `ProposeError::Diverged` mapping did, without minting a new wire
-    /// outcome or retaining divergence state here.
+    /// must map this to [`crate::contract::REVISION_EXHAUSTED_KIND`]
+    /// ("revision-exhausted") and [`crate::contract::REVISION_EXHAUSTED_MESSAGE`]
+    /// ("revision bound reached"), without minting a new wire outcome or
+    /// retaining divergence state here.
     RevisionLimit {
         base: u64,
         limit: u64,

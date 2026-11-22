@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::directional::{Axis, Node, NodeId, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
-use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, OutputDomain};
+use crate::session::{DomainKey, ObservedWindow, OutputDomain};
 use crate::size_hints::WindowSizeHints;
 use crate::world_layout::{AdmissionOutcome, WorldLayout};
 
@@ -134,8 +134,6 @@ fn admit_with_placement(
         .admit_window(
             key,
             &WindowId(window.to_owned()),
-            ExceptionFlags::none(),
-            None,
             placement_bounds,
             false,
             false,

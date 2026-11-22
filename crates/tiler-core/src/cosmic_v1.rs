@@ -18,8 +18,6 @@
 //! `plan_resize_step`) is intentionally NOT re-exported here: COSMIC resize
 //! operates on physical pixels through the named constants and helpers below.
 
-pub use crate::contract::POLICY_VERSION;
-
 /// Cosmic v1 API version (envelope identifier for this explicit surface).
 pub const COSMIC_V1_VERSION: u32 = 1;
 
@@ -517,9 +515,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn policy_version_is_current() {
-        assert_eq!(POLICY_VERSION, 1);
-        assert_eq!(POLICY_VERSION, crate::contract::POLICY_VERSION);
+    fn cosmic_v1_version_is_current() {
         assert_eq!(COSMIC_V1_VERSION, 1);
     }
 

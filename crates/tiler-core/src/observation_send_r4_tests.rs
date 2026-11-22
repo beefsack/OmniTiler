@@ -14,7 +14,7 @@ use crate::directional::{
 };
 use crate::geometry::Rect;
 use crate::seed::EngineWindow;
-use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, RefusalKind};
+use crate::session::{DomainKey, ObservedWindow, OutputDomain, RefusalKind};
 use crate::world_layout::{
     LayoutFailure, PairMoveOutcome, PairOperationContext, PairOperationFailure, WorldLayout,
 };
@@ -106,8 +106,6 @@ fn admit_to(layout: &mut WorldLayout, d: &OutputDomain, window: &str) {
         .admit_window(
             &dk,
             &WindowId(window.to_owned()),
-            ExceptionFlags::none(),
-            None,
             d.bounds,
             false,
             false,

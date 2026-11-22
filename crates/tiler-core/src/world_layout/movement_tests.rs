@@ -11,9 +11,7 @@ use crate::directional::{
 };
 use crate::geometry::Rect;
 use crate::seed::EngineWindow;
-use crate::session::{
-    DesiredGeometry, DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, RefusalKind,
-};
+use crate::session::{DesiredGeometry, DomainKey, ObservedWindow, OutputDomain, RefusalKind};
 use crate::size_hints::WindowSizeHints;
 
 use super::outcome::{
@@ -207,16 +205,7 @@ impl MovementRig {
             .or_insert_with(|| DomainLayout::new(desc.bounds, desc.gap, 0));
         let obs = self.domain_observed(&k, vec![tiled(window, output, workspace)]);
         self.layout
-            .admit_window(
-                &k,
-                &win(window),
-                ExceptionFlags::none(),
-                None,
-                placement(horiz),
-                false,
-                false,
-                &obs,
-            )
+            .admit_window(&k, &win(window), placement(horiz), false, false, &obs)
             .unwrap_or_else(|e| panic!("admit {window}: {e:?}"))
     }
 
@@ -1113,16 +1102,7 @@ fn invalid_geometry_admits_capacity_float() {
     let obs = tiny.domain_observed(&k, vec![tiled("b", "tiny", "ws-1")]);
     let outcome = tiny
         .layout
-        .admit_window(
-            &k,
-            &win("b"),
-            ExceptionFlags::none(),
-            None,
-            placement(true),
-            false,
-            false,
-            &obs,
-        )
+        .admit_window(&k, &win("b"), placement(true), false, false, &obs)
         .expect("exhaustion floats instead of refusing");
     assert!(outcome.admitted_leaf.is_none());
     assert!(outcome.geometry.is_empty());

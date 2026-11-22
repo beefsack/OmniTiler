@@ -448,8 +448,6 @@ fn converge_newcomers_match_sequential_seed_admits() {
             .admit_window(
                 &k,
                 &WindowId(name.to_owned()),
-                ExceptionFlags::none(),
-                None,
                 bounds,
                 false,
                 false,
@@ -656,8 +654,6 @@ fn alloc_restore_rejoin_mints_fresh_never_reissues() {
         .admit_window(
             &k,
             &WindowId("win-d".to_owned()),
-            ExceptionFlags::none(),
-            None,
             bounds,
             false,
             false,

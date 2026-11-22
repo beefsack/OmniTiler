@@ -334,21 +334,6 @@ pub const fn unfloat_maximize_clear_eligible(
     is_float && !is_sticky_origin && maximized && !fullscreen
 }
 
-/// Directional refusal for a sticky subject (sticky isolation): a sticky
-/// focused window never starts directional focus/move. `None` when the route
-/// may proceed.
-#[must_use]
-pub const fn sticky_directional_refusal(is_sticky: bool, is_move: bool) -> Option<&'static str> {
-    if !is_sticky {
-        return None;
-    }
-    if is_move {
-        Some("move-refused-sticky")
-    } else {
-        Some("focus-refused-sticky")
-    }
-}
-
 /// Born-fullscreen hold gate: a first-seen fullscreen window without a
 /// retained tile slot is tracked as a slotless exception until its first
 /// exit, never admitted. A window with a retained slot is a managed overlay
@@ -568,24 +553,6 @@ mod tests {
                         );
                     }
                 }
-            }
-        }
-    }
-
-    #[test]
-    fn sticky_directional_truth_table() {
-        for is_sticky in [false, true] {
-            for is_move in [false, true] {
-                assert_eq!(
-                    sticky_directional_refusal(is_sticky, is_move),
-                    if !is_sticky {
-                        None
-                    } else if is_move {
-                        Some("move-refused-sticky")
-                    } else {
-                        Some("focus-refused-sticky")
-                    }
-                );
             }
         }
     }

@@ -4,7 +4,7 @@
 //! holds only `#[test]` fns.
 
 use super::*;
-use crate::session::{ExceptionBehavior, RefusalKind};
+use crate::session::{ExceptionFlags, RefusalKind};
 use crate::world_layout::{
     FreshOutcomeKind, LayoutFailure, LocalOperationContext, LocalOperationFailure,
     PairOperationContext,
@@ -214,8 +214,6 @@ fn capacity_float_matches_ordinary_float_with_no_auto_retile() {
         .admit_window(
             &key,
             &WindowId("b".to_owned()),
-            ExceptionFlags::none(),
-            None,
             placement(1, 1),
             false,
             false,
@@ -288,28 +286,16 @@ fn capacity_float_matches_ordinary_float_with_no_auto_retile() {
     // ordinary deferred float converges identically (zero counts).
     let mut ordinary = WorldLayout::new();
     admit_into(&mut ordinary, &grown, "a", placement(1, 1));
-    {
-        let mut extra = tiled_observed("b", "tiny", "ws");
-        extra.floating = true;
-        let obs = complete_observed_for(&ordinary, &key, vec![extra]);
-        ordinary
-            .admit_window(
-                &key,
-                &WindowId("b".to_owned()),
-                ExceptionFlags {
-                    floating: true,
-                    fullscreen: false,
-                    maximized: false,
-                    sticky: false,
-                },
-                Some(ExceptionBehavior::Defer),
-                placement(1, 1),
-                false,
-                false,
-                &obs,
-            )
-            .expect("ordinary float defers");
-    }
+    ordinary.seed_exception_for_test(
+        &key,
+        &WindowId("b".to_owned()),
+        ExceptionFlags {
+            floating: true,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+        },
+    );
     assert!(!ordinary.is_capacity_float(&key, &WindowId("b".to_owned())));
     let ordinary_echo = complete_observed_for(&ordinary, &key, Vec::new());
     let ordinary_counts = ordinary
@@ -361,8 +347,6 @@ fn capacity_float_matches_ordinary_float_with_no_auto_retile() {
         .admit_window(
             &key,
             &WindowId("b".to_owned()),
-            ExceptionFlags::none(),
-            None,
             placement(1, 1),
             false,
             false,
@@ -581,8 +565,6 @@ fn capacity_float_preserves_focus_like_ordinary_float() {
                 .admit_window(
                     &key,
                     &WindowId("b".to_owned()),
-                    ExceptionFlags::none(),
-                    None,
                     placement(1, 1),
                     false,
                     false,
@@ -591,26 +573,16 @@ fn capacity_float_preserves_focus_like_ordinary_float() {
                 .expect("capacity floats");
             assert!(layout.is_capacity_float(&key, &WindowId("b".to_owned())));
         } else {
-            let mut extra = tiled_observed("b", "tiny", "ws");
-            extra.floating = true;
-            let obs = complete_observed_for(&layout, &key, vec![extra]);
-            layout
-                .admit_window(
-                    &key,
-                    &WindowId("b".to_owned()),
-                    ExceptionFlags {
-                        floating: true,
-                        fullscreen: false,
-                        maximized: false,
-                        sticky: false,
-                    },
-                    Some(ExceptionBehavior::Defer),
-                    placement(1, 1),
-                    false,
-                    false,
-                    &obs,
-                )
-                .expect("ordinary float defers");
+            layout.seed_exception_for_test(
+                &key,
+                &WindowId("b".to_owned()),
+                ExceptionFlags {
+                    floating: true,
+                    fullscreen: false,
+                    maximized: false,
+                    sticky: false,
+                },
+            );
             assert!(!layout.is_capacity_float(&key, &WindowId("b".to_owned())));
         }
         assert_eq!(
@@ -636,8 +608,6 @@ fn pair_round_trip_preserves_capacity_order_globally() {
         .admit_window(
             &key1,
             &WindowId("b".to_owned()),
-            ExceptionFlags::none(),
-            None,
             placement(1, 1),
             false,
             false,

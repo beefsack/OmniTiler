@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::directional::{Node, NodeId, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::seed::EngineWindow;
-use crate::session::{DesiredGeometry, DomainKey, ExceptionFlags, ObservedWindow, OutputDomain};
+use crate::session::{DesiredGeometry, DomainKey, ObservedWindow, OutputDomain};
 use crate::size_hints::WindowSizeHints;
 use crate::world_layout::WorldLayout;
 
@@ -191,16 +191,7 @@ fn admit_into(
         vec![tiled_observed(window, &d.id.0, &d.workspace.0)],
     );
     layout
-        .admit_window(
-            &key,
-            &win_id,
-            ExceptionFlags::none(),
-            None,
-            placement_bounds,
-            false,
-            false,
-            &obs,
-        )
+        .admit_window(&key, &win_id, placement_bounds, false, false, &obs)
         .unwrap_or_else(|e| panic!("admit {window}: {e:?}"))
         .geometry
 }

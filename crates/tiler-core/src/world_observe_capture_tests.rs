@@ -8782,10 +8782,8 @@ fn v4_staging_drives_convergence_homing_and_resweep() {
             .any(|domain| domain.key == key && domain.readable),
         "v4 capture assembles a readable domain"
     );
-    // Float-to-tiled resweep with explicit owner/correlation: the
-    // sessionless second workspace converges through the real sweep.
-    let owner = OwnerId::parse("adapter-1").expect("owner");
-    let correlation = CorrelationId::parse("req-2").expect("correlation");
+    // Float-to-tiled resweep: the sessionless second workspace converges
+    // through the real sweep.
     let mut held_scopes = BTreeSet::new();
     let mut was_floating = BTreeSet::new();
     let spare = key.clone();
@@ -8794,7 +8792,7 @@ fn v4_staging_drives_convergence_homing_and_resweep() {
         !engine.world.layout.contains_domain(&spare),
         "sessionless before resweep"
     );
-    engine.tx(|tx| tx.resweep_retiled(&owner, &correlation, &mut held_scopes, &was_floating));
+    engine.tx(|tx| tx.resweep_retiled(&mut held_scopes, &was_floating));
     assert!(
         engine.world.layout.contains_domain(&spare),
         "resweep converges the retiled domain"
@@ -8842,15 +8840,13 @@ fn admission_known_before(engine: &WorldEngine) -> BTreeMap<DomainKey, BTreeSet<
 }
 
 fn sweep_all(engine: &mut WorldEngine) {
-    let owner = OwnerId::parse("adapter-1").expect("owner");
-    let correlation = CorrelationId::parse("req-2").expect("correlation");
     let mut held_scopes = BTreeSet::new();
     let domains = engine.world.staged.domains.clone();
     for domain in &domains {
         if !domain.readable {
             continue;
         }
-        engine.tx(|tx| tx.sweep_domain(domain, &owner, &correlation, &mut held_scopes));
+        engine.tx(|tx| tx.sweep_domain(domain, &mut held_scopes));
     }
 }
 
@@ -9921,17 +9917,17 @@ fn staged_native_sticky_followup_uses_staged_gates_and_original_seq() {
             .followup_done
     };
     // Staged gap retains proof and sticky provenance.
-    let (mut engine, staged) = setup(false, Some(false));
-    engine.tx(|tx| tx.run_native_sticky_followups(&test_issue(&staged), &BTreeSet::new()));
+    let (mut engine, _staged) = setup(false, Some(false));
+    engine.tx(|tx| tx.run_native_sticky_followups(&BTreeSet::new()));
     assert!(!done(&engine), "staged gap holds");
     // Staged restick retains proof while the current fact is sticky.
-    let (mut engine, staged) = setup(true, Some(true));
-    engine.tx(|tx| tx.run_native_sticky_followups(&test_issue(&staged), &BTreeSet::new()));
+    let (mut engine, _staged) = setup(true, Some(true));
+    engine.tx(|tx| tx.run_native_sticky_followups(&BTreeSet::new()));
     assert!(!done(&engine), "staged restick holds");
     // Staged complete with a fresh non-sticky fact finishes the
     // followup (positive control).
-    let (mut engine, staged) = setup(true, Some(false));
-    engine.tx(|tx| tx.run_native_sticky_followups(&test_issue(&staged), &BTreeSet::new()));
+    let (mut engine, _staged) = setup(true, Some(false));
+    engine.tx(|tx| tx.run_native_sticky_followups(&BTreeSet::new()));
     assert!(done(&engine), "staged complete finishes the followup");
     assert!(
         !engine
@@ -10045,15 +10041,11 @@ fn v4_staged_native_sticky_refused_proven_rolls_back_with_original_seq() {
             .expect("binding retained")
             .clone()
     };
-    let issue = crate::world_engine::EventIssue {
-        owner: OwnerId::parse("adapter-1").expect("owner"),
-        correlation: CorrelationId::parse("req-9").expect("correlation"),
-    };
     // Held home retains proof with no write and no runtime change.
     let mut held_engine = setup();
     let mut held = BTreeSet::new();
     held.insert(home.clone());
-    held_engine.tx(|tx| tx.run_native_sticky_followups(&issue, &held));
+    held_engine.tx(|tx| tx.run_native_sticky_followups(&held));
     let held_binding = binding_of(&held_engine);
     assert!(!held_binding.sticky_meta.expect("meta").followup_done);
     assert_eq!(
@@ -10071,7 +10063,7 @@ fn v4_staged_native_sticky_refused_proven_rolls_back_with_original_seq() {
     let mut gapped_engine = setup();
     std::sync::Arc::make_mut(&mut gapped_engine.world.staged.observation).inventory_complete =
         false;
-    gapped_engine.tx(|tx| tx.run_native_sticky_followups(&issue, &BTreeSet::new()));
+    gapped_engine.tx(|tx| tx.run_native_sticky_followups(&BTreeSet::new()));
     let gapped_binding = binding_of(&gapped_engine);
     assert!(!gapped_binding.sticky_meta.expect("meta").followup_done);
     assert_eq!(
@@ -10086,7 +10078,7 @@ fn v4_staged_native_sticky_refused_proven_rolls_back_with_original_seq() {
     );
     // Healthy run: prior runtime restored through fresh restage.
     let mut engine = setup();
-    engine.tx(|tx| tx.run_native_sticky_followups(&issue, &BTreeSet::new()));
+    engine.tx(|tx| tx.run_native_sticky_followups(&BTreeSet::new()));
     let binding = binding_of(&engine);
     let meta = binding.sticky_meta.expect("meta");
     assert!(meta.followup_done);
@@ -10109,7 +10101,7 @@ fn v4_staged_native_sticky_refused_proven_rolls_back_with_original_seq() {
     assert_eq!(binding.target.revision, 1);
     assert_eq!(meta.command_seq, Some(7));
     // Exactly-once retained target: a second run writes nothing new.
-    engine.tx(|tx| tx.run_native_sticky_followups(&issue, &BTreeSet::new()));
+    engine.tx(|tx| tx.run_native_sticky_followups(&BTreeSet::new()));
     assert_eq!(
         engine.world.intent.intent_desired.get(&win),
         Some(&None),

@@ -892,15 +892,6 @@ pub fn validate_text(field: &FieldDef, text: &str) -> Validity {
     }
 }
 
-/// Validate one field ID plus typed value.
-#[must_use]
-pub fn validate_field_id(id: &str, value: &SettingValue) -> Validity {
-    match find_field(id) {
-        Some(field) => validate_field_value(field, value),
-        None => Validity::Invalid("unknown field"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

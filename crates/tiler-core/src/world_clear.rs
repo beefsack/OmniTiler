@@ -713,7 +713,7 @@ impl WorldTransaction<'_> {
                         cross_output_transfer: false,
                         same_axis_move: retained.same_axis,
                     };
-                    self.run_local_operation(issue, command_seq, &command, &by_id, &held_scopes)
+                    self.run_local_operation(command_seq, &command, &by_id, &held_scopes)
                 };
                 // Fallible commands must not leak a stale directional
                 // result into this observation-only reply.

@@ -12,9 +12,7 @@
 use crate::directional::{Direction, Node, NodeId, OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::seed::EngineWindow;
-use crate::session::{
-    DomainKey, ExceptionBehavior, ExceptionFlags, ObservedWindow, OutputDomain, RefusalKind,
-};
+use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, RefusalKind};
 use crate::world_layout::{
     LayoutFailure, PairAssemblyFailure, PairOperationContext, PairOperationFailure, WorldLayout,
     rank_cross_output_edge_candidates,
@@ -177,7 +175,7 @@ fn complete_engine_for_pair(
     windows
 }
 fn admit(layout: &mut WorldLayout, d: &OutputDomain, w: &str, placement: Rect) {
-    admit_with_flags(layout, d, w, placement, ExceptionFlags::none(), None);
+    admit_with_flags(layout, d, w, placement, ExceptionFlags::none());
 }
 fn admit_with_flags(
     layout: &mut WorldLayout,
@@ -185,7 +183,6 @@ fn admit_with_flags(
     w: &str,
     placement: Rect,
     exceptions: ExceptionFlags,
-    behavior: Option<ExceptionBehavior>,
 ) {
     let k = d.key();
     let win_id = WindowId(w.to_owned());
@@ -200,24 +197,14 @@ fn admit_with_flags(
             .unwrap_or_else(|e| panic!("fresh admit {w}: {e:?}"));
         return;
     }
-    let mut entry = tiled(w, &d.id.0, &d.workspace.0);
-    entry.floating = exceptions.floating;
-    entry.fullscreen = exceptions.fullscreen;
-    entry.maximized = exceptions.maximized;
-    entry.sticky = exceptions.sticky;
+    if exceptions.any() {
+        layout.seed_exception_for_test(&k, &win_id, exceptions);
+        return;
+    }
+    let entry = tiled(w, &d.id.0, &d.workspace.0);
     let obs = complete_observed_for(layout, &k, vec![entry]);
-    let defer_to_float = matches!(behavior, Some(ExceptionBehavior::Defer));
     layout
-        .admit_window(
-            &k,
-            &win_id,
-            exceptions,
-            behavior,
-            placement,
-            false,
-            defer_to_float,
-            &obs,
-        )
+        .admit_window(&k, &win_id, placement, false, false, &obs)
         .unwrap_or_else(|e| panic!("admit {w}: {e:?}"));
 }
 fn leaf_window(layout: &WorldLayout, k: &DomainKey, leaf: &NodeId) -> String {
@@ -717,7 +704,6 @@ fn float_origin_keeps_remembered_selection() {
             maximized: false,
             sticky: false,
         },
-        Some(ExceptionBehavior::Defer),
     );
     admit(&mut layout, &o2, "win-2", wide_placement());
     admit(&mut layout, &o2, "win-3", wide_placement());
@@ -800,7 +786,6 @@ fn float_missing_remembered_refuses_unchanged() {
             maximized: false,
             sticky: false,
         },
-        Some(ExceptionBehavior::Defer),
     );
     let source = o1.key();
     let target = o2.key();

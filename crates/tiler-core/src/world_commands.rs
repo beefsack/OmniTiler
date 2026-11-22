@@ -10,7 +10,7 @@ use crate::world_transaction::WorldTransaction;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::boundary::CoreCommand;
-use crate::contract::DivergenceKind;
+use crate::contract::{REVISION_EXHAUSTED_KIND, REVISION_EXHAUSTED_MESSAGE};
 use crate::directional::WindowSubject;
 use crate::directional::{Direction, OutputId, WindowId};
 use crate::seed::EngineWindow;
@@ -843,10 +843,10 @@ impl WorldTransaction<'_> {
             WorldCommand::SetSticky {
                 window: WindowSubject::Window(window),
                 value,
-            } => self.execute_sticky_command(issue, command_seq, window, Some(*value), held_scopes),
+            } => self.execute_sticky_command(command_seq, window, Some(*value), held_scopes),
             WorldCommand::ToggleSticky {
                 window: WindowSubject::Window(window),
-            } => self.execute_sticky_command(issue, command_seq, window, None, held_scopes),
+            } => self.execute_sticky_command(command_seq, window, None, held_scopes),
             WorldCommand::SetFullscreen {
                 window: WindowSubject::Window(window),
                 value,
@@ -1713,8 +1713,8 @@ fn reject_workspace_migration_failure(err: WorkspaceMigrationFailure) -> Command
         }
         WorkspaceMigrationFailure::Layout(LayoutFailure::RevisionLimit { .. }) => {
             CommandApplied::Rejected {
-                kind: DivergenceKind::RevisionExhausted.as_str(),
-                message: DivergenceKind::RevisionExhausted.message(),
+                kind: REVISION_EXHAUSTED_KIND,
+                message: REVISION_EXHAUSTED_MESSAGE,
             }
         }
         WorkspaceMigrationFailure::SameOutput => CommandApplied::Rejected {

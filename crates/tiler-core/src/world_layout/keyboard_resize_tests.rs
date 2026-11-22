@@ -18,8 +18,7 @@ use crate::directional::{
 };
 use crate::geometry::Rect;
 use crate::session::{
-    DesiredGeometry, DomainKey, ExceptionBehavior, ExceptionFlags, ObservedWindow, OutputDomain,
-    RefusalKind,
+    DesiredGeometry, DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, RefusalKind,
 };
 use crate::size_hints::WindowSizeHints;
 
@@ -138,16 +137,7 @@ impl KeyboardResizeRig {
             .or_insert_with(|| DomainLayout::new(desc.bounds, desc.gap, 0));
         let obs = self.domain_observed(&k, vec![tiled(window, "out-1", "ws-1")]);
         self.layout
-            .admit_window(
-                &k,
-                &win(window),
-                ExceptionFlags::none(),
-                None,
-                placement(horiz),
-                false,
-                false,
-                &obs,
-            )
+            .admit_window(&k, &win(window), placement(horiz), false, false, &obs)
             .unwrap_or_else(|e| panic!("admit {window}: {e:?}"))
     }
 
@@ -752,26 +742,16 @@ fn flagged_observation_refuses_fail_closed() {
     let mut t = KeyboardResizeRig::single();
     t.admit_commit("win-1", true);
     let tk = key("out-1", "ws-1");
-    let mut deferred = tiled("win-9", "out-1", "ws-1");
-    deferred.floating = true;
-    let tobs = t.domain_observed(&tk, vec![deferred]);
-    t.layout
-        .admit_window(
-            &tk,
-            &win("win-9"),
-            ExceptionFlags {
-                floating: true,
-                fullscreen: false,
-                maximized: false,
-                sticky: false,
-            },
-            Some(ExceptionBehavior::Defer),
-            placement(true),
-            false,
-            false,
-            &tobs,
-        )
-        .expect("defer");
+    t.layout.seed_exception_for_test(
+        &tk,
+        &win("win-9"),
+        ExceptionFlags {
+            floating: true,
+            fullscreen: false,
+            maximized: false,
+            sticky: false,
+        },
+    );
     let tkobs = t.domain_observed(&tk, vec![]);
     let t_rev_before = t.layout.accepted_revision(&tk);
     assert_eq!(

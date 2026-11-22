@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::seed::EngineWindow;
-use crate::session::{DomainKey, ExceptionFlags, ObservedWindow, OutputDomain, RefusalKind};
+use crate::session::{DomainKey, ObservedWindow, OutputDomain, RefusalKind};
 use crate::size_hints::WindowSizeHints;
 
 use super::outcome::{LayoutFailure, PairOperationFailure, PairSendKind};
@@ -112,16 +112,7 @@ fn admit_tiled(layout: &mut WorldLayout, w: &str, o: &str, ws: &str) {
     let mut observed = domain_observed(layout, &k);
     observed.push(obs_tiled(w, o, ws));
     layout
-        .admit_window(
-            &k,
-            &win(w),
-            ExceptionFlags::none(),
-            None,
-            bounds(),
-            false,
-            false,
-            &observed,
-        )
+        .admit_window(&k, &win(w), bounds(), false, false, &observed)
         .expect("admit");
 }
 
