@@ -44,8 +44,8 @@
 //! lifetimes, and explicit closes record nothing. Unknown DPI on either
 //! side means no known transition (learning proceeds); a changed DPI basis
 //! is invalidated placement and records nothing. Attempts without a
-//! freshness stamp (`attempt_ms == 0`) never learn: with no ordering claim
-//! the replay contract cannot tell fresh growth from redelivery.
+//! freshness stamp (`attempt_ms` is `None` or `Some(0)`) never learn
+//! (unproven clock policy; replay itself is decided by ordered `attempt_id`).
 //! Learning and counter-evidence both need a genuinely controlled tiled
 //! row. Vetoed: minimized, floating, fullscreen, maximized, fit-excluded,
 //! sticky, fixed-auto/suppress flags, missing or unreadable facts, unknown
@@ -62,6 +62,7 @@ use crate::world_attempts::{
 };
 use crate::world_transaction::WorldTransaction;
 
+#[cfg(test)]
 pub(crate) use crate::world_attempts::is_stale_replay;
 
 /// Backoff base for transient setter failures.
@@ -159,8 +160,8 @@ pub(crate) fn attempt_observed(attempt: &FrameAttemptEvidence, fact: Option<Rect
 ///   an unreadable post-write proof exactly like a readable one);
 /// - unreadable evidence (no readback and no staged frame) records
 ///   nothing;
-/// - a stale redelivery (same pair at or before the consumed stamp)
-///   changes nothing, so a lost acknowledgement never renews backoff;
+/// - replay filtering is enforced upstream at the per-window `attempt_id`
+///   watermark (`frame_watermark_stale` in `settle_frames`);
 /// - an accepted setter with a changed DPI basis records nothing
 ///   (invalidated placement retries under fresh state);
 /// - an accepted setter with readable post-write proof and a corroborated
@@ -188,13 +189,6 @@ pub(crate) fn consume_attempt(
     if observed == attempt.target {
         return None;
     }
-    if let Some(memory) = existing.clone()
-        && memory.desired == attempt.target
-        && memory.observed == observed
-        && attempt.attempt_ms <= memory.last_ms
-    {
-        return existing;
-    }
     let same_pair = existing
         .as_ref()
         .is_some_and(|memory| memory.desired == attempt.target && memory.observed == observed);
@@ -221,6 +215,7 @@ pub(crate) fn consume_attempt(
     {
         return None;
     }
+    let attempt_ms = attempt.attempt_ms.unwrap_or(0);
     match attempt.disposition {
         AttemptDisposition::Accepted if proven_dispatch => Some(FrameMemory {
             desired: attempt.target,
@@ -231,9 +226,9 @@ pub(crate) fn consume_attempt(
                     if same_pair { memory.failures } else { 0 }
                 },
             ),
-            last_ms: existing.as_ref().map_or(attempt.attempt_ms, |memory| {
-                memory.last_ms.max(attempt.attempt_ms)
-            }),
+            last_ms: existing
+                .as_ref()
+                .map_or(attempt_ms, |memory| memory.last_ms.max(attempt_ms)),
             clamped: true,
         }),
         AttemptDisposition::Accepted | AttemptDisposition::Refused | AttemptDisposition::Threw => {
@@ -247,7 +242,7 @@ pub(crate) fn consume_attempt(
                         0
                     }
                 }),
-                last_ms: attempt.attempt_ms,
+                last_ms: attempt_ms,
                 clamped: existing
                     .as_ref()
                     .is_some_and(|memory| same_pair && memory.clamped),
@@ -391,7 +386,9 @@ impl WorldTransaction<'_> {
         attempt: &FrameAttemptEvidence,
         readback: &Rect,
     ) -> Option<(Option<i32>, Option<i32>)> {
-        if attempt.disposition != AttemptDisposition::Accepted || attempt.attempt_ms == 0 {
+        if attempt.disposition != AttemptDisposition::Accepted
+            || attempt.attempt_ms.unwrap_or(0) == 0
+        {
             return None;
         }
         if dpi_basis_changed(attempt.dpi_before, attempt.dpi_after) {
@@ -460,9 +457,9 @@ impl WorldTransaction<'_> {
     /// as learning. Runs BEFORE attempt consumption/learning against the
     /// prior watermark, so an existing smaller current disproves a prior
     /// higher floor before fresh growth in the same report establishes a
-    /// new one. Attempts already consumed (exact redeliveries or older
-    /// stamps) and clockless attempts (`ms == 0`, no ordering claim) never
-    /// veto: they are skipped, not treated as fresh counter-proof.
+    /// new one. Attempts already consumed (`attempt_id` at or below the prior
+    /// watermark) and clockless attempts (`attempt_ms` is `None` or `Some(0)`)
+    /// never veto: they are skipped, not treated as fresh counter-proof.
     /// Otherwise skipped per window on any fresh refused/thrown or
     /// DPI-flipped current attempt (transient preimage, not external
     /// proof); per axis when the current accepted target already undercuts
@@ -495,20 +492,13 @@ impl WorldTransaction<'_> {
             {
                 // No ordering claim: clockless attempts never veto fresh
                 // observation-only counter-evidence (nor prove anything).
-                if attempt.attempt_ms == 0 {
+                if attempt.attempt_ms.unwrap_or(0) == 0 {
                     continue;
                 }
                 // Redelivery of already-consumed evidence: not fresh proof.
                 // Reads the prior watermark only; this runs before the loop
                 // below consumes the current report.
-                if self
-                    .world
-                    .settlement
-                    .consumed_frames
-                    .get(&window)
-                    .and_then(PropertyAttempt::as_frame)
-                    .is_some_and(|prior| is_stale_replay(prior, attempt))
-                {
+                if frame_watermark_stale(&self.world.settlement.consumed_frames, attempt) {
                     continue;
                 }
                 if attempt.disposition != AttemptDisposition::Accepted
@@ -656,11 +646,11 @@ impl WorldTransaction<'_> {
     /// lifetime scoping and observed frames) and before the sweep/publish
     /// below, so suppression and learned floors apply to this same reply.
     /// Attempts for unknown or minimized lifetimes record nothing;
-    /// unreadable evidence records nothing. Lost-ack redeliveries (older
-    /// stamp, or exact duplicate) are ignored via the retained consumed
-    /// watermark, which survives exact-match clears: a replay never
-    /// resurrects stale suppression nor clobbers newer authority. All three
-    /// maps prune under one predicate (staged fact or retained member).
+    /// unreadable evidence records nothing. Lost-ack redeliveries (`attempt_id`
+    /// at or below the retained watermark) are ignored via the retained
+    /// consumed watermark, which survives exact-match clears: a replay never
+    /// resurrects stale suppression nor clobbers newer authority. All maps
+    /// prune under one predicate (staged fact or retained member).
     pub(crate) fn settle_frames(&mut self) {
         // Counter-evidence first, against the prior watermark only: still
         // narrower than the post-loop maps, so newly consumed current

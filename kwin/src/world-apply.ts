@@ -761,7 +761,7 @@ function applyTiledFrame(
     entryObs: string,
     observed: ObservedWindow,
     target: NonNullable<WorldReplyWindow["frame"]>,
-    stamp: string,
+    frameStamp: string | null,
     result: ApplyResult,
     expectLive?: { out: string; ws: string },
 ): boolean {
@@ -791,7 +791,7 @@ function applyTiledFrame(
         win: observed.win, target: [target[0], target[1], target[2], target[3]],
         disposition: { kind: "called", setter },
         readback: readback === null ? null : [readback.x, readback.y, readback.w, readback.h],
-        dpiBefore: null, dpiAfter: null, attemptMs: stamp, purpose: { kind: "layout" },
+        dpiBefore: null, dpiAfter: null, attemptMs: frameStamp, purpose: { kind: "layout" },
     });
     if (setter === "accepted") {
         result.geometryWrites += 1;
@@ -801,7 +801,7 @@ function applyTiledFrame(
     return true;
 }
 
-function runApply(env: ApplyEnv, stamp: string): ApplyResult {
+function runApply(env: ApplyEnv, stamp: string, frameStamp: string | null): ApplyResult {
     const { state, observation, reply } = env;
     const result: ApplyResult = {
         geometryWrites: 0, membershipWrites: 0, viewWrites: 0,
@@ -888,7 +888,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             // The destination frame must never be written at the source.
             // The same-flight crossing below requires fresh arrival proof.
         } else if (targetFrame !== null && frameControlled && !safetyGuarded && !coreFloating) {
-            if (!applyTiledFrame(env, entryObs, observed, targetFrame, stamp, result)) {
+            if (!applyTiledFrame(env, entryObs, observed, targetFrame, frameStamp, result)) {
                 result.stoppedMidApply = true;
                 break;
             }
@@ -1079,7 +1079,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             // and restore geometry). Once it proves exact homing, request only
             // the published final rectangle; never write a remapped size.
             if (outAttempted && outOk && targetFrame !== null && crossings?.has(row)) {
-                applyTiledFrame(env, entryObs, observed, targetFrame, stamp, result, midHome);
+                applyTiledFrame(env, entryObs, observed, targetFrame, frameStamp, result, midHome);
             }
             settleFollowView(env, reply, entryObs, transfer, row.win, result);
             continue;
@@ -1153,7 +1153,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             // workspace. Only the exact post-desktop-set home permits the
             // final rectangle here; async/ambiguous arrivals use a later capture.
             if (outAttempted && outOk && !threw && wsOk && targetFrame !== null && crossings?.has(row)) {
-                applyTiledFrame(env, entryObs, observed, targetFrame, stamp, result, proof);
+                applyTiledFrame(env, entryObs, observed, targetFrame, frameStamp, result, proof);
             }
             settleFollowView(env, reply, entryObs, transfer, row.win, result);
         } else if (!threw && (!outAttempted || !outOk) && (!wsAttempted || !wsOk) && proof !== null && proof.out === observed.out && proof.ws === observed.ws) {
@@ -1331,7 +1331,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
             win: row.win, target: [target.x, target.y, target.w, target.h],
             disposition: { kind: "called", setter: threw ? "threw" : floatOk ? "accepted" : "refused" },
             readback: proof === null ? null : [proof.x, proof.y, proof.w, proof.h],
-            dpiBefore: null, dpiAfter: null, attemptMs: stamp,
+            dpiBefore: null, dpiAfter: null, attemptMs: frameStamp,
             purpose: { kind: "float-placement", op, pre: [liveRect.x, liveRect.y, liveRect.w, liveRect.h] },
         });
         if (proof !== null && sameRect(proof, [target.x, target.y, target.w, target.h])) {
@@ -3037,7 +3037,7 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
         const frame = row?.frame ?? row?.alloc;
         if (row === undefined || observed === undefined || frame == null || row.floating ||
             row.frame_auth !== "controlled" || row.frame_hold !== "" || row.frame_op !== "") return true;
-        return applyTiledFrame(env, entryObs, observed, frame, stamp, result, { out, ws: native });
+        return applyTiledFrame(env, entryObs, observed, frame, frameStamp, result, { out, ws: native });
     };
     env.runRoster?.((request, resolve) => {
         if (reply.focusRequest?.id !== request.id) return true;
@@ -3062,9 +3062,11 @@ function runApply(env: ApplyEnv, stamp: string): ApplyResult {
 // reentrant native work.
 export function applyWorldReply(env: ApplyEnv): ApplyResult {
     // Original broker dispatch-clock reading, never wall-clock; "0" means
-    // unreported. Captured before native setters can reenter and move it.
+    // unreported (mapped to null for frame attempts; other lanes keep "0").
+    // Captured before native setters can reenter and move it.
     const stamp = isCanonicalU64(env.state.lastClock) ? env.state.lastClock : "0";
-    const result = runApply(env, stamp);
+    const frameStamp = stamp === "0" ? null : stamp;
+    const result = runApply(env, stamp, frameStamp);
     if (!result.stoppedMidApply) {
         return result;
     }

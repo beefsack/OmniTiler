@@ -591,10 +591,11 @@ describe("world float placement", () => {
             reply,
         });
         assert.equal(calls, 1);
+        assert.equal(state.lastClock, "0", "default lastClock is the zero sentinel");
         assert.equal(heldAmbiguous(state, OP), true, "dispatch record stays; the refused row rides, core owns refusal");
         assert.deepEqual(
             state.framesForReport().filter((a) => a.purpose.kind === "float-placement" && a.purpose.op === OP),
-            [{ win: "win-a", target: [162, 122, 475, 355], disposition: { kind: "called", setter: "refused" }, readback: [10, 10, 100, 100], dpiBefore: null, dpiAfter: null, attemptMs: state.lastClock, purpose: { kind: "float-placement", op: OP, pre: [10, 10, 100, 100] } }],
+            [{ win: "win-a", target: [162, 122, 475, 355], disposition: { kind: "called", setter: "refused" }, readback: [10, 10, 100, 100], dpiBefore: null, dpiAfter: null, attemptId: "1", attemptMs: null, purpose: { kind: "float-placement", op: OP, pre: [10, 10, 100, 100] } }],
             "refused disposition plus unchanged prewrite rides the next report",
         );
         const again = applyWorldReply({ dispatchWatermark: state.currentInvalid, takeResult: null,

@@ -208,7 +208,8 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
         readback: None,
         dpi_before: None,
         dpi_after: None,
-        attempt_ms: 1000,
+        attempt_id: 1000,
+        attempt_ms: Some(1000),
         purpose: crate::world_report::FramePurpose::Layout,
     }];
     let (reply, settlements) = match engine.handle_report(&rejected, &[]) {
@@ -276,8 +277,7 @@ fn rejected_focus_unknown_incorporates_observation_with_typed_result() {
             .settlement
             .consumed_frames
             .get(&WindowId("w0".to_owned()))
-            .and_then(crate::world_attempts::PropertyAttempt::as_frame)
-            .map(|evidence| evidence.attempt_ms),
+            .map(|watermark| watermark.attempt_id),
         Some(1000),
         "frame attempt settles pre-command"
     );

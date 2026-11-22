@@ -161,7 +161,8 @@ pub(crate) struct FrameAttemptEvidence {
     pub(crate) readback: Option<Rect>,
     pub(crate) dpi_before: Option<u32>,
     pub(crate) dpi_after: Option<u32>,
-    pub(crate) attempt_ms: u64,
+    pub(crate) attempt_id: u64,
+    pub(crate) attempt_ms: Option<u64>,
     pub(crate) purpose: FramePurpose,
 }
 
@@ -178,6 +179,7 @@ pub(crate) fn frame_evidence(raw: &FrameAttempt) -> FrameAttemptEvidence {
         readback: raw.readback,
         dpi_before: raw.dpi_before,
         dpi_after: raw.dpi_after,
+        attempt_id: raw.attempt_id,
         attempt_ms: raw.attempt_ms,
         purpose: raw.purpose.clone(),
     }
@@ -201,53 +203,71 @@ pub(crate) fn frame_evidence_matches(
 
 /// True when `attempt` is a lost-ack redelivery of an already-consumed frame
 /// write for one lifetime, and must not mutate suppression or spend budget:
-///
-/// - a strictly older stamp (`ms != 0`) is a replay regardless of pair;
-/// - an exact duplicate of the consumed evidence (all facts plus stamp equal)
-///   is the same write reported twice, even at an equal stamp.
-///
-/// Deliberately narrow: an unreported clock (`ms == 0`) never dedups (no
-/// ordering claim is possible, and same-tick duplicates are routine there);
-/// a changed pair at an equal-or-newer stamp always processes.
+/// ordered per-producer `attempt_id` at or below the consumed watermark is
+/// stale regardless of timing or facts, including clockless rows.
+#[cfg(test)]
 #[must_use]
 pub(crate) fn is_stale_replay(
     prior: &FrameAttemptEvidence,
     attempt: &FrameAttemptEvidence,
 ) -> bool {
-    if attempt.attempt_ms == 0 {
-        return false;
-    }
-    attempt.attempt_ms < prior.attempt_ms || attempt == prior
+    attempt.attempt_id <= prior.attempt_id
+}
+
+/// Per-window consumed frame watermark: the most recent consumed `attempt_id`
+/// (including clockless rows) plus the latest nonzero-stamped valid accepted
+/// DPI-stable target echo for float self-echo fallback. A timed non-qualifying
+/// attempt clears `timed_echo`; a clockless attempt leaves `timed_echo`
+/// unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ConsumedFrameWatermark {
+    pub(crate) attempt_id: u64,
+    pub(crate) timed_echo: Option<Rect>,
+}
+
+/// True when a frame attempt qualifies as a timed float self-echo: nonzero
+/// `attempt_ms`, accepted disposition, and no DPI basis change.
+#[must_use]
+pub(crate) fn is_qualifying_timed_echo(attempt: &FrameAttemptEvidence) -> bool {
+    attempt.attempt_ms.unwrap_or(0) != 0
+        && attempt.disposition == AttemptDisposition::Accepted
+        && !crate::world_frames::dpi_basis_changed(attempt.dpi_before, attempt.dpi_after)
 }
 
 /// Shared prior-watermark replay gate for canonical frame evidence. The
-/// consumed watermark is keyed by exact window lifetime; a zero stamp never
-/// dedups and an exact duplicate is a replay. Both the tiled anti-fighting
-/// lane and explicit float staging use this same mechanically exact check.
+/// consumed watermark is keyed by exact window lifetime; any row with an
+/// `attempt_id` at or below the retained watermark is a replay. Both the tiled
+/// anti-fighting lane and explicit float staging use this same mechanically
+/// exact check.
 #[must_use]
 pub(crate) fn frame_watermark_stale(
-    consumed: &BTreeMap<WindowId, PropertyAttempt>,
+    consumed: &BTreeMap<WindowId, ConsumedFrameWatermark>,
     attempt: &FrameAttemptEvidence,
 ) -> bool {
     consumed
         .get(&attempt.window)
-        .and_then(PropertyAttempt::as_frame)
-        .is_some_and(|prior| is_stale_replay(prior, attempt))
+        .is_some_and(|prior| attempt.attempt_id <= prior.attempt_id)
 }
 
-/// Retain one consumed frame write in the exact-window watermark. Zero-stamp
-/// evidence never enters the watermark (it makes no ordering claim); every
-/// fresh stamped write replaces the prior row, so the watermark survives an
-/// exact-match suppression clear as redelivery protection.
+/// Retain one consumed frame write in the exact-window watermark. Every
+/// consumed frame row updates `attempt_id`, including clockless rows, so the
+/// watermark survives an exact-match suppression clear as redelivery
+/// protection. A timed row updates `timed_echo` (setting `Some(target)` when
+/// qualifying, clearing to `None` otherwise); a clockless row leaves any prior
+/// `timed_echo` unchanged.
 pub(crate) fn retain_frame_watermark(
-    consumed: &mut BTreeMap<WindowId, PropertyAttempt>,
+    consumed: &mut BTreeMap<WindowId, ConsumedFrameWatermark>,
     attempt: &FrameAttemptEvidence,
 ) {
-    if attempt.attempt_ms != 0 {
-        consumed.insert(
-            attempt.window.clone(),
-            PropertyAttempt::Frame(attempt.clone()),
-        );
+    let entry = consumed
+        .entry(attempt.window.clone())
+        .or_insert(ConsumedFrameWatermark {
+            attempt_id: attempt.attempt_id,
+            timed_echo: None,
+        });
+    entry.attempt_id = attempt.attempt_id;
+    if attempt.attempt_ms.unwrap_or(0) != 0 {
+        entry.timed_echo = is_qualifying_timed_echo(attempt).then_some(attempt.target);
     }
 }
 
@@ -1118,7 +1138,8 @@ mod tests {
             }),
             dpi_before: Some(96),
             dpi_after: Some(120),
-            attempt_ms: ms,
+            attempt_id: ms,
+            attempt_ms: (ms != 0).then_some(ms),
             purpose: match op {
                 None => FramePurpose::Layout,
                 Some(op) => FramePurpose::FloatPlacement {
@@ -1148,7 +1169,8 @@ mod tests {
             readback: None,
             dpi_before: Some(120),
             dpi_after: None,
-            attempt_ms: 42,
+            attempt_id: 7,
+            attempt_ms: Some(42),
             purpose: FramePurpose::FloatPlacement {
                 operation_id: "op-f".to_owned(),
                 prewrite: Some(Rect {
@@ -1166,7 +1188,8 @@ mod tests {
         assert_eq!(evidence.disposition, AttemptDisposition::Accepted);
         assert_eq!(evidence.readback, None);
         assert_eq!((evidence.dpi_before, evidence.dpi_after), (Some(120), None));
-        assert_eq!(evidence.attempt_ms, 42);
+        assert_eq!(evidence.attempt_id, 7);
+        assert_eq!(evidence.attempt_ms, Some(42));
         assert_eq!(evidence.purpose.operation_id(), Some("op-f"));
         assert_eq!(evidence.purpose.prewrite(), raw.purpose.prewrite());
         // No other arm can read frame evidence and vice versa.
@@ -1180,22 +1203,26 @@ mod tests {
     fn frame_replay_predicate_truthfulness_and_exact_correlation() {
         let ordinary = frame(None, 100);
         let prior = ordinary.as_frame().expect("prior").clone();
-        // Older stamp and exact duplicate are replays; a fresh same-window
-        // changed pair and a zero stamp are not.
+        // Older or equal attempt_id is a replay regardless of timing or facts;
+        // a strictly greater attempt_id is fresh even with equal timing/facts
+        // or a clockless stamp.
         assert!(is_stale_replay(&prior, frame(None, 99).as_frame().unwrap()));
         assert!(is_stale_replay(
             &prior,
             frame(None, 100).as_frame().unwrap()
         ));
-        let mut changed = frame(None, 100).as_frame().unwrap().clone();
-        changed.target.w += 1;
-        assert!(!is_stale_replay(&prior, &changed));
-        let clockless = frame(None, 0);
-        assert!(!is_stale_replay(&prior, clockless.as_frame().unwrap()));
-        assert!(!is_stale_replay(
-            clockless.as_frame().unwrap(),
-            clockless.as_frame().unwrap()
-        ));
+        let mut changed_same_id = frame(None, 100).as_frame().unwrap().clone();
+        changed_same_id.target.w += 1;
+        assert!(is_stale_replay(&prior, &changed_same_id));
+        let mut newer = frame(None, 100).as_frame().unwrap().clone();
+        newer.attempt_id = prior.attempt_id + 1;
+        assert!(!is_stale_replay(&prior, &newer));
+        let mut clockless_same_id = frame(None, 0).as_frame().unwrap().clone();
+        clockless_same_id.attempt_id = prior.attempt_id;
+        assert!(is_stale_replay(&prior, &clockless_same_id));
+        let mut clockless_newer = clockless_same_id.clone();
+        clockless_newer.attempt_id = prior.attempt_id + 1;
+        assert!(!is_stale_replay(&clockless_same_id, &clockless_newer));
         // Ordinary correlation never matches an explicit float identity.
         let target = prior.target;
         assert!(frame_evidence_matches(
@@ -1226,8 +1253,9 @@ mod tests {
             frame(None, 100).as_frame().unwrap()
         ));
         let mut zero = BTreeMap::new();
-        retain_frame_watermark(&mut zero, clockless.as_frame().unwrap());
-        assert!(zero.is_empty(), "zero stamp never enters the watermark");
+        retain_frame_watermark(&mut zero, &clockless_same_id);
+        assert_eq!(zero.len(), 1, "clockless attempt enters the watermark");
+        assert!(zero.get(&window("win-a")).unwrap().timed_echo.is_none());
     }
 
     fn visibility_last(disposition: VisibilityDisposition, with_post: bool) -> VisibilityAttempt {

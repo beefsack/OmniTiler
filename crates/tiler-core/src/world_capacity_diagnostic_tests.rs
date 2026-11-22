@@ -250,7 +250,8 @@ fn float_attempt(
         readback,
         dpi_before: None,
         dpi_after: None,
-        attempt_ms: ms,
+        attempt_id: ms,
+        attempt_ms: (ms != 0).then_some(ms),
         purpose: crate::world_report::FramePurpose::FloatPlacement {
             operation_id: operation.to_owned(),
             prewrite,
@@ -938,7 +939,8 @@ fn float_dpi_change_blocks_confirmation_until_fresh_evidence() {
                 readback: Some(target),
                 dpi_before: Some(96),
                 dpi_after: Some(120),
-                attempt_ms: 4000,
+                attempt_id: 4000,
+                attempt_ms: Some(4000),
                 purpose: crate::world_report::FramePurpose::FloatPlacement {
                     operation_id: "op-12".to_owned(),
                     prewrite: Some(source),
@@ -1102,7 +1104,8 @@ fn float_forged_correlation_never_settles() {
             readback: Some(source),
             dpi_before: None,
             dpi_after: None,
-            attempt_ms: 4000,
+            attempt_id: 4000,
+            attempt_ms: Some(4000),
             purpose: crate::world_report::FramePurpose::Layout,
         },
     ];
@@ -1593,7 +1596,8 @@ fn float_dpi_flip_holds_recovery_then_target_settles() {
                 readback: Some(third),
                 dpi_before: Some(96),
                 dpi_after: Some(120),
-                attempt_ms: 4000,
+                attempt_id: 4000,
+                attempt_ms: Some(4000),
                 purpose: crate::world_report::FramePurpose::FloatPlacement {
                     operation_id: "op-12".to_owned(),
                     prewrite: Some(source),

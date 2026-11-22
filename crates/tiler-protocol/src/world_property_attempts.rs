@@ -246,6 +246,7 @@ fn decode_frame_attempt_v4(
         "readback",
         "dpiBefore",
         "dpiAfter",
+        "attemptId",
         "attemptMs",
         "purpose",
     ];
@@ -318,7 +319,12 @@ fn decode_frame_attempt_v4(
     let readback = opt_rect_or_null(map, "readback")?;
     let dpi_before = opt_u32_or_null(map, "dpiBefore")?;
     let dpi_after = opt_u32_or_null(map, "dpiAfter")?;
-    let attempt_ms = req_u64_str(map, "attemptMs")?;
+    let attempt_id = req_u64_str(map, "attemptId")?;
+    let attempt_ms = match map.get("attemptMs") {
+        Some(serde_json::Value::Null) => None,
+        Some(_) => Some(req_u64_str(map, "attemptMs")?),
+        None => return Err(malformed()),
+    };
     if !seen_frames.insert(window.0.clone()) {
         return Err(WorldProtocolError {
             kind: KIND_SNAPSHOT,
@@ -352,6 +358,7 @@ fn decode_frame_attempt_v4(
         readback,
         dpi_before,
         dpi_after,
+        attempt_id,
         attempt_ms,
         purpose,
     }))
@@ -717,9 +724,18 @@ fn encode_frame_attempt_v4(row: &FrameAttempt) -> Result<String> {
     push_opt_u32(&mut out, &row.dpi_before);
     out.push_str(",\"dpiAfter\":");
     push_opt_u32(&mut out, &row.dpi_after);
-    out.push_str(",\"attemptMs\":\"");
-    out.push_str(&row.attempt_ms.to_string());
-    out.push_str("\",\"purpose\":");
+    out.push_str(",\"attemptId\":\"");
+    out.push_str(&row.attempt_id.to_string());
+    out.push_str("\",\"attemptMs\":");
+    match row.attempt_ms {
+        Some(ms) => {
+            out.push('"');
+            out.push_str(&ms.to_string());
+            out.push('"');
+        }
+        None => out.push_str("null"),
+    }
+    out.push_str(",\"purpose\":");
     match &row.purpose {
         FramePurpose::Layout => out.push_str("{\"kind\":\"layout\"}"),
         FramePurpose::FloatPlacement {

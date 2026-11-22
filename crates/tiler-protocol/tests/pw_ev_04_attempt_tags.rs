@@ -180,6 +180,7 @@ fn pw_ev_04_frame_purposes_round_trip_and_legacy_op_pre_held() {
         "readback": [0, 0, 800, 600],
         "dpiBefore": 96,
         "dpiAfter": 96,
+        "attemptId": "1",
         "attemptMs": "100",
         "purpose": {"kind": "layout"}
     }]);
@@ -201,6 +202,7 @@ fn pw_ev_04_frame_purposes_round_trip_and_legacy_op_pre_held() {
         "readback": [0, 0, 700, 500],
         "dpiBefore": null,
         "dpiAfter": null,
+        "attemptId": "2",
         "attemptMs": "101",
         "purpose": {"kind": "float-placement", "op": "op-9", "pre": [0, 0, 700, 500]}
     }]);
@@ -239,6 +241,7 @@ fn pw_ev_04_frame_purposes_round_trip_and_legacy_op_pre_held() {
         "readback": [0, 0, 800, 600],
         "dpiBefore": null,
         "dpiAfter": null,
+        "attemptId": "3",
         "attemptMs": "102",
         "op": "",
         "pre": null

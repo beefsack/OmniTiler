@@ -132,7 +132,8 @@ fn frame_row(window: &str) -> FrameAttempt {
         readback: None,
         dpi_before: None,
         dpi_after: None,
-        attempt_ms: 11,
+        attempt_id: 11,
+        attempt_ms: Some(11),
         purpose: crate::world_report::FramePurpose::Layout,
     }
 }
@@ -2499,7 +2500,8 @@ fn frame_attempt(
         readback,
         dpi_before: None,
         dpi_after: None,
-        attempt_ms: ms,
+        attempt_id: ms,
+        attempt_ms: (ms != 0).then_some(ms),
         purpose: crate::world_report::FramePurpose::Layout,
     }
 }
@@ -4192,7 +4194,8 @@ fn frame_4b2d(
         readback: None,
         dpi_before: dpi.0,
         dpi_after: dpi.1,
-        attempt_ms: ms,
+        attempt_id: ms,
+        attempt_ms: (ms != 0).then_some(ms),
         purpose: crate::world_report::FramePurpose::FloatPlacement {
             operation_id: "op-f".to_owned(),
             prewrite: None,
@@ -5511,7 +5514,10 @@ fn settle_float_uses_staged_frames_with_replay_dpi_and_close() {
     seed_float(&mut replayed);
     replayed.world.settlement.consumed_frames.insert(
         WindowId("win-a".to_owned()),
-        crate::world_attempts::PropertyAttempt::from_frame_attempt(&prior),
+        crate::world_attempts::ConsumedFrameWatermark {
+            attempt_id: prior.attempt_id,
+            timed_echo: None,
+        },
     );
     replayed.tx(|tx| tx.settle_floats());
     assert!(
@@ -5548,12 +5554,10 @@ fn settle_float_uses_staged_frames_with_replay_dpi_and_close() {
     seed_float(&mut fresh);
     fresh.world.settlement.consumed_frames.insert(
         WindowId("win-a".to_owned()),
-        crate::world_attempts::PropertyAttempt::from_frame_attempt(&frame_4b2d(
-            target,
-            FrameSetter::Accepted,
-            5,
-            (None, None),
-        )),
+        crate::world_attempts::ConsumedFrameWatermark {
+            attempt_id: 5,
+            timed_echo: None,
+        },
     );
     fresh.tx(|tx| tx.settle_floats());
     assert_eq!(
@@ -5847,7 +5851,8 @@ fn settle_float_holds_own_prior_tile_echo_not_external() {
             readback: Some(float_rect),
             dpi_before: None,
             dpi_after: None,
-            attempt_ms: 100,
+            attempt_id: 100,
+            attempt_ms: Some(100),
             purpose: crate::world_report::FramePurpose::Layout,
         };
         if !defer_attempt {
@@ -5902,7 +5907,7 @@ fn settle_float_holds_own_prior_tile_echo_not_external() {
             for invalid in ["clockless", "refused", "dpi"] {
                 let mut bad_attempt = own_attempt.clone();
                 match invalid {
-                    "clockless" => bad_attempt.attempt_ms = 0,
+                    "clockless" => bad_attempt.attempt_ms = None,
                     "refused" => bad_attempt.disposition = FrameSetter::Refused,
                     "dpi" => {
                         bad_attempt.dpi_before = Some(96);

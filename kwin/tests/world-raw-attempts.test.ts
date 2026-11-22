@@ -355,11 +355,11 @@ describe("world raw mechanical attempts", () => {
             const sweep = frames.find((f) => f["win"] === "win-b");
             assert.deepEqual(
                 sweep,
-                { kind: "frame", win: "win-b", target: [800, 0, 400, 300], disposition: { kind: "called", setter: "accepted" }, readback: [800, 0, 400, 300], dpiBefore: null, dpiAfter: null, attemptMs: "1", purpose: { kind: "layout" } },
+                { kind: "frame", win: "win-b", target: [800, 0, 400, 300], disposition: { kind: "called", setter: "accepted" }, readback: [800, 0, 400, 300], dpiBefore: null, dpiAfter: null, attemptId: "1", attemptMs: "1", purpose: { kind: "layout" } },
             );
             assert.deepEqual(
                 frames.find((f) => f["win"] === "win-a"),
-                { kind: "frame", win: "win-a", target: [800, 0, 200, 200], disposition: { kind: "called", setter: "accepted" }, readback: [800, 0, 200, 200], dpiBefore: null, dpiAfter: null, attemptMs: "1", purpose: { kind: "layout" } },
+                { kind: "frame", win: "win-a", target: [800, 0, 200, 200], disposition: { kind: "called", setter: "accepted" }, readback: [800, 0, 200, 200], dpiBefore: null, dpiAfter: null, attemptId: "3", attemptMs: "1", purpose: { kind: "layout" } },
                 "the final tiled frame and its exact membership proof ride the same capture",
             );
             // Explicit float placement: stable op correlation plus the live
@@ -367,7 +367,7 @@ describe("world raw mechanical attempts", () => {
             const placed = frames.find((f) => (f["purpose"] as Record<string, unknown> | undefined)?.["op"] === "op-float-1");
             assert.deepEqual(
                 placed,
-                { kind: "frame", win: "win-c", target: [300, 200, 250, 180], disposition: { kind: "called", setter: "accepted" }, readback: [300, 200, 250, 180], dpiBefore: null, dpiAfter: null, attemptMs: "1", purpose: { kind: "float-placement", op: "op-float-1", pre: [10, 10, 100, 100] } },
+                { kind: "frame", win: "win-c", target: [300, 200, 250, 180], disposition: { kind: "called", setter: "accepted" }, readback: [300, 200, 250, 180], dpiBefore: null, dpiAfter: null, attemptId: "2", attemptMs: "1", purpose: { kind: "float-placement", op: "op-float-1", pre: [10, 10, 100, 100] } },
             );
             // Typed steps retain the exact source output on the cross-output
             // preimage and record fresh native currents for both view writes.
@@ -708,6 +708,41 @@ describe("world attempt retention", () => {
         // Generation rotation clears every retained attempt.
         state.onDiscovery("gen-2", "adapter-a");
         assert.equal(state.framesForReport().length, 0);
+    });
+    it("allocates ordered frame attemptId, preserves it across retry, acks by ID, and allows null attemptMs", () => {
+        const state = new WorldAdapterState("adapter-a", "owner-a");
+        // Clockless frame attempt (attemptMs: null) records with attemptId "1".
+        assert.equal(state.recordFrameAttempt({
+            win: "win-a", target: [0, 0, 100, 100], disposition: { kind: "called", setter: "refused" }, readback: [0, 0, 80, 80],
+            dpiBefore: null, dpiAfter: null, attemptMs: null, purpose: { kind: "layout" },
+        }), true);
+        assert.equal(state.framesForReport()[0]?.attemptId, "1");
+        assert.equal(state.framesForReport()[0]?.attemptMs, null);
+
+        // Lost ack / retry preserves the exact assigned attemptId "1".
+        const flight1 = state.beginCapture("src-1", null);
+        assert.ok(flight1 !== null);
+        assert.equal(flight1.delivered.frames[0]?.attemptId, "1");
+        assert.equal(state.ackDelivered("src-1", false), 0);
+        assert.equal(state.framesForReport()[0]?.attemptId, "1");
+
+        // Identical facts and timing for a new actuation gets a strictly greater attemptId "2"
+        // and survives ack of attemptId "1" (ack by ID, never by tuple/stamp).
+        assert.equal(state.recordFrameAttempt({
+            win: "win-a", target: [0, 0, 100, 100], disposition: { kind: "called", setter: "refused" }, readback: [0, 0, 80, 80],
+            dpiBefore: null, dpiAfter: null, attemptMs: null, purpose: { kind: "layout" },
+        }), true);
+        assert.equal(state.framesForReport()[0]?.attemptId, "2");
+        assert.equal(state.ackDelivered("src-1", true), 0, "ack of id 1 must not retire id 2");
+        assert.equal(state.framesForReport()[0]?.attemptId, "2");
+
+        // Generation rotation resets the per-generation counter.
+        state.onDiscovery("gen-2", "adapter-a");
+        assert.equal(state.recordFrameAttempt({
+            win: "win-a", target: [0, 0, 100, 100], disposition: { kind: "called", setter: "accepted" }, readback: null,
+            dpiBefore: null, dpiAfter: null, attemptMs: "5", purpose: { kind: "layout" },
+        }), true);
+        assert.equal(state.framesForReport()[0]?.attemptId, "1");
     });
     it("tags the member namespace the capability allows and keeps views native-only", () => {
         const state = new WorldAdapterState("adapter-a", "owner-a");

@@ -19,12 +19,13 @@ pub(crate) fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
 }
 
-pub(crate) fn attempt(
+pub(crate) fn attempt_with_id(
     window: &str,
     target: Rect,
     setter: FrameSetter,
     readback: Option<Rect>,
-    ms: u64,
+    attempt_id: u64,
+    attempt_ms: Option<u64>,
 ) -> FrameAttempt {
     FrameAttempt {
         window: WindowId(window.to_owned()),
@@ -33,9 +34,27 @@ pub(crate) fn attempt(
         readback,
         dpi_before: None,
         dpi_after: None,
-        attempt_ms: ms,
+        attempt_id,
+        attempt_ms,
         purpose: crate::world_report::FramePurpose::Layout,
     }
+}
+
+pub(crate) fn attempt(
+    window: &str,
+    target: Rect,
+    setter: FrameSetter,
+    readback: Option<Rect>,
+    ms: u64,
+) -> FrameAttempt {
+    attempt_with_id(
+        window,
+        target,
+        setter,
+        readback,
+        ms,
+        (ms != 0).then_some(ms),
+    )
 }
 
 fn dpi_attempt(
@@ -53,7 +72,8 @@ fn dpi_attempt(
         readback,
         dpi_before: before,
         dpi_after: after,
-        attempt_ms: ms,
+        attempt_id: ms,
+        attempt_ms: (ms != 0).then_some(ms),
         purpose: crate::world_report::FramePurpose::Layout,
     }
 }
@@ -255,77 +275,519 @@ fn transient_backoff_caps_and_never_pins() {
 }
 
 #[test]
-fn stale_replay_guard_ignores_only_real_redeliveries() {
+fn stale_replay_guard_uses_ordered_attempt_id() {
     let desired = rect(0, 0, 800, 600);
     let held = rect(0, 0, 700, 600);
-    let prior = attempt_c("w1", desired, FrameSetter::Accepted, Some(held), 1000);
-    // Older stamp, same or different pair: stale either way.
-    assert!(is_stale_replay(
-        &prior,
-        &attempt_c("w1", desired, FrameSetter::Accepted, Some(held), 999),
+    let a = canonical(&attempt_with_id(
+        "w1",
+        desired,
+        FrameSetter::Accepted,
+        Some(held),
+        10,
+        Some(1000),
     ));
+    let b = canonical(&attempt_with_id(
+        "w1",
+        desired,
+        FrameSetter::Accepted,
+        Some(held),
+        11,
+        Some(1000),
+    ));
+    // Same ID: stale replay.
+    assert!(is_stale_replay(&a, &a));
+    // Lower ID (A, B, replay A): stale regardless of facts or time.
+    assert!(is_stale_replay(&b, &a));
     assert!(is_stale_replay(
-        &prior,
-        &attempt_c(
+        &b,
+        &canonical(&attempt_with_id(
             "w1",
             rect(0, 0, 900, 600),
             FrameSetter::Refused,
             Some(held),
-            999,
-        ),
+            9,
+            Some(2000),
+        )),
     ));
-    // Exact duplicate at the same stamp: the same write reported twice.
-    assert!(is_stale_replay(
-        &prior,
-        &attempt_c("w1", desired, FrameSetter::Accepted, Some(held), 1000),
+    // Higher ID with identical time and facts: distinct actuation, not stale.
+    assert!(!is_stale_replay(&a, &b));
+    // Clockless duplicate with same or lower ID: stale replay.
+    let clockless_a = canonical(&attempt_with_id(
+        "w1",
+        desired,
+        FrameSetter::Refused,
+        Some(held),
+        10,
+        None,
     ));
-    // Changed pair at an equal-or-newer stamp always processes: time is
-    // not a unique attempt identity.
-    assert!(!is_stale_replay(
-        &prior,
-        &attempt_c(
-            "w1",
-            rect(0, 0, 900, 600),
-            FrameSetter::Refused,
-            Some(held),
+    let clockless_b = canonical(&attempt_with_id(
+        "w1",
+        desired,
+        FrameSetter::Refused,
+        Some(held),
+        11,
+        None,
+    ));
+    assert!(is_stale_replay(&clockless_a, &clockless_a));
+    assert!(is_stale_replay(&clockless_b, &clockless_a));
+    assert!(!is_stale_replay(&clockless_a, &clockless_b));
+}
+
+#[test]
+fn settle_frames_replay_watermark_handles_clockless_and_ordered_ids() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let first_reply = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("w1", Some(rect(0, 0, 700, 600)))],
+            vec![],
+            vec![],
             1000,
+            true,
         ),
-    ));
-    assert!(!is_stale_replay(
-        &prior,
-        &attempt_c("w1", desired, FrameSetter::Accepted, Some(held), 1001),
-    ));
-    // Unreported clock never dedups: no ordering claim is possible.
-    let clockless = attempt_c("w1", desired, FrameSetter::Refused, Some(held), 0);
-    assert!(!is_stale_replay(&prior, &clockless));
-    assert!(!is_stale_replay(&clockless, &clockless));
+    );
+    let desired = first_reply.windows[0].effective_frame.expect("tiled frame");
+    let held = rect(0, 0, 700, 600);
+    let wid = WindowId("w1".to_owned());
+
+    // Clockless A (id=1, attempt_ms=None) increments once and enters consumed_frames.
+    let null_a = attempt_with_id("w1", desired, FrameSetter::Refused, Some(held), 1, None);
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(held))],
+            vec![],
+            vec![null_a.clone()],
+            1100,
+            true,
+        ),
+    );
+    assert_eq!(
+        engine
+            .world
+            .settlement
+            .frames
+            .get(&wid)
+            .expect("mem")
+            .failures,
+        0
+    );
+    assert_eq!(
+        engine
+            .world
+            .settlement
+            .frame_bursts
+            .get(&wid)
+            .expect("burst")
+            .attempts,
+        1
+    );
+    assert!(engine.world.settlement.consumed_frames.contains_key(&wid));
+
+    // Retry of clockless A (id=1) does not increment.
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(held))],
+            vec![],
+            vec![null_a.clone()],
+            1150,
+            true,
+        ),
+    );
+    assert_eq!(
+        engine
+            .world
+            .settlement
+            .frames
+            .get(&wid)
+            .expect("mem")
+            .failures,
+        0
+    );
+    assert_eq!(
+        engine
+            .world
+            .settlement
+            .frame_bursts
+            .get(&wid)
+            .expect("burst")
+            .attempts,
+        1
+    );
+
+    // Distinct B (id=2, equal facts and null time) increments once.
+    let null_b = attempt_with_id("w1", desired, FrameSetter::Refused, Some(held), 2, None);
+    accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("w1", Some(held))],
+            vec![],
+            vec![null_b],
+            1200,
+            true,
+        ),
+    );
+    assert_eq!(
+        engine
+            .world
+            .settlement
+            .frames
+            .get(&wid)
+            .expect("mem")
+            .failures,
+        1
+    );
+    assert_eq!(
+        engine
+            .world
+            .settlement
+            .frame_bursts
+            .get(&wid)
+            .expect("burst")
+            .attempts,
+        2
+    );
+
+    // Replay A (id=1) after B (id=2) does not increment.
+    accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![fact("w1", Some(held))],
+            vec![],
+            vec![null_a],
+            1250,
+            true,
+        ),
+    );
+    assert_eq!(
+        engine
+            .world
+            .settlement
+            .frames
+            .get(&wid)
+            .expect("mem")
+            .failures,
+        1
+    );
+    assert_eq!(
+        engine
+            .world
+            .settlement
+            .frame_bursts
+            .get(&wid)
+            .expect("burst")
+            .attempts,
+        2
+    );
+
+    // Timed distinct IDs with equal time and facts both increment; replay of earlier ID does not.
+    let timed_c = attempt_with_id(
+        "w1",
+        desired,
+        FrameSetter::Refused,
+        Some(held),
+        3,
+        Some(1300),
+    );
+    let timed_d = attempt_with_id(
+        "w1",
+        desired,
+        FrameSetter::Refused,
+        Some(held),
+        4,
+        Some(1300),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            6,
+            vec![fact("w1", Some(held))],
+            vec![],
+            vec![timed_c.clone()],
+            1300,
+            true,
+        ),
+    );
+    assert_eq!(
+        engine
+            .world
+            .settlement
+            .frames
+            .get(&wid)
+            .expect("mem")
+            .failures,
+        2
+    );
+    accepted(
+        &mut engine,
+        &report(
+            7,
+            vec![fact("w1", Some(held))],
+            vec![],
+            vec![timed_d],
+            1300,
+            true,
+        ),
+    );
+    assert_eq!(
+        engine
+            .world
+            .settlement
+            .frames
+            .get(&wid)
+            .expect("mem")
+            .failures,
+        3
+    );
+    accepted(
+        &mut engine,
+        &report(
+            8,
+            vec![fact("w1", Some(held))],
+            vec![],
+            vec![timed_c],
+            1300,
+            true,
+        ),
+    );
+    assert_eq!(
+        engine
+            .world
+            .settlement
+            .frames
+            .get(&wid)
+            .expect("mem")
+            .failures,
+        3
+    );
 }
 
 #[test]
 fn stale_redelivery_never_renews_backoff() {
-    let desired = rect(0, 0, 800, 600);
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let first_reply = accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("w1", Some(rect(0, 0, 700, 600)))],
+            vec![],
+            vec![],
+            1000,
+            true,
+        ),
+    );
+    let desired = first_reply.windows[0].effective_frame.expect("tiled frame");
     let observed = rect(0, 0, 700, 600);
-    let first = consume_attempt(
-        None,
-        &attempt_c("w1", desired, FrameSetter::Refused, Some(observed), 1000),
+    let wid = WindowId("w1".to_owned());
+    let first = attempt_with_id(
+        "w1",
+        desired,
+        FrameSetter::Refused,
         Some(observed),
-    )
-    .expect("records");
-    let second = consume_attempt(
-        Some(first.clone()),
-        &attempt_c("w1", desired, FrameSetter::Refused, Some(observed), 1600),
+        1,
+        Some(1000),
+    );
+    let second = attempt_with_id(
+        "w1",
+        desired,
+        FrameSetter::Refused,
         Some(observed),
-    )
-    .expect("repeats");
-    assert_eq!(second.failures, 1);
+        2,
+        Some(1600),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(observed))],
+            vec![],
+            vec![first.clone()],
+            1000,
+            true,
+        ),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(observed))],
+            vec![],
+            vec![second],
+            1600,
+            true,
+        ),
+    );
+    let before_replay = engine
+        .world
+        .settlement
+        .frames
+        .get(&wid)
+        .expect("records")
+        .clone();
+    assert_eq!(before_replay.failures, 1);
+    assert_eq!(before_replay.last_ms, 1600);
     // The lost-ack redelivery of the first attempt changes nothing.
-    let replayed = consume_attempt(
-        Some(second.clone()),
-        &attempt_c("w1", desired, FrameSetter::Refused, Some(observed), 1000),
-        Some(observed),
-    )
-    .expect("entry survives");
-    assert_eq!(replayed, second);
+    accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("w1", Some(observed))],
+            vec![],
+            vec![first],
+            1700,
+            true,
+        ),
+    );
+    let after_replay = engine
+        .world
+        .settlement
+        .frames
+        .get(&wid)
+        .expect("entry survives");
+    assert_eq!(*after_replay, before_replay);
+}
+
+#[test]
+fn float_echo_fallback_survives_clockless_watermark_advance() {
+    let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
+    let source = rect(0, 0, 800, 600);
+    let echo_rect = rect(0, 0, 720, 600);
+    let other_rect = rect(0, 0, 640, 600);
+    let wid = WindowId("w1".to_owned());
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            vec![fact("w1", Some(source))],
+            vec![],
+            vec![],
+            1000,
+            true,
+        ),
+    );
+    // Report 2: timed accepted attempt T1 enters consumed_frames with timed_echo.
+    let timed_t1 = attempt_with_id(
+        "w1",
+        echo_rect,
+        FrameSetter::Accepted,
+        Some(echo_rect),
+        1,
+        Some(1100),
+    );
+    accepted(
+        &mut engine,
+        &report(
+            2,
+            vec![fact("w1", Some(source))],
+            vec![],
+            vec![timed_t1],
+            1100,
+            true,
+        ),
+    );
+    assert_eq!(
+        engine
+            .world
+            .settlement
+            .consumed_frames
+            .get(&wid)
+            .and_then(|w| w.timed_echo),
+        Some(echo_rect)
+    );
+
+    // Report 3: clockless attempt N2 advances attempt_id but preserves timed_echo.
+    let null_n2 = attempt_with_id(
+        "w1",
+        other_rect,
+        FrameSetter::Accepted,
+        Some(other_rect),
+        2,
+        None,
+    );
+    accepted(
+        &mut engine,
+        &report(
+            3,
+            vec![fact("w1", Some(source))],
+            vec![],
+            vec![null_n2],
+            1200,
+            true,
+        ),
+    );
+    let watermark = engine
+        .world
+        .settlement
+        .consumed_frames
+        .get(&wid)
+        .expect("watermark");
+    assert_eq!(watermark.attempt_id, 2);
+    assert_eq!(watermark.timed_echo, Some(echo_rect));
+
+    // Stage a retained float target on w1 and observe echo_rect on a later report
+    // with no fresh frame attempt: retained float is kept via timed self-echo fallback.
+    engine
+        .world
+        .settlement
+        .retained_floats
+        .push(crate::world_settlement_state::RetainedFloat {
+            operation_id: "op-float-1".to_owned(),
+            command_seq: 1,
+            window: wid.clone(),
+            target: rect(100, 100, 500, 400),
+            source: Some(source),
+            output: OutputId("out-1".to_owned()),
+            workspace: "1".to_owned(),
+            ambiguous: false,
+            pending: None,
+        });
+    accepted(
+        &mut engine,
+        &report(
+            4,
+            vec![fact("w1", Some(echo_rect))],
+            vec![],
+            vec![],
+            1300,
+            true,
+        ),
+    );
+    assert_eq!(
+        engine.world.settlement.retained_floats.len(),
+        1,
+        "timed self-echo fallback must survive clockless watermark advance"
+    );
+
+    // Fresh clockless attempt N3 matching current rect must still be non-proof (abandons as external).
+    let null_n3 = attempt_with_id(
+        "w1",
+        other_rect,
+        FrameSetter::Accepted,
+        Some(other_rect),
+        3,
+        None,
+    );
+    accepted(
+        &mut engine,
+        &report(
+            5,
+            vec![fact("w1", Some(other_rect))],
+            vec![],
+            vec![null_n3],
+            1400,
+            true,
+        ),
+    );
+    assert!(
+        engine.world.settlement.retained_floats.is_empty(),
+        "fresh clockless attempt must remain non-proof for float self-echo"
+    );
 }
 
 #[test]
@@ -1920,7 +2382,8 @@ fn async_clockless_or_dpi_changed_never_learns() {
                 readback: Some(baseline),
                 dpi_before: Some(96),
                 dpi_after: Some(120),
-                attempt_ms: 1000,
+                attempt_id: 1,
+                attempt_ms: Some(1000),
                 purpose: crate::world_report::FramePurpose::Layout,
             }],
             1000,
@@ -2100,7 +2563,8 @@ fn learned_ignores_dpi_refused_threw() {
                     readback,
                     dpi_before: before,
                     dpi_after: after,
-                    attempt_ms: 1000,
+                    attempt_id: seq_no,
+                    attempt_ms: Some(1000),
                     purpose: crate::world_report::FramePurpose::Layout,
                 }],
                 1000,

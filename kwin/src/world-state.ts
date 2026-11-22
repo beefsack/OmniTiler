@@ -208,12 +208,14 @@ export class WorldAdapterState {
     // Raw mechanical write/readback facts (latest-wins per window,
     // operation window, owning view phase, and clear operation
     // respectively) drained into every report until a bound ready reply
-    // consumes the delivered snapshot. Redelivery reuses the original
-    // write stamps; the core consumes each idempotently. Host-owned
-    // member/view rows carry null native-derived evidence (never
-    // translated logical receipts); frames carry full rect evidence with
-    // nullable DPI; clears carry the pre/post maximized states.
+    // consumes the delivered snapshot. Frame rows carry a per-generation
+    // ordered attemptId (acknowledged by ID) and nullable attemptMs; other
+    // lanes reuse their original write stamps. The core consumes each
+    // idempotently. Host-owned member/view rows carry null native-derived
+    // evidence (never translated logical receipts); frames carry full rect
+    // evidence with nullable DPI; clears carry the pre/post maximized states.
     frameAttempts = new Map<string, WorldFrameAttempt>();
+    lastFrameAttemptId = "0";
     memberAttempts = new Map<string, WorldMemberAttempt>();
     viewAttempts = new Map<string, WorldViewAttempt>();
     // Raw native-state write/readback facts (latest-wins per window
@@ -530,12 +532,21 @@ export class WorldAdapterState {
     // Record one raw mechanical frame attempt for the next report lane.
     // Latest-wins per window; invalid rows (bad window id, setter, stamp,
     // target/readback/pre shapes, or a prewrite without an operation id)
-    // refuse, never stored. Redelivery reuses the stored stamp: callers
-    // never restamp.
-    recordFrameAttempt(attempt: WorldFrameAttempt): boolean {
-        if (encodeV4FrameAttempt(attempt) === null) {
+    // refuse, never stored. Redelivery reuses the stored attemptId and
+    // stamp: callers never reallocate or restamp.
+    recordFrameAttempt(attempt: Omit<WorldFrameAttempt, "attemptId">): boolean {
+        const nextId = incrementU64(this.lastFrameAttemptId);
+        if (nextId === null) {
             return false;
         }
+        const full: WorldFrameAttempt = {
+            ...attempt,
+            attemptId: nextId,
+        };
+        if (encodeV4FrameAttempt(full) === null) {
+            return false;
+        }
+        this.lastFrameAttemptId = nextId;
         const purpose = attempt.purpose.kind === "layout"
             ? { kind: "layout" as const }
             : {
@@ -546,7 +557,7 @@ export class WorldAdapterState {
                     : [...attempt.purpose.pre] as [number, number, number, number],
             };
         this.frameAttempts.set(attempt.win, {
-            ...attempt,
+            ...full,
             target: [...attempt.target] as [number, number, number, number],
             disposition: { ...attempt.disposition },
             readback: attempt.readback === null
@@ -763,16 +774,9 @@ export class WorldAdapterState {
             return 0;
         }
         let retired = 0;
-        const sameFrame = (a: WorldFrameAttempt, b: WorldFrameAttempt): boolean =>
-            a.win === b.win && a.target.join(",") === b.target.join(",") &&
-            JSON.stringify(a.disposition) === JSON.stringify(b.disposition) &&
-            (a.readback?.join(",") ?? "") === (b.readback?.join(",") ?? "") &&
-            a.dpiBefore === b.dpiBefore && a.dpiAfter === b.dpiAfter &&
-            a.attemptMs === b.attemptMs &&
-            JSON.stringify(a.purpose) === JSON.stringify(b.purpose);
         for (const sent of this.inFlight.delivered.frames) {
             const live = this.frameAttempts.get(sent.win);
-            if (live !== undefined && sameFrame(live, sent)) {
+            if (live !== undefined && live.attemptId === sent.attemptId) {
                 this.frameAttempts.delete(sent.win);
                 retired += 1;
             }
@@ -1038,6 +1042,7 @@ export class WorldAdapterState {
         this.creationAttempts.clear();
         this.creationPending.clear();
         this.frameAttempts.clear();
+        this.lastFrameAttemptId = "0";
         this.memberAttempts.clear();
         this.viewAttempts.clear();
         this.stateAttempts.clear();

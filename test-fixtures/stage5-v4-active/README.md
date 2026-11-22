@@ -42,6 +42,14 @@ New keys versus frozen `../stage5-v4` (all producer-genuine, never patched):
 - Genesis-0 publishes the shared `rosterPlan`. Genesis-1 returns exact
   `rosterFeedback` for its one tail append and the same-apply native frame
   attempts; the broker then publishes the settled backing without a plan.
+- Re-recording scope: when the two `envelope-genesis-1.json` frame attempts
+  change (for example, adding required `attemptId`), both `full` and `s2`
+  chains are re-recorded end-to-end as coherent recorder cohorts rather than
+  patching individual envelopes. Because each capture's envelope and reply are
+  coupled by fresh per-run `source`/`req` nonces and monotonic/dispatch clock
+  readings (`clock`, `monotonicMs`, `attemptMs`), all 38 envelope and reply
+  files move on those incidental fields while non-frame payload semantics stay
+  unchanged.
 
 The projections carry the genuine visible anchored border (7 keys, `win-a`
 subject with a joining witness) and the found `win-a` underlay, matching the

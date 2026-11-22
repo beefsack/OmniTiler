@@ -253,7 +253,8 @@ fn accepted_frame(window: &str, attempt_ms: u64) -> FrameAttempt {
         readback: None,
         dpi_before: None,
         dpi_after: None,
-        attempt_ms,
+        attempt_id: attempt_ms,
+        attempt_ms: (attempt_ms != 0).then_some(attempt_ms),
         purpose: crate::world_report::FramePurpose::Layout,
     }
 }
@@ -896,8 +897,7 @@ fn refused_command_preserves_observation_without_command_mutation() {
             .settlement
             .consumed_frames
             .get(&WindowId("w0".to_owned()))
-            .and_then(crate::world_attempts::PropertyAttempt::as_frame)
-            .map(|evidence| evidence.attempt_ms),
+            .map(|watermark| watermark.attempt_id),
         Some(1000),
         "frame attempt settles pre-command"
     );

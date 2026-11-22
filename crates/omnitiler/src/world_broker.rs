@@ -3679,6 +3679,17 @@ mod tests {
             .clone();
         assert!(attempts_clock_valid(&inner, 9));
         assert!(!attempts_clock_valid(&inner, 8));
+        // Null attemptMs is clockless and comparable to nothing.
+        let null_stamp: serde_json::Map<String, serde_json::Value> = serde_json::from_str::<
+            serde_json::Value,
+        >(
+            "{\"propertyAttempts\":[{\"kind\":\"frame\",\"attemptId\":\"1\",\"attemptMs\":null}]}",
+        )
+        .expect("object")
+        .as_object()
+        .expect("map")
+        .clone();
+        assert!(attempts_clock_valid(&null_stamp, 0));
         // Visibility and state rows have no attemptMs clock gate.
         let vis_state: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str::<serde_json::Value>(

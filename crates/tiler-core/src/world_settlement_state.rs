@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::directional::{OutputId, WindowId};
 use crate::geometry::Rect;
 use crate::session::DomainKey;
-use crate::world_attempts::PropertyAttempt;
+use crate::world_attempts::{ConsumedFrameWatermark, PropertyAttempt};
 use crate::world_engine::{core_trace_enabled, diag_id, emit_focus_trace, format_bounded_failed};
 use crate::world_frames::{FrameBurst, FrameMemory, LearnedMin};
 use crate::world_report::{
@@ -122,7 +122,9 @@ pub(crate) struct SettlementState {
     pub(crate) born_seen_nonfullscreen: BTreeSet<WindowId>,
     pub(crate) born_keep_overlay: BTreeSet<WindowId>,
     pub(crate) frames: BTreeMap<WindowId, FrameMemory>,
-    pub(crate) consumed_frames: BTreeMap<WindowId, PropertyAttempt>,
+    /// Per-window `attempt_id` replay watermark and latest qualifying timed
+    /// float self-echo target.
+    pub(crate) consumed_frames: BTreeMap<WindowId, ConsumedFrameWatermark>,
     pub(crate) frame_bursts: BTreeMap<WindowId, FrameBurst>,
     pub(crate) learned_mins: BTreeMap<WindowId, LearnedMin>,
     pub(crate) native_creation_seq: u64,

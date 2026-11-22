@@ -919,7 +919,8 @@ fn composed_float_suppressed_pair_holds_clamp_without_retry() {
         readback: Some(clamped),
         dpi_before: None,
         dpi_after: None,
-        attempt_ms: 1000,
+        attempt_id: 1000,
+        attempt_ms: Some(1000),
         purpose: crate::world_report::FramePurpose::Layout,
     }];
     let reply = accepted(&mut engine, &clamped_report);
@@ -1771,7 +1772,8 @@ fn composed_clamped_frame_readback_retains_bit() {
         readback: Some(clamped),
         dpi_before: None,
         dpi_after: None,
-        attempt_ms: 1000,
+        attempt_id: 1000,
+        attempt_ms: Some(1000),
         purpose: crate::world_report::FramePurpose::Layout,
     }];
     let reply = accepted(&mut engine, &clamped_report);
@@ -2727,7 +2729,8 @@ fn composed_float_clamped_frame_readback_retains_bit() {
         readback: Some(clamped),
         dpi_before: None,
         dpi_after: None,
-        attempt_ms: 1000,
+        attempt_id: 1000,
+        attempt_ms: Some(1000),
         purpose: crate::world_report::FramePurpose::Layout,
     }];
     let reply = accepted(&mut engine, &clamped_report);

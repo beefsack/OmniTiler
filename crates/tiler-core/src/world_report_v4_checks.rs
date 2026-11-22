@@ -1114,6 +1114,12 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
             *hash = hash.wrapping_mul(1099511628211);
         }
     }
+    fn feed_u64(hash: &mut u64, value: u64) {
+        for byte in value.to_le_bytes() {
+            *hash ^= u64::from(byte);
+            *hash = hash.wrapping_mul(1099511628211);
+        }
+    }
     fn sep(hash: &mut u64) {
         *hash ^= 0xff;
         *hash = hash.wrapping_mul(1099511628211);
@@ -1490,7 +1496,12 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
                 .unwrap_or_default(),
         );
         sep(&mut hash);
-        feed(&mut hash, &attempt.attempt_ms.to_string());
+        feed_u64(&mut hash, attempt.attempt_id);
+        sep(&mut hash);
+        flag(&mut hash, attempt.attempt_ms.is_some());
+        if let Some(ms) = attempt.attempt_ms {
+            feed_u64(&mut hash, ms);
+        }
         sep(&mut hash);
         match &attempt.purpose {
             crate::world_report::FramePurpose::Layout => {

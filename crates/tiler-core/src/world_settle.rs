@@ -2302,7 +2302,7 @@ impl WorldTransaction<'_> {
             // An already-issued older world can land after this target was
             // retained. Its latest mechanical attempt is self-echo evidence,
             // not a float completion or permission to repeat either write.
-            let latest = self
+            let fresh_frame = self
                 .world
                 .staged
                 .observation
@@ -2312,20 +2312,18 @@ impl WorldTransaction<'_> {
                 .find(|evidence| {
                     evidence.window == retained.window
                         && !frame_watermark_stale(&self.world.settlement.consumed_frames, evidence)
-                })
-                .or_else(|| {
-                    self.world
-                        .settlement
-                        .consumed_frames
-                        .get(&retained.window)
-                        .and_then(PropertyAttempt::as_frame)
                 });
-            if latest.is_some_and(|evidence| {
-                evidence.attempt_ms != 0
-                    && evidence.disposition == AttemptDisposition::Accepted
-                    && !dpi_basis_changed(evidence.dpi_before, evidence.dpi_after)
-                    && evidence.target == current
-            }) {
+            let echo_target = match fresh_frame {
+                Some(evidence) => crate::world_attempts::is_qualifying_timed_echo(evidence)
+                    .then_some(evidence.target),
+                None => self
+                    .world
+                    .settlement
+                    .consumed_frames
+                    .get(&retained.window)
+                    .and_then(|watermark| watermark.timed_echo),
+            };
+            if echo_target == Some(current) {
                 keep.push(retained);
                 continue;
             }

@@ -1423,7 +1423,7 @@ fn foreign_epoch_attempt_stamps_refuse_above_the_dispatch_clock() {
     let future_attempt = "{\"kind\":\"frame\",\"win\":\"win-001\",\"target\":[0,0,100,100],\
           \"disposition\":{\"kind\":\"called\",\"setter\":\"accepted\"},\
           \"readback\":[0,0,100,100],\"dpiBefore\":null,\"dpiAfter\":null,\
-          \"attemptMs\":\"18446744073709551615\",\"purpose\":{\"kind\":\"layout\"}}"
+          \"attemptId\":\"1\",\"attemptMs\":\"18446744073709551615\",\"purpose\":{\"kind\":\"layout\"}}"
         .to_owned();
     let future_inner = inner_report_with_attempts(&[], true, false, "", &future_attempt, false);
     let refused = parse(

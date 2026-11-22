@@ -551,16 +551,20 @@ fn render_frame_attempt(attempt: &FrameAttempt) -> String {
             opt_rect_text(prewrite),
         ),
     };
+    let attempt_ms = attempt
+        .attempt_ms
+        .map_or_else(|| "null".to_owned(), |ms| format!("\"{ms}\""));
     format!(
         "{{\"kind\":\"frame\",\"win\":{},\"target\":{},\"disposition\":{{\"kind\":\"called\",\"setter\":\"{}\"}},\"readback\":{},\
-         \"dpiBefore\":{},\"dpiAfter\":{},\"attemptMs\":\"{}\",\"purpose\":{}}}",
+         \"dpiBefore\":{},\"dpiAfter\":{},\"attemptId\":\"{}\",\"attemptMs\":{},\"purpose\":{}}}",
         wire_str(&attempt.window.0),
         rect_text(&attempt.target),
         attempt.disposition.as_str(),
         opt_rect_text(&attempt.readback),
         dpi_before,
         dpi_after,
-        attempt.attempt_ms,
+        attempt.attempt_id,
+        attempt_ms,
         purpose,
     )
 }
@@ -997,7 +1001,7 @@ fn malformed_optionals_reject_identically_on_both_apis() {
         "win": "win-a", "target": [0, 0, 800, 560],
         "disposition": {"kind": "called", "setter": "clamped"},
         "readback": null, "dpiBefore": null, "dpiAfter": null,
-        "attemptMs": "1000", "purpose": {"kind": "layout"},
+        "attemptId": "1", "attemptMs": "1000", "purpose": {"kind": "layout"},
     }]);
     let (kind, _) = assert_same_rejection(&bad_setter.to_string());
     assert_eq!(kind, "unknown-value");
@@ -1007,7 +1011,7 @@ fn malformed_optionals_reject_identically_on_both_apis() {
         "win": "win-a", "target": [0, 0, 800, 560],
         "disposition": {"kind": "called", "setter": "threw"},
         "readback": null, "dpiBefore": null, "dpiAfter": null,
-        "attemptMs": "1000", "purpose": {"kind": "layout"}, "verdict": "clamp",
+        "attemptId": "1", "attemptMs": "1000", "purpose": {"kind": "layout"}, "verdict": "clamp",
     }]);
     let unknown_wire = unknown_field.to_string();
     assert_same_hold(&unknown_wire, AttemptLaneV4::Frame, &["win-a"]);

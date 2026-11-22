@@ -893,6 +893,7 @@
           "propertyAttempts": [
             {
               "kind": "frame",
+              "attemptId": "1",
               "win": "win-a",
               "target": [
                 100,
@@ -1468,6 +1469,7 @@
           "propertyAttempts": [
             {
               "kind": "frame",
+              "attemptId": "2",
               "win": "win-b",
               "target": [
                 100,
@@ -2043,6 +2045,7 @@
           "propertyAttempts": [
             {
               "kind": "frame",
+              "attemptId": "3",
               "win": "win-c",
               "target": [
                 100,
@@ -2343,6 +2346,7 @@
           "propertyAttempts": [
             {
               "kind": "frame",
+              "attemptId": "3",
               "win": "win-c",
               "target": [
                 100,

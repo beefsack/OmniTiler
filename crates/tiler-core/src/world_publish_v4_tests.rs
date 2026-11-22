@@ -2734,7 +2734,8 @@ fn published_settlement_trace_operation_q1_q2_duplicate_late_toggle_and_reset() 
         readback: Some(float_target),
         dpi_before: None,
         dpi_after: None,
-        attempt_ms: 7,
+        attempt_id: 1,
+        attempt_ms: Some(7),
         purpose: crate::world_report::FramePurpose::FloatPlacement {
             operation_id: "op-2".to_owned(),
             prewrite: None,
@@ -2825,7 +2826,8 @@ fn published_settlement_trace_operation_q1_q2_duplicate_late_toggle_and_reset() 
         readback: Some(float_target),
         dpi_before: None,
         dpi_after: None,
-        attempt_ms: 7,
+        attempt_id: 2,
+        attempt_ms: Some(7),
         purpose: crate::world_report::FramePurpose::FloatPlacement {
             operation_id: "op-5".to_owned(),
             prewrite: None,
@@ -2884,7 +2886,8 @@ fn published_settlement_trace_operation_q1_q2_duplicate_late_toggle_and_reset() 
                 readback: Some(target_b),
                 dpi_before: None,
                 dpi_after: None,
-                attempt_ms: 7,
+                attempt_id: 3,
+                attempt_ms: Some(7),
                 purpose: crate::world_report::FramePurpose::FloatPlacement {
                     operation_id: "op-7".to_owned(),
                     prewrite: None,
@@ -3635,7 +3638,8 @@ fn q2_dropped_trace_rejects_outbound_gate_preserves_same_obs_and_dedups() {
         readback: Some(float_target),
         dpi_before: None,
         dpi_after: None,
-        attempt_ms: 7,
+        attempt_id: 1,
+        attempt_ms: Some(7),
         purpose: crate::world_report::FramePurpose::FloatPlacement {
             operation_id: "op-2".to_owned(),
             prewrite: None,
@@ -3808,7 +3812,8 @@ fn drag_preview_trace_emits_correlated_branch_reasons_and_is_gated() {
                 readback: Some(target),
                 dpi_before: None,
                 dpi_after: None,
-                attempt_ms: 5,
+                attempt_id: 5,
+                attempt_ms: Some(5),
                 purpose: crate::world_report::FramePurpose::Layout,
             })
         })

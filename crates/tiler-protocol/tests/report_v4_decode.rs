@@ -629,6 +629,7 @@ fn attempt_schema(lane: AttemptLaneV4) -> &'static [&'static str] {
             "readback",
             "dpiBefore",
             "dpiAfter",
+            "attemptId",
             "attemptMs",
             "purpose",
         ],
@@ -1330,6 +1331,7 @@ fn frame_attempt_row(win: usize, held: bool) -> serde_json::Value {
         "readback": [8, 8, 800, 600],
         "dpiBefore": null,
         "dpiAfter": null,
+        "attemptId": format!("{}", win + 1),
         "attemptMs": "20",
         "purpose": {"kind": "layout"},
     });

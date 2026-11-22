@@ -294,7 +294,7 @@ fn v4_digest_sees_each_lane_family() {
 
     let mut attempt = find(&|report| !report.frames.is_empty());
     let before = report_digest_v4(&attempt);
-    attempt.frames[0].attempt_ms += 1;
+    attempt.frames[0].attempt_id = attempt.frames[0].attempt_id.wrapping_add(1);
     assert_ne!(report_digest_v4(&attempt), before, "attempt");
 
     let mut held_attempt = find(&|report| !report.held_attempts.is_empty());

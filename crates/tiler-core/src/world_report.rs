@@ -818,7 +818,8 @@ pub struct FrameAttempt {
     pub readback: Option<Rect>,
     pub dpi_before: Option<u32>,
     pub dpi_after: Option<u32>,
-    pub attempt_ms: u64,
+    pub attempt_id: u64,
+    pub attempt_ms: Option<u64>,
     pub purpose: FramePurpose,
 }
 

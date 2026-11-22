@@ -1050,7 +1050,7 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
         "win": "win-a", "target": [0, 0, 800, 560],
         "disposition": {"kind": "called", "setter": "accepted"},
         "readback": [0, 0, 700, 560], "dpiBefore": 96, "dpiAfter": 120,
-        "attemptMs": "1000",
+        "attemptId": "1", "attemptMs": "1000",
         "purpose": {"kind": "float-placement", "op": "op-7", "pre": [0, 0, 800, 560]},
     }]);
     let wire = value.to_string();
@@ -1062,7 +1062,8 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     assert_eq!(attempt.disposition, FrameSetter::Accepted);
     assert_eq!(attempt.dpi_before, Some(96));
     assert_eq!(attempt.dpi_after, Some(120));
-    assert_eq!(attempt.attempt_ms, 1000);
+    assert_eq!(attempt.attempt_id, 1);
+    assert_eq!(attempt.attempt_ms, Some(1000));
     assert_eq!(attempt.purpose.operation_id(), Some("op-7"));
     assert_eq!(
         attempt.purpose.prewrite(),
@@ -1080,7 +1081,7 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
         "win": "win-a", "target": [0, 0, 800, 560],
         "disposition": {"kind": "called", "setter": "refused"},
         "readback": null, "dpiBefore": null, "dpiAfter": null,
-        "attemptMs": "1001", "purpose": {"kind": "layout"},
+        "attemptId": "2", "attemptMs": "1001", "purpose": {"kind": "layout"},
     }]);
     let report = decode_request(&value.to_string()).expect("ordinary decodes");
     assert_eq!(
@@ -1094,7 +1095,7 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
         "win": "win-a", "target": [0, 0, 800, 560],
         "disposition": {"kind": "called", "setter": "refused"},
         "readback": null, "dpiBefore": null, "dpiAfter": null,
-        "attemptMs": "1001", "op": "", "pre": [0, 0, 800, 560],
+        "attemptId": "3", "attemptMs": "1001", "op": "", "pre": [0, 0, 800, 560],
     }]);
     let held_report = decode_request(&value.to_string()).expect("legacy op/pre holds");
     assert!(held_report.frames.is_empty(), "no valid frame row");
@@ -1120,7 +1121,7 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
         "win": "win-a", "target": [0, 0, 800, 560],
         "disposition": {"kind": "called", "setter": "clamped"},
         "readback": null, "dpiBefore": null, "dpiAfter": null,
-        "attemptMs": "1000", "purpose": {"kind": "layout"},
+        "attemptId": "4", "attemptMs": "1000", "purpose": {"kind": "layout"},
     }]);
     let error = decode_request(&value.to_string()).expect_err("bad setter refuses");
     assert_eq!(error.kind, "unknown-value");
@@ -1130,7 +1131,7 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
         "win": "win-a", "target": [0, 0, 800, 560],
         "disposition": {"kind": "called", "setter": "threw"},
         "readback": null, "dpiBefore": null, "dpiAfter": null,
-        "attemptMs": "1000", "purpose": {"kind": "layout"}, "verdict": "clamp",
+        "attemptId": "4", "attemptMs": "1000", "purpose": {"kind": "layout"}, "verdict": "clamp",
     }]);
     // Unknown attempt keys hold the identifiable row in v4 instead of
     // refusing the envelope.
@@ -1142,16 +1143,49 @@ fn frame_attempts_decode_tolerantly_and_stay_bounded() {
     value["propertyAttempts"] = serde_json::json!([
         {"kind": "frame", "win": "win-a", "target": [0, 0, 800, 560],
          "disposition": {"kind": "called", "setter": "refused"},
-         "readback": null, "dpiBefore": null, "dpiAfter": null, "attemptMs": "1000",
+         "readback": null, "dpiBefore": null, "dpiAfter": null, "attemptId": "6", "attemptMs": "1000",
          "purpose": {"kind": "layout"}},
         {"kind": "frame", "win": "win-a", "target": [0, 0, 800, 560],
          "disposition": {"kind": "called", "setter": "refused"},
-         "readback": null, "dpiBefore": null, "dpiAfter": null, "attemptMs": "1001",
+         "readback": null, "dpiBefore": null, "dpiAfter": null, "attemptId": "7", "attemptMs": "1001",
          "purpose": {"kind": "layout"}},
     ]);
     let error = decode_request(&value.to_string()).expect_err("duplicate refuses");
     assert_eq!(error.kind, "snapshot-invalid");
     assert_eq!(error.message, "duplicate-frame");
+
+    // PW-EV-06: missing attemptId refuses; nullable attemptMs round-trips and sizes cleanly.
+    let mut missing_id: serde_json::Value =
+        serde_json::from_str(&one_window_request()).expect("valid");
+    missing_id["propertyAttempts"] = serde_json::json!([{
+        "kind": "frame",
+        "win": "win-a", "target": [0, 0, 800, 560],
+        "disposition": {"kind": "called", "setter": "refused"},
+        "readback": null, "dpiBefore": null, "dpiAfter": null,
+        "attemptMs": "1000", "purpose": {"kind": "layout"},
+    }]);
+    let error = decode_request(&missing_id.to_string()).expect_err("missing attemptId refuses");
+    assert_eq!(error.kind, "malformed");
+
+    let mut null_ms: serde_json::Value =
+        serde_json::from_str(&one_window_request()).expect("valid");
+    null_ms["propertyAttempts"] = serde_json::json!([{
+        "kind": "frame",
+        "win": "win-a", "target": [0, 0, 800, 560],
+        "disposition": {"kind": "called", "setter": "refused"},
+        "readback": null, "dpiBefore": null, "dpiAfter": null,
+        "attemptId": "18446744073709551615", "attemptMs": null,
+        "purpose": {"kind": "layout"},
+    }]);
+    let null_decoded = decode_report_v4(&null_ms.to_string()).expect("null attemptMs decodes");
+    assert_eq!(null_decoded.report.frames[0].attempt_id, u64::MAX);
+    assert_eq!(null_decoded.report.frames[0].attempt_ms, None);
+    let null_encoded = tiler_protocol::world_protocol::encode_report_v4(&null_decoded)
+        .expect("null attemptMs encodes");
+    assert!(null_encoded.contains("\"attemptId\":\"18446744073709551615\",\"attemptMs\":null"));
+    assert!(report_estimate_v4(&null_decoded.report) >= null_encoded.len());
+    let null_redecoded = decode_report_v4(&null_encoded).expect("null attemptMs re-decodes");
+    assert_eq!(null_redecoded.report.frames, null_decoded.report.frames);
 }
 
 #[test]

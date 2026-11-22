@@ -212,7 +212,7 @@ pub fn report_estimate_v4_with_residual(
                     })
             }
         };
-        bytes += "{\"kind\":\"frame\",\"win\":,\"target\":[,,,],\"disposition\":{\"kind\":\"called\",\"setter\":},\"readback\":,\"dpiBefore\":,\"dpiAfter\":,\"attemptMs\":\"\",\"purpose\":}".len()
+        bytes += "{\"kind\":\"frame\",\"win\":,\"target\":[,,,],\"disposition\":{\"kind\":\"called\",\"setter\":},\"readback\":,\"dpiBefore\":,\"dpiAfter\":,\"attemptId\":\"\",\"attemptMs\":,\"purpose\":}".len()
             + json_string_len(&attempt.window.0)
             + int_len(attempt.target.x)
             + int_len(attempt.target.y)
@@ -224,7 +224,8 @@ pub fn report_estimate_v4_with_residual(
             })
             + attempt.dpi_before.map_or(4, |dpi| u64_len(u64::from(dpi)))
             + attempt.dpi_after.map_or(4, |dpi| u64_len(u64::from(dpi)))
-            + u64_len(attempt.attempt_ms)
+            + u64_len(attempt.attempt_id)
+            + attempt.attempt_ms.map_or(4, |ms| 2 + u64_len(ms))
             + purpose_len;
     }
     for attempt in &report.member_attempts {

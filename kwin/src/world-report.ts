@@ -345,7 +345,8 @@ export interface WorldFrameAttempt {
     readback: [number, number, number, number] | null;
     dpiBefore: number | null;
     dpiAfter: number | null;
-    attemptMs: string;
+    attemptId: string;
+    attemptMs: string | null;
     purpose: FramePurpose;
 }
 // Approved v4 workspace reference (world-contract.md "Typed references"):
@@ -3855,7 +3856,7 @@ export function encodeV4FrameAttempt(a: WorldFrameAttempt): string | null {
         return null;
     }
     if (!hasExactKeys(a as unknown as Record<string, unknown>, [
-        "win", "target", "disposition", "readback", "dpiBefore", "dpiAfter", "attemptMs", "purpose",
+        "win", "target", "disposition", "readback", "dpiBefore", "dpiAfter", "attemptId", "attemptMs", "purpose",
     ])) {
         return null;
     }
@@ -3874,13 +3875,21 @@ export function encodeV4FrameAttempt(a: WorldFrameAttempt): string | null {
     if (dpiBefore === null || dpiAfter === null) {
         return null;
     }
-    if (typeof a.attemptMs !== "string" || !isCanonicalU64(a.attemptMs)) {
+    if (typeof a.attemptId !== "string" || !isCanonicalU64(a.attemptId)) {
+        return null;
+    }
+    const attemptMs = a.attemptMs === null
+        ? "null"
+        : (typeof a.attemptMs === "string" && isCanonicalU64(a.attemptMs))
+            ? encodeV4String(a.attemptMs)
+            : null;
+    if (attemptMs === null) {
         return null;
     }
     return `{"kind":"frame","win":${encodeV4String(a.win)},"target":${target},` +
         `"disposition":${disposition},"readback":${readback},` +
         `"dpiBefore":${dpiBefore},"dpiAfter":${dpiAfter},` +
-        `"attemptMs":${encodeV4String(a.attemptMs)},"purpose":${purpose}}`;
+        `"attemptId":${encodeV4String(a.attemptId)},"attemptMs":${attemptMs},"purpose":${purpose}}`;
 }
 
 // Canonical v4 member/view evidence writer: one WorkspaceRef object per

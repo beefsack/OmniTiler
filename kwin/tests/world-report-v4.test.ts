@@ -677,6 +677,7 @@ describe("v4 frame attempt lane", () => {
             readback: [0, 0, 200, 200],
             dpiBefore: null,
             dpiAfter: null,
+            attemptId: "1",
             attemptMs: "7",
             purpose: { kind: "layout" },
             ...over,
@@ -691,7 +692,7 @@ describe("v4 frame attempt lane", () => {
         assert.equal(rows.length, 1);
         assert.deepEqual(Object.keys(rows[0] as Record<string, unknown>), [
             "kind", "win", "target", "disposition", "readback",
-            "dpiBefore", "dpiAfter", "attemptMs", "purpose",
+            "dpiBefore", "dpiAfter", "attemptId", "attemptMs", "purpose",
         ]);
         assert.deepEqual(rows[0]?.["disposition"], { kind: "called", setter: "accepted" });
         assert.deepEqual(rows[0]?.["purpose"], { kind: "layout" });

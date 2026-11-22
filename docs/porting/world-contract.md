@@ -1694,7 +1694,8 @@ that step's ordered proof and requiring the exact planned ID for removal.
   remains ambiguous/spent, never blind retry. Carry attempts into a freshly
   captured report whose observations do not predate immediate readbacks; later
   asynchronous observation is not itself a completion signal. Lost acknowledgements
-  redeliver the original stamps idempotently. [Settlement baseline](world-contract-v3.md#5-raw-attempts-and-settlement),
+  redeliver the original rows without reissuing the native call.
+  [Settlement baseline](world-contract-v3.md#5-raw-attempts-and-settlement),
   [rename/consolidation](../changes/core-interface-review.md#original-backlog-lines-159-186).
 
 - Active v4 uses exact tagged `disposition` and frame `purpose` objects
@@ -1737,7 +1738,8 @@ that step's ordered proof and requiring the exact planned ID for removal.
 | `FrameAttempt` | `kind,win,target,disposition` | `"frame"`, WindowId, Rect, called disposition | no | Exact window and attempted frame target. |
 | | `readback` | Rect | yes | Immediate frame readback. |
 | | `dpiBefore,dpiAfter` | integer | yes | Native DPI observations around the call. |
-| | `attemptMs` | Counter | no | Original monotonic call stamp. |
+| | `attemptId` | Counter | no | Producer-assigned frame attempt identity, independent of clock. |
+| | `attemptMs` | Counter | yes | Original monotonic call stamp, or null when unavailable. |
 | | `purpose` | layout or float-placement purpose | no | Layout has only `kind`; float-placement also requires opaque nonempty `op` and nullable Rect `pre`. |
 | `MemberAttempt` | `kind,op,win,out,ws,disposition` | `"member"`, Id, WindowId, OutputId, WorkspaceId, called or already-at-target disposition | no | Operation, subject, target and call or no-call disposition. |
 | | `pre,post` | WorkspaceRef | yes | Single logical-or-native reference set, live before/after. |
@@ -1749,6 +1751,16 @@ that step's ordered proof and requiring the exact planned ID for removal.
 | | `disposition` | called disposition | no | Actual native call outcome. |
 | | `pre,post` | bool | yes | Observed property immediately around call. |
 | | `attemptMs` | Counter | no | Original stamp. |
+
+- Frame rows require both `attemptId` and `attemptMs`; only the stamp may
+  be null. Allocate frame attempt IDs in strictly increasing order within
+  the bound producer generation. Assign one ID to each new native frame
+  attempt and retain it unchanged, with all original evidence, on retries
+  and resends. A new attempt gets a new ID even if its stamp and readbacks
+  match. Frame replay compares IDs at the consumed watermark for the exact
+  window lifetime; equal and older IDs are inert, even with a null stamp.
+  A new producer generation starts a new identity scope. Timing is not an
+  identity and other attempt lanes do not carry `attemptId`.
 
 - Duplicate keys by kind: frame by `win`, membership by `(op,win)`, view by
   `op`, native state by `(win,property)`, visibility by
@@ -1768,9 +1780,10 @@ that step's ordered proof and requiring the exact planned ID for removal.
   producer order within each kind; the first
   hard error wins. The input ordinal is for wire reconstruction, not
   settlement. Broker clock validation checks comparable canonical stamps
-  for frame, membership, view and creation even on rows later held;
-  it does not add that check for native state (including automatic maximize
-  clears) or visibility. The retired `kind:"clear"` attempt refuses.
+  for frame, membership, view and creation even on rows later held; a null
+  frame stamp has nothing to compare. It does not add that check for native
+  state (including automatic maximize clears) or visibility. The retired
+  `kind:"clear"` attempt refuses.
 
 - StateAttempt `rev` is the acted-on WorldReply publication's `rev`, not the later
   report's `obs` or `reqSeq`, nor the write's `attemptMs`. The adapter acts only
