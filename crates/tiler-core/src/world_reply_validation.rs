@@ -155,7 +155,13 @@ fn validate_output_desire(row: &OutputDesire) -> Result<()> {
     Ok(())
 }
 
-fn validate_window_desire(row: &WindowDesire, host: Option<&HostCapabilities>) -> Result<()> {
+/// `include_ops` is false for the renderer projection, which never carries
+/// `frame_operation` or automatic-clear state targets.
+fn validate_window_desire(
+    row: &WindowDesire,
+    host: Option<&HostCapabilities>,
+    include_ops: bool,
+) -> Result<()> {
     check_id(&row.lifetime.0)?;
     check_id(&row.output.0)?;
     check_id(&row.workspace)?;
@@ -165,7 +171,7 @@ fn validate_window_desire(row: &WindowDesire, host: Option<&HostCapabilities>) -
     if let Some(rect) = row.effective_frame.as_ref() {
         check_rect(rect)?;
     }
-    if let Some(op) = row.frame_operation.as_deref() {
+    if include_ops && let Some(op) = row.frame_operation.as_deref() {
         check_id(op)?;
     }
     if let Some(visibility) = row.visibility.as_ref()
@@ -174,12 +180,18 @@ fn validate_window_desire(row: &WindowDesire, host: Option<&HostCapabilities>) -
     {
         return Err(ReplyValidationError::snapshot("visibility-show-fallback"));
     }
-    if row.state.len() > MAX_STATE_TARGETS_PER_WINDOW {
+    if include_ops && row.state.len() > MAX_STATE_TARGETS_PER_WINDOW {
         return Err(ReplyValidationError::snapshot("state-target-count"));
     }
     let mut seen_state = BTreeSet::new();
-    for target in &row.state {
-        if !seen_state.insert(target.property) {
+    for target in row
+        .state
+        .iter()
+        .filter(|target| include_ops || !target.automatic_clear)
+    {
+        if !seen_state.insert(target.property)
+            || (!include_ops && seen_state.len() > MAX_STATE_TARGETS_PER_WINDOW)
+        {
             return Err(ReplyValidationError::snapshot("state-target-count"));
         }
         if let Some(host) = host {
@@ -432,15 +444,22 @@ fn validate_pager(pager: &[PagerScreen]) -> Result<()> {
     Ok(())
 }
 
-fn validate_presentation(presentation: &WorldPresentationV4) -> Result<()> {
+fn validate_presentation_rows(
+    presentation: &WorldPresentationV4,
+    include_suspension: bool,
+) -> Result<()> {
     if !presentation.foreground.is_empty() && !is_opaque_id(&presentation.foreground) {
         return Err(ReplyValidationError::unknown_value());
     }
-    if let Some(output) = presentation.suspended_output.as_ref() {
+    if include_suspension && let Some(output) = presentation.suspended_output.as_ref() {
         check_id(&output.0)?;
     }
     validate_border_presentation(&presentation.border)?;
-    validate_underlay(&presentation.underlay)?;
+    validate_underlay(&presentation.underlay)
+}
+
+fn validate_presentation(presentation: &WorldPresentationV4) -> Result<()> {
+    validate_presentation_rows(presentation, true)?;
     validate_pager(&presentation.pager)
 }
 
@@ -496,7 +515,7 @@ pub fn validate_reply_v4(reply: &WorldReplyV4, host: Option<&HostCapabilities>) 
         if !seen_windows.insert(window.lifetime.0.as_str()) {
             return Err(ReplyValidationError::snapshot("duplicate-window"));
         }
-        validate_window_desire(window, host)?;
+        validate_window_desire(window, host, true)?;
     }
     let mut seen_transfers = BTreeSet::new();
     for transfer in &reply.transfers {
@@ -567,19 +586,10 @@ pub fn validate_projection_reply_v4(reply: &WorldReplyV4) -> Result<()> {
     if reply.contract_version != WORLD_CONTRACT_VERSION_V4 {
         return Err(ReplyValidationError::version());
     }
-    for scope in &reply.scopes {
-        validate_scope_status(scope)?;
-    }
-    for workspace in &reply.workspaces {
-        validate_workspace_desire(workspace)?;
-    }
-    for output in &reply.outputs {
-        validate_output_desire(output)?;
-    }
     for window in &reply.windows {
-        validate_window_desire(window, None)?;
+        validate_window_desire(window, None, false)?;
     }
-    validate_presentation(&reply.presentation)?;
+    validate_presentation_rows(&reply.presentation, false)?;
     if let Some(preview) = reply.drag_preview.as_ref()
         && !reply
             .presentation

@@ -21,12 +21,6 @@ function projection(
     return JSON.stringify({
         v: 4, outcome: "presentation", gen, req, rev, obs,
         coveredInstance: "effect-1", coveredInvalid: "5",
-        scopes: [{ scope: { kind: "output", out: "out" }, auth: "controlled", reason: "" }],
-        workspaces: [{
-            id: "ws", out: "out", bind: "", scope: { kind: "output", out: "out" },
-            order: 0, mode: "tiled", exist: true, hold: "",
-        }],
-        outputs: [{ out: "out", view: "ws", mode: "tiled", hold: "" }],
         windows: [{
             win: "win-a", out: "out", ws: "ws",
             alloc: [4, 4, 792, 592], frame: [4, 4, 792, 592],
@@ -39,7 +33,6 @@ function projection(
         }],
         presentation: {
             foreground: "win-a",
-            rev,
             border: {
                 visible: false, reason: "no-target", subject: null,
                 outsets: null, width: null, radius: null, witness: null,
@@ -53,7 +46,6 @@ function projection(
                     { leaf: "leaf-a", win: "win-a", rect: [404, 4, 392, 592] },
                 ],
             },
-            pager: [],
         },
         preview: null,
         ...(extra ?? {}),

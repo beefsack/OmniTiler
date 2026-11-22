@@ -1378,8 +1378,11 @@ fn actuator_reply_carries_no_terminal_result_but_presentation_hides_tokens() {
             .expect("in-band"),
     );
     assert_eq!(projection["outcome"], "presentation");
-    for key in ["scopes", "workspaces", "outputs", "windows", "presentation"] {
+    for key in ["windows", "presentation", "preview"] {
         assert!(projection.get(key).is_some(), "projection carries {key}");
+    }
+    for key in ["scopes", "workspaces", "outputs"] {
+        assert!(projection.get(key).is_none(), "projection drops {key}");
     }
     for key in [
         "effects",
@@ -5080,11 +5083,12 @@ fn service_capture_bound_and_projection_match_legacy_serde_bytes() {
         "req": "read-1",
         "rev": oracle_val["rev"],
         "obs": oracle_val["obs"],
-        "scopes": oracle_val["scopes"],
-        "workspaces": oracle_val["workspaces"],
-        "outputs": oracle_val["outputs"],
         "windows": windows,
-        "presentation": oracle_val["presentation"],
+        "presentation": {
+            "foreground": oracle_val["presentation"]["foreground"],
+            "border": oracle_val["presentation"]["border"],
+            "underlay": oracle_val["presentation"]["underlay"],
+        },
         "preview": serde_json::Value::Null,
         "coveredInstance": serde_json::Value::Null,
         "coveredInvalid": serde_json::Value::Null,

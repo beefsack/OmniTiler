@@ -1368,6 +1368,30 @@ that step's ordered proof and requiring the exact planned ID for removal.
   exact-id `active_assoc_for` accessor (reconciled before projection). Missing
   or mismatched association stays unproven (`producer: null`), never guessed.
 
+### Renderer read projection
+
+`ReadWorldPresentation` returns an exact object with
+`v,outcome,gen,req,rev,obs,coveredInstance,coveredInvalid,windows,presentation,preview`.
+`outcome` is `"presentation"`; `gen` is the serving generation and `req` echoes
+the read request. The cached `rev` and `obs` identify the accepted publication
+for freshness. The coverage pair identifies the native invalidation it covered,
+or both fields are null if coverage is unproven. The broker binds these read
+fields to the cached canonical projection without reparsing it.
+
+`windows` preserves the published window rows, including identity, membership,
+and allocation for scenario oracles, but omits `frame_op` and automatic-clear
+state targets. `presentation` has exactly `foreground,border,underlay`, with
+their full-reply shapes. `preview` is null or contains
+`rect,sourceOut,sourceWs,win,producerInstance,producerSerial`; both producer
+fields are null when unproven. Preview geometry uses the carried-rectangle
+bounds. The broker still uses the full reply's suspension verdict to suppress
+the preview for its resolution output, but does not expose that verdict on reads.
+
+`scopes`, `workspaces`, `outputs`, `presentation.pager`,
+`presentation.suspendedOutput` and `presentation.rev` do not appear on this
+route. The projection confers no setter authority; the full reply and native
+v2 presentation relay are unchanged.
+
 <a id="retained-positive-close-focus"></a>
 
 ### One retained focus request

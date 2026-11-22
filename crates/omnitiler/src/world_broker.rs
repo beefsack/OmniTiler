@@ -98,9 +98,11 @@
 //!   eviction (never re-executes); or an unknown-command rejection.
 //! read:     {"v":4,"req":R}
 //!   Replies {"v":4,"outcome":"presentation","gen","req","rev","obs",
-//!   "scopes","workspaces","outputs","windows","presentation","preview"} from
-//!   the last accepted capture, or a not-ready rejection before the first
-//!   one. Window rows carry no frame_op tokens. `preview` is the
+//!   "coveredInstance","coveredInvalid","windows","presentation","preview"}
+//!   from the last accepted capture, or
+//!   a not-ready rejection before the first one. Window rows carry no
+//!   frame_op tokens or automatic-clear state targets; `presentation` carries
+//!   only `foreground`, `border`, and `underlay`. `preview` is the
 //!   renderer-only drop preview (paint `rect`, mover-home `sourceOut`/
 //!   `sourceWs`, insertion-neighbor `win`) when the cached reply carried a
 //!   drop preview, else null; every one-shot lane stays excluded.
@@ -217,12 +219,12 @@ use tiler_protocol::world_protocol::{
     decode_command_value_v4, decode_report_v4_map, encode_error, is_valid_adapter_id,
     is_valid_request_id,
 };
+#[cfg(test)]
+use tiler_protocol::world_reply_write::write_cached_projection_v4;
 use tiler_protocol::world_reply_write::{
     BrokerGestureAssoc, BrokerReplyBind, CachedProjectionV4, write_bound_reply_v4,
     write_bound_reply_v4_prevalidated, write_cached_projection_v4_prevalidated,
 };
-#[cfg(test)]
-use tiler_protocol::world_reply_write::{write_cached_projection_v4, write_projection_reply_v4};
 
 /// Broker wire contract version (equals the core/world protocol version).
 pub const BROKER_VERSION: u32 = 4;
@@ -440,9 +442,8 @@ pub struct WorldBroker {
     /// reply never loses the outcome. Bounded like `settled`.
     retired: HashMap<(String, String, String), Settlement>,
     retired_order: VecDeque<(String, String, String)>,
-    /// Cached accepted presentation projection (snapshot plus
-    /// presentation plus the renderer-only drop preview, window write tokens
-    /// stripped). Never the full reply.
+    /// Cached renderer read body: window rows without write tokens, paint
+    /// descriptors, and the trimmed preview. Never the full reply.
     presentation: Option<CachedProjectionV4>,
     /// Causal coverage of the cached projection: the native-invalidation
     /// witness (source instance plus counter) the accepted capture
@@ -1603,11 +1604,10 @@ impl WorldBroker {
         }
     }
 
-    /// Read the cached accepted presentation projection (snapshot plus
-    /// presentation plus the renderer-only drop preview, window write tokens
-    /// stripped). Never carries transfers, effects, terminal results,
-    /// settlements, or warp desires; the preview is the single carried
-    /// drop-preview geometry (`rect`, mover-home `sourceOut`/`sourceWs`,
+    /// Read the cached accepted renderer projection: window rows without
+    /// write tokens and the foreground, border, and underlay descriptors.
+    /// Never carries the full state arrays, one-shot lanes, or pager. The
+    /// preview carries drop geometry (`rect`, mover-home `sourceOut`/`sourceWs`,
     /// insertion-neighbor `win`, producing-gesture `producerInstance`/
     /// `producerSerial` or nulls when unproven; null when the cached reply
     /// carried none). Every served projection also binds the causal
@@ -2675,8 +2675,8 @@ fn preview_suspended_by_presentation(encoded: &str) -> bool {
 /// `dragPreview`, else `None`. Pure over the encoded reply; never touches
 /// the engine. Core provenance (the `id`, the `hover` chain, the session
 /// `rev`, the resolution `domainOut`/`domainWs`) never rides: the
-/// subscriber paints from these fields plus the cached
-/// snapshot/scopes/presentation, vets staleness through the projection
+/// subscriber paints from these fields plus the cached windows and
+/// presentation, vets staleness through the projection
 /// generation/revision/coverage, and applies live hide-only vetoes at
 /// dispatch.
 /// Malformed shapes fail closed to `None`, never a fabricated preview.
@@ -2706,9 +2706,11 @@ fn drag_preview_of(encoded: &str) -> Option<serde_json::Value> {
     }))
 }
 
-/// Project one accepted reply for the presentation cache: snapshot plus
-/// presentation plus the renderer-only drop preview, with the native write
-/// tokens (`frame_op`) stripped from every window row.
+/// Project one accepted reply for the presentation cache: the retained
+/// envelope (`v`, `outcome`, `rev`, `obs`), window rows with the native write
+/// tokens (`frame_op`) and automatic-clear state stripped, the
+/// foreground/border/underlay `presentation`, and the renderer-only drop
+/// preview. Scopes, workspaces, outputs, and the pager never enter.
 /// One-shot lanes (transfers, effects, settlements, warp) never enter, and
 /// `dragPreview` enters only through the carried `preview` (paint `rect`,
 /// mover-home source, insertion-neighbor window, producing-gesture identity
@@ -2754,16 +2756,24 @@ fn project_reply(encoded: &str, preview: Option<&CarriedPreview>) -> String {
             geometry
         }
     };
+    let presentation = get("presentation");
+    let kept = |key: &str| {
+        presentation
+            .get(key)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+    };
     serde_json::json!({
         "v": BROKER_VERSION,
         "outcome": "presentation",
         "rev": get("rev"),
         "obs": get("obs"),
-        "scopes": get("scopes"),
-        "workspaces": get("workspaces"),
-        "outputs": get("outputs"),
         "windows": windows,
-        "presentation": get("presentation"),
+        "presentation": {
+            "foreground": kept("foreground"),
+            "border": kept("border"),
+            "underlay": kept("underlay"),
+        },
         "preview": preview_value,
     })
     .to_string()
@@ -5938,7 +5948,10 @@ mod tests {
         let generation = "gen-1";
 
         let cached = write_cached_projection_v4(&reply, None).expect("cached projection");
-        let legacy_json = write_projection_reply_v4(&reply, None).expect("legacy projection");
+        let legacy_json = project_reply(
+            &tiler_protocol::world_reply_write::write_reply_v4(&reply).expect("full reply"),
+            None,
+        );
         let witness = CoverWitness {
             instance: "inst-\"quoted\"\\1".to_owned(),
             counter: "42".to_owned(),
@@ -5951,6 +5964,131 @@ mod tests {
         assert_eq!(
             project_read(&cached, generation, "req-2", None),
             legacy_project_read(&legacy_json, generation, "req-2", None),
+        );
+    }
+
+    #[test]
+    fn projection_is_flat_retained_envelope_without_scopes_or_pager() {
+        let mut reply = tiler_protocol::world_protocol::decode_reply_v4(include_str!(
+            "../../../test-fixtures/world-wire/v4-active/messages/reply-presentation-hidden-suspended.json"
+        ))
+        .expect("decode reply")
+        .reply;
+        let window = reply.windows.first_mut().expect("fixture window");
+        window.frame_operation = Some("op-1".to_owned());
+        window.state = vec![
+            tiler_core::world_report::StateTarget {
+                property: tiler_core::world_report::StateProperty::Above,
+                value: true,
+                authority: tiler_core::world_report::ScopeAuthority::Controlled,
+                command_seq: Some(11),
+                automatic_clear: false,
+            },
+            tiler_core::world_report::StateTarget {
+                property: tiler_core::world_report::StateProperty::Maximized,
+                value: false,
+                authority: tiler_core::world_report::ScopeAuthority::Controlled,
+                command_seq: Some(12),
+                automatic_clear: true,
+            },
+        ];
+        let full: serde_json::Value = serde_json::from_str(
+            &tiler_protocol::world_reply_write::write_reply_v4(&reply).expect("full reply"),
+        )
+        .expect("full JSON");
+        // The full reply keeps scopes, the pager, suspendedOutput, and rev.
+        assert!(full.get("scopes").is_some());
+        assert_eq!(full["presentation"]["suspendedOutput"], "out-a");
+        assert!(full["presentation"].get("pager").is_some());
+        assert!(full["presentation"].get("rev").is_some());
+
+        // The retained projection drops those presentation fields plus
+        // frame_op and automatic-clear state targets from the windows.
+        let mut expected_presentation = full["presentation"].clone();
+        for key in ["pager", "rev", "suspendedOutput"] {
+            expected_presentation
+                .as_object_mut()
+                .expect("presentation object")
+                .remove(key);
+        }
+        let mut expected_windows = full["windows"].clone();
+        for row in expected_windows.as_array_mut().expect("windows array") {
+            let row = row.as_object_mut().expect("window row");
+            row.remove("frame_op");
+            if let Some(states) = row
+                .get_mut("state")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                states.retain(|item| item.get("automaticClear").is_none());
+            }
+        }
+
+        let cached = write_cached_projection_v4(&reply, None).expect("cached projection");
+        let witness = CoverWitness {
+            instance: "inst-1".to_owned(),
+            counter: "42".to_owned(),
+        };
+        for (covered, instance, invalid) in [
+            (Some(&witness), json_string("inst-1"), json_string("42")),
+            (None, serde_json::Value::Null, serde_json::Value::Null),
+        ] {
+            let read: serde_json::Value =
+                serde_json::from_str(&project_read(&cached, "gen-1", "req-1", covered))
+                    .expect("read JSON");
+            let mut keys: Vec<&str> = read
+                .as_object()
+                .expect("read object")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(
+                keys,
+                [
+                    "coveredInstance",
+                    "coveredInvalid",
+                    "gen",
+                    "obs",
+                    "outcome",
+                    "presentation",
+                    "preview",
+                    "req",
+                    "rev",
+                    "v",
+                    "windows",
+                ]
+            );
+            assert_eq!(read["coveredInstance"], instance);
+            assert_eq!(read["coveredInvalid"], invalid);
+            assert_eq!(read["gen"], "gen-1");
+            assert_eq!(read["req"], "req-1");
+            assert_eq!(read["v"], full["v"]);
+            assert_eq!(read["outcome"], "presentation");
+            assert_eq!(read["rev"], full["rev"]);
+            assert_eq!(read["obs"], full["obs"]);
+            assert_eq!(read["presentation"], expected_presentation);
+            assert_eq!(read["windows"], expected_windows);
+        }
+    }
+
+    #[test]
+    fn projection_refuses_zero_width_drop_preview_rect() {
+        let mut reply = tiler_protocol::world_protocol::decode_reply_v4(include_str!(
+            "../../../test-fixtures/world-wire/v4-active/messages/reply-result-drag-bottom.json"
+        ))
+        .expect("decode reply")
+        .reply;
+        reply.presentation.suspended_output = None;
+        let preview = reply
+            .drag_preview
+            .as_mut()
+            .expect("fixture carries a drop preview");
+        preview.rect.w = 0;
+        let err = write_cached_projection_v4(&reply, None)
+            .expect_err("zero-width preview rect must fail");
+        assert_eq!(
+            map_protocol_reply_error(err),
+            BrokerError::InvalidReply("unknown-value")
         );
     }
 }

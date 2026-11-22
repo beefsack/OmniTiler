@@ -40,13 +40,9 @@ function projection(
     const text = JSON.stringify({
         v: 4, outcome: "presentation", gen, req, rev, obs,
         coveredInstance: "effect-1", coveredInvalid: "0",
-        scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws" }, auth: "controlled", reason: "" }],
-        workspaces: [{ id: "ws", out: "out", bind: "ws", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" }],
-        outputs: [{ out: "out", view: "ws", mode: "tiled", hold: "" }],
         windows: [winRow()],
         presentation: {
             foreground: "win-a",
-            rev,
             border: HIDDEN_BORDER,
             underlay: {
                 status: "found", reason: "", baseRev: "11",
@@ -57,7 +53,6 @@ function projection(
                     { leaf: "leaf-a", win: "win-a", rect: [404, 4, 392, 592] },
                 ],
             },
-            pager: [],
         },
         preview: null,
         ...(extra ?? {}),

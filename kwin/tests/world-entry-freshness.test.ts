@@ -79,13 +79,9 @@ function projection(
         v: 4, outcome: "presentation", gen: GEN, req, rev, obs,
         coveredInstance: opts.coveredInstance === undefined ? EFFECT : opts.coveredInstance,
         coveredInvalid: opts.coveredInvalid === undefined ? "0" : opts.coveredInvalid,
-        scopes: [{ scope: { kind: "workspace", out: "out-1", ws: "ws1" }, auth: "controlled", reason: "" }],
-        workspaces: [{ id: "ws1", out: "out-1", bind: "ws1", scope: { kind: "output", out: "out-1" }, order: 0, mode: "tiled", exist: true, hold: "" }],
-        outputs: [{ out: "out-1", view: "ws1", mode: "tiled", hold: "" }],
         windows: [winProjRow()],
         presentation: {
             foreground: opts.foreground,
-            rev,
             border: HIDDEN_BORDER,
             underlay: {
                 status: "found", reason: "", baseRev: "11",
@@ -96,7 +92,6 @@ function projection(
                     { leaf: "leaf-a", win: "win-a", rect: [404, 4, 392, 592] },
                 ],
             },
-            pager: [],
         },
         preview: opts.preview,
     });

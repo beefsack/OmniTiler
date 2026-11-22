@@ -33,16 +33,11 @@ function presentationReply(
         obs: "1",
         coveredInstance: "effect-1",
         coveredInvalid: "5",
-        scopes: [],
-        workspaces: [],
-        outputs: [],
         windows: [],
         presentation: {
             foreground: "win-a",
-            rev: "1",
             border,
             underlay: { status: "hidden", reason: "no-group", baseRev: null },
-            pager: [],
         },
         preview: null,
         ...(extra ?? {}),
@@ -223,10 +218,8 @@ describe("world presentation v2 anchored border", () => {
             presentationReply("pres-unrep", HIDDEN_BORDER, {
                 presentation: {
                     foreground: "win-a",
-                    rev: "1",
                     border: HIDDEN_BORDER,
                     underlay: { status: "hidden", reason: "unrepresentable", baseRev: "5" },
-                    pager: [],
                 },
             }),
         );
@@ -241,10 +234,8 @@ describe("world presentation v2 anchored border", () => {
             presentationReply("pres-bad-reason", HIDDEN_BORDER, {
                 presentation: {
                     foreground: "win-a",
-                    rev: "1",
                     border: HIDDEN_BORDER,
                     underlay: { status: "hidden", reason: "bogus-reason", baseRev: null },
-                    pager: [],
                 },
             }),
         );

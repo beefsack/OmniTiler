@@ -74,9 +74,6 @@ function projection(req: string, preview: Record<string, unknown> | null, rev = 
     return JSON.stringify({
         v: 4, outcome: "presentation", gen: GEN, req, rev, obs,
         coveredInstance: EFFECT, coveredInvalid: "0",
-        scopes: [{ scope: { kind: "output", out: "out-1" }, auth: "controlled", reason: "" }],
-        workspaces: [{ id: "ws1", out: "out-1", bind: "ws1", scope: { kind: "output", out: "out-1" }, order: 0, mode: "tiled", exist: true, hold: "" }],
-        outputs: [{ out: "out-1", view: "ws1", mode: "tiled", hold: "" }],
         windows: [{
             win: "win-a", out: "out-1", ws: "ws1",
             alloc: [10, 20, 300, 400], frame: [10, 20, 300, 400],
@@ -89,10 +86,8 @@ function projection(req: string, preview: Record<string, unknown> | null, rev = 
         }],
         presentation: {
             foreground: "win-a",
-            rev,
             border: { visible: true, reason: "", subject: null, outsets: [8, 8, 304, 304], width: null, radius: null, witness: null },
             underlay: { status: "hidden", reason: "disabled", baseRev: null },
-            pager: [],
         },
         preview,
     });

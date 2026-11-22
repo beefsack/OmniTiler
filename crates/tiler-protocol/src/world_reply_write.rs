@@ -27,7 +27,7 @@ use tiler_core::world_report::{
 use tiler_core::world_roster::SharedRosterPlan;
 
 use crate::world_protocol::{
-    WORLD_MAX_REPLY_BYTES, WorldProtocolError, reply_snapshot, unknown_value,
+    WORLD_MAX_REPLY_BYTES, WorldProtocolError, parse_u64_decimal, reply_snapshot, unknown_value,
 };
 use crate::world_reply_sink::{
     CountSink, ObjectWriter, ReplySink, SortedStringSink, StringSink, push_serde_json_string,
@@ -657,6 +657,18 @@ fn write_pager_v4<S: ReplySink>(pager: &[PagerScreen], sink: &mut S) -> Result<(
     Ok(())
 }
 
+/// Border and underlay presentation fields shared by the full reply and the
+/// renderer projection.
+fn write_presentation_drawn_fields<S: ReplySink>(
+    presentation: &WorldPresentationV4,
+    obj: &mut ObjectWriter<'_, S>,
+) -> Result<()> {
+    obj.field("border", |s| {
+        write_border_presentation_v4(&presentation.border, s)
+    })?;
+    obj.field("underlay", |s| write_underlay_v4(&presentation.underlay, s))
+}
+
 fn write_reply_presentation_v4<S: ReplySink>(
     presentation: &WorldPresentationV4,
     sink: &mut S,
@@ -667,11 +679,20 @@ fn write_reply_presentation_v4<S: ReplySink>(
         if let Some(output) = presentation.suspended_output.as_ref() {
             obj.field_str("suspendedOutput", &output.0)?;
         }
-        obj.field("border", |s| {
-            write_border_presentation_v4(&presentation.border, s)
-        })?;
-        obj.field("underlay", |s| write_underlay_v4(&presentation.underlay, s))?;
+        write_presentation_drawn_fields(presentation, obj)?;
         obj.field("pager", |s| write_pager_v4(&presentation.pager, s))
+    })
+}
+
+/// Retained renderer presentation: foreground plus the drawn border and
+/// underlay. The full-reply `rev`, `suspendedOutput`, and `pager` never project.
+fn write_projection_presentation_v4<S: ReplySink>(
+    presentation: &WorldPresentationV4,
+    sink: &mut S,
+) -> Result<()> {
+    sink.write_object(|obj| {
+        obj.field_str("foreground", &presentation.foreground)?;
+        write_presentation_drawn_fields(presentation, obj)
     })
 }
 
@@ -806,7 +827,7 @@ fn write_reply_v4_to_sink<S: ReplySink, const VALIDATE: bool>(
     Ok(())
 }
 
-fn write_projection_preview<S: ReplySink>(
+fn write_projection_preview<S: ReplySink, const CHECK_PRODUCER: bool>(
     preview: Option<&DragPreviewV4>,
     suspended_output: Option<&tiler_core::directional::OutputId>,
     producer: Option<(&str, &str)>,
@@ -819,6 +840,12 @@ fn write_projection_preview<S: ReplySink>(
     if suspended_output.is_some_and(|suspended| *suspended == preview.domain.output) {
         sink.push_str("null");
         return Ok(());
+    }
+    if CHECK_PRODUCER
+        && let Some((instance, serial)) = producer
+        && (!is_opaque_id(instance) || parse_u64_decimal(serial).is_none_or(|value| value == 0))
+    {
+        return Err(unknown_value());
     }
     sink.write_object(|obj| {
         obj.field("rect", |s| {
@@ -985,7 +1012,7 @@ impl CachedProjectionV4 {
     }
 }
 
-fn write_cached_projection_v4_inner(
+fn write_cached_projection_v4_inner<const CHECK_PRODUCER: bool>(
     reply: &WorldReplyV4,
     producer: Option<(&str, &str)>,
 ) -> Result<CachedProjectionV4> {
@@ -998,17 +1025,14 @@ fn write_cached_projection_v4_inner(
         obj.field_str("outcome", "presentation")?;
         obj.field_u64_str("rev", reply.state_revision)?;
         obj.field_u64_str("obs", reply.based_on_observation_seq)?;
-        obj.field_array("scopes", &reply.scopes, write_scope_status_v4)?;
-        obj.field_array("workspaces", &reply.workspaces, write_workspace_desire_v4)?;
-        obj.field_array("outputs", &reply.outputs, write_output_desire_v4)?;
         obj.field_array("windows", &reply.windows, |w, s| {
             write_window_desire_v4(w, s, false)
         })?;
         obj.field("presentation", |s| {
-            write_reply_presentation_v4(&reply.presentation, s)
+            write_projection_presentation_v4(&reply.presentation, s)
         })?;
         obj.field("preview", |s| {
-            write_projection_preview(
+            write_projection_preview::<_, CHECK_PRODUCER>(
                 reply.drag_preview.as_ref(),
                 reply.presentation.suspended_output.as_ref(),
                 producer,
@@ -1029,23 +1053,24 @@ pub fn write_cached_projection_v4(
     producer: Option<(&str, &str)>,
 ) -> Result<CachedProjectionV4> {
     validate_projection_reply_v4(reply).map_err(map_validation_error)?;
-    write_cached_projection_v4_inner(reply, producer)
+    write_cached_projection_v4_inner::<true>(reply, producer)
 }
 
 /// Prevalidated renderer projection writer that returns a cached canonical body
 /// ready for zero-parse read binding without revalidating typed reply rows.
+/// Any supplied producer must come from the validated broker gesture lane.
 pub fn write_cached_projection_v4_prevalidated(
     validated: ValidatedReply<'_>,
     producer: Option<(&str, &str)>,
 ) -> Result<CachedProjectionV4> {
-    write_cached_projection_v4_inner(validated.reply(), producer)
+    write_cached_projection_v4_inner::<false>(validated.reply(), producer)
 }
 
 /// Checked renderer projection writer over a borrowed [`WorldReplyV4`].
-/// Reuses the shared typed reply validator and typed row writers while
-/// stripping `frame_op` from `windows` and retaining the exact
-/// preview/authority fields in lexicographic object key order with `serde_json`
-/// string escaping.
+/// Emits the retained surface only: `windows` without `frame_op` or
+/// automatic-clear state targets, the foreground/border/underlay
+/// `presentation`, and the carried `preview`, in lexicographic object key
+/// order with `serde_json` string escaping.
 pub fn write_projection_reply_v4(
     reply: &WorldReplyV4,
     producer: Option<(&str, &str)>,

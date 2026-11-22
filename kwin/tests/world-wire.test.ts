@@ -20,6 +20,7 @@ import {
     buildQueueRequest,
     buildTakeRequest,
     isCoreWorldReply,
+    isWorldPresentationReply,
     isWorldQueueReply,
     isWorldRejection,
     parseWorldReply,
@@ -39,6 +40,12 @@ const DISABLED_PRESENTATION = {
     border: { visible: false, reason: "disabled", subject: null, outsets: null, width: null, radius: null, witness: null },
     underlay: { status: "hidden", reason: "disabled", baseRev: null },
     pager: [],
+};
+
+const DISABLED_PROJECTION_PRESENTATION = {
+    foreground: DISABLED_PRESENTATION.foreground,
+    border: DISABLED_PRESENTATION.border,
+    underlay: DISABLED_PRESENTATION.underlay,
 };
 
 function makeSurface() {
@@ -533,7 +540,7 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
 
     // ReadWorldPresentation projection: the exact cached-projection key
     // set ({v,outcome,gen,req,rev,obs,coveredInstance,coveredInvalid,
-    // scopes,workspaces,outputs,windows,presentation,preview}) parses
+    // windows,preview,presentation:{foreground,border,underlay}}) parses
     // directly, never through a fabricated core envelope. Write tokens,
     // one-shot lanes, and transport bindings refuse here. `preview` is the
     // trimmed renderer-only drop preview (paint rect, mover-home source,
@@ -544,9 +551,6 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         return JSON.stringify({
             v: 4, outcome: "presentation", gen, req, rev, obs,
             coveredInstance: "effect-1", coveredInvalid: "5",
-            scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws1" }, auth: "controlled", reason: "" }],
-            workspaces: [{ id: "ws1", out: "out", bind: "ws1", scope: { kind: "output", out: "out" }, order: 0, mode: "tiled", exist: true, hold: "" }],
-            outputs: [{ out: "out", view: "ws1", mode: "tiled", hold: "" }],
             windows: [{
                 win: "win-a", out: "out", ws: "ws1",
                 alloc: [10, 10, 300, 300], frame: [10, 10, 300, 300],
@@ -557,28 +561,24 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
                 visibility_auth: "untouched", visibility_hold: "",
                 state: [],
             }],
-            presentation: DISABLED_PRESENTATION,
+            presentation: DISABLED_PROJECTION_PRESENTATION,
             preview: null,
         });
     }
 
     it("presentation replies parse the real projection key set and refuse one-shot lanes", () => {
         const parsed = parseWorldReply(projectPresentation("gen-1", "req-9", "4", "7"));
-        assert.ok(parsed !== null && !isWorldRejection(parsed) && !isCoreWorldReply(parsed) && !isWorldQueueReply(parsed));
-        if (parsed === null || isWorldRejection(parsed) || isCoreWorldReply(parsed) || isWorldQueueReply(parsed)) {
-            return;
-        }
-        assert.equal((parsed as { outcome?: unknown }).outcome, "presentation");
-        assert.equal((parsed as { gen?: unknown }).gen, "gen-1");
-        assert.equal((parsed as { req?: unknown }).req, "req-9");
+        assert.ok(isWorldPresentationReply(parsed));
+        assert.equal(parsed.gen, "gen-1");
+        assert.equal(parsed.req, "req-9");
+        assert.ok(parsed.windows[0] && !("frame_op" in parsed.windows[0]));
         assert.deepEqual(
             [...Object.keys(JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")))].sort(),
-            ["gen", "obs", "outcome", "outputs", "presentation", "preview", "req", "rev", "coveredInstance", "coveredInvalid", "scopes", "v", "windows", "workspaces"].sort(),
+            ["gen", "obs", "outcome", "preview", "presentation", "req", "rev", "coveredInstance", "coveredInvalid", "v", "windows"].sort(),
         );
-        assert.deepEqual((parsed as { preview?: unknown }).preview, null);
-        const covered = parsed as { coveredInstance?: unknown; coveredInvalid?: unknown };
-        assert.equal(covered.coveredInstance, "effect-1");
-        assert.equal(covered.coveredInvalid, "5");
+        assert.equal(parsed.preview, null);
+        assert.equal(parsed.coveredInstance, "effect-1");
+        assert.equal(parsed.coveredInvalid, "5");
         // The trimmed renderer-only drop preview parses (paint rect plus
         // subject proof plus the producing identity); issuer/provenance
         // extras refuse. `win` is the insertion neighbor, never the mover
@@ -648,31 +648,59 @@ describe("world wire fixture (TS construction <-> Rust codec)", () => {
         assert.ok(coreShaped !== null && isCoreWorldReply(coreShaped));
     });
 
-    it("presentation parses the optional focused-fullscreen suspension verdict", () => {
+    it("full core presentation parses the optional focused-fullscreen suspension verdict", () => {
+        // The verdict rides only the full core presentation: the cached
+        // projection carries no suspendedOutput key at all.
+        const envelope = { source: "src-1", nativeInvalid: "1" };
+        const withSuspension = (value: unknown): string => {
+            const full = JSON.parse(acceptCapture("gen-1", envelope, "1")) as Record<string, unknown>;
+            (full["presentation"] as Record<string, unknown>)["suspendedOutput"] = value;
+            return JSON.stringify(full);
+        };
         // Absent key (default publication) parses to a null verdict.
-        const plain = parseWorldReply(projectPresentation("gen-1", "req-9", "4", "7"));
-        assert.ok(plain !== null && !isWorldRejection(plain) && !isCoreWorldReply(plain) && !isWorldQueueReply(plain));
-        assert.equal((plain as { presentation?: { suspendedOutput?: unknown } }).presentation?.suspendedOutput, null);
+        const plain = parseWorldReply(acceptCapture("gen-1", envelope, "1"));
+        assert.ok(plain !== null && isCoreWorldReply(plain));
+        assert.equal(plain.presentation.suspendedOutput, null);
         // Present verdict parses verbatim.
-        const withVerdict = JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")) as Record<string, unknown>;
-        (withVerdict["presentation"] as Record<string, unknown>)["suspendedOutput"] = "out-1";
-        const parsed = parseWorldReply(JSON.stringify(withVerdict));
-        assert.ok(parsed !== null && !isWorldRejection(parsed) && !isCoreWorldReply(parsed) && !isWorldQueueReply(parsed));
-        assert.equal((parsed as { presentation?: { suspendedOutput?: unknown } }).presentation?.suspendedOutput, "out-1");
+        const parsed = parseWorldReply(withSuspension("out-1"));
+        assert.ok(parsed !== null && isCoreWorldReply(parsed));
+        assert.equal(parsed.presentation.suspendedOutput, "out-1");
         // Explicit null refuses: absent fills null, present null is malformed.
-        const withNull = JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")) as Record<string, unknown>;
-        (withNull["presentation"] as Record<string, unknown>)["suspendedOutput"] = null;
-        assert.equal(parseWorldReply(JSON.stringify(withNull)), null, "explicit null refuses");
-        // Malformed verdicts and unknown fifth keys refuse.
+        assert.equal(parseWorldReply(withSuspension(null)), null, "explicit null refuses");
+        // Malformed verdicts and unknown extra keys refuse.
         for (const bad of ["", "bad id!", 7, true, [], {}]) {
-            const badReply = JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")) as Record<string, unknown>;
-            (badReply["presentation"] as Record<string, unknown>)["suspendedOutput"] = bad;
-            assert.equal(parseWorldReply(JSON.stringify(badReply)), null, `malformed verdict refuses: ${JSON.stringify(bad)}`);
+            assert.equal(parseWorldReply(withSuspension(bad)), null, `malformed verdict refuses: ${JSON.stringify(bad)}`);
         }
-        const extra = JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")) as Record<string, unknown>;
+        const extra = JSON.parse(acceptCapture("gen-1", envelope, "1")) as Record<string, unknown>;
         (extra["presentation"] as Record<string, unknown>)["suspendedOutput"] = "out-1";
         (extra["presentation"] as Record<string, unknown>)["unknown"] = 1;
-        assert.equal(parseWorldReply(JSON.stringify(extra)), null, "unknown fifth key refuses");
+        assert.equal(parseWorldReply(JSON.stringify(extra)), null, "unknown extra key refuses");
+    });
+
+    it("projection refuses each dropped field and bad preview geometry", () => {
+        const base = (): Record<string, unknown> => JSON.parse(projectPresentation("gen-1", "req-9", "4", "7")) as Record<string, unknown>;
+        // Each dropped field refuses on its own even when valid or empty.
+        for (const [key, value] of [["scopes", []], ["workspaces", []], ["outputs", []]] as const) {
+            const withKey = base();
+            withKey[key] = value;
+            assert.equal(parseWorldReply(JSON.stringify(withKey)), null, `${key} refuses on the presentation lane`);
+        }
+        for (const [key, value] of [["rev", "4"], ["pager", []], ["suspendedOutput", "out-1"]] as const) {
+            const withKey = base();
+            (withKey["presentation"] as Record<string, unknown>)[key] = value;
+            assert.equal(parseWorldReply(JSON.stringify(withKey)), null, `presentation.${key} refuses on the presentation lane`);
+        }
+        // Zero-width/height and out-of-bounds previews refuse even when
+        // every other field is valid.
+        for (const rect of [[0, 0, 0, 600], [0, 0, 396, 0], [0, 0, 16385, 600], [32000, 0, 1000, 600], [-32769, 0, 396, 600]]) {
+            const badRect = base();
+            badRect["preview"] = { rect, sourceOut: "out-1", sourceWs: "ws-1", win: "win-a", producerInstance: "gesture-1", producerSerial: "1" };
+            assert.equal(parseWorldReply(JSON.stringify(badRect)), null, `preview rect ${JSON.stringify(rect)} refuses`);
+        }
+        // The carried-rect bounds are inclusive at the coordinate and extent limits.
+        const edge = base();
+        edge["preview"] = { rect: [-32768, 0, 16384, 600], sourceOut: "out-1", sourceWs: "ws-1", win: "win-a", producerInstance: "gesture-1", producerSerial: "1" };
+        assert.ok(parseWorldReply(JSON.stringify(edge)) !== null, "in-bounds limit preview parses");
     });
 
     it("a timed-out queue redelivers the identical queue bytes under the same clientCmd", () => {

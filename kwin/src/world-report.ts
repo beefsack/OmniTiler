@@ -143,6 +143,9 @@ export interface WorldReplyWindow {
     // Independent native-state targets, at most one per property.
     state: WorldReplyStateTarget[];
 }
+// Presentation-lane window row (ReadWorldPresentation): the projection carries
+// no retained frame_op token, so it is the full row without that field.
+export type WorldPresentationWindow = Omit<WorldReplyWindow, "frame_op">;
 export interface WorldReplyTransfer {
     op: string;
     kind: "window" | "view" | "migration";
@@ -548,8 +551,15 @@ export interface WorldPresentationPagerOutput {
     out: string;
     workspaces: WorldPresentationPagerWorkspace[];
 }
-export interface WorldPresentation {
+// Projection presentation (ReadWorldPresentation): exactly the renderer-read
+// fields. The full core presentation extends it with the pager, rev, and
+// suspension verdict, which the projection never carries.
+export interface WorldPresentationProjection {
     foreground: string;
+    border: WorldPresentationBorder;
+    underlay: WorldPresentationUnderlay;
+}
+export interface WorldPresentation extends WorldPresentationProjection {
     // Issuing world revision label for the computed shapes.
     rev: string;
     // Neutral focused-fullscreen suspension verdict (stage 5): the observed
@@ -557,8 +567,6 @@ export interface WorldPresentation {
     // fullscreen holds. Absent on the wire means null; an explicit null
     // refuses.
     suspendedOutput: string | null;
-    border: WorldPresentationBorder;
-    underlay: WorldPresentationUnderlay;
     pager: WorldPresentationPagerOutput[];
 }
 export type WorldRosterSlot = { kind: "existing"; native: string } | { kind: "append"; step: string };
@@ -711,11 +719,8 @@ export interface WorldPresentationReply {
     // missing proof yields no drawable coverage, never guessed truth).
     coveredInstance: string | null;
     coveredInvalid: string | null;
-    scopes: WorldReplyScope[];
-    workspaces: WorldReplyWorkspace[];
-    outputs: WorldReplyOutput[];
-    windows: WorldReplyWindow[];
-    presentation: WorldPresentation;
+    windows: WorldPresentationWindow[];
+    presentation: WorldPresentationProjection;
     preview: WorldPreview | null;
 }
 // Wait-lane replies (WaitWorldWake): the long-held call completes when
@@ -1384,13 +1389,13 @@ function parseVisibilityTarget(value: unknown): WorldReplyVisibility {
     return { shown: o["shown"] as boolean, rev: o["rev"] as string, fallback: o["fallback"] as boolean };
 }
 
-function parseStateTarget(value: unknown): WorldReplyStateTarget {
+function parseStateTarget(value: unknown, allowAutomaticClear: boolean): WorldReplyStateTarget {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
         throw new Error("state-keys");
     }
     const o = value as Record<string, unknown>;
     const requiredKeys = ["property", "value", "auth", "reason", "cmdSeq"];
-    const hasAuto = "automaticClear" in o;
+    const hasAuto = allowAutomaticClear && "automaticClear" in o;
     const expectedKeys = hasAuto ? [...requiredKeys, "automaticClear"] : requiredKeys;
     if (!hasExactKeys(o, expectedKeys)) {
         throw new Error("state-keys");
@@ -1420,22 +1425,22 @@ function parseStateTarget(value: unknown): WorldReplyStateTarget {
     return base;
 }
 
-function parseWindowRow(e: unknown): WorldReplyWindow {
-    if (typeof e !== "object" || e === null || Array.isArray(e)) {
-        throw new Error("win-keys");
-    }
-    const o = e as Record<string, unknown>;
-    if (!hasExactKeys(o, [
-        "win", "out", "ws", "alloc", "frame",
-        "frame_auth", "frame_hold", "member_auth", "member_hold",
-        "frame_op", "floating", "float_origin", "cmdSeq",
-        "visibility", "visibility_auth", "visibility_hold", "state",
-    ])) {
-        throw new Error("win-keys");
-    }
+// Presentation window keys: the shared row without the retained write token.
+// The full core row adds `frame_op` on top.
+const PRESENTATION_WINDOW_KEYS: ReadonlyArray<string> = [
+    "win", "out", "ws", "alloc", "frame",
+    "frame_auth", "frame_hold", "member_auth", "member_hold",
+    "floating", "float_origin", "cmdSeq",
+    "visibility", "visibility_auth", "visibility_hold", "state",
+];
+const FULL_WINDOW_KEYS: ReadonlyArray<string> = [...PRESENTATION_WINDOW_KEYS, "frame_op"];
+
+// Shared row parse for every field except the retained float-placement token.
+// `allowAutomaticClear` is true only for full core rows; the projection refuses
+// automaticClear state targets through exact state keys.
+function parseWindowFields(o: Record<string, unknown>, allowAutomaticClear: boolean): WorldPresentationWindow {
     if (
         !isOpaqueId(o["win"]) || !isOpaqueId(o["out"]) || !isOpaqueId(o["ws"]) ||
-        (typeof o["frame_op"] !== "string" || (o["frame_op"] !== "" && !isOpaqueId(o["frame_op"]))) ||
         typeof o["floating"] !== "boolean" ||
         (o["float_origin"] !== "" && o["float_origin"] !== "capacity")
     ) {
@@ -1457,7 +1462,7 @@ function parseWindowRow(e: unknown): WorldReplyWindow {
     }
     const seen = new Set<string>();
     const state = (stateRaw as ReadonlyArray<unknown>).map((item) => {
-        const target = parseStateTarget(item);
+        const target = parseStateTarget(item, allowAutomaticClear);
         if (seen.has(target.property)) {
             throw new Error("state-target-count");
         }
@@ -1470,7 +1475,6 @@ function parseWindowRow(e: unknown): WorldReplyWindow {
         frame: (frame as [number, number, number, number] | null) ?? null,
         frame_auth: framePair.auth, frame_hold: framePair.reason,
         member_auth: memberPair.auth, member_hold: memberPair.reason,
-        frame_op: o["frame_op"] as string,
         floating: o["floating"] as boolean, float_origin: o["float_origin"] as "" | "capacity",
         cmdSeq: optU64orNull(o["cmdSeq"]),
         visibility,
@@ -1479,24 +1483,33 @@ function parseWindowRow(e: unknown): WorldReplyWindow {
     };
 }
 
-// Presentation window row: the projection strips the retained write
-// tokens server-side (keys absent). Any carried frame_op,
-// result, transfer, effect, or other one-shot lane here refuses.
-function parsePresentationWindowRow(e: unknown): Omit<WorldReplyWindow, "frame_op"> {
+function parseWindowRow(e: unknown): WorldReplyWindow {
+    if (typeof e !== "object" || e === null || Array.isArray(e)) {
+        throw new Error("win-keys");
+    }
+    const o = e as Record<string, unknown>;
+    if (!hasExactKeys(o, FULL_WINDOW_KEYS)) {
+        throw new Error("win-keys");
+    }
+    const frameOp = o["frame_op"];
+    if (typeof frameOp !== "string" || (frameOp !== "" && !isOpaqueId(frameOp))) {
+        throw new Error("win");
+    }
+    return Object.assign(parseWindowFields(o, true), { frame_op: frameOp });
+}
+
+// Presentation window row (ReadWorldPresentation): the projection strips the
+// retained write tokens server-side, so the row carries exactly the shared
+// row keys (no frame_op, no automaticClear state); any other key refuses.
+function parsePresentationWindowRow(e: unknown): WorldPresentationWindow {
     if (typeof e !== "object" || e === null || Array.isArray(e)) {
         throw new Error("win");
     }
-    const rec = e as Record<string, unknown>;
-    if ("frame_op" in rec || "clear_op" in rec) {
-        throw new Error("presentation-write-token");
+    const o = e as Record<string, unknown>;
+    if (!hasExactKeys(o, PRESENTATION_WINDOW_KEYS)) {
+        throw new Error("win-keys");
     }
-    const full = parseWindowRow({ ...rec, frame_op: "" });
-    if (full.state.some((t) => t.automaticClear === true)) {
-        throw new Error("presentation-write-token");
-    }
-    const { frame_op: _frameOp, ...rest } = full;
-    void _frameOp;
-    return rest;
+    return parseWindowFields(o, false);
 }
 
 function parseTransferRow(e: unknown): WorldReplyTransfer {
@@ -2283,11 +2296,9 @@ const UNDERLAY_HIDE_REASONS = new Set([
     "idle", "suspended", "unrepresentable",
 ]);
 
-function parsePresentation(value: unknown): WorldPresentation {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        throw new Error("presentation");
-    }
-    const o = value as Record<string, unknown>;
+// Shared renderer-read presentation core: foreground, border, and underlay.
+// The projection and the full core reply parse these exactly.
+function parsePresentationCore(o: Record<string, unknown>): WorldPresentationProjection {
     if (
         typeof o["foreground"] !== "string" ||
         (o["foreground"] as string) !== "" && !isOpaqueId(o["foreground"])
@@ -2366,6 +2377,17 @@ function parsePresentation(value: unknown): WorldPresentation {
             baseRev: (baseRev as string | null) ?? null,
         };
     }
+    return { foreground: o["foreground"] as string, border, underlay };
+}
+
+// Full core presentation: the shared core plus the revision, suspension
+// verdict, and pager.
+function parsePresentation(value: unknown): WorldPresentation {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new Error("presentation");
+    }
+    const o = value as Record<string, unknown>;
+    const { foreground, border, underlay } = parsePresentationCore(o);
     const pagerRaw = o["pager"];
     if (!Array.isArray(pagerRaw) || pagerRaw.length > MAX_REPLY_OUTPUTS) {
         throw new Error("presentation-pager");
@@ -2450,7 +2472,7 @@ function parsePresentation(value: unknown): WorldPresentation {
         suspendedOutput = suspendedRaw;
     }
     return {
-        foreground: o["foreground"] as string,
+        foreground,
         rev: o["rev"] as string,
         suspendedOutput,
         border,
@@ -2459,22 +2481,37 @@ function parsePresentation(value: unknown): WorldPresentation {
     };
 }
 
+// Projection presentation (ReadWorldPresentation): exactly the renderer-read
+// {foreground, border, underlay}. The core reply's revision, suspension
+// verdict, and pager are not projected; any extra key refuses.
+function parsePresentationProjection(value: unknown): WorldPresentationProjection {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new Error("presentation");
+    }
+    const o = value as Record<string, unknown>;
+    if (!hasExactKeys(o, ["foreground", "border", "underlay"])) {
+        throw new Error("presentation-keys");
+    }
+    return parsePresentationCore(o);
+}
+
 // Presentation-lane reply (ReadWorldPresentation): the exact cached
 // projection shape `project_reply` plus the serving generation, the read
 // correlation, and the causal coverage, bound by `project_read`: exactly
-// {v,outcome,gen,req,rev,obs,coveredInstance,coveredInvalid,scopes,
-// workspaces,outputs,windows,presentation,preview}. No core transport
-// bindings (adapter/source/nativeInvalid/clock), no readiness/consumed
-// flags, no one-shot lanes (result, transfers, effects, gesture/operation
-// settlement, warp), and no retained write tokens (frame_op/clear_op keys
-// are stripped server-side; any carried token refuses). Window rows share
-// the core row shape minus the tokens; every other row shares the core row
-// parser exactly. `preview` is the trimmed renderer-only drop preview
-// (paint `rect`, mover-home source, insertion-neighbor window, plus the
-// producing-gesture identity or nulls when unproven) or null; any other
-// shape refuses. `coveredInstance`/`coveredInvalid` are the causal witness
-// the cached capture covered (nulls when unproven); non-null values must
-// be an opaque instance and a canonical counter.
+// {v,outcome,gen,req,rev,obs,coveredInstance,coveredInvalid,windows,
+// presentation,preview}. No scope, workspace, or output rows, no core
+// transport bindings (adapter/source/nativeInvalid/clock), no readiness/
+// consumed flags, no one-shot lanes (result, transfers, effects, gesture/
+// operation settlement, warp), and no retained write tokens (window rows
+// carry no frame_op and no automaticClear state; any carried token refuses).
+// Window rows share the core row parser minus the token. `presentation` is
+// exactly {foreground, border, underlay}. `preview` is the trimmed
+// renderer-only drop preview (carried paint `rect`, mover-home source,
+// insertion-neighbor window, plus the producing-gesture identity or nulls
+// when unproven) or null; any other shape refuses. `coveredInstance`/
+// `coveredInvalid` are the causal witness the cached capture covered (nulls
+// when unproven); non-null values must be an opaque instance and a canonical
+// counter.
 function parsePreview(value: unknown): WorldPreview | null {
     if (value === null) {
         return null;
@@ -2490,7 +2527,7 @@ function parsePreview(value: unknown): WorldPreview | null {
     ) {
         throw new Error("presentation-preview-keys");
     }
-    if (!isRect(o["rect"])) {
+    if (!isCarriedRect(o["rect"])) {
         throw new Error("presentation-preview-rect");
     }
     if (!isOpaqueId(o["sourceOut"]) || !isOpaqueId(o["sourceWs"]) || !isOpaqueId(o["win"])) {
@@ -2520,7 +2557,7 @@ function parsePreview(value: unknown): WorldPreview | null {
     };
 }
 function parsePresentationReply(r: Record<string, unknown>, gen: string): WorldPresentationReply | null {
-    if (!hasExactKeys(r, ["v", "outcome", "gen", "req", "rev", "obs", "coveredInstance", "coveredInvalid", "scopes", "workspaces", "outputs", "windows", "presentation", "preview"])) {
+    if (!hasExactKeys(r, ["v", "outcome", "gen", "req", "rev", "obs", "coveredInstance", "coveredInvalid", "windows", "presentation", "preview"])) {
         return null;
     }
     if (r["outcome"] !== "presentation" || r["gen"] !== gen) {
@@ -2545,26 +2582,19 @@ function parsePresentationReply(r: Record<string, unknown>, gen: string): WorldP
     if ((coveredInstance === null) !== (coveredInvalid === null)) {
         return null;
     }
-    const scopesRaw = r["scopes"];
-    const wsRaw = r["workspaces"];
-    const outRaw = r["outputs"];
     const winRaw = r["windows"];
-    if (!Array.isArray(scopesRaw) || !Array.isArray(wsRaw) || !Array.isArray(outRaw) || !Array.isArray(winRaw)) {
+    if (!Array.isArray(winRaw)) {
         return null;
     }
     try {
-        const scopes = (scopesRaw as ReadonlyArray<unknown>).map(parseScopeRow);
-        const workspaces = (wsRaw as ReadonlyArray<unknown>).map(parseWorkspaceRow);
-        const outputs = (outRaw as ReadonlyArray<unknown>).map(parseOutputRow);
-        const stripped = (winRaw as ReadonlyArray<unknown>).map(parsePresentationWindowRow);
-        const windows: WorldReplyWindow[] = stripped.map((w) => ({ ...w, frame_op: "" }));
-        const presentation = parsePresentation(r["presentation"]);
+        const windows = (winRaw as ReadonlyArray<unknown>).map(parsePresentationWindowRow);
+        const presentation = parsePresentationProjection(r["presentation"]);
         const preview = parsePreview(r["preview"]);
         return {
             outcome: "presentation", gen, req: r["req"] as string, rev, obs,
             coveredInstance: coveredInstance as string | null,
             coveredInvalid: coveredInvalid as string | null,
-            scopes, workspaces, outputs, windows, presentation, preview,
+            windows, presentation, preview,
         };
     } catch (error) {
         void error;

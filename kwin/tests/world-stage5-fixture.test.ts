@@ -83,10 +83,10 @@ function v4Fixture(chain: ChainName, name: string): string {
 // v2 producer lineage (adapter-local FrameWitness): genuine recordings via
 // the same actual entry/real-broker path, now carrying the local witness,
 // the visible anchored border, and the required `sharedNativeRoster` /
-// `foregroundKnown` / `focusRequest` keys. Producer re-record comparisons use
-// the active family byte-exact (gen/source only normalized); legacy
-// hidden-fixture subscriber tests below stay on frozen stage5-v4, and frozen
-// stage5-v2 stays untouched history.
+// `foregroundKnown` / `focusRequest` keys. Producer re-record comparisons and
+// every subscriber test use the active family (gen/source only normalized);
+// frozen stage5-v4 and stage5-v2 stay untouched history, and the frozen
+// projection is pinned as a strict refusal below.
 function activeFixture(chain: ChainName, name: string): string {
     return readFileSync(resolve("..", "test-fixtures", "stage5-v4-active", chain, name), "utf8");
 }
@@ -621,7 +621,7 @@ function makeSubscriberHarness(opts: {
     generation: string;
 }): {
     paints: string[];
-    answerChain: (chain: ChainName, name: string) => void;
+    answerWith: (recordedText: string) => void;
     stop: () => void;
 } {
     const pending: Array<{ payload: string; callback: (reply: unknown) => void }> = [];
@@ -648,10 +648,11 @@ function makeSubscriberHarness(opts: {
     sub.notifyGeneration(opts.generation);
     return {
         paints,
-        answerChain: (chain: ChainName, name: string) => {
+        answerWith: (recordedText: string) => {
             for (const call of pending.splice(0)) {
-                const issued = (JSON.parse(call.payload) as { req: string }).req;
-                const recorded = JSON.parse(v4Fixture(chain, name)) as Record<string, unknown>;
+                const sent = JSON.parse(call.payload) as Record<string, unknown>;
+                const issued = sent["req"];
+                const recorded = JSON.parse(recordedText) as Record<string, unknown>;
                 recorded["req"] = issued;
                 call.callback(JSON.stringify(recorded));
             }
@@ -677,7 +678,7 @@ interface SubscriberCase {
 }
 
 function runSubscriberCase(spec: SubscriberCase, where: string): void {
-    const proj = JSON.parse(v4Fixture(spec.chain, spec.projection)) as V4Projection;
+    const proj = JSON.parse(activeFixture(spec.chain, spec.projection)) as V4Projection;
     const covered = spec.covered ?? spec.witness;
     assert.equal(proj.coveredInstance, "effect-1", `${where} genuine coverage instance`);
     assert.equal(proj.coveredInvalid, covered, `${where} genuine coverage witness`);
@@ -694,7 +695,7 @@ function runSubscriberCase(spec: SubscriberCase, where: string): void {
         generation: proj.gen,
     });
     try {
-        h.answerChain(spec.chain, spec.projection);
+        h.answerWith(activeFixture(spec.chain, spec.projection));
         assert.equal(h.paints.length, spec.expectPaints, `${where} paint count`);
         if (spec.expectPaints === 0) {
             return;
@@ -910,7 +911,7 @@ describe("stage5 v4 genuine bridge (actual entry recording)", () => {
 });
 
 describe("stage5 v4 recorded projections (production subscriber route)", () => {
-    it("genuine p5 projection paints the hidden border plus found underlay", () => {
+    it("genuine p5 projection paints the visible border plus found underlay", () => {
         runSubscriberCase(
             { chain: "full", projection: "projection-p5.json", witness: "0", gesture: null, expectPreview: false, expectPaints: 1 },
             "p5",
@@ -992,6 +993,28 @@ describe("stage5 v4 recorded projections (production subscriber route)", () => {
             { chain: "full", projection: "projection-cover.json", witness: "2", covered: "1", gesture: null, expectPreview: false, expectPaints: 0 },
             "stale cover",
         );
+    });
+
+    it("frozen stage5-v4 projection refuses even with current read correlation and coverage", () => {
+        // The frozen shape includes the retired arrays and nested rev/pager.
+        // The parser refuses both its original bytes and the subscriber's
+        // ordinarily req-rekeyed input.
+        const frozenText = v4Fixture("full", "projection-p5.json");
+        assert.equal(parseWorldReply(frozenText), null, "frozen pre-cutover projection refuses");
+        const frozen = JSON.parse(frozenText) as V4Projection;
+        assert.equal(frozen.coveredInstance, "effect-1", "frozen p5 genuine coverage instance");
+        assert.equal(frozen.coveredInvalid, "0", "frozen p5 genuine coverage witness");
+        const h = makeSubscriberHarness({
+            invalidation: { instance: "effect-1", counter: "0" },
+            gesture: null,
+            generation: frozen.gen,
+        });
+        try {
+            h.answerWith(frozenText);
+            assert.equal(h.paints.length, 0, "frozen projection never paints");
+        } finally {
+            h.stop();
+        }
     });
 });
 

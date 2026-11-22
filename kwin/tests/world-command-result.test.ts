@@ -475,9 +475,6 @@ describe("world command result entry", () => {
                 (call as { callback: (reply: unknown) => void }).callback(JSON.stringify({
                     v: 4, outcome: "presentation", gen: "gen-1", req, rev: "12", obs: "12",
                     coveredInstance: "effect-1", coveredInvalid: "0",
-                    scopes: [{ scope: { kind: "workspace", out: "out", ws: "ws" }, auth: "controlled", reason: "" }],
-                    workspaces: [{ id: "ws", out: "out", bind: "ws", scope: { kind: "workspace", out: "out", ws: "ws" }, order: 0, mode: "tiled", exist: true, hold: "" }],
-                    outputs: [{ out: "out", view: "ws", mode: "tiled", hold: "" }],
                     windows: [{
                         win: "win-a", out: "out", ws: "ws",
                         alloc: [4, 4, 792, 592], frame: [4, 4, 792, 592],
@@ -490,7 +487,6 @@ describe("world command result entry", () => {
                     }],
                     presentation: {
                         foreground: "win-a",
-                        rev: "12",
                         border: { visible: true, reason: "", subject: null, outsets: [8, 8, 304, 304], width: null, radius: null, witness: null },
                         underlay: {
                             status: "found", reason: "", baseRev: "11",
@@ -501,7 +497,6 @@ describe("world command result entry", () => {
                                 { leaf: "leaf-win-a", win: "win-a", rect: [404, 4, 392, 592] },
                             ],
                         },
-                        pager: [],
                     },
                     preview: {
                         rect: [0, 0, 396, 600], sourceOut: "out", sourceWs: "ws", win: "win-b",

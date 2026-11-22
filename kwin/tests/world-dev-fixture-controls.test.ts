@@ -128,15 +128,22 @@ function makeHarness(scopeClass?: string | readonly string[], opts: { floatInten
             }
             if (method === "ReadWorldPresentation") {
                 presentationCalls.push({ service, path, iface, method, payload, callback });
-                const body = JSON.parse(payload) as { req?: string; nativeInvalid?: string };
+                const body = JSON.parse(payload) as { req: string };
                 callback(JSON.stringify({
                     v: 4,
+                    outcome: "presentation",
                     gen: currentGen,
-                    req: body.req ?? "1",
+                    req: body.req,
                     rev: String(rev),
                     obs: String(obs),
-                    nativeInvalid: body.nativeInvalid ?? "0",
-                    presentation: DISABLED_PRESENTATION,
+                    coveredInstance: null,
+                    coveredInvalid: null,
+                    windows: [],
+                    presentation: {
+                        foreground: DISABLED_PRESENTATION.foreground,
+                        border: DISABLED_PRESENTATION.border,
+                        underlay: DISABLED_PRESENTATION.underlay,
+                    },
                     preview: null,
                 }));
                 return;

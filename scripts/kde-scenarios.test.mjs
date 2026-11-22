@@ -3595,3 +3595,17 @@ test("PURE: validators, readiness correlation, presentation and window-info pars
   assert.equal(WORLD_CONTRACT_VERSION, 4);
   assert.equal(PLUGIN_ID, "omnitiler-kwin");
 });
+
+test("planner scenario parser retains exact window sets and allocations from a broker read", () => {
+  const bytes = fs.readFileSync(
+    path.join(HERE, "../test-fixtures/stage5-v4-active/full/projection-cover.json"), "utf8",
+  );
+  const { gen, req } = JSON.parse(bytes);
+  assert.deepEqual(parsePresentation(J({ type: "s", data: [bytes] }), req), {
+    gen, rev: "5", obs: "5",
+    windows: [
+      { win: "win-a", out: "DP-1", ws: "ws-1", alloc: [404, 8, 388, 584], floating: false },
+      { win: "win-b", out: "DP-1", ws: "ws-1", alloc: [8, 8, 388, 584], floating: false },
+    ],
+  });
+});

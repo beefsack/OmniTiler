@@ -1871,16 +1871,19 @@ fn legacy_projection_oracle(decoded: &DecodedReplyV4, producer: Option<(&str, &s
     } else {
         serde_json::Value::Null
     };
+    let presentation = get("presentation");
+    let presentation = serde_json::json!({
+        "foreground": presentation["foreground"].clone(),
+        "border": presentation["border"].clone(),
+        "underlay": presentation["underlay"].clone(),
+    });
     serde_json::json!({
         "v": 4,
         "outcome": "presentation",
         "rev": get("rev"),
         "obs": get("obs"),
-        "scopes": get("scopes"),
-        "workspaces": get("workspaces"),
-        "outputs": get("outputs"),
         "windows": windows,
-        "presentation": get("presentation"),
+        "presentation": presentation,
         "preview": preview,
     })
     .to_string()
@@ -2131,6 +2134,24 @@ fn v4_bound_and_projection_strip_automatic_clear_state_target_only() {
     );
     assert_eq!(proj_state[0]["property"], "above");
     assert_eq!(proj_state[0]["value"], true);
+}
+
+#[test]
+fn checked_projection_requires_valid_preview_producer() {
+    let decoded = decode_ok("messages/reply-result-drag-bottom.json");
+    assert!(decoded.reply.drag_preview.is_some());
+    for (instance, serial) in [
+        ("bad instance", "1"),
+        ("gesture-1", "0"),
+        ("gesture-1", "01"),
+        ("gesture-1", "18446744073709551616"),
+    ] {
+        let err = write_projection_reply_v4(&decoded.reply, Some((instance, serial)))
+            .expect_err("unusable producer identity must refuse");
+        assert_eq!(err.kind, "unknown-value");
+    }
+    write_projection_reply_v4(&decoded.reply, Some(("gesture-1", "18446744073709551615")))
+        .expect("maximal nonzero serial is canonical");
 }
 
 #[test]

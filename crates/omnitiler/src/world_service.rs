@@ -1630,7 +1630,7 @@ mod tests {
         assert_eq!(proj["preview"]["producerInstance"], "effect-1");
         assert_eq!(proj["preview"]["producerSerial"], "1");
         assert!(
-            proj["presentation"]["suspendedOutput"].is_null(),
+            first["presentation"]["suspendedOutput"].is_null(),
             "no verdict without fullscreen"
         );
         // Focused fullscreen on the same output: the verdict publishes and
@@ -1639,7 +1639,7 @@ mod tests {
         assert_eq!(suspended["ready"], true, "fullscreen capture accepted");
         let proj = suspension_read(&service, "read-3");
         assert!(proj["preview"].is_null(), "suspended output omits preview");
-        assert_eq!(proj["presentation"]["suspendedOutput"], "out-a");
+        assert_eq!(suspended["presentation"]["suspendedOutput"], "out-a");
         // The suspension holds across captures: a further suspended
         // capture keeps the verdict and the null preview.
         let still = suspension_capture(&service, &generation, "cap-4", 5, true, WIN_A, None);
@@ -1649,7 +1649,7 @@ mod tests {
             proj["preview"].is_null(),
             "suspension holds across captures"
         );
-        assert_eq!(proj["presentation"]["suspendedOutput"], "out-a");
+        assert_eq!(still["presentation"]["suspendedOutput"], "out-a");
         // Fullscreen exit: the verdict clears and the live gesture preview
         // restores, proven again.
         let exited = suspension_capture(
@@ -1674,7 +1674,7 @@ mod tests {
             "fresh gesture serial proves the new binding"
         );
         assert!(
-            proj["presentation"]["suspendedOutput"].is_null(),
+            exited["presentation"]["suspendedOutput"].is_null(),
             "verdict clears on exit"
         );
     }
@@ -1881,7 +1881,7 @@ mod tests {
                 .read_presentation("{\"v\":4,\"req\":\"read-before\"}")
                 .expect("presentation"),
         );
-        assert_eq!(pres_before["presentation"]["rev"], "2");
+        assert_eq!(pres_before["rev"], "2");
         assert_eq!(pres_before["coveredInstance"], "inst-cover");
         assert_eq!(pres_before["coveredInvalid"], "7");
         assert!(pres_before["preview"].is_null());

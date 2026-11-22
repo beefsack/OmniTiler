@@ -261,7 +261,7 @@ pub fn decode_authority_scope(value: &serde_json::Value) -> Result<AuthorityScop
 /// Bounded canonical decimal `u64` string: `0` or `[1-9][0-9]{0,19}` with a
 /// value at or below `u64::MAX`. JSON numbers refuse (no `f64` precision
 /// loss); leading zeros, signs, whitespace, and empty strings refuse.
-fn parse_u64_decimal(text: &str) -> Option<u64> {
+pub(crate) fn parse_u64_decimal(text: &str) -> Option<u64> {
     if text.is_empty() || text.len() > 20 {
         return None;
     }
@@ -276,9 +276,6 @@ fn parse_u64_decimal(text: &str) -> Option<u64> {
         return None;
     }
     if !text.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    if text.len() == 20 && text > u64::MAX.to_string().as_str() {
         return None;
     }
     text.parse::<u64>().ok()
