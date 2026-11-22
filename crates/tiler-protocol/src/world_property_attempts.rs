@@ -34,28 +34,17 @@ pub(crate) enum AttemptRowOutcome<T> {
     },
 }
 
-/// Decoded `propertyAttempts` prefix (`frame -> member -> view`)
-/// plus wire-order reconstruction metadata.
-pub(crate) struct DecodedPropertyPrefix {
+/// Decoded `propertyAttempts` section (`frame -> member -> view -> state ->
+/// visibility`) plus held-row retention and wire-order reconstruction metadata.
+pub(crate) struct DecodedPropertyAttempts {
     pub frames: Vec<FrameAttempt>,
     pub member_attempts: Vec<MemberAttempt>,
     pub view_attempts: Vec<ViewAttempt>,
+    pub state_attempts: Vec<StateAttempt>,
+    pub visibility_attempts: Vec<VisibilityAttempt>,
     pub held_attempts: Vec<HeldAttemptRow>,
     pub held_attempt_fields: Vec<(AttemptLaneV4, usize, HeldFields)>,
     pub property_attempt_order: Vec<AttemptLaneV4>,
-}
-
-/// Partitioned `state` and `visibility` buckets deferred until after
-/// `creationAttempts` to preserve legacy cross-section refusal precedence.
-pub(crate) struct PropertyAttemptTail<'a> {
-    state_bucket: Vec<(usize, &'a serde_json::Value)>,
-    visibility_bucket: Vec<(usize, &'a serde_json::Value)>,
-}
-
-/// Decoded `state` and `visibility` suffix from [`PropertyAttemptTail`].
-pub(crate) struct DecodedPropertyTail {
-    pub state_attempts: Vec<StateAttempt>,
-    pub visibility_attempts: Vec<VisibilityAttempt>,
 }
 
 fn section_over_cap() -> WorldProtocolError {
@@ -65,12 +54,12 @@ fn section_over_cap() -> WorldProtocolError {
     }
 }
 
-/// Partition `propertyAttempts` into the six closed kinds, enforce total cap
-/// and `frame|member|view|clear` per-kind caps, and decode `frame -> member ->
-/// view -> clear` (producer order within each kind; first hard error wins).
-pub(crate) fn decode_property_attempts_prefix(
+/// Partition `propertyAttempts` into the five closed kinds, enforce total and
+/// per-kind caps, and decode `frame -> member -> view -> state -> visibility`
+/// (producer order within each kind; first hard error wins).
+pub(crate) fn decode_property_attempts(
     items: &[serde_json::Value],
-) -> Result<(DecodedPropertyPrefix, PropertyAttemptTail<'_>)> {
+) -> Result<DecodedPropertyAttempts> {
     if items.len() > MAX_WORLD_PROPERTY_ATTEMPTS {
         return Err(section_over_cap());
     }
@@ -161,35 +150,12 @@ pub(crate) fn decode_property_attempts_prefix(
         }
     }
 
-    Ok((
-        DecodedPropertyPrefix {
-            frames,
-            member_attempts,
-            view_attempts,
-            held_attempts,
-            held_attempt_fields,
-            property_attempt_order,
-        },
-        PropertyAttemptTail {
-            state_bucket,
-            visibility_bucket,
-        },
-    ))
-}
-
-/// Decode `state -> visibility` after `creationAttempts`, enforcing per-kind
-/// caps and producer order within each kind.
-pub(crate) fn decode_property_attempts_tail(
-    tail: PropertyAttemptTail<'_>,
-    held_attempts: &mut Vec<HeldAttemptRow>,
-    held_attempt_fields: &mut Vec<(AttemptLaneV4, usize, HeldFields)>,
-) -> Result<DecodedPropertyTail> {
-    if tail.state_bucket.len() > MAX_WORLD_STATE_ATTEMPTS {
+    if state_bucket.len() > MAX_WORLD_STATE_ATTEMPTS {
         return Err(section_over_cap());
     }
     let mut state_attempts = Vec::new();
     let mut seen_states = BTreeSet::new();
-    for (_, item) in tail.state_bucket {
+    for (_, item) in state_bucket {
         let attempt = decode_state_attempt(item)?;
         if !seen_states.insert((attempt.window.0.clone(), attempt.property)) {
             return Err(WorldProtocolError {
@@ -200,12 +166,12 @@ pub(crate) fn decode_property_attempts_tail(
         state_attempts.push(attempt);
     }
 
-    if tail.visibility_bucket.len() > MAX_WORLD_VISIBILITY_ATTEMPTS {
+    if visibility_bucket.len() > MAX_WORLD_VISIBILITY_ATTEMPTS {
         return Err(section_over_cap());
     }
     let mut visibility_attempts = Vec::new();
     let mut seen_visibility = BTreeSet::new();
-    for (ordinal, item) in tail.visibility_bucket {
+    for (ordinal, item) in visibility_bucket {
         match decode_visibility_attempt_v4(item, ordinal, &mut seen_visibility)? {
             AttemptRowOutcome::Valid(attempt) => visibility_attempts.push(attempt),
             AttemptRowOutcome::Held { row, fields } => {
@@ -215,9 +181,15 @@ pub(crate) fn decode_property_attempts_tail(
         }
     }
 
-    Ok(DecodedPropertyTail {
+    Ok(DecodedPropertyAttempts {
+        frames,
+        member_attempts,
+        view_attempts,
         state_attempts,
         visibility_attempts,
+        held_attempts,
+        held_attempt_fields,
+        property_attempt_order,
     })
 }
 

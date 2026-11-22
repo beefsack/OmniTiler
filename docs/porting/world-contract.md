@@ -446,6 +446,18 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 - The pre-release v4 attempt cutover has no dual spelling: the old five
   attempt arrays and `WindowFact.lastWrite` are not accepted.
 
+- Report-codec hard refusal precedence (applies to the `WorldReportV4` codec
+  only; it does not alter pre-decode endpoint checks or post-decode engine
+  checks, and decoding order does not reorder wire replay): after the
+  preceding envelope, inventory, and `monotonicMs` checks, `propertyAttempts`
+  is validated as one section -- array shape, total cap, and row `kind` tags
+  in producer order first, then per-lane caps and rows in
+  `frame -> member -> view -> state -> visibility` order (producer order
+  within each lane). Any hard `propertyAttempts` error beats
+  `creationAttempts` and later sections; a hard `creationAttempts` error beats
+  `focusFeedback` and later report decode. Identifiable held rows do not
+  themselves refuse.
+
 - `foregroundKnown:false` with nonempty `focused` refuses as
   `snapshot-invalid` / `focused-unknown-mismatch`. Inventory completeness or
   absence of a managed focus match cannot prove no-client foreground. Preserve

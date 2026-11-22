@@ -4005,14 +4005,17 @@ pub fn decode_report_v4_map(
     };
     let property_attempts_value = map.get("propertyAttempts").ok_or_else(malformed)?;
     let property_items = property_attempts_value.as_array().ok_or_else(malformed)?;
-    let (decoded_prefix, property_tail) =
-        crate::world_property_attempts::decode_property_attempts_prefix(property_items)?;
-    let frames = decoded_prefix.frames;
-    let member_attempts = decoded_prefix.member_attempts;
-    let view_attempts = decoded_prefix.view_attempts;
-    let mut held_attempts = decoded_prefix.held_attempts;
-    let mut held_attempt_fields = decoded_prefix.held_attempt_fields;
-    let property_attempt_order = decoded_prefix.property_attempt_order;
+    let decoded_properties =
+        crate::world_property_attempts::decode_property_attempts(property_items)?;
+    let frames = decoded_properties.frames;
+    let member_attempts = decoded_properties.member_attempts;
+    let view_attempts = decoded_properties.view_attempts;
+    let state_attempts = decoded_properties.state_attempts;
+    let visibility_attempts = decoded_properties.visibility_attempts;
+    let mut held_attempts = decoded_properties.held_attempts;
+    let mut held_attempt_fields = decoded_properties.held_attempt_fields;
+    let property_attempt_order = decoded_properties.property_attempt_order;
+    let pre_creation_held_len = held_attempts.len();
     let mut creation_attempts = Vec::new();
     let mut creation_receipts = Vec::new();
     let mut seen_creations: std::collections::BTreeMap<String, Option<(String, String)>> =
@@ -4054,13 +4057,15 @@ pub fn decode_report_v4_map(
             }
         }
     }
-    let decoded_tail = crate::world_property_attempts::decode_property_attempts_tail(
-        property_tail,
-        &mut held_attempts,
-        &mut held_attempt_fields,
-    )?;
-    let state_attempts = decoded_tail.state_attempts;
-    let visibility_attempts = decoded_tail.visibility_attempts;
+    // Keep legacy creation-before-visibility order for diagnostic presentation
+    // while `held_attempt_fields` stays in `AttemptLaneV4` order for binary search.
+    if held_attempts.len() > pre_creation_held_len {
+        let vis_start = held_attempts[..pre_creation_held_len]
+            .partition_point(|row| row.lane != AttemptLaneV4::Visibility);
+        if vis_start < pre_creation_held_len {
+            held_attempts[vis_start..].rotate_left(pre_creation_held_len - vis_start);
+        }
+    }
     // Required correlated focus evidence: closed mechanical rows, no
     // missing tolerance. Both arms decode context-free here; the engine
     // host gate owns the native/output check.

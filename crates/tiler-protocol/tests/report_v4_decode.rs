@@ -2612,13 +2612,13 @@ fn v4_cross_section_and_kind_refusal_precedence() {
         "attemptMs": "1"
     });
 
-    // 1. Creation error ("unknown-value") beats state ("malformed") and visibility errors.
-    let mut creation_vs_state = fixture_value("messages/report-empty.json");
-    creation_vs_state["propertyAttempts"] = serde_json::json!([bad_vis, bad_state]);
-    creation_vs_state["creationAttempts"] = serde_json::json!([bad_creation]);
-    let err = decode_report_v4(&creation_vs_state.to_string())
-        .expect_err("creation error must beat state/visibility");
-    assert_eq!(err.kind, "unknown-value");
+    // 1. State ("malformed") in propertyAttempts beats creation ("unknown-value") and visibility errors.
+    let mut state_vs_creation = fixture_value("messages/report-empty.json");
+    state_vs_creation["propertyAttempts"] = serde_json::json!([bad_vis, bad_state]);
+    state_vs_creation["creationAttempts"] = serde_json::json!([bad_creation]);
+    let err = decode_report_v4(&state_vs_creation.to_string())
+        .expect_err("state error must beat creation/visibility");
+    assert_eq!(err.kind, "malformed");
 
     // 2. State error beats visibility error in either producer order.
     for order in [vec![&bad_vis, &bad_state], vec![&bad_state, &bad_vis]] {
@@ -3042,4 +3042,186 @@ fn active_v4_rejects_retired_clear_attempt_kind() {
     ]);
     let error = decode_report_v4(&doc.to_string()).expect_err("retired kind=clear must refuse");
     assert_eq!(error.kind, "unknown-value");
+}
+
+#[test]
+fn property_attempts_precede_creation_attempts_state_error() {
+    let state_row = serde_json::json!({
+        "kind": "state",
+        "win": "win-a",
+        "property": "fullscreen",
+        "target": true,
+        "rev": "1",
+        "disposition": { "kind": "called", "setter": "accepted" },
+        "pre": false,
+        "post": true,
+        "attemptMs": "20"
+    });
+    let bad_creation = serde_json::json!([
+        {
+            "op": "op-1",
+            "ws": "ws-1",
+            "out": "out-1",
+            "setter": "accepted",
+            "before": [""],
+            "after": [],
+            "created": null,
+            "attemptMs": "20"
+        }
+    ]);
+
+    let mut state_only = fixture_value("messages/report-observe.json");
+    state_only["propertyAttempts"] = serde_json::json!([state_row.clone(), state_row.clone()]);
+    let state_err =
+        decode_report_v4(&state_only.to_string()).expect_err("duplicate state attempt must refuse");
+    assert_eq!(state_err.kind, "snapshot-invalid");
+    assert_eq!(state_err.message, "duplicate-state-attempt");
+
+    let mut creation_only = fixture_value("messages/report-observe.json");
+    creation_only["creationAttempts"] = bad_creation.clone();
+    let creation_err =
+        decode_report_v4(&creation_only.to_string()).expect_err("invalid creation id must refuse");
+    assert_eq!(creation_err.kind, "snapshot-invalid");
+    assert_eq!(creation_err.message, "creation-id-invalid");
+
+    let mut paired = fixture_value("messages/report-observe.json");
+    paired["propertyAttempts"] = serde_json::json!([state_row.clone(), state_row]);
+    paired["creationAttempts"] = bad_creation;
+    let paired_err = decode_report_v4(&paired.to_string())
+        .expect_err("paired state + creation error must refuse");
+    assert_eq!(paired_err.kind, "snapshot-invalid");
+    assert_eq!(paired_err.message, "duplicate-state-attempt");
+}
+
+#[test]
+fn property_attempts_precede_creation_attempts_visibility_error() {
+    let visibility_row = serde_json::json!({
+        "kind": "visibility",
+        "win": "win-a",
+        "target": true,
+        "revision": "1",
+        "path": "minimized",
+        "disposition": { "kind": "called", "setter": "accepted" },
+        "pre": null,
+        "post": null
+    });
+    let bad_creation = serde_json::json!([
+        {
+            "op": "op-1",
+            "ws": "ws-1",
+            "out": "out-1",
+            "setter": "accepted",
+            "before": [""],
+            "after": [],
+            "created": null,
+            "attemptMs": "20"
+        }
+    ]);
+
+    let mut vis_only = fixture_value("messages/report-observe.json");
+    vis_only["propertyAttempts"] =
+        serde_json::json!([visibility_row.clone(), visibility_row.clone()]);
+    let vis_err = decode_report_v4(&vis_only.to_string())
+        .expect_err("duplicate visibility attempt must refuse");
+    assert_eq!(vis_err.kind, "snapshot-invalid");
+    assert_eq!(vis_err.message, "duplicate-visibility-attempt");
+
+    let mut creation_only = fixture_value("messages/report-observe.json");
+    creation_only["creationAttempts"] = bad_creation.clone();
+    let creation_err =
+        decode_report_v4(&creation_only.to_string()).expect_err("invalid creation id must refuse");
+    assert_eq!(creation_err.kind, "snapshot-invalid");
+    assert_eq!(creation_err.message, "creation-id-invalid");
+
+    let mut paired = fixture_value("messages/report-observe.json");
+    paired["propertyAttempts"] = serde_json::json!([visibility_row.clone(), visibility_row]);
+    paired["creationAttempts"] = bad_creation;
+    let paired_err = decode_report_v4(&paired.to_string())
+        .expect_err("paired visibility + creation error must refuse");
+    assert_eq!(paired_err.kind, "snapshot-invalid");
+    assert_eq!(paired_err.message, "duplicate-visibility-attempt");
+}
+
+#[test]
+fn mixed_held_creation_precedes_visibility_with_residual_and_wire_order() {
+    let held_visibility = serde_json::json!({
+        "kind": "visibility",
+        "win": "win-a",
+        "target": true,
+        "revision": "1",
+        "path": "minimized",
+        "disposition": { "kind": "called", "setter": "accepted" },
+        "pre": null,
+        "post": null,
+        "reason": "not-a-reason"
+    });
+    let valid_state = serde_json::json!({
+        "kind": "state",
+        "win": "win-a",
+        "property": "fullscreen",
+        "target": true,
+        "rev": "1",
+        "disposition": { "kind": "called", "setter": "accepted" },
+        "pre": false,
+        "post": true,
+        "attemptMs": "20"
+    });
+    let held_creation = serde_json::json!({
+        "op": "op-1",
+        "ws": "ws-1",
+        "out": "out-1",
+        "setter": "accepted",
+        "before": [],
+        "after": [],
+        "created": null,
+        "attemptMs": "20",
+        "extraField": "held"
+    });
+
+    let mut doc = fixture_value("messages/report-observe.json");
+    doc["propertyAttempts"] = serde_json::json!([held_visibility, valid_state]);
+    doc["creationAttempts"] = serde_json::json!([held_creation]);
+
+    let decoded = decode_report_v4(&doc.to_string()).expect("mixed held report must decode");
+    let held_lanes: Vec<(AttemptLaneV4, usize)> = decoded
+        .report
+        .held_attempts
+        .iter()
+        .map(|row| (row.lane, row.ordinal))
+        .collect();
+    assert_eq!(
+        held_lanes,
+        vec![(AttemptLaneV4::Creation, 0), (AttemptLaneV4::Visibility, 0)]
+    );
+
+    let residual = decoded
+        .residual
+        .as_ref()
+        .expect("mixed held report must retain residual");
+    let creation_fields = residual
+        .attempt_fields(AttemptLaneV4::Creation, 0)
+        .expect("held creation residual fields must be retrievable");
+    assert!(creation_fields.iter().any(|(k, _)| k == "extraField"));
+    let visibility_fields = residual
+        .attempt_fields(AttemptLaneV4::Visibility, 0)
+        .expect("held visibility residual fields must be retrievable");
+    assert!(visibility_fields.iter().any(|(k, _)| k == "reason"));
+
+    let encoded = encode_report_v4(&decoded).expect("mixed held report must encode");
+    let encoded_value: serde_json::Value =
+        serde_json::from_str(&encoded).expect("encoded report must be valid json");
+    assert_eq!(encoded_value["propertyAttempts"], doc["propertyAttempts"]);
+
+    let redecoded = decode_report_v4(&encoded).expect("re-encoded mixed held report must decode");
+    let redecoded_lanes: Vec<(AttemptLaneV4, usize)> = redecoded
+        .report
+        .held_attempts
+        .iter()
+        .map(|row| (row.lane, row.ordinal))
+        .collect();
+    assert_eq!(redecoded_lanes, held_lanes);
+    assert_eq!(
+        redecoded.property_attempt_order,
+        vec![AttemptLaneV4::Visibility, AttemptLaneV4::State]
+    );
 }
