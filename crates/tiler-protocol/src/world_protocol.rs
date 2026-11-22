@@ -228,14 +228,6 @@ pub(crate) fn req_bool(
         .ok_or_else(malformed)
 }
 
-fn req_i32(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<i32> {
-    let value = map.get(key).ok_or_else(malformed)?;
-    value
-        .as_i64()
-        .and_then(|v| i32::try_from(v).ok())
-        .ok_or_else(malformed)
-}
-
 /// Decode a closed v4 scope union. The output arm and workspace arm have
 /// intentionally disjoint key sets; no string/composite compatibility form
 /// is accepted.
@@ -1336,81 +1328,6 @@ fn decode_creation_attempt(
     })
 }
 
-fn decode_hover_prior(
-    value: &serde_json::Value,
-) -> Result<Option<tiler_core::session::DragHoverPrior>> {
-    let map = as_object(value)?;
-    check_keys(
-        map,
-        &[
-            "domainOut",
-            "domainWs",
-            "leaf",
-            "win",
-            "rev",
-            "prior",
-            "priorOut",
-            "priorWs",
-        ],
-    )?;
-    let leaf = req_id(map, "leaf")?;
-    let revision = req_u64_str(map, "rev")?;
-    let edge = match map.get("prior") {
-        None => return Err(malformed()),
-        Some(serde_json::Value::Null) => None,
-        Some(prior_value) => {
-            let prior_map = as_object(prior_value)?;
-            check_keys(prior_map, &["group", "edge"])?;
-            let group = req_id(prior_map, "group")?;
-            let edge = match req_str(prior_map, "edge")? {
-                "left" => tiler_core::contract::DragSide::Left,
-                "right" => tiler_core::contract::DragSide::Right,
-                "top" => tiler_core::contract::DragSide::Top,
-                "bottom" => tiler_core::contract::DragSide::Bottom,
-                // Center never carries stickiness: advisory degrade, not a
-                // refusal (mirrors the legacy hover-carry rule).
-                _ => return Ok(None),
-            };
-            Some(tiler_core::policy::PriorGroupEdge {
-                group: NodeId::from(group.as_str()),
-                edge,
-            })
-        }
-    };
-    let domain_out = req_id(map, "domainOut")?;
-    let domain_ws = req_id(map, "domainWs")?;
-    let prior_out = req_id(map, "priorOut")?;
-    let prior_ws = req_id(map, "priorWs")?;
-    Ok(Some(tiler_core::session::DragHoverPrior {
-        domain: tiler_core::session::DomainKey {
-            output: OutputId(domain_out),
-            workspace: WorkspaceId(domain_ws),
-        },
-        source_leaf: NodeId::from(leaf.as_str()),
-        source_window: WindowId(req_id(map, "win")?),
-        revision,
-        prior: edge,
-        prior_domain: tiler_core::session::DomainKey {
-            output: OutputId(prior_out),
-            workspace: WorkspaceId(prior_ws),
-        },
-    }))
-}
-
-fn decode_drag_source(value: &serde_json::Value) -> Result<Option<tiler_core::session::DomainKey>> {
-    match value {
-        serde_json::Value::Null => Ok(None),
-        serde_json::Value::Object(map) => {
-            check_keys(map, &["out", "ws"])?;
-            Ok(Some(tiler_core::session::DomainKey {
-                output: OutputId(req_id(map, "out")?),
-                workspace: WorkspaceId(req_id(map, "ws")?),
-            }))
-        }
-        _ => Err(malformed()),
-    }
-}
-
 /// Normalized gesture ingress: `{"win":S,"kind":"move"|"resize",
 /// "phase":"started"|"updated"|"released"|"cancelled","id":"N",
 /// "cursor":[x,y]|null,"startCursor":[x,y]|null,"esc":B,"modal":B,
@@ -2118,181 +2035,10 @@ pub(crate) fn push_opt_bool(out: &mut String, value: &Option<bool>) {
     }
 }
 
-fn decode_core_command(map: &serde_json::Map<String, serde_json::Value>) -> Result<CoreCommand> {
-    let op = req_str(map, "op")?;
-    match op {
-        "reconcile" => {
-            check_keys(map, &["op"])?;
-            Ok(CoreCommand::Reconcile)
-        }
-        "update-gaps" => {
-            check_keys(map, &["op"])?;
-            Ok(CoreCommand::UpdateGaps)
-        }
-        "release-domain" => {
-            check_keys(map, &["op"])?;
-            Ok(CoreCommand::ReleaseDomain)
-        }
-        "move" => {
-            check_keys(map, &["op", "win", "direction", "crossOutput", "sameAxis"])?;
-            let same_axis = match req_str(map, "sameAxis")? {
-                "group-with-neighbor" => tiler_core::directional::SameAxisMove::GroupWithNeighbor,
-                "swap-with-neighbor" => tiler_core::directional::SameAxisMove::SwapWithNeighbor,
-                _ => return Err(unknown_value()),
-            };
-            Ok(CoreCommand::Move {
-                window: WindowId(req_id(map, "win")?),
-                direction: parse_direction(req_str(map, "direction")?)?,
-                cross_output_transfer: req_bool(map, "crossOutput")?,
-                same_axis_move: same_axis,
-            })
-        }
-        "focus" => {
-            check_keys(
-                map,
-                &["op", "win", "direction", "crossOutput", "floatSubject"],
-            )?;
-            Ok(CoreCommand::Focus {
-                window: WindowId(req_id(map, "win")?),
-                direction: parse_direction(req_str(map, "direction")?)?,
-                cross_output_transfer: req_bool(map, "crossOutput")?,
-                float_subject: req_bool(map, "floatSubject")?,
-            })
-        }
-        "resize" => {
-            check_keys(map, &["op", "win", "direction", "mode", "press"])?;
-            let mode = parse_resize_selector(req_str(map, "mode")?)?;
-            let press = map
-                .get("press")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|v| u32::try_from(v).ok())
-                .ok_or_else(malformed)?;
-            Ok(CoreCommand::Resize {
-                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
-                direction: parse_direction(req_str(map, "direction")?)?,
-                mode,
-                press_index: press,
-            })
-        }
-        "pointer-resize" => {
-            check_keys(
-                map,
-                &[
-                    "op",
-                    "win",
-                    "direction",
-                    "boundary",
-                    "direction2",
-                    "boundary2",
-                ],
-            )?;
-            let direction2 = match map.get("direction2") {
-                None => return Err(malformed()),
-                Some(serde_json::Value::Null) => None,
-                Some(v) => Some(parse_direction(v.as_str().ok_or_else(malformed)?)?),
-            };
-            let boundary2 = match map.get("boundary2") {
-                None => return Err(malformed()),
-                Some(serde_json::Value::Null) => None,
-                Some(v) => Some(
-                    v.as_i64()
-                        .and_then(|n| i32::try_from(n).ok())
-                        .ok_or_else(malformed)?,
-                ),
-            };
-            let second = match (direction2, boundary2) {
-                (None, None) => None,
-                (Some(d), Some(b)) => Some((d, b)),
-                _ => return Err(unknown_value()),
-            };
-            Ok(CoreCommand::PointerResize {
-                window: WindowId(req_id(map, "win")?),
-                direction: parse_direction(req_str(map, "direction")?)?,
-                boundary: req_i32(map, "boundary")?,
-                second,
-            })
-        }
-        "toggle-float" => {
-            check_keys(map, &["op", "win", "rect"])?;
-            Ok(CoreCommand::ToggleFloat {
-                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
-                float_rect: opt_rect_or_null(map, "rect")?,
-            })
-        }
-        "toggle-orientation" => {
-            check_keys(map, &["op", "win"])?;
-            Ok(CoreCommand::ToggleOrientation {
-                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
-            })
-        }
-        "send-to-workspace" => {
-            check_keys(map, &["op", "win", "out", "ws", "follow"])?;
-            Ok(CoreCommand::SendToWorkspace {
-                window: WindowId(req_id(map, "win")?),
-                target_output: OutputId(req_id(map, "out")?),
-                target_workspace: WorkspaceId(req_id(map, "ws")?),
-                follow: req_bool(map, "follow")?,
-            })
-        }
-        "send-to-output" => {
-            check_keys(map, &["op", "win", "out", "ws", "follow"])?;
-            Ok(CoreCommand::SendToOutput {
-                window: WindowId(req_id(map, "win")?),
-                target_output: OutputId(req_id(map, "out")?),
-                target_workspace: WorkspaceId(req_id(map, "ws")?),
-                follow: req_bool(map, "follow")?,
-            })
-        }
-        "migrate-workspace" => {
-            check_keys(map, &["op", "direction"])?;
-            Ok(CoreCommand::MigrateWorkspace {
-                direction: parse_direction(req_str(map, "direction")?)?,
-            })
-        }
-        "drag-drop" | "drag-preview" => {
-            check_keys(map, &["op", "win", "x", "y", "hover", "source"])?;
-            let hover = match map.get("hover") {
-                None => return Err(malformed()),
-                Some(serde_json::Value::Null) => None,
-                Some(value) => decode_hover_prior(value)?,
-            };
-            let source = decode_drag_source(map.get("source").ok_or_else(malformed)?)?;
-            let window = WindowId(req_id(map, "win")?);
-            let x = req_i32(map, "x")?;
-            let y = req_i32(map, "y")?;
-            if op == "drag-drop" {
-                Ok(CoreCommand::DragDrop {
-                    window,
-                    x,
-                    y,
-                    hover_prior: hover,
-                    source,
-                })
-            } else {
-                Ok(CoreCommand::DragPreview {
-                    window,
-                    x,
-                    y,
-                    hover_prior: hover,
-                    source,
-                })
-            }
-        }
-        _ => Err(unknown_value()),
-    }
-}
-
 fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
     let map = as_object(value)?;
     let op = req_str(map, "op")?;
     match op {
-        "focus" => {
-            check_keys(map, &["op", "win", "direction"])?;
-            Ok(WorldCommand::Focus {
-                window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
-                direction: Some(parse_direction(req_str(map, "direction")?)?),
-            })
-        }
         "send" => {
             check_keys(map, &["op", "win", "out", "ws", "follow"])?;
             Ok(WorldCommand::Send {
@@ -2300,13 +2046,6 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
                 target_output: OutputId(req_id(map, "out")?),
                 target_workspace: WorkspaceId(req_id(map, "ws")?),
                 follow: req_bool(map, "follow")?,
-            })
-        }
-        "switch-view" => {
-            check_keys(map, &["op", "out", "ws"])?;
-            Ok(WorldCommand::SwitchView {
-                output: OutputId(req_id(map, "out")?),
-                workspace: WorkspaceId(req_id(map, "ws")?),
             })
         }
         "select-workspace" => {
@@ -2499,12 +2238,6 @@ fn decode_command(value: &serde_json::Value) -> Result<WorldCommand> {
             Ok(WorldCommand::ToggleFullscreen {
                 window: WindowSubject::Window(WindowId(req_id(map, "win")?)),
             })
-        }
-        "operation" => {
-            check_keys(map, &["op", "command"])?;
-            let inner = map.get("command").ok_or_else(malformed)?;
-            let inner_map = as_object(inner)?;
-            Ok(WorldCommand::Operation(decode_core_command(inner_map)?))
         }
         _ => Err(unknown_value()),
     }
@@ -3987,6 +3720,20 @@ pub fn decode_report_v4(json: &str) -> std::result::Result<DecodedReportV4, Worl
             }
         })?;
     let map = as_object(&value)?;
+    decode_report_v4_map(map)
+}
+
+/// Decode one already-parsed, duplicate-checked JSON object map into the typed
+/// core v4 report plus its optional wire metadata.
+///
+/// Caller contract: `map` must come from a strict duplicate-rejecting JSON
+/// parse (such as [`crate::connection_protocol::parse_strict_json`]) and the
+/// caller must enforce the [`WORLD_MAX_REQUEST_BYTES`] compact-encoding byte
+/// limit before calling this entry point. Raw wire callers should use
+/// [`decode_report_v4`] / [`decode_request_with_wire`].
+pub fn decode_report_v4_map(
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> std::result::Result<DecodedReportV4, WorldProtocolError> {
     check_keys_with_optional(
         map,
         &[
@@ -5564,21 +5311,10 @@ fn decode_reply_presentation_v4(value: &serde_json::Value) -> Result<WorldPresen
     })
 }
 
-/// Optional wire metadata for a decoded v4 reply: the typed reply carries
-/// what the wire carries, and this records which omit-if-absent spellings
-/// the wire used. `suspended_output_present` names the wire presence of
-/// `presentation.suspendedOutput`; it never influences typed equality or
-/// engine input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReplyWireOptionals {
-    pub suspended_output_present: bool,
-}
-
-/// Decoded v4 reply plus its optional wire metadata.
+/// Decoded v4 reply plus its optional shared-roster plan metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedReplyV4 {
     pub reply: WorldReplyV4,
-    pub wire: ReplyWireOptionals,
     pub roster_plan: Option<SharedRosterPlan>,
 }
 
@@ -5773,12 +5509,6 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
     let cursor_warp = opt_point_or_null(map, "warpCursor")?;
     let presentation =
         decode_reply_presentation_v4(map.get("presentation").ok_or_else(malformed)?)?;
-    let wire = ReplyWireOptionals {
-        suspended_output_present: map
-            .get("presentation")
-            .and_then(serde_json::Value::as_object)
-            .is_some_and(|presentation| presentation.contains_key("suspendedOutput")),
-    };
     let writes_value = map.get("intentDesired").ok_or_else(malformed)?;
     let write_items = writes_value.as_array().ok_or_else(malformed)?;
     if write_items.len() > MAX_INTENT_DESIRED {
@@ -5860,7 +5590,6 @@ pub fn decode_reply_v4(json: &str) -> std::result::Result<DecodedReplyV4, WorldP
             switch_settled,
             diagnostics,
         },
-        wire,
         roster_plan,
     })
 }
@@ -5929,15 +5658,10 @@ pub use crate::world_report_rows::{
     encode_window_canonical,
 };
 
-/// Checked canonical encode of one decoded v4 reply. Refuses inconsistent
-/// wire metadata and unspellable typed values instead of emitting
-/// non-wire bytes.
+/// Checked canonical encode of one decoded v4 reply. Refuses unspellable
+/// typed values instead of emitting non-wire bytes.
 pub fn encode_reply_v4(decoded: &DecodedReplyV4) -> Result<String> {
-    crate::world_reply_write::write_reply_v4_with_plan(
-        &decoded.reply,
-        &decoded.wire,
-        decoded.roster_plan.as_ref(),
-    )
+    crate::world_reply_write::write_reply_v4_with_plan(&decoded.reply, decoded.roster_plan.as_ref())
 }
 
 // -- Staged canonical v4 report writer --
@@ -7203,48 +6927,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pointer_resize_half_pair_rejects_and_same_axis_decodes() {
-        for (dir2, bnd2) in [
-            (serde_json::json!("up"), serde_json::Value::Null),
-            (serde_json::Value::Null, serde_json::json!(250)),
-        ] {
-            let val = serde_json::json!({
-                "op": "pointer-resize",
-                "win": "win-a",
-                "direction": "right",
-                "boundary": 200,
-                "direction2": dir2,
-                "boundary2": bnd2,
-            });
-            let map = val.as_object().expect("object");
-            let err = decode_core_command(map).expect_err("half-pair must reject");
-            assert_eq!(err.kind, "unknown-value");
-        }
-
-        for (dir2_str, expected_dir2) in [("up", Direction::Up), ("left", Direction::Left)] {
-            let val = serde_json::json!({
-                "op": "pointer-resize",
-                "win": "win-a",
-                "direction": "right",
-                "boundary": 200,
-                "direction2": dir2_str,
-                "boundary2": 250,
-            });
-            let map = val.as_object().expect("object");
-            let cmd = decode_core_command(map).expect("pair decodes");
-            assert_eq!(
-                cmd,
-                CoreCommand::PointerResize {
-                    window: WindowId("win-a".to_owned()),
-                    direction: Direction::Right,
-                    boundary: 200,
-                    second: Some((expected_dir2, 250)),
-                }
-            );
-        }
-    }
-
-    #[test]
     fn u64_decimal_rejects_floats_and_formats() {
         assert_eq!(parse_u64_decimal("0"), Some(0));
         assert_eq!(parse_u64_decimal("7"), Some(7));
@@ -7335,14 +7017,11 @@ mod tests {
         let decoded = DecodedReplyV4 {
             reply,
             roster_plan: None,
-            wire: ReplyWireOptionals {
-                suspended_output_present: false,
-            },
         };
         let wire = encode_reply_v4(&decoded).expect("reply encodes");
         assert_eq!(
             wire.len(),
-            count_reply_v4(&decoded.reply, &decoded.wire).expect("writer counts event reply"),
+            count_reply_v4(&decoded.reply).expect("writer counts event reply"),
             "protocol writer count is exact over the event reply"
         );
         assert_eq!(

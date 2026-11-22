@@ -204,16 +204,16 @@ use serde_json::Map;
 #[cfg(test)]
 use tiler_protocol::world_protocol::decode_request;
 use tiler_protocol::world_protocol::{
-    ReplyWireOptionals, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldEngine, WorldOutcome,
-    decode_command_value_v4, decode_request_with_wire, encode_error, is_valid_adapter_id,
+    WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldEngine, WorldOutcome,
+    decode_command_value_v4, decode_report_v4_map, encode_error, is_valid_adapter_id,
     is_valid_request_id,
 };
-#[cfg(test)]
-use tiler_protocol::world_reply_write::write_projection_reply_v4;
 use tiler_protocol::world_reply_write::{
-    BrokerGestureAssoc, BrokerReplyBind, write_bound_reply_v4, write_bound_reply_v4_prevalidated,
-    write_projection_reply_v4_prevalidated,
+    BrokerGestureAssoc, BrokerReplyBind, CachedProjectionV4, write_bound_reply_v4,
+    write_bound_reply_v4_prevalidated, write_cached_projection_v4_prevalidated,
 };
+#[cfg(test)]
+use tiler_protocol::world_reply_write::{write_cached_projection_v4, write_projection_reply_v4};
 
 /// Broker wire contract version (equals the core/world protocol version).
 pub const BROKER_VERSION: u32 = 4;
@@ -405,7 +405,7 @@ impl Settlement {
 /// presentation cache.
 struct PreparedCapture {
     bound: String,
-    projection: String,
+    projection: CachedProjectionV4,
     preview_assoc_is_some: bool,
     has_preview_geometry: bool,
     suspended: bool,
@@ -434,7 +434,7 @@ pub struct WorldBroker {
     /// Cached accepted presentation projection (snapshot plus
     /// presentation plus the renderer-only drop preview, window write tokens
     /// stripped). Never the full reply.
-    presentation: Option<String>,
+    presentation: Option<CachedProjectionV4>,
     /// Causal coverage of the cached projection: the native-invalidation
     /// witness (source instance plus counter) the accepted capture
     /// covered, or `None` when the capture carried no proof (missing
@@ -921,7 +921,7 @@ impl WorldBroker {
                 return self.remember_rejection(&refused, envelope, kind, message, clock_now);
             }
         };
-        let parsed = ParsedCapture {
+        let mut parsed = ParsedCapture {
             adapter,
             generation,
             source,
@@ -938,19 +938,18 @@ impl WorldBroker {
         // syntactically invalid capture rejects here without touching the
         // engine or the queue, so it can never retire a good queued command.
         // No engine mutation happens in this gate.
-        let mut plain_inner = parsed.inner.clone();
         self.stamp_inner(
-            &mut plain_inner,
-            &parsed,
+            &mut parsed.inner,
+            &parsed.adapter,
+            &parsed.source,
             observation_seq,
             request_seq,
             clock,
         );
-        let plain_stamped = serde_json::Value::Object(plain_inner).to_string();
-        if plain_stamped.len() > WORLD_MAX_REQUEST_BYTES {
+        if compact_json_exceeds_limit(&parsed.inner, WORLD_MAX_REQUEST_BYTES) {
             return Err(BrokerError::Oversized);
         }
-        let plain_decoded = match decode_request_with_wire(&plain_stamped) {
+        let plain_decoded = match decode_report_v4_map(&parsed.inner) {
             Ok(decoded) => decoded,
             Err(error) => {
                 return self.remember_rejection(
@@ -1189,9 +1188,6 @@ impl WorldBroker {
                 // installing gesture_map, projection, coverage, watermark,
                 // or source replay.
                 self.repark_batch(drained);
-                let wire = ReplyWireOptionals {
-                    suspended_output_present: reply.presentation.suspended_output.is_some(),
-                };
                 let bind = BrokerReplyBind {
                     source: &parsed.source,
                     native_invalid: parsed.native_invalid,
@@ -1201,13 +1197,9 @@ impl WorldBroker {
                 };
                 // Defensive core replay is for the latest adopted candidate;
                 // its retained roster plan is still the one published with it.
-                let bound = write_bound_reply_v4(
-                    &reply,
-                    &wire,
-                    self.engine.desired_shared_roster_plan(),
-                    &bind,
-                )
-                .map_err(map_protocol_reply_error)?;
+                let bound =
+                    write_bound_reply_v4(&reply, self.engine.desired_shared_roster_plan(), &bind)
+                        .map_err(map_protocol_reply_error)?;
                 if bound.len() > self.final_reply_max_bytes() {
                     return Err(BrokerError::Oversized);
                 }
@@ -1315,16 +1307,17 @@ impl WorldBroker {
     fn stamp_inner(
         &self,
         inner: &mut serde_json::Map<String, serde_json::Value>,
-        parsed: &ParsedCapture,
+        adapter: &str,
+        source: &str,
         observation_seq: u64,
         request_seq: u64,
         clock: u64,
     ) {
-        inner.insert("adapter".to_owned(), json_string(&parsed.adapter));
+        inner.insert("adapter".to_owned(), json_string(adapter));
         inner.insert("gen".to_owned(), json_string(self.generation()));
         inner.insert("obs".to_owned(), json_string(&observation_seq.to_string()));
         inner.insert("reqSeq".to_owned(), json_string(&request_seq.to_string()));
-        inner.insert("req".to_owned(), json_string(&parsed.source));
+        inner.insert("req".to_owned(), json_string(source));
         inner.insert("cmdSeq".to_owned(), serde_json::Value::Null);
         inner.insert("command".to_owned(), serde_json::Value::Null);
         inner.insert("monotonicMs".to_owned(), json_string(&clock.to_string()));
@@ -1982,6 +1975,31 @@ fn is_generation_token(text: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
+/// Count the same compact serde JSON encoding used for a stamped wire report.
+fn compact_json_exceeds_limit(map: &Map<String, serde_json::Value>, limit: usize) -> bool {
+    struct CountingSink {
+        count: usize,
+        limit: usize,
+    }
+
+    impl std::io::Write for CountingSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.count = self.count.saturating_add(buf.len());
+            if self.count > self.limit {
+                return Err(std::io::ErrorKind::WriteZero.into());
+            }
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut sink = CountingSink { count: 0, limit };
+    serde_json::to_writer(&mut sink, map).is_err()
+}
+
 /// Strict v4 capture envelope parse: exact keys
 /// (`v,adapter,gen,source,sourceSeq,nativeInvalid,report`), v4 versions in
 /// both layers, opaque lifetime, generation alphabet, opaque source
@@ -1993,9 +2011,9 @@ fn parse_capture_envelope(envelope: &str) -> Result<ParsedCapture, CaptureFailur
     let failure = |kind: &'static str, message: &'static str| CaptureFailure::blind(kind, message);
     let value = tiler_protocol::connection_protocol::parse_strict_json(envelope)
         .map_err(|_| failure("malformed", "request is malformed"))?;
-    let map = value
-        .as_object()
-        .ok_or_else(|| failure("malformed", "request is malformed"))?;
+    let serde_json::Value::Object(mut map) = value else {
+        return Err(failure("malformed", "request is malformed"));
+    };
     if map.len() != 7
         || !map.contains_key("v")
         || !map.contains_key("adapter")
@@ -2027,21 +2045,16 @@ fn parse_capture_envelope(envelope: &str) -> Result<ParsedCapture, CaptureFailur
             "unsupported contract version",
         ));
     }
-    let adapter = map
-        .get("adapter")
-        .and_then(serde_json::Value::as_str)
-        .filter(|s| is_valid_adapter_id(s))
-        .ok_or_else(|| failure("unknown-value", "request contains an unknown value"))?;
-    let generation = map
-        .get("gen")
-        .and_then(serde_json::Value::as_str)
-        .filter(|s| is_generation_token(s))
-        .ok_or_else(|| failure("unknown-value", "request contains an unknown value"))?;
-    let source = map
-        .get("source")
-        .and_then(serde_json::Value::as_str)
-        .filter(|s| is_valid_request_id(s))
-        .ok_or_else(|| failure("unknown-value", "request contains an unknown value"))?;
+    let mut take_string = |key, valid: fn(&str) -> bool| match map.remove(key) {
+        Some(serde_json::Value::String(text)) if valid(&text) => Ok(text),
+        _ => Err(failure(
+            "unknown-value",
+            "request contains an unknown value",
+        )),
+    };
+    let adapter = take_string("adapter", is_valid_adapter_id)?;
+    let generation = take_string("gen", is_generation_token)?;
+    let source = take_string("source", is_valid_request_id)?;
     let source_seq = map
         .get("sourceSeq")
         .and_then(serde_json::Value::as_str)
@@ -2054,29 +2067,37 @@ fn parse_capture_envelope(envelope: &str) -> Result<ParsedCapture, CaptureFailur
         .filter(|s| is_canonical_u64(s))
         .and_then(|s| s.parse::<u64>().ok())
         .ok_or_else(|| failure("unknown-value", "request contains an unknown value"))?;
-    let bound = |kind: &'static str, message: &'static str| CaptureFailure {
-        source: source.to_owned(),
+    let bound = |source, kind, message| CaptureFailure {
+        source,
         native_invalid: watermark,
         kind,
         message,
     };
-    let inner = map
-        .get("report")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| bound("malformed", "request is malformed"))?;
+    let inner = match map.remove("report") {
+        Some(serde_json::Value::Object(inner)) => inner,
+        _ => return Err(bound(source, "malformed", "request is malformed")),
+    };
     if inner.get("v").and_then(serde_json::Value::as_u64) != Some(u64::from(BROKER_VERSION)) {
-        return Err(bound("unsupported-version", "unsupported contract version"));
+        return Err(bound(
+            source,
+            "unsupported-version",
+            "unsupported contract version",
+        ));
     }
     if BROKER_KEYS.iter().any(|k| inner.contains_key(*k)) {
-        return Err(bound("unknown-field", "request contains an unknown field"));
+        return Err(bound(
+            source,
+            "unknown-field",
+            "request contains an unknown field",
+        ));
     }
     Ok(ParsedCapture {
-        adapter: adapter.to_owned(),
-        generation: generation.to_owned(),
-        source: source.to_owned(),
+        adapter,
+        generation,
+        source,
         source_seq,
         native_invalid: watermark,
-        inner: inner.clone(),
+        inner,
     })
 }
 
@@ -2275,9 +2296,7 @@ fn to_broker_assoc(assoc: &crate::kde_gesture::GestureAssoc) -> BrokerGestureAss
 }
 
 /// Checked canonical encode of one v4 engine reply for the broker lane.
-/// The wire presence flag mirrors the typed presentation so the strict
-/// codec accepts its own output. Any encode failure fails closed as
-/// oversize (the caller never serves a partial reply).
+/// Never serves a partial reply if encoding or the byte gate fails.
 #[allow(clippy::too_many_arguments)]
 fn prepare_capture_reply(
     candidate: tiler_core::world_engine::PreparedCandidate<'_>,
@@ -2302,9 +2321,6 @@ fn prepare_capture_reply(
     let settled_assoc = staged_gesture_map
         .terminal_assoc_for(reply.gesture_settled.map(|settled| settled.id))
         .cloned();
-    let wire = ReplyWireOptionals {
-        suspended_output_present: reply.presentation.suspended_output.is_some(),
-    };
     let bind = BrokerReplyBind {
         source: &parsed.source,
         native_invalid: parsed.native_invalid,
@@ -2312,9 +2328,8 @@ fn prepare_capture_reply(
         gesture_assoc: gesture_assoc.map(to_broker_assoc),
         gesture_settled_assoc: settled_assoc.as_ref().map(to_broker_assoc),
     };
-    let bound =
-        write_bound_reply_v4_prevalidated(validated, &wire, candidate.shared_roster_plan, &bind)
-            .map_err(map_protocol_reply_error)?;
+    let bound = write_bound_reply_v4_prevalidated(validated, candidate.shared_roster_plan, &bind)
+        .map_err(map_protocol_reply_error)?;
     if bound.len() > max_reply_bytes {
         return Err(BrokerError::Oversized);
     }
@@ -2332,7 +2347,7 @@ fn prepare_capture_reply(
     } else {
         None
     };
-    let projection = write_projection_reply_v4_prevalidated(validated, &wire, producer)
+    let projection = write_cached_projection_v4_prevalidated(validated, producer)
         .map_err(map_protocol_reply_error)?;
     Ok(PreparedCapture {
         bound,
@@ -2368,9 +2383,6 @@ fn prepare_capture_reply_checked(
     let settled_assoc = staged_gesture_map
         .terminal_assoc_for(reply.gesture_settled.map(|settled| settled.id))
         .cloned();
-    let wire = ReplyWireOptionals {
-        suspended_output_present: reply.presentation.suspended_output.is_some(),
-    };
     let bind = BrokerReplyBind {
         source: &parsed.source,
         native_invalid: parsed.native_invalid,
@@ -2378,8 +2390,7 @@ fn prepare_capture_reply_checked(
         gesture_assoc: gesture_assoc.map(to_broker_assoc),
         gesture_settled_assoc: settled_assoc.as_ref().map(to_broker_assoc),
     };
-    let bound =
-        write_bound_reply_v4(reply, &wire, None, &bind).map_err(map_protocol_reply_error)?;
+    let bound = write_bound_reply_v4(reply, None, &bind).map_err(map_protocol_reply_error)?;
     if bound.len() > max_reply_bytes {
         return Err(BrokerError::Oversized);
     }
@@ -2398,7 +2409,7 @@ fn prepare_capture_reply_checked(
         None
     };
     let projection =
-        write_projection_reply_v4(reply, &wire, producer).map_err(map_protocol_reply_error)?;
+        write_cached_projection_v4(reply, producer).map_err(map_protocol_reply_error)?;
     Ok(PreparedCapture {
         bound,
         projection,
@@ -2755,27 +2766,16 @@ fn project_reply(encoded: &str, preview: Option<&CarriedPreview>) -> String {
 /// capture covered (nulls when unproven: missing proof yields no drawable
 /// coverage, never guessed truth).
 fn project_read(
-    cached: &str,
+    cached: &CachedProjectionV4,
     generation: &str,
     req: &str,
     covered: Option<&CoverWitness>,
 ) -> String {
-    let mut value: serde_json::Value = serde_json::from_str(cached).unwrap_or_default();
-    if let Some(map) = value.as_object_mut() {
-        map.insert("gen".to_owned(), json_string(generation));
-        map.insert("req".to_owned(), json_string(req));
-        match covered {
-            Some(witness) => {
-                map.insert("coveredInstance".to_owned(), json_string(&witness.instance));
-                map.insert("coveredInvalid".to_owned(), json_string(&witness.counter));
-            }
-            None => {
-                map.insert("coveredInstance".to_owned(), serde_json::Value::Null);
-                map.insert("coveredInvalid".to_owned(), serde_json::Value::Null);
-            }
-        }
-    }
-    value.to_string()
+    cached.bind_read(
+        generation,
+        req,
+        covered.map(|witness| (witness.instance.as_str(), witness.counter.as_str())),
+    )
 }
 
 fn json_string(value: &str) -> serde_json::Value {
@@ -4680,9 +4680,6 @@ mod tests {
         // 1. Standalone bound writer: small invalid warp -> InvalidReply("unknown-value"), never Oversized.
         let mut bad_rect = valid_reply.clone();
         bad_rect.cursor_warp = Some((32769, 0));
-        let wire = ReplyWireOptionals {
-            suspended_output_present: false,
-        };
         let bind = BrokerReplyBind {
             source: &parsed.source,
             native_invalid: parsed.native_invalid,
@@ -4691,7 +4688,7 @@ mod tests {
             gesture_settled_assoc: None,
         };
         let err = map_protocol_reply_error(
-            tiler_protocol::world_reply_write::write_bound_reply_v4(&bad_rect, &wire, None, &bind)
+            tiler_protocol::world_reply_write::write_bound_reply_v4(&bad_rect, None, &bind)
                 .expect_err("bad warp must fail"),
         );
         assert_eq!(err, BrokerError::InvalidReply("unknown-value"));
@@ -4710,13 +4707,8 @@ mod tests {
                 await_shown: false,
             });
         let err = map_protocol_reply_error(
-            tiler_protocol::world_reply_write::write_bound_reply_v4(
-                &bad_semantic,
-                &wire,
-                None,
-                &bind,
-            )
-            .expect_err("effect-focus-removed must fail"),
+            tiler_protocol::world_reply_write::write_bound_reply_v4(&bad_semantic, None, &bind)
+                .expect_err("effect-focus-removed must fail"),
         );
         assert_eq!(err, BrokerError::InvalidReply("effect-focus-removed"));
 
@@ -4724,7 +4716,7 @@ mod tests {
         let mut bad_proj = valid_reply.clone();
         bad_proj.presentation.foreground = "bad id with spaces".to_owned();
         let proj_err =
-            tiler_protocol::world_reply_write::write_projection_reply_v4(&bad_proj, &wire, None)
+            tiler_protocol::world_reply_write::write_projection_reply_v4(&bad_proj, None)
                 .expect_err("projection must fail");
         assert_eq!(
             map_protocol_reply_error(proj_err),
@@ -5500,5 +5492,89 @@ mod tests {
         .expect("json");
         assert_eq!(read_rep["outcome"], "presentation");
         assert_eq!(read_rep["rev"], "1");
+    }
+
+    #[test]
+    fn compact_json_limit_and_map_decode_match_serialized_roundtrip() {
+        let raw = concat!(
+            r#"{"negZero":-0.0,"float":1.2345678901234567,"sci":1e20,"#,
+            r#""ctrl":"\u0000\n\t\"\\","utf8":"cafe\u00e9","nested":{"a":[0.1,-0.0]}}"#
+        );
+        let map = tiler_protocol::connection_protocol::parse_strict_json(raw)
+            .expect("strict parse")
+            .as_object()
+            .cloned()
+            .expect("object");
+        let serialized_len = serde_json::Value::Object(map.clone()).to_string().len();
+        assert!(!compact_json_exceeds_limit(&map, serialized_len));
+        assert!(compact_json_exceeds_limit(&map, serialized_len - 1));
+
+        let mut stamped = tiler_protocol::connection_protocol::parse_strict_json(include_str!(
+            "../../../test-fixtures/world-wire/v4-active/messages/report-foreground-known-bound.json"
+        ))
+        .expect("strict parse")
+        .as_object()
+        .cloned()
+        .expect("object");
+        let broker = WorldBroker::new();
+        broker.stamp_inner(&mut stamped, "kde", "r-1", 1, 1, 100);
+        let stamped_json = serde_json::Value::Object(stamped.clone()).to_string();
+        assert!(!compact_json_exceeds_limit(&stamped, stamped_json.len()));
+        assert!(compact_json_exceeds_limit(&stamped, stamped_json.len() - 1));
+        assert_eq!(
+            decode_report_v4_map(&stamped).expect("parsed report decodes"),
+            tiler_protocol::world_protocol::decode_request_with_wire(&stamped_json)
+                .expect("serialized report decodes"),
+        );
+    }
+
+    #[test]
+    fn cached_projection_bind_read_matches_legacy_value_oracle() {
+        fn legacy_project_read(
+            cached_json: &str,
+            generation: &str,
+            req: &str,
+            covered: Option<&CoverWitness>,
+        ) -> String {
+            let mut value: serde_json::Value =
+                serde_json::from_str(cached_json).expect("valid cached projection json");
+            let map = value.as_object_mut().expect("projection object");
+            map.insert("gen".to_owned(), json_string(generation));
+            map.insert("req".to_owned(), json_string(req));
+            match covered {
+                Some(witness) => {
+                    map.insert("coveredInstance".to_owned(), json_string(&witness.instance));
+                    map.insert("coveredInvalid".to_owned(), json_string(&witness.counter));
+                }
+                None => {
+                    map.insert("coveredInstance".to_owned(), serde_json::Value::Null);
+                    map.insert("coveredInvalid".to_owned(), serde_json::Value::Null);
+                }
+            }
+            value.to_string()
+        }
+
+        let reply = tiler_protocol::world_protocol::decode_reply_v4(include_str!(
+            "../../../test-fixtures/world-wire/v4-active/messages/reply-presentation-hidden-suspended.json"
+        ))
+        .expect("decode reply")
+        .reply;
+        let generation = "gen-1";
+
+        let cached = write_cached_projection_v4(&reply, None).expect("cached projection");
+        let legacy_json = write_projection_reply_v4(&reply, None).expect("legacy projection");
+        let witness = CoverWitness {
+            instance: "inst-\"quoted\"\\1".to_owned(),
+            counter: "42".to_owned(),
+        };
+
+        assert_eq!(
+            project_read(&cached, generation, "req-1", Some(&witness)),
+            legacy_project_read(&legacy_json, generation, "req-1", Some(&witness)),
+        );
+        assert_eq!(
+            project_read(&cached, generation, "req-2", None),
+            legacy_project_read(&legacy_json, generation, "req-2", None),
+        );
     }
 }

@@ -25,7 +25,7 @@ use tiler_core::world_report::{
 };
 use tiler_protocol::world_admission_sizing::max_switch_settle_reserve;
 use tiler_protocol::world_protocol::{
-    DecodedReplyV4, ReplyWireOptionals, decode_reply_v4, decode_request, encode_reply_v4,
+    DecodedReplyV4, decode_reply_v4, decode_request, encode_reply_v4,
 };
 use tiler_protocol::world_reply_write::count_reply_v4;
 
@@ -93,13 +93,10 @@ fn reply_wire(reply: &WorldReplyV4) -> String {
     let decoded = DecodedReplyV4 {
         roster_plan: None,
         reply: reply.clone(),
-        wire: ReplyWireOptionals {
-            suspended_output_present: reply.presentation.suspended_output.is_some(),
-        },
     };
     let wire = encode_reply_v4(&decoded).expect("reply encodes");
     assert_eq!(
-        count_reply_v4(reply, &decoded.wire).expect("protocol count succeeds"),
+        count_reply_v4(reply).expect("protocol count succeeds"),
         wire.len(),
         "protocol exact byte count matches wire"
     );

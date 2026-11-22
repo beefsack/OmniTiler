@@ -15,9 +15,7 @@ use crate::world_admission_sizing::{
     max_operation_settle_reserve, max_switch_settle_reserve, reply_upper_bound_v4,
     report_estimate_v4_with_residual,
 };
-use crate::world_protocol::{
-    DecodedReportV4, ReplyWireOptionals, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES,
-};
+use crate::world_protocol::{DecodedReportV4, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES};
 use crate::world_reply_write::{
     count_operation_settled_rows_bytes, count_reply_v4_bytes, count_switch_settled_section_bytes,
 };
@@ -161,10 +159,7 @@ impl<'a> ProtocolAdmissionGate<'a> {
         #[cfg(test)]
         self.count_calls
             .set(self.count_calls.get().saturating_add(1));
-        let wire = ReplyWireOptionals {
-            suspended_output_present: reply.presentation.suspended_output.is_some(),
-        };
-        count_reply_v4_bytes(reply, &wire)
+        count_reply_v4_bytes(reply)
     }
 }
 
@@ -453,13 +448,10 @@ mod tests {
             }),
         });
 
-        let wire = ReplyWireOptionals {
-            suspended_output_present: false,
-        };
         reply.windows.push(pad_win(0));
-        let exact_one = count_reply_v4(&reply, &wire).expect("one row counts");
+        let exact_one = count_reply_v4(&reply).expect("one row counts");
         reply.windows.push(pad_win(1));
-        let exact_two = count_reply_v4(&reply, &wire).expect("two rows count");
+        let exact_two = count_reply_v4(&reply).expect("two rows count");
         let step = exact_two - exact_one;
         let future_facts = FutureReserveGateFacts {
             operation_slot_count: 1,
@@ -474,7 +466,7 @@ mod tests {
         let extra = (target_exact - exact_two) / step;
         reply.windows.extend((2..2 + extra).map(pad_win));
 
-        let exact = count_reply_v4(&reply, &wire).expect("discriminator reply counts");
+        let exact = count_reply_v4(&reply).expect("discriminator reply counts");
         // Historical legacy `reply_estimate_v4(&reply)` count captured before removal
         // for this exact witness (100 short afterShown members + 3241 pad_win rows).
         const HISTORICAL_LEGACY_ESTIMATE: usize = 4_239_352;
@@ -588,10 +580,7 @@ mod tests {
             AdmissionGateDecision::Allow
         );
 
-        let wire = ReplyWireOptionals {
-            suspended_output_present: false,
-        };
-        let count_err = count_reply_v4(&bad, &wire).expect_err("checked counter still validates");
+        let count_err = count_reply_v4(&bad).expect_err("checked counter still validates");
         assert_eq!(count_err.kind, "unknown-value");
         assert_eq!(count_err.message, "request contains an unknown value");
 
@@ -602,8 +591,8 @@ mod tests {
             gesture_assoc: None,
             gesture_settled_assoc: None,
         };
-        let bound_err = write_bound_reply_v4(&bad, &wire, None, &bind)
-            .expect_err("bound writer still validates");
+        let bound_err =
+            write_bound_reply_v4(&bad, None, &bind).expect_err("bound writer still validates");
         assert_eq!(bound_err.kind, "unknown-value");
         assert_eq!(bound_err.message, "request contains an unknown value");
     }
@@ -621,10 +610,7 @@ mod tests {
             cause: None,
         });
 
-        let wire = ReplyWireOptionals {
-            suspended_output_present: false,
-        };
-        let exact = count_reply_v4(&reply, &wire).expect("reply with emitted op counts");
+        let exact = count_reply_v4(&reply).expect("reply with emitted op counts");
         let raw_one_slot = max_operation_settle_reserve(1);
         let emitted_rows = count_operation_settled_rows_bytes(&reply.operation_settled);
         let credited_delta = MAX_OPERATION_EVENT_BYTES.saturating_sub(emitted_rows);
@@ -736,10 +722,7 @@ mod tests {
         use tiler_core::intent_data::{IntentData, encode_intent_data};
         use tiler_core::world_report::IntentDesire;
 
-        let wire = ReplyWireOptionals {
-            suspended_output_present: false,
-        };
-        let base_bytes = count_reply_v4(&base_reply(), &wire).expect("base reply counts");
+        let base_bytes = count_reply_v4(&base_reply()).expect("base reply counts");
 
         let staged_sticky_shapes = [
             IntentData::new(Some(true), Some(true)),
@@ -778,7 +761,7 @@ mod tests {
             win: WindowId("w".repeat(128)),
             data: Some(IntentData::new(Some(false), Some(false))),
         });
-        let row_delta = count_reply_v4(&with_max_row, &wire)
+        let row_delta = count_reply_v4(&with_max_row)
             .expect("max row reply counts")
             .saturating_sub(base_bytes);
         assert!(row_delta <= MAX_INTENT_DESIRED_ROW_BYTES);
@@ -790,7 +773,7 @@ mod tests {
                 data: Some(IntentData::new(Some(false), Some(false))),
             })
             .collect();
-        let three_delta = count_reply_v4(&with_three_max, &wire)
+        let three_delta = count_reply_v4(&with_three_max)
             .expect("three max rows reply counts")
             .saturating_sub(base_bytes);
         assert!(
@@ -874,17 +857,14 @@ mod tests {
         use tiler_core::intent_data::IntentData;
         use tiler_core::world_report::{IntentDesire, WorldCommand};
 
-        let wire = ReplyWireOptionals {
-            suspended_output_present: false,
-        };
-        let base_bytes = count_reply_v4(&base_reply(), &wire).expect("base reply counts");
+        let base_bytes = count_reply_v4(&base_reply()).expect("base reply counts");
         let row_delta_for = |id: &str| {
             let mut reply = base_reply();
             reply.intent_desired.push(IntentDesire {
                 win: WindowId(id.to_owned()),
                 data: Some(IntentData::new(Some(false), Some(false))),
             });
-            count_reply_v4_bytes(&reply, &wire).saturating_sub(base_bytes)
+            count_reply_v4_bytes(&reply).saturating_sub(base_bytes)
         };
 
         let with_cmd = |command: Option<WorldCommand>| {
@@ -958,10 +938,7 @@ mod tests {
         use tiler_core::intent_data::IntentData;
         use tiler_core::world_report::{IntentDesire, WorldCommand};
 
-        let wire = ReplyWireOptionals {
-            suspended_output_present: false,
-        };
-        let base_bytes = count_reply_v4(&base_reply(), &wire).expect("base reply counts");
+        let base_bytes = count_reply_v4(&base_reply()).expect("base reply counts");
 
         let mut queued: Vec<(u64, WorldCommand)> = (1..=100u64)
             .map(|n| {
@@ -994,7 +971,7 @@ mod tests {
                 data: Some(IntentData::new(Some(false), Some(false))),
             })
             .collect();
-        let exact_section_delta = count_reply_v4(&max_reply, &wire)
+        let exact_section_delta = count_reply_v4(&max_reply)
             .expect("128-row reply counts")
             .saturating_sub(base_bytes);
         let batch_bound = max_intent_save_batch_bound_v4(&queued);
@@ -1087,7 +1064,7 @@ mod tests {
                 data: Some(IntentData::new(Some(true), None)),
             },
         ];
-        let two_delta = count_reply_v4(&two_reply, &wire)
+        let two_delta = count_reply_v4(&two_reply)
             .expect("two-save reply counts")
             .saturating_sub(base_bytes);
         let report = base_report();
@@ -1132,10 +1109,7 @@ mod tests {
         };
         use tiler_core::world_report::{SwitchEvent, SwitchFocus, SwitchOutcome};
 
-        let wire = ReplyWireOptionals {
-            suspended_output_present: false,
-        };
-        let base_bytes = count_reply_v4(&base_reply(), &wire).expect("base reply counts");
+        let base_bytes = count_reply_v4(&base_reply()).expect("base reply counts");
         assert_eq!(max_switch_settle_reserve(0, 0), 0);
         assert_eq!(
             max_switch_settle_reserve(1, 1),
@@ -1153,7 +1127,7 @@ mod tests {
         for count in [1usize, 2usize] {
             let mut reply = base_reply();
             reply.switch_settled = (0..count).map(worst_empty).collect();
-            let delta = count_reply_v4(&reply, &wire)
+            let delta = count_reply_v4(&reply)
                 .expect("switch reply counts")
                 .saturating_sub(base_bytes);
             let reserve = max_switch_settle_reserve(count, 0);
@@ -1167,7 +1141,7 @@ mod tests {
         let mut ev = worst_empty(0);
         ev.failed = vec![WindowId("w".repeat(128))];
         with_failed.switch_settled.push(ev);
-        let failed_delta = count_reply_v4(&with_failed, &wire)
+        let failed_delta = count_reply_v4(&with_failed)
             .expect("failed switch reply counts")
             .saturating_sub(base_bytes);
         assert!(
@@ -1222,10 +1196,7 @@ mod tests {
             fallback: false,
         });
 
-        let wire = ReplyWireOptionals {
-            suspended_output_present: false,
-        };
-        let exact = count_reply_v4(&reply, &wire).expect("reply with emitted switch counts");
+        let exact = count_reply_v4(&reply).expect("reply with emitted switch counts");
         let raw_one_switch = max_switch_settle_reserve(1, 1);
         let emitted_section = count_switch_settled_section_bytes(&reply.switch_settled);
         let credited_delta = raw_one_switch.saturating_sub(emitted_section);

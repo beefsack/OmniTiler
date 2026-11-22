@@ -2742,31 +2742,6 @@ pub enum RequestFreshness {
     Stale,
 }
 
-/// Classify request freshness. Pure over the monotonic `request_seq` bound
-/// to the adapter incarnation/core generation.
-#[must_use]
-pub fn classify_request(
-    incoming_seq: u64,
-    digest: u64,
-    has_last: bool,
-    last_seq: u64,
-    last_digest: u64,
-) -> RequestFreshness {
-    if !has_last {
-        return RequestFreshness::New;
-    }
-    if incoming_seq < last_seq {
-        return RequestFreshness::Stale;
-    }
-    if incoming_seq == last_seq {
-        if digest == last_digest {
-            return RequestFreshness::Duplicate;
-        }
-        return RequestFreshness::ReusedInvalid;
-    }
-    RequestFreshness::New
-}
-
 /// Feed one identity-bound visibility read into the report digest: the
 /// watermark, every presence bit, and every carried fact. Unknown stays
 /// distinct from every known value.

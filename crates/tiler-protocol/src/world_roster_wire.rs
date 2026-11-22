@@ -17,7 +17,7 @@ use crate::world_protocol::{
     malformed, req_id, req_str, req_u64_str, snapshot_invalid, unknown_value,
 };
 use crate::world_reply_sink::{CountSink, ObjectWriter, ReplySink};
-use crate::world_reply_write::write_focus_request_v4;
+use crate::world_reply_write::{validate_focus_request_v4, write_focus_request_v4};
 
 const MAX_SLOTS: usize = 25;
 const MAX_STEPS: usize = 2 * MAX_SLOTS + MAX_WORLD_SCREENS + MAX_REPLY_WINDOWS;
@@ -694,7 +694,10 @@ pub(crate) fn write_plan<S: ReplySink>(plan: &SharedRosterPlan, sink: &mut S) ->
             })
         })?;
         obj.field("focus", |s| match &plan.focus {
-            Some(focus) => write_focus_request_v4::<S, true>(focus, s),
+            Some(focus) => {
+                validate_focus_request_v4(focus)?;
+                write_focus_request_v4(focus, s)
+            }
             None => {
                 s.push_str("null");
                 Ok(())

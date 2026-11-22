@@ -13,50 +13,12 @@ import { connectSignal, readSignal, type SignalDetach, type SignalHandler } from
 export type WorkspaceMode = "per-output-local" | "global-unique" | "shared";
 
 export const DEFAULT_WORKSPACE_MODE: WorkspaceMode = "per-output-local";
-export const WORKSPACE_MODE_CONFIG_KEY = "workspaceMode";
-export const WORKSPACE_MODES: ReadonlyArray<WorkspaceMode> = Object.freeze([
-    "per-output-local",
-    "global-unique",
-    "shared",
-]);
-
-export const DEFAULT_TILED = true;
-export const TILING_DEFAULT_CONFIG_KEY = "defaultTiled";
 
 export function parseWorkspaceMode(value: unknown): WorkspaceMode {
     if (value === "per-output-local" || value === "global-unique" || value === "shared") {
         return value;
     }
     return DEFAULT_WORKSPACE_MODE;
-}
-
-export function parseDefaultTiled(value: unknown): boolean {
-    if (value === true) {
-        return true;
-    }
-    if (value === false) {
-        return false;
-    }
-    if (typeof value === "number") {
-        if (value === 1) {
-            return true;
-        }
-        if (value === 0) {
-            return false;
-        }
-        return DEFAULT_TILED;
-    }
-    if (typeof value === "string") {
-        const text = value.trim().toLowerCase();
-        if (text === "true" || text === "1") {
-            return true;
-        }
-        if (text === "false" || text === "0") {
-            return false;
-        }
-        return DEFAULT_TILED;
-    }
-    return DEFAULT_TILED;
 }
 
 const SHIFT_DIGIT_SYMBOL_ALIAS: ReadonlyMap<number, string> = new Map([

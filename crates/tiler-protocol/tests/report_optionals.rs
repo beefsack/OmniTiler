@@ -23,9 +23,8 @@ use tiler_core::world_report::{
 };
 use tiler_core::world_report_v4_checks::report_digest_v4 as report_digest;
 use tiler_protocol::world_protocol::{
-    CursorHitWire, DecodedReplyV4, DecodedReportV4, GestureIngressWire, ReplyWireOptionals,
-    ReportWireOptionals, WorldOutcome, decode_reply_v4, decode_request, decode_request_with_wire,
-    encode_reply_v4,
+    CursorHitWire, DecodedReplyV4, DecodedReportV4, GestureIngressWire, ReportWireOptionals,
+    WorldOutcome, decode_reply_v4, decode_request, decode_request_with_wire, encode_reply_v4,
 };
 use tiler_protocol::world_reply_write::count_reply_v4;
 
@@ -101,14 +100,11 @@ fn reply_wire(reply: &tiler_core::world_report::WorldReplyV4) -> String {
     let decoded = DecodedReplyV4 {
         roster_plan: None,
         reply: reply.clone(),
-        wire: ReplyWireOptionals {
-            suspended_output_present: reply.presentation.suspended_output.is_some(),
-        },
     };
     let wire = encode_reply_v4(&decoded).expect("reply encodes");
     assert_eq!(
         wire.len(),
-        count_reply_v4(reply, &decoded.wire).expect("protocol count succeeds"),
+        count_reply_v4(reply).expect("protocol count succeeds"),
         "protocol byte count is exact over the wire"
     );
     assert_eq!(

@@ -175,7 +175,7 @@ fn v4_reply_valid_shapes_spot_check() {
     );
     assert!(observe.reply.cursor_warp.is_none(), "observe no warp");
     assert!(
-        !observe.wire.suspended_output_present,
+        observe.reply.presentation.suspended_output.is_none(),
         "observe no suspension"
     );
     let focus = decode_ok("messages/reply-effect-focus.json");
@@ -215,10 +215,6 @@ fn v4_reply_valid_shapes_spot_check() {
     let intent = decode_ok("messages/reply-intent-save-clear.json");
     assert_eq!(intent.reply.intent_desired.len(), 2);
     let suspended = decode_ok("messages/reply-presentation-hidden-suspended.json");
-    assert!(
-        suspended.wire.suspended_output_present,
-        "suspension recorded"
-    );
     assert!(
         suspended.reply.presentation.suspended_output.is_some(),
         "suspension typed"
@@ -702,20 +698,9 @@ fn v4_reply_hidden_underlay_base_rev_number_is_malformed() {
 fn v4_reply_wire_metadata_distinctness() {
     let plain = decode_ok("messages/reply-observe.json");
     let suspended = decode_ok("messages/reply-presentation-hidden-suspended.json");
-    assert_ne!(
-        plain.wire, suspended.wire,
-        "suspension presence changes wire metadata"
-    );
     assert!(suspended.reply.presentation.suspended_output.is_some());
     assert!(plain.reply.presentation.suspended_output.is_none());
     let text = fixture_text("messages/reply-observe.json");
-    assert_eq!(
-        decode_reply_v4(&text).expect("decodes").wire,
-        decode_reply_v4(&text).expect("decodes").wire,
-        "same bytes carry same metadata"
-    );
-    // Metadata never leaks into the typed reply comparison target: two
-    // decodes of the same bytes are fully equal, wire included.
     assert_eq!(
         decode_reply_v4(&text).expect("decodes"),
         decode_reply_v4(&text).expect("decodes")
@@ -988,13 +973,13 @@ fn v4_reply_writer_round_trips_all_valid_wire() {
         let decoded = decode_reply_v4(&text).expect("valid-wire decodes");
         let encoded = encode_reply_v4(&decoded).expect("valid-wire encodes");
         assert_eq!(
-            count_reply_v4(&decoded.reply, &decoded.wire).expect("valid-wire counts"),
+            count_reply_v4(&decoded.reply).expect("valid-wire counts"),
             encoded.len(),
             "exact count matches encoded len {}",
             fixture.id
         );
         assert_eq!(
-            write_reply_v4(&decoded.reply, &decoded.wire).expect("valid-wire writes"),
+            write_reply_v4(&decoded.reply).expect("valid-wire writes"),
             encoded,
             "borrowed writer matches encode_reply_v4 {}",
             fixture.id
@@ -1042,28 +1027,12 @@ fn v4_reply_writer_warp_constructed() {
 }
 
 #[test]
-fn v4_reply_writer_suspended_output_present_and_inconsistent() {
+fn v4_reply_writer_suspended_output_present_round_trips() {
     let suspended_text = fixture_text("messages/reply-presentation-hidden-suspended.json");
     let suspended = decode_reply_v4(&suspended_text).expect("suspended decodes");
-    assert!(suspended.wire.suspended_output_present);
     assert!(suspended.reply.presentation.suspended_output.is_some());
     let encoded = encode_reply_v4(&suspended).expect("suspended encodes");
     assert_eq!(encoded, suspended_text, "suspended presence round-trips");
-    // Flag true with no typed output refuses.
-    let mut missing = suspended.clone();
-    missing.reply.presentation.suspended_output = None;
-    let error = encode_reply_v4(&missing).expect_err("flag without value refuses");
-    assert_eq!(error.kind, "snapshot-invalid");
-    assert_eq!(error.message, "suspended-output-inconsistent");
-    // Flag false with a typed output refuses.
-    let plain_text = fixture_text("messages/reply-observe.json");
-    let mut plain = decode_reply_v4(&plain_text).expect("observe decodes");
-    assert!(!plain.wire.suspended_output_present);
-    plain.reply.presentation.suspended_output =
-        Some(tiler_core::directional::OutputId("out-a".to_owned()));
-    let error = encode_reply_v4(&plain).expect_err("value without flag refuses");
-    assert_eq!(error.kind, "snapshot-invalid");
-    assert_eq!(error.message, "suspended-output-inconsistent");
 }
 
 #[test]
@@ -1377,8 +1346,8 @@ fn v4_reply_writer_refuses_unspellable() {
         let error = encode_reply_v4(&decoded).expect_err("writer refuses {case}");
         assert_eq!(error.kind, kind, "kind {case}");
         assert_eq!(error.message, message, "message {case}");
-        let count_error = count_reply_v4(&decoded.reply, &decoded.wire)
-            .expect_err("counter refuses unspellable case");
+        let count_error =
+            count_reply_v4(&decoded.reply).expect_err("counter refuses unspellable case");
         assert_eq!(count_error.kind, kind, "count kind {case}");
         assert_eq!(count_error.message, message, "count message {case}");
     }
@@ -1493,7 +1462,7 @@ fn v4_reply_operation_and_switch_settled_strict_keys_and_round_trip() {
     let decoded = decode_value(&doc).expect("distinct phase/output keys decode");
     let wire = encode_reply_v4(&decoded).expect("encodes");
     assert_eq!(
-        count_reply_v4(&decoded.reply, &decoded.wire).expect("writer counts"),
+        count_reply_v4(&decoded.reply).expect("writer counts"),
         wire.len()
     );
     let redecoded = decode_reply_v4(&wire).expect("re-decodes");
@@ -1602,9 +1571,9 @@ fn v4_reply_cap_valid_near_4mib_windows_encodes_and_roundtrips() {
     };
 
     decoded.reply.windows.push(pad_win(0));
-    let after_one = count_reply_v4(&decoded.reply, &decoded.wire).expect("one row counts");
+    let after_one = count_reply_v4(&decoded.reply).expect("one row counts");
     decoded.reply.windows.push(pad_win(1));
-    let after_two = count_reply_v4(&decoded.reply, &decoded.wire).expect("two rows count");
+    let after_two = count_reply_v4(&decoded.reply).expect("two rows count");
     let row_step = after_two - after_one;
     let target_bytes = WORLD_MAX_REPLY_BYTES - 500;
     let extra = target_bytes.saturating_sub(after_two) / row_step;
@@ -1621,16 +1590,13 @@ fn v4_reply_cap_valid_near_4mib_windows_encodes_and_roundtrips() {
     assert!(decoded.reply.intent_desired.len() <= MAX_INTENT_DESIRED);
     assert!(decoded.reply.switch_settled.len() <= MAX_REPLY_SWITCH_EVENTS);
     assert!(decoded.reply.diagnostics.len() <= MAX_REPLY_DIAGNOSTICS);
-    assert!(
-        count_reply_v4(&decoded.reply, &decoded.wire).expect("writer counts")
-            <= WORLD_MAX_REPLY_BYTES
-    );
+    assert!(count_reply_v4(&decoded.reply).expect("writer counts") <= WORLD_MAX_REPLY_BYTES);
 
     let wire = encode_reply_v4(&decoded).expect("cap-valid ~4 MiB reply encodes");
     assert!(wire.len() <= WORLD_MAX_REPLY_BYTES);
     assert_eq!(
         wire.len(),
-        count_reply_v4(&decoded.reply, &decoded.wire).expect("writer counts")
+        count_reply_v4(&decoded.reply).expect("writer counts")
     );
     let redecoded = decode_reply_v4(&wire).expect("encoded ~4 MiB reply re-decodes");
     assert_eq!(redecoded, decoded);
@@ -1648,7 +1614,6 @@ fn v4_reply_drag_preview_strict_validation_and_bounds() {
         BorderHideReasonV4, BorderPresentationV4, DragPreviewV4, WORLD_CONTRACT_VERSION_V4,
         WorldPresentationV4, WorldReplyV4,
     };
-    use tiler_protocol::world_protocol::ReplyWireOptionals;
 
     let domain = DomainKey {
         output: OutputId("out-a".to_owned()),
@@ -1724,13 +1689,10 @@ fn v4_reply_drag_preview_strict_validation_and_bounds() {
             switch_settled: vec![],
             diagnostics: vec![],
         },
-        wire: ReplyWireOptionals {
-            suspended_output_present: false,
-        },
     };
     let base_wire = encode_reply_v4(&base_decoded).expect("encodes");
     assert_eq!(
-        count_reply_v4(&base_decoded.reply, &base_decoded.wire).expect("writer counts"),
+        count_reply_v4(&base_decoded.reply).expect("writer counts"),
         base_wire.len()
     );
     assert_eq!(decode_reply_v4(&base_wire).expect("decodes"), base_decoded);
@@ -1855,8 +1817,7 @@ fn v4_reply_writer_after_shown_duplicate_and_later_error_precedence() {
     let err = encode_reply_v4(&dup_only).expect_err("duplicate afterShown member refuses");
     assert_eq!(err.kind, "snapshot-invalid");
     assert_eq!(err.message, "encode-mismatch");
-    let count_err =
-        count_reply_v4(&dup_only.reply, &dup_only.wire).expect_err("count matches encode error");
+    let count_err = count_reply_v4(&dup_only.reply).expect_err("count matches encode error");
     assert_eq!(count_err, err);
 
     let mut with_later_error = dup_only;
@@ -1865,8 +1826,8 @@ fn v4_reply_writer_after_shown_duplicate_and_later_error_precedence() {
         encode_reply_v4(&with_later_error).expect_err("later writer error takes precedence");
     assert_eq!(later_err.kind, "unknown-value");
     assert_eq!(later_err.message, "request contains an unknown value");
-    let later_count_err = count_reply_v4(&with_later_error.reply, &with_later_error.wire)
-        .expect_err("count matches later writer error");
+    let later_count_err =
+        count_reply_v4(&with_later_error.reply).expect_err("count matches later writer error");
     assert_eq!(later_count_err, later_err);
 }
 
@@ -1875,7 +1836,7 @@ fn legacy_bound_oracle(
     roster_plan: Option<&serde_json::Value>,
     bind: &BrokerReplyBind<'_>,
 ) -> String {
-    let encoded = write_reply_v4(&decoded.reply, &decoded.wire).expect("oracle inner encodes");
+    let encoded = write_reply_v4(&decoded.reply).expect("oracle inner encodes");
     let mut val: serde_json::Value = serde_json::from_str(&encoded).expect("oracle json");
     let map = val.as_object_mut().expect("object");
     if let Some(plan) = roster_plan {
@@ -2014,7 +1975,6 @@ fn v4_bound_and_projection_match_stage5_fixtures_and_serde_oracle_byte_for_byte(
     );
     let actual_genesis = write_bound_reply_v4(
         &genesis_decoded.reply,
-        &genesis_decoded.wire,
         genesis_decoded.roster_plan.as_ref(),
         &genesis_bind,
     )
@@ -2056,7 +2016,6 @@ fn v4_bound_and_projection_match_stage5_fixtures_and_serde_oracle_byte_for_byte(
     };
     let actual_preview_bound = write_bound_reply_v4(
         &preview_decoded.reply,
-        &preview_decoded.wire,
         preview_decoded.roster_plan.as_ref(),
         &preview_bind,
     )
@@ -2074,12 +2033,8 @@ fn v4_bound_and_projection_match_stage5_fixtures_and_serde_oracle_byte_for_byte(
     let proj_fixture_raw = std::fs::read_to_string(stage5_dir.join("projection-preview.json"))
         .expect("projection-preview.json");
     let proj_fixture_trimmed = proj_fixture_raw.trim_end_matches('\n');
-    let actual_proj = write_projection_reply_v4(
-        &preview_decoded.reply,
-        &preview_decoded.wire,
-        Some(("gesture-1", "1")),
-    )
-    .expect("write_projection_reply_v4");
+    let actual_proj = write_projection_reply_v4(&preview_decoded.reply, Some(("gesture-1", "1")))
+        .expect("write_projection_reply_v4");
     let mut proj_val: serde_json::Value = serde_json::from_str(&actual_proj).expect("proj json");
     let proj_fixture_val: serde_json::Value =
         serde_json::from_str(proj_fixture_trimmed).expect("fixture proj json");
@@ -2091,7 +2046,7 @@ fn v4_bound_and_projection_match_stage5_fixtures_and_serde_oracle_byte_for_byte(
     assert_eq!(proj_val.to_string(), proj_fixture_trimmed);
 
     // 3. Constructed rich reply with IntentDesire nested data + C0/serde escapes,
-    // trailing=true, suspended_output_present=true/false, and full oracle comparison.
+    // trailing=true, suspended_output=Some/None, and full oracle comparison.
     let mut rich = decode_ok("messages/reply-observe.json");
     rich.reply
         .workspaces
@@ -2135,7 +2090,6 @@ fn v4_bound_and_projection_match_stage5_fixtures_and_serde_oracle_byte_for_byte(
         });
     rich.reply.presentation.suspended_output =
         Some(tiler_core::directional::OutputId("out-a".to_owned()));
-    rich.wire.suspended_output_present = true;
 
     let rich_bind = BrokerReplyBind {
         source: "src-rich-1",
@@ -2153,12 +2107,11 @@ fn v4_bound_and_projection_match_stage5_fixtures_and_serde_oracle_byte_for_byte(
         }),
     };
     let actual_rich_bound =
-        write_bound_reply_v4(&rich.reply, &rich.wire, None, &rich_bind).expect("rich bound");
+        write_bound_reply_v4(&rich.reply, None, &rich_bind).expect("rich bound");
     let oracle_rich_bound = legacy_bound_oracle(&rich, None, &rich_bind);
     assert_eq!(actual_rich_bound, oracle_rich_bound);
 
-    let actual_rich_proj =
-        write_projection_reply_v4(&rich.reply, &rich.wire, None).expect("rich proj");
+    let actual_rich_proj = write_projection_reply_v4(&rich.reply, None).expect("rich proj");
     let oracle_rich_proj = legacy_projection_oracle(&rich, None);
     assert_eq!(actual_rich_proj, oracle_rich_proj);
 }

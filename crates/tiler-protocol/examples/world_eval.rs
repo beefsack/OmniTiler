@@ -19,8 +19,7 @@ use std::io::{BufRead, Write};
 use tiler_protocol::connection_protocol::route_connection_request;
 use tiler_protocol::world_admission::ProtocolAdmissionGate;
 use tiler_protocol::world_protocol::{
-    ReplyWireOptionals, WorldEngine, WorldOutcome, WorldProtocolError, decode_request_with_wire,
-    encode_error,
+    WorldEngine, WorldOutcome, WorldProtocolError, decode_request_with_wire, encode_error,
 };
 use tiler_protocol::world_reply_write::write_reply_v4_with_plan;
 
@@ -50,12 +49,8 @@ fn submit_report(engine: &mut WorldEngine, body: &str, generation: &str) -> Stri
     let mut prepared = None;
     let transition = match gate.dispatch_with_prepare(engine, &decoded.report, &[], |candidate| {
         let reply = candidate.reply.reply();
-        let wire = ReplyWireOptionals {
-            suspended_output_present: reply.presentation.suspended_output.is_some(),
-        };
         prepared = Some(write_reply_v4_with_plan(
             reply,
-            &wire,
             candidate.shared_roster_plan,
         )?);
         Ok::<(), WorldProtocolError>(())
@@ -68,10 +63,7 @@ fn submit_report(engine: &mut WorldEngine, body: &str, generation: &str) -> Stri
             prepared.expect("accepted candidate was prepared")
         }
         WorldOutcome::Duplicate(reply) => {
-            let wire = ReplyWireOptionals {
-                suspended_output_present: reply.presentation.suspended_output.is_some(),
-            };
-            match write_reply_v4_with_plan(&reply, &wire, engine.desired_shared_roster_plan()) {
+            match write_reply_v4_with_plan(&reply, engine.desired_shared_roster_plan()) {
                 Ok(bytes) => bytes,
                 Err(error) => encode_error(error.kind, error.message, generation),
             }

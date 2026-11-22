@@ -1,4 +1,4 @@
-// World production entry (strict v2): the single active KDE policy path
+// World production entry (strict v4): the single active KDE policy path
 // over the sole broker
 // (DiscoverWorld/DescribeWorld/QueueWorldCommand/TakeCommandResult). The
 // broker owns ALL sequencing (obs/reqSeq/cmdSeq) and its clock: this
@@ -291,16 +291,6 @@ export const WORLD_DISCOVERY_METHOD = "DiscoverWorld";
 export const WORLD_DESCRIBE_METHOD = "DescribeWorld";
 export const WORLD_QUEUE_METHOD = "QueueWorldCommand";
 export const WORLD_TAKE_METHOD = "TakeCommandResult";
-export const WORLD_READ_METHOD = "ReadWorldPresentation";
-// WorldWake is a best-effort latency hint emitted by the service
-// (`WorldWake(gen, rev, kind)` with `presentation-updated` after accepted
-// captures and `command-queued` after new queue entries). The KWin
-// scripting surface exposes no D-Bus signal subscription (callDBus is
-// method calls with a one-shot callback only, never a subscribe), so the
-// script cannot hear foreign wakes: our own queues dispatch a fresh capture
-// directly, and foreign queued commands drain on the next native-event
-// capture. Both sides re-sync on their next poll either way.
-export const WORLD_WAKE_SIGNAL = "WorldWake";
 export const WORLD_TIMEOUT_MS = 2000;
 export const WORLD_DEBOUNCE_MS = 120;
 export const WORLD_WAIT_METHOD = "WaitWorldWake";
@@ -9123,7 +9113,7 @@ export function startWorldAdapterEntry(overrides: WorldEntryOverrides = {}): Wor
         if (native === "") {
             return "";
         }
-        // Stable core logical id for commands (v2 commands name logical
+        // Stable core logical id for commands (v4 commands name logical
         // workspaces, never native desktop ids): resolve through the
         // converged core mapping only. Unmapped natives fail closed (never
         // an invented logical); outstanding local receipts prove nothing

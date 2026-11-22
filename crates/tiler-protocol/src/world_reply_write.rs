@@ -1,38 +1,37 @@
 //! Checked canonical v4 reply writer, exact byte counter, and broker
 //! bound/projection emitters.
 //!
-//! Operates on a borrowed [`WorldReplyV4`] plus [`ReplyWireOptionals`] and
-//! drives exact byte counting, canonical wire emission, broker bound emission,
-//! and renderer projection emission through the same typed schema traversal
-//! and validation, with no intermediate JSON object model and no round-trip
-//! re-parse.
+//! Operates on a borrowed [`WorldReplyV4`] and drives exact byte counting,
+//! canonical wire emission, broker bound emission, and renderer projection
+//! emission through the same typed schema traversal and validation, with no
+//! intermediate JSON object model and no round-trip re-parse.
 
 use std::collections::BTreeSet;
 
 use tiler_core::bounds::{is_opaque_id, valid_carried_rect};
 use tiler_core::geometry::Rect;
 use tiler_core::gesture::GestureSettled;
-use tiler_core::intent_data::{MAX_INTENT_DATA_BYTES, encode_intent_data};
+use tiler_core::intent_data::encode_intent_data;
 use tiler_core::world_engine::ValidatedReply;
 use tiler_core::world_presentation::{PagerScreen, PresentationUnderlay};
 use tiler_core::world_reply_validation::{
     ReplyValidationError, validate_projection_reply_v4, validate_reply_v4,
 };
 use tiler_core::world_report::{
-    AfterShown, AfterShownScope, AuthorityScope, BorderPresentationV4, CommandRejectKind,
-    DragPreviewV4, FloatOrigin, FocusRequest, FocusRequestCause, FrameWitness, HoldReason,
-    IntentDesire, MAX_FOCUS_DEPARTING, MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED, MAX_FOCUS_VIEWS,
-    MAX_REPLY_OUTPUTS, MAX_REPLY_WINDOWS, MAX_REPLY_WORKSPACES, MAX_STATE_TARGETS_PER_WINDOW,
-    NativeCreationDesire, OperationEvent, OutputDesire, RowDiagnostic, ScopeStatus, SwitchEvent,
-    TransferKind, TransferTargetV4, WindowDesire, WorkspaceDesire, WorldPresentationV4,
-    WorldReplyV4,
+    AfterShown, AfterShownScope, AuthorityScope, BorderPresentationV4, DragPreviewV4, FloatOrigin,
+    FocusRequest, FocusRequestCause, FrameWitness, HoldReason, IntentDesire, MAX_FOCUS_DEPARTING,
+    MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED, MAX_FOCUS_VIEWS, NativeCreationDesire, OperationEvent,
+    OutputDesire, RowDiagnostic, ScopeStatus, SwitchEvent, TransferKind, TransferTargetV4,
+    WindowDesire, WorkspaceDesire, WorldPresentationV4, WorldReplyV4,
 };
 use tiler_core::world_roster::SharedRosterPlan;
 
 use crate::world_protocol::{
-    ReplyWireOptionals, WORLD_MAX_REPLY_BYTES, WorldProtocolError, reply_snapshot, unknown_value,
+    WORLD_MAX_REPLY_BYTES, WorldProtocolError, reply_snapshot, unknown_value,
 };
-use crate::world_reply_sink::{CountSink, ObjectWriter, ReplySink, SortedStringSink, StringSink};
+use crate::world_reply_sink::{
+    CountSink, ObjectWriter, ReplySink, SortedStringSink, StringSink, push_serde_json_string,
+};
 use crate::world_roster_wire::{check_publication, validate_plan, write_plan};
 
 type Result<T> = std::result::Result<T, WorldProtocolError>;
@@ -81,45 +80,10 @@ fn write_rect<S: ReplySink>(sink: &mut S, rect: &Rect) {
     sink.push_char(']');
 }
 
-fn write_checked_rect<S: ReplySink, const VALIDATE: bool>(sink: &mut S, rect: &Rect) -> Result<()> {
-    if VALIDATE && !valid_carried_rect(rect.x, rect.y, rect.w, rect.h) {
-        return Err(unknown_value());
-    }
-    write_rect(sink, rect);
-    Ok(())
-}
-
-fn write_checked_opt_rect<S: ReplySink, const VALIDATE: bool>(
-    sink: &mut S,
-    rect: &Option<Rect>,
-) -> Result<()> {
+fn write_opt_rect<S: ReplySink>(sink: &mut S, rect: &Option<Rect>) -> Result<()> {
     match rect {
         None => sink.push_str("null"),
-        Some(rect) => write_checked_rect::<S, VALIDATE>(sink, rect)?,
-    }
-    Ok(())
-}
-
-fn write_empty_or_id<S: ReplySink, const VALIDATE: bool>(sink: &mut S, text: &str) -> Result<()> {
-    if VALIDATE && !text.is_empty() {
-        check_reply_id(text)?;
-    }
-    sink.push_json_str(text);
-    Ok(())
-}
-
-fn write_opt_id_or_empty<S: ReplySink, const VALIDATE: bool>(
-    sink: &mut S,
-    value: &Option<String>,
-) -> Result<()> {
-    match value {
-        None => sink.push_str("\"\""),
-        Some(text) => {
-            if VALIDATE {
-                check_reply_id(text)?;
-            }
-            sink.push_json_str(text);
-        }
+        Some(rect) => write_rect(sink, rect),
     }
     Ok(())
 }
@@ -138,19 +102,7 @@ fn write_authority_scope<S: ReplySink>(sink: &mut S, scope: &AuthorityScope) -> 
     })
 }
 
-fn write_scope_status_v4<S: ReplySink, const VALIDATE: bool>(
-    row: &ScopeStatus,
-    sink: &mut S,
-) -> Result<()> {
-    if VALIDATE {
-        match &row.scope {
-            AuthorityScope::Output(output) => check_reply_id(&output.0)?,
-            AuthorityScope::Workspace { output, workspace } => {
-                check_reply_id(&output.0)?;
-                check_reply_id(&workspace.0)?;
-            }
-        }
-    }
+fn write_scope_status_v4<S: ReplySink>(row: &ScopeStatus, sink: &mut S) -> Result<()> {
     sink.write_object(|obj| {
         obj.field("scope", |s| write_authority_scope(s, &row.scope))?;
         obj.field_str("auth", row.authority.as_str())?;
@@ -161,30 +113,11 @@ fn write_scope_status_v4<S: ReplySink, const VALIDATE: bool>(
     })
 }
 
-fn write_workspace_desire_v4<S: ReplySink, const VALIDATE: bool>(
-    row: &WorkspaceDesire,
-    sink: &mut S,
-) -> Result<()> {
-    if VALIDATE {
-        check_reply_id(&row.id)?;
-        check_reply_id(&row.output.0)?;
-        if let Some(bind) = row.native_binding.as_deref() {
-            check_reply_id(bind)?;
-        }
-        match &row.scope {
-            AuthorityScope::Output(output) => check_reply_id(&output.0)?,
-            AuthorityScope::Workspace { output, workspace } => {
-                check_reply_id(&output.0)?;
-                check_reply_id(&workspace.0)?;
-            }
-        }
-    }
+fn write_workspace_desire_v4<S: ReplySink>(row: &WorkspaceDesire, sink: &mut S) -> Result<()> {
     sink.write_object(|obj| {
         obj.field_str("id", &row.id)?;
         obj.field_str("out", &row.output.0)?;
-        obj.field("bind", |s| {
-            write_opt_id_or_empty::<S, VALIDATE>(s, &row.native_binding)
-        })?;
+        obj.field_str("bind", row.native_binding.as_deref().unwrap_or(""))?;
         obj.field("scope", |s| write_authority_scope(s, &row.scope))?;
         obj.field("order", |s| {
             s.push_usize(row.order);
@@ -200,21 +133,10 @@ fn write_workspace_desire_v4<S: ReplySink, const VALIDATE: bool>(
     })
 }
 
-fn write_output_desire_v4<S: ReplySink, const VALIDATE: bool>(
-    row: &OutputDesire,
-    sink: &mut S,
-) -> Result<()> {
-    if VALIDATE {
-        check_reply_id(&row.output.0)?;
-        if let Some(view) = row.logical_view.as_deref() {
-            check_reply_id(view)?;
-        }
-    }
+fn write_output_desire_v4<S: ReplySink>(row: &OutputDesire, sink: &mut S) -> Result<()> {
     sink.write_object(|obj| {
         obj.field_str("out", &row.output.0)?;
-        obj.field("view", |s| {
-            write_opt_id_or_empty::<S, VALIDATE>(s, &row.logical_view)
-        })?;
+        obj.field_str("view", row.logical_view.as_deref().unwrap_or(""))?;
         obj.field_str("mode", row.tiling_mode.as_str())?;
         obj.field_str("hold", row.hold.map_or("", HoldReason::as_str))
     })
@@ -260,57 +182,17 @@ fn write_window_target_lanes<S: ReplySink>(
     })
 }
 
-fn write_window_desire_v4<S: ReplySink, const VALIDATE: bool>(
+fn write_window_desire_v4<S: ReplySink>(
     row: &WindowDesire,
     sink: &mut S,
     include_ops: bool,
 ) -> Result<()> {
-    if VALIDATE {
-        check_reply_id(&row.lifetime.0)?;
-        check_reply_id(&row.output.0)?;
-        check_reply_id(&row.workspace)?;
-        if let Some(rect) = row.allocation.as_ref()
-            && !valid_carried_rect(rect.x, rect.y, rect.w, rect.h)
-        {
-            return Err(unknown_value());
-        }
-        if let Some(rect) = row.effective_frame.as_ref()
-            && !valid_carried_rect(rect.x, rect.y, rect.w, rect.h)
-        {
-            return Err(unknown_value());
-        }
-        if let Some(op) = row.frame_operation.as_deref() {
-            check_reply_id(op)?;
-        }
-        if let Some(op) = row.clear_operation.as_deref() {
-            check_reply_id(op)?;
-        }
-        if let Some(visibility) = row.visibility.as_ref()
-            && visibility.shown
-            && visibility.fallback
-        {
-            return Err(reply_snapshot("visibility-show-fallback"));
-        }
-        if row.state.len() > MAX_STATE_TARGETS_PER_WINDOW {
-            return Err(reply_snapshot("state-target-count"));
-        }
-        let mut seen_state = BTreeSet::new();
-        for target in &row.state {
-            if !seen_state.insert(target.property) {
-                return Err(reply_snapshot("state-target-count"));
-            }
-        }
-    }
     sink.write_object(|obj| {
         obj.field_str("win", &row.lifetime.0)?;
         obj.field_str("out", &row.output.0)?;
         obj.field_str("ws", &row.workspace)?;
-        obj.field("alloc", |s| {
-            write_checked_opt_rect::<S, VALIDATE>(s, &row.allocation)
-        })?;
-        obj.field("frame", |s| {
-            write_checked_opt_rect::<S, VALIDATE>(s, &row.effective_frame)
-        })?;
+        obj.field("alloc", |s| write_opt_rect(s, &row.allocation))?;
+        obj.field("frame", |s| write_opt_rect(s, &row.effective_frame))?;
         obj.field_str("frame_auth", row.frame_authority.as_str())?;
         obj.field_str(
             "frame_hold",
@@ -326,9 +208,7 @@ fn write_window_desire_v4<S: ReplySink, const VALIDATE: bool>(
                 .map_or("", HoldReason::as_str),
         )?;
         if include_ops {
-            obj.field("frame_op", |s| {
-                write_opt_id_or_empty::<S, VALIDATE>(s, &row.frame_operation)
-            })?;
+            obj.field_str("frame_op", row.frame_operation.as_deref().unwrap_or(""))?;
         }
         obj.field_bool("floating", row.floating)?;
         obj.field_str(
@@ -336,30 +216,13 @@ fn write_window_desire_v4<S: ReplySink, const VALIDATE: bool>(
             row.float_origin.map_or("", FloatOrigin::as_str),
         )?;
         if include_ops {
-            obj.field("clear_op", |s| {
-                write_opt_id_or_empty::<S, VALIDATE>(s, &row.clear_operation)
-            })?;
+            obj.field_str("clear_op", row.clear_operation.as_deref().unwrap_or(""))?;
         }
         write_window_target_lanes(row, obj)
     })
 }
 
-fn write_transfer_v4<S: ReplySink, const VALIDATE: bool>(
-    row: &TransferTargetV4,
-    sink: &mut S,
-) -> Result<()> {
-    if VALIDATE {
-        check_reply_id(&row.operation_id)?;
-        check_reply_id(&row.target_output.0)?;
-        check_reply_id(&row.target_workspace)?;
-        if let Some(parent) = row.parent.as_deref() {
-            check_reply_id(parent)?;
-        }
-        match &row.kind {
-            TransferKind::Window(window) => check_reply_id(&window.0)?,
-            TransferKind::View | TransferKind::Migration => {}
-        }
-    }
+fn write_transfer_v4<S: ReplySink>(row: &TransferTargetV4, sink: &mut S) -> Result<()> {
     sink.write_object(|obj| {
         obj.field_str("op", &row.operation_id)?;
         obj.field_str(
@@ -395,29 +258,45 @@ fn write_transfer_v4<S: ReplySink, const VALIDATE: bool>(
     })
 }
 
-fn write_after_shown_scope_v4<S: ReplySink, const VALIDATE: bool>(
-    scope: &AfterShownScope,
-    sink: &mut S,
-) -> Result<()> {
-    if VALIDATE {
-        check_reply_id(&scope.out.0)?;
-        check_reply_id(&scope.ws)?;
-    }
+fn write_after_shown_scope_v4<S: ReplySink>(scope: &AfterShownScope, sink: &mut S) -> Result<()> {
     sink.write_object(|obj| {
         obj.field_str("out", &scope.out.0)?;
         obj.field_str("ws", &scope.ws)
     })
 }
 
-fn write_after_shown_v4<S: ReplySink, const VALIDATE: bool>(
-    shown: &Option<AfterShown>,
-    sink: &mut S,
-) -> Result<()> {
+fn write_after_shown_v4<S: ReplySink>(shown: &Option<AfterShown>, sink: &mut S) -> Result<()> {
     let Some(shown) = shown else {
         sink.push_str("null");
         return Ok(());
     };
-    if VALIDATE {
+    sink.write_object(|obj| {
+        obj.field_str("op", &shown.op)?;
+        obj.field_u64_str("obs", shown.obs)?;
+        obj.field_array("members", &shown.members, |member, s| {
+            s.write_object(|m| {
+                m.field_str("win", &member.win.0)?;
+                m.field_str("out", &member.out.0)?;
+                m.field_str("ws", &member.ws)?;
+                m.field("frame", |s| write_opt_rect(s, &member.frame))
+            })
+        })?;
+        obj.field_array("views", &shown.views, write_after_shown_scope_v4)?;
+        obj.field_array("selected", &shown.selected, write_after_shown_scope_v4)?;
+        obj.field_array("departing", &shown.departing, write_after_shown_scope_v4)
+    })
+}
+
+pub(crate) fn validate_focus_request_v4(request: &FocusRequest) -> Result<()> {
+    check_reply_id(&request.id)?;
+    check_reply_id(&request.target.0)?;
+    check_reply_id(&request.output.0)?;
+    check_reply_id(&request.workspace)?;
+    let explicit = request.cause == FocusRequestCause::ExplicitCommand;
+    if explicit != request.cmd_seq.is_some() || (!explicit && request.after_shown.is_some()) {
+        return Err(reply_snapshot("encode-mismatch"));
+    }
+    if let Some(shown) = request.after_shown.as_ref() {
         check_reply_id(&shown.op)?;
         check_reply_cap(shown.members.len(), MAX_FOCUS_MEMBERS)?;
         check_reply_cap(shown.views.len(), MAX_FOCUS_VIEWS)?;
@@ -443,57 +322,33 @@ fn write_after_shown_v4<S: ReplySink, const VALIDATE: bool>(
         {
             return Err(reply_snapshot("encode-mismatch"));
         }
-    }
-    sink.write_object(|obj| {
-        obj.field_str("op", &shown.op)?;
-        obj.field_u64_str("obs", shown.obs)?;
-        obj.field_array("members", &shown.members, |member, s| {
-            if VALIDATE {
-                check_reply_id(&member.win.0)?;
-                check_reply_id(&member.out.0)?;
-                check_reply_id(&member.ws)?;
+        for member in &shown.members {
+            check_reply_id(&member.win.0)?;
+            check_reply_id(&member.out.0)?;
+            check_reply_id(&member.ws)?;
+            if let Some(rect) = member.frame.as_ref()
+                && !valid_carried_rect(rect.x, rect.y, rect.w, rect.h)
+            {
+                return Err(unknown_value());
             }
-            s.write_object(|m| {
-                m.field_str("win", &member.win.0)?;
-                m.field_str("out", &member.out.0)?;
-                m.field_str("ws", &member.ws)?;
-                m.field("frame", |s| {
-                    write_checked_opt_rect::<S, VALIDATE>(s, &member.frame)
-                })
-            })
-        })?;
-        obj.field_array(
-            "views",
-            &shown.views,
-            write_after_shown_scope_v4::<S, VALIDATE>,
-        )?;
-        obj.field_array(
-            "selected",
-            &shown.selected,
-            write_after_shown_scope_v4::<S, VALIDATE>,
-        )?;
-        obj.field_array(
-            "departing",
-            &shown.departing,
-            write_after_shown_scope_v4::<S, VALIDATE>,
-        )
-    })
+        }
+        for scope in shown
+            .views
+            .iter()
+            .chain(shown.selected.iter())
+            .chain(shown.departing.iter())
+        {
+            check_reply_id(&scope.out.0)?;
+            check_reply_id(&scope.ws)?;
+        }
+    }
+    Ok(())
 }
 
-pub(crate) fn write_focus_request_v4<S: ReplySink, const VALIDATE: bool>(
+pub(crate) fn write_focus_request_v4<S: ReplySink>(
     request: &FocusRequest,
     sink: &mut S,
 ) -> Result<()> {
-    if VALIDATE {
-        check_reply_id(&request.id)?;
-        check_reply_id(&request.target.0)?;
-        check_reply_id(&request.output.0)?;
-        check_reply_id(&request.workspace)?;
-        let explicit = request.cause == FocusRequestCause::ExplicitCommand;
-        if explicit != request.cmd_seq.is_some() || (!explicit && request.after_shown.is_some()) {
-            return Err(reply_snapshot("encode-mismatch"));
-        }
-    }
     sink.write_object(|obj| {
         obj.field_str("id", &request.id)?;
         obj.field_str("target", &request.target.0)?;
@@ -503,73 +358,22 @@ pub(crate) fn write_focus_request_v4<S: ReplySink, const VALIDATE: bool>(
         obj.field_str("ws", &request.workspace)?;
         obj.field_opt_u64_str("cmdSeq", request.cmd_seq)?;
         obj.field("afterShown", |s| {
-            write_after_shown_v4::<S, VALIDATE>(&request.after_shown, s)
+            write_after_shown_v4(&request.after_shown, s)
         })
     })
 }
 
-fn valid_operation_cause(text: &str) -> bool {
-    if CommandRejectKind::parse(text).is_some() {
-        return true;
-    }
-    matches!(
-        text,
-        "baseline-non-subject"
-            | "closed"
-            | "constraints"
-            | "early-verdict"
-            | "external"
-            | "fixed"
-            | "floating"
-            | "homing-loss"
-            | "invalid-direction"
-            | "invalid-geometry"
-            | "non-subject-focus"
-            | "refused-with-unmaximized"
-            | "sticky"
-            | "tiling-changed"
-            | "topology-unreadable"
-            | "unknown-output"
-            | "unknown-window"
-    )
-}
-
-fn write_operation_event_v4<S: ReplySink, const VALIDATE: bool>(
-    row: &OperationEvent,
-    sink: &mut S,
-) -> Result<()> {
-    if VALIDATE {
-        check_reply_id(&row.window.0)?;
-        check_reply_id(&row.operation_id)?;
-        if row.outcome.kind() != row.kind {
-            return Err(unknown_value());
-        }
-        if let Some(cause) = row.cause.as_deref()
-            && !valid_operation_cause(cause)
-        {
-            return Err(unknown_value());
-        }
-    }
+fn write_operation_event_v4<S: ReplySink>(row: &OperationEvent, sink: &mut S) -> Result<()> {
     sink.write_object(|obj| {
         obj.field_str("win", &row.window.0)?;
         obj.field_str("kind", row.kind.as_str())?;
         obj.field_str("op", &row.operation_id)?;
         obj.field_str("outcome", row.outcome.as_str())?;
-        obj.field("cause", |s| {
-            write_empty_or_id::<S, VALIDATE>(s, row.cause.as_deref().unwrap_or_default())
-        })
+        obj.field_str("cause", row.cause.as_deref().unwrap_or_default())
     })
 }
 
-fn write_native_creation_v4<S: ReplySink, const VALIDATE: bool>(
-    row: &NativeCreationDesire,
-    sink: &mut S,
-) -> Result<()> {
-    if VALIDATE {
-        check_reply_id(&row.operation_id)?;
-        check_reply_id(&row.logical_workspace)?;
-        check_reply_id(&row.target_output.0)?;
-    }
+fn write_native_creation_v4<S: ReplySink>(row: &NativeCreationDesire, sink: &mut S) -> Result<()> {
     sink.write_object(|obj| {
         obj.field_str("op", &row.operation_id)?;
         obj.field_str("ws", &row.logical_workspace)?;
@@ -577,7 +381,7 @@ fn write_native_creation_v4<S: ReplySink, const VALIDATE: bool>(
     })
 }
 
-fn write_drag_preview_v4<S: ReplySink, const VALIDATE: bool>(
+fn write_drag_preview_v4<S: ReplySink>(
     preview: &Option<DragPreviewV4>,
     sink: &mut S,
 ) -> Result<()> {
@@ -585,32 +389,6 @@ fn write_drag_preview_v4<S: ReplySink, const VALIDATE: bool>(
         sink.push_str("null");
         return Ok(());
     };
-    if VALIDATE {
-        if !valid_carried_rect(
-            preview.rect.x,
-            preview.rect.y,
-            preview.rect.w,
-            preview.rect.h,
-        ) {
-            return Err(unknown_value());
-        }
-        check_reply_id(&preview.domain.output.0)?;
-        check_reply_id(&preview.domain.workspace.0)?;
-        check_reply_id(&preview.source.output.0)?;
-        check_reply_id(&preview.source.workspace.0)?;
-        check_reply_id(&preview.target.0)?;
-        if let Some(hover) = &preview.hover {
-            check_reply_id(&hover.domain.output.0)?;
-            check_reply_id(&hover.domain.workspace.0)?;
-            check_reply_id(&hover.source_leaf.0)?;
-            check_reply_id(&hover.source_window.0)?;
-            if let Some(prior) = hover.prior.as_ref() {
-                check_reply_id(&prior.group.0)?;
-            }
-            check_reply_id(&hover.prior_domain.output.0)?;
-            check_reply_id(&hover.prior_domain.workspace.0)?;
-        }
-    }
     sink.write_object(|obj| {
         obj.field_u64_str("id", preview.id)?;
         obj.field_u64_str("rev", preview.revision)?;
@@ -665,23 +443,8 @@ fn write_gesture_settled_v4<S: ReplySink>(
     })
 }
 
-fn write_intent_desire_v4<S: ReplySink, const VALIDATE: bool>(
-    row: &IntentDesire,
-    sink: &mut S,
-) -> Result<()> {
-    if VALIDATE {
-        check_reply_id(&row.win.0)?;
-    }
-    let encoded_data = match row.data.as_ref() {
-        Some(data) => {
-            let encoded = encode_intent_data(data);
-            if VALIDATE && encoded.len() > MAX_INTENT_DATA_BYTES {
-                return Err(reply_snapshot("intent-data-invalid"));
-            }
-            Some(encoded)
-        }
-        None => None,
-    };
+fn write_intent_desire_v4<S: ReplySink>(row: &IntentDesire, sink: &mut S) -> Result<()> {
+    let encoded_data = row.data.as_ref().map(encode_intent_data);
     sink.write_object(|obj| {
         obj.field_str("win", &row.win.0)?;
         obj.field("data", |s| {
@@ -694,18 +457,7 @@ fn write_intent_desire_v4<S: ReplySink, const VALIDATE: bool>(
     })
 }
 
-fn write_switch_event_v4<S: ReplySink, const VALIDATE: bool>(
-    row: &SwitchEvent,
-    sink: &mut S,
-) -> Result<()> {
-    if VALIDATE {
-        check_reply_id(&row.output.0)?;
-        check_reply_id(&row.operation_id)?;
-        check_reply_cap(row.failed.len(), MAX_REPLY_WINDOWS)?;
-        for window in &row.failed {
-            check_reply_id(&window.0)?;
-        }
-    }
+fn write_switch_event_v4<S: ReplySink>(row: &SwitchEvent, sink: &mut S) -> Result<()> {
     sink.write_object(|obj| {
         obj.field_str("out", &row.output.0)?;
         obj.field_str("op", &row.operation_id)?;
@@ -719,22 +471,7 @@ fn write_switch_event_v4<S: ReplySink, const VALIDATE: bool>(
     })
 }
 
-fn write_row_diagnostic_v4<S: ReplySink, const VALIDATE: bool>(
-    row: &RowDiagnostic,
-    sink: &mut S,
-) -> Result<()> {
-    if VALIDATE {
-        if let Some(id) = row.id.as_deref() {
-            check_reply_id(id)?;
-        }
-        match &row.scope {
-            AuthorityScope::Output(output) => check_reply_id(&output.0)?,
-            AuthorityScope::Workspace { output, workspace } => {
-                check_reply_id(&output.0)?;
-                check_reply_id(&workspace.0)?;
-            }
-        }
-    }
+fn write_row_diagnostic_v4<S: ReplySink>(row: &RowDiagnostic, sink: &mut S) -> Result<()> {
     sink.write_object(|obj| {
         obj.field("scope", |s| write_authority_scope(s, &row.scope))?;
         obj.field_str("row", row.row.as_str())?;
@@ -749,22 +486,7 @@ fn write_row_diagnostic_v4<S: ReplySink, const VALIDATE: bool>(
     })
 }
 
-fn write_frame_witness_v4<S: ReplySink, const VALIDATE: bool>(
-    witness: &FrameWitness,
-    sink: &mut S,
-) -> Result<()> {
-    if VALIDATE {
-        check_reply_id(&witness.win.0)?;
-        if !valid_carried_rect(
-            witness.frame.x,
-            witness.frame.y,
-            witness.frame.w,
-            witness.frame.h,
-        ) {
-            return Err(unknown_value());
-        }
-        check_reply_id(&witness.foreground.0)?;
-    }
+fn write_frame_witness_v4<S: ReplySink>(witness: &FrameWitness, sink: &mut S) -> Result<()> {
     sink.write_object(|obj| {
         obj.field_str("win", &witness.win.0)?;
         obj.field_u64_str("obs", witness.obs)?;
@@ -776,28 +498,10 @@ fn write_frame_witness_v4<S: ReplySink, const VALIDATE: bool>(
     })
 }
 
-fn write_border_presentation_v4<S: ReplySink, const VALIDATE: bool>(
+fn write_border_presentation_v4<S: ReplySink>(
     row: &BorderPresentationV4,
     sink: &mut S,
 ) -> Result<()> {
-    if VALIDATE {
-        if row.visible && row.reason.is_some() {
-            return Err(unknown_value());
-        }
-        if let Some(subject) = row.subject.as_ref() {
-            check_reply_id(&subject.0)?;
-        }
-        if let Some(width) = row.width
-            && width < 0
-        {
-            return Err(unknown_value());
-        }
-        if let Some(radius) = row.radius
-            && radius < 0
-        {
-            return Err(unknown_value());
-        }
-    }
     sink.write_object(|obj| {
         obj.field_bool("visible", row.visible)?;
         obj.field_str("reason", row.reason.map_or("", |r| r.as_str()))?;
@@ -844,79 +548,41 @@ fn write_border_presentation_v4<S: ReplySink, const VALIDATE: bool>(
                 s.push_str("null");
                 Ok(())
             }
-            Some(witness) => write_frame_witness_v4::<S, VALIDATE>(witness, s),
+            Some(witness) => write_frame_witness_v4(witness, s),
         })
     })
 }
 
-fn write_underlay_v4<S: ReplySink, const VALIDATE: bool>(
-    row: &PresentationUnderlay,
-    sink: &mut S,
-) -> Result<()> {
+fn write_underlay_v4<S: ReplySink>(row: &PresentationUnderlay, sink: &mut S) -> Result<()> {
     match row {
-        PresentationUnderlay::Found(found) => {
-            if VALIDATE {
-                check_reply_id(&found.home.output.0)?;
-                check_reply_id(&found.home.workspace.0)?;
-                check_reply_id(&found.group.0)?;
-                check_reply_id(&found.focused_leaf.0)?;
-                check_reply_id(&found.focused_window.0)?;
-                if !valid_carried_rect(
-                    found.union_rect.x,
-                    found.union_rect.y,
-                    found.union_rect.w,
-                    found.union_rect.h,
-                ) {
-                    return Err(unknown_value());
-                }
-                if !valid_carried_rect(
-                    found.outer_rect.x,
-                    found.outer_rect.y,
-                    found.outer_rect.w,
-                    found.outer_rect.h,
-                ) {
-                    return Err(unknown_value());
-                }
-                check_reply_cap(found.members.len(), MAX_REPLY_WINDOWS)?;
-                for member in &found.members {
-                    check_reply_id(&member.leaf.0)?;
-                    check_reply_id(&member.window.0)?;
-                    if !valid_carried_rect(
-                        member.rect.x,
-                        member.rect.y,
-                        member.rect.w,
-                        member.rect.h,
-                    ) {
-                        return Err(unknown_value());
-                    }
-                }
-            }
-            sink.write_object(|obj| {
-                obj.field_str("status", "found")?;
-                obj.field_raw("reason", "\"\"")?;
-                obj.field_u64_str("baseRev", found.base_revision)?;
-                obj.field_str("homeOut", &found.home.output.0)?;
-                obj.field_str("homeWs", &found.home.workspace.0)?;
-                obj.field_str("group", &found.group.0)?;
-                obj.field_str("leaf", &found.focused_leaf.0)?;
-                obj.field_str("win", &found.focused_window.0)?;
-                obj.field("union", |s| {
-                    write_checked_rect::<S, VALIDATE>(s, &found.union_rect)
-                })?;
-                obj.field("outer", |s| {
-                    write_checked_rect::<S, VALIDATE>(s, &found.outer_rect)
-                })?;
-                obj.field_array("members", &found.members, |member, s| {
-                    s.write_object(|m| {
-                        m.field_str("leaf", &member.leaf.0)?;
-                        m.field_str("win", &member.window.0)?;
-                        m.field("rect", |s| {
-                            write_checked_rect::<S, VALIDATE>(s, &member.rect)
-                        })
+        PresentationUnderlay::Found(found) => sink.write_object(|obj| {
+            obj.field_str("status", "found")?;
+            obj.field_raw("reason", "\"\"")?;
+            obj.field_u64_str("baseRev", found.base_revision)?;
+            obj.field_str("homeOut", &found.home.output.0)?;
+            obj.field_str("homeWs", &found.home.workspace.0)?;
+            obj.field_str("group", &found.group.0)?;
+            obj.field_str("leaf", &found.focused_leaf.0)?;
+            obj.field_str("win", &found.focused_window.0)?;
+            obj.field("union", |s| {
+                write_rect(s, &found.union_rect);
+                Ok(())
+            })?;
+            obj.field("outer", |s| {
+                write_rect(s, &found.outer_rect);
+                Ok(())
+            })?;
+            obj.field_array("members", &found.members, |member, s| {
+                s.write_object(|m| {
+                    m.field_str("leaf", &member.leaf.0)?;
+                    m.field_str("win", &member.window.0)?;
+                    m.field("rect", |s| {
+                        write_rect(s, &member.rect);
+                        Ok(())
                     })
                 })
             })
-        }
+        }),
         PresentationUnderlay::Hidden {
             base_revision,
             reason,
@@ -928,40 +594,15 @@ fn write_underlay_v4<S: ReplySink, const VALIDATE: bool>(
     }
 }
 
-fn write_pager_v4<S: ReplySink, const VALIDATE: bool>(
-    pager: &[PagerScreen],
-    sink: &mut S,
-) -> Result<()> {
-    if VALIDATE {
-        check_reply_cap(pager.len(), MAX_REPLY_OUTPUTS)?;
-    }
+fn write_pager_v4<S: ReplySink>(pager: &[PagerScreen], sink: &mut S) -> Result<()> {
     sink.push_char('[');
     for (i, screen) in pager.iter().enumerate() {
         if i > 0 {
             sink.push_char(',');
         }
-        if VALIDATE {
-            check_reply_id(&screen.output)?;
-            check_reply_cap(screen.workspaces.len(), MAX_REPLY_WORKSPACES)?;
-        }
         sink.write_object(|scr| {
             scr.field_str("out", &screen.output)?;
             scr.field_array("workspaces", &screen.workspaces, |workspace, s| {
-                if VALIDATE {
-                    check_reply_id(&workspace.id)?;
-                    check_reply_cap(workspace.windows.len(), MAX_REPLY_WINDOWS)?;
-                    for window in &workspace.windows {
-                        check_reply_id(&window.window.0)?;
-                        if !valid_carried_rect(
-                            window.frame.x,
-                            window.frame.y,
-                            window.frame.w,
-                            window.frame.h,
-                        ) {
-                            return Err(unknown_value());
-                        }
-                    }
-                }
                 s.write_object(|ws| {
                     ws.field_str("id", &workspace.id)?;
                     ws.field("ordinal", |s| {
@@ -979,7 +620,8 @@ fn write_pager_v4<S: ReplySink, const VALIDATE: bool>(
                         s.write_object(|w| {
                             w.field_str("win", &window.window.0)?;
                             w.field("frame", |s| {
-                                write_checked_rect::<S, VALIDATE>(s, &window.frame)
+                                write_rect(s, &window.frame);
+                                Ok(())
                             })
                         })
                     })
@@ -991,24 +633,10 @@ fn write_pager_v4<S: ReplySink, const VALIDATE: bool>(
     Ok(())
 }
 
-fn write_reply_presentation_v4<S: ReplySink, const VALIDATE: bool>(
+fn write_reply_presentation_v4<S: ReplySink>(
     presentation: &WorldPresentationV4,
-    suspended_present: bool,
     sink: &mut S,
 ) -> Result<()> {
-    if VALIDATE {
-        if !presentation.foreground.is_empty() && !is_opaque_id(&presentation.foreground) {
-            return Err(unknown_value());
-        }
-        match (&presentation.suspended_output, suspended_present) {
-            (None, false) => {}
-            (Some(_), true) => {}
-            _ => return Err(reply_snapshot("suspended-output-inconsistent")),
-        }
-        if let Some(output) = presentation.suspended_output.as_ref() {
-            check_reply_id(&output.0)?;
-        }
-    }
     sink.write_object(|obj| {
         obj.field_str("foreground", &presentation.foreground)?;
         obj.field_u64_str("rev", presentation.rev)?;
@@ -1016,14 +644,10 @@ fn write_reply_presentation_v4<S: ReplySink, const VALIDATE: bool>(
             obj.field_str("suspendedOutput", &output.0)?;
         }
         obj.field("border", |s| {
-            write_border_presentation_v4::<S, VALIDATE>(&presentation.border, s)
+            write_border_presentation_v4(&presentation.border, s)
         })?;
-        obj.field("underlay", |s| {
-            write_underlay_v4::<S, VALIDATE>(&presentation.underlay, s)
-        })?;
-        obj.field("pager", |s| {
-            write_pager_v4::<S, VALIDATE>(&presentation.pager, s)
-        })
+        obj.field("underlay", |s| write_underlay_v4(&presentation.underlay, s))?;
+        obj.field("pager", |s| write_pager_v4(&presentation.pager, s))
     })
 }
 
@@ -1053,16 +677,12 @@ fn map_validation_error(err: ReplyValidationError) -> WorldProtocolError {
 
 fn write_reply_v4_to_sink<S: ReplySink, const VALIDATE: bool>(
     reply: &WorldReplyV4,
-    wire: &ReplyWireOptionals,
     roster_plan: Option<&SharedRosterPlan>,
     broker_bind: Option<&BrokerReplyBind<'_>>,
     sink: &mut S,
 ) -> Result<()> {
     if VALIDATE {
         validate_reply_v4(reply, None).map_err(map_validation_error)?;
-        if reply.presentation.suspended_output.is_some() != wire.suspended_output_present {
-            return Err(reply_snapshot("suspended-output-inconsistent"));
-        }
     }
     if let Some(plan) = roster_plan {
         check_publication(
@@ -1086,21 +706,13 @@ fn write_reply_v4_to_sink<S: ReplySink, const VALIDATE: bool>(
         obj.field_u64_str("rev", reply.state_revision)?;
         obj.field_bool("ready", reply.ready)?;
         obj.field_bool("consumed", reply.command_consumed)?;
-        obj.field_array("scopes", &reply.scopes, write_scope_status_v4::<S, false>)?;
-        obj.field_array(
-            "workspaces",
-            &reply.workspaces,
-            write_workspace_desire_v4::<S, false>,
-        )?;
-        obj.field_array(
-            "outputs",
-            &reply.outputs,
-            write_output_desire_v4::<S, false>,
-        )?;
+        obj.field_array("scopes", &reply.scopes, write_scope_status_v4)?;
+        obj.field_array("workspaces", &reply.workspaces, write_workspace_desire_v4)?;
+        obj.field_array("outputs", &reply.outputs, write_output_desire_v4)?;
         obj.field_array("windows", &reply.windows, |w, s| {
-            write_window_desire_v4::<S, false>(w, s, true)
+            write_window_desire_v4(w, s, true)
         })?;
-        obj.field_array("transfers", &reply.transfers, write_transfer_v4::<S, false>)?;
+        obj.field_array("transfers", &reply.transfers, write_transfer_v4)?;
         obj.field("effects", |s| {
             s.push_str("[]");
             Ok(())
@@ -1110,10 +722,10 @@ fn write_reply_v4_to_sink<S: ReplySink, const VALIDATE: bool>(
                 s.push_str("null");
                 Ok(())
             }
-            Some(request) => write_focus_request_v4::<S, false>(request, s),
+            Some(request) => write_focus_request_v4(request, s),
         })?;
         obj.field("dragPreview", |s| {
-            write_drag_preview_v4::<S, false>(&reply.drag_preview, s)
+            write_drag_preview_v4(&reply.drag_preview, s)
         })?;
         obj.field("gestureSettled", |s| {
             write_gesture_settled_v4(&reply.gesture_settled, s)
@@ -1121,12 +733,12 @@ fn write_reply_v4_to_sink<S: ReplySink, const VALIDATE: bool>(
         obj.field_array(
             "operationSettled",
             &reply.operation_settled,
-            write_operation_event_v4::<S, false>,
+            write_operation_event_v4,
         )?;
         obj.field_array(
             "nativeCreations",
             &reply.native_creations,
-            write_native_creation_v4::<S, false>,
+            write_native_creation_v4,
         )?;
         obj.field("warpCursor", |s| {
             match reply.cursor_warp {
@@ -1142,27 +754,19 @@ fn write_reply_v4_to_sink<S: ReplySink, const VALIDATE: bool>(
             Ok(())
         })?;
         obj.field("presentation", |s| {
-            write_reply_presentation_v4::<S, false>(
-                &reply.presentation,
-                wire.suspended_output_present,
-                s,
-            )
+            write_reply_presentation_v4(&reply.presentation, s)
         })?;
         obj.field_array(
             "intentDesired",
             &reply.intent_desired,
-            write_intent_desire_v4::<S, false>,
+            write_intent_desire_v4,
         )?;
         obj.field_array(
             "switchSettled",
             &reply.switch_settled,
-            write_switch_event_v4::<S, false>,
+            write_switch_event_v4,
         )?;
-        obj.field_array(
-            "diagnostics",
-            &reply.diagnostics,
-            write_row_diagnostic_v4::<S, false>,
-        )?;
+        obj.field_array("diagnostics", &reply.diagnostics, write_row_diagnostic_v4)?;
         if let Some(plan) = roster_plan {
             obj.field("rosterPlan", |s| write_plan(plan, s))?;
         }
@@ -1221,14 +825,13 @@ fn write_projection_preview<S: ReplySink>(
     })
 }
 
-/// Exact canonical v4 reply byte count over a borrowed [`WorldReplyV4`] and
-/// [`ReplyWireOptionals`]. Measures canonical serialized size without running
-/// writer-only validation so admission size gates preserve the final-prepare
-/// validation checkpoint.
+/// Exact canonical v4 reply byte count over a borrowed [`WorldReplyV4`].
+/// Measures canonical serialized size without running writer-only validation so
+/// admission size gates preserve the final-prepare validation checkpoint.
 #[must_use]
-pub fn count_reply_v4_bytes(reply: &WorldReplyV4, wire: &ReplyWireOptionals) -> usize {
+pub fn count_reply_v4_bytes(reply: &WorldReplyV4) -> usize {
     let mut sink = CountSink(0);
-    let _ = write_reply_v4_to_sink::<_, false>(reply, wire, None, None, &mut sink);
+    let _ = write_reply_v4_to_sink::<_, false>(reply, None, None, &mut sink);
     sink.0
 }
 
@@ -1239,7 +842,7 @@ pub(crate) fn count_operation_settled_rows_bytes(settled: &[OperationEvent]) -> 
         if i > 0 {
             sink.push_char(',');
         }
-        let _ = write_operation_event_v4::<_, false>(event, &mut sink);
+        let _ = write_operation_event_v4(event, &mut sink);
     }
     sink.0
 }
@@ -1252,49 +855,43 @@ pub(crate) fn count_switch_settled_section_bytes(settled: &[SwitchEvent]) -> usi
         if i > 0 {
             sink.push_char(',');
         }
-        let _ = write_switch_event_v4::<_, false>(event, &mut sink);
+        let _ = write_switch_event_v4(event, &mut sink);
     }
     sink.push_char(']');
     sink.0
 }
 
-/// Exact canonical v4 reply byte count over a borrowed [`WorldReplyV4`] and
-/// [`ReplyWireOptionals`]. Runs the identical validation and traversal as
-/// [`write_reply_v4_into`], without allocating output bytes or enforcing the
-/// 4 MiB transport cap so callers can measure headroom or over-budget sizes.
-pub fn count_reply_v4(reply: &WorldReplyV4, wire: &ReplyWireOptionals) -> Result<usize> {
+/// Exact canonical v4 reply byte count over a borrowed [`WorldReplyV4`]. Runs
+/// the identical validation and traversal as [`write_reply_v4_into`], without
+/// allocating output bytes or enforcing the 4 MiB transport cap so callers can
+/// measure headroom or over-budget sizes.
+pub fn count_reply_v4(reply: &WorldReplyV4) -> Result<usize> {
     let mut sink = CountSink(0);
-    write_reply_v4_to_sink::<_, true>(reply, wire, None, None, &mut sink)?;
+    write_reply_v4_to_sink::<_, true>(reply, None, None, &mut sink)?;
     Ok(sink.0)
 }
 
 /// Checked canonical v4 reply writer appending into `out` from a borrowed
-/// [`WorldReplyV4`] and [`ReplyWireOptionals`]. Does not enforce the 4 MiB
-/// transport cap so outer envelope callers can append broker fields before
-/// checking the final bound.
-pub fn write_reply_v4_into(
-    reply: &WorldReplyV4,
-    wire: &ReplyWireOptionals,
-    out: &mut String,
-) -> Result<()> {
+/// [`WorldReplyV4`]. Does not enforce the 4 MiB transport cap so outer envelope
+/// callers can append broker fields before checking the final bound.
+pub fn write_reply_v4_into(reply: &WorldReplyV4, out: &mut String) -> Result<()> {
     let mut sink = StringSink(out);
-    write_reply_v4_to_sink::<_, true>(reply, wire, None, None, &mut sink)
+    write_reply_v4_to_sink::<_, true>(reply, None, None, &mut sink)
 }
 
-/// Checked canonical encode of a borrowed v4 reply and wire optionals,
-/// enforcing the 4 MiB transport reply bound.
-pub fn write_reply_v4(reply: &WorldReplyV4, wire: &ReplyWireOptionals) -> Result<String> {
-    write_reply_v4_with_plan(reply, wire, None)
+/// Checked canonical encode of a borrowed v4 reply, enforcing the 4 MiB
+/// transport reply bound.
+pub fn write_reply_v4(reply: &WorldReplyV4) -> Result<String> {
+    write_reply_v4_with_plan(reply, None)
 }
 
 /// Checked canonical reply emission, including any shared-roster publication.
 pub fn write_reply_v4_with_plan(
     reply: &WorldReplyV4,
-    wire: &ReplyWireOptionals,
     roster_plan: Option<&SharedRosterPlan>,
 ) -> Result<String> {
     let mut out = String::new();
-    write_reply_v4_to_sink::<_, true>(reply, wire, roster_plan, None, &mut StringSink(&mut out))?;
+    write_reply_v4_to_sink::<_, true>(reply, roster_plan, None, &mut StringSink(&mut out))?;
     if out.len() > WORLD_MAX_REPLY_BYTES {
         return Err(reply_snapshot("encode-mismatch"));
     }
@@ -1306,45 +903,74 @@ pub fn write_reply_v4_with_plan(
 /// string escaping directly without cloning the reply or reparsing JSON.
 pub fn write_bound_reply_v4(
     reply: &WorldReplyV4,
-    wire: &ReplyWireOptionals,
     roster_plan: Option<&SharedRosterPlan>,
     bind: &BrokerReplyBind<'_>,
 ) -> Result<String> {
     check_reply_id(bind.source)?;
     let mut sink = SortedStringSink::new();
-    write_reply_v4_to_sink::<_, true>(reply, wire, roster_plan, Some(bind), &mut sink)?;
+    write_reply_v4_to_sink::<_, true>(reply, roster_plan, Some(bind), &mut sink)?;
     Ok(sink.finish())
 }
 
 /// Prevalidated broker-bound v4 reply writer for callers that already proved
-/// [`validate_reply_v4`] on `reply`. Performs envelope-only checks on `wire`
-/// and `bind` without revalidating typed reply rows.
+/// [`validate_reply_v4`] on `reply`. Performs envelope-only checks on `bind`
+/// without revalidating typed reply rows.
 pub fn write_bound_reply_v4_prevalidated(
     validated: ValidatedReply<'_>,
-    wire: &ReplyWireOptionals,
     roster_plan: Option<&SharedRosterPlan>,
     bind: &BrokerReplyBind<'_>,
 ) -> Result<String> {
     let reply = validated.reply();
-    if reply.presentation.suspended_output.is_some() != wire.suspended_output_present {
-        return Err(reply_snapshot("suspended-output-inconsistent"));
-    }
     check_reply_id(bind.source)?;
     let mut sink = SortedStringSink::new();
-    write_reply_v4_to_sink::<_, false>(reply, wire, roster_plan, Some(bind), &mut sink)?;
+    write_reply_v4_to_sink::<_, false>(reply, roster_plan, Some(bind), &mut sink)?;
     Ok(sink.finish())
 }
 
-fn write_projection_reply_v4_inner(
-    reply: &WorldReplyV4,
-    wire: &ReplyWireOptionals,
-    producer: Option<(&str, &str)>,
-) -> Result<String> {
-    if reply.presentation.suspended_output.is_some() != wire.suspended_output_present {
-        return Err(reply_snapshot("suspended-output-inconsistent"));
+/// Serialized canonical renderer projection with a known read-binding offset.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CachedProjectionV4 {
+    body: String,
+    req_split: usize,
+}
+
+impl CachedProjectionV4 {
+    /// Assemble a bound read reply in lexicographic order with
+    /// `serde_json`-compatible string escaping.
+    pub fn bind_read(&self, generation: &str, req: &str, covered: Option<(&str, &str)>) -> String {
+        // These three binding fields sort before every projection field;
+        // the writer records the position of the remaining field (`req`).
+        let covered_extra = covered.map_or(8, |(inst, inv)| inst.len() + inv.len() + 4);
+        let mut out = String::with_capacity(
+            self.body.len() + generation.len() + req.len() + covered_extra + 72,
+        );
+        out.push_str("{\"coveredInstance\":");
+        match covered {
+            Some((instance, _)) => push_serde_json_string(&mut out, instance),
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"coveredInvalid\":");
+        match covered {
+            Some((_, invalid)) => push_serde_json_string(&mut out, invalid),
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"gen\":");
+        push_serde_json_string(&mut out, generation);
+        out.push(',');
+        out.push_str(&self.body[1..self.req_split]);
+        out.push_str(",\"req\":");
+        push_serde_json_string(&mut out, req);
+        out.push_str(&self.body[self.req_split..]);
+        out
     }
+}
+
+fn write_cached_projection_v4_inner(
+    reply: &WorldReplyV4,
+    producer: Option<(&str, &str)>,
+) -> Result<CachedProjectionV4> {
     let mut sink = SortedStringSink::new();
-    sink.write_object(|obj| {
+    let req_split = sink.write_object_split(Some("req"), |obj| {
         obj.field("v", |s| {
             s.push_u64(u64::from(reply.contract_version));
             Ok(())
@@ -1352,26 +978,14 @@ fn write_projection_reply_v4_inner(
         obj.field_str("outcome", "presentation")?;
         obj.field_u64_str("rev", reply.state_revision)?;
         obj.field_u64_str("obs", reply.based_on_observation_seq)?;
-        obj.field_array("scopes", &reply.scopes, write_scope_status_v4::<_, false>)?;
-        obj.field_array(
-            "workspaces",
-            &reply.workspaces,
-            write_workspace_desire_v4::<_, false>,
-        )?;
-        obj.field_array(
-            "outputs",
-            &reply.outputs,
-            write_output_desire_v4::<_, false>,
-        )?;
+        obj.field_array("scopes", &reply.scopes, write_scope_status_v4)?;
+        obj.field_array("workspaces", &reply.workspaces, write_workspace_desire_v4)?;
+        obj.field_array("outputs", &reply.outputs, write_output_desire_v4)?;
         obj.field_array("windows", &reply.windows, |w, s| {
-            write_window_desire_v4::<_, false>(w, s, false)
+            write_window_desire_v4(w, s, false)
         })?;
         obj.field("presentation", |s| {
-            write_reply_presentation_v4::<_, false>(
-                &reply.presentation,
-                wire.suspended_output_present,
-                s,
-            )
+            write_reply_presentation_v4(&reply.presentation, s)
         })?;
         obj.field("preview", |s| {
             write_projection_preview(
@@ -1382,7 +996,29 @@ fn write_projection_reply_v4_inner(
             )
         })
     })?;
-    Ok(sink.finish())
+    Ok(CachedProjectionV4 {
+        body: sink.finish(),
+        req_split,
+    })
+}
+
+/// Checked renderer projection writer over a borrowed [`WorldReplyV4`] that
+/// returns a cached canonical body ready for zero-parse read binding.
+pub fn write_cached_projection_v4(
+    reply: &WorldReplyV4,
+    producer: Option<(&str, &str)>,
+) -> Result<CachedProjectionV4> {
+    validate_projection_reply_v4(reply).map_err(map_validation_error)?;
+    write_cached_projection_v4_inner(reply, producer)
+}
+
+/// Prevalidated renderer projection writer that returns a cached canonical body
+/// ready for zero-parse read binding without revalidating typed reply rows.
+pub fn write_cached_projection_v4_prevalidated(
+    validated: ValidatedReply<'_>,
+    producer: Option<(&str, &str)>,
+) -> Result<CachedProjectionV4> {
+    write_cached_projection_v4_inner(validated.reply(), producer)
 }
 
 /// Checked renderer projection writer over a borrowed [`WorldReplyV4`].
@@ -1392,20 +1028,7 @@ fn write_projection_reply_v4_inner(
 /// string escaping.
 pub fn write_projection_reply_v4(
     reply: &WorldReplyV4,
-    wire: &ReplyWireOptionals,
     producer: Option<(&str, &str)>,
 ) -> Result<String> {
-    validate_projection_reply_v4(reply).map_err(map_validation_error)?;
-    write_projection_reply_v4_inner(reply, wire, producer)
-}
-
-/// Prevalidated renderer projection writer for callers that already proved
-/// [`validate_reply_v4`] on `reply`. Performs envelope-only wire checks without
-/// revalidating typed reply rows.
-pub fn write_projection_reply_v4_prevalidated(
-    validated: ValidatedReply<'_>,
-    wire: &ReplyWireOptionals,
-    producer: Option<(&str, &str)>,
-) -> Result<String> {
-    write_projection_reply_v4_inner(validated.reply(), wire, producer)
+    Ok(write_cached_projection_v4(reply, producer)?.body)
 }

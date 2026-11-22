@@ -952,9 +952,6 @@ const DRAG_EDGES = new Set(["left", "right", "top", "bottom", "center"]);
 // index 1..9 (0 is the trailing path for send-numbered); relative delta
 // -1/+1. Selection outputs are null for core-resolved (cursor-first) or an
 // opaque id for a genuinely semantic explicit output.
-export function cmdSelectWorkspace(out: string, ws: string): WorldCommand {
-    return { op: "select-workspace", out, ws };
-}
 export function cmdSelectNumbered(out: string | null, index: number): WorldCommand | null {
     if (!Number.isInteger(index) || index < 1 || index > 9) {
         return null;
@@ -1000,13 +997,9 @@ export function cmdSendNumbered(win: string, source: SendSource, index: number, 
     }
     return { op: "send-numbered", win, source, index, follow };
 }
-// Planner-owned per-workspace tiling mode: explicit sets choose a mode;
-// the neutral toggle flips the core-retained mode at execution time so
-// racing toggles compose with no adapter snapshot policy. The adapter
-// never decides tiling mode locally.
-export function cmdSetWorkspaceTiling(out: string, ws: string, tiled: boolean): WorldCommand {
-    return { op: "set-workspace-tiling", out, ws, tiled };
-}
+// Planner-owned per-workspace tiling mode: the neutral toggle flips the
+// core-retained mode at execution time so racing toggles compose with no
+// adapter snapshot policy. The adapter never decides tiling mode locally.
 export function cmdToggleWorkspaceTiling(out: string, ws: string): WorldCommand {
     return { op: "toggle-workspace-tiling", out, ws };
 }
@@ -2044,7 +2037,7 @@ export function parseIntentDesired(value: unknown): WorldIntentDesire[] | null {
     return out;
 }
 
-// Exact v4 core reply shape: the 23 core keys the Rust canonical encoder
+// Exact v4 core reply shape: the 24 core keys the Rust canonical encoder
 // emits (including the required opaque `intentDesired`, `switchSettled`,
 // and `diagnostics` lanes), plus source/nativeInvalid/clock/gestureAssoc
 // on the bound (capture) lane. Any unknown key refuses, and a
@@ -2873,10 +2866,6 @@ export function buildTakeRequest(client: string, gen: string, clientCmd: string)
 // cursor (canonical decimal u64, "0" before the first wake).
 export function buildWaitRequest(adapter: string, gen: string, nonce: string, cursor: string): string {
     return `{"v":${WORLD_CONTRACT_VERSION},"gen":${JSON.stringify(gen)},"adapter":${JSON.stringify(adapter)},"nonce":${JSON.stringify(nonce)},"cursor":${JSON.stringify(cursor)}}`;
-}
-
-export function buildReadRequest(req: string): string {
-    return `{"v":${WORLD_CONTRACT_VERSION},"req":${JSON.stringify(req)}}`;
 }
 
 // ---------------------------------------------------------------------------

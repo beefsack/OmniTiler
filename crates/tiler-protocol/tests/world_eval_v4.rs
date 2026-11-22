@@ -12,8 +12,8 @@ use tiler_protocol::connection_protocol::{
     decode_error, decode_handshake_reply, decode_settings_reply, route_connection_request,
 };
 use tiler_protocol::world_protocol::{
-    DecodedReplyV4, ReplyWireOptionals, WorldEngine, WorldOutcome, decode_reply_v4, decode_request,
-    encode_error, encode_reply,
+    DecodedReplyV4, WorldEngine, WorldOutcome, decode_reply_v4, decode_request, encode_error,
+    encode_reply,
 };
 
 fn seed() -> String {
@@ -36,17 +36,11 @@ fn submit_report(engine: &mut WorldEngine, body: &str) -> String {
     {
         WorldOutcome::Accepted(reply)
         | WorldOutcome::Duplicate(reply)
-        | WorldOutcome::CommandConsumed(reply) => {
-            let suspended_output_present = reply.presentation.suspended_output.is_some();
-            encode_reply(&DecodedReplyV4 {
-                roster_plan: None,
-                wire: ReplyWireOptionals {
-                    suspended_output_present,
-                },
-                reply,
-            })
-            .expect("reply encodes")
-        }
+        | WorldOutcome::CommandConsumed(reply) => encode_reply(&DecodedReplyV4 {
+            roster_plan: None,
+            reply,
+        })
+        .expect("reply encodes"),
         WorldOutcome::Rejected { kind, message } => encode_error(kind, message, &generation),
     }
 }

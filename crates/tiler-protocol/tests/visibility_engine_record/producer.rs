@@ -26,7 +26,7 @@ use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::*;
 use tiler_protocol::connection_protocol::{decode_handshake_request, decode_settings};
 use tiler_protocol::world_protocol::{
-    DecodedReplyV4, ReplyWireOptionals, decode_reply_v4, decode_report_v4, encode_reply_v4,
+    DecodedReplyV4, decode_reply_v4, decode_report_v4, encode_reply_v4,
 };
 
 fn scenario_path(id: &str) -> std::path::PathBuf {
@@ -96,13 +96,9 @@ impl Rec {
             }
         };
         if record {
-            let wire_flags = ReplyWireOptionals {
-                suspended_output_present: reply.presentation.suspended_output.is_some(),
-            };
             let text = encode_reply_v4(&DecodedReplyV4 {
                 roster_plan: None,
                 reply: reply.clone(),
-                wire: wire_flags,
             })
             .unwrap_or_else(|error| panic!("{req} encodes: {error:?}"));
             self.out.push((req.to_owned(), text));
@@ -745,14 +741,10 @@ pub fn assert_reproduces(fresh: Vec<(String, String)>, expected: Vec<(String, St
             expected_decoded,
             "{req} committed bytes are encoder-stable"
         );
-        let fresh_flags = ReplyWireOptionals {
-            suspended_output_present: fresh_decoded.reply.presentation.suspended_output.is_some(),
-        };
         assert_eq!(
             encode_reply_v4(&DecodedReplyV4 {
                 roster_plan: None,
                 reply: fresh_decoded.reply,
-                wire: fresh_flags
             })
             .expect("fresh reply re-encodes"),
             *fresh_wire,

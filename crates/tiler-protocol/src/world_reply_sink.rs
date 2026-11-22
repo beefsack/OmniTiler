@@ -242,6 +242,55 @@ impl SortedStringSink {
         debug_assert!(self.fields.is_empty());
         self.buffers.into_iter().next().unwrap_or_default()
     }
+
+    pub(crate) fn write_object_split<E, F>(
+        &mut self,
+        split_before: Option<&str>,
+        body: F,
+    ) -> Result<usize, E>
+    where
+        F: FnOnce(&mut ObjectWriter<'_, Self>) -> Result<(), E>,
+    {
+        let field_base = self.fields.len();
+        self.depth += 1;
+        if self.depth >= self.buffers.len() {
+            self.buffers.push(String::new());
+        } else {
+            self.buffers[self.depth].clear();
+        }
+        let mut writer = ObjectWriter {
+            sink: self,
+            has_fields: false,
+        };
+        let res = body(&mut writer);
+        self.depth -= 1;
+        if let Err(err) = res {
+            self.fields.truncate(field_base);
+            return Err(err);
+        }
+        self.fields[field_base..].sort_unstable_by(|a, b| a.0.cmp(b.0));
+        let (parent_slice, child_slice) = self.buffers.split_at_mut(self.depth + 1);
+        let parent = &mut parent_slice[self.depth];
+        let child = &child_slice[0];
+        parent.push('{');
+        let mut split_offset = None;
+        for (i, &(key, start, end)) in self.fields[field_base..].iter().enumerate() {
+            if split_offset.is_none() && split_before.is_some_and(|split| key >= split) {
+                split_offset = Some(parent.len());
+            }
+            if i > 0 {
+                parent.push(',');
+            }
+            parent.push('"');
+            parent.push_str(key);
+            parent.push_str("\":");
+            parent.push_str(&child[start..end]);
+        }
+        let split_offset = split_offset.unwrap_or(parent.len());
+        parent.push('}');
+        self.fields.truncate(field_base);
+        Ok(split_offset)
+    }
 }
 
 impl ReplySink for SortedStringSink {
@@ -288,40 +337,7 @@ impl ReplySink for SortedStringSink {
     where
         F: FnOnce(&mut ObjectWriter<'_, Self>) -> Result<(), E>,
     {
-        let field_base = self.fields.len();
-        self.depth += 1;
-        if self.depth >= self.buffers.len() {
-            self.buffers.push(String::new());
-        } else {
-            self.buffers[self.depth].clear();
-        }
-        let mut writer = ObjectWriter {
-            sink: self,
-            has_fields: false,
-        };
-        let res = body(&mut writer);
-        self.depth -= 1;
-        if res.is_err() {
-            self.fields.truncate(field_base);
-            return res;
-        }
-        self.fields[field_base..].sort_unstable_by(|a, b| a.0.cmp(b.0));
-        let (parent_slice, child_slice) = self.buffers.split_at_mut(self.depth + 1);
-        let parent = &mut parent_slice[self.depth];
-        let child = &child_slice[0];
-        parent.push('{');
-        for (i, &(key, start, end)) in self.fields[field_base..].iter().enumerate() {
-            if i > 0 {
-                parent.push(',');
-            }
-            parent.push('"');
-            parent.push_str(key);
-            parent.push_str("\":");
-            parent.push_str(&child[start..end]);
-        }
-        parent.push('}');
-        self.fields.truncate(field_base);
-        Ok(())
+        self.write_object_split(None, body).map(|_| ())
     }
 }
 
@@ -371,7 +387,7 @@ fn json_string_len(value: &str) -> usize {
     bytes
 }
 
-fn push_serde_json_string(out: &mut String, value: &str) {
+pub(crate) fn push_serde_json_string(out: &mut String, value: &str) {
     out.push('"');
     for c in value.chars() {
         match c {

@@ -19,7 +19,7 @@ use tiler_core::world_report::{
     TransferTargetV4, VisibilityTarget, WindowDesire, WorkspaceDesire, WorldPresentationV4,
     WorldReplyV4,
 };
-use tiler_protocol::world_protocol::{DecodedReplyV4, ReplyWireOptionals};
+use tiler_protocol::world_protocol::DecodedReplyV4;
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect { x, y, w, h }
@@ -159,9 +159,6 @@ pub fn base_bootstrap() -> DecodedReplyV4 {
             switch_settled: vec![],
             diagnostics: vec![],
         },
-        wire: ReplyWireOptionals {
-            suspended_output_present: false,
-        },
     }
 }
 
@@ -234,9 +231,6 @@ pub fn base_observe() -> DecodedReplyV4 {
             intent_desired: vec![],
             switch_settled: vec![],
             diagnostics: vec![],
-        },
-        wire: ReplyWireOptionals {
-            suspended_output_present: false,
         },
     }
 }
@@ -994,7 +988,6 @@ pub fn valid_reply_cases() -> Vec<(&'static str, DecodedReplyV4)> {
         (
             "reply-presentation-hidden-suspended",
             obs_with(|d| {
-                d.wire.suspended_output_present = true;
                 d.reply.presentation = WorldPresentationV4 {
                     foreground: "win-a".to_owned(),
                     rev: 1,

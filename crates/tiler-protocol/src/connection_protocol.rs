@@ -181,8 +181,12 @@ fn process_identity(v: &Value) -> Result<Option<String>, CodecError> {
 
 pub fn decode_handshake_request(input: &str) -> Result<HandshakeRequest, CodecError> {
     let v = parse_strict_json(input)?;
+    decode_handshake_request_value(&v)
+}
+
+fn decode_handshake_request_value(v: &Value) -> Result<HandshakeRequest, CodecError> {
     exact(
-        &v,
+        v,
         &[
             "type",
             "v",
@@ -192,7 +196,7 @@ pub fn decode_handshake_request(input: &str) -> Result<HandshakeRequest, CodecEr
             "capabilities",
         ],
     )?;
-    let m = object(&v)?;
+    let m = object(v)?;
     if strv(&m["type"])? != "handshake" || m["v"].as_u64() != Some(4) {
         return Err(CodecError("version"));
     }
@@ -360,8 +364,12 @@ fn raw(v: &Value) -> Result<RawSettingValue, CodecError> {
 
 pub fn decode_settings(input: &str) -> Result<SettingsRequest, CodecError> {
     let v = parse_strict_json(input)?;
-    exact(&v, &["type", "v", "adapter", "gen", "req", "rev", "values"])?;
-    let m = object(&v)?;
+    decode_settings_value(&v)
+}
+
+fn decode_settings_value(v: &Value) -> Result<SettingsRequest, CodecError> {
+    exact(v, &["type", "v", "adapter", "gen", "req", "rev", "values"])?;
+    let m = object(v)?;
     if strv(&m["type"])? != "settings" || m["v"].as_u64() != Some(4) {
         return Err(CodecError("version"));
     }
@@ -744,11 +752,11 @@ pub fn route_connection_request_bounded(
         .ok_or(CodecError("malformed"))?;
     match message_type {
         "handshake" => {
-            let request = decode_handshake_request(input)?;
+            let request = decode_handshake_request_value(&value)?;
             encode_handshake_reply(&engine.handshake(&request))
         }
         "settings" => {
-            let request = decode_settings(input)?;
+            let request = decode_settings_value(&value)?;
             match engine.try_handle_settings(&request, |reply| {
                 encode_settings_reply_with_limit(reply, max_reply_bytes)
             })? {

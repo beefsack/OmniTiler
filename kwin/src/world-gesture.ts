@@ -12,7 +12,6 @@ export const GESTURE_SERVICE = "com.omnitiler.Gesture";
 export const GESTURE_OBJECT = "/com/omnitiler/Gesture";
 export const GESTURE_INTERFACE = "com.omnitiler.Gesture1";
 export const GESTURE_WAIT_METHOD = "WaitGesture";
-export const GESTURE_LAST_METHOD = "LastGesture";
 export const GESTURE_ACK_METHOD = "AckGesture";
 export const GESTURE_LEASE_MS = 20000;
 

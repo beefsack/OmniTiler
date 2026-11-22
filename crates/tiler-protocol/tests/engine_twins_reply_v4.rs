@@ -89,7 +89,7 @@ fn v4_reply_exact_matches_canonical_encoding() {
         let decoded = decode_reply_v4(&reply_text(&fixture.file)).expect("fixture decodes");
         let wire = encode_reply_v4(&decoded).expect("fixture encodes");
         assert_eq!(
-            count_reply_v4_bytes(&decoded.reply, &decoded.wire),
+            count_reply_v4_bytes(&decoded.reply),
             wire.len(),
             "canonical count matches emitted bytes {}",
             fixture.id
@@ -160,7 +160,7 @@ fn v4_reply_twins_cover_extreme_transfers_and_border() {
     decoded.reply.cursor_warp = Some((16384, -16384));
     let wire = encode_reply_v4(&decoded).expect("extreme reply encodes");
     assert_eq!(
-        count_reply_v4_bytes(&decoded.reply, &decoded.wire),
+        count_reply_v4_bytes(&decoded.reply),
         wire.len(),
         "canonical count matches extreme emitted bytes"
     );
@@ -204,15 +204,12 @@ fn v4_reply_exact_covers_presentation_rev_marginals_and_effect_reserve_constants
     let mut zero = decode_reply_v4(&reply_text(&fixture.file)).expect("fixture decodes");
     zero.reply.presentation.rev = 0;
     let zero_len = encode_reply_v4(&zero).expect("zero rev encodes").len();
-    assert_eq!(count_reply_v4_bytes(&zero.reply, &zero.wire), zero_len);
+    assert_eq!(count_reply_v4_bytes(&zero.reply), zero_len);
     for (rev, expected_delta) in [(0u64, 0usize), (9, 0), (10, 1), (u64::MAX, 19)] {
         let mut rev_reply = zero.clone();
         rev_reply.reply.presentation.rev = rev;
         let wire = encode_reply_v4(&rev_reply).expect("rev reply encodes");
-        assert_eq!(
-            count_reply_v4_bytes(&rev_reply.reply, &rev_reply.wire),
-            wire.len()
-        );
+        assert_eq!(count_reply_v4_bytes(&rev_reply.reply), wire.len());
         assert_eq!(wire.len() - zero_len, expected_delta, "rev {rev}");
     }
 

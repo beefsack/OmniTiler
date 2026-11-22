@@ -15,9 +15,7 @@ use tiler_core::world_report::{
     HoldReason, ScopeAuthority, StateProperty, StateTarget, VisibilityTarget, WindowDesire,
 };
 use tiler_protocol::world_admission_sizing::MAX_TARGET_LANES_PER_WINDOW;
-use tiler_protocol::world_protocol::{
-    DecodedReplyV4, ReplyWireOptionals, decode_reply_v4, encode_reply_v4,
-};
+use tiler_protocol::world_protocol::{DecodedReplyV4, decode_reply_v4, encode_reply_v4};
 use tiler_protocol::world_reply_write::count_reply_v4;
 
 fn fixture_text(name: &str) -> String {
@@ -100,13 +98,10 @@ fn v4_writer_spells_crafted_target_lanes_with_exact_bytes() {
             ],
         },
     ];
-    decoded.wire = ReplyWireOptionals {
-        suspended_output_present: decoded.reply.presentation.suspended_output.is_some(),
-    };
     let wire = encode_reply_v4(&decoded).expect("reply encodes");
     assert_eq!(
         wire.len(),
-        count_reply_v4(&decoded.reply, &decoded.wire).expect("protocol count succeeds"),
+        count_reply_v4(&decoded.reply).expect("protocol count succeeds"),
         "protocol byte count is exact over crafted lanes"
     );
     assert_eq!(
@@ -146,9 +141,6 @@ fn v4_writer_spells_crafted_target_lanes_with_exact_bytes() {
 fn max_legal_target_lane_width_combinations_match_exact_bytes() {
     let mut decoded: DecodedReplyV4 =
         decode_reply_v4(&fixture_text("reply-observe")).expect("observe decodes");
-    decoded.wire = ReplyWireOptionals {
-        suspended_output_present: decoded.reply.presentation.suspended_output.is_some(),
-    };
 
     let lane_window = |command_seq, visibility, visibility_authority, state| WindowDesire {
         lifetime: WindowId("win-a".to_owned()),
@@ -173,7 +165,7 @@ fn max_legal_target_lane_width_combinations_match_exact_bytes() {
         let wire = encode_reply_v4(decoded).expect("reply encodes");
         assert_eq!(
             wire.len(),
-            count_reply_v4(&decoded.reply, &decoded.wire).expect("protocol count succeeds"),
+            count_reply_v4(&decoded.reply).expect("protocol count succeeds"),
             "protocol byte count exact"
         );
         assert_eq!(
@@ -394,13 +386,10 @@ fn v4_writer_spells_clear_op_and_untouched_target_lanes() {
         row.clear_operation = clear_op.map(str::to_owned);
         row.command_seq = command_seq;
         decoded.reply.windows = vec![row];
-        decoded.wire = ReplyWireOptionals {
-            suspended_output_present: decoded.reply.presentation.suspended_output.is_some(),
-        };
         let wire = encode_reply_v4(&decoded).expect("reply encodes");
         assert_eq!(
             wire.len(),
-            count_reply_v4(&decoded.reply, &decoded.wire).expect("protocol count succeeds"),
+            count_reply_v4(&decoded.reply).expect("protocol count succeeds"),
         );
         assert_eq!(decode_reply_v4(&wire).expect("reply round-trips"), decoded,);
         assert!(

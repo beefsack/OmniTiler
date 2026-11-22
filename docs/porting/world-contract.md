@@ -161,11 +161,12 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 - Requests and replies are independently <=4 MiB, validated before candidate
   mutation and checked against exact encoding before commit. No partial
   oversized state applies. Retain caps: screens 16; windows/closed 10000 each;
-  frame/member/view/clear attempts 1024 each; creation attempts 256; native rows
-  4096 with <=256 ids per output; occupancy <=10000 per desktop; pager order and
-  frame sources 1024 each. New intent return/write arrays <=10000 each;
-  state attempts/focus feedback <=1024 each; at most four state targets per
-  window; arrival brackets <=10000 total per report; one renderer input at most.
+  unified `propertyAttempts` 1024 per kind (`frame`, `member`, `view`, `clear`,
+  `state`) and 10000 for `visibility` (15120 total); creation attempts 256;
+  native rows 4096 with <=256 ids per output; occupancy <=10000 per desktop;
+  pager order and frame sources 1024 each; `intentRecords` and `intentDesired`
+  <=10000 each; `focusFeedback` <=1024; at most four state targets per window;
+  arrival brackets <=10000 total per report; one renderer input at most.
   Failed-window lists are subsets of the frozen <=10000-window roster;
   diagnostics have at most one entry per held row, never unbounded queues.
   Metadata text below is UTF-8 <=4096 bytes each (display identity <=256).
@@ -2101,14 +2102,14 @@ and separately checks the report's observed native facts.
 
 | Unchanged record/enum by name | Shape and behavior source |
 | --- | --- |
-| `OutputDesire`, `TilingMode`, `FloatOrigin`, `TransferKind`, `EffectKind`, `ScopeAuthority`, `HoldReason` | [Desired rows](world-contract-v3.md#4-desired-world-state-what-the-reply-authorizes), [world_report.rs](../../crates/tiler-core/src/world_report.rs) |
+| `OutputDesire`, `TilingMode`, `FloatOrigin`, `TransferKind`, `ScopeAuthority`, `HoldReason` | [Desired rows](world-contract-v3.md#4-desired-world-state-what-the-reply-authorizes), [world_report.rs](../../crates/tiler-core/src/world_report.rs) |
 | `NativeObservation`, `NativeOccupancy`, `NativeCreationDesire`, `NativeCreationAttempt` | [Adoption](world-contract-v3.md#host-owned-adoption-amendment-tentative-2026-10-25), [world_report.rs](../../crates/tiler-core/src/world_report.rs) |
 | `FrameAttempt`, `ClearAttempt`, `OperationOutcome` | [Settlement](world-contract-v3.md#5-raw-attempts-and-settlement), [world_report.rs](../../crates/tiler-core/src/world_report.rs) |
 | `WindowSizeHints`, `FixedSizePredicate` | [size_hints.rs](../../crates/tiler-core/src/size_hints.rs) |
-| `WorkspaceMode`, `MigrationSourceRefill`, `AnchorFallback`, `NoSpaceResult`, `SwitchTarget`, `FreshPlacement`, `BornMaximized` | [Settings baseline](world-contract-v3.md#current-message-shapes-v3), [catalog](../../crates/tiler-core/src/settings_catalog.rs) |
-| `CommandResult::Float`, `CommandResult::Migration`, `CommandResult::Maximize`, `DirectionalOutcome` | [Results](world-contract-v3.md#current-message-shapes-v3), [world_sizing.rs](../../crates/tiler-core/src/world_sizing.rs), [world_directional.rs](../../crates/tiler-core/src/world_directional.rs) |
+| `WorkspaceMode`, `MigrationSourceRefill`, `SwitchTarget`, `FreshPlacement`, `BornMaximized` | [Settings baseline](world-contract-v3.md#current-message-shapes-v3), [catalog](../../crates/tiler-core/src/settings_catalog.rs) |
+| `CommandResult::Float`, `CommandResult::Migration`, `CommandResult::Maximize`, `DirectionalOutcome` | [Results](world-contract-v3.md#current-message-shapes-v3), [world_report.rs](../../crates/tiler-core/src/world_report.rs), [world_directional.rs](../../crates/tiler-core/src/world_directional.rs) |
 | `GestureIngress`, `GestureSettled`, `DragHoverPrior`, `PriorGroupEdge`, `DragSide`, `Direction`, `SameAxisMove` | [Wire baseline](world-contract-v3.md#current-message-shapes-v3), [gesture.rs](../../crates/tiler-core/src/gesture.rs), [world_protocol.rs](../../crates/tiler-protocol/src/world_protocol.rs) |
-| `PresentationUnderlay`, `PresentationUnderlayFound`, `GroupHideReason` (adds `Unrepresentable` / `unrepresentable`), `ActiveGroupMember`, `PagerScreen`, `PagerWorkspace`, `PagerWindow` | [Presentation](world-contract-v3.md#8-border-underlay-drop-preview-and-pager), [world_presentation.rs](../../crates/tiler-core/src/world_presentation.rs), [world_sizing.rs](../../crates/tiler-core/src/world_sizing.rs) |
+| `PresentationUnderlay`, `PresentationUnderlayFound`, `GroupHideReason` (adds `Unrepresentable` / `unrepresentable`), `ActiveGroupMember`, `PagerScreen`, `PagerWorkspace`, `PagerWindow` | [Presentation](world-contract-v3.md#8-border-underlay-drop-preview-and-pager), [world_presentation.rs](../../crates/tiler-core/src/world_presentation.rs) |
 | `BorderHideReason` except HostHidden spelling | [visual.rs](../../crates/tiler-core/src/visual.rs) |
 | `DomainKey`, `OutputId`, `WorkspaceId`, `NativeWorkspaceId` string representation, `WindowId`, `NodeId`, `Rect` | [Baseline codec](../../crates/tiler-protocol/src/world_protocol.rs), [session/world.rs](../../crates/tiler-core/src/session/world.rs) |
 

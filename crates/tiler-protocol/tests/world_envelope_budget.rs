@@ -23,9 +23,7 @@ use tiler_protocol::world_admission_sizing::{
     MAX_EFFECT_RESERVE_BYTES, MAX_STATE_ATTEMPT_DIAGNOSTIC_BYTES, MAX_TARGET_LANES_PER_WINDOW,
     max_intent_desired_bound, max_intent_save_bound_v4, reply_upper_bound_v4, report_estimate_v4,
 };
-use tiler_protocol::world_protocol::{
-    ReplyWireOptionals, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES,
-};
+use tiler_protocol::world_protocol::{WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES};
 use tiler_protocol::world_reply_write::count_reply_v4_bytes;
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -712,10 +710,7 @@ fn explicit_focus_with_newcomer_fits_preflight_reserve_and_canonical_count() {
     assert_eq!(explicit.cmd_seq, Some(2));
     assert_eq!(explicit.after_shown, None);
 
-    let wire = ReplyWireOptionals {
-        suspended_output_present: reply.presentation.suspended_output.is_some(),
-    };
-    let actual = count_reply_v4_bytes(&reply, &wire);
+    let actual = count_reply_v4_bytes(&reply);
     assert!(
         actual <= pre_bound,
         "canonical reply {actual} fits pre-mutation bound {pre_bound}"

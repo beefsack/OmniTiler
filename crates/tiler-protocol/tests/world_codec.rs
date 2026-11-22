@@ -19,8 +19,8 @@ use tiler_core::world_report_v4_checks::{report_digest_v4, validate_report_v4_re
 use tiler_protocol::world_admission::ProtocolAdmissionGate;
 use tiler_protocol::world_admission_sizing::report_estimate_v4;
 use tiler_protocol::world_protocol::{
-    DecodedReplyV4, ReplyWireOptionals, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES,
-    WorldOutcome, decode_reply_v4, decode_report_v4, decode_request, encode_reply_v4,
+    DecodedReplyV4, WORLD_MAX_REPLY_BYTES, WORLD_MAX_REQUEST_BYTES, WorldOutcome, decode_reply_v4,
+    decode_report_v4, decode_request, encode_reply_v4,
 };
 use tiler_protocol::world_reply_write::count_reply_v4;
 
@@ -302,14 +302,11 @@ fn reply_wire(reply: &WorldReplyV4) -> String {
     let decoded = DecodedReplyV4 {
         roster_plan: None,
         reply: reply.clone(),
-        wire: ReplyWireOptionals {
-            suspended_output_present: reply.presentation.suspended_output.is_some(),
-        },
     };
     let wire = encode_reply_v4(&decoded).expect("reply encodes");
     assert_eq!(
         wire.len(),
-        count_reply_v4(reply, &decoded.wire).expect("protocol count succeeds"),
+        count_reply_v4(reply).expect("protocol count succeeds"),
         "protocol byte count is exact over the wire"
     );
     assert_eq!(
@@ -1641,9 +1638,6 @@ fn focus_effects_refuse_through_v4_writer() {
         let error = encode_reply_v4(&DecodedReplyV4 {
             roster_plan: None,
             reply: refused.clone(),
-            wire: ReplyWireOptionals {
-                suspended_output_present: refused.presentation.suspended_output.is_some(),
-            },
         })
         .expect_err("focus carrier never encodes");
         assert_eq!(error.kind, "snapshot-invalid");
@@ -2840,7 +2834,7 @@ fn typed_scopes_match_v4_fixture_rows_and_reject_malformed_unions() {
     let wire = encode_reply_v4(&decoded).expect("reply encodes");
     assert_eq!(
         wire.len(),
-        count_reply_v4(&decoded.reply, &decoded.wire).expect("protocol count succeeds"),
+        count_reply_v4(&decoded.reply).expect("protocol count succeeds"),
         "protocol byte count is exact over the wire"
     );
     assert_eq!(
@@ -2888,8 +2882,7 @@ fn typed_scopes_match_v4_fixture_rows_and_reject_malformed_unions() {
     let output_wire = encode_reply_v4(&output_decoded).expect("output reply encodes");
     assert_eq!(
         output_wire.len(),
-        count_reply_v4(&output_decoded.reply, &output_decoded.wire)
-            .expect("protocol count succeeds"),
+        count_reply_v4(&output_decoded.reply).expect("protocol count succeeds"),
         "protocol byte count is exact over the wire"
     );
     assert_eq!(
@@ -4675,9 +4668,6 @@ fn immutable_effect_rows_match_fixture_bytes() {
             &tiler_protocol::world_protocol::DecodedReplyV4 {
                 roster_plan: None,
                 reply: reply.clone(),
-                wire: tiler_protocol::world_protocol::ReplyWireOptionals {
-                    suspended_output_present: reply.presentation.suspended_output.is_some(),
-                },
             }
         )
         .is_err(),

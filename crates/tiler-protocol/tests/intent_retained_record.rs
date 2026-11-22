@@ -18,8 +18,7 @@ use tiler_core::directional::WindowId;
 use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{IntentDesire, WorldReplyV4, validate_intent_desired_reason};
 use tiler_protocol::world_protocol::{
-    DecodedReplyV4, ReplyWireOptionals, WorldOutcome, decode_reply_v4, decode_request,
-    encode_reply_v4,
+    DecodedReplyV4, WorldOutcome, decode_reply_v4, decode_request, encode_reply_v4,
 };
 use tiler_protocol::world_reply_write::count_reply_v4;
 
@@ -78,14 +77,11 @@ fn reply_wire(reply: &WorldReplyV4) -> String {
     let decoded = DecodedReplyV4 {
         roster_plan: None,
         reply: reply.clone(),
-        wire: ReplyWireOptionals {
-            suspended_output_present: reply.presentation.suspended_output.is_some(),
-        },
     };
     let wire = encode_reply_v4(&decoded).expect("reply encodes");
     assert_eq!(
         wire.len(),
-        count_reply_v4(reply, &decoded.wire).expect("protocol count succeeds"),
+        count_reply_v4(reply).expect("protocol count succeeds"),
         "protocol byte count is exact over the wire"
     );
     assert_eq!(

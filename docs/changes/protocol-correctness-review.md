@@ -19,35 +19,51 @@ Review only: no product code, tests, or fixtures changed. Scope is the active v4
 
 `crates/omnitiler/src/world_broker.rs:876-953,1312-1331,1992-2080` and `crates/tiler-protocol/src/world_protocol.rs:3961-3989`: the strict outer parser already recursively builds a duplicate-checked tree. The broker clones `report` out of it, clones the report again to stamp eight broker-owned keys, serializes it, then invokes the raw report decoder which parses a second strict tree before it checks the keys. Both actual callers converge on the same decoding body; the second parse does not provide independent duplicate-key evidence. Move the inner map out of the strict outer tree and run that same decoding body on the stamped map. Preserve both independent byte gates: count the exact compact stamped encoding with byte-equivalent semantics before removing the intermediate string, rather than estimating from the outer capture length. Keep raw attempt-clock checks in their current refusal order until PW-BR-04 is decided; borrowing the map needs no second copy. Consumer effect: no change in wire, replay bytes, rejection precedence or evidence; less whole-capture processing. Risk medium, particularly numeric/string encoding equivalence and error precedence. Estimate 35–75 lines changed; no fixture re-recording. Existing guards: `capture_envelope_rejects_duplicate_outer_and_nested_keys` and `b6_strict_ingress_rejects_duplicates_and_preserves_precedence` (`world_broker.rs:3013,5237`). Depends on preserving strict source-replay and byte gates, not a wire decision.
 
+Done: the broker decodes the stamped report map directly; both byte gates and replay/refusal ordering are retained, with an exact compact-encoding test.
+
 ### PW-DOC-01 — Remove stale v3-era rows and superseded status, not historical files
 
 `docs/porting/world-contract.md:161-168,2102-2112` still describes former separate attempt sections, “intent return/write arrays,” v3 `EffectKind`, removed admission settings `AnchorFallback`/`NoSpaceResult`, and links the removed `world_sizing.rs`. The authoritative active report table (`:411-433`) and [contract decisions](../decisions/contract.md#state-centric-contract) already state unified lanes, retained intent, and empty-only effects. `docs/decisions/contract.md:65-71` also says the shared-roster slot route is not implemented or natively verified; the implementation is `crates/tiler-core/src/world_roster.rs`, with scoped native evidence in [the slot record](kde-shared-roster-slots.md#native-kde-evidence--90391310-plus-sibling-fence-fix) and the outstanding physical matrix in [the backlog](../backlog.md#open-work), `:147`. Correct the status to scoped implementation/evidence, not full native acceptance; remove replaced rows/links or point at active definitions. Consumer effect: no change in accepted bytes or behavior; implementers stop following obsolete names. Risk low, except accidentally dropping still-referenced v3 definitions. Estimate 10–25 documentation lines; no fixture changes and no dependency on any B decision.
 
 The TS reply decoder's “23 core keys” comment (`kwin/src/world-report.ts:2047-2059`) is also stale; the following bootstrap comment and allowlist show 24.
 
+Done: the active v4 references, scoped roster status, and TypeScript key count are corrected.
+
 ### PW-BR-07 — Serve the cached renderer projection without decoding its snapshot
 
 `crates/omnitiler/src/world_broker.rs:1284-1285,1598-1626,2335-2344,2753-2779`: accepted capture already builds the renderer projection with a typed writer and preserves native coverage. A read reparses the entire cached snapshot into `serde_json::Value`, appends only `gen`, `req`, `coveredInstance`, `coveredInvalid`, then re-encodes it. Cache a canonical reply object body ready for checked assembly with separately encoded binding fields; preserve current output ordering/encoding wherever byte tests require it. Consumer effect: same projection/coverage, fewer copies and no per-read full JSON parse. Risk medium (stale coverage, canonical byte/order, projected size gate); estimate 30–75 lines. Existing read fixtures in `crates/omnitiler/tests/world_service_flow.rs:3686,5936,5996` and genuine `kwin/tests/world-stage5-fixture.test.ts:5-10`; preserve them. F8 remainder, independent of PW-BR-01 and not a proposal to remove the renderer route or its freshness fences.
+
+Done: renderer reads bind the cached canonical projection without reparsing it; a byte-equality test covers known and unknown coverage.
 
 ### PW-IN-02 — Delete unreachable legacy command decoding
 
 `crates/tiler-protocol/src/world_protocol.rs:2121-2284,2285-2311,2503-2508,3915-3957`: the only production caller of private `decode_command` is v4's fallback, after v4 handles or refuses `focus`, `switch-view` and `operation`. Delete those fallback arms and `decode_core_command`; the other references at `:7220,7234` are helper-only tests. Preserve active v4 refusal and supported command tests in `crates/tiler-protocol/tests/report_v4_decode.rs`. No consumer effect; low risk; about 185 production lines plus helper-only tests; no dependency (F2/R6 follow-through).
 
+Done: unreachable legacy command arms and their private helpers are gone; supported v4 commands and refusals are unchanged.
+
 ### PW-IN-04 — Parse each setup request once
 
 `crates/tiler-protocol/src/connection_protocol.rs:734-758` strictly parses to dispatch on `type`, then parses the same bytes again. Share one parsed-object validation body per message between the byte API and router. Preserve strict duplicate-key walk, bounds and route errors (`connection_protocol/tests.rs:755-805`). No consumer effect; low risk; 25–45 lines changed; independent of PW-IN-01. Encoders at `:588,635,653,698,718` also decode what they write, but some typed input checks currently depend on that: do not remove the encoder checks in this deletion.
+
+Done: setup requests share one strict parsed tree with the existing message validators.
 
 ### PW-OUT-01 — Delete never-instantiated row-writer checks
 
 `crates/tiler-protocol/src/world_reply_write.rs:84-1028,1054-1165,1267-1375`: the four `true` instantiations are the full writer, which validates once in core and then always uses row writers with `false`; projection also uses `false`. Remove the row-level const generic and checks, including duplicate operation-cause validation (`:511-535` versus `crates/tiler-core/src/world_reply_validation.rs:111-135`); keep top-level checks and prevalidated API rules. No consumer effect; low risk; about 180 lines removed; no dependency.
 
+Done: row-writer checks are gone; top-level checks and the live shared-roster focus checks remain.
+
 ### PW-OUT-02 — Drop the typed suspended-output presence bit
 
 `crates/tiler-protocol/src/world_protocol.rs:5567-5583,5776-5781` and `world_reply_write.rs:994-1017,1061-1065,1322-1374`: `ReplyWireOptionals.suspended_output_present` must equal `presentation.suspended_output.is_some()`, already used for emission. Delete the wrapper from the protocol/broker APIs and migrate the macOS test caller (`crates/tiler-macos/src/world_command_map.rs:820-821`). Valid bytes unchanged; the contradictory typed input in `crates/tiler-protocol/tests/reply_v4_decode.rs:1045-1061` becomes unrepresentable. Low risk; 40–75 lines; coordinate with PW-OUT-01.
 
+Done: supported callers derive suspended-output presence from the typed reply; deferred macOS code was not migrated.
+
 ### PW-IN-07 — Remove callerless wire helpers, not their live endpoints
 
 Whole-tree symbol search found only declarations for TS `WORLD_READ_METHOD` and `WORLD_WAKE_SIGNAL` (`kwin/src/world-entry.ts:294,303`), `GESTURE_LAST_METHOD` (`kwin/src/world-gesture.ts:15`), `cmdSelectWorkspace`, `cmdSetWorkspaceTiling`, `buildReadRequest` (`kwin/src/world-report.ts:955,1007,2878`) and Rust `classify_request` (`crates/tiler-core/src/world_report.rs:2748-2784`). Remove these definitions, not command variants or D-Bus endpoints. The presentation subscriber uses its own method/builder (`kwin/src/world-presentation.ts:379-389`), Rust still sends `WorldWake` (`crates/omnitiler/src/planner_service.rs:59,138`), and native `LastGesture` still has a dedicated test (`kwin/native-effect/gesturefacts_test.cpp:112-115,252-284`). No supported consumer/byte changes; typed source callers outside the tree would need to migrate. Low risk; about 50–65 lines; no dependency. Consolidating the two version constant names is a separate typed API decision (181 in-tree references to `WORLD_CONTRACT_VERSION_V4`); `CoreCommand` remains live beyond the dead decoder (PW-IN-02), so leave its general cleanup to C8.
+
+Done: callerless helpers are gone; live D-Bus endpoints and command variants remain.
 
 
 ## B — decisions

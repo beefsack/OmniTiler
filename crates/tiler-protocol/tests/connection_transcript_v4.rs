@@ -16,8 +16,7 @@ use tiler_protocol::connection_protocol::{
     decode_settings_reply, route_connection_request,
 };
 use tiler_protocol::world_protocol::{
-    DecodedReplyV4, ReplyWireOptionals, decode_reply_v4, decode_request, decode_request_with_wire,
-    encode_reply,
+    DecodedReplyV4, decode_reply_v4, decode_request, decode_request_with_wire, encode_reply,
 };
 
 fn fixture_root() -> std::path::PathBuf {
@@ -113,9 +112,6 @@ impl Driver {
             | WorldOutcome::CommandConsumed(reply) => {
                 let bytes = encode_reply(&DecodedReplyV4 {
                     roster_plan: None,
-                    wire: ReplyWireOptionals {
-                        suspended_output_present: reply.presentation.suspended_output.is_some(),
-                    },
                     reply,
                 })
                 .expect("reply encodes");
@@ -192,7 +188,7 @@ fn assert_bootstrap(decoded: &DecodedReplyV4, generation: &str, request: &str, o
         }
     ));
     assert!(reply.presentation.pager.is_empty());
-    assert!(!decoded.wire.suspended_output_present);
+    assert!(reply.presentation.suspended_output.is_none());
 }
 
 #[test]

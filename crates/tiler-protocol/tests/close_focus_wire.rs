@@ -145,7 +145,7 @@ fn reply_focus_request_all_causes_round_trip_with_correlation() {
         let decoded = decode_reply_v4(&wire).expect("cause decodes");
         assert_eq!(decoded, reply, "cause {cause:?} round-trips");
         assert_eq!(
-            count_reply_v4(&reply.reply, &reply.wire).expect("protocol count succeeds"),
+            count_reply_v4(&reply.reply).expect("protocol count succeeds"),
             wire.len(),
             "exact matches {cause:?} bytes"
         );
@@ -558,7 +558,7 @@ fn core_digest_and_sizing_cover_new_lanes() {
         decode_reply_v4(&reply_text("messages/reply-bootstrap.json")).expect("reply decodes");
     let null_wire = encode_reply_v4(&null_reply).expect("null encodes");
     assert_eq!(
-        count_reply_v4(&null_reply.reply, &null_reply.wire).expect("protocol count succeeds"),
+        count_reply_v4(&null_reply.reply).expect("protocol count succeeds"),
         null_wire.len(),
         "exact matches null-lane bytes"
     );
@@ -576,7 +576,7 @@ fn core_digest_and_sizing_cover_new_lanes() {
     });
     let wide_wire = encode_reply_v4(&wide).expect("max-width pending encodes");
     assert_eq!(
-        count_reply_v4(&wide.reply, &wide.wire).expect("protocol count succeeds"),
+        count_reply_v4(&wide.reply).expect("protocol count succeeds"),
         wide_wire.len(),
         "exact matches max-width pending bytes"
     );
@@ -614,7 +614,7 @@ fn core_digest_and_sizing_cover_new_lanes() {
     });
     let projected_wire = encode_reply_v4(&projected).expect("projected encodes");
     assert_eq!(
-        count_reply_v4(&projected.reply, &projected.wire).expect("protocol count succeeds"),
+        count_reply_v4(&projected.reply).expect("protocol count succeeds"),
         projected_wire.len(),
         "exact matches projected bytes"
     );
@@ -626,18 +626,15 @@ fn core_digest_and_sizing_cover_new_lanes() {
         .report;
     let bound = reply_upper_bound_v4(&report, 0, 0, 0, 0, 0);
     assert!(
-        bound
-            >= count_reply_v4(&null_reply.reply, &null_reply.wire)
-                .expect("protocol count succeeds"),
+        bound >= count_reply_v4(&null_reply.reply).expect("protocol count succeeds"),
         "upper bound covers null-lane reply"
     );
     assert!(
-        bound >= count_reply_v4(&wide.reply, &wide.wire).expect("protocol count succeeds"),
+        bound >= count_reply_v4(&wide.reply).expect("protocol count succeeds"),
         "upper bound covers max-width pending reply"
     );
     assert!(
-        bound
-            >= count_reply_v4(&projected.reply, &projected.wire).expect("protocol count succeeds"),
+        bound >= count_reply_v4(&projected.reply).expect("protocol count succeeds"),
         "upper bound covers projected reply"
     );
 }
@@ -722,7 +719,7 @@ fn focus_request_aftershown_at_cap_exact_and_oversize_contrast() {
     let decoded = decode_reply_v4(&wire).expect("at-cap decodes");
     assert_eq!(decoded, at_cap, "at-cap round-trips");
     assert_eq!(
-        count_reply_v4(&at_cap.reply, &at_cap.wire).expect("protocol count succeeds"),
+        count_reply_v4(&at_cap.reply).expect("protocol count succeeds"),
         wire.len(),
         "exact matches at-cap bytes"
     );
@@ -758,7 +755,7 @@ fn focus_request_aftershown_at_cap_exact_and_oversize_contrast() {
             departing: Vec::new(),
         }),
     });
-    let exact = count_reply_v4(&heavy.reply, &heavy.wire).expect("protocol count succeeds");
+    let exact = count_reply_v4(&heavy.reply).expect("protocol count succeeds");
     assert!(
         exact > WORLD_MAX_REPLY_BYTES,
         "max-width capped projection exceeds the byte budget (exact {exact})"

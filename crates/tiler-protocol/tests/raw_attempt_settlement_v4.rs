@@ -31,7 +31,7 @@ use tiler_protocol::connection_protocol::{
     decode_handshake_request, decode_settings, encode_handshake_reply, encode_settings_reply,
 };
 use tiler_protocol::world_protocol::{
-    DecodedReplyV4, ReplyWireOptionals, decode_reply_v4, decode_report_v4, encode_reply_v4,
+    DecodedReplyV4, decode_reply_v4, decode_report_v4, encode_reply_v4,
 };
 
 #[allow(dead_code)]
@@ -1866,16 +1866,9 @@ fn run_loaded_scenario(
                                         reply,
                                     ) => {
                                         run.reports += 1;
-                                        let wire_flags = ReplyWireOptionals {
-                                            suspended_output_present: reply
-                                                .presentation
-                                                .suspended_output
-                                                .is_some(),
-                                        };
                                         let text = encode_reply_v4(&DecodedReplyV4 {
                                             roster_plan: None,
                                             reply,
-                                            wire: wire_flags,
                                         })
                                         .unwrap_or_else(|error| {
                                             panic!("{sid} reply encodes: {error:?}")
@@ -3231,13 +3224,9 @@ fn visibility_driver_fallback_true_consumer_edge() {
         .as_mut()
         .expect("win-old visibility target")
         .fallback = true;
-    let suspended = typed.presentation.suspended_output.is_some();
     let text = encode_reply_v4(&DecodedReplyV4 {
         roster_plan: None,
         reply: typed,
-        wire: ReplyWireOptionals {
-            suspended_output_present: suspended,
-        },
     })
     .expect("fallback reply encodes");
     let round = decode_reply_v4(&text).expect("fallback reply decodes");
