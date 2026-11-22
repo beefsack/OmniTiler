@@ -63,8 +63,10 @@ Implement the 2026-11-10 [dynamic lifecycle decision](../decisions/workspaces.md
   validation skeletons and Rust test inputs: a nonempty focused identity must
   carry known foreground, and every report needs the required field. This is
   distinct from the separately implemented
-  [KDE close-focus adoption](kde-retained-close-focus.md), which now permits
-  genuine current entry recording without a wire compatibility shim.
+  [retired KDE close-focus adoption](https://github.com/beefsack/OmniTiler/blob/480a473e11fd9e0bf66c8d0a0852b6b76def0f0b/docs/changes/kde-retained-close-focus.md)
+  (offline adoption accepted on the superseded `closeFocus` lane; native
+  acceptance remained open), which permitted genuine current entry recording
+  without a wire compatibility shim.
 - Final sequential offline checks: Rust core/protocol/CLI 3283 passed, zero
   failed or ignored, with only the unsafe-posture test filtered; KWin 1272/1272,
   zero cancelled/skipped; both TypeScript configurations, Rust formatting and
@@ -108,7 +110,9 @@ Implement the 2026-11-10 [dynamic lifecycle decision](../decisions/workspaces.md
   The diagnosis below explains the view mismatch; do not treat later unrelated
   activity as settle-time success.
 - The exact two-window close-focus leg and complete sole-close readbacks are
-  still open; see [close-focus evidence limits](kde-retained-close-focus.md#live-recheck-2026-11-11-incomplete).
+  still open: the bounded 2026-11-11 close sample did not retain full
+  `closeFocus` publication identity, MRU-target equality, or spend-once
+  accounting (see [retired close-focus evidence limits](https://github.com/beefsack/OmniTiler/blob/480a473e11fd9e0bf66c8d0a0852b6b76def0f0b/docs/changes/kde-retained-close-focus.md#live-recheck-2026-11-11-incomplete)).
   Checklist rows 15/52 remain unchecked: the physical send matrix and complete
   inverse/repeated lifecycle scope are not established by these bounded results.
 

@@ -256,7 +256,7 @@
 - Why: not recorded.
 - Assumes / revisit if: Focus continuity deliberately keeps the window in use visible; selection among multiple survivors follows the reconnect rule.
 - Status: active, 2026-10-18.
-- Evidence: [physical reconnect/rehome](../changes/v4-phase2-kde-physical-reconnect.md#disconnect-rehomed-members-are-not-admissions); earlier [workspace record](../changes/kde-aligned-output-workspaces.md); `world_model.rs` `take_admission_focus`, regression `disconnect_rehomed_members_mint_no_admission_focus`.
+- Evidence: [physical reconnect/rehome](../changes/v4-phase2-kde-physical-reconnect.md#disconnect-rehomed-members-are-not-admissions); earlier 2026-10-18 no-merge/return decision (hotplug origin retention and live probe remained open in the retired [workspace record](https://github.com/beefsack/OmniTiler/blob/480a473e11fd9e0bf66c8d0a0852b6b76def0f0b/docs/changes/kde-aligned-output-workspaces.md)); `world_model.rs` `take_admission_focus`, regression `disconnect_rehomed_members_mint_no_admission_focus`.
 
 ### KDE common-model output reconnection
 <a id="kde-aligned-output-reconnection"></a>

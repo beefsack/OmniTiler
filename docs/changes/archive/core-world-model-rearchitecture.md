@@ -3160,7 +3160,7 @@ of cursor-first fresh placement or the entire rearchitecture.
     ([dual-output record](changes/kde-dual-output-live.md)).
   - Follow-ups: Windows is complete under v2; macOS follows its v2 port item;
     independent-set defaults remain unchanged.
-  [Record](changes/kde-aligned-output-workspaces.md).
+  (retired record removed; see Git history at 480a473e11fd9e0bf66c8d0a0852b6b76def0f0b).
 ````
 
 ### Original backlog lines 998-1007

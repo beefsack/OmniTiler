@@ -158,29 +158,10 @@ pub fn kde_option_text(field_id: &str, option: &EnumOption) -> (&'static str, &'
     }
 }
 
-/// KDE-withheld catalog tokens: valid in the shared catalog but offered
-/// by no KDE surface. Intentionally empty: the approved workspace
-/// vocabulary offers all three scope modes on KDE (the former
-/// `global-unique` withholding is superseded). Kept as an explicit seam
-/// so emitters still filter through one place.
-pub const KDE_WITHHELD_OPTIONS: &[(&str, &str)] = &[];
-
-/// Catalog enum options actually offered on KDE: catalog order minus the
-/// withheld tokens above. Emitters must use this (never raw
-/// `def.options`) so schema, UI and descriptors agree.
+/// Catalog enum options offered on KDE in catalog order.
 #[must_use]
-pub fn kde_exposed_options(field_id: &str) -> Vec<&'static EnumOption> {
-    let Some(def) = settings_catalog::find_field(field_id) else {
-        return Vec::new();
-    };
-    def.options
-        .iter()
-        .filter(|option| {
-            !KDE_WITHHELD_OPTIONS.iter().any(|(held_field, held_token)| {
-                *held_field == field_id && *held_token == option.token
-            })
-        })
-        .collect()
+pub fn kde_exposed_options(field_id: &str) -> &'static [EnumOption] {
+    settings_catalog::find_field(field_id).map_or(&[], |def| def.options)
 }
 
 /// Every KDE-exposed portable field in native UI row order (17 entries:
@@ -786,31 +767,12 @@ mod tests {
     }
 
     #[test]
-    fn withheld_options_stay_catalog_valid_but_unoffered() {
-        // No KDE withholding remains: the approved workspace vocabulary
-        // offers all three scope modes on KDE (the former `global-unique`
-        // withholding is superseded). Every withheld token must still
-        // exist in the catalog and stay unoffered, so the seam keeps its
-        // contract while empty.
-        for (field_id, token) in KDE_WITHHELD_OPTIONS {
-            let def = settings_catalog::find_field(field_id).expect("catalog def");
-            assert!(
-                def.options.iter().any(|option| option.token == *token),
-                "withheld {field_id}.{token} must exist in the catalog"
-            );
-            assert!(
-                !kde_exposed_options(field_id)
-                    .iter()
-                    .any(|option| option.token == *token),
-                "withheld {field_id}.{token} must not be offered"
-            );
-        }
+    fn workspace_mode_offers_all_scope_modes() {
         let exposed: Vec<&str> = kde_exposed_options(settings_catalog::FIELD_WORKSPACE_MODE)
             .iter()
             .map(|option| option.token)
             .collect();
         assert_eq!(exposed, vec!["per-output-local", "global-unique", "shared"]);
-        // The catalog default is never withheld.
         let def =
             settings_catalog::find_field(settings_catalog::FIELD_WORKSPACE_MODE).expect("mode def");
         assert!(exposed.contains(&crate::emit::rendered_default(def).as_str()));

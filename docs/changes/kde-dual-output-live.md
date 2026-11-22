@@ -26,8 +26,10 @@ questions and unverified cases remain open; no earlier pass proves the v2 port.
 
 - Production acceptance now uses the world adapter and aligned workspace model;
   the disjoint-model T05 failures and prototype recommendations below are
-  historical. Aligned migration settlement is covered by the
-  [aligned-workspace outcome](kde-aligned-output-workspaces.md#accepted-evidence-2026-10-19).
+  historical. Aligned migration settlement (2/2 native trailing landings with
+  source refills and mover focus retained; aligned grid later retired
+  2026-11-08 for common v4) is recorded in the
+  [retired aligned-workspace record](https://github.com/beefsack/OmniTiler/blob/480a473e11fd9e0bf66c8d0a0852b6b76def0f0b/docs/changes/kde-aligned-output-workspaces.md#accepted-evidence-2026-10-19).
 - Configuration safety: recovered the original captures and the chain of later
   full configuration copies. Desktop count/names, project settings, shortcuts
   and empty float-intent bytes agree with the captured baseline. The first run

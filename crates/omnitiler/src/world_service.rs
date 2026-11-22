@@ -213,13 +213,6 @@ impl WorldService {
             .set_max_reply_bytes_for_test(limit);
     }
 
-    /// Non-queuing single-flight probe for tests: `true` when the world
-    /// route is idle.
-    #[must_use]
-    pub fn try_acquire(&self) -> bool {
-        self.world_lock.try_lock().is_some()
-    }
-
     /// Non-queuing single-flight admission for the D-Bus capture route:
     /// `Some` guard when idle, `None` when a world call is in flight (fail
     /// fast as busy, never queue). The guard must be held for the whole
@@ -987,9 +980,9 @@ mod tests {
         let service = WorldService::new();
         let guard = service.world_lock.try_lock();
         assert!(guard.is_some());
-        assert!(!service.try_acquire());
+        assert!(service.try_acquire_guard().is_none());
         drop(guard);
-        assert!(service.try_acquire());
+        assert!(service.try_acquire_guard().is_some());
     }
 
     #[test]

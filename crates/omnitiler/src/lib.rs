@@ -6,8 +6,6 @@
 // equal to the current `org.kde.KWin` owner.
 pub(crate) mod float_intent_store;
 pub(crate) mod kde_gesture;
-#[cfg(test)]
-pub(crate) mod kde_raw;
 pub(crate) mod native_preimage_store;
 pub mod planner_service;
 pub mod tray;

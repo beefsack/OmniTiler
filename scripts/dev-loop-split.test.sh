@@ -435,8 +435,10 @@ build_isolated_justfile() {
 import pathlib, os
 repo = os.environ.get("REPO_ROOT_SRC", "")
 dst = os.environ.get("ISOLATED_DST", "")
+helper_dst = pathlib.Path(dst).parent / "scripts" / "dev-planner-helpers.sh"
 def isolate(text):
   text = text.replace('REPO_ROOT="{{ justfile_directory() }}"', f'REPO_ROOT="{repo}"')
+  text = text.replace('source "$REPO_ROOT/scripts/dev-planner-helpers.sh"', f'source "{helper_dst}"')
   text = text.replace('KWIN_DIR="$REPO_ROOT/kwin"', 'KWIN_DIR="${OMNITILER_KWIN_DIR:-$REPO_ROOT/kwin}"')
   text = text.replace('SOURCE_DIR="$REPO_ROOT/kwin/native-effect"', 'SOURCE_DIR="${OMNITILER_NATIVE_SOURCE:-$REPO_ROOT/kwin/native-effect}"')
   text = text.replace('BUILD_DIR="$REPO_ROOT/target/kwin-native-effect-build"', 'BUILD_DIR="${OMNITILER_NATIVE_BUILD:-$REPO_ROOT/target/kwin-native-effect-build}"')
@@ -475,6 +477,8 @@ pathlib.Path(dst).write_text(isolate(src.read_text()))
 linux_dst = pathlib.Path(dst).parent / "just" / "linux.just"
 linux_dst.parent.mkdir(parents=True, exist_ok=True)
 linux_dst.write_text(isolate((pathlib.Path(repo) / "just" / "linux.just").read_text()))
+helper_dst.parent.mkdir(parents=True, exist_ok=True)
+helper_dst.write_text(isolate((pathlib.Path(repo) / "scripts" / "dev-planner-helpers.sh").read_text()))
 PYEOF
 }
 

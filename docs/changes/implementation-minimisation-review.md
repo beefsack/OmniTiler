@@ -23,11 +23,17 @@ Rust symbol evidence uses `rust-analyzer` `textDocument/references`, checked aga
 
 **core-a-gate — Remove 14 copies of the same allow-only test gate.** `crates/tiler-core/tests/{cursor_targeting.rs:253–288,reconcile_invariants.rs:231–266,world_actions_cursor.rs:276–311,world_classify_applicability.rs:135–170,world_envelope_budget.rs:150–185,world_fullscreen_req_max_12.rs:206–241,world_host_owned_gap_holds.rs:166–201,world_host_owned_stage1b.rs:191–226,world_minimized_native_pinning.rs:185–220,world_modes_contract.rs:194–229,world_native_adoption.rs:281–316,world_native_attempt_settlement.rs:224–259,world_native_retirement.rs:182–217,world_no_focus_directional.rs:132–167,world_truthful_settlement.rs:153–188}`. All 15 declaration/implementation blocks (540 lines) match after normalizing whitespace and qualified type imports, including `ExactInnerCheck::new(0)`. Use one module in extant `tests/support/`; leave each caller's report setup, wrapper and assertions alone, and do not share the gate with tests that deliberately reject or count bytes. About 475–490 net lines removed; no runtime or test-oracle effect, low risk (integration compilation/import hygiene), no dependencies. Gate: `cargo test --locked -p tiler-core --tests`; all current integration assertions still pass and the 15 targets compile without introducing a production/test-feature dependency.
 
+Done: All 15 integration targets use the shared allow-only gate; core tests, supported all-target check, and core Clippy passed.
+
 ### A-core-dead-api — prune callerless helper exports (concrete C8 unit)
 
 **core-a-unused — Remove five exported helpers with no callers.** `crates/tiler-core/src/{world_engine.rs:930–935,workspace_scope.rs:724–728,size_hints.rs:139–146,settings_catalog.rs:895–902,window_classify.rs:546–568}`: `logical_previous`, `discard_shared`, `max_for_axis`, `validate_field_id`, `classify_newcomer`. Each has one LSP hit (its declaration) and one whole-tree identifier hit, no test callers. They expose an unused history read/reset, convenience axis and field-ID operations, and a classifier wrapper that invents capability defaults; leave the underlying history, hint, field and classification logic intact. `git log -S` traces the history reader to `2120470d` and the newcomer helper to `067733a1`. About 50 lines removed. Supported consumers see no runtime effect; the unused Rust entry points disappear, with low risk to any untracked caller. No dependencies.
 
+Done: Removed all five declaration-only helpers; core tests, supported all-target check, and core Clippy passed.
+
 **core-a-test-orphans — Remove four helpers only used to test themselves.** `crates/tiler-core/src/{visual.rs:97–112,486–512,window_policy.rs:337–350,575–591,directional.rs:1788–1793,directional/tests.rs:1610–1613}`: `group_focus_eligible`, `group_visible`, `sticky_directional_refusal`, `half_split`. LSP finds only declaration plus local test for the first, third and fourth; whole-tree search for `group_visible` finds only its declaration, local assertions, and a historical macOS plan (`docs/research/macos-port/plan.md:843`). The current underlay flag matrix exercises real evaluator outcomes (`world_presentation.rs:445–524`, `world_presentation_v4.rs:331–344`); current directional code routes sticky subjects from their effective domain (`world_directional.rs:91`), rather than issuing either obsolete helper refusal. Remove the helpers and their four orphan test blocks, not current underlay, directional, or equal-share placement coverage. About 84 lines removed. No runtime effect; untracked Rust callers could need migration. No dependencies.
+
+Done: Removed the four orphan helpers and their direct self-tests; existing behavior tests and the full core unit gate passed.
 
 Gate (both): `cargo test --locked -p tiler-core` and `cargo check --locked -p omnitiler -p tiler-kde-settings-exporter --all-targets`; surviving behavior tests pass and no supported caller fails to compile. Recheck symbol references on deferred native source statically, not by requiring native builds.
 
@@ -35,13 +41,19 @@ Gate (both): `cargo test --locked -p tiler-core` and `cargo check --locked -p om
 
 **core-a-planner-residue — Remove the old planner version constants, unused divergence variants and leftover argument threading.** `crates/tiler-core/src/{contract.rs:11–83,202–212,cosmic_v1.rs:21,521–522,world_layout/lifecycle_tests.rs:20,24,840–841,world_model.rs:1963–1964,1986,2146–2147}`. Whole-tree symbol search finds no live `CONTRACT_VERSION`, `POLICY_VERSION`, `LIFECYCLE_POLICY_VERSION` or `is_revision` consumer (including the `cosmic_v1` re-export); `DivergenceKind` has one live variant, `RevisionExhausted`, at three production sites (`world_commands.rs:1716–1717`, `world_operations.rs:2799–2800`, `world_sends.rs:1119–1120`). Replace it with the same static kind and message, drop obsolete self-tests, and delete the two arguments that only thread into unused parameters. Keep `MAX_REVISION`, live replay checks, and requester-visible reason text verbatim. Fix the obsolete `world_sizing_v4` link at `world_engine.rs:36` in this C8 pass. Roughly 90–110 lines removed/changed; low API/source risk, no runtime effect or dependencies. Gate: `cargo test --locked -p tiler-core --lib` and `cargo doc --locked -p tiler-core --no-deps`; existing revision-bound behavior and reason text are intact and rustdoc no longer links the removed sizer.
 
+Done: Removed retired planner bookkeeping and dead identity arguments, preserving both revision-exhaustion strings; core tests, supported all-target check, core Clippy, and rustdoc passed.
+
 ### A-core-surface — narrow tested versus supported Rust API (C8)
 
 **core-a-surface — Make internal modules private and isolate test helpers.** `crates/tiler-core/src/lib.rs:6–83`, `world_engine.rs:160–171,370–500,696–739,762–945,1151–1196`. Whole-tree import search found no external consumers of `admission`, `fresh_focus`, `seed`, `window_classify`, `world_born`, `world_clear`, `world_commands`, `world_cursor`, `world_members`, `world_model`, `world_native`, `world_observe`, `world_operations`, `world_publish`, `world_sends`, `world_settle`, `world_tiling_views`; make them `pub(crate)`. The seven explicitly test-only methods (`new_test_bound`, `new_test_bound_with_capabilities`, `new_test_bound_with_initial_settings`, `new_test_host_owned`, `new_test_host_owned_equal_count`, `apply_test_settings`, `staged_visibility_attempt_windows_for_test`) are currently unconditionally exported; no production sibling-crate callers found. Gate them for unit and cross-crate test use, not through a new production adapter shim. Leave live adapter/benchmark inspection API out of this unit unless the C8 facade work accounts for each caller. Seventeen module visibility changes and seven method gates; no expected behavior effect, low supported-consumer risk and no dependencies. Gate: build ordinary supported libraries with `cargo check --locked -p tiler-core -p tiler-protocol -p omnitiler -p tiler-kde-settings-exporter`, then run those crates' tests with test support enabled through dev-dependencies; default consumers cannot import these internals, tests keep all assertions.
 
+Done: 17 modules are `pub(crate)`; the seven test-only methods are gated behind `cfg(test)`/`test-support` (four also under `structural-bench`), enabled through dev-dependency features for core, protocol and broker tests; `handle_report` wording corrected.
+
 ### A-core-admit — remove untriggerable overlay-admission branch
 
 **core-a-exception — Drop the test-only layout exception admission mode.** `crates/tiler-core/src/world_layout/admit.rs:34–106,162–206` and the following exception insertion branch; `world_layout/{adoption.rs:311–324,float.rs:171–182}`, `session.rs:92–94,175,197,221`. The only two production callers pass `ExceptionFlags::none(), None`; `admit_window` is already `#[cfg(test)]`. Remove those two parameters, `ExceptionBehavior`, the unselectable refusal, and tests specific to the impossible explicit-exception branch. Preserve live flags/exceptions elsewhere, the maximized birth carrier, explicit unfloat fullscreen allowance and assertions on live admission outcomes. Tests that used explicit exception admission for setup must still build equivalent fixture state for their real resize/send/capacity assertions (`world_layout/{admit_tests,lifecycle_tests,keyboard_resize_tests,workspace_send_tests}.rs`, `capacity_admission_tests/engine_admission.rs`, `cross_output_edge_tests.rs`). About 150–200 lines gross affected [INFERENCE]; net depends on replacing setup. No supported runtime change, medium test-migration risk, independent of facade work. Gate: `cargo test --locked -p tiler-core --lib`; same surviving behavioral oracles pass, and no non-test exception-admission route is introduced.
+
+Done: Removed explicit exception admission and kept equivalent test setup for the surviving resize, send, capacity, and ordinary admission assertions; core tests, supported all-target check, and core Clippy passed.
 
 ### Keep
 
@@ -56,18 +68,22 @@ Gate (both): `cargo test --locked -p tiler-core` and `cargo check --locked -p om
 ### A-broker-retired — remove the retired KDE raw normalizer
 
 **broker-a-raw — Delete the obsolete classifier and its dedicated corpus.** `crates/omnitiler/src/lib.rs:9–10`, `src/kde_raw.rs:1–1128`, `test-fixtures/kde-raw-corpus.json:1–2207`. `kde_raw` compiles only for tests; `normalize_raw_windows` is called only by its own tests. Its `include_str!` (`kde_raw.rs:778`) is the corpus's only non-documentation reader. Retain the supported v4 decoder and classifier, genuine current captures, and old-wire refusals (`crates/omnitiler/tests/{world_service_flow.rs:5438,stage5-fixture-route.rs:610}`). The corpus is outside the frozen families. ~3,337 lines removed (1,130 Rust, 2,207 JSON); no production or wire effect, low risk of losing only historical coverage, no dependencies. Gate: `cargo test --locked -p omnitiler` and `cargo test --locked -p tiler-core --test world_classify_applicability`; current classification and old-wire refusal assertions still pass, and there is no nonhistorical raw-corpus reader. The old interface review's `kde_raw` citations (`:368,1657,4320`) describe historical code.
+Done: the retired raw classifier and corpus were deleted; the broker all-targets and core classification gates passed.
 
 ### A-broker-surface — retire test-only indirection and duplicate manifest entries
 
 **broker-a-surface — Exercise the production guard directly instead of exposing `try_acquire`.** `crates/omnitiler/src/world_service.rs:219–227,990–992`, `planner_service.rs:461–471`. Search finds two calls to the bool wrapper, in one test; production uses `try_acquire_guard`. Assert availability/absence of the guard directly without holding it past the check. ~7 lines removed, no runtime change, low risk, no dependencies.
+Done: the single-flight test now exercises the production guard directly.
 
 **broker-a-deps — Drop duplicate test dependency declarations.** `crates/omnitiler/Cargo.toml:13–19`. `serde` with `derive` and `serde_json` have identical normal and dev declarations; tests and examples inherit the normal dependencies. Three lines removed, no build graph or behavior change expected, low risk, no dependencies.
+Done: removed the duplicate dev dependencies; the locked broker all-targets gate passed.
 
 Gate: `cargo test --locked -p omnitiler --all-targets`; requester single-flight still refuses instead of waiting, all targets still compile under the same lockfile.
 
 ### A-exporter-options — remove empty KDE withholding seam
 
 **exporter-a-options — Use the existing catalog slice instead of allocating and filtering.** `crates/tiler-kde-settings-exporter/src/{kde_adapter.rs:161–184,788–817,emit.rs:221,380,399}`. `KDE_WITHHELD_OPTIONS` is `&[]`; its three occurrences are its declaration, no-op filter and vacuous test loop. Return the existing option slice or an empty slice from the field lookup; keep the assertion that all scope modes are offered and the KDE label overrides. ~20–30 lines and the temporary vectors removed; generated settings bytes unchanged, low risk, no dependencies. Gate: `cargo test --locked -p tiler-kde-settings-exporter` and `cargo run --locked -p tiler-kde-settings-exporter -- --check`; generated files compare equal.
+Done: the exporter borrows catalog options; all 14 tests and the three generated-file comparisons passed.
 
 ### Decisions and keeps
 
@@ -82,8 +98,10 @@ Gate: `cargo test --locked -p omnitiler --all-targets`; requester single-flight 
 ### A-kwin-unused — delete stale non-wire settings exports and comments
 
 **kwin-a-settings — Drop unused local setting helpers.** `kwin/src/workspace-native.ts:16–24,33` declares `WORKSPACE_MODE_CONFIG_KEY`, `WORKSPACE_MODES`, `TILING_DEFAULT_CONFIG_KEY`, `parseDefaultTiled`; each whole-tree identifier search returns the declaration alone. Keep the live settings/catalog path. Roughly 10–15 lines removed, no change to saved settings or adapter behavior, low risk, no dependencies.
+Done: callerless settings helpers are gone; the live parser and catalog remain.
 
 **kwin-a-comments — Remove inaccurate v2 production-entry wording.** `kwin/src/world-entry.ts:1` calls the sole live entry “strict v2”, preserved from the port commit (`git log -S` points to `e033bd4c`). Current route is the supported v4 broker. Update this and comments located by `strict v2`/`v2 commands` only where the referenced route is actually gone, not historical conformance explanations. C8/status-text follow-through; one confirmed header plus adjacent stale wording, no runtime effect, low risk, no dependencies.
+Done: the production entry and command comments now name v4.
 
 Gate: `npm --prefix kwin run typecheck` and `npm --prefix kwin test`; current settings parsing, build and script tests are unchanged.
 
@@ -100,14 +118,17 @@ Gate: `npm --prefix kwin run typecheck` and `npm --prefix kwin test`; current se
 ### A-scripts-spike — retire the static floor-ratio proof scaffold
 
 **tooling-a-floor — Delete the old floor-ratio static runner, self-tests, fixture/schema and change note.** `scripts/{floor-ratio-feasibility.sh:1–453,floor-ratio-feasibility.test.sh:1–547}`, `test-fixtures/{floor-ratio-evidence.json:1–80,floor-ratio-evidence.schema.json:1–134}`, `docs/changes/floor-ratio-feasibility.md:1–19`. The note records no qualifying live invocation; the only purported live command is explicitly a refusal (`scripts/floor-ratio-feasibility.sh:400–453`). Whole-tree references are the self-test, historical records and the research page; automatic test invocation is the shell glob (`.github/workflows/ci.yml:75`). Preserve the research conclusion (no native proof, no policy change); replace its stale runner links/instructions with a pinned historical reference. Removes ~1,233 lines gross and 92 historical static spike checks, not a production or live test path. Low risk, no dependencies, concrete continuation of repository cleanup/D6 rather than a new research proposal. Gate: no nonhistorical invocation or fixture references remain, and the CI shell-test glob still runs all remaining scripts successfully.
+Done: retired the static scaffold, pinned the no-native-proof conclusion, and verified that the CI glob excludes the removed suite.
 
 ### A-dev-identities — share exact Bash helper bodies
 
 **tooling-a-dev-functions — Extract only the four identical helpers.** `just/linux.just:113–140,166–199,528–555,568–600,715–736,901–933`. Normalized comparisons of comments/whitespace confirm `validate_intent_root` (2 copies), `planner_start_identity` (4), `planner_exe_is_worktree` (4) and `planner_verify_worktree` (3) have one body variant each. Source one common script from the four caller recipes; keep caller-specific assignments, authority checks and refusal text in place. ~75 net lines removed (not an estimated wholesale rewrite). Command surface and native lifecycle unchanged; low-to-medium risk to script scoping and identity fences, no dependencies. Gate: `bash scripts/dev-loop-split.test.sh`; start/reload/off/status routing, intent isolation and PID/path/identity refusals remain identical. No change to platform routing stubs or tracked dev-log cleanup.
+Done: sourced four unchanged helper bodies from a common script; the dev-loop gate passed 712/0.
 
 ### A-notes-closed — retire only verified historical records
 
 **tooling-a-notes — Remove two obsolete active notes after preserving cited evidence.** `docs/changes/kde-aligned-output-workspaces.md:3–7` explicitly retires the aligned grid in favor of common v4; `kde-retained-close-focus.md:12–15,35–45` describes an obsolete `closeFocus` lane and incomplete native sample whose remainder is already transferred to unified focus (`docs/backlog.md:77`). Whole-tree search shows the first still cited by `docs/decisions/workspaces.md:259`, `docs/spec/reference-outcomes/workspaces.md:2282`, and active changes; the second by `docs/changes/kde-dynamic-workspaces.md:66,111`. Before deletion replace live evidence links according to `docs/principles.md:27–30`, carrying forward the substantive result and incomplete-acceptance status, not simply unlinking them. ~273 lines gross; no runtime effect, low risk to discoverability if followed. No dependencies. Gate: whole-tree exact filename search finds no broken local link, and every current evidence consumer retains its relevant conclusion. Do not batch in the old physical checklist, focus-feedback record or resize diagnosis: the current v4 checklist cites specific open legs/evidence (`docs/changes/kde-v4-acceptance-checklist.md:63,157,167,278–286`).
+Done: retired both notes, preserved current evidence in pinned links, and found no broken local links.
 
 ### Keep
 

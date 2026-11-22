@@ -2279,7 +2279,7 @@ Retired, 2026-11-08: the aligned-only rows below are historical discriminators,
 not current acceptance criteria. The [common v4 per-output model](../../decisions/workspaces.md#common-v4-per-output-workspaces)
 replaces full-grid numbering, occupied-extent trailing, global holes and
 trailing-cell migration/refill. Earlier evidence remains in the
-[retired record](../../changes/kde-aligned-output-workspaces.md); it proves no
+[retired record](https://github.com/beefsack/OmniTiler/blob/480a473e11fd9e0bf66c8d0a0852b6b76def0f0b/docs/changes/kde-aligned-output-workspaces.md); it proves no
 new native outcome for the common model. Native move and retained-arrival
 safety behavior remain independent of that retired grid.
 

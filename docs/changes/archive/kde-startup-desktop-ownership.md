@@ -3,7 +3,7 @@
 - Superseded: aligned KDE startup adopts the native grid without ownership
   conversion. Historical evidence below remains valid for that implementation.
   Exact creation attribution and friendly-name non-identity remain applicable.
-  [Replacement](../kde-aligned-output-workspaces.md).
+  (Aligned replacement later retired for common v4; see Git history at 480a473e11fd9e0bf66c8d0a0852b6b76def0f0b).
 
 ## Goal and scope
 

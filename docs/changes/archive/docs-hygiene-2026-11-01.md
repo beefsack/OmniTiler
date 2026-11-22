@@ -40,10 +40,10 @@ three documentation closures do not close separately tracked product work.
 | [dev-entry-point.md](../dev-entry-point.md) | Keep | L54: "Evidence and remaining checks"; backlog L110 retains entry-point acceptance. |
 | [docs-followups-2026-11-01.md](docs-followups-2026-11-01.md) | Archive | Decisions 2, 2b, 3 and 4 were recorded; decisions 5 and 6 are now approved and recorded. Windows fullscreen baseline implementation and live acceptance remain queued. |
 | [edge-drag-share-adjustment.md](../edge-drag-share-adjustment.md) | Keep | L84-85: later fixes have not run live; L100-101: gap loss not visually confirmed fixed. |
-| [floor-ratio-feasibility.md](../floor-ratio-feasibility.md) | Keep | L17: "Next Action"; no explicit whole-record closure established. |
+| floor-ratio-feasibility.md (retired) | Keep | L17: "Next Action"; no explicit whole-record closure established. |
 | [group-underlay-move-trigger.md](../group-underlay-move-trigger.md) | Keep | L13,21-22: A/B delivered, C remains parked; backlog L148 retains C. |
 | [js-workload.md](../js-workload.md) | Keep | L18: "Next Action"; backlog L156 retains parked evidence work. |
-| [kde-aligned-output-workspaces.md](../kde-aligned-output-workspaces.md) | Keep | L107: live two-output acceptance; no explicit whole-record closure established. |
+| kde-aligned-output-workspaces.md (retired) | Keep | L107: live two-output acceptance; no explicit whole-record closure established. |
 | [kde-automatic-float-stacking.md](../kde-automatic-float-stacking.md) | Keep | L101-102: real-game and Steam acceptance remain pending. |
 | [kde-dual-output-live.md](../kde-dual-output-live.md) | Keep | L3-8: incomplete port/native evidence; backlog L75 retains acceptance. |
 | [kde-legacy-route-removal.md](../kde-legacy-route-removal.md) | Keep | L103: "Remaining acceptance"; backlog L116-117 retains cleanup. |

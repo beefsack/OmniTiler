@@ -110,34 +110,7 @@ dev-on *args:
       esac
       DEVON_I=$((DEVON_I + 1))
     done
-    validate_intent_root() {
-      local raw="${1:-}" cur="" part uid dir_uid dir_mode
-      local -a parts=()
-      [[ -n "$raw" ]] || return 1
-      [[ "$raw" != *$'\n'* && "$raw" != *$'\r'* ]] || return 1
-      [[ "$raw" == /* ]] || return 1
-      case "$raw" in *//*) return 1 ;; esac
-      [[ "$raw" == */ ]] && raw="${raw%/}"
-      [[ -n "$raw" ]] || return 1
-      IFS='/' read -r -a parts <<< "${raw#/}"
-      [[ "${#parts[@]}" -gt 0 ]] || return 1
-      for part in "${parts[@]}"; do
-        [[ -n "$part" && "$part" != "." && "$part" != ".." ]] || return 1
-        cur="$cur/$part"
-        [[ ! -L "$cur" ]] || return 1
-        [[ -d "$cur" ]] || return 1
-      done
-      uid="$(id -u)" || return 1
-      dir_uid="$(stat -c '%u' "$cur" 2>/dev/null)" || return 1
-      [[ "$dir_uid" == "$uid" ]] || return 1
-      dir_mode="$(stat -c '%a' "$cur" 2>/dev/null)" || return 1
-      [[ "$dir_mode" =~ ^[0-7]+$ ]] || return 1
-      (( (8#$dir_mode & 077) == 0 )) || return 1
-      local orig_canon=""
-      orig_canon="$(cd -P -- "$RUNTIME_DIR" 2>/dev/null && pwd -P || printf '%s' "${RUNTIME_DIR%/}")"
-      [[ -n "$orig_canon" && "$cur" != "$orig_canon" ]] || return 1
-      printf '%s\n' "$cur"
-    }
+    source "$REPO_ROOT/scripts/dev-planner-helpers.sh"
     PLANNER_DBUS_ADDR=""
     if [[ "$INTENT_ROOT_SET" -eq 1 ]]; then
       [[ "${OMNITILER_TRACE:-}" == "1" ]] || { echo "error: just dev-on: --intent-root requires OMNITILER_TRACE=1" >&2; exit 1; }
@@ -163,40 +136,7 @@ dev-on *args:
     SCOPE_START_ARGS=()
     [[ -z "$SCOPE_CLASS" ]] || SCOPE_START_ARGS+=("--scope-class" "$SCOPE_CLASS")
     [[ "$SETTINGS_ROOT_SET" -eq 0 ]] || SCOPE_START_ARGS+=("--settings-root" "$SETTINGS_ROOT")
-    planner_start_identity() {
-      local pid="$1" stat_line stat_pid rest
-      local -a fields=()
-      stat_line="$(<"/proc/$pid/stat")" || return 1
-      [[ "$stat_line" != *$'\n'* ]] || return 1
-      stat_pid="${stat_line%% *}"
-      [[ "$stat_pid" == "$pid" ]] || return 1
-      rest="${stat_line##*) }"
-      [[ "$rest" != "$stat_line" ]] || return 1
-      read -r -a fields <<<"$rest"
-      [[ "${#fields[@]}" -ge 20 && "${fields[0]:-}" =~ ^[A-Za-z]$ ]] || return 1
-      [[ "${fields[19]:-}" =~ ^[1-9][0-9]*$ ]] || return 1
-      printf '%s\n' "${fields[19]}"
-    }
-    planner_exe_is_worktree() {
-      local raw="$1" normalized="$1"
-      [[ -n "$raw" ]] || return 1
-      case "$BIN" in *" (deleted)") return 1 ;; esac
-      case "$normalized" in *" (deleted)") normalized="${normalized%' (deleted)'}"; ;; esac
-      case "$normalized" in */nix/store/*) return 1 ;; esac
-      [[ "$normalized" == "$BIN" ]] || return 1
-    }
     case "$BIN" in *" (deleted)") echo "error: configured worktree binary path is ambiguous ('$BIN'); refusing" >&2; exit 1 ;; esac
-    planner_verify_worktree() {
-      local pid="$1" exe candidate_start
-      [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-      [[ -d "/proc/$pid" ]] || return 1
-      exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
-      planner_exe_is_worktree "$exe" || return 1
-      tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -Fq "planner-service" || return 1
-      candidate_start="$(planner_start_identity "$pid")" || return 1
-      [[ "$candidate_start" =~ ^[1-9][0-9]*$ ]] || return 1
-      printf '%s\n' "$candidate_start"
-    }
     planner_dbus_owner_pid() {
       local owner_reply owner_name owner_pid
       owner_reply="$(busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus GetNameOwner s "$PLANNER_BUS" 2>/dev/null)" || return 1
@@ -525,34 +465,7 @@ reload:
     START_FILE="$STATE_DIR/planner-start"
     INTENT_ROOT_FILE="$STATE_DIR/planner-intent-root"
     DBUS_ADDR_FILE="$STATE_DIR/planner-dbus-address"
-    validate_intent_root() {
-      local raw="${1:-}" cur="" part uid dir_uid dir_mode
-      local -a parts=()
-      [[ -n "$raw" ]] || return 1
-      [[ "$raw" != *$'\n'* && "$raw" != *$'\r'* ]] || return 1
-      [[ "$raw" == /* ]] || return 1
-      case "$raw" in *//*) return 1 ;; esac
-      [[ "$raw" == */ ]] && raw="${raw%/}"
-      [[ -n "$raw" ]] || return 1
-      IFS='/' read -r -a parts <<< "${raw#/}"
-      [[ "${#parts[@]}" -gt 0 ]] || return 1
-      for part in "${parts[@]}"; do
-        [[ -n "$part" && "$part" != "." && "$part" != ".." ]] || return 1
-        cur="$cur/$part"
-        [[ ! -L "$cur" ]] || return 1
-        [[ -d "$cur" ]] || return 1
-      done
-      uid="$(id -u)" || return 1
-      dir_uid="$(stat -c '%u' "$cur" 2>/dev/null)" || return 1
-      [[ "$dir_uid" == "$uid" ]] || return 1
-      dir_mode="$(stat -c '%a' "$cur" 2>/dev/null)" || return 1
-      [[ "$dir_mode" =~ ^[0-7]+$ ]] || return 1
-      (( (8#$dir_mode & 077) == 0 )) || return 1
-      local orig_canon=""
-      orig_canon="$(cd -P -- "$RUNTIME_DIR" 2>/dev/null && pwd -P || printf '%s' "${RUNTIME_DIR%/}")"
-      [[ -n "$orig_canon" && "$cur" != "$orig_canon" ]] || return 1
-      printf '%s\n' "$cur"
-    }
+    source "$REPO_ROOT/scripts/dev-planner-helpers.sh"
     RELOAD_INTENT_ROOT=""
     RELOAD_DBUS_ADDR=""
     if [[ -e "$INTENT_ROOT_FILE" || -L "$INTENT_ROOT_FILE" || -e "$DBUS_ADDR_FILE" || -L "$DBUS_ADDR_FILE" ]]; then
@@ -565,39 +478,6 @@ reload:
         exit 1
       fi
     fi
-    planner_start_identity() {
-      local pid="$1" stat_line stat_pid rest
-      local -a fields=()
-      stat_line="$(<"/proc/$pid/stat")" || return 1
-      [[ "$stat_line" != *$'\n'* ]] || return 1
-      stat_pid="${stat_line%% *}"
-      [[ "$stat_pid" == "$pid" ]] || return 1
-      rest="${stat_line##*) }"
-      [[ "$rest" != "$stat_line" ]] || return 1
-      read -r -a fields <<<"$rest"
-      [[ "${#fields[@]}" -ge 20 && "${fields[0]:-}" =~ ^[A-Za-z]$ ]] || return 1
-      [[ "${fields[19]:-}" =~ ^[1-9][0-9]*$ ]] || return 1
-      printf '%s\n' "${fields[19]}"
-    }
-    planner_exe_is_worktree() {
-      local raw="$1" normalized="$1"
-      [[ -n "$raw" ]] || return 1
-      case "$BIN" in *" (deleted)") return 1 ;; esac
-      case "$normalized" in *" (deleted)") normalized="${normalized%' (deleted)'}"; ;; esac
-      case "$normalized" in */nix/store/*) return 1 ;; esac
-      [[ "$normalized" == "$BIN" ]] || return 1
-    }
-    planner_verify_worktree() {
-      local pid="$1" exe candidate_start
-      [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-      [[ -d "/proc/$pid" ]] || return 1
-      exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
-      planner_exe_is_worktree "$exe" || return 1
-      tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -Fq "planner-service" || return 1
-      candidate_start="$(planner_start_identity "$pid")" || return 1
-      [[ "$candidate_start" =~ ^[1-9][0-9]*$ ]] || return 1
-      printf '%s\n' "$candidate_start"
-    }
     planner_dbus_owner_pid() {
       local owner_reply owner_name owner_pid
       owner_reply="$(busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus GetNameOwner s "$PLANNER_BUS" 2>/dev/null)" || return 1
@@ -712,28 +592,7 @@ dev-off:
     EXE_FILE="$STATE_DIR/planner-exe"
     START_FILE="$STATE_DIR/planner-start"
     RECEIPT_PTR="$STATE_DIR/controller-receipt-path"
-    planner_start_identity() {
-      local pid="$1" stat_line stat_pid rest
-      local -a fields=()
-      stat_line="$(<"/proc/$pid/stat")" || return 1
-      [[ "$stat_line" != *$'\n'* ]] || return 1
-      stat_pid="${stat_line%% *}"
-      [[ "$stat_pid" == "$pid" ]] || return 1
-      rest="${stat_line##*) }"
-      [[ "$rest" != "$stat_line" ]] || return 1
-      read -r -a fields <<<"$rest"
-      [[ "${#fields[@]}" -ge 20 && "${fields[0]:-}" =~ ^[A-Za-z]$ ]] || return 1
-      [[ "${fields[19]:-}" =~ ^[1-9][0-9]*$ ]] || return 1
-      printf '%s\n' "${fields[19]}"
-    }
-    planner_exe_is_worktree() {
-      local raw="$1" normalized="$1"
-      [[ -n "$raw" ]] || return 1
-      case "$BIN" in *" (deleted)") return 1 ;; esac
-      case "$normalized" in *" (deleted)") normalized="${normalized%' (deleted)'}"; ;; esac
-      case "$normalized" in */nix/store/*) return 1 ;; esac
-      [[ "$normalized" == "$BIN" ]] || return 1
-    }
+    source "$REPO_ROOT/scripts/dev-planner-helpers.sh"
     # Strict controller fact first; malformed/unknown replies fail closed
     # before any mutation. A known false skips the exact stop entirely.
     IS_LOADED_OUT="$(busctl --user --json=short call org.kde.KWin /Scripting org.kde.kwin.Scripting isScriptLoaded s "$PLUGIN_ID" 2>/dev/null)" || { echo "error: isScriptLoaded call failed" >&2; exit 1; }
@@ -898,39 +757,7 @@ dev-status:
     BIN="$REPO_ROOT/target/debug/omnitiler"
     RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
     STATE_DIR="$RUNTIME_DIR/omnitiler-dev"
-    planner_start_identity() {
-      local pid="$1" stat_line stat_pid rest
-      local -a fields=()
-      stat_line="$(<"/proc/$pid/stat")" || return 1
-      [[ "$stat_line" != *$'\n'* ]] || return 1
-      stat_pid="${stat_line%% *}"
-      [[ "$stat_pid" == "$pid" ]] || return 1
-      rest="${stat_line##*) }"
-      [[ "$rest" != "$stat_line" ]] || return 1
-      read -r -a fields <<<"$rest"
-      [[ "${#fields[@]}" -ge 20 && "${fields[0]:-}" =~ ^[A-Za-z]$ ]] || return 1
-      [[ "${fields[19]:-}" =~ ^[1-9][0-9]*$ ]] || return 1
-      printf '%s\n' "${fields[19]}"
-    }
-    planner_exe_is_worktree() {
-      local raw="$1" normalized="$1"
-      [[ -n "$raw" ]] || return 1
-      case "$BIN" in *" (deleted)") return 1 ;; esac
-      case "$normalized" in *" (deleted)") normalized="${normalized%' (deleted)'}"; ;; esac
-      case "$normalized" in */nix/store/*) return 1 ;; esac
-      [[ "$normalized" == "$BIN" ]] || return 1
-    }
-    planner_verify_worktree() {
-      local pid="$1" exe candidate_start
-      [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-      [[ -d "/proc/$pid" ]] || return 1
-      exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
-      planner_exe_is_worktree "$exe" || return 1
-      tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -Fq "planner-service" || return 1
-      candidate_start="$(planner_start_identity "$pid")" || return 1
-      [[ "$candidate_start" =~ ^[1-9][0-9]*$ ]] || return 1
-      printf '%s\n' "$candidate_start"
-    }
+    source "$REPO_ROOT/scripts/dev-planner-helpers.sh"
     echo "planner name: $PLANNER_BUS"
     if OWNER_REPLY="$(busctl --user call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus GetNameOwner s "$PLANNER_BUS" 2>/dev/null)"; then
       OWNER_NAME="$(echo "$OWNER_REPLY" | awk '{print $NF}' | tr -d '\"')"
