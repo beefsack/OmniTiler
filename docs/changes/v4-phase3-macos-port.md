@@ -361,7 +361,7 @@ native acceptance.
 | `sharedNativeRoster` declared | Implemented (the key is required by the codec); the value itself is not asserted by an adapter test. |
 | Unified retained focus | Implemented and natively proven for automatic admission, explicit command and close reflow; the cursor-hit cause is unreachable because no producer sets the cursor facts. |
 | Pending-focus command subjects | Fixed (`a6451e41`): the four window-shape commands send core's current-focus subject, the observed-foreground substitution and its pre-dispatch refusals are gone, and the homing/domain gates run at apply time on the window core resolved. |
-| Retained settlement outcomes | Partial: gesture outcomes are consumed; the retained `operationSettled`/`switchSettled` projections have no consumer. |
+| Retained settlement outcomes | Switch half consumed (`d67b1733`): the retained projection delivers the verdict once per settlement identity, survives a skipped reply, is inert on replay and is authoritative over an earlier reply. The operation half still has no consumer because macOS has no clear lane. |
 | Retained `intentDesired` | Partial and fail-closed: a nonempty desire latches the session; no persistence, so this waits on the M3 host-storage decision. |
 | Switch and fallback removals | No adapter-local policy remains; only live legs are outstanding. |
 | No-space removal | Inherited from core; the adapter writes core rects and produces no no-space rows. A live constrained-work-area leg is the remaining proof. |
@@ -371,10 +371,9 @@ native acceptance.
 | Settings-key parity | Implemented by construction (raw pass-through, no adapter caps). |
 | 16-output `actionOutputs` cap | Inert: the field is always empty because no action context is produced. |
 
-Ranked remaining adapter work: retained switch settlement consumption; the
-batch-3 utility mapping with its native palette check; a cursor-hit producer
-(unblocks focus-follows-cursor and perpendicular recency). The M3 storage
-decision stays with its owner.
+Ranked remaining adapter work: the batch-3 utility mapping with its native
+palette check; a cursor-hit producer (unblocks focus-follows-cursor and
+perpendicular recency). The M3 storage decision stays with its owner.
 
 ### Integration triage (2026-11-23)
 
