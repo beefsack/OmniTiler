@@ -369,13 +369,50 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 serde_json::to_string(&status).unwrap_or_else(|_| status.reason.clone()),
             ))
         }
-        Command::SpacesCreate { pid, nonce } => {
-            tiler_macos::ax::authorize_owned_action(pid, &nonce).map_err(|e| (2, e.to_string()))?;
-            let status = tiler_macos::spaces::create_space_status();
-            Err((
-                1,
-                serde_json::to_string(&status).unwrap_or_else(|_| status.reason.clone()),
-            ))
+        Command::SpacesCreate {
+            pid,
+            nonce,
+            display,
+            route,
+            allow_untested,
+        } => {
+            // Default route keeps today's exact refusal (authenticated
+            // first, so a foreign session stays an ownership error). The
+            // opt-in route calls the verified AX create leg; ownership
+            // refusals exit 2 like other identity gates, and an unverified
+            // effect remains a failed command with the report on stderr.
+            if route == tiler_macos::spaces::SpaceCreateRoute::Unsupported {
+                tiler_macos::ax::authorize_owned_action(pid, &nonce)
+                    .map_err(|e| (2, e.to_string()))?;
+                let status = tiler_macos::spaces::create_space_status(route);
+                return Err((
+                    1,
+                    serde_json::to_string(&status).unwrap_or_else(|_| status.reason.clone()),
+                ));
+            }
+            let report = tiler_macos::spaces::create_space_owned(
+                pid,
+                &nonce,
+                display,
+                route,
+                allow_untested,
+            )
+            .map_err(|e| match e {
+                tiler_macos::spaces::SpacesError::Ownership(r) => (2, r),
+                other => (1, other.to_string()),
+            })?;
+            let body = serde_json::json!({
+                "report": report,
+                "live_evidence": if report.effect_verified {
+                    "one appended Space ID after one press with exact-effect readback; causal creation unproven (M5), untested live"
+                } else {
+                    "press dispatched but effect UNVERIFIED — preserve evidence; no retry or automatic removal"
+                },
+            });
+            if !report.effect_verified {
+                return Err((1, body.to_string()));
+            }
+            Ok(body.to_string())
         }
         Command::SpacesDestroy { pid, nonce, space } => {
             tiler_macos::ax::authorize_owned_action(pid, &nonce).map_err(|e| (2, e.to_string()))?;

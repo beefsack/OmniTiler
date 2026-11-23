@@ -304,11 +304,18 @@ Source and destination must read back as user Spaces; unreadable Space type,
 unknown frontmost context and loginwindow fail closed before dispatch. A
 frontmost observation is not an atomic lock detector. Source and target must
 map unambiguously to the same display; cross-display recovery remains unproven.
-`spaces-switch`, `spaces-create` and `spaces-destroy` stay explicitly
-unsupported single-shot commands: their non-SA single-shot routes are
-unimplemented here (see the [route survey](../../docs/research/macos-port/native-spaces-routes.md))
+`spaces-switch` and `spaces-destroy` stay explicitly unsupported single-shot
+commands: their non-SA single-shot routes are unimplemented here (see the
+[route survey](../../docs/research/macos-port/native-spaces-routes.md))
 and the commands report the route instead of executing — use the bounded
 gated probes below, which carry their own per-run readbacks.
+`spaces-create` reports that same surveyed refusal by default; the
+off-by-default `spaces-create --pid PID --nonce HEX [--display INDEX]
+--route mission-control-ax --allow-untested` route reuses the existing
+verified AX Mission Control create leg (pinned managed UUID -> CG display ID
+join, one press, exact-append readback). It is untested live, claims no
+`created` causality, and never removes a Space — removal stays
+`mc-remove-empty --allow-untested`.
 
 Native-Space write routes (source-derived surveyed route at pinned yabai
 `dd845723416f5fe92af49fad5ebab00369e07edd`, not a universal claim; no SIP
@@ -480,13 +487,17 @@ title, or content logs). Stop interception when Secure Input is active
   (one gated dispatch observed no-effect on an owned fixture with exact
   readbacks; single-shot inverse unverified while the separate public
   held-Child recovery is proven per run; `--allow-untested` required per
-  invocation). Single-shot switch/create/destroy: explicitly unsupported;
-  the single-shot commands report the pinned route instead of executing —
-  use the bounded gated probes (`spaces-switch-probe`,
-  `spaces-owned-recovery`, `mc-lifecycle`/`mc-recover`, `mc-members`,
-  `mc-restore-frontmost`, `spaces-bindings`), which carry their own
-  gates and per-run readbacks; they are not product workspaces and prove no
-  universal native-move outcome.
+  invocation). Single-shot switch/destroy: explicitly unsupported; those
+  commands report the pinned route instead of executing — use the bounded
+  gated probes (`spaces-switch-probe`, `spaces-owned-recovery`,
+  `mc-lifecycle`/`mc-recover`, `mc-members`, `mc-restore-frontmost`,
+  `spaces-bindings`), which carry their own gates and per-run readbacks;
+  they are not product workspaces and prove no universal native-move outcome.
+  `spaces-create` keeps that refusal by default; its opt-in
+  `--route mission-control-ax --allow-untested` route is untested live and
+  reports an unproven causal identity (exactly one appended SID after one
+  press, no competing-creator discriminator), with one press per invocation
+  and no removal.
 - Nonces are OS-CSPRNG (`/dev/urandom`, std only, no new crate); spawn
   records live in a `0700` UID-owned session dir as `0600` `create_new`
   files with symlink/stale/replaced-identity refusal, and the recorded exe

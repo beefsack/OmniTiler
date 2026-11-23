@@ -90,6 +90,9 @@ pub enum Command {
     SpacesCreate {
         pid: u32,
         nonce: String,
+        display: usize,
+        route: crate::spaces::SpaceCreateRoute,
+        allow_untested: bool,
     },
     SpacesDestroy {
         pid: u32,
@@ -534,7 +537,6 @@ pub fn help_text() -> String {
            \x20 spaces-restore --pid PID --nonce HEX --wid WID --space ID --allow-untested\n\
            \x20 \x20 (independent restore with the same identity validation; usable after mover exit)\n\
             \x20 spaces-switch --pid PID --nonce HEX --space ID\n\
-            \x20 spaces-create --pid PID --nonce HEX\n\
             \x20 spaces-destroy --pid PID --nonce HEX --space ID\n\
             \x20 \x20 (single-shot, explicitly unsupported: no implemented single-shot\n\
             \x20 \x20 route here; report the route, never execute — surveyed non-SA\n\
@@ -545,6 +547,12 @@ pub fn help_text() -> String {
             \x20 \x20 spaces-switch-probe, spaces-owned-recovery,\n\
             \x20 \x20 mc-lifecycle/mc-recover/mc-members/mc-restore-frontmost,\n\
             \x20 \x20 spaces-bindings)\n\
+            \x20 spaces-create --pid PID --nonce HEX [--display INDEX] [--route mission-control-ax] [--allow-untested]\n\
+            \x20 \x20 (off by default: no --route reports the explicitly unsupported\n\
+            \x20 \x20 surveyed route; --route mission-control-ax requires\n\
+            \x20 \x20 --allow-untested (exit 2 otherwise): opt-in AX Mission Control\n\
+            \x20 \x20 create leg, untested live, one press with no retry, unproven\n\
+            \x20 \x20 creator identity, never removes a Space)\n\
                \x20 probe-spawn [--hung-ms MS] [--slow-ms MS] [--seconds N] [--fixed-size] [--regular-policy] [--close-window-ms MS] [--transient-panel-ms MS] [--transient-sheet-ms MS] [--space-join]\n\
               \x20 \x20 (bounded owned holder: spawns one helper and holds its exact\n\
               \x20 \x20 Child to the deadline; --regular-policy prefers the dedicated\n\
@@ -1293,6 +1301,10 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
         "spaces-create" => {
             let mut pid: Option<u32> = None;
             let mut nonce: Option<String> = None;
+            let mut display = 0usize;
+            let mut route = crate::spaces::SpaceCreateRoute::Unsupported;
+            let mut route_seen = false;
+            let mut allow_untested = false;
             let mut j = 0;
             while j < args.len() {
                 match args[j].as_str() {
@@ -1307,13 +1319,37 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                         j += 1;
                         nonce = Some(args.get(j).ok_or("--nonce needs a value")?.clone());
                     }
+                    "--display" => {
+                        j += 1;
+                        display =
+                            parse_u64(args.get(j).ok_or("--display needs a value")?, "--display")?
+                                as usize;
+                    }
+                    "--route" => {
+                        j += 1;
+                        route = crate::spaces::SpaceCreateRoute::parse(
+                            args.get(j).ok_or("--route needs a value")?,
+                        )?;
+                        route_seen = true;
+                    }
+                    "--allow-untested" => {
+                        allow_untested = true;
+                    }
                     other => return Err(format!("{cmd}: unknown arg '{other}'")),
                 }
                 j += 1;
             }
+            if route_seen && !allow_untested {
+                return Err(
+                    "spaces-create --route mission-control-ax requires --allow-untested".to_owned(),
+                );
+            }
             Command::SpacesCreate {
                 pid: pid.ok_or("spaces-create needs --pid")?,
                 nonce: nonce.ok_or("spaces-create needs --nonce")?,
+                display,
+                route,
+                allow_untested,
             }
         }
         "spaces-destroy" => {

@@ -3583,3 +3583,102 @@ fn tile_help_qualifies_authentic_holder_ensure() {
         "blanket no-writes claim must stay removed"
     );
 }
+
+#[test]
+fn spaces_create_default_and_opt_in_parse_explicitly() {
+    let r = parse_args(&argv(&[
+        "spaces-create",
+        "--pid",
+        "9",
+        "--nonce",
+        "0123456789abcdef",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate, "spaces-create is write-intent");
+    assert_eq!(
+        r.command,
+        Command::SpacesCreate {
+            pid: 9,
+            nonce: "0123456789abcdef".to_owned(),
+            display: 0,
+            route: crate::spaces::SpaceCreateRoute::Unsupported,
+            allow_untested: false,
+        }
+    );
+
+    let r = parse_args(&argv(&[
+        "spaces-create",
+        "--pid",
+        "9",
+        "--nonce",
+        "0123456789abcdef",
+        "--display",
+        "2",
+        "--route",
+        "mission-control-ax",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(r.may_mutate);
+    assert_eq!(
+        r.command,
+        Command::SpacesCreate {
+            pid: 9,
+            nonce: "0123456789abcdef".to_owned(),
+            display: 2,
+            route: crate::spaces::SpaceCreateRoute::MissionControlAx,
+            allow_untested: true,
+        }
+    );
+
+    // The opt-in flag alone must not change the default refusal route.
+    let r = parse_args(&argv(&[
+        "spaces-create",
+        "--pid",
+        "9",
+        "--nonce",
+        "0123456789abcdef",
+        "--allow-untested",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        r.command,
+        Command::SpacesCreate {
+            route: crate::spaces::SpaceCreateRoute::Unsupported,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn spaces_create_route_requires_allow_untested_and_rejects_unknown() {
+    let err = parse_args(&argv(&[
+        "spaces-create",
+        "--pid",
+        "9",
+        "--nonce",
+        "0123456789abcdef",
+        "--route",
+        "mission-control-ax",
+    ]))
+    .unwrap_err();
+    assert!(err.contains("--allow-untested"), "unexpected: {err}");
+
+    let err = parse_args(&argv(&[
+        "spaces-create",
+        "--pid",
+        "9",
+        "--nonce",
+        "0123456789abcdef",
+        "--route",
+        "bogus",
+        "--allow-untested",
+    ]))
+    .unwrap_err();
+    assert!(err.contains("unknown --route"), "unexpected: {err}");
+    assert!(err.contains("bogus"), "unexpected: {err}");
+    assert!(
+        err.contains("refusing without a fallback"),
+        "unexpected: {err}"
+    );
+}

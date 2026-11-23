@@ -25,17 +25,22 @@
 //!   dispatch on an owned fixture observed no effect. Target and preimage
 //!   are additionally gated to user Spaces (read-only `SLSSpaceGetType`):
 //!   fullscreen/system Spaces have no proven restore and fail closed.
-//! - switch/create/destroy/reorder/display-move as SINGLE-SHOT commands
-//!   (`spaces-switch`, `spaces-create`, `spaces-destroy`): no implemented
-//!   single-shot route in surveyed source. Native legs need Dock
-//!   injection (scripting-addition); surveyed non-SA legs (synthetic
-//!   gestures, AX Mission Control automation, system-chord resolve-and-post)
-//!   are unimplemented as single-shot commands here
-//!   (global synthetic input or visible UI automation). These single-shot
-//!   commands stay explicitly unsupported with the route and reason reported
-//!   instead of executed — use the bounded gated probes below, which carry
-//!   their own per-run readbacks. Missing implementation/recovery is never
-//!   a SIP rejection: no SIP rejection is asserted without live evidence.
+//! - switch/create/destroy as SINGLE-SHOT commands
+//!   (`spaces-switch`, `spaces-create`, `spaces-destroy`): switch and destroy
+//!   stay explicitly unsupported (no implemented single-shot route with
+//!   proven recovery). `spaces-create` also refuses with the surveyed route
+//!   by default; the off-by-default `--route mission-control-ax
+//!   --allow-untested` path reuses the already-verified bounded AX Mission
+//!   Control create leg (pinned managed-UUID -> CGID join, one press,
+//!   exact-append readback), reports an unproven causal identity, and never
+//!   removes a Space. Native legs need Dock injection (scripting-addition);
+//!   surveyed non-SA legs (synthetic gestures, AX Mission Control automation,
+//!   system-chord resolve-and-post) are otherwise unimplemented as
+//!   single-shot commands here. These single-shot commands report the route
+//!   and refuse instead of executing by default — use the bounded gated
+//!   probes below, which carry their own per-run readbacks. Missing
+//!   implementation/recovery is never a SIP rejection: no SIP rejection is
+//!   asserted without live evidence.
 //!
 //! Bounded gated probe batteries exist SEPARATELY and are not single-shot
 //! execution: `spaces-switch-probe` (same-display arrow-vs-gesture
@@ -678,22 +683,213 @@ pub fn switch_space_status(space: u64) -> SpaceRouteStatus {
     }
 }
 
-/// Native Space creation (single-shot). No implemented single-shot route
-/// here: the yabai path is scripting-addition-gated, and the only
-/// surveyed non-SA alternative is Hammerspoon's Mission Control + AX
-/// `addSpaceToScreen` (visible global UI automation, unimplemented as a
-/// single-shot command here). The bounded
-/// `mc-lifecycle` temp-Space battery exists separately with its own gates
-/// and per-run readbacks; it is not single-shot creation.
-pub fn create_space_status() -> SpaceRouteStatus {
-    SpaceRouteStatus {
-        action: "create".to_owned(),
-        supported: false,
-        route: "yabai scripting_addition_create_space only (no direct SLS create in surveyed source); surveyed non-SA alternative is Hammerspoon Mission Control + AX addSpaceToScreen (visible UI automation, not implemented as a single-shot command here; the bounded mc-lifecycle battery covers the temp-Space create leg separately)".to_owned(),
-        reason: "single-shot creation has no implemented route here: the native path needs Dock injection (scripting-addition) and the surveyed AX Mission Control alternative is visible global UI automation, unimplemented single-shot here — use the bounded mc-lifecycle battery instead, which carries its own per-run readbacks; missing implementation, not a SIP rejection"
-            .to_owned(),
-        source: "https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L1062-L1072 + https://github.com/Hammerspoon/hammerspoon/blob/23e387e2805a9890066366e0ac96c71b27f0cfd5/extensions/spaces/spaces.lua#L689-L738".to_owned(),
-        live_evidence: untested(),
+/// Create route selection. `Unsupported` is the default and preserves the
+/// surveyed refusal; the Mission Control AX route is an explicit opt-in that
+/// reuses the existing verified bounded create leg.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpaceCreateRoute {
+    #[default]
+    Unsupported,
+    MissionControlAx,
+}
+
+impl SpaceCreateRoute {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unsupported => "unsupported",
+            Self::MissionControlAx => "mission-control-ax",
+        }
+    }
+
+    /// Pure argv parse: an unknown route refuses before any live touch; no
+    /// fallback to the default refusal or to another create mechanism.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "mission-control-ax" => Ok(Self::MissionControlAx),
+            other => Err(format!(
+                "unknown --route '{other}' (expected mission-control-ax); refusing without a fallback"
+            )),
+        }
+    }
+}
+
+/// Measured outcome of one opt-in single-shot Space create. The exact-append
+/// readback (one new SID on the pinned display, preexisting order and all
+/// currents intact) is the only effect evidence; the press itself proves no
+/// `created` causality. The separate-Spaces state is snapshotted before and
+/// after the press, and a close shortfall is recorded without hiding an
+/// accepted append.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpaceCreateReport {
+    pub display: usize,
+    pub route: String,
+    pub display_identity: Option<String>,
+    pub budget_secs: u64,
+    pub preimage_spaces: Vec<Vec<u64>>,
+    pub preimage_currents: Vec<Option<u64>>,
+    pub effect_spaces: Vec<Vec<u64>>,
+    pub appended_sid: Option<u64>,
+    pub currents_unchanged: bool,
+    pub mc_closed: bool,
+    pub close_error: Option<String>,
+    pub effect_verified: bool,
+    pub causal_identity: String,
+}
+
+const CREATE_CAUSAL_IDENTITY: &str =
+    "unproven (M5): exactly one appended SID after the press; no competing-creator discriminator";
+
+fn spaces_error_from_mc(e: crate::mc_probe::McError) -> SpacesError {
+    match e {
+        crate::mc_probe::McError::Ownership(r) => SpacesError::Ownership(r),
+        crate::mc_probe::McError::Unsupported(r) => SpacesError::Unsupported(r),
+        other => SpacesError::Blocked(other.to_string()),
+    }
+}
+
+/// Opt-in owned single-shot Space create on one display. No route is
+/// attempted unless `route` is [`SpaceCreateRoute::MissionControlAx`] and
+/// `--allow-untested` was explicitly passed. After the owned session proof,
+/// the existing session/trust/AX gates run, the display is pinned by exact
+/// managed-UUID -> CG display-ID join, and the Space/topology/separate-Spaces
+/// preimage is captured before exactly one press of the already-verified
+/// Mission Control add-space leg. The leg closes Mission Control on every
+/// exit after opening it and records any close shortfall; no press is ever
+/// retried and removal is never performed here (use `mc-remove-empty`).
+pub fn create_space_owned(
+    pid: u32,
+    nonce: &str,
+    display: usize,
+    route: SpaceCreateRoute,
+    allow_untested: bool,
+) -> Result<SpaceCreateReport, SpacesError> {
+    match route {
+        SpaceCreateRoute::Unsupported => {
+            return Err(SpacesError::Blocked(
+                "create route unsupported by default; pass --route mission-control-ax --allow-untested to opt into the verified AX Mission Control create leg (untested live)"
+                    .to_owned(),
+            ));
+        }
+        SpaceCreateRoute::MissionControlAx => {}
+    }
+    if !allow_untested {
+        return Err(SpacesError::Blocked(
+            "create requires --allow-untested (AX Mission Control create is untested live; one press, no retry, unproven creator identity)"
+                .to_owned(),
+        ));
+    }
+    if pid <= 1 {
+        return Err(SpacesError::Ownership(format!(
+            "refusing reserved pid {pid}"
+        )));
+    }
+    let _owned = crate::ax::authorize_owned_action(pid, nonce)
+        .map_err(|e| SpacesError::Ownership(e.to_string()))?;
+    crate::mc_lifecycle::live::action_gates().map_err(spaces_error_from_mc)?;
+    let before = crate::mc_lifecycle::live::fresh_snapshot().map_err(spaces_error_from_mc)?;
+    let row = before.displays.get(display).ok_or_else(|| {
+        SpacesError::Blocked(format!(
+            "display {display} unknown ({} displays); refusing without an exact preimage",
+            before.displays.len()
+        ))
+    })?;
+    let uuid = row.identifier.as_deref().ok_or_else(|| {
+        SpacesError::Blocked(
+            "chosen display has no managed UUID; refusing positional fallback".to_owned(),
+        )
+    })?;
+    let separate_before = crate::ffi::ns_separate_spaces().ok_or_else(|| {
+        SpacesError::Blocked(
+            "separate-Spaces state unreadable; refusing before any create — this is not a SIP failure"
+                .to_owned(),
+        )
+    })?;
+    // Pin the display by exact managed-UUID -> CG display-ID join; never a
+    // positional or first-display guess. The leg re-verifies this identity
+    // after opening Mission Control, before its one press.
+    let screens = crate::ffi::ns_display_snapshot().map_err(SpacesError::Unsupported)?;
+    let cgid = screens
+        .iter()
+        .find(|s| s.cg_id != 0 && s.uuid.as_deref() == Some(uuid))
+        .map(|s| s.cg_id)
+        .ok_or_else(|| {
+            SpacesError::Blocked(format!(
+                "no CG display ID joins managed display '{uuid}' for display {display}; refusing without an exact mapping — this is not a SIP failure"
+            ))
+        })?;
+    let budget_secs = crate::config::DEFAULT_PROBE_SECONDS;
+    let mut budget = crate::mc_probe::ActionBudget::new(budget_secs);
+    let outcome =
+        crate::mc_lifecycle::live::mc_add_space_pinned(display, cgid, uuid, &mut budget, false)
+            .map_err(spaces_error_from_mc)?;
+    // A sent press is never replayed: a missing post snapshot is reported as
+    // an unverified effect, not a second dispatch.
+    let after = match outcome.after {
+        Some(snapshot) => Some(snapshot),
+        None => crate::mc_lifecycle::live::fresh_snapshot().ok(),
+    };
+    let separate_after = crate::ffi::ns_separate_spaces();
+    let appended_sid = after
+        .as_ref()
+        .and_then(|a| crate::mc_probe::validate_create_effect(&before, a, display).ok());
+    let currents_unchanged = after.as_ref().is_some_and(|a| {
+        before.displays.len() == a.displays.len()
+            && before
+                .displays
+                .iter()
+                .zip(a.displays.iter())
+                .all(|(b, x)| b.current == x.current)
+    });
+    let effect_verified =
+        appended_sid.is_some() && currents_unchanged && separate_after == Some(separate_before);
+    Ok(SpaceCreateReport {
+        display,
+        route: route.as_str().to_owned(),
+        display_identity: Some(uuid.to_owned()),
+        budget_secs,
+        preimage_spaces: before.displays.iter().map(|d| d.spaces.clone()).collect(),
+        preimage_currents: before.displays.iter().map(|d| d.current).collect(),
+        effect_spaces: after
+            .as_ref()
+            .map(|a| a.displays.iter().map(|d| d.spaces.clone()).collect())
+            .unwrap_or_default(),
+        appended_sid,
+        currents_unchanged,
+        mc_closed: !outcome.mc_open,
+        close_error: outcome.close_error,
+        effect_verified,
+        causal_identity: CREATE_CAUSAL_IDENTITY.to_owned(),
+    })
+}
+
+/// Native Space creation (single-shot). The default route stays explicitly
+/// unsupported: the yabai path is scripting-addition-gated and the surveyed
+/// non-SA Hammerspoon Mission Control + AX `addSpaceToScreen` alternative is
+/// reported without execution. The opt-in Mission Control AX route reuses
+/// the already-verified bounded create leg; it is off by default, untested
+/// live, and never removes a Space. Both routes keep "untested live"
+/// evidence.
+pub fn create_space_status(route: SpaceCreateRoute) -> SpaceRouteStatus {
+    match route {
+        SpaceCreateRoute::Unsupported => SpaceRouteStatus {
+            action: "create".to_owned(),
+            supported: false,
+            route: "yabai scripting_addition_create_space only (no direct SLS create in surveyed source); surveyed non-SA alternative is Hammerspoon Mission Control + AX addSpaceToScreen (visible UI automation, not implemented as a single-shot command here; the bounded mc-lifecycle battery covers the temp-Space create leg separately)".to_owned(),
+            reason: "single-shot creation has no implemented route here: the native path needs Dock injection (scripting-addition) and the surveyed AX Mission Control alternative is visible global UI automation, unimplemented single-shot here — use the bounded mc-lifecycle battery instead, which carries its own per-run readbacks; missing implementation, not a SIP rejection"
+                .to_owned(),
+            source: "https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L1062-L1072 + https://github.com/Hammerspoon/hammerspoon/blob/23e387e2805a9890066366e0ac96c71b27f0cfd5/extensions/spaces/spaces.lua#L689-L738".to_owned(),
+            live_evidence: untested(),
+        },
+        SpaceCreateRoute::MissionControlAx => SpaceRouteStatus {
+            action: "create".to_owned(),
+            supported: true,
+            route: "mission-control-ax: existing verified bounded AX Mission Control create leg (mc_lifecycle::live::mc_add_space_pinned; managed-UUID -> CGID exact join, one addSpaceToScreen press, exact-append readback)".to_owned(),
+            reason: "off-by-default opt-in requiring --route mission-control-ax --allow-untested; session/trust/AX gates and owned-session proof, one press per invocation with no retry, Mission Control always closed with any close shortfall recorded, no removal and no `created` causality claim — use mc-remove-empty for removal; untested live, not a SIP verdict"
+                .to_owned(),
+            source: "https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L1062-L1072 + https://github.com/Hammerspoon/hammerspoon/blob/23e387e2805a9890066366e0ac96c71b27f0cfd5/extensions/spaces/spaces.lua#L689-L738".to_owned(),
+            live_evidence: untested(),
+        },
     }
 }
 
@@ -996,7 +1192,7 @@ mod tests {
         );
         assert!(switch.live_evidence.contains("untested"));
 
-        let create = create_space_status();
+        let create = create_space_status(SpaceCreateRoute::Unsupported);
         assert!(!create.supported);
         assert!(create.reason.contains("scripting-addition"));
         assert!(!create.route.contains("SA-only"));
@@ -1063,5 +1259,74 @@ mod tests {
                 .to_string()
                 .starts_with("unsupported:")
         );
+    }
+
+    #[test]
+    fn create_status_keeps_default_refusal_and_names_opt_in_route() {
+        assert_eq!(SpaceCreateRoute::default(), SpaceCreateRoute::Unsupported);
+        let default = create_space_status(SpaceCreateRoute::Unsupported);
+        assert!(!default.supported);
+        assert!(default.reason.contains("scripting-addition"));
+        assert!(default.live_evidence.contains("untested live"));
+
+        let mc = create_space_status(SpaceCreateRoute::MissionControlAx);
+        assert!(mc.supported);
+        assert!(mc.route.contains("mission-control-ax"));
+        assert!(mc.route.contains("mc_add_space_pinned"));
+        assert!(mc.reason.contains("no removal"));
+        assert!(mc.live_evidence.contains("untested live"));
+    }
+
+    #[test]
+    fn create_route_parses_explicitly_with_no_fallback() {
+        assert_eq!(
+            SpaceCreateRoute::parse("mission-control-ax"),
+            Ok(SpaceCreateRoute::MissionControlAx)
+        );
+        assert_eq!(
+            SpaceCreateRoute::MissionControlAx.as_str(),
+            "mission-control-ax"
+        );
+        assert_eq!(SpaceCreateRoute::Unsupported.as_str(), "unsupported");
+        assert!(SpaceCreateRoute::parse("").is_err());
+        assert!(SpaceCreateRoute::parse("auto").is_err());
+        assert!(SpaceCreateRoute::parse("mission-control").is_err());
+        assert!(SpaceCreateRoute::parse("MISSION-CONTROL-AX").is_err());
+    }
+
+    #[test]
+    fn create_report_round_trips_with_unproven_causal_identity() {
+        let report = SpaceCreateReport {
+            display: 1,
+            route: SpaceCreateRoute::MissionControlAx.as_str().to_owned(),
+            display_identity: Some("uuid-1".to_owned()),
+            budget_secs: 30,
+            preimage_spaces: vec![vec![10, 11], vec![20]],
+            preimage_currents: vec![Some(10), Some(20)],
+            effect_spaces: vec![vec![10, 11, 12], vec![20]],
+            appended_sid: Some(12),
+            currents_unchanged: true,
+            mc_closed: true,
+            close_error: None,
+            effect_verified: true,
+            causal_identity: CREATE_CAUSAL_IDENTITY.to_owned(),
+        };
+        let json = serde_json::to_string(&report).expect("serializes");
+        assert!(json.contains("unproven (M5)"));
+        assert!(json.contains("no competing-creator discriminator"));
+        let back: SpaceCreateReport = serde_json::from_str(&json).expect("round-trips");
+        assert_eq!(back, report);
+    }
+
+    #[test]
+    fn create_owned_refuses_before_live_touch_without_route_and_opt_in() {
+        let err =
+            create_space_owned(9001, "bogus", 0, SpaceCreateRoute::Unsupported, true).unwrap_err();
+        assert!(matches!(err, SpacesError::Blocked(_)));
+        assert!(err.to_string().contains("--route mission-control-ax"));
+        let err = create_space_owned(9001, "bogus", 0, SpaceCreateRoute::MissionControlAx, false)
+            .unwrap_err();
+        assert!(matches!(err, SpacesError::Blocked(_)));
+        assert!(err.to_string().contains("--allow-untested"));
     }
 }

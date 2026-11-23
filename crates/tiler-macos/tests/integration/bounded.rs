@@ -95,7 +95,9 @@ fn spaces_switch_create_destroy_report_unsupported_routes() {
     assert!(switch.reason.contains("Mission Control"));
     assert!(switch.reason.contains("not a SIP rejection"));
 
-    let create = tiler_macos::spaces::create_space_status();
+    let create = tiler_macos::spaces::create_space_status(
+        tiler_macos::spaces::SpaceCreateRoute::Unsupported,
+    );
     assert!(!create.supported);
     assert!(create.reason.contains("scripting-addition"));
     // Non-SA alternative named; refusal is missing recovery, not SIP.
