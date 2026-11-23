@@ -245,11 +245,18 @@ struct CauseTokens {
 
 /// Count the staged focus-route cause tokens in one product log snapshot.
 /// Only the explicit `cause=` fields count (the ring `kind=` names are a
-/// different schema); a missing stamp stays `None`, never zero. Pure;
-/// unit-tested.
+/// different schema), and only lines whose `outcome=dispatched-native` count
+/// (spent-envelope, duplicate and accepted-feedback lines never do); a missing
+/// stamp stays `None`, never zero. Pure; unit-tested.
 fn cause_tokens(raw: &str) -> CauseTokens {
     let mut out = CauseTokens::default();
     for line in raw.lines() {
+        let dispatched = line
+            .split_whitespace()
+            .any(|token| token == "outcome=dispatched-native");
+        if !dispatched {
+            continue;
+        }
         let stamp = line
             .split_whitespace()
             .find_map(|token| token.strip_prefix("stamp_us="))
@@ -1120,9 +1127,11 @@ mod tests {
     #[test]
     fn cause_tokens_count_only_explicit_cause_fields() {
         let raw = "\
-tiler-diag stage=focus stamp_us=1000 id=focus-1 cause=focus-follows-cursor target=100_7 observed=100_9 known=1 report=4 outcome=accepted provenance=retained
-tiler-diag stage=focus stamp_us=1200 id=focus-2 cause=explicit-command target=100_9 observed=100_7 known=1 report=5 outcome=accepted provenance=retained
-tiler-diag stage=focus stamp_us=1400 id=focus-3 cause=focus-follows-cursor target=100_9 observed=100_7 known=1 report=6 outcome=accepted provenance=retained
+tiler-diag stage=focus stamp_us=1000 id=focus-1 cause=focus-follows-cursor target=100_7 observed=100_9 known=1 report=4 outcome=dispatched-native provenance=retained
+tiler-diag stage=focus stamp_us=1200 id=focus-2 cause=explicit-command target=100_9 observed=100_7 known=1 report=5 outcome=dispatched-native provenance=retained
+tiler-diag stage=focus stamp_us=1400 id=focus-3 cause=focus-follows-cursor target=100_9 observed=100_7 known=1 report=6 outcome=dispatched-native provenance=retained
+tiler-diag stage=focus stamp_us=1500 id=focus-4 cause=focus-follows-cursor target=100_7 observed=100_9 known=1 report=7 outcome=envelope-duplicate-spent provenance=retained
+tiler-diag stage=focus stamp_us=1550 id=focus-5 cause=explicit-command target=100_9 observed=100_7 known=1 report=8 outcome=accepted provenance=retained
 tiler-log seq=1 t=12ms pid=0 gen=0 ref=7 kind=diag-focus-follows outcome=accepted count=3
 tiler-diag stage=frame stamp_us=1600 pid=100 wid=7 rev=3 entry=none completion=applied
 ";
@@ -1145,11 +1154,11 @@ tiler-diag stage=frame stamp_us=1600 pid=100 wid=7 rev=3 entry=none completion=a
     #[test]
     fn cause_json_reports_cumulative_counts_and_deltas() {
         let base = cause_tokens(
-            "tiler-diag stage=focus stamp_us=10 id=a cause=focus-follows-cursor target=a observed=b known=1 report=1 outcome=accepted",
+            "tiler-diag stage=focus stamp_us=10 id=a cause=focus-follows-cursor target=a observed=b known=1 report=1 outcome=dispatched-native",
         );
         let now = cause_tokens(
-            "tiler-diag stage=focus stamp_us=10 id=a cause=focus-follows-cursor target=a observed=b known=1 report=1 outcome=accepted\n\
-             tiler-diag stage=focus stamp_us=20 id=b cause=explicit-command target=c observed=b known=1 report=2 outcome=accepted",
+            "tiler-diag stage=focus stamp_us=10 id=a cause=focus-follows-cursor target=a observed=b known=1 report=1 outcome=dispatched-native\n\
+             tiler-diag stage=focus stamp_us=20 id=b cause=explicit-command target=c observed=b known=1 report=2 outcome=dispatched-native",
         );
         let value = cause_json(now, base);
         assert_eq!(value["focus-follows-cursor"]["count"], 1);

@@ -477,10 +477,9 @@ mid-flight advances the observation clock and can make that reply refuse stale
 app/homing rows, so PID reuse after a silent exit is bounded by the prune paths
 rather than an independent liveness read. The hover probe proves only the first
 three joined windows, so extra owned windows are outside the proof. Its cause
-recorder counts cause lines without filtering the outcome; this run's hover
-token was `dispatched-native` and the accepted-feedback line corroborates it,
-but a future run should require `dispatched-native` to avoid a spent-envelope
-line satisfying the wait. The initial admission FFC and the post-observation
+recorder requires `outcome=dispatched-native`, so spent-envelope, duplicate and
+accepted-feedback lines cannot satisfy a wait.
+The initial admission FFC and the post-observation
 pointer-restore FFC fall outside the recorded snapshot (honest miss / cleanup),
 and `--preset authentic` still logs transient frame-set retry failures that
 converge to exact readbacks.
