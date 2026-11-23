@@ -106,7 +106,10 @@ struct FakeSetter {
     position_fail_next: Option<String>,
     size_fail_on_call: Option<(usize, String, bool)>,
     size_calls: usize,
-    get_fail_next: Option<String>,
+    /// One-shot readback failure on exactly the Nth read (peeked, like the
+    /// size arming): models a transient AX read miss, which makes the
+    /// redundancy proof absent so the next leg still attempts.
+    get_fail_on_call: Option<(usize, String)>,
     sets: Vec<&'static str>,
     set_calls: usize,
     get_calls: usize,
@@ -119,7 +122,7 @@ impl FakeSetter {
             position_fail_next: None,
             size_fail_on_call: None,
             size_calls: 0,
-            get_fail_next: None,
+            get_fail_on_call: None,
             sets: Vec::new(),
             set_calls: 0,
             get_calls: 0,
@@ -179,7 +182,12 @@ impl AxSetter for FakeSetter {
 
     fn readback(&mut self, _wid: u32) -> Result<Option<AxFrame>, String> {
         self.get_calls += 1;
-        if let Some(reason) = self.get_fail_next.take() {
+        let fires = self
+            .get_fail_on_call
+            .as_ref()
+            .is_some_and(|(call, _)| *call == self.get_calls);
+        if fires {
+            let (_, reason) = self.get_fail_on_call.take().expect("armed above");
             return Err(reason);
         }
         Ok(Some(self.current))
@@ -221,7 +229,13 @@ fn attempt() -> AxFrame {
 }
 
 #[test]
-fn all_legs_apply_in_silica_order_with_per_leg_truth() {
+fn silica_order_applies_and_proof_skips_redundant_final_size() {
+    // Production `apply_scoped_frame` proves each later leg redundant from
+    // the previous leg's fresh readback (native_tile_backend.rs: the
+    // `read_xy`/`read_wh` skip predicate): the size-first write lands the
+    // wanted width/height, so the position leg still moves the origin and
+    // the final size leg is skipped without an AX write (its readback
+    // still runs). Silica order and per-leg truth survive the skip.
     let scope = scope();
     let identity = identity();
     let gates = FakeGates::healthy(11, 9);
@@ -237,15 +251,15 @@ fn all_legs_apply_in_silica_order_with_per_leg_truth() {
         9,
         3,
     );
-    assert_eq!(setter.sets, vec!["size", "position", "size"]);
+    assert_eq!(setter.sets, vec!["size", "position"]);
     assert_eq!(
         setter.get_calls, 3,
-        "one bounded readback per attempted leg"
+        "one bounded readback per leg, skipped or not"
     );
     assert!(matches!(completion, AxCompletion::Applied { .. }));
     assert_eq!(report.size_first, LegOutcome::Applied);
     assert_eq!(report.position, LegOutcome::Applied);
-    assert_eq!(report.size, LegOutcome::Applied);
+    assert_eq!(report.size, LegOutcome::SkippedRedundant);
     // Per-leg truth is faithful: after size-first only the size moved.
     let after_size_first = AxFrame {
         x: 10.0,
@@ -352,15 +366,19 @@ fn other_space_membership_writes_nothing() {
 
 #[test]
 fn partial_size_refusal_still_attempts_rest_and_reports_truth() {
-    // Final size leg refused after size-first+position applied: all
-    // three legs still attempt in order, every attempted leg is read
-    // back exactly once (no retry storm), and the completion reports
-    // the actual partial truth.
+    // Final size leg refused after size-first+position applied: all three
+    // legs still attempt in order, every leg is read back exactly once (no
+    // retry storm), and the completion reports the actual partial truth.
+    // The position-leg readback is unreadable (transient AX read miss), so
+    // the redundancy proof is absent and the final size leg must attempt
+    // (native_tile_backend.rs: a skip can never hide a mismatch that proof
+    // would report).
     let scope = scope();
     let identity = identity();
     let gates = FakeGates::healthy(11, 9);
     let mut setter = FakeSetter::at(frame());
     setter.size_fail_on_call = Some((2, "size: kAXErrorCannotComplete".to_owned(), false));
+    setter.get_fail_on_call = Some((2, "readback: kAXErrorCannotComplete".to_owned()));
     let (completion, report) = apply_scoped_frame(
         &scope,
         &identity,
@@ -894,7 +912,10 @@ fn session_safety_refuses_secure_lock_and_unknown() {
 fn unscoped_effect_boundary_parity_with_scoped() {
     // Parity: Ghostty binds and passes the effect fence unscoped (ordinary
     // product candidate) while the scoped selection refuses it at admission;
-    // own bundles, exclusions, and unknown bundles refuse in both modes.
+    // own bundles admit unscoped from another process (M1 own-process
+    // protection is pid-based, never bundle-wide — see
+    // dev_selection.rs `allows_effect`), exclusions and unknown bundles
+    // refuse, and the scoped selection keeps its own-bundle fence.
     let unscoped = TileScope::Unscoped { excluded: vec![] };
     let ghostty = validate_identity_triple(
         &unscoped,
@@ -921,14 +942,46 @@ fn unscoped_effect_boundary_parity_with_scoped() {
         .is_err(),
         "Ghostty refused at scoped admission"
     );
-    // Own bundles refuse unscoped at admission (helper and probe alike).
+    // Unscoped product mode admits both own product bundles when they
+    // arrive from another process: exact-exclusion and own-process
+    // protection are the only gates (dev_selection.rs `allows_effect`;
+    // `validate_identity_triple` refuses only `std::process::id()`).
     for own in [tiler_macos::BUNDLE_ID, tiler_macos::HELPER_BUNDLE_ID] {
         assert!(
             validate_identity_triple(&unscoped, 4242, Some(own), Some("/x"), Some("launch-1"))
-                .is_err(),
-            "{own}"
+                .is_ok(),
+            "{own} admits unscoped from another process"
         );
     }
+    // The bound process itself never admits in either mode.
+    assert!(
+        validate_identity_triple(
+            &unscoped,
+            std::process::id(),
+            Some(tiler_macos::BUNDLE_ID),
+            Some("/x"),
+            Some("launch-1")
+        )
+        .is_err(),
+        "own process never binds"
+    );
+    // Scoped keeps the fence: the own probe bundle never admits, even
+    // listed explicitly (only the signed helper is an explicit fixture
+    // exception).
+    let listed_probe = TileScope::Scoped(AppScope {
+        allowed: vec![tiler_macos::BUNDLE_ID.to_owned()],
+    });
+    assert!(
+        validate_identity_triple(
+            &listed_probe,
+            4242,
+            Some(tiler_macos::BUNDLE_ID),
+            Some("/x"),
+            Some("launch-1"),
+        )
+        .is_err(),
+        "scoped probe bundle never admits"
+    );
     // Exact exclusions refuse unscoped at admission; unknown refuses both.
     let excluded = TileScope::Unscoped {
         excluded: vec!["com.example.skip".to_owned()],

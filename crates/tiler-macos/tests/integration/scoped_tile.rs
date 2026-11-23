@@ -1655,6 +1655,11 @@ fn deleted_space_retires_domain_and_reseeds() {
         )),
         SubmitOutcome::Accepted
     );
+    // Settle A's re-observation before B submits: both riders share one
+    // engine lane, and a second report advances the freshness watermark,
+    // refusing A's in-flight reply as stale before it can emit (see
+    // `prove_coherent` / the sequencer's `stale-observation` verdict).
+    let a = wait_applied(&fixture, "1001_1");
     assert_eq!(
         fixture.handle.submit_scoped_observation(scoped_obs(
             APP_B,
@@ -1668,7 +1673,7 @@ fn deleted_space_retires_domain_and_reseeds() {
     );
     assert!(fixture.handle.flush(FLUSH));
     // Both windows re-actuate inside their (unchanged) work areas.
-    let (a, b) = wait_applied_pair(&fixture, "1001_1", "1002_2");
+    let b = wait_applied(&fixture, "1002_2");
     let areas = work_areas();
     assert!(within(a.3, areas[0]), "reseeded domain tiles d1: {:?}", a.3);
     assert!(within(b.3, areas[1]), "stable domain tiles d2: {:?}", b.3);
@@ -2508,8 +2513,12 @@ fn out_of_scope_config_and_unknown_focus_never_actuate() {
 fn focus_dispatches_through_owner_slot_with_exact_target() {
     // Worker-published snapshot plus agreeing evidence promotes focus;
     // the input focus step then dispatches through the owning worker's
-    // slot with the exact window target (never a foreign window), while
-    // the outbox keeps its drained record for the controller.
+    // slot with the exact window target (never a foreign window). The
+    // outbox row that named the command is controller-visible only until
+    // the terminal owner completion retires it
+    // (`retire_focus_request_exact`, world_dispatch.rs; called from the
+    // focus-result handler in runtime_thread.rs), so a settled command
+    // leaves no pending record.
     let fixture = start(scoped_config());
     fixture
         .handle
@@ -2566,11 +2575,14 @@ fn focus_dispatches_through_owner_slot_with_exact_target() {
         },
         "focus dispatch truth",
     );
-    // The outbox keeps its controller-visible record too.
+    // The terminal focus-result above retired the row that named the
+    // command, so the outbox holds no pending record for a settled
+    // dispatch. A live record here would mean a second, unretired command.
     let drained = fixture.handle.drain_focus_requests();
-    assert_eq!(drained.len(), 1);
-    assert_eq!(drained[0].window, "1001_2");
-    assert!(!drained[0].verified);
+    assert!(
+        drained.is_empty(),
+        "a settled owner dispatch must retain no outbox record, got {drained:?}"
+    );
     shutdown_clean(&fixture);
 }
 
@@ -3865,8 +3877,9 @@ fn stale_select_flight_still_binds_claim_and_never_replays() {
         .recv_timeout(WAIT)
         .expect("select flight must open");
     // Racing select arrives while the request is outstanding: it marks
-    // the watermark past the flight (and later refuses busy — never a
-    // second dispatch of the consumed command).
+    // the watermark past the flight and admits into the same FIFO queue
+    // behind the in-progress drain — admission has no busy gate, and no
+    // second dispatch of the consumed command is ever replayed.
     assert_eq!(
         fixture
             .handle
@@ -3876,8 +3889,10 @@ fn stale_select_flight_still_binds_claim_and_never_replays() {
     proceed_tx.send(()).expect("engine parked mid-flight");
     assert!(fixture.handle.flush(FLUSH));
     fixture.handle.set_midflight_hook_for_test(None);
-    // Stale command reply refused with no stale emission; the claim bound
-    // with its operation identity exactly once; the racer refused busy.
+    // Stale command reply refused with no stale emission; the pending
+    // claim still binds under its operation identity exactly once; the
+    // racing press is queued (never dropped, never overlapping: the drain
+    // serializes actuation).
     let diagnostics = fixture.handle.diagnostics();
     assert!(
         diagnostics
@@ -3889,16 +3904,19 @@ fn stale_select_flight_still_binds_claim_and_never_replays() {
         "stale select reply must refuse: {:?}",
         diagnostics.core_replies
     );
-    assert_eq!(diagnostics.input_select_enqueued, 1);
-    assert!(
-        diagnostics.input_select_refused >= 1,
-        "racing select must refuse busy: {diagnostics:?}"
+    assert_eq!(
+        diagnostics.input_select_enqueued, 2,
+        "both admitted presses queue FIFO: {diagnostics:?}"
+    );
+    assert_eq!(
+        diagnostics.input_select_refused, 0,
+        "admission has no busy refusal: {diagnostics:?}"
     );
     let claimed = fixture.handle.claim_select_for_drain().expect("claim");
     assert_eq!(
         claimed.operation_id.as_deref(),
         Some("op-1"),
-        "stale select still binds its operation identity"
+        "oldest admitted select still binds its operation identity"
     );
     // The recovered retry reply is current, so the bound plan resolves
     // against live truth: the binding names a SID in the current native

@@ -352,6 +352,38 @@ fn arrival(
     }
 }
 
+/// Establish one focused arrival end to end: the manual observation names
+/// the focus, and the owner-thread selected-oracle leg (the fake's
+/// `sys_focus` script) attests the same window. A stale oracle makes the
+/// close-focus owner recheck refuse every later step as
+/// `superseded-observed` even though the engine promoted the arrival, so
+/// the fixture must attest the focus it establishes.
+fn arrive_focused(
+    fixture: &Fixture,
+    generation: u64,
+    seq: u64,
+    windows: Vec<ObservedWindow>,
+    focused_wid: u32,
+    revision: u64,
+) {
+    install(
+        fixture,
+        APP_A,
+        scripted(windows.clone(), Some(focused_wid)),
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(arrival(
+            APP_A,
+            generation,
+            seq,
+            windows,
+            focused_wid,
+            revision
+        )),
+        SubmitOutcome::Accepted
+    );
+}
+
 fn send_focus_right(fixture: &Fixture) {
     // Legacy focus chord (H key) with the default Right step direction.
     let flags = cg_flag_bits(ProbeModifier::Ctrl).0;
@@ -540,17 +572,7 @@ fn native_focus_walk_retains_at_edge_per_tier1() {
         win_at(2, 200, 8, 100, 100),
         win_at(3, 400, 8, 100, 100),
     ];
-    assert_eq!(
-        fixture.handle.submit_scoped_observation(arrival(
-            APP_A,
-            generation,
-            50,
-            windows.clone(),
-            2,
-            revision
-        )),
-        SubmitOutcome::Accepted
-    );
+    arrive_focused(&fixture, generation, 50, windows.clone(), 2, revision);
     assert!(fixture.handle.flush(FLUSH));
     send_focus_right(&fixture);
     let cmd = fixture
@@ -562,17 +584,7 @@ fn native_focus_walk_retains_at_edge_per_tier1() {
 
     // Arrival on win3, step 3 at the exhausted edge: no dispatch.
     let generation = fixture.handle.app_generation(APP_A).expect("generation");
-    assert_eq!(
-        fixture.handle.submit_scoped_observation(arrival(
-            APP_A,
-            generation,
-            51,
-            windows.clone(),
-            3,
-            revision
-        )),
-        SubmitOutcome::Accepted
-    );
+    arrive_focused(&fixture, generation, 51, windows.clone(), 3, revision);
     assert!(fixture.handle.flush(FLUSH));
     while fixture.focus_rx.try_recv().is_ok() {}
     // Before/after invariants across the refused edge: no plan change, no
@@ -643,12 +655,7 @@ fn native_focus_walk_retains_at_edge_per_tier1() {
     // Recovery: an external arrival back on win2 steps to win3 again, so a
     // retained edge never wedges later focus.
     let generation = fixture.handle.app_generation(APP_A).expect("generation");
-    assert_eq!(
-        fixture
-            .handle
-            .submit_scoped_observation(arrival(APP_A, generation, 52, windows, 2, revision)),
-        SubmitOutcome::Accepted
-    );
+    arrive_focused(&fixture, generation, 52, windows, 2, revision);
     assert!(fixture.handle.flush(FLUSH));
     send_focus_right(&fixture);
     let cmd = fixture
