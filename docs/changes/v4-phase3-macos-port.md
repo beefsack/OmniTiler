@@ -55,7 +55,7 @@ the slice-1 evidence below for planning.
 - **Build restored (2026-11-23).** The port below removes the drift: `tiler-macos`
   builds with `cargo check`, builds `--all-targets`, formats, passes strict
   clippy and the library tests (1601/0/3). The mock `tests/integration` target
-  is still red (134/16) as a classified harness gap; see
+  now reports 148 passed / 2 failed, both documented stops; see
   [integration triage](#integration-triage-2026-11-23). No core or protocol
   file changed.
 - **Historical build state.** At `dfb70175`, a Linux `cargo check --offline --locked -p tiler-macos`
@@ -211,14 +211,27 @@ Proven on the native desktop:
   window happened to be focused.
 - After the AX change the signature stage passes (the `--signer` value must
   be the full `designated => …` tail), the AX join passes and the AX title
-  authentication passes. The leg now refuses at `focus-agreement`:
+  authentication passes.
+- The leg then refused at `focus-agreement`:
   `focus disagreement: focus agreement timeout (5s): want pid N wid X, have
   slps N workspace N AX (N,Some(Y)) cg_owned=true` — the fixture's own
   socket focus request did not make the target the AX focused window while
-  the scoped product was running. Admission/reflow and the admission-focus
-  case remain unproven, and no Space > n was reached (directional chords
-  create no owned Space in this controller; owned Space creation is gated on
-  space-mutating chords).
+  the scoped product was running. Fixed in `a6599b89`: the leg focuses each
+  owned window through the fixture's own focus action and requires the
+  post path's selected-window proof before posting, so agreement is proven
+  per window instead of assuming whichever window happened to be focused.
+- Chord arming: under `--preset compatible` with the Ctrl role, bare
+  Ctrl+arrows are deliberately left to macOS, so `focus-right` is not armed
+  and the tap sees the deliveries with `matched:0`. `--preset authentic`
+  arms the chord. Recorded so a future leg does not read that as a delivery
+  defect.
+- Teardown: the host's `CursorUIViewService` (pid 52832, 64x64 offscreen
+  cursor window) replaces its own window mid-leg, which used to fail the
+  protected-window roster comparison. `fc1d455d` classifies exactly that
+  case with the existing `cg_diff::classify_benign_churn` predicate (same
+  pid, both offscreen, identical layer and bounds); the raw before/after
+  rows are retained with `benign:true`, and every other category still
+  blocks the leg.
 
 Teardown receipts per attempt: `residue:[]`, `owned_reaped:[]`,
 `product_reaped:true`, `current_restored:true`; Spaces stayed `[1,7]`
@@ -232,9 +245,51 @@ A stale 2026-11-12 receipt whose only mismatch was an appeared protected
 window was inspected and cleared after confirming that window absent and no
 owned residue; copies were kept outside the repository.
 
-Not proven: admission/reflow through the genuine route, the admission-focus
-retained-per-cause case, product chords, and any Space > n behaviour. No live
-leg exposed an adapter defect, so no adapter code changed for it.
+Proven on the native desktop in one leg (`f4bf760e`, `--preset authentic`,
+`--chord focus-right`, operator settle windows via
+`OMNITILER_FIXTURE_LEG_SETTLE_MS`):
+
+- **Admission and reflow through the genuine route.** With one fixture
+  window observed (A, full tile `8,38 2224×1123`) a second owned window was
+  admitted (B) and the scoped product retiled both to halves (A
+  `8,38 1108×1123`, B `1124,38 1108×1123`). AX frames and CG
+  bounds/layer/onscreen agreed (`Tile`, Space 1) at every phase, and the
+  fixture's own CG oracle agreed (A `2216×2182` px, B `2216×2182 @2248,76`).
+  Closing B reflowed A back to the full tile.
+- **Retained admission focus per cause.** `cause=automatic-admission`,
+  `target=91375_1912`, `observed=91375_1912`, `outcome=already-satisfied`:
+  the published request named B and the observation agreed. This is the
+  minimal case the
+  [suppressed admission focus blocker](#blocker-suppressed-admission-focus-changes-the-next-implicit-subject)
+  demanded, so that blocker is closed against the current core.
+- **Explicit focus-right.** After A was focused, the chord dispatched with
+  `cause=explicit-command` to B, the setter was accepted
+  (`pre=91375_1908 post=91375_1912 proven=1`, `attempt_ms=9`), the fixture
+  oracle reported `b focused=true` with unchanged frames (focus causes no
+  reflow), and both owned windows posted the chord from the leg itself.
+- **Clean teardown**: `product_reaped:true`, `current_restored:true`,
+  `residue:[]`, `owned_reaped:[]`, `caffeinate_reaped:true`; Spaces `[1,7]`
+  current `1` before and after.
+
+Not proven: any Space > n *in a leg receipt yet*. One display with Spaces
+`[1,7]` and `space_count 2` means no Space > n exists, so a leg that needs
+one must create it. Correction to an earlier reading: the controller's
+Space creation is **not** an unsupported stub — the AX Mission Control
+`mc.spaces.add` press is implemented on macOS (`mc_lifecycle.rs`
+`mc_add_space`/`mc_add_space_pinned`, verified by
+`space_probe::LiveNativeSpaces::space_create` as exactly one appended SID
+with unchanged currents), the controller already plans owned destinations
+for space-mutating chords (`select-N`/`send-N`, `plan_owned_destinations`),
+and the product's own creation leg is wired through
+`NativeSelection::create`. Only the single-shot `spaces-create` CLI remains
+a policy refusal (`create_space_status()`), not a capability gap. What is
+still unproven is an actual `select-N`/`send-N` leg on this host: the AX
+create leg is recorded as proven for one temporary same-display Space, but
+the immediate goto-back (`prove_return`) is the historically fragile stage,
+so the first run should expect trouble there rather than at creation.
+The leg's exit-time product JSON (preset, `active_chords`, tap counters) is
+preserved by the harness from `f4bf760e` onward so a rerun can corroborate
+the receipt with those counters.
 
 ### Integration triage (2026-11-23)
 
@@ -505,9 +560,11 @@ run after the port:
 - Reply decoding uses actual macOS capabilities before sequencing/apply.
   Dead pre-v4 report/session policy plumbing is removed; normalization with
   remaining test readers is test-only. No compatibility report is retained.
-- Latest verification limits: the integration suite remains red; a fresh full
-  gate closure remains pending. Focused passes do not establish a usable native
-  surface.
+- Latest verification limits: the integration target is 148 passed / 2
+  documented stops; every other offline gate is green. The native
+  admission/reflow floor and the admission-focus minimal case are proven (see
+  [native leg attempts](#native-leg-attempts-2026-11-23)); later slice behavior
+  is not inferred from them.
 
 ### Blocker: suppressed admission focus changes the next implicit subject
 
@@ -534,6 +591,13 @@ run after the port:
   Preserve FIFO implicit subjects, selection dependencies and native safety.
   No assertion weakening is authorized. The other four phase-1 focus failures
   are not yet causally attributed to this case; native acceptance remains open.
+- Closed natively 2026-11-23: the retained-focus implementation publishes one
+  request per cause and the adapter actuates it. In one live signed-fixture leg
+  (`f4bf760e`) admitting B published
+  `cause=automatic-admission target=91375_1912 observed=91375_1912 outcome=already-satisfied`
+  (the request named B and the observation agreed), and the following explicit
+  focus-right dispatched to B and applied (`pre=A post=B proven=1`). See
+  [native leg attempts](#native-leg-attempts-2026-11-23).
 - Minimal discriminator and unsupported outcomes are retained in the
   [platform-fit table](../spec/reference-outcomes.md#v4-macos-platform-fit-discriminators).
 
