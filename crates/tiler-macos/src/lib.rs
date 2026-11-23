@@ -80,6 +80,7 @@ pub mod mc_probe;
 #[cfg(test)]
 mod mc_probe_tests;
 pub mod mc_recover;
+pub mod mc_tree;
 pub mod native_facts;
 pub mod native_input;
 #[cfg(test)]

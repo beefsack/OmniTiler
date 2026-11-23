@@ -299,6 +299,9 @@ pub enum Command {
         seconds: u64,
     },
     McInspect,
+    McTree {
+        labels: bool,
+    },
     ProcIdentity {
         pid: u32,
     },
@@ -779,6 +782,11 @@ pub fn help_text() -> String {
             \x20 \x20 (read-only Mission Control probe: session lock, AX trust, Dock\n\
             \x20 \x20 identity, MC-group presence, sanitized topology; no launch, no\n\
             \x20 \x20 traversal past presence, no writes, no synthetic events)\n\
+            \x20 mc-tree [--labels]\n\
+            \x20 \x20 (read-only bounded AX child-tree dump of the Dock, Mission\n\
+            \x20 \x20 Control and WindowManager shell processes: path, role, subrole,\n\
+            \x20 \x20 identifier, AXDisplayID, action names and children; --labels also\n\
+            \x20 \x20 reads AXTitle/AXDescription; no launch, no presses, no writes)\n\
             \x20 proc-identity --pid PID\n\
             \x20 \x20 (read-only process/login-namespace identity: target bundle plus\n\
             \x20 \x20 LaunchServices launch date (null when never launched through\n\
@@ -2985,6 +2993,19 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             }
             Command::McInspect
         }
+        "mc-tree" => {
+            // Read-only shell AX tree dump (route discovery): no launch,
+            // no writes, no synthetic events. `--labels` opts into
+            // AXTitle/AXDescription strings for the exact shell bundles.
+            let mut labels = false;
+            for arg in args {
+                match arg.as_str() {
+                    "--labels" => labels = true,
+                    other => return Err(format!("mc-tree: unknown arg '{other}'")),
+                }
+            }
+            Command::McTree { labels }
+        }
         "proc-identity" => {
             // Read-only identity join: one target pid (bundle/launch-date
             // read, no auth needed) plus this observer's own audit ids.
@@ -3334,6 +3355,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             | Command::FixtureFrameSample { .. }
             | Command::ScopeInspect { .. }
             | Command::McInspect
+            | Command::McTree { .. }
             | Command::ProcIdentity { .. }
             | Command::WorkspaceIndicatorStatus
             | Command::McMembers { .. }

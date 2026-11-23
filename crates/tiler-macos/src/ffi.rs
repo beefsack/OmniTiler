@@ -9743,6 +9743,71 @@ mod macos {
         Ok(out)
     }
 
+    /// `AXActionNames` of one AX element (read-only diagnostic). Names stay
+    /// runtime strings from the target, so a bounded read is not proof they
+    /// carry no app data. Same bounds and local-error discipline as
+    /// [`ax_attribute_names`]: over-long lists/names/budgets are explicit
+    /// local errors, never a silent truncation or an inferred absence.
+    pub fn ax_action_names(element: &AxElement) -> Result<Vec<String>, String> {
+        const MAX_ACTION_NAMES: usize = 256;
+        const MAX_ACTION_NAME_LEN: usize = 128;
+        const MAX_ACTION_NAMES_BYTES: usize = 4096;
+        let mut raw: *const CFArray = std::ptr::null();
+        // SAFETY: live element from a checked constructor; the out-pointer
+        // is a live stack local; a nonzero status returns `Err` with no use
+        // of `raw`. Copy rule: success yields a +1 retained array, wrapped
+        // exactly once below.
+        let status = unsafe {
+            element
+                .inner
+                .copy_action_names(NonNull::new(std::ptr::addr_of_mut!(raw)).expect("non-null"))
+        };
+        if status.0 != 0 {
+            return Err(ax_error_name(status.0));
+        }
+        if raw.is_null() {
+            return Err("local: null action-names array".to_owned());
+        }
+        let untyped: CFRetained<CFArray> =
+            unsafe { CFRetained::from_raw(NonNull::new(raw as *mut CFArray).expect("non-null")) };
+        if untyped.len() > MAX_ACTION_NAMES {
+            return Err(format!(
+                "local: {} action names exceed {MAX_ACTION_NAMES}",
+                untyped.len()
+            ));
+        }
+        // SAFETY: top-level kind verified as `CFArray` by the typed pointer
+        // above; viewed as `CFArray<CFType>` (layouts identical; every CF
+        // object is a `CFType`). Entries are checked-downcast to `CFString`
+        // below; non-string entries are skipped, never guessed.
+        let array: CFRetained<CFArray<CFType>> = unsafe { CFRetained::cast_unchecked(untyped) };
+        let mut out = Vec::new();
+        let mut total_bytes = 0usize;
+        for i in 0..array.len() {
+            let item = array
+                .get(i)
+                .ok_or_else(|| "local: unreadable action-names entry".to_owned())?;
+            if let Ok(name) = item.downcast::<CFString>() {
+                let name = name.to_string();
+                if name.len() > MAX_ACTION_NAME_LEN {
+                    return Err(format!(
+                        "local: action name exceeds {MAX_ACTION_NAME_LEN} bytes"
+                    ));
+                }
+                total_bytes += name.len();
+                if total_bytes > MAX_ACTION_NAMES_BYTES {
+                    return Err(format!(
+                        "local: action names exceed {MAX_ACTION_NAMES_BYTES} bytes"
+                    ));
+                }
+                out.push(name);
+            }
+        }
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
+
     /// One sub-element via a named accessor attribute (`AXZoomButton`,
     /// `AXFullScreenButton`, ...). `Ok` is the joined element; `Err` is
     /// already an exact status string: the native [`ax_error_name`] when the
@@ -10263,31 +10328,31 @@ pub use macos::{
     NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SegmentReadback,
     SegmentRow, SlpsPsn, SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec,
     TapHit, TapPump, TapSource, TapSourceReport, WorkspaceIndicator, activate_app,
-    activation_policy_raw_for_pid, app_hidden_for_pid, audit_self, ax_app_focus_leg,
-    ax_attribute_names, ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id,
-    ax_element_at_position, ax_element_attribute, ax_elements_equal, ax_focused_preimage,
-    ax_focused_preimage_detailed, ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame,
-    ax_hit_test_detail, ax_hit_test_owner, ax_identifier, ax_is_process_trusted,
-    ax_is_size_settable, ax_min_size, ax_observe_bounded, ax_observe_session, ax_perform_action,
-    ax_raise, ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window,
-    ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
-    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
-    border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_carrier_below_targets,
-    cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
-    copy_symbolic_hotkeys, drain_app_events, drain_app_events_counted, frontmost_app, host_now_ns,
-    host_timebase, hotkey_read, hotkey_set_enabled, hotkey_spi_available,
-    install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
-    mc_launch_toggle, mouse_counts_snapshot, ns_app_identity_for_pid, ns_display_snapshot,
-    ns_image_for_bundle, ns_separate_spaces, own_bundle_id, process_executable_path,
-    process_exists, pump_runloop_once, resolve_hotkey_spi, run_event_tap_bounded,
-    run_owned_probe_window, runloop_present, running_apps, secure_input_known, session_state,
-    slps_available, slps_front_available, slps_front_pid, slps_post_event, slps_psn_for_pid,
-    slps_set_front, sls_bridged_availability, sls_connection_available, sls_display_rows,
-    sls_display_spaces, sls_main_connection_id, sls_move_symbols, sls_move_windows_bridged,
-    sls_move_windows_direct, sls_order_available, sls_order_below, sls_order_below_txn,
-    sls_order_txn_available, sls_space_front_available, sls_space_set_front_psn, sls_space_type,
-    sls_spaces_for_window, sls_spaces_for_windows, sls_window_at_point, terminate_process,
-    warp_cursor_position,
+    activation_policy_raw_for_pid, app_hidden_for_pid, audit_self, ax_action_names,
+    ax_app_focus_leg, ax_attribute_names, ax_bool_attribute, ax_children, ax_direct_focused_read,
+    ax_display_id, ax_element_at_position, ax_element_attribute, ax_elements_equal,
+    ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
+    ax_fullscreen_state, ax_get_frame, ax_hit_test_detail, ax_hit_test_owner, ax_identifier,
+    ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
+    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
+    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
+    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
+    ax_window_id_detailed, ax_window_title, border_system_accent, bundle_id_for_pid,
+    cg_carrier_above_target, cg_carrier_below_targets, cg_display_uuid, cg_post_event_access_known,
+    cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys, drain_app_events,
+    drain_app_events_counted, frontmost_app, host_now_ns, host_timebase, hotkey_read,
+    hotkey_set_enabled, hotkey_spi_available, install_display_change_guard, key_counts_snapshot,
+    launch_date_for_pid, macos_major, mc_launch_toggle, mouse_counts_snapshot,
+    ns_app_identity_for_pid, ns_display_snapshot, ns_image_for_bundle, ns_separate_spaces,
+    own_bundle_id, process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
+    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
+    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
+    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
+    sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
+    sls_move_symbols, sls_move_windows_bridged, sls_move_windows_direct, sls_order_available,
+    sls_order_below, sls_order_below_txn, sls_order_txn_available, sls_space_front_available,
+    sls_space_set_front_psn, sls_space_type, sls_spaces_for_window, sls_spaces_for_windows,
+    sls_window_at_point, terminate_process, warp_cursor_position,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -10712,6 +10777,10 @@ mod stub {
     }
 
     pub fn ax_attribute_names(_element: &AxElement) -> Result<Vec<String>, String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn ax_action_names(_element: &AxElement) -> Result<Vec<String>, String> {
         Err("macOS-only".to_owned())
     }
 
@@ -11442,8 +11511,8 @@ pub use stub::{
     SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SegmentReadback, SegmentRow, SlpsPsn,
     SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
     TapSource, TapSourceReport, WorkspaceIndicator, activate_app, activation_policy_raw_for_pid,
-    app_hidden_for_pid, audit_self, ax_app_focus_leg, ax_attribute_names, ax_bool_attribute,
-    ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
+    app_hidden_for_pid, audit_self, ax_action_names, ax_app_focus_leg, ax_attribute_names,
+    ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
     ax_element_attribute, ax_elements_equal, ax_focused_preimage, ax_focused_preimage_detailed,
     ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_detail,
     ax_hit_test_owner, ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size,

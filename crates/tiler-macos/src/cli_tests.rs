@@ -3084,6 +3084,20 @@ fn mc_inspect_is_read_only_without_args() {
 }
 
 #[test]
+fn mc_tree_is_read_only_and_labels_opt_in() {
+    // Read-only shell AX tree dump: no launch, no presses, never mutating;
+    // `--labels` is the only accepted flag and every other argument refuses.
+    let r = parse_args(&argv(&["mc-tree"])).unwrap();
+    assert_eq!(r.command, Command::McTree { labels: false });
+    assert!(!r.may_mutate, "mc-tree must not mutate");
+    let r = parse_args(&argv(&["mc-tree", "--labels"])).unwrap();
+    assert_eq!(r.command, Command::McTree { labels: true });
+    assert!(!r.may_mutate, "mc-tree --labels must not mutate");
+    assert!(parse_args(&argv(&["mc-tree", "--bogus"])).is_err());
+    assert!(parse_args(&argv(&["mc-tree", "--labels", "--bogus"])).is_err());
+}
+
+#[test]
 fn proc_identity_is_read_only_with_exact_pid() {
     // Read-only identity join: exactly one --pid (pid 0/1 refused),
     // no nonce/auth surface, never mutating.

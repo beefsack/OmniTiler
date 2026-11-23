@@ -1096,6 +1096,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             tiler_macos::group_underlay_session::run_group_underlay_session(seconds)
         }
         Command::McInspect => tiler_macos::mc_lifecycle::run_mc_inspect(),
+        Command::McTree { labels } => tiler_macos::mc_tree::run_mc_tree(labels),
         Command::ProcIdentity { pid } => {
             // Read-only join: target bundle/launch-date (LaunchServices
             // read, no auth) beside this observer's own audit ids.
