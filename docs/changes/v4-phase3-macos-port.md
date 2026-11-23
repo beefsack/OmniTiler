@@ -55,7 +55,7 @@ the slice-1 evidence below for planning.
 - **Build restored (2026-11-23).** The port below removes the drift: `tiler-macos`
   builds with `cargo check`, builds `--all-targets`, formats, passes strict
   clippy and the library tests (1601/0/3). The mock `tests/integration` target
-  now reports 148 passed / 2 failed, both documented stops; see
+  now reports 149 passed / 1 failed, one documented core-policy stop; see
   [integration triage](#integration-triage-2026-11-23). No core or protocol
   file changed.
 - **Historical build state.** At `dfb70175`, a Linux `cargo check --offline --locked -p tiler-macos`
@@ -355,15 +355,16 @@ unchanged, and the async append is now awaited instead of read once.
 Corrected classification of the red `tests/integration` target (the earlier
 "35 all `failed-snapshot`" reading was wrong: `failed-snapshot` is the fake
 backend's expected legacy-snapshot refusal, not a cause). Counts:
-118 passed / 32 failed at triage start; **148 passed / 2 failed** in the
-current tree. Both remaining cases are documented stops, not stale mocks.
+118 passed / 32 failed at triage start; **148 passed / 2 failed** at triage,
+and **149 passed / 1 failed** now. The single remaining case is a documented
+core-policy stop, not a stale mock.
 
 | Group | Root cause | Resolution |
 | --- | --- | --- |
 | `macos_classification` ×19 | The fixture ran `RuntimeConfig::default()` (synthetic topology) and submitted legacy `AxObservation`s; a v4 report built without a native context carries no screen rows, so no row gained allocation or frame. | Test-only: fixture starts in `TopologyMode::Native`, publishes the suite's 1920x1080 single-display snapshot, submit helpers build `ScopedObservation` rows, nonzero-layer geometry asserts the gap-inset native domain, the partial-zero predicate travels as a core setting, and the minimize/restore case drives the production `poll_scoped` + `ExcludedOmission` route. All green. |
 | `runtime_phase1` ×6 | Two causes: (1) admission focus is published per cause while the close-focus lane re-reads the selected oracle, whose fake default was `None`, so requests ended `unproven-read`; (2) v4 seeds the focused leaf last, so a naive step direction is an edge (`internal=unchanged`) rather than a defect. | Each fake attests the focus it actually establishes; steps use the direction the seeded layout makes resolvable; asynchronous focus rows settle on the `focus-result` terminal before draining. Five green; `focus_saturation_drops_counted_and_survives` is a documented stop: one session cannot mint a second distinct focus publication while the first is unsettled (a repeat dedups: `world_sequencer.rs` duplicate arm), so the capacity fence is unreachable without a distinct cause this module does not drive. |
 | `scoped_gates` ×3 | Stale expectations plus one fixture gap. | Legs expect `["size","position"]` with a redundant final-size skip; the fix-up refusal arms the readback call so the final size leg is still attempted; own-bundle unscoped admission now compares own-process refusal plus a scoped listed-probe refusal. Green. |
-| `scoped_tile` ×3, `focus_gaps_trace` ×1 | Owner-slot dispatch retires the outbox row at its terminal completion; stale-select admission has no busy gate; arrival needs its own attested selected oracle. | All three ported with those source contracts cited; `deleted_space_retires_domain_and_reseeds` is a documented stop: the adapter reports the new topology truthfully, but outside adoption returns at the core `pending_here` guard because the trailing-spare creation is retained and this host never produces creation receipts (`world_builder.rs` passes `creation_attempts: &[]`, and the offline fake host never runs a create leg, so no honest attempt row can exist; the macOS adapter itself does implement the AX creation route and `RuntimeHandle::report_creation_attempt`). Settling it needs the fake host to run a create leg and report the attempt, or a core allowance for adoption while a creation is pending (core change, out of scope here). |
+| `scoped_tile` ×3, `focus_gaps_trace` ×1 | Owner-slot dispatch retires the outbox row at its terminal completion; stale-select admission has no busy gate; arrival needs its own attested selected oracle. | All three ported with those source contracts cited. `deleted_space_retires_domain_and_reseeds` is green: the fake host now runs a genuine create leg (tree's read-only `RuntimeHandle::native_creation_requests`, mint-baseline `order_before`, a real append, an `Accepted` uncorrelated attempt with `created_native: None`, then the appended readback), so the core binds the trailing spare by its unique-delta rule before the deletion. No assertion was weakened and no core file changed. Two limits recorded: creating *after* the delete cannot bind (the launch spare's mint baseline no longer matches the live order and a second pending row per output latches `AmbiguousCreation`), and the stale-mint-baseline conflict noted in `docs/porting/world-contract.md` remains an open core question rather than something this change resolves. |
 | `runtime_freshness` ×2 | Both were settle-order races in the tests, not product flakes: the retained admission focus is controller-visible only until its terminal result. | Tests wait for the `focus-result`/`not-called` terminal before draining and assert one armed dispatch with an empty outbox; `input_eos_is_observed_not_spun` settles on the input owner's join edge (the EOS counter bumps from inside the exiting thread, before the join edge). Green (8/8 and 5/5 repeated runs). |
 
 ### Offline gates (2026-11-23)
@@ -374,7 +375,7 @@ run after the port:
 | Gate | First run | After fixes | Notes |
 | --- | --- | --- | --- |
 | `cargo build --locked -p tiler-core -p tiler-protocol -p tiler-macos` | exit 0 | — | |
-| `cargo test --locked -p tiler-core -p tiler-protocol -p tiler-macos` | exit 101: 4373 passed, 16 failed | exit 101: core 2468 passed / 0 failed, every protocol suite ok, `tiler-macos` lib 1601 passed / 0 failed / 3 ignored; `tests/integration` 134 passed / 16 failed | The integration target is a named mock-harness gap, classified above; no core or protocol failure. |
+| `cargo test --locked -p tiler-core -p tiler-protocol -p tiler-macos` | exit 101: 4373 passed, 16 failed | now exit 101: core 2468 passed / 0 failed, every protocol suite ok, `tiler-macos` lib 1617 passed / 0 failed / 3 ignored; `tests/integration` **149 passed / 1 failed** | The single failure is the core-policy stop `focus_saturation_drops_counted_and_survives`, classified above; no core or protocol failure, no stale mock. |
 | `cargo fmt --all -- --check` | exit 1, two ported test helpers unformatted (`drag_drop.rs`, `native_lifetime_tests.rs`) | exit 0 after `cargo fmt --all` | formatting only, no semantic change |
 | `cargo clippy --locked -p tiler-core -p tiler-protocol -p tiler-macos --all-targets -- -D warnings` | exit 101, 53 `-D warnings` lints (18 lib, 35 test-target) | exit 0 | mechanical lint fixes only: `too_many_arguments` allows per repo convention, private tuple type aliases, `repeat_n`, `clone_on_copy`, needless borrows, `let_and_return`, `collapsible_if`, `field_reassign_with_default`. Two lib lints (`border_runtime.rs` needless return, `native_tile_backend.rs` argument count) were latent in untouched files: the crate did not compile before the port, so the gate had never run. |
 
@@ -619,8 +620,8 @@ run after the port:
 - Reply decoding uses actual macOS capabilities before sequencing/apply.
   Dead pre-v4 report/session policy plumbing is removed; normalization with
   remaining test readers is test-only. No compatibility report is retained.
-- Latest verification limits: the integration target is 148 passed / 2
-  documented stops; every other offline gate is green. The native
+- Latest verification limits: the integration target is 149 passed / 1
+  documented core-policy stop; every other offline gate is green. The native
   admission/reflow floor and the admission-focus minimal case are proven (see
   [native leg attempts](#native-leg-attempts-2026-11-23)); later slice behavior
   is not inferred from them.
