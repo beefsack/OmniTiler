@@ -23,8 +23,8 @@ use std::time::Duration;
 
 use tiler_macos::classifier::{
     ActivationPolicy, AppFacts, AxFacts, CgFacts, ClassifiedWindow, Disposition, ExcludeReason,
-    FloatReason, ROLE_SHEET, ROLE_WINDOW, SUBROLE_DIALOG, SUBROLE_FLOATING,
-    SUBROLE_STANDARD, WindowFrame, classify_window,
+    FloatReason, ROLE_SHEET, ROLE_WINDOW, SUBROLE_DIALOG, SUBROLE_FLOATING, SUBROLE_STANDARD,
+    WindowFrame, classify_window,
 };
 use tiler_macos::ffi::{DisplayRect, NsDisplay, SlsDisplayRow};
 use tiler_macos::runtime::{
@@ -32,8 +32,8 @@ use tiler_macos::runtime::{
     ScopedBackendSnapshot, ScopedObservation, ScopedWindowMeta, ShutdownOutcome, SubmitOutcome,
     TopologyMode, WindowSizeHints,
 };
-use tiler_macos::runtime_types::ExcludedOmission;
 use tiler_macos::runtime_backend::{AxBackend, AxBackendFactory, EffectHook, NativeInputStub};
+use tiler_macos::runtime_types::ExcludedOmission;
 use tiler_macos::topology;
 
 const APP_A: u32 = 1001;
@@ -68,13 +68,7 @@ struct FakeFactory {
 
 impl AxBackendFactory for FakeFactory {
     fn create(&self, pid: u32) -> Result<Box<dyn AxBackend>, String> {
-        let poll_rx = self
-            .state
-            .0
-            .lock()
-            .expect("mutex")
-            .inboxes
-            .remove(&pid);
+        let poll_rx = self.state.0.lock().expect("mutex").inboxes.remove(&pid);
         Ok(Box::new(FakeBackend {
             state: Arc::clone(&self.state),
             poll_rx,
@@ -1537,7 +1531,10 @@ fn plain_minimize_restore_is_position_exact() {
         "a minimized window publishes as an omission, not an observed tile"
     );
     inbox
-        .send(Ok(scoped_snapshot(&[tile_10.clone()], Some(&minimized))))
+        .send(Ok(scoped_snapshot(
+            std::slice::from_ref(&tile_10),
+            Some(&minimized),
+        )))
         .expect("minimize snapshot");
     let reflowed = wait_applied(&fixture, "1001_10");
     assert_ne!(
@@ -1655,4 +1652,3 @@ fn unknown_roles_exclude_at_the_boundary() {
     );
     assert_eq!(off_space.disposition, Disposition::Tile);
 }
-

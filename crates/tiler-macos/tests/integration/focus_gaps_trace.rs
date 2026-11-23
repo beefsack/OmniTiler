@@ -366,11 +366,7 @@ fn arrive_focused(
     focused_wid: u32,
     revision: u64,
 ) {
-    install(
-        fixture,
-        APP_A,
-        scripted(windows.clone(), Some(focused_wid)),
-    );
+    install(fixture, APP_A, scripted(windows.clone(), Some(focused_wid)));
     assert_eq!(
         fixture.handle.submit_scoped_observation(arrival(
             APP_A,
