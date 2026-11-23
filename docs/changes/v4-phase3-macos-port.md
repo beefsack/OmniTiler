@@ -271,25 +271,84 @@ Proven on the native desktop in one leg (`f4bf760e`, `--preset authentic`,
   `residue:[]`, `owned_reaped:[]`, `caffeinate_reaped:true`; Spaces `[1,7]`
   current `1` before and after.
 
-Not proven: any Space > n *in a leg receipt yet*. One display with Spaces
-`[1,7]` and `space_count 2` means no Space > n exists, so a leg that needs
-one must create it. Correction to an earlier reading: the controller's
-Space creation is **not** an unsupported stub — the AX Mission Control
+Space inventory: one display with Spaces `[1,7]` and `space_count 2`, so a
+leg that needs a Space > n must create one — proven below. The controller's
+Space creation is **not** an unsupported stub: the AX Mission Control
 `mc.spaces.add` press is implemented on macOS (`mc_lifecycle.rs`
-`mc_add_space`/`mc_add_space_pinned`, verified by
-`space_probe::LiveNativeSpaces::space_create` as exactly one appended SID
-with unchanged currents), the controller already plans owned destinations
-for space-mutating chords (`select-N`/`send-N`, `plan_owned_destinations`),
-and the product's own creation leg is wired through
-`NativeSelection::create`. Only the single-shot `spaces-create` CLI remains
-a policy refusal (`create_space_status()`), not a capability gap. What is
-still unproven is an actual `select-N`/`send-N` leg on this host: the AX
-create leg is recorded as proven for one temporary same-display Space, but
-the immediate goto-back (`prove_return`) is the historically fragile stage,
-so the first run should expect trouble there rather than at creation.
-The leg's exit-time product JSON (preset, `active_chords`, tap counters) is
-preserved by the harness from `f4bf760e` onward so a rerun can corroborate
-the receipt with those counters.
+`mc_add_space`/`mc_add_space_pinned`), the controller plans owned
+destinations for space-mutating chords (`select-N`/`send-N`,
+`plan_owned_destinations`), and the product's own creation leg is wired
+through `NativeSelection::create`. The single-shot `spaces-create` CLI keeps
+its default refusal as policy and offers the same press only through an
+explicit opt-in. The leg's exit-time product JSON (preset, `active_chords`,
+tap counters) is preserved by the harness from `f4bf760e` onward.
+
+**Space > n leg attempt and the Tahoe Mission Control surface.** The first
+`select-3` leg refused at `prove_return` → `probe-create`:
+`add-Space press refused (mission-control probe error: Mission Control presence did not become true within 2000ms)`.
+Nothing mutated — no SID appended, no current change, no product launch, no
+owned residue — but the failed open stranded Mission Control on screen, which
+the harness's own public route recovered (`open -b com.apple.exposelauncher`
+plus `mc-inspect`/`cg-inspect` verification; reproduced twice).
+
+Root cause, observed rather than inferred: on macOS 27.2.1 the Dock exposes
+**no `mc` AX child at all** (checked at 0.58 s … 13.9 s while Mission Control
+was displayed and the WindowManager overlay windows were on screen). The
+Mission Control tree has moved to **`com.apple.WindowManager`**: the
+application element's direct child `AXGroup` `mc.display` is the presence
+marker, `mc.display` → `mc.spaces` → `mc.spaces.list` holds the "Desktop N"
+buttons, and the create control is the sibling `AXButton mc.spaces.add`
+("Add Desktop", `AXPress`). With Mission Control closed the WindowManager
+element has zero children, the Dock tree has no identifiers, and
+`com.apple.exposelauncher` is never a running application.
+
+Proven with one authorized create and remove on this host: press
+`mc.spaces.add` → `spaces-diagnose` `[1,7,36]` current `1` (exactly one
+appended SID), then `AXRemoveDesktop` → `[1,7]` current `1`, with a
+`cg-inspect` comparison of 40 same / 0 changed / 0 gone / 0 extra windows.
+Public AX only; no private SLS symbol and no synthetic input. The adapter now
+points presence and `spaces_group` at that surface, keeping the 2 s poll,
+300 ms stabilize, `AXDisplayID` join, single press and every validator
+unchanged. `mc-tree [--labels]` is the read-only dump used for the map.
+
+The single-shot `spaces-create` CLI now has an off-by-default
+`--route mission-control-ax --allow-untested` path (`a1aedb47`) that reuses
+the same press and reports an attempt plus the verified append; it keeps
+`causal_identity` `unproven (M5)` and never claims `created`.
+
+**Space > n leg, proven (`9e4d0303`).** One `select-3` leg completed with
+`--preset authentic` on the corrected surface:
+
+- `prove_return` passed (temp create, exact append, empty, goto away, goto
+  back, empty, remove) with no `probe-mc` shortfall.
+- One owned destination was created: `spaces-diagnose` `[1,7,43]` with
+  currents unchanged.
+- The fixture window on the owned Space was admitted and tiled: wid 2091,
+  AX `8,38 2224×1123`, CG identical, layer 0, onscreen, `disposition:"Tile"`,
+  Space `[1]`.
+- The chord dispatched: `select-3`, key_code 20, `outcome:"posted"`; the
+  product's exit JSON reports `preset:"authentic"`, `active_chords:63`,
+  tap `deliveries:2 matched:2 suppressed:2`, `shutdown_clean:true`.
+- Teardown: `residue:[]`, `owned_reaped:[]`, `product_reaped:true`,
+  `current_restored:true`; Spaces `[1,7]` current `1`; Mission Control
+  verified closed (no WindowManager window at layer >= 0).
+- The CLI route was exercised once on the real desktop:
+  `spaces-create --route mission-control-ax --allow-untested` →
+  `appended_sid:44`, `effect_verified:true`, `currents_unchanged:true`,
+  `mc_closed:true`; then `mc-remove-empty --space 44` →
+  `remove_dispatched:true`, `protected_restored:true`, back to `[1,7]`
+  current `1`.
+
+Two lifecycle defects surfaced and were fixed rather than gated around: the
+create path discarded the press outcome's Mission Control state (a single
+blind toggle could leave Mission Control displayed, and its presentation
+window then blocked the emptiness gate, correctly), and a goto press
+auto-dismisses Mission Control so an unconditional close could re-toggle it
+open. `9e4d0303` makes the close decision explicit (`decide_close`) and
+verifies closure (AX group absent and no WindowManager window at layer >= 0,
+PID-reuse fenced) before any leg continues; the emptiness predicate,
+single-press rule, poll shape, display join and trust/ownership gates are
+unchanged, and the async append is now awaited instead of read once.
 
 ### Integration triage (2026-11-23)
 
@@ -304,7 +363,7 @@ current tree. Both remaining cases are documented stops, not stale mocks.
 | `macos_classification` ×19 | The fixture ran `RuntimeConfig::default()` (synthetic topology) and submitted legacy `AxObservation`s; a v4 report built without a native context carries no screen rows, so no row gained allocation or frame. | Test-only: fixture starts in `TopologyMode::Native`, publishes the suite's 1920x1080 single-display snapshot, submit helpers build `ScopedObservation` rows, nonzero-layer geometry asserts the gap-inset native domain, the partial-zero predicate travels as a core setting, and the minimize/restore case drives the production `poll_scoped` + `ExcludedOmission` route. All green. |
 | `runtime_phase1` ×6 | Two causes: (1) admission focus is published per cause while the close-focus lane re-reads the selected oracle, whose fake default was `None`, so requests ended `unproven-read`; (2) v4 seeds the focused leaf last, so a naive step direction is an edge (`internal=unchanged`) rather than a defect. | Each fake attests the focus it actually establishes; steps use the direction the seeded layout makes resolvable; asynchronous focus rows settle on the `focus-result` terminal before draining. Five green; `focus_saturation_drops_counted_and_survives` is a documented stop: one session cannot mint a second distinct focus publication while the first is unsettled (a repeat dedups: `world_sequencer.rs` duplicate arm), so the capacity fence is unreachable without a distinct cause this module does not drive. |
 | `scoped_gates` ×3 | Stale expectations plus one fixture gap. | Legs expect `["size","position"]` with a redundant final-size skip; the fix-up refusal arms the readback call so the final size leg is still attempted; own-bundle unscoped admission now compares own-process refusal plus a scoped listed-probe refusal. Green. |
-| `scoped_tile` ×3, `focus_gaps_trace` ×1 | Owner-slot dispatch retires the outbox row at its terminal completion; stale-select admission has no busy gate; arrival needs its own attested selected oracle. | All three ported with those source contracts cited; `deleted_space_retires_domain_and_reseeds` is a documented stop: the adapter reports the new topology truthfully, but outside adoption returns at the core `pending_here` guard because the trailing-spare creation is retained and this host never produces creation receipts (`world_builder.rs` passes `creation_attempts: &[]`, no consumer of `ensure_native_creations`, `spaces.rs` reports the create route unsupported). Settling it needs host creation receipts (product work) or a core allowance for adoption while a creation is pending (out of this ticket's scope). |
+| `scoped_tile` ×3, `focus_gaps_trace` ×1 | Owner-slot dispatch retires the outbox row at its terminal completion; stale-select admission has no busy gate; arrival needs its own attested selected oracle. | All three ported with those source contracts cited; `deleted_space_retires_domain_and_reseeds` is a documented stop: the adapter reports the new topology truthfully, but outside adoption returns at the core `pending_here` guard because the trailing-spare creation is retained and this host never produces creation receipts (`world_builder.rs` passes `creation_attempts: &[]`, and the offline fake host never runs a create leg, so no honest attempt row can exist; the macOS adapter itself does implement the AX creation route and `RuntimeHandle::report_creation_attempt`). Settling it needs the fake host to run a create leg and report the attempt, or a core allowance for adoption while a creation is pending (core change, out of scope here). |
 | `runtime_freshness` ×2 | Both were settle-order races in the tests, not product flakes: the retained admission focus is controller-visible only until its terminal result. | Tests wait for the `focus-result`/`not-called` terminal before draining and assert one armed dispatch with an empty outbox; `input_eos_is_observed_not_spun` settles on the input owner's join edge (the EOS counter bumps from inside the exiting thread, before the join edge). Green (8/8 and 5/5 repeated runs). |
 
 ### Offline gates (2026-11-23)

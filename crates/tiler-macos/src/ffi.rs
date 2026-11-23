@@ -2727,16 +2727,20 @@ mod macos {
         if status == 0 { Ok(()) } else { Err(status) }
     }
 
-    // -- Mission Control AX traversal (public AX on the Dock, no synthetic
-    // input, no private SPI) --
+    // -- Mission Control AX traversal (public AX on the Mission Control
+    // surface, no synthetic input, no private SPI) --
     //
-    // Shape pinned against the local Hammerspoon checkout
-    // (`extensions/spaces/spaces.lua`: Dock application element, then
-    // `AXIdentifier == "mc"` group, then `AXChildren` into `"mc.display"`
-    // (matched on `AXDisplayID`), then `"mc.spaces"`, then `"mc.spaces.add"`
-    // (`doAXPress`) or `"mc.spaces.list"[index]` (`AXPress` to go to a
-    // Space, `AXRemoveDesktop` to remove one)). Opens/closes ride the public
-    // `NSWorkspace` application toggle below, not Hammerspoon's private
+    // Shape as observed on macOS 27.2.1: the tree lives on
+    // `com.apple.WindowManager`'s application element, whose direct child
+    // `AXIdentifier == "mc.display"` (matched on `AXDisplayID`) is the
+    // presence marker; then `"mc.spaces"`, then `"mc.spaces.add"`
+    // (`AXPress` to create) or `"mc.spaces.list"[index]` (`AXPress` to go to
+    // a Space, `AXRemoveDesktop` to remove one). Older Hammerspoon-era hosts
+    // put the same identifiers under a `"mc"` group on the Dock
+    // (`extensions/spaces/spaces.lua`); that root no longer exists here, so
+    // the adapter reads the WindowManager surface only and fails closed.
+    // Opens/closes ride the public `NSWorkspace` application toggle below,
+    // not Hammerspoon's private
     // `CoreDockSendNotification("com.apple.expose.awake")` nor yabai's
     // `CoreDockSendNotification(CFSTR("com.apple.expose.awake"), 0)`
     // (`src/space_manager.c` `space_manager_toggle_mission_control`).
