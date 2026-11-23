@@ -375,12 +375,12 @@ Ranked remaining adapter work: the batch-3 utility mapping with its native
 palette check; a cursor-hit producer (unblocks focus-follows-cursor and
 perpendicular recency). The M3 storage decision stays with its owner.
 
-### Cursor/hover producer: designed, not implemented (2026-11-24)
+### Cursor/hover producer: implemented; native fixture proof pending (2026-11-24)
 
-The adapter never emits the cursor pair: `world_builder.rs` hardcodes
-`cursor: None, cursor_hit: None`, `ReportInput` has no cursor field, and
-`world_runtime.rs` never supplies one, so the `focus-follows-cursor` cause
-and the accepted-hover arm of perpendicular recency are unreachable.
+Before this change the adapter never emitted the cursor pair: `world_builder.rs`
+hardcoded `cursor: None, cursor_hit: None`, `ReportInput` had no cursor field,
+and `world_runtime.rs` supplied none, so the `focus-follows-cursor` cause and
+the accepted-hover arm of perpendicular recency were unreachable.
 
 Facts that constrain the implementation:
 
@@ -400,15 +400,37 @@ Facts that constrain the implementation:
   today, and reports are only built on an observation/command/terminate, so a
   pointer move alone currently produces no report.
 
-Designed shape: a bounded observer thread (250 ms tick, 1 s hit refresh,
-retry on an unacked sample) posting a new data-lane job, the sample stored on
-the session, attribution to a homed member at sample time (never re-read at
-build time, or a resting pointer would clear hover memory), and
-`cursor`/`cursor_hit` filled in the builder while `focused_global`,
-`foreground_known` and `focus_changes` stay untouched because hover is an
-observation, never a focus claim. A read-only `cursor-probe` CLI is the
-diagnostic for the pre-attribution observation. Nothing of this is
-implemented yet.
+Implemented shape (`8b44a2fa`): `cursor_observer.rs` runs the bounded observer
+thread (250 ms tick, 1 s hit refresh, one pending sample retried until the
+engine acks its sequence) and posts `EngineJob::CursorSample` on the data lane;
+the engine acks `cursor_ack_seq`, attributes the raw hit once at sample time
+(`attribute_cursor_hit`), stores it on `WorldSession` and dispatches one
+report. `ReportInput` pairs `cursor`/`cursor_hit` only when the stored hit
+still names a window row emitted in that same report, so chrome, foreign,
+unreadable and stale hits omit the pair; `focused_global`, `foreground_known`
+and `focus_changes` never derive from it. The read-only `cursor-probe` CLI and
+the CLI/fixture-leg `--focus-follows-cursor` pass-through are also in.
+
+Offline evidence at `8b44a2fa`:
+
+- `cargo fmt --all -- --check` and
+  `cargo clippy --locked -p tiler-macos --all-targets -- -D warnings` pass.
+- `cargo test --locked -p tiler-macos --lib`: 1637 passed, 0 failed, 3 ignored.
+- `cargo test --locked -p tiler-macos --test integration`: 149 passed, 1 failed
+  — only the documented `runtime_phase1::focus_saturation_drops_counted_and_survives`
+  core-policy stop, no new failure.
+- Focused tests cover observer cadence/retry, builder pairing and omission,
+  sample-time attribution and persistence, and the cursor reply token path.
+
+Native proof remains open: the opt-in `fixture-leg --hover-probe` harness and
+the live focus-follows-cursor / accepted-hover-recency leg were not completed,
+and `cursor-probe` has no live receipt yet, so this record makes no native
+claim. Residual risks: the observer dispatches one report per movement and one
+per second while resting even when the core setting is off; a sample landing
+mid-flight advances the observation clock and can make that reply refuse stale
+(converges through the existing successor path); attribution trusts retained
+app/homing rows, so PID reuse after a silent exit is bounded by the prune paths
+rather than an independent liveness read.
 
 ### Integration triage (2026-11-23)
 
