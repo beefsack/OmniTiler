@@ -1782,6 +1782,54 @@ fn publish_native_creations(
         .collect();
 }
 
+/// Apply the applied reply's retained switch-settlement projection and
+/// publish one lifecycle receipt per newly applied terminal.
+///
+/// [`WorldSession::apply_switch_settlements`] owns the once-per-identity
+/// rule: the projection is complete current state re-published on every
+/// applied reply, so an exact replay is inert and a differing row for the
+/// same output replaces the earlier applied snapshot (the retained
+/// projection is authoritative). This wrapper only turns each genuine
+/// application into receipts: `switch` carries the closed terminal
+/// outcome, `switch-focus` the core-derived focus verdict, both counting
+/// the frozen failed members and correlating to the settled parent
+/// operation. Receipts are diagnostic: a settled switch never authorizes a
+/// setter, unspends a dispatch, or releases an arrival barrier.
+fn consume_switch_settlements(
+    session: &mut WorldSession,
+    shared: &Arc<Mutex<Shared>>,
+    reply: &WorldReplyV4,
+    pid: u32,
+    generation: u64,
+    seq: u64,
+) {
+    for settlement in session.apply_switch_settlements(&reply.switch_settled) {
+        let failed = settlement.failed.len() as u64;
+        // Correlate the receipt to the settled parent operation; a parent
+        // token with no numeric op falls back to this dispatch's sequence
+        // (never a guessed identity).
+        let parent = crate::stage_timing::parse_op_seq(&settlement.operation_id).unwrap_or(seq);
+        emit(
+            shared,
+            pid,
+            generation,
+            parent,
+            "switch",
+            settlement.outcome.as_str(),
+            failed,
+        );
+        emit(
+            shared,
+            pid,
+            generation,
+            parent,
+            "switch-focus",
+            settlement.focus.as_str(),
+            failed,
+        );
+    }
+}
+
 /// Consume one applied world reply: current-scope controlled frames into
 /// per-app latest-wins slots, focus requests into the outbox plus the
 /// owning slot, view-transfer hold settling for pending selects, and the
@@ -1807,6 +1855,10 @@ fn consume_world_reply(
     ticket_request_seq: u64,
 ) {
     publish_native_creations(shared, reply, native);
+    // Retained switch settlement projection: applied once per exact
+    // terminal across every applied reply, so a verdict whose issuing
+    // reply was skipped still lands (see `consume_switch_settlements`).
+    consume_switch_settlements(session, shared, reply, pid, generation, seq);
     // Currently-actuated scopes as (output, LOGICAL workspace) pairs:
     // native current domains translated through the applied reply's
     // `native_binding` rows (a current-reply live lookup, never a durable
@@ -4489,6 +4541,7 @@ mod tests {
         tiler_core::world_report::WorldReplyV4,
     );
     use tiler_core::directional::OutputId;
+    use tiler_core::world_report::{SwitchEvent, SwitchFocus, SwitchOutcome};
 
     fn output() -> OutputId {
         OutputId("macos-display-1".to_owned())
@@ -4579,6 +4632,330 @@ mod tests {
         // neither gate call touched slots, outbox, or retained presentation.
         assert!(lock_shared(&shared).last_desired.is_empty());
         assert!(lock_focus(&focus_queue).is_empty());
+    }
+
+    // -- Retained switch settlement projection (once per identity) --
+
+    /// One retained switch terminal row.
+    fn switch_event(
+        output: &OutputId,
+        operation: &str,
+        outcome: SwitchOutcome,
+        failed: &[&str],
+        focus: SwitchFocus,
+    ) -> SwitchEvent {
+        use tiler_core::directional::WindowId;
+        SwitchEvent {
+            output: output.clone(),
+            operation_id: operation.to_owned(),
+            outcome,
+            failed: failed
+                .iter()
+                .map(|window| WindowId((*window).to_owned()))
+                .collect(),
+            focus,
+            fallback: false,
+        }
+    }
+
+    /// A reply bound to the session's current incarnation/generation.
+    fn switch_reply(
+        session: &WorldSession,
+        request_id: &str,
+        observation_seq: u64,
+        revision: u64,
+        event: SwitchEvent,
+    ) -> WorldReplyV4 {
+        let mut reply = empty_reply();
+        reply.adapter_incarnation = session.incarnation().to_owned();
+        reply.core_generation = session.sequencer().bound_generation();
+        reply.request_id = request_id.to_owned();
+        reply.based_on_observation_seq = observation_seq;
+        reply.state_revision = revision;
+        reply.ready = true;
+        reply.switch_settled.push(event);
+        reply
+    }
+
+    /// `(outcome, count)` receipts of one ring kind, in emission order.
+    fn switch_receipts(shared: &Arc<Mutex<Shared>>, kind: &str) -> Vec<(&'static str, u64)> {
+        lock_shared(shared)
+            .log
+            .iter()
+            .filter(|entry| entry.kind == kind)
+            .map(|entry| (entry.outcome, entry.count))
+            .collect()
+    }
+
+    #[test]
+    fn switch_settlement_survives_a_skipped_reply_via_the_retained_projection() {
+        // The required `switchSettled` field is complete current state,
+        // not a take-once queue: a terminal whose issuing reply was skipped
+        // (newer input moved the watermark mid-flight, so the sequencer
+        // refuses it) must still be applied from the later applied reply
+        // that re-publishes the same retained row.
+        let mut session = focus_session();
+        let shared = focus_shared();
+        let terminal = switch_event(
+            &output(),
+            "op-5",
+            SwitchOutcome::Complete,
+            &[],
+            SwitchFocus::Proven,
+        );
+
+        let issued = session
+            .sequencer()
+            .try_begin_request(None)
+            .expect("issuing flight opens");
+        session.sequencer().invalidate();
+        let issuing = switch_reply(
+            &session,
+            &issued.request_id,
+            issued.observation_seq,
+            1,
+            terminal.clone(),
+        );
+        match session.sequencer().accept_reply(&issuing) {
+            ReplyVerdict::Refused { reason } => assert_eq!(reason, "stale-observation"),
+            ReplyVerdict::Applied(_) => panic!("stale issuing reply must be skipped"),
+        }
+        session.sequencer().clear_flight();
+        assert!(
+            session.switch_settlements.is_empty(),
+            "a skipped reply applies no switch terminal"
+        );
+        assert!(switch_receipts(&shared, "switch").is_empty());
+
+        // The catch-up reply carries the retained projection: the verdict
+        // lands here, exactly once, even though the issuing reply never
+        // applied.
+        let catchup = session
+            .sequencer()
+            .try_begin_request(None)
+            .expect("catch-up flight opens");
+        let later = switch_reply(
+            &session,
+            &catchup.request_id,
+            catchup.observation_seq,
+            2,
+            terminal,
+        );
+        let ReplyVerdict::Applied(applied) = session.sequencer().accept_reply(&later) else {
+            panic!("fresh catch-up reply must apply")
+        };
+        consume_switch_settlements(&mut session, &shared, &applied, 0, 0, 0);
+        assert_eq!(session.switch_settlements.len(), 1);
+        assert_eq!(session.switch_settlements[0].output, output());
+        assert_eq!(session.switch_settlements[0].operation_id, "op-5");
+        assert_eq!(
+            switch_receipts(&shared, "switch"),
+            vec![("complete", 0)],
+            "one receipt for the terminal the skipped reply lost"
+        );
+        assert_eq!(
+            switch_receipts(&shared, "switch-focus"),
+            vec![("proven", 0)]
+        );
+        // A later applied reply re-publishes the same row: inert.
+        consume_switch_settlements(&mut session, &shared, &applied, 0, 0, 0);
+        assert_eq!(
+            switch_receipts(&shared, "switch").len(),
+            1,
+            "retained re-projection never double-applies"
+        );
+    }
+
+    #[test]
+    fn replayed_switch_settlement_applies_once() {
+        let mut session = focus_session();
+        let shared = focus_shared();
+        let terminal = switch_event(
+            &output(),
+            "op-5",
+            SwitchOutcome::CompletedWithFailures,
+            &["4242_7", "4242_8"],
+            SwitchFocus::Refused,
+        );
+        let mut reply = empty_reply();
+        reply.switch_settled.push(terminal);
+        // Duplicate delivery (redelivered reply, re-projected row) is
+        // exact-identity inert: one application, one receipt pair.
+        for _ in 0..3 {
+            consume_switch_settlements(&mut session, &shared, &reply, 0, 0, 0);
+        }
+        assert_eq!(session.switch_settlements.len(), 1);
+        let slot = &session.switch_settlements[0];
+        assert_eq!(slot.outcome, SwitchOutcome::CompletedWithFailures);
+        assert_eq!(slot.focus, SwitchFocus::Refused);
+        assert_eq!(slot.failed.len(), 2, "frozen failed members preserved");
+        assert_eq!(
+            switch_receipts(&shared, "switch"),
+            vec![("completed-with-failures", 2)]
+        );
+        assert_eq!(
+            switch_receipts(&shared, "switch-focus"),
+            vec![("refused", 2)]
+        );
+    }
+
+    #[test]
+    fn issuing_reply_and_retained_projection_agree_apply_once() {
+        // The issuing reply carries the terminal and the retained
+        // projection re-publishes the identical row on the next applied
+        // reply: both channels agree, so the terminal applies once through
+        // the production consumption site.
+        let mut session = focus_session();
+        let mut retained = crate::runtime_core::RetainedCore::default();
+        let shared = focus_shared();
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let terminal = switch_event(
+            &output(),
+            "op-5",
+            SwitchOutcome::Complete,
+            &[],
+            SwitchFocus::Proven,
+        );
+
+        let mut issuing = empty_reply();
+        issuing.switch_settled.push(terminal.clone());
+        consume_world_reply(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            16,
+            &issuing,
+            &[],
+            None,
+            None,
+            "select",
+            "accepted",
+            0,
+            0,
+            0,
+            0,
+        );
+        assert_eq!(session.switch_settlements.len(), 1);
+
+        // The retained projection re-publishes the same row.
+        let mut reprojected = empty_reply();
+        reprojected.switch_settled.push(terminal);
+        consume_world_reply(
+            &mut session,
+            &mut retained,
+            &shared,
+            &focus_queue,
+            16,
+            &reprojected,
+            &[],
+            None,
+            None,
+            "select",
+            "accepted",
+            0,
+            0,
+            0,
+            0,
+        );
+        assert_eq!(session.switch_settlements.len(), 1);
+        assert_eq!(session.switch_settlements[0].operation_id, "op-5");
+        assert_eq!(
+            switch_receipts(&shared, "switch"),
+            vec![("complete", 0)],
+            "agreement between the two channels applies the terminal once"
+        );
+    }
+
+    #[test]
+    fn retained_switch_projection_is_authoritative_over_an_earlier_reply() {
+        // The adapter applied the predecessor operation's terminal from its
+        // issuing reply. A later applied reply's retained projection names
+        // the successor operation's terminal for the same owning output (the
+        // contract's Q1 A replacement) and a second output's terminal. The
+        // retained projection is complete current state, so it is
+        // authoritative: the differing row replaces the earlier applied
+        // snapshot instead of being ignored in its favour, while a
+        // different output never erases the first.
+        let mut session = focus_session();
+        let shared = focus_shared();
+        let other = OutputId("macos-display-2".to_owned());
+        let predecessor = switch_event(
+            &output(),
+            "op-5",
+            SwitchOutcome::Complete,
+            &[],
+            SwitchFocus::Proven,
+        );
+        let successor = switch_event(
+            &output(),
+            "op-6",
+            SwitchOutcome::CompletedWithFailures,
+            &["4242_7"],
+            SwitchFocus::Unproven,
+        );
+        let elsewhere = switch_event(
+            &other,
+            "op-7",
+            SwitchOutcome::Complete,
+            &[],
+            SwitchFocus::Unproven,
+        );
+
+        let mut issuing = empty_reply();
+        issuing.switch_settled.push(predecessor);
+        consume_switch_settlements(&mut session, &shared, &issuing, 0, 0, 0);
+        assert_eq!(session.switch_settlements[0].operation_id, "op-5");
+
+        let mut later = empty_reply();
+        later.switch_settled.push(successor);
+        later.switch_settled.push(elsewhere);
+        consume_switch_settlements(&mut session, &shared, &later, 0, 0, 0);
+
+        assert_eq!(
+            session.switch_settlements.len(),
+            2,
+            "keys never erase each other"
+        );
+        assert_eq!(session.switch_settlements[0].output, output());
+        assert_eq!(
+            session.switch_settlements[0].operation_id, "op-6",
+            "the retained projection replaced the reply-scoped predecessor"
+        );
+        assert_eq!(
+            session.switch_settlements[0].outcome,
+            SwitchOutcome::CompletedWithFailures
+        );
+        assert_eq!(session.switch_settlements[0].focus, SwitchFocus::Unproven);
+        assert_eq!(session.switch_settlements[1].output, other);
+        assert_eq!(session.switch_settlements[1].operation_id, "op-7");
+        assert_eq!(
+            switch_receipts(&shared, "switch"),
+            vec![
+                ("complete", 0),
+                ("completed-with-failures", 1),
+                ("complete", 0)
+            ],
+            "each distinct terminal applies once; the corrected one too"
+        );
+
+        // A corrected verdict for the same parent operation is a distinct
+        // terminal identity: the projection wins and the slot is replaced.
+        let mut corrected = empty_reply();
+        corrected.switch_settled.push(switch_event(
+            &other,
+            "op-7",
+            SwitchOutcome::Complete,
+            &[],
+            SwitchFocus::Proven,
+        ));
+        consume_switch_settlements(&mut session, &shared, &corrected, 0, 0, 0);
+        assert_eq!(session.switch_settlements[1].focus, SwitchFocus::Proven);
+        assert_eq!(
+            switch_receipts(&shared, "switch").len(),
+            4,
+            "the corrected verdict is applied, not dropped in favour of the first"
+        );
     }
 
     #[test]

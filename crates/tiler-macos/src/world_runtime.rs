@@ -50,7 +50,8 @@ use tiler_core::session::DomainKey;
 use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
     FocusFeedback, FrameAttempt, FramePurpose, FrameSetter, HoldReason, MemberAttempt,
-    NativeCreationAttempt, ViewAttempt, WorldCommand, WorldReportV4,
+    NativeCreationAttempt, SwitchEvent, SwitchFocus, SwitchOutcome, ViewAttempt, WorldCommand,
+    WorldReportV4,
 };
 
 use crate::focus_route::FocusRoute;
@@ -95,6 +96,23 @@ fn session_tokens() -> Option<(String, String)> {
 /// built report is rejected owner-side: nothing admits, nothing actuates.
 const UNBOUND_INCARNATION: &str = "unbound";
 const UNBOUND_GENERATION: &str = "unbound";
+
+/// One applied retained switch terminal: the owning output, the parent
+/// operation the core settled, and the closed verdict fields, projected
+/// verbatim from the reply's `switch_settled` row. The adapter publishes
+/// this completion receipt only; it never authorizes a native write (the
+/// retained outcome describes completed core accounting, not a setter).
+/// The row's `fallback` flag is deliberately not projected: this adapter
+/// lane authorizes no fallback hides, so the core always reports it false
+/// and there is no verdict to record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SwitchSettlement {
+    pub output: OutputId,
+    pub operation_id: String,
+    pub outcome: SwitchOutcome,
+    pub failed: Vec<WindowId>,
+    pub focus: SwitchFocus,
+}
 
 /// Engine-thread-owned world session: the retained [`WorldEngine`], the
 /// adapter-side [`WorldSequencer`], pending attempt feedback, and the
@@ -162,6 +180,12 @@ pub(crate) struct WorldSession {
     /// never clears - later replies without desires stay held. Ordinary
     /// admission/reflow emits no desires, so this never fires honestly.
     unpersisted_intent_desired: bool,
+    /// Applied retained switch terminals, latest per owning output in the
+    /// projection's stable output order (see
+    /// [`WorldSession::apply_switch_settlements`]). Adapter-visible
+    /// completion receipts only: no claim, frame, or focus decision reads
+    /// this, and an absent owner is never a verdict.
+    pub(crate) switch_settlements: Vec<SwitchSettlement>,
 }
 
 impl WorldSession {
@@ -224,6 +248,7 @@ impl WorldSession {
                 connection_bound: false,
                 initial_settings: None,
                 unpersisted_intent_desired: false,
+                switch_settlements: Vec::new(),
             };
         };
         // `seed` mints the bound generation below, so the constructor always
@@ -262,6 +287,7 @@ impl WorldSession {
             connection_bound,
             initial_settings,
             unpersisted_intent_desired: false,
+            switch_settlements: Vec::new(),
         }
     }
 
@@ -291,6 +317,51 @@ impl WorldSession {
     /// persistence.
     pub(crate) fn mark_unpersisted_intent_desired(&mut self) {
         self.unpersisted_intent_desired = true;
+    }
+
+    /// Apply one applied reply's `switch_settled` rows.
+    ///
+    /// The field is a complete retained projection, not a take-once queue:
+    /// every applied reply re-publishes the same rows, and the issuing
+    /// reply may have been skipped (refused as stale or coalesced as a
+    /// duplicate) with the terminal first delivered by a later reply. A
+    /// terminal is therefore applied once per settlement identity: the
+    /// owning output (the projection's unique key) plus the exact verdict
+    /// (parent operation, outcome, failed members, focus). An exact replay
+    /// is inert, so redelivery and re-projection never double-apply.
+    ///
+    /// The retained projection is authoritative over anything the adapter
+    /// applied earlier for the same output: it is complete current state,
+    /// so a differing row (the successor operation's terminal after new
+    /// same-key work, or a corrected verdict once later evidence lands)
+    /// replaces the published slot and is applied, while an absent row
+    /// proves no verdict and never removes one. Returns only the rows this
+    /// call applied, in projection order, for the receipt emission.
+    pub(crate) fn apply_switch_settlements(
+        &mut self,
+        events: &[SwitchEvent],
+    ) -> Vec<SwitchSettlement> {
+        let mut applied = Vec::new();
+        for event in events {
+            let row = SwitchSettlement {
+                output: event.output.clone(),
+                operation_id: event.operation_id.clone(),
+                outcome: event.outcome,
+                failed: event.failed.clone(),
+                focus: event.focus,
+            };
+            match self
+                .switch_settlements
+                .iter()
+                .position(|slot| slot.output == row.output)
+            {
+                Some(index) if self.switch_settlements[index] == row => continue,
+                Some(index) => self.switch_settlements[index] = row.clone(),
+                None => self.switch_settlements.push(row.clone()),
+            }
+            applied.push(row);
+        }
+        applied
     }
 
     /// Adapter incarnation bound into every report.
