@@ -147,6 +147,17 @@ impl AxBackend for FakeBackend {
         self.inner.hooks_wake.notify_one();
     }
 
+    fn selected_focus_evidence(&mut self) -> Option<(u32, Option<u32>)> {
+        // Truthful owner-thread read: the scripted snapshot's own attested
+        // selected-oracle pair; absent means unreadable (never a guess).
+        self.inner
+            .scoped
+            .lock()
+            .expect("mutex")
+            .get(&self.pid)
+            .and_then(|snapshot| snapshot.sys_focus)
+    }
+
     fn snapshot_scoped(&mut self) -> Result<ScopedBackendSnapshot, String> {
         let revision = self
             .bound
@@ -352,7 +363,10 @@ fn scripted(
     }
 }
 
-fn install(fixture: &Fixture, pid: u32, snapshot: ScopedBackendSnapshot) {
+fn install(fixture: &Fixture, pid: u32, mut snapshot: ScopedBackendSnapshot) {
+    // The fake attests its own selected-oracle read: exactly the snapshot's
+    // app-local focused window, never a guessed one. `None` stays unreadable.
+    snapshot.sys_focus = snapshot.focused_wid.map(|wid| (pid, Some(wid)));
     fixture
         .inner
         .scoped

@@ -23,11 +23,14 @@ use tiler_macos::classifier::{
     ActivationPolicy, AppFacts, AxFacts, CgFacts, ClassifiedWindow, Disposition, FloatReason,
     ROLE_SHEET, SUBROLE_DIALOG, SUBROLE_FLOATING, WindowFrame, classify_window,
 };
+use tiler_macos::ffi::{DisplayRect, NsDisplay, SlsDisplayRow};
 use tiler_macos::runtime::{
-    AxCompletion, AxObservation, FixedSizePredicate, FrameCommand, ObservedWindow, Runtime,
-    RuntimeConfig, RuntimeHandle, ShutdownOutcome, SubmitOutcome, WindowSizeHints,
+    AxCompletion, FixedSizePredicate, FrameCommand, ObservedWindow, Runtime, RuntimeConfig,
+    RuntimeHandle, ScopedObservation, ScopedWindowMeta, ShutdownOutcome, SubmitOutcome,
+    TopologyMode, WindowSizeHints,
 };
 use tiler_macos::runtime_backend::{AxBackend, AxBackendFactory, NativeInputStub};
+use tiler_macos::topology;
 
 const APP_A: u32 = 1001;
 const FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -86,19 +89,63 @@ impl AxBackend for FakeBackend {
 struct Fixture {
     handle: RuntimeHandle,
     state: Arc<(Mutex<FakeState>, Condvar)>,
+    /// Published native topology revision every manual observation fences
+    /// against (one display, Spaces 11+12).
+    revision: u64,
 }
 
 fn start(config: RuntimeConfig) -> Fixture {
     let state = Arc::new((Mutex::new(FakeState::default()), Condvar::new()));
     let handle = Runtime::start(
-        config,
+        RuntimeConfig {
+            topology_mode: TopologyMode::Native,
+            ..config
+        },
         Arc::new(FakeFactory {
             state: Arc::clone(&state),
         }),
         Arc::new(NativeInputStub),
     )
     .expect("runtime starts offline");
-    Fixture { handle, state }
+    // Manual observations carry no Space membership; the native topology
+    // supplies the single 1920x1080 scope the class cases tile into (the
+    // same display their synthetic frames already name).
+    let revision = handle.update_topology_with(single_display_snapshot(), &user_space);
+    Fixture {
+        handle,
+        state,
+        revision,
+    }
+}
+
+fn single_display_snapshot() -> topology::TopologySnapshot {
+    topology::build_snapshot(
+        &[ns(1, "uuid-1", 0.0, 0.0, 1920.0, 1080.0)],
+        &[row(Some("uuid-1"), &[11, 12], Some(11))],
+        Some(true),
+    )
+}
+
+fn ns(cg_id: u32, uuid: &str, x: f64, y: f64, w: f64, h: f64) -> NsDisplay {
+    NsDisplay {
+        cg_id,
+        uuid: Some(uuid.to_owned()),
+        frame: DisplayRect { x, y, w, h },
+        visible: DisplayRect { x, y, w, h },
+        scale: 2.0,
+    }
+}
+
+fn row(id: Option<&str>, spaces: &[u64], current: Option<u64>) -> SlsDisplayRow {
+    SlsDisplayRow {
+        identifier: id.map(str::to_owned),
+        spaces: spaces.to_vec(),
+        current,
+    }
+}
+
+fn user_space(_: u64) -> Option<tiler_macos::ffi::SlsSpaceType> {
+    Some(tiler_macos::ffi::SlsSpaceType::User)
 }
 
 fn shutdown_clean(fixture: &Fixture) {
@@ -178,17 +225,79 @@ fn submit_focused(
     items: &[ClassifiedWindow],
     focused_wid: Option<u32>,
 ) {
-    let windows: Vec<ObservedWindow> = items
+    let observed: Vec<ObservedWindow> = items
         .iter()
         .filter_map(ClassifiedWindow::to_observed)
         .collect();
+    // Native topology: manual observations are scoped snapshots homed by
+    // exact Space membership (11), with neutral truthful metadata and the
+    // same agreeing global-focus legs the classifier fixtures attest.
+    let (frontmost_pid, ax_focus) = match focused_wid {
+        Some(wid) => (Some(pid), Some((pid, Some(wid)))),
+        None => (None, None),
+    };
+    let mut cg_owner_wids: Vec<u32> = observed.iter().map(|w| w.wid).collect();
+    cg_owner_wids.sort_unstable();
+    cg_owner_wids.dedup();
+    let meta: Vec<ScopedWindowMeta> = items
+        .iter()
+        .filter(|item| item.to_observed().is_some())
+        .map(|item| {
+            // The classifier's own float origin rides back as the exact
+            // native fact that caused it: the scoped route re-derives the
+            // exception core-side from facts, never from a synthetic flag.
+            let (role, subrole, modal) = match item.disposition {
+                Disposition::Float(FloatReason::Sheet) => (
+                    Some(ROLE_SHEET.to_owned()),
+                    Some(SUBROLE_FLOATING.to_owned()),
+                    Some(false),
+                ),
+                Disposition::Float(FloatReason::DialogSubrole) => (
+                    Some(tiler_macos::classifier::ROLE_WINDOW.to_owned()),
+                    Some(SUBROLE_DIALOG.to_owned()),
+                    Some(false),
+                ),
+                Disposition::Float(FloatReason::Modal) => (
+                    Some(tiler_macos::classifier::ROLE_WINDOW.to_owned()),
+                    Some(tiler_macos::classifier::SUBROLE_STANDARD.to_owned()),
+                    Some(true),
+                ),
+                _ => (
+                    Some(tiler_macos::classifier::ROLE_WINDOW.to_owned()),
+                    Some(tiler_macos::classifier::SUBROLE_STANDARD.to_owned()),
+                    Some(false),
+                ),
+            };
+            ScopedWindowMeta {
+                wid: item.wid,
+                spaces: vec![11],
+                fullscreen: item.fullscreen,
+                minimized: false,
+                hidden: false,
+                role,
+                subrole,
+                modal,
+                resizable: Some(true),
+                layer: Some(0),
+                app_id: Some("com.example.app".to_owned()),
+                activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+            }
+        })
+        .collect();
     assert_eq!(
-        fixture.handle.submit_observation(AxObservation {
+        fixture.handle.submit_scoped_observation(ScopedObservation {
             pid,
             generation,
             seq,
-            windows,
+            windows: observed,
             focused_wid,
+            revision: fixture.revision,
+            frontmost_pid,
+            ax_focus,
+            cg_owned: focused_wid.is_some(),
+            meta,
+            cg_complete: true,
+            cg_owner_wids,
         }),
         SubmitOutcome::Accepted
     );

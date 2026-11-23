@@ -207,6 +207,15 @@ impl AxBackend for FakeAxBackend {
         self.bound = hook.cell.load().map(|ctx| ctx.revision);
     }
 
+    fn selected_focus_evidence(&mut self) -> Option<(u32, Option<u32>)> {
+        self.inner
+            .scoped
+            .lock()
+            .expect("mutex")
+            .get(&self.pid)
+            .and_then(|snapshot| snapshot.sys_focus)
+    }
+
     fn snapshot_scoped(&mut self) -> Result<ScopedBackendSnapshot, String> {
         if self
             .inner
@@ -1592,11 +1601,11 @@ fn focus_saturation_drops_counted_and_survives() {
 
 #[test]
 fn admission_never_steals_focus_but_explicit_focus_dispatches() {
-    // Legacy observed-focus authority: an admission-only reply (a newcomer
-    // window arriving with no command) must tile frames but never dispatch
-    // native focus; only an explicit focus step dispatches. Guards the
-    // migration against adopting the core's automatic admission policy as
-    // native steering.
+    // Retained-focus authority: one published focus request per cause, so
+    // an admission-only reply (a newcomer arriving with no command) tiles
+    // its frames AND actuates exactly one native focus for the newcomer;
+    // observed focus stays with the app's own reported window (the core
+    // owns the difference). An explicit focus step adds exactly one more.
     let fixture = start(test_config());
     let revision = fixture
         .handle
@@ -1632,15 +1641,19 @@ fn admission_never_steals_focus_but_explicit_focus_dispatches() {
         vec!["1001_11".to_owned(), "1001_12".to_owned()],
         "admission must still tile the newcomer"
     );
-    // ...but no native focus dispatches for it.
+    // ...and admission now actuates its published focus too: the approved
+    // resolution is one retained focus request per cause (admission
+    // included), with candidate selection unchanged. The runtime already
+    // drained that request into a native dispatch, so the counter moved
+    // exactly once and no request is left queued.
     assert!(
         fixture.handle.drain_focus_requests().is_empty(),
-        "admission-only replies must never dispatch native focus"
+        "the admission request is dispatched, not left queued"
     );
     assert_eq!(
         fixture.handle.diagnostics().focus_dispatched,
-        0,
-        "admission must move no focus counter"
+        1,
+        "admission publishes exactly one focus request"
     );
 
     // Explicit focus still dispatches exactly once, to the neighbor.
