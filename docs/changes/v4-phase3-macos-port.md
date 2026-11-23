@@ -350,6 +350,32 @@ PID-reuse fenced) before any leg continues; the emptiness predicate,
 single-press rule, poll shape, display join and trust/ownership gates are
 unchanged, and the async append is now awaited instead of read once.
 
+### Behaviour rows after the port (2026-11-24)
+
+Every rebase row that "compiles but still needs macOS behaviour" was checked
+against the adapter source. Status is code-and-test evidence, not a claim of
+native acceptance.
+
+| Row | Status |
+| --- | --- |
+| `sharedNativeRoster` declared | Implemented (the key is required by the codec); the value itself is not asserted by an adapter test. |
+| Unified retained focus | Implemented and natively proven for automatic admission, explicit command and close reflow; the cursor-hit cause is unreachable because no producer sets the cursor facts. |
+| Pending-focus command subjects | Fixed (`a6451e41`): the four window-shape commands send core's current-focus subject, the observed-foreground substitution and its pre-dispatch refusals are gone, and the homing/domain gates run at apply time on the window core resolved. |
+| Retained settlement outcomes | Partial: gesture outcomes are consumed; the retained `operationSettled`/`switchSettled` projections have no consumer. |
+| Retained `intentDesired` | Partial and fail-closed: a nonempty desire latches the session; no persistence, so this waits on the M3 host-storage decision. |
+| Switch and fallback removals | No adapter-local policy remains; only live legs are outstanding. |
+| No-space removal | Inherited from core; the adapter writes core rects and produces no no-space rows. A live constrained-work-area leg is the remaining proof. |
+| Perpendicular focus recency | Command route ready; the accepted-hover arm is unreachable without the cursor-hit producer. |
+| Batch 3 admission | Partial: floating AX kinds are withheld from `utility`, so palettes never float until that mapping is settled with a native check. |
+| Best-effort admission | Inherited; live proof only. |
+| Settings-key parity | Implemented by construction (raw pass-through, no adapter caps). |
+| 16-output `actionOutputs` cap | Inert: the field is always empty because no action context is produced. |
+
+Ranked remaining adapter work: retained switch settlement consumption; the
+batch-3 utility mapping with its native palette check; a cursor-hit producer
+(unblocks focus-follows-cursor and perpendicular recency). The M3 storage
+decision stays with its owner.
+
 ### Integration triage (2026-11-23)
 
 Corrected classification of the red `tests/integration` target (the earlier
