@@ -16,20 +16,24 @@
 //! every relevant batch) and then assert immediate absence: nothing
 //! outstanding can arrive late, so no quiet-time poll is needed.
 
-use std::sync::{Arc, Condvar, Mutex};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::Duration;
 
 use tiler_macos::classifier::{
-    ActivationPolicy, AppFacts, AxFacts, CgFacts, ClassifiedWindow, Disposition, FloatReason,
-    ROLE_SHEET, SUBROLE_DIALOG, SUBROLE_FLOATING, WindowFrame, classify_window,
+    ActivationPolicy, AppFacts, AxFacts, CgFacts, ClassifiedWindow, Disposition, ExcludeReason,
+    FloatReason, ROLE_SHEET, ROLE_WINDOW, SUBROLE_DIALOG, SUBROLE_FLOATING,
+    SUBROLE_STANDARD, WindowFrame, classify_window,
 };
 use tiler_macos::ffi::{DisplayRect, NsDisplay, SlsDisplayRow};
 use tiler_macos::runtime::{
     AxCompletion, FrameCommand, ObservedWindow, Runtime, RuntimeConfig, RuntimeHandle,
-    ScopedObservation, ScopedWindowMeta, ShutdownOutcome, SubmitOutcome, TopologyMode,
-    WindowSizeHints,
+    ScopedBackendSnapshot, ScopedObservation, ScopedWindowMeta, ShutdownOutcome, SubmitOutcome,
+    TopologyMode, WindowSizeHints,
 };
-use tiler_macos::runtime_backend::{AxBackend, AxBackendFactory, NativeInputStub};
+use tiler_macos::runtime_types::ExcludedOmission;
+use tiler_macos::runtime_backend::{AxBackend, AxBackendFactory, EffectHook, NativeInputStub};
 use tiler_macos::topology;
 
 const APP_A: u32 = 1001;
@@ -48,6 +52,14 @@ struct Applied {
 #[derive(Default)]
 struct FakeState {
     applied: Vec<Applied>,
+    /// Autonomous scoped observation inboxes, one per pid, installed before
+    /// launch and taken by the owning worker at creation (the production
+    /// backend route: classifier exclusions and minimized facts ride the
+    /// same snapshot).
+    inboxes: BTreeMap<u32, mpsc::Receiver<Result<ScopedBackendSnapshot, String>>>,
+    /// Worker-bound (current) topology revision, stamped on every polled
+    /// snapshot so the engine's revision fence matches.
+    bound: Option<u64>,
 }
 
 struct FakeFactory {
@@ -55,15 +67,24 @@ struct FakeFactory {
 }
 
 impl AxBackendFactory for FakeFactory {
-    fn create(&self, _pid: u32) -> Result<Box<dyn AxBackend>, String> {
+    fn create(&self, pid: u32) -> Result<Box<dyn AxBackend>, String> {
+        let poll_rx = self
+            .state
+            .0
+            .lock()
+            .expect("mutex")
+            .inboxes
+            .remove(&pid);
         Ok(Box::new(FakeBackend {
             state: Arc::clone(&self.state),
+            poll_rx,
         }))
     }
 }
 
 struct FakeBackend {
     state: Arc<(Mutex<FakeState>, Condvar)>,
+    poll_rx: Option<mpsc::Receiver<Result<ScopedBackendSnapshot, String>>>,
 }
 
 impl AxBackend for FakeBackend {
@@ -83,6 +104,36 @@ impl AxBackend for FakeBackend {
         // Honest failure keeps the manual sequence space exclusive to the
         // test (see module docs); retained engine state is preserved.
         Err("fake snapshot not configured".to_owned())
+    }
+
+    fn bind_effect_hook(&mut self, hook: &EffectHook) {
+        let revision = hook.cell.load().map(|ctx| ctx.revision);
+        let (lock, _) = &*self.state;
+        lock.lock().expect("mutex").bound = revision;
+    }
+
+    fn poll_scoped(&mut self, stop: &AtomicBool) -> Option<Result<ScopedBackendSnapshot, String>> {
+        let rx = self.poll_rx.as_ref()?;
+        if stop.load(Ordering::SeqCst) {
+            return None;
+        }
+        let (lock, _) = &*self.state;
+        let bound = lock.lock().expect("mutex").bound;
+        // Wake-driven: returns immediately on send; the bound only caps stop
+        // latency. A correct backend stamps the revision it read under.
+        match rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(result) => Some(result.map(|mut snapshot| {
+                if let Some(revision) = bound {
+                    snapshot.revision = revision;
+                }
+                snapshot
+            })),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                self.poll_rx = None;
+                None
+            }
+        }
     }
 }
 
@@ -305,6 +356,92 @@ fn submit_focused(
         fixture.handle.flush(FLUSH_TIMEOUT),
         "engine flush timed out"
     );
+}
+
+/// Install the production autonomous-observation route for one pid: the
+/// owning worker polls this inbox and publishes every snapshot through the
+/// same scoped ingestion the live backend uses, classifier exclusions
+/// included. Must be called before launch (the worker takes it at creation).
+fn backend_observations(
+    fixture: &Fixture,
+    pid: u32,
+) -> mpsc::Sender<Result<ScopedBackendSnapshot, String>> {
+    let (tx, rx) = mpsc::channel::<Result<ScopedBackendSnapshot, String>>();
+    fixture
+        .state
+        .0
+        .lock()
+        .expect("mutex")
+        .inboxes
+        .insert(pid, rx);
+    tx
+}
+
+/// One production-shaped scoped snapshot: `live` windows are observed and
+/// `minimized` rides the classifier's omission with its truthful
+/// `ExcludeReason::Minimized` fact plus a retained meta row (the adapter
+/// mints the D23 minimized record from exactly that pair). Every window is
+/// CG-owned, minimized ones included.
+fn scoped_snapshot(
+    live: &[ClassifiedWindow],
+    minimized: Option<&ClassifiedWindow>,
+) -> ScopedBackendSnapshot {
+    let windows: Vec<ObservedWindow> = live
+        .iter()
+        .filter_map(ClassifiedWindow::to_observed)
+        .collect();
+    let excluded_reasons: Vec<ExcludedOmission> = minimized
+        .map(|item| ExcludedOmission {
+            wid: item.wid,
+            reason: ExcludeReason::Minimized,
+        })
+        .into_iter()
+        .collect();
+    let mut meta: Vec<ScopedWindowMeta> = live
+        .iter()
+        .map(|item| meta_row(item, false))
+        .chain(minimized.map(|item| meta_row(item, true)))
+        .collect();
+    meta.sort_by_key(|row| row.wid);
+    let mut cg_owner_wids: Vec<u32> = live
+        .iter()
+        .map(|item| item.wid)
+        .chain(minimized.map(|item| item.wid))
+        .collect();
+    cg_owner_wids.sort_unstable();
+    cg_owner_wids.dedup();
+    ScopedBackendSnapshot {
+        windows,
+        focused_wid: None,
+        focus_cg_owned: false,
+        focus_evidence: None,
+        sys_focus: None,
+        global_focus: None,
+        excluded: excluded_reasons.len(),
+        excluded_reasons,
+        meta,
+        cg_complete: true,
+        cg_owner_wids,
+        cg_alive: Vec::new(),
+        revision: 0,
+    }
+}
+
+fn meta_row(item: &ClassifiedWindow, minimized: bool) -> ScopedWindowMeta {
+    ScopedWindowMeta {
+        wid: item.wid,
+        spaces: vec![11],
+        fullscreen: item.fullscreen,
+        minimized,
+        hidden: false,
+        role: Some(ROLE_WINDOW.to_owned()),
+        subrole: Some(SUBROLE_STANDARD.to_owned()),
+        modal: Some(false),
+        resizable: Some(true),
+        layer: Some(0),
+        app_id: Some("com.example.app".to_owned()),
+        activation_policy: Some(tiler_core::world_report::ActivationPolicy::Regular),
+    }
 }
 
 fn desired_names(fixture: &Fixture) -> Vec<String> {
@@ -1357,46 +1494,72 @@ fn plain_minimize_restore_is_position_exact() {
     // minimize/restore roundtrip with no fullscreen interlude restores
     // exact positions, not just the rect set.
     //
-    // KNOWN RED (test-route gap, not an adapter defect): this fixture can
-    // only express "window absent from the observation" — the manual
-    // `submit_scoped_observation` leg always builds its snapshot with
-    // `excluded: 0, excluded_reasons: []` (crates/tiler-macos/src/runtime.rs,
-    // scoped observation submit), so it cannot report the truthful
-    // `ExcludeReason::Minimized` fact that `refresh_minimized`
-    // (crates/tiler-macos/src/world_runtime.rs) needs to store the D23
-    // restore slot. The core therefore sees absence, not a minimize, and
-    // re-admits on return (left tile becomes 11 instead of restoring 10).
-    // Pinning D23 exactness through the adapter requires driving the
-    // backend snapshot route (`poll_scoped` + `ExcludedOmission`), which
-    // this module's fake does not model; the core-side contract is pinned
-    // by `minimize_restore_tests::mnz_02` and this module's own
-    // minimized-omission case above.
+    // Driven through the production route: the backend reports the
+    // minimized window as the classifier's omission with its truthful
+    // `ExcludeReason::Minimized` fact (the manual
+    // `submit_scoped_observation` leg always reports `excluded: 0`, so it
+    // cannot express a minimize at all). That fact is what mints the
+    // adapter's retained minimized record and, with it, the core's D23
+    // restore slot.
     let fixture = start(RuntimeConfig::default());
-    let generation = fixture.handle.launch_app(APP_A).expect("launch");
-    submit(
-        &fixture,
-        APP_A,
-        generation,
-        1,
-        &[tile(10, 0, 0, 960, 1080), tile(11, 960, 0, 960, 1080)],
-    );
-    let birth_10 = desired_rect(&fixture, "1001_10").expect("tile planned");
-    let birth_11 = desired_rect(&fixture, "1001_11").expect("tile planned");
+    let inbox = backend_observations(&fixture, APP_A);
+    let _generation = fixture.handle.launch_app(APP_A).expect("launch");
+    let tile_10 = tile(10, 0, 0, 960, 1080);
+    let tile_11 = tile(11, 960, 0, 960, 1080);
+
+    inbox
+        .send(Ok(scoped_snapshot(
+            &[tile_10.clone(), tile_11.clone()],
+            None,
+        )))
+        .expect("birth snapshot");
     wait_applied(&fixture, "1001_10");
     wait_applied(&fixture, "1001_11");
+    let birth_10 = desired_rect(&fixture, "1001_10").expect("tile planned");
+    let birth_11 = desired_rect(&fixture, "1001_11").expect("tile planned");
     drain_applied(&fixture);
-    submit(&fixture, APP_A, generation, 2, &[tile(10, 0, 0, 960, 1080)]);
-    submit(
-        &fixture,
-        APP_A,
-        generation,
-        3,
-        &[tile(10, 0, 0, 960, 1080), tile(11, 960, 0, 960, 1080)],
+
+    // Minimize: the window leaves membership and is reported as a
+    // classified omission (never a silent absence), so the survivor reflows
+    // into the released allocation and no frame is written to the hidden
+    // window.
+    let minimized = classify_window(
+        frame(11, 960, 0, 960, 1080),
+        &AxFacts {
+            minimized: true,
+            ..AxFacts::standard()
+        },
+        &CgFacts::normal(),
+        &AppFacts::regular(),
     );
+    assert!(
+        minimized.to_observed().is_none(),
+        "a minimized window publishes as an omission, not an observed tile"
+    );
+    inbox
+        .send(Ok(scoped_snapshot(&[tile_10.clone()], Some(&minimized))))
+        .expect("minimize snapshot");
+    let reflowed = wait_applied(&fixture, "1001_10");
+    assert_ne!(
+        reflowed.rect, birth_10,
+        "survivor reflows into the released allocation"
+    );
+    assert_eq!(desired_names(&fixture), vec!["1001_10"]);
+    assert_no_applied(&fixture, "1001_11");
+    drain_applied(&fixture);
+
+    // Restore rejoins the stored D23 slot exactly: same rects as birth,
+    // not merely the same set of windows.
+    inbox
+        .send(Ok(scoped_snapshot(
+            &[tile_10.clone(), tile_11.clone()],
+            None,
+        )))
+        .expect("restore snapshot");
+    wait_applied(&fixture, "1001_11");
     assert_eq!(desired_names(&fixture), vec!["1001_10", "1001_11"]);
     assert_eq!(desired_rect(&fixture, "1001_10"), Some(birth_10));
     assert_eq!(desired_rect(&fixture, "1001_11"), Some(birth_11));
-    wait_applied(&fixture, "1001_11");
     shutdown_clean(&fixture);
 }
 

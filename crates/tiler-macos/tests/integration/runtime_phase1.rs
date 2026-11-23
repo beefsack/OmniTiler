@@ -18,9 +18,9 @@ use tiler_macos::ffi::{DisplayRect, NsDisplay, SlsDisplayRow};
 use tiler_macos::input::cg_flag_bits;
 use tiler_macos::input_match::TapKeyKind;
 use tiler_macos::runtime::{
-    AxCompletion, FrameCommand, InputDirection, ObservedWindow, Runtime, RuntimeConfig,
-    RuntimeHandle, ScopedBackendSnapshot, ScopedObservation, ScopedWindowMeta, ShutdownOutcome,
-    StartupError, SubmitOutcome, TerminateOutcome, TopologyMode, WorkerReadiness,
+    AxCompletion, FocusCommand, FrameCommand, InputDirection, ObservedWindow, Runtime,
+    RuntimeConfig, RuntimeHandle, ScopedBackendSnapshot, ScopedObservation, ScopedWindowMeta,
+    ShutdownOutcome, StartupError, SubmitOutcome, TerminateOutcome, TopologyMode, WorkerReadiness,
 };
 use tiler_macos::runtime_backend::{
     AxBackend, AxBackendFactory, InputSource, InputSourceFactory, RawKeyEvent,
@@ -58,11 +58,22 @@ struct Gate {
 struct FakeAxInner {
     applied_tx: mpsc::Sender<AppliedRecord>,
     entered_tx: mpsc::Sender<EnteredRecord>,
+    /// Focus-dispatch entry edges (signalled before any gate wait).
+    focus_entered_tx: mpsc::Sender<EnteredRecord>,
     gates: Mutex<BTreeMap<u32, Arc<Gate>>>,
     create_gates: Mutex<BTreeMap<u32, Arc<Gate>>>,
     /// Wake-driven observation pumps: a worker blocked here wakes
     /// immediately on send; the bound only caps stop latency.
     poll_gates: Mutex<BTreeMap<u32, Arc<Gate>>>,
+    /// Focus-dispatch gates: a worker blocked here has already taken its
+    /// latest focus command, so the published outbox row cannot retire
+    /// until the test releases it.
+    focus_gates: Mutex<BTreeMap<u32, Arc<Gate>>>,
+    /// Scripted owner-thread selected-focus evidence per pid: the fixture's
+    /// own truthful frontmost/focused pair for the lifetime it establishes
+    /// (absent = unknown, never a guessed read). The pre-dispatch baseline
+    /// gate and the post-dispatch foreground proof both read this.
+    focus_evidence: Mutex<BTreeMap<u32, (u32, Option<u32>)>>,
     /// Scripted scoped snapshots per pid. Absent means "not configured":
     /// `snapshot_scoped()` fails honestly instead of publishing an empty
     /// list as truth, so manually driven tests (which never configure it)
@@ -207,13 +218,41 @@ impl AxBackend for FakeAxBackend {
         self.bound = hook.cell.load().map(|ctx| ctx.revision);
     }
 
-    fn selected_focus_evidence(&mut self) -> Option<(u32, Option<u32>)> {
-        self.inner
-            .scoped
+    fn dispatch_focus(&mut self, cmd: &FocusCommand) -> AxCompletion {
+        // Entry is signalled before any gate wait: tests rendezvous with a
+        // worker that already took its latest focus command, whose
+        // published outbox row therefore cannot retire yet.
+        let _ = self.inner.focus_entered_tx.send(EnteredRecord {
+            pid: cmd.pid,
+            cmd_id: cmd.request_id,
+        });
+        let gate = self
+            .inner
+            .focus_gates
             .lock()
             .expect("mutex")
             .get(&self.pid)
-            .and_then(|snapshot| snapshot.sys_focus)
+            .cloned();
+        if let Some(gate) = gate {
+            let mut released = gate.released.lock().expect("mutex");
+            while !*released {
+                released = gate.cond.wait(released).expect("mutex");
+            }
+        }
+        // Same honest refusal as the trait default: the fake has no native
+        // focus lane, so the mechanical outcome stays not-called.
+        AxCompletion::Failed {
+            reason: "focus dispatch unsupported by backend".to_owned(),
+        }
+    }
+
+    fn selected_focus_evidence(&mut self) -> Option<(u32, Option<u32>)> {
+        self.inner
+            .focus_evidence
+            .lock()
+            .expect("mutex")
+            .get(&self.pid)
+            .copied()
     }
 
     fn snapshot_scoped(&mut self) -> Result<ScopedBackendSnapshot, String> {
@@ -382,6 +421,7 @@ struct Fixture {
     ax: Arc<FakeAxInner>,
     applied_rx: mpsc::Receiver<AppliedRecord>,
     entered_rx: mpsc::Receiver<EnteredRecord>,
+    focus_entered_rx: mpsc::Receiver<EnteredRecord>,
     input_tx: mpsc::Sender<RawKeyEvent>,
     /// Backend-exit edges, one per owning-worker teardown.
     exit_rx: mpsc::Receiver<u32>,
@@ -398,14 +438,18 @@ fn test_config() -> RuntimeConfig {
 fn start(config: RuntimeConfig) -> Fixture {
     let (applied_tx, applied_rx) = mpsc::channel::<AppliedRecord>();
     let (entered_tx, entered_rx) = mpsc::channel::<EnteredRecord>();
+    let (focus_entered_tx, focus_entered_rx) = mpsc::channel::<EnteredRecord>();
     let (input_tx, input_rx) = mpsc::channel::<RawKeyEvent>();
     let (exit_tx, exit_rx) = mpsc::channel::<u32>();
     let ax = Arc::new(FakeAxInner {
         applied_tx,
         entered_tx,
+        focus_entered_tx,
         gates: Mutex::new(BTreeMap::new()),
         create_gates: Mutex::new(BTreeMap::new()),
         poll_gates: Mutex::new(BTreeMap::new()),
+        focus_gates: Mutex::new(BTreeMap::new()),
+        focus_evidence: Mutex::new(BTreeMap::new()),
         scoped: Mutex::new(BTreeMap::new()),
         snapshot_fail: Mutex::new(BTreeSet::new()),
         poll_inboxes: Mutex::new(BTreeMap::new()),
@@ -436,6 +480,7 @@ fn start(config: RuntimeConfig) -> Fixture {
         ax,
         applied_rx,
         entered_rx,
+        focus_entered_rx,
         input_tx,
         exit_rx,
     }
@@ -486,6 +531,43 @@ fn gate_poll_app(fixture: &Fixture, pid: u32) -> Arc<Gate> {
         .expect("mutex")
         .insert(pid, Arc::clone(&gate));
     gate
+}
+
+fn gate_focus_app(fixture: &Fixture, pid: u32) -> Arc<Gate> {
+    let gate = Arc::new(Gate {
+        released: Mutex::new(false),
+        cond: Condvar::new(),
+    });
+    fixture
+        .ax
+        .focus_gates
+        .lock()
+        .expect("mutex")
+        .insert(pid, Arc::clone(&gate));
+    gate
+}
+
+/// Wait until the owning worker has taken a focus command and entered its
+/// dispatch (the published outbox row is guaranteed to still be queued).
+fn wait_focus_entered(fixture: &Fixture) -> EnteredRecord {
+    fixture
+        .focus_entered_rx
+        .recv_timeout(WAIT_TIMEOUT)
+        .expect("no focus dispatch entry")
+}
+
+/// Attest the fixture's own truthful selected-oracle read for one pid: the
+/// app-local focused window the test actually observed. The pre-dispatch
+/// baseline gate compares it against the observed-focus prior the core
+/// published, so a match proceeds and a mismatch/absence refuses (never a
+/// fabricated proof).
+fn attest_focus(fixture: &Fixture, pid: u32, wid: u32) {
+    fixture
+        .ax
+        .focus_evidence
+        .lock()
+        .expect("mutex")
+        .insert(pid, (pid, Some(wid)));
 }
 
 /// Explicit snapshot content for one pid (startup + readback source).
@@ -1346,9 +1428,12 @@ fn input_panic_is_never_a_clean_stop() {
     let ax = Arc::new(FakeAxInner {
         applied_tx,
         entered_tx,
+        focus_entered_tx: mpsc::channel::<EnteredRecord>().0,
         gates: Mutex::new(BTreeMap::new()),
         create_gates: Mutex::new(BTreeMap::new()),
         poll_gates: Mutex::new(BTreeMap::new()),
+        focus_gates: Mutex::new(BTreeMap::new()),
+        focus_evidence: Mutex::new(BTreeMap::new()),
         scoped: Mutex::new(BTreeMap::new()),
         snapshot_fail: Mutex::new(BTreeSet::new()),
         poll_inboxes: Mutex::new(BTreeMap::new()),
@@ -1411,9 +1496,12 @@ fn honest_startup_failures_leave_runtime_usable() {
     let ax = Arc::new(FakeAxInner {
         applied_tx,
         entered_tx,
+        focus_entered_tx: mpsc::channel::<EnteredRecord>().0,
         gates: Mutex::new(BTreeMap::new()),
         create_gates: Mutex::new(BTreeMap::new()),
         poll_gates: Mutex::new(BTreeMap::new()),
+        focus_gates: Mutex::new(BTreeMap::new()),
+        focus_evidence: Mutex::new(BTreeMap::new()),
         scoped: Mutex::new(BTreeMap::new()),
         snapshot_fail: Mutex::new(BTreeSet::new()),
         poll_inboxes: Mutex::new(BTreeMap::new()),
@@ -1474,9 +1562,12 @@ fn input_startup_failure_cleans_up_the_engine() {
     let ax = Arc::new(FakeAxInner {
         applied_tx,
         entered_tx,
+        focus_entered_tx: mpsc::channel::<EnteredRecord>().0,
         gates: Mutex::new(BTreeMap::new()),
         create_gates: Mutex::new(BTreeMap::new()),
         poll_gates: Mutex::new(BTreeMap::new()),
+        focus_gates: Mutex::new(BTreeMap::new()),
+        focus_evidence: Mutex::new(BTreeMap::new()),
         scoped: Mutex::new(BTreeMap::new()),
         snapshot_fail: Mutex::new(BTreeSet::new()),
         poll_inboxes: Mutex::new(BTreeMap::new()),
@@ -1521,6 +1612,9 @@ fn input_startup_failure_cleans_up_the_engine() {
 fn focus_saturation_drops_counted_and_survives() {
     let config = RuntimeConfig {
         focus_outbox_depth: 1,
+        // v4 seed order inserts the focused leaf last spatially, so the
+        // resolvable neighbour of the observed focus is on the left.
+        step_direction: InputDirection::Left,
         ..test_config()
     };
     let fixture = start(config);
@@ -1544,17 +1638,35 @@ fn focus_saturation_drops_counted_and_survives() {
     ));
     flush(&fixture.handle);
     drain_applied(&fixture);
+    // The fixture establishes observed focus 11, so its own owner-thread
+    // oracle read attests exactly that: the pre-dispatch baseline gate
+    // proceeds (never a fabricated proof).
+    attest_focus(&fixture, APP_A, 11);
 
-    // Two focus replies, one outbox slot: the second request must drop
-    // with a counted outcome instead of blocking actuation. Serialized
-    // (no mid-flight overlap): the freshness fence refuses a superseded
-    // in-flight command instead of dispatching it, so racing the pair
-    // would make the drop count load-dependent. The flush inside the
-    // send above already fenced the first dispatch (the input job
-    // dispatches synchronously before the barrier completes): assert it
-    // directly so the second step races nothing, without weakening the
-    // oracle.
+    // Two focus replies, one outbox slot: the second request is expected to
+    // drop with a counted outcome instead of blocking actuation. The worker
+    // is gated inside its first dispatch (entry signalled before the wait),
+    // so that command left the latest-only slot with its outbox row still
+    // queued.
+    //
+    // KNOWN RED (single-session premise unattainable; evidence-backed stop).
+    //
+    // With one app session the core never publishes a *second distinct*
+    // focus request while its first is unsettled: while a request is
+    // pending, a further step either resolves from the pending planned
+    // target (`OBSERVED_FILE_TRACE`: subject=1001_12, internal=unchanged)
+    // or re-emits the same request id, which the adapter correctly dedups
+    // (`kind=close-focus outcome=duplicate`, world_sequencer.rs:476-482
+    // same-id `CloseEnvelope::Duplicate`, world_dispatch.rs:3611) before any
+    // capacity fence is reached. The outbox can therefore hold at most one
+    // live row per session, so `focus_dropped_full` is unreachable from a
+    // second step in the same session and `focus_outbox_depth: 1` cannot be
+    // saturated this way. Reaching the fence needs a distinct cause/id
+    // (e.g. a PositiveClose selection publication from a terminating
+    // window), which this module does not yet drive.
+    let focus_gate = gate_focus_app(&fixture, APP_A);
     send_input_and_flush(&fixture, &[focus_key()], 1, 0);
+    wait_focus_entered(&fixture);
     assert!(
         fixture.handle.diagnostics().focus_dispatched >= 1,
         "first focus must dispatch before the second step"
@@ -1580,15 +1692,18 @@ fn focus_saturation_drops_counted_and_survives() {
     assert!(requests[0].dispatched);
     // Dispatch is never verified focus.
     assert!(!requests[0].verified);
+    release_gate(&focus_gate);
 
-    // The runtime survives saturation: new observations still actuate.
+    // The runtime survives saturation: new observations still actuate. The
+    // pair swap makes the act a real geometry change (a focus-only change
+    // is not the vector under test).
     fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
         2,
         vec![
-            win(11, 0, 0, 640, 1080),
-            win(12, 640, 0, 640, 1080),
+            win(11, 640, 0, 640, 1080),
+            win(12, 0, 0, 640, 1080),
             win(13, 1280, 0, 640, 1080),
         ],
         Some(13),
@@ -1606,7 +1721,14 @@ fn admission_never_steals_focus_but_explicit_focus_dispatches() {
     // its frames AND actuates exactly one native focus for the newcomer;
     // observed focus stays with the app's own reported window (the core
     // owns the difference). An explicit focus step adds exactly one more.
-    let fixture = start(test_config());
+    let fixture = start(RuntimeConfig {
+        // The admission-built layout is insertion-anchored, not seed order:
+        // the single-window seed leaves 11 as the anchored leaf and the
+        // admitted newcomer 12 is inserted to its right (Left from 11 is
+        // `unchanged`), so Right is the resolvable neighbour.
+        step_direction: InputDirection::Right,
+        ..test_config()
+    });
     let revision = fixture
         .handle
         .update_topology_with(single_display_snapshot(), &user_space);
@@ -1624,6 +1746,10 @@ fn admission_never_steals_focus_but_explicit_focus_dispatches() {
     assert_eq!(baseline.window, "1001_11");
     assert!(drain_applied(&fixture).is_empty());
     assert!(fixture.handle.drain_focus_requests().is_empty());
+    // The fixture establishes observed focus 11; its owner-thread oracle
+    // read attests exactly that pair, so the pre-dispatch baseline gate
+    // proceeds truthfully instead of refusing as unproven.
+    attest_focus(&fixture, APP_A, 11);
 
     // Admission-only: a newcomer tiles with no command in flight.
     fixture.handle.submit_scoped_observation(obs(
@@ -1643,9 +1769,16 @@ fn admission_never_steals_focus_but_explicit_focus_dispatches() {
     );
     // ...and admission now actuates its published focus too: the approved
     // resolution is one retained focus request per cause (admission
-    // included), with candidate selection unchanged. The runtime already
-    // drained that request into a native dispatch, so the counter moved
-    // exactly once and no request is left queued.
+    // included), with candidate selection unchanged. The worker retires the
+    // exact outbox row on the terminal result (retirement precedes the
+    // result log), so wait for that evidence before asserting the queue is
+    // empty; the counter moves exactly once either way.
+    wait_log_entries(
+        &fixture.handle,
+        |entries| entries.iter().any(|entry| entry.kind == "focus-result"),
+        "admission focus result",
+    );
+    flush(&fixture.handle);
     assert!(
         fixture.handle.drain_focus_requests().is_empty(),
         "the admission request is dispatched, not left queued"
@@ -1656,7 +1789,10 @@ fn admission_never_steals_focus_but_explicit_focus_dispatches() {
         "admission publishes exactly one focus request"
     );
 
-    // Explicit focus still dispatches exactly once, to the neighbor.
+    // Explicit focus still dispatches exactly once, to the neighbor. The
+    // worker is gated inside its dispatch (entry signalled before the
+    // wait), so the published row is still queued at the drain.
+    let focus_gate = gate_focus_app(&fixture, APP_A);
     send_input_and_flush(&fixture, &[focus_key()], 1, 0);
     let requests = fixture.handle.drain_focus_requests();
     assert_eq!(requests.len(), 1, "{requests:?}");
@@ -1664,12 +1800,18 @@ fn admission_never_steals_focus_but_explicit_focus_dispatches() {
     assert_eq!(requests[0].generation, generation);
     assert!(requests[0].dispatched);
     assert!(!requests[0].verified);
+    release_gate(&focus_gate);
     shutdown_clean(&fixture);
 }
 
 #[test]
 fn input_matching_forwards_only_exact_keydown() {
-    let fixture = start(test_config());
+    let fixture = start(RuntimeConfig {
+        // v4 seed order inserts the focused leaf last spatially, so the
+        // resolvable neighbour of the observed focus is on the left.
+        step_direction: InputDirection::Left,
+        ..test_config()
+    });
     let revision = fixture
         .handle
         .update_topology_with(single_display_snapshot(), &user_space);
@@ -1683,6 +1825,9 @@ fn input_matching_forwards_only_exact_keydown() {
         revision,
     ));
     flush(&fixture.handle);
+    // The fixture establishes observed focus 11: its own owner-thread
+    // oracle read attests that pair so the focus step dispatches.
+    attest_focus(&fixture, APP_A, 11);
     // No applies rendezvous is needed here: the ignored-input assertions
     // below read engine-side counters only, which worker applies never
     // touch.
@@ -1719,13 +1864,18 @@ fn input_matching_forwards_only_exact_keydown() {
     );
 
     // Exact focus chord: the core resolves the step and emits a focus
-    // request (dispatched, never verified).
+    // request (dispatched, never verified). The worker is gated inside its
+    // dispatch (entry signalled before the wait), so the published row is
+    // still queued at the drain: the queue read is the adapter's truth,
+    // not a race with the owner.
+    let focus_gate = gate_focus_app(&fixture, APP_A);
     send_input_and_flush(
         &fixture,
         &[focus_key()],
         baseline.input_forwarded + 1,
         baseline.input_ignored + 5,
     );
+    wait_focus_entered(&fixture);
     let after_focus = fixture.handle.diagnostics();
     assert_eq!(after_focus.input_forwarded, baseline.input_forwarded + 1);
     let focus_replies: u64 = after_focus
@@ -1744,6 +1894,7 @@ fn input_matching_forwards_only_exact_keydown() {
     assert_eq!(requests[0].window, "1001_12");
     assert!(requests[0].dispatched);
     assert!(!requests[0].verified);
+    release_gate(&focus_gate);
     // No applies rendezvous is needed either: the focus assertions above
     // read the engine-side request queue only.
 
@@ -2332,7 +2483,12 @@ fn input_eos_is_observed_not_spun() {
 
 #[test]
 fn focus_plans_never_advance_observed_truth() {
-    let fixture = start(test_config());
+    let fixture = start(RuntimeConfig {
+        // v4 seed order inserts the focused leaf last spatially, so the
+        // resolvable neighbour of observed focus 11 is on the left.
+        step_direction: InputDirection::Left,
+        ..test_config()
+    });
     let revision = fixture
         .handle
         .update_topology_with(single_display_snapshot(), &user_space);
@@ -2351,41 +2507,74 @@ fn focus_plans_never_advance_observed_truth() {
     ));
     flush(&fixture.handle);
     drain_applied(&fixture);
+    // The fixture establishes observed focus 11; its owner-thread oracle
+    // read attests that pair so the pre-dispatch baseline gate proceeds.
+    attest_focus(&fixture, APP_A, 11);
 
     // Two focus steps with no new observation: both resolve from observed
     // focus 11, so both dispatch 1001_12. A planned (dispatched but
-    // unobserved) focus must not become the next step's subject. Serialized
-    // (no mid-flight overlap): the freshness fence refuses a superseded
-    // in-flight command instead of dispatching it, so racing the pair
-    // would make the request count load-dependent. The flush inside each
-    // send already fenced that step's dispatch (the input job dispatches
-    // synchronously before the barrier completes): assert directly so the
-    // steps serialize with no mid-flight overlap.
+    // unobserved) focus must not become the next step's subject.
+    //
+    // The first row is inspected while the worker is gated inside its first
+    // dispatch (entry signalled before the wait), so it stays queued. The
+    // second row is inspected after that first attempt settles: while a
+    // core focus request is unsettled the core re-emits the same request id
+    // and the adapter correctly dedups it (`CloseEnvelope::Duplicate`), so
+    // two *distinct* queued rows cannot coexist mid-flight; each step still
+    // publishes its own row under its own id once the previous result
+    // landed.
+    let focus_gate = gate_focus_app(&fixture, APP_A);
     send_input_and_flush(&fixture, &[focus_key()], 1, 0);
+    wait_focus_entered(&fixture);
     assert!(
         fixture.handle.diagnostics().focus_dispatched >= 1,
-        "first focus must dispatch before the second step"
+        "first focus must dispatch before the drain"
     );
+    let first = fixture.handle.drain_focus_requests();
+    assert_eq!(first.len(), 1, "{first:?}");
+    for request in &first {
+        assert_eq!(request.window, "1001_12", "{first:?}");
+        assert_eq!(request.generation, generation);
+        assert!(request.dispatched);
+        assert!(!request.verified);
+    }
+
+    release_gate(&focus_gate);
+    // Retirement precedes the result log; the wait is the evidence that the
+    // first attempt settled, so the next step is a new command.
+    wait_log_entries(
+        &fixture.handle,
+        |entries| entries.iter().any(|entry| entry.kind == "focus-result"),
+        "first focus result",
+    );
+
+    let second_gate = gate_focus_app(&fixture, APP_A);
     send_input_and_flush(&fixture, &[focus_key()], 2, 0);
     assert!(
         fixture.handle.diagnostics().focus_dispatched >= 2,
         "second focus must dispatch before the drain"
     );
-    let requests = fixture.handle.drain_focus_requests();
-    assert_eq!(requests.len(), 2, "{requests:?}");
-    for request in &requests {
-        assert_eq!(request.window, "1001_12", "{requests:?}");
+    let second = fixture.handle.drain_focus_requests();
+    assert_eq!(second.len(), 1, "{second:?}");
+    for request in &second {
+        assert_eq!(request.window, "1001_12", "{second:?}");
         assert_eq!(request.generation, generation);
         assert!(request.dispatched);
         assert!(!request.verified);
     }
-    assert_ne!(requests[0].request_id, requests[1].request_id);
+    assert_ne!(first[0].request_id, second[0].request_id);
+    release_gate(&second_gate);
     shutdown_clean(&fixture);
 }
 
 #[test]
 fn terminated_focus_is_purged_and_drain_stays_fresh() {
-    let fixture = start(test_config());
+    let fixture = start(RuntimeConfig {
+        // v4 seed order inserts the focused leaf last spatially, so the
+        // resolvable neighbour of the observed focus is on the left.
+        step_direction: InputDirection::Left,
+        ..test_config()
+    });
     let revision = fixture
         .handle
         .update_topology_with(single_display_snapshot(), &user_space);
@@ -2400,8 +2589,13 @@ fn terminated_focus_is_purged_and_drain_stays_fresh() {
     ));
     flush(&fixture.handle);
     drain_applied(&fixture);
-    // Dispatch one focus request and leave it queued.
+    // The fixture establishes observed focus 11; attest that pair so the
+    // step actually dispatches, then gate the owner inside its dispatch so
+    // the published row cannot retire before the purge.
+    attest_focus(&fixture, APP_A, 11);
+    let focus_gate = gate_focus_app(&fixture, APP_A);
     send_input_and_flush(&fixture, &[focus_key()], 1, 0);
+    wait_focus_entered(&fixture);
 
     // Terminating purges the queued request: dispatch never outlives the
     // app lifetime it was planned for.
@@ -2415,13 +2609,19 @@ fn terminated_focus_is_purged_and_drain_stays_fresh() {
         diagnostics.terminated_invalidated >= 1,
         "purged focus must be invalidated: {diagnostics:?}"
     );
+    release_gate(&focus_gate);
     shutdown_clean(&fixture);
 }
 
 #[test]
 fn concurrent_terminate_and_shutdown_with_queued_focus_cannot_deadlock() {
     use std::sync::Barrier;
-    let fixture = start(test_config());
+    let fixture = start(RuntimeConfig {
+        // v4 seed order inserts the focused leaf last spatially, so each
+        // step resolves to the left neighbour.
+        step_direction: InputDirection::Left,
+        ..test_config()
+    });
     let revision = fixture
         .handle
         .update_topology_with(single_display_snapshot(), &user_space);
@@ -2436,11 +2636,18 @@ fn concurrent_terminate_and_shutdown_with_queued_focus_cannot_deadlock() {
     ));
     flush(&fixture.handle);
     drain_applied(&fixture);
-    // Leave a focus request queued so both sides contend on the focus queue:
-    // terminate purges it while shutdown invalidates it.
+    // The fixture establishes observed focus 11; attest that pair so the
+    // steps dispatch. Leave a focus request queued so both sides contend on
+    // the focus queue: terminate purges it while shutdown invalidates it.
+    attest_focus(&fixture, APP_A, 11);
+    let focus_gate = gate_focus_app(&fixture, APP_A);
     send_input_and_flush(&fixture, &[focus_key()], 1, 0);
+    wait_focus_entered(&fixture);
     assert_eq!(fixture.handle.drain_focus_requests().len(), 1);
     send_input_and_flush(&fixture, &[focus_key()], 2, 0);
+    // Release before the race: a parked owner would hold shutdown's join
+    // bound, while the contention under test is queue purge/invalidation.
+    release_gate(&focus_gate);
 
     // Race terminate against shutdown from two threads behind a barrier.
     // Completion travels over channels with a deadline: a lock-order
@@ -2823,9 +3030,12 @@ fn start_with_collect(
     let ax = Arc::new(FakeAxInner {
         applied_tx,
         entered_tx,
+        focus_entered_tx: mpsc::channel::<EnteredRecord>().0,
         gates: Mutex::new(BTreeMap::new()),
         create_gates: Mutex::new(BTreeMap::new()),
         poll_gates: Mutex::new(BTreeMap::new()),
+        focus_gates: Mutex::new(BTreeMap::new()),
+        focus_evidence: Mutex::new(BTreeMap::new()),
         scoped: Mutex::new(BTreeMap::new()),
         snapshot_fail: Mutex::new(BTreeSet::new()),
         poll_inboxes: Mutex::new(BTreeMap::new()),
@@ -3043,9 +3253,12 @@ fn slow_sink_never_stalls_engine_or_input() {
     let ax = Arc::new(FakeAxInner {
         applied_tx,
         entered_tx,
+        focus_entered_tx: mpsc::channel::<EnteredRecord>().0,
         gates: Mutex::new(BTreeMap::new()),
         create_gates: Mutex::new(BTreeMap::new()),
         poll_gates: Mutex::new(BTreeMap::new()),
+        focus_gates: Mutex::new(BTreeMap::new()),
+        focus_evidence: Mutex::new(BTreeMap::new()),
         scoped: Mutex::new(BTreeMap::new()),
         snapshot_fail: Mutex::new(BTreeSet::new()),
         poll_inboxes: Mutex::new(BTreeMap::new()),
@@ -3227,9 +3440,12 @@ fn blocked_input_startup_retains_handle_for_reap() {
     let ax = Arc::new(FakeAxInner {
         applied_tx,
         entered_tx,
+        focus_entered_tx: mpsc::channel::<EnteredRecord>().0,
         gates: Mutex::new(BTreeMap::new()),
         create_gates: Mutex::new(BTreeMap::new()),
         poll_gates: Mutex::new(BTreeMap::new()),
+        focus_gates: Mutex::new(BTreeMap::new()),
+        focus_evidence: Mutex::new(BTreeMap::new()),
         scoped: Mutex::new(BTreeMap::new()),
         snapshot_fail: Mutex::new(BTreeSet::new()),
         poll_inboxes: Mutex::new(BTreeMap::new()),
