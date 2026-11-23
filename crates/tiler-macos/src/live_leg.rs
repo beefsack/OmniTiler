@@ -264,6 +264,14 @@ pub struct TeardownReport {
     pub caffeinate_reaped: bool,
     pub owned_reaped: Vec<u32>,
     pub receipt_retained: bool,
+    /// The product's own exit-time `outcome.json` body, retained before
+    /// the owned run directory is removed. The product publishes it at
+    /// exit (preset, active chords, tap counters, shutdown fields); the
+    /// leg reports it verbatim instead of dropping it with the run
+    /// directory. Absent when the product published no terminal body
+    /// (the stop path already records that residue; nothing is
+    /// synthesized here).
+    pub product_outcome: Option<serde_json::Value>,
 }
 
 /// Injected leg boundary. Baseline reads ride [`BaselineReads`], Space
@@ -477,14 +485,20 @@ impl LegTransport for LiveLegTransport {
         // our shutdown (which would authorize a foreign server), and no
         // signal is ever sent to a drifted PID.
         let live = crate::ffi::ns_app_identity_for_pid(i32::try_from(record.pid).unwrap_or(0));
-        match (live.exe, live.launch_date) {
-            (Some(exe), Some(launch)) if exe == record.exe && launch == record.launch => {}
-            _ => {
-                return Err(format!(
-                    "shutdown: fixture pid {} identity drift (relaunch or PID reuse); refusing shutdown and signals; residue: foreign process untouched",
-                    record.pid
-                ));
-            }
+        let exe_match = live.exe.as_deref() == Some(record.exe.as_str());
+        let launch_match = live.launch_date.as_deref() == Some(record.launch.as_str());
+        if !(exe_match && launch_match) {
+            // Values never travel into the residue (IDs and counts only):
+            // the read/match booleans locate the drifted field without
+            // echoing a path or launch token.
+            return Err(format!(
+                "shutdown: fixture pid {} identity drift (relaunch or PID reuse: exe_read={} exe_match={} launch_read={} launch_match={}); refusing shutdown and signals; residue: foreign process untouched",
+                record.pid,
+                live.exe.is_some(),
+                exe_match,
+                live.launch_date.is_some(),
+                launch_match
+            ));
         }
         let nonce = read_nonce_from_run_dir(&record.run_dir)?;
         crate::fixture_post::send_fixture_shutdown(&record.socket_path, &nonce)
@@ -685,6 +699,10 @@ pub struct LiveLeg<'a, T: LegTransport> {
     owned_windows: Vec<OwnedWindow>,
     owned_spaces: Vec<(usize, u64)>,
     owned_pids: Vec<u32>,
+    /// Retained product exit-time `outcome.json` body: read while the
+    /// product stops, before the owned run directory removal, and reported
+    /// in the teardown receipt.
+    product_outcome: Option<serde_json::Value>,
 }
 
 impl<'a, T: LegTransport> std::fmt::Debug for LiveLeg<'a, T> {
@@ -740,6 +758,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
             owned_windows: Vec::new(),
             owned_spaces: Vec::new(),
             owned_pids: Vec::new(),
+            product_outcome: None,
         })
     }
 
@@ -1044,7 +1063,9 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
             return true;
         };
         if record.launch_services {
-            return self.stop_product_ls(&record, residue);
+            let stopped = self.stop_product_ls(&record, residue);
+            self.retain_product_outcome(&record);
+            return stopped;
         }
         let Some(child) = self.product_child.as_mut() else {
             residue.push(format!(
@@ -1094,7 +1115,27 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
                 record.pid
             ));
         }
-        outcome.exited && outcome.reaped
+        let stopped = outcome.exited && outcome.reaped;
+        self.retain_product_outcome(&record);
+        stopped
+    }
+
+    /// Retain the product's exit-time `outcome.json` body while the owned
+    /// run directory still exists. Called on the stop path, after the
+    /// product published its terminal JSON and before [`LegTransport`]
+    /// fixture shutdown removes the run directory. A missing, unreadable,
+    /// or non-JSON body stays absent: the stop path already reports
+    /// terminal evidence only when it parsed, and nothing is synthesized.
+    fn retain_product_outcome(&mut self, record: &ProductRecord) {
+        if self.product_outcome.is_some() {
+            return;
+        }
+        let Ok(raw) = std::fs::read_to_string(record.run_dir.join("outcome.json")) else {
+            return;
+        };
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+            self.product_outcome = Some(value);
+        }
     }
 
     /// Stop a LaunchServices-launched product (no held `Child`: the `open`
@@ -1338,6 +1379,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
                     caffeinate_reaped,
                     owned_reaped: owned_reaped.clone(),
                     receipt_retained: true,
+                    product_outcome: self.product_outcome.clone(),
                 },
             );
         }
@@ -1351,6 +1393,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
             caffeinate_reaped,
             owned_reaped,
             receipt_retained,
+            product_outcome: self.product_outcome.clone(),
         }
     }
 
@@ -1379,6 +1422,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
                     "residue": report.residue,
                     "caffeinate_reaped": report.caffeinate_reaped,
                     "receipt_retained": report.receipt_retained,
+                    "product_outcome": report.product_outcome,
                 })
                 .to_string(),
             ));
@@ -2050,6 +2094,7 @@ mod tests {
             caffeinate_reaped: true,
             owned_reaped: vec![],
             receipt_retained: true,
+            product_outcome: None,
         };
         let flat = serde_json::to_string(&report).expect("report flattens");
         for leaked in [
@@ -2223,12 +2268,59 @@ mod tests {
         })
         .expect("LS product registers");
         assert!(leg.pending_launches().is_empty());
-        leg.finish().expect("clean finish passes");
+        let report = leg.finish().expect("clean finish passes");
+        // The product's exit-time body is retained in the receipt before
+        // the owned run directory is removed (the product dir here stands
+        // in for the production transport's `remove_owned_run_dir`).
+        assert_eq!(
+            report.product_outcome,
+            Some(serde_json::json!({"outcome": "completed", "shutdown_clean": true}))
+        );
         assert!(product.join("stop-requested").exists());
         assert!(!dir.join(crate::live_baseline::BASELINE_FILE_NAME).exists());
         // Repeat begin is unblocked after the successful receipt removal.
         let mut transport = ScriptLeg::passing(dir.clone());
         LiveLeg::begin(&mut transport, 60).expect("repeat begin passes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ls_product_outcome_retains_before_run_dir_removal() {
+        // The production teardown removes the owned run directory during
+        // fixture shutdown, after the product stop. Model the removal in
+        // the transport's shutdown step and prove the reported body was
+        // already captured: the leg must not depend on a still-present
+        // `outcome.json`.
+        let dir = test_dir("ls-product-removal-order");
+        let product = dir.join("product");
+        std::fs::create_dir_all(&product).expect("product dir creates");
+        std::fs::write(
+            product.join("outcome.json"),
+            "{\"outcome\":\"completed\",\"preset\":\"authentic\",\"active_chords\":2}",
+        )
+        .expect("outcome writes");
+        let mut transport = ScriptLeg::passing(dir.clone());
+        let mut leg = LiveLeg::begin(&mut transport, 60).expect("leg begins");
+        leg.register_product_ls(ProductRecord {
+            pid: 4245,
+            exe: "/probe-exe".to_owned(),
+            launch: "launch-product".to_owned(),
+            run_dir: product.clone(),
+            launch_services: true,
+        })
+        .expect("LS product registers");
+        let report = leg.finish().expect("clean finish passes");
+        // Model the production removal after the stop: the receipt still
+        // carries the captured body.
+        std::fs::remove_dir_all(&product).expect("product dir removes");
+        assert_eq!(
+            report.product_outcome,
+            Some(serde_json::json!({
+                "outcome": "completed",
+                "preset": "authentic",
+                "active_chords": 2
+            }))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
