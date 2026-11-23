@@ -76,6 +76,21 @@ pub const LEG_MAX_SECONDS: u64 = crate::tile::MAX_TILE_SECONDS;
 /// Maximum chords per leg invocation (bounded automation, never open-ended).
 pub const LEG_MAX_CHORDS: usize = 32;
 
+/// Operator settle window (harness only): milliseconds the leg holds before
+/// its first chord and again after its last chord, so an operator can drive
+/// extra owned fixture windows over the announced control socket and read
+/// native frames while the product is running. Absent or `0` leaves the
+/// leg's own timing untouched. Never a product flag: this only spaces the
+/// harness's chord posts.
+pub const SETTLE_ENV: &str = "OMNITILER_FIXTURE_LEG_SETTLE_MS";
+
+/// Upper bound for one operator settle window (milliseconds).
+pub const SETTLE_MAX_MS: u64 = 20_000;
+
+/// Shutdown margin required on top of both settle windows, so the product's
+/// own bounded lifetime never expires mid-hold.
+pub const SETTLE_LIFETIME_MARGIN_MS: u64 = 10_000;
+
 /// One fixture-leg invocation.
 pub struct FixtureLegOpts {
     pub seconds: u64,
@@ -321,6 +336,62 @@ fn create_owned_run_dir(tag: &str) -> Result<std::path::PathBuf, String> {
     std::fs::create_dir(&dir).map_err(|e| format!("fixture-leg: run directory refused ({e})"))?;
     crate::desktop_shortcuts::ensure_private_dir(&dir)?;
     Ok(dir)
+}
+
+/// Parse and bound one operator settle window from its raw environment
+/// value. Pure; unit-tested. `None`, empty, or `0` means no settle. The
+/// window must leave the product's own bounded lifetime intact (both holds
+/// plus one shutdown margin), so a settle can never outlive the run it is
+/// observing.
+fn settle_ms_from(raw: Option<&str>, seconds: u64) -> Result<u64, String> {
+    let Some(raw) = raw else { return Ok(0) };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(0);
+    }
+    let value: u64 = raw.parse().map_err(|_| {
+        format!("fixture-leg: {SETTLE_ENV} must be whole milliseconds (got '{raw}')")
+    })?;
+    if value == 0 {
+        return Ok(0);
+    }
+    if value > SETTLE_MAX_MS {
+        return Err(format!(
+            "fixture-leg: {SETTLE_ENV} {value}ms exceeds the {SETTLE_MAX_MS}ms settle bound; refusing"
+        ));
+    }
+    if value
+        .saturating_mul(2)
+        .saturating_add(SETTLE_LIFETIME_MARGIN_MS)
+        > seconds.saturating_mul(1000)
+    {
+        return Err(format!(
+            "fixture-leg: {SETTLE_ENV} {value}ms twice plus a {SETTLE_LIFETIME_MARGIN_MS}ms margin does not fit the {seconds}s product lifetime; refusing"
+        ));
+    }
+    Ok(value)
+}
+
+/// Read the operator settle window from the environment (harness only).
+fn settle_ms(seconds: u64) -> Result<u64, String> {
+    settle_ms_from(std::env::var(SETTLE_ENV).ok().as_deref(), seconds)
+}
+
+/// Hold for one settle window, polling the interrupt latch so SIGINT/SIGTERM
+/// still unwinds through the leg's full teardown.
+#[cfg(target_os = "macos")]
+fn settle_hold(ms: u64) -> Result<(), (i32, String)> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+    while std::time::Instant::now() < deadline {
+        if crate::space_drag_diag_live::diag_interrupted() {
+            return Err((
+                1,
+                "fixture-leg: interrupted (SIGINT/SIGTERM latched); restoring".to_owned(),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Ok(())
 }
 
 /// Launch the signed fixture bundle through LaunchServices into the owned
@@ -594,6 +665,9 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
             ));
         }
     }
+    // Operator settle validation refuses before any baseline or launch: a
+    // bad window must never leave a created run directory behind.
+    settle_ms(opts.seconds).map_err(|e| (2, e))?;
     let _interrupt = crate::space_drag_diag_live::InterruptArmed::arm()
         .map_err(|e| (2, format!("fixture-leg: interrupt arm refused ({e})")))?;
     let mut transport = LiveLegTransport::new();
@@ -924,6 +998,13 @@ fn run_leg_body_macos(
         &opts.signer,
         admission,
     )?;
+    // Operator settle (harness only): hold before the first chord and again
+    // after the last, so an operator can drive extra owned fixture windows
+    // and read native frames while the product runs. Zero when unset.
+    let settle = settle_ms(opts.seconds).map_err(|e| (2, e))?;
+    if settle > 0 {
+        settle_hold(settle)?;
+    }
     let mut reports = Vec::new();
     for (chord, (caller, wid)) in opts.chords.iter().zip(joined.iter()) {
         if crate::space_drag_diag_live::diag_interrupted() {
@@ -940,6 +1021,9 @@ fn run_leg_body_macos(
             serde_json::from_str(&driver.post(caller, *wid, chord, opts.modifier)?)
                 .map_err(|e| (1, e.to_string()))?;
         reports.push(report);
+    }
+    if settle > 0 {
+        settle_hold(settle)?;
     }
     Ok(reports)
 }
@@ -1087,6 +1171,27 @@ mod tests {
         let err = run_fixture_leg(bad_chord).unwrap_err();
         assert_eq!(err.0, 2);
         assert!(err.1.contains("teleport"));
+    }
+
+    #[test]
+    fn settle_window_is_bounded_and_lifetime_fitted() {
+        // Unset/empty/zero: no hold at all (unchanged leg timing).
+        assert_eq!(settle_ms_from(None, 90).expect("unset"), 0);
+        assert_eq!(settle_ms_from(Some(""), 90).expect("empty"), 0);
+        assert_eq!(settle_ms_from(Some("  "), 90).expect("blank"), 0);
+        assert_eq!(settle_ms_from(Some("0"), 90).expect("zero"), 0);
+        // Valid windows parse exactly (trimmed).
+        assert_eq!(settle_ms_from(Some(" 15000 "), 90).expect("valid"), 15_000);
+        assert_eq!(settle_ms_from(Some("20000"), 90).expect("max"), 20_000);
+        // Non-numeric and over-bound values refuse before any effect.
+        assert!(settle_ms_from(Some("1s"), 90).is_err());
+        assert!(settle_ms_from(Some("-5"), 90).is_err());
+        assert!(settle_ms_from(Some("20001"), 120).is_err());
+        // Both holds plus the shutdown margin must fit the product lifetime.
+        assert!(settle_ms_from(Some("20000"), 49).is_err());
+        assert_eq!(settle_ms_from(Some("20000"), 50).expect("fits"), 20_000);
+        assert!(settle_ms_from(Some("15000"), 39).is_err());
+        assert_eq!(settle_ms_from(Some("15000"), 40).expect("fits"), 15_000);
     }
 
     #[test]
