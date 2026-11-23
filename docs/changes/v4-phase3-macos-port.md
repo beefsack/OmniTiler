@@ -359,23 +359,22 @@ native acceptance.
 | Row | Status |
 | --- | --- |
 | `sharedNativeRoster` declared | Implemented (the key is required by the codec); the value itself is not asserted by an adapter test. |
-| Unified retained focus | Implemented and natively proven for automatic admission, explicit command and close reflow; the cursor-hit cause is unreachable because no producer sets the cursor facts. |
+| Unified retained focus | Implemented and natively proven for automatic admission, explicit command, close reflow and the cursor-hit (focus-follows-cursor) cause. |
 | Pending-focus command subjects | Fixed (`a6451e41`): the four window-shape commands send core's current-focus subject, the observed-foreground substitution and its pre-dispatch refusals are gone, and the homing/domain gates run at apply time on the window core resolved. |
 | Retained settlement outcomes | Switch half consumed (`d67b1733`): the retained projection delivers the verdict once per settlement identity, survives a skipped reply, is inert on replay and is authoritative over an earlier reply. The operation half still has no consumer because macOS has no clear lane. |
 | Retained `intentDesired` | Partial and fail-closed: a nonempty desire latches the session; no persistence, so this waits on the M3 host-storage decision. |
 | Switch and fallback removals | No adapter-local policy remains; only live legs are outstanding. |
 | No-space removal | Inherited from core; the adapter writes core rects and produces no no-space rows. A live constrained-work-area leg is the remaining proof. |
-| Perpendicular focus recency | Command route ready; the accepted-hover arm is unreachable without the cursor-hit producer. |
+| Perpendicular focus recency | Both arms natively proven: explicit-command history and accepted-hover recency (hover leg). |
 | Batch 3 admission | Partial: floating AX kinds are withheld from `utility`, so palettes never float until that mapping is settled with a native check. |
 | Best-effort admission | Inherited; live proof only. |
 | Settings-key parity | Implemented by construction (raw pass-through, no adapter caps). |
 | 16-output `actionOutputs` cap | Inert: the field is always empty because no action context is produced. |
 
 Ranked remaining adapter work: the batch-3 utility mapping with its native
-palette check; a cursor-hit producer (unblocks focus-follows-cursor and
-perpendicular recency). The M3 storage decision stays with its owner.
+palette check. The M3 storage decision stays with its owner.
 
-### Cursor/hover producer: implemented; native fixture proof pending (2026-11-24)
+### Cursor/hover producer: implemented and natively proven (2026-11-24)
 
 Before this change the adapter never emitted the cursor pair: `world_builder.rs`
 hardcoded `cursor: None, cursor_hit: None`, `ReportInput` had no cursor field,
@@ -411,26 +410,80 @@ unreadable and stale hits omit the pair; `focused_global`, `foreground_known`
 and `focus_changes` never derive from it. The read-only `cursor-probe` CLI and
 the CLI/fixture-leg `--focus-follows-cursor` pass-through are also in.
 
-Offline evidence at `8b44a2fa`:
+Harness: the opt-in `fixture-leg --hover-probe` flag (adapter-only, requires
+at least three `--chord` windows before any effect) runs one bounded sequence
+on the same owned fixtures after the normal chords. It launches the product
+with `TILER_MACOS_STAGE_TIMING=1` through `open --env` so the cause tokens ride
+that launch only, parks the pointer for an honest miss, settles two identical
+AX frame reads, and classifies one tall anchor beside a stacked pair. It then
+seeds accepted history with explicit chords, warps onto one member while the
+other is focused, requires the native focus transition plus a
+`focus-follows-cursor` cause token, departs and waits out the resting refresh,
+natively refocuses the anchor, and posts the perpendicular chord, requiring the
+hovered member to win. Frames, focus transitions, token counts/stamps and
+cursor restore are recorded; a layout, focus, or token mismatch refuses instead
+of passing. Five unit tests cover the classifier and token accounting.
 
-- `cargo fmt --all -- --check` and
-  `cargo clippy --locked -p tiler-macos --all-targets -- -D warnings` pass.
-- `cargo test --locked -p tiler-macos --lib`: 1637 passed, 0 failed, 3 ignored.
+Offline evidence at `8b44a2fa` plus the harness commit:
+
+- `cargo fmt --all -- --check`, `cargo build --locked -p tiler-macos`, and
+  `cargo clippy --locked -p tiler-macos --all-targets -- -D warnings` pass
+  (the committed `8b44a2fa` tree needed one rustfmt line in `cursor_probe.rs`,
+  folded into the harness commit).
+- `cargo test --locked -p tiler-macos --lib`: 1642 passed, 0 failed,
+  3 ignored.
 - `cargo test --locked -p tiler-macos --test integration`: 149 passed, 1 failed
   — only the documented `runtime_phase1::focus_saturation_drops_counted_and_survives`
   core-policy stop, no new failure.
 - Focused tests cover observer cadence/retry, builder pairing and omission,
-  sample-time attribution and persistence, and the cursor reply token path.
+  sample-time attribution and persistence, the cursor reply token path, and
+  the hover classifier/token accounting.
 
-Native proof remains open: the opt-in `fixture-leg --hover-probe` harness and
-the live focus-follows-cursor / accepted-hover-recency leg were not completed,
-and `cursor-probe` has no live receipt yet, so this record makes no native
-claim. Residual risks: the observer dispatches one report per movement and one
-per second while resting even when the core setting is off; a sample landing
+Native receipt (fixture scope `io.github.omnitiler.live-fixture`, signed
+ad-hoc `OmniTiler Mac Dev` bundles, preflight `ax_trusted:true`):
+
+- `cursor-probe`: `ax_trusted:true`, element role `AXTextArea`, subrole null,
+  AX hit owner present, no error.
+- Leg `completed`: three chord receipts posted from three distinct owned
+  windows; tap deliveries 12/matched 12/suppressed 12; product scoped
+  shutdown clean, joined 4, workers 1/0 failed, observation failures 0.
+- Layout: tall anchor 1108×1123 on the left; stacked pair 1108×557 above and
+  1108×558 below on the right; off point on the menu bar with an AX honest
+  miss (`no-window`, not fixture/owned).
+- Native focus transitions: anchor; `focus-l` 123 ms to the above member;
+  `focus-j` 96 ms to the below member; hovering the above member produced
+  focus-follows-cursor in 224 ms (below→above) with
+  `cause=focus-follows-cursor outcome=dispatched-native` at 4.139620 s;
+  departure kept focus; anchor refocus; perpendicular `focus-l` 93 ms to the
+  hovered above member (expected), with
+  `cause=explicit-command outcome=dispatched-native` at 6.498077 s.
+- Recency: after the alternate was seeded, it was the newest accepted column
+  member and both leaves had accepted history, so the first-child fallback
+  could not apply; the hovered member's accepted focus (native feedback
+  `setter=accepted proven=1` at 4.195 s) is the only accepted column focus
+  between that seed and the perpendicular, so only hover-updated history
+  explains selecting it.
+- Teardown: `product_reaped:true`, `owned_reaped:[]`, `residue:[]`,
+  `current_restored:true`, `caffeinate_reaped:true`; two `benign:true`
+  protected-window host churn mismatches (same-pid offscreen 64×64
+  replacement, identical layer/bounds), not owned residue. Spaces unchanged
+  before and after (current 1, spaces `[1,7]`, count 2); no leftover
+  fixture/probe processes or run directory; the terminal was never targeted.
+
+Residual risks: the observer dispatches one report per movement and one per
+second while resting even when the core setting is off; a sample landing
 mid-flight advances the observation clock and can make that reply refuse stale
 (converges through the existing successor path); attribution trusts retained
 app/homing rows, so PID reuse after a silent exit is bounded by the prune paths
-rather than an independent liveness read.
+rather than an independent liveness read. The hover probe proves only the first
+three joined windows, so extra owned windows are outside the proof. Its cause
+recorder counts cause lines without filtering the outcome; this run's hover
+token was `dispatched-native` and the accepted-feedback line corroborates it,
+but a future run should require `dispatched-native` to avoid a spent-envelope
+line satisfying the wait. The initial admission FFC and the post-observation
+pointer-restore FFC fall outside the recorded snapshot (honest miss / cleanup),
+and `--preset authentic` still logs transient frame-set retry failures that
+converge to exact readbacks.
 
 ### Integration triage (2026-11-23)
 

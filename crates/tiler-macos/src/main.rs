@@ -775,6 +775,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             chords,
             preset,
             focus_follows_cursor,
+            hover_probe,
             signer,
         } => {
             // Development-only fixture leg: the complete real entry point
@@ -786,6 +787,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 modifier: request.modifier,
                 signer,
                 focus_follows_cursor,
+                hover_probe,
             })
         }
         Command::TextEditGrabInspect { record, nonce } => {

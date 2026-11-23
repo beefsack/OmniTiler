@@ -223,6 +223,7 @@ pub enum Command {
         chords: Vec<String>,
         preset: crate::input_policy::InputPreset,
         focus_follows_cursor: bool,
+        hover_probe: bool,
         signer: String,
     },
     TextEditGrabInspect {
@@ -670,7 +671,7 @@ pub fn help_text() -> String {
               \x20 \x20 5000/1000/256; run concurrently with exactly one\n\
               \x20 \x20 action invocation and join stamps offline; no writes,\n\
               \x20 \x20 no press, no focus changes, no input synthesis)\n\
-              \x20 fixture-leg --chord NAME [--chord NAME ...] --signer REQUIREMENT [--seconds N] [--preset compatible|authentic]\n\
+              \x20 fixture-leg --chord NAME [--chord NAME ...] --signer REQUIREMENT [--seconds N] [--preset compatible|authentic] [--focus-follows-cursor] [--hover-probe]\n\
               \x20 \x20 (development-only fixture leg: the complete controller\n\
               \x20 \x20 entry from baseline through owned shutdown. Captures\n\
               \x20 \x20 the full baseline before ANY setup effect, launches\n\
@@ -681,7 +682,11 @@ pub fn help_text() -> String {
               \x20 \x20 space-mutating chords, drives each chord to its owned\n\
               \x20 \x20 window, then restores the starting Space and compares\n\
               \x20 \x20 the teardown; default 90s, one --chord per owned\n\
-              \x20 \x20 window in order)\n\
+              \x20 \x20 window in order; --focus-follows-cursor forwards the\n\
+              \x20 \x20 tile override; --hover-probe adds the opt-in bounded\n\
+              \x20 \x20 native hover/focus-follows-cursor/recency proof after\n\
+              \x20 \x20 the chords, needs >=3 chords plus the flag, and\n\
+              \x20 \x20 launches the product with stage-timing diagnostics)\n\
               \x20 owned-space-join --pid PID --nonce HEX\n\
               \x20 \x20 (public AppKit self-action: helper joins its OWN window\n\
               \x20 \x20 to the current Space via MoveToActiveSpace + self-activate\n\
@@ -2248,6 +2253,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             let mut chords: Vec<String> = Vec::new();
             let mut preset = crate::input_policy::InputPreset::Compatible;
             let mut focus_follows_cursor = false;
+            let mut hover_probe = false;
             let mut signer: Option<String> = None;
             let mut j = 0;
             while j < args.len() {
@@ -2274,12 +2280,22 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                     "--focus-follows-cursor" => {
                         focus_follows_cursor = true;
                     }
+                    "--hover-probe" => {
+                        hover_probe = true;
+                    }
                     other => return Err(format!("fixture-leg: unknown arg '{other}'")),
                 }
                 j += 1;
             }
             if chords.is_empty() {
                 return Err("fixture-leg needs at least one --chord".to_owned());
+            }
+            if hover_probe && chords.len() < crate::fixture_hover::HOVER_MIN_WINDOWS {
+                return Err(format!(
+                    "fixture-leg --hover-probe needs at least {} --chord values (one tall anchor plus a stacked pair), got {}",
+                    crate::fixture_hover::HOVER_MIN_WINDOWS,
+                    chords.len()
+                ));
             }
             for chord in &chords {
                 if crate::fixture_post::resolve_fixture_chord(chord).is_none()
@@ -2293,6 +2309,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 chords,
                 preset,
                 focus_follows_cursor,
+                hover_probe,
                 signer: signer.ok_or("fixture-leg needs --signer")?,
             }
         }

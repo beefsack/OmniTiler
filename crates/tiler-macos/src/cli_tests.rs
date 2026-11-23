@@ -901,11 +901,13 @@ fn fixture_commands_parse_with_announcement_identity_and_fixture_chords() {
             preset,
             signer,
             focus_follows_cursor: _,
+            hover_probe,
         } => {
             assert_eq!(seconds, 120);
             assert_eq!(chords, vec!["focus-h".to_owned(), "select-1".to_owned()]);
             assert_eq!(preset, crate::input_policy::InputPreset::Authentic);
             assert_eq!(signer, "designated => test");
+            assert!(!hover_probe);
         }
         _ => panic!("fixture-leg must parse"),
     }
@@ -947,6 +949,41 @@ fn fixture_commands_parse_with_announcement_identity_and_fixture_chords() {
             ..
         }
     ));
+    // The hover probe is opt-in: with the flag plus three chords it parses,
+    // and fewer than three chords refuse at parse (no live effect).
+    let with_hover = parse_args(&argv(&[
+        "fixture-leg",
+        "--chord",
+        "focus-h",
+        "--chord",
+        "focus-j",
+        "--chord",
+        "focus-k",
+        "--signer",
+        "designated => test",
+        "--hover-probe",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        with_hover.command,
+        Command::FixtureLeg {
+            hover_probe: true,
+            ..
+        }
+    ));
+    assert!(
+        parse_args(&argv(&[
+            "fixture-leg",
+            "--chord",
+            "focus-h",
+            "--chord",
+            "focus-j",
+            "--signer",
+            "designated => test",
+            "--hover-probe",
+        ]))
+        .is_err()
+    );
     // Missing chords, unknown chords, and a missing signer refuse at parse
     // (exit 2), before any baseline or effect.
     assert!(parse_args(&argv(&["fixture-leg", "--signer", "designated => test"])).is_err());

@@ -18,10 +18,7 @@ pub fn run() -> Result<String, (i32, String)> {
             let subrole = crate::ffi::ax_string_attribute(&element, "AXSubrole")
                 .ok()
                 .flatten();
-            (
-                serde_json::json!({"role": role, "subrole": subrole}),
-                None,
-            )
+            (serde_json::json!({"role": role, "subrole": subrole}), None)
         }
         Err(error) => (serde_json::Value::Null, Some(error)),
     };

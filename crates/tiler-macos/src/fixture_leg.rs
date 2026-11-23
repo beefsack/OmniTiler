@@ -103,6 +103,11 @@ pub struct FixtureLegOpts {
     pub signer: String,
     /// Forward the tile command's CLI-only focus-follows-cursor override.
     pub focus_follows_cursor: bool,
+    /// Run the opt-in bounded native hover proof after the chords
+    /// (`fixture_hover::run`). Requires at least
+    /// [`crate::fixture_hover::HOVER_MIN_WINDOWS`] chords and launches the
+    /// product with stage-timing diagnostics; default off.
+    pub hover_probe: bool,
 }
 
 /// Own signed bundle root for a controller executable running from the
@@ -540,6 +545,7 @@ fn launch_product_ls(
     product_dir: &std::path::Path,
     argv: &[String],
     run_id: &str,
+    hover_probe: bool,
 ) -> Result<ProductRecord, String> {
     use std::collections::BTreeSet;
     // PIDs of this bundle before launch: the announced PID must be fresh.
@@ -549,12 +555,20 @@ fn launch_product_ls(
         .collect();
     let stdout_log = product_dir.join("stdout.log");
     let stderr_log = product_dir.join("stderr.log");
-    let status = std::process::Command::new("open")
-        .arg("-n")
+    let mut open = std::process::Command::new("open");
+    open.arg("-n")
         .arg("-o")
         .arg(&stdout_log)
         .arg("--stderr")
-        .arg(&stderr_log)
+        .arg(&stderr_log);
+    // Opt-in hover probe: stage timing plus the cause tokens ride the
+    // product's own environment for this launch only (adapter-only, never a
+    // settings write). Default runs keep the unchanged environment.
+    if hover_probe {
+        open.arg("--env")
+            .arg(crate::fixture_hover::STAGE_TIMING_ENV);
+    }
+    let status = open
         .arg(bundle)
         .arg("--args")
         .args(argv)
@@ -639,6 +653,13 @@ fn launch_product_ls(
     })
 }
 
+/// What the leg body returns to the envelope: every chord driver report in
+/// order, plus the opt-in hover-probe evidence when it ran.
+struct LegReports {
+    chords: Vec<serde_json::Value>,
+    hover_probe: Option<serde_json::Value>,
+}
+
 /// Development-only fixture leg runner: the complete real entry point.
 /// Exit codes: 2 usage/validation, 1 live-gate/proof/teardown failure with
 /// evidence. Every failure path runs the leg teardown (starting-Space
@@ -670,6 +691,18 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
             ));
         }
     }
+    // The hover probe needs one tall anchor plus a stacked pair; refuse the
+    // shape before any baseline, Space, or launch effect (no run dir).
+    if opts.hover_probe && opts.chords.len() < crate::fixture_hover::HOVER_MIN_WINDOWS {
+        return Err((
+            2,
+            format!(
+                "fixture-leg --hover-probe needs at least {} --chord values (one tall anchor plus a stacked pair), got {}",
+                crate::fixture_hover::HOVER_MIN_WINDOWS,
+                opts.chords.len()
+            ),
+        ));
+    }
     // Operator settle validation refuses before any baseline or launch: a
     // bad window must never leave a created run directory behind.
     settle_ms(opts.seconds).map_err(|e| (2, e))?;
@@ -680,35 +713,48 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
     // From here every failure runs the teardown: finish consumes the leg.
     let outcome = run_leg_body(&mut leg, &opts);
     match outcome {
-        Ok(reports) => match leg.finish() {
-            Ok(teardown) => Ok(serde_json::json!({
-                "outcome": "completed",
-                "chords": reports,
-                "teardown": teardown,
-            })
-            .to_string()),
-            Err(teardown) => {
-                // Chords were posted and proven before `finish`; keep their
-                // driver reports in the refusal so the completed posts stay
-                // auditable instead of being dropped with the teardown
-                // detail. The teardown body is already JSON; embed it as
-                // data when it parses (a malformed body stays a string).
-                let teardown_body = match serde_json::from_str::<serde_json::Value>(&teardown.1) {
-                    Ok(value) => value,
-                    Err(_) => serde_json::Value::String(teardown.1),
-                };
-                Err((
-                    teardown.0,
-                    serde_json::json!({
+        Ok(reports) => {
+            let LegReports {
+                chords,
+                hover_probe,
+            } = reports;
+            match leg.finish() {
+                Ok(teardown) => {
+                    let mut envelope = serde_json::json!({
+                        "outcome": "completed",
+                        "chords": chords,
+                        "teardown": teardown,
+                    });
+                    if let Some(probe) = hover_probe {
+                        envelope["hover_probe"] = probe;
+                    }
+                    Ok(envelope.to_string())
+                }
+                Err(teardown) => {
+                    // Chords were posted and proven before `finish`; keep
+                    // their driver reports in the refusal so the completed
+                    // posts stay auditable instead of being dropped with the
+                    // teardown detail. The teardown body is already JSON;
+                    // embed it as data when it parses (a malformed body stays
+                    // a string).
+                    let teardown_body = match serde_json::from_str::<serde_json::Value>(&teardown.1)
+                    {
+                        Ok(value) => value,
+                        Err(_) => serde_json::Value::String(teardown.1),
+                    };
+                    let mut envelope = serde_json::json!({
                         "stage": "leg-finish",
                         "error": "chords posted but teardown refused",
-                        "chords": reports,
+                        "chords": chords,
                         "teardown": teardown_body,
-                    })
-                    .to_string(),
-                ))
+                    });
+                    if let Some(probe) = hover_probe {
+                        envelope["hover_probe"] = probe;
+                    }
+                    Err((teardown.0, envelope.to_string()))
+                }
             }
-        },
+        }
         Err(error) => {
             if let Err(teardown) = leg.finish() {
                 eprintln!("fixture-leg teardown after failure: {}", teardown.1);
@@ -728,7 +774,7 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
 fn run_leg_body(
     leg: &mut LiveLeg<LiveLegTransport>,
     opts: &FixtureLegOpts,
-) -> Result<Vec<serde_json::Value>, (i32, String)> {
+) -> Result<LegReports, (i32, String)> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (leg, opts);
@@ -836,7 +882,7 @@ fn plan_owned_destinations(
 fn run_leg_body_macos(
     leg: &mut LiveLeg<LiveLegTransport>,
     opts: &FixtureLegOpts,
-) -> Result<Vec<serde_json::Value>, (i32, String)> {
+) -> Result<LegReports, (i32, String)> {
     use crate::live_leg::PendingLaunch;
     // Owned private run directory first (before ANY fixture/product/Space
     // effect): a refusal aborts with zero effects.
@@ -988,7 +1034,13 @@ fn run_leg_body_macos(
     // the entry validation above: the exact flag is accepted).
     let product_bundle = product_bundle_path().map_err(|e| (2, e))?;
     let argv = product_argv(opts, &product_dir, &owned_sids, starting_sid);
-    match launch_product_ls(&product_bundle, &product_dir, &argv, &run_id) {
+    match launch_product_ls(
+        &product_bundle,
+        &product_dir,
+        &argv,
+        &run_id,
+        opts.hover_probe,
+    ) {
         Ok(product) => leg.register_product_ls(product)?,
         Err(e) => {
             let _ = leg.resolve_pending_absence("product");
@@ -1038,7 +1090,39 @@ fn run_leg_body_macos(
     if settle > 0 {
         settle_hold(settle)?;
     }
-    Ok(reports)
+    // Opt-in native hover proof, after every chord and the final operator
+    // settle so its own bounded pointer/focus sequence is the last effect
+    // before teardown. Any failure keeps the completed chord audits in the
+    // refusal envelope (a layout mismatch names the observed geometry).
+    let hover_probe = if opts.hover_probe {
+        match crate::fixture_hover::run(
+            &driver,
+            parsed.pid,
+            &joined,
+            opts.modifier,
+            &product_dir.join("stderr.log"),
+        ) {
+            Ok(value) => Some(value),
+            Err((code, error)) => {
+                return Err((
+                    code,
+                    serde_json::json!({
+                        "stage": "hover-probe",
+                        "error": error,
+                        "chords": reports,
+                        "hover_probe": {"outcome": "refused"},
+                    })
+                    .to_string(),
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    Ok(LegReports {
+        chords: reports,
+        hover_probe,
+    })
 }
 
 /// Spawn the leg's caller windows through the owned control socket. The
@@ -1162,6 +1246,7 @@ mod tests {
             modifier: ProbeModifier::Ctrl,
             signer: "designated => test".to_owned(),
             focus_follows_cursor: false,
+            hover_probe: false,
         }
     }
 
@@ -1185,6 +1270,13 @@ mod tests {
         let err = run_fixture_leg(bad_chord).unwrap_err();
         assert_eq!(err.0, 2);
         assert!(err.1.contains("teleport"));
+        // The hover probe needs one tall anchor plus a stacked pair: fewer
+        // chords refuse with usage (exit 2) before any run dir or effect.
+        let mut short_hover = test_opts(vec!["focus-h", "focus-j"]);
+        short_hover.hover_probe = true;
+        let err = run_fixture_leg(short_hover).unwrap_err();
+        assert_eq!(err.0, 2);
+        assert!(err.1.contains("--hover-probe"), "{}", err.1);
     }
 
     #[test]

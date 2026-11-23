@@ -55,6 +55,7 @@ pub mod engine;
 pub mod ffi;
 pub mod fixture_frame;
 pub mod fixture_gate;
+mod fixture_hover;
 pub mod fixture_leg;
 pub mod fixture_menu;
 pub mod fixture_post;
