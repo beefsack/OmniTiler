@@ -1470,6 +1470,20 @@ pub struct DesiredFrame {
     pub h: i32,
 }
 
+/// Read-only adapter view of one outstanding core native creation
+/// authorization: the desire identity plus the native order (SIDs) the
+/// authorization was first published under. That order is the mint-time
+/// baseline an uncorrelated creation attempt is settled against; the
+/// adapter still executes against its own live pre-order and reports the
+/// genuine orders around the write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeCreationRequest {
+    pub operation_id: String,
+    pub logical_workspace: String,
+    pub target_output: String,
+    pub order_before: Vec<u64>,
+}
+
 // -- Outcomes ------------------------------------------------------------------
 
 /// Error starting the runtime or launching an app.

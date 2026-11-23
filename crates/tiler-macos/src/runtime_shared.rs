@@ -491,6 +491,12 @@ pub(crate) struct Shared {
     /// `trailing` designation plus an explicit `None` binding names the
     /// spare).
     pub(crate) last_workspace_desires: Vec<tiler_core::world_report::WorkspaceDesire>,
+    /// Outstanding native creation authorizations from the last applied
+    /// reply, each carrying the native order (SIDs) it was first published
+    /// under. Read-only adapter surface: the create leg executes against
+    /// its live pre-order, and the baseline names the mint-time order the
+    /// core settles an uncorrelated attempt against.
+    pub(crate) last_native_creations: Vec<crate::runtime_types::NativeCreationRequest>,
     /// Core generation of the last applied reply (coherence fence for the
     /// indicator drain's exact-id select: a render verified against one
     /// generation never actuates against another).

@@ -19,9 +19,10 @@ use tiler_macos::ffi::{DisplayRect, NsDisplay, SlsDisplayRow};
 use tiler_macos::input::cg_flag_bits;
 use tiler_macos::input_match::TapKeyKind;
 use tiler_macos::runtime::{
-    AxCompletion, EngineManagedFacts, FocusCommand, FocusEvidence, FocusRoute, ObservedWindow,
-    Runtime, RuntimeConfig, RuntimeHandle, ScopedBackendSnapshot, ScopedObservation,
-    ScopedWindowMeta, ShutdownOutcome, SubmitOutcome, TopologyMode,
+    AxCompletion, EngineManagedFacts, FocusCommand, FocusEvidence, FocusRoute,
+    NativeCreationRequest, ObservedWindow, Runtime, RuntimeConfig, RuntimeHandle,
+    ScopedBackendSnapshot, ScopedObservation, ScopedWindowMeta, ShutdownOutcome, SubmitOutcome,
+    TopologyMode,
 };
 use tiler_macos::runtime_backend::{
     AxBackend, AxBackendFactory, InputSource, InputSourceFactory, RawKeyEvent,
@@ -486,6 +487,21 @@ fn wait_applied(fixture: &Fixture, window: &str) -> AppliedRecord {
             Err(_) => panic!("no applied frame for {window}"),
         }
     }
+}
+
+/// Bounded condition wait over the read-only creation surface (the field
+/// commits with the applied reply that publishes it, and the reply wakes
+/// test waiters). Returns exactly `expected` rows.
+fn wait_creation_requests(fixture: &Fixture, expected: usize) -> Vec<NativeCreationRequest> {
+    let matched = fixture.handle.wait_diagnostics_for_test(WAIT, |_| {
+        fixture.handle.native_creation_requests().len() == expected
+    });
+    assert!(
+        matched.is_some(),
+        "creation requests never reached {expected}: {:?}",
+        fixture.handle.native_creation_requests()
+    );
+    fixture.handle.native_creation_requests()
 }
 
 /// Wait for applied frames for two windows regardless of arrival order
@@ -1604,11 +1620,12 @@ fn space_switch_preserves_hidden_layout_without_retirement() {
 
 #[test]
 fn deleted_space_retires_domain_and_reseeds() {
-    // Display 1's Space 11 is DELETED (row drops it, current becomes 12):
-    // the space-11 session must retire (ring evidence) and space-12 must
-    // seed fresh and tile inside display 1's actual work area. Display 2
-    // (Space 21) is undisturbed. Companion to the switch test above, which
-    // proves a mere current change retires nothing.
+    // Display 1's Space 11 is DELETED (row drops it, the backed trailing
+    // Space 12 becomes current): the space-11 session must retire (ring
+    // evidence) and the reseeded Space must tile inside display 1's actual
+    // work area. Display 2 (Space 21) is undisturbed. Companion to the
+    // switch test above, which proves a mere current change retires
+    // nothing.
     let fixture = start(scoped_config());
     fixture
         .handle
@@ -1628,13 +1645,105 @@ fn deleted_space_retires_domain_and_reseeds() {
     assert!(fixture.handle.flush(FLUSH));
     let _ = wait_applied_pair(&fixture, "1001_1", "1002_2");
     while fixture.applied_rx.try_recv().is_ok() {}
+    let gen_a = fixture.handle.app_generation(APP_A).expect("gen A");
+    let gen_b = fixture.handle.app_generation(APP_B).expect("gen B");
 
-    let mut moved = two_display_snapshot();
+    // The core authorizes native backing for each output's trailing spare.
+    // Execute that create leg exactly as the product does: append one
+    // Space in the fake host's own topology, report the mechanical facts
+    // (the live pre-order, the first observed post-order, the Accepted
+    // setter and the dispatch stamp; causal identity stays unknown, M5),
+    // then publish the appended readback so a full report settles it
+    // against fresh state.
+    let requests = wait_creation_requests(&fixture, 2);
+    let mut spaced = two_display_snapshot();
+    for request in &requests {
+        let (row, created) = match request.target_output.as_str() {
+            "macos-display-1" => (0usize, 12u64),
+            "macos-display-2" => (1usize, 22u64),
+            other => panic!("unexpected creation output {other}"),
+        };
+        let pre = spaced.rows[row].spaces.clone();
+        assert_eq!(
+            request.order_before, pre,
+            "authorization baseline is the live pre-order"
+        );
+        let mut post = pre.clone();
+        post.push(created);
+        fixture.handle.report_creation_attempt(
+            &request.operation_id,
+            &request.logical_workspace,
+            &request.target_output,
+            tiler_core::world_report::FrameSetter::Accepted,
+            &pre,
+            &post,
+            None,
+            tiler_macos::input_eligibility::now_ms(),
+        );
+        spaced.rows[row].spaces = post;
+    }
+    spaced.revision =
+        topology::fingerprint_snapshot(&spaced.displays, &spaced.rows, spaced.separate_spaces);
+    let revision2 = fixture
+        .handle
+        .update_topology_with(spaced.clone(), &user_space);
+    // A full report under the appended readback settles both create legs.
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_A,
+            gen_a,
+            10,
+            vec![(win(1), vec![11])],
+            None,
+            revision2
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert_eq!(
+        fixture.handle.submit_scoped_observation(scoped_obs(
+            APP_B,
+            gen_b,
+            10,
+            vec![(win(2), vec![21])],
+            None,
+            revision2
+        )),
+        SubmitOutcome::Accepted
+    );
+    assert!(fixture.handle.flush(FLUSH));
+    assert!(
+        wait_creation_requests(&fixture, 0).is_empty(),
+        "create legs settle both authorizations"
+    );
+    // Settlement bound each appended Space to the authorized logical (the
+    // applied reply's own native bindings, not just an empty desire list).
+    let bindings = fixture.handle.last_pager_bindings();
+    for request in &requests {
+        let native = match request.target_output.as_str() {
+            "macos-display-1" => "space-12",
+            "macos-display-2" => "space-22",
+            other => panic!("unexpected creation output {other}"),
+        };
+        assert!(
+            bindings.iter().any(|row| {
+                row.output == request.target_output
+                    && row.workspace == request.logical_workspace
+                    && row.native.as_deref() == Some(native)
+            }),
+            "create leg binds {native} to {}::{bindings:?}",
+            request.logical_workspace
+        );
+    }
+    while fixture.applied_rx.try_recv().is_ok() {}
+
+    // Delete Space 11: the host-appended Space 12 survives and becomes the
+    // current Space.
+    let mut moved = spaced.clone();
     moved.rows[0].spaces = vec![12];
     moved.rows[0].current = Some(12);
     moved.revision =
         topology::fingerprint_snapshot(&moved.displays, &moved.rows, moved.separate_spaces);
-    let revision2 = fixture.handle.update_topology_with(moved, &user_space);
+    let revision3 = fixture.handle.update_topology_with(moved, &user_space);
     // Workers re-read under the new revision (same observed windows, new
     // membership evidence arrives with the next snapshots).
     install(
@@ -1642,8 +1751,6 @@ fn deleted_space_retires_domain_and_reseeds() {
         APP_A,
         scripted(vec![win(1)], vec![vec![12]], None),
     );
-    let gen_a = fixture.handle.app_generation(APP_A).expect("gen A");
-    let gen_b = fixture.handle.app_generation(APP_B).expect("gen B");
     assert_eq!(
         fixture.handle.submit_scoped_observation(scoped_obs(
             APP_A,
@@ -1651,7 +1758,7 @@ fn deleted_space_retires_domain_and_reseeds() {
             20,
             vec![(win(1), vec![12])],
             None,
-            revision2
+            revision3
         )),
         SubmitOutcome::Accepted
     );
@@ -1659,6 +1766,7 @@ fn deleted_space_retires_domain_and_reseeds() {
     // engine lane, and a second report advances the freshness watermark,
     // refusing A's in-flight reply as stale before it can emit (see
     // `prove_coherent` / the sequencer's `stale-observation` verdict).
+    assert!(fixture.handle.flush(FLUSH));
     let a = wait_applied(&fixture, "1001_1");
     assert_eq!(
         fixture.handle.submit_scoped_observation(scoped_obs(
@@ -1667,7 +1775,7 @@ fn deleted_space_retires_domain_and_reseeds() {
             20,
             vec![(win(2), vec![21])],
             None,
-            revision2
+            revision3
         )),
         SubmitOutcome::Accepted
     );

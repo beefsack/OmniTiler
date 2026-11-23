@@ -3735,6 +3735,7 @@ mod send_join_tests {
             last_presentation: crate::runtime::empty_world_presentation_v4(),
             last_pager_bindings: Vec::new(),
             last_workspace_desires: Vec::new(),
+            last_native_creations: Vec::new(),
             last_core_generation: String::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),
         }))

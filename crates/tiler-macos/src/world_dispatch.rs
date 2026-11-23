@@ -635,6 +635,7 @@ pub(crate) fn dispatch_gesture_report(
                     focus_queue,
                     focus_capacity,
                     &applied,
+                    &report.native,
                     ticket.command.as_ref(),
                     ticket.command_seq,
                     op,
@@ -724,6 +725,7 @@ pub(crate) fn dispatch_gesture_report(
                     focus_queue,
                     focus_capacity,
                     &applied,
+                    &report.native,
                     ticket.command.as_ref(),
                     ticket.command_seq,
                     op,
@@ -1085,6 +1087,7 @@ fn dispatch_ticket_inner(
                         focus_queue,
                         focus_capacity,
                         &applied,
+                        &report.native,
                         ticket.command.as_ref(),
                         ticket.command_seq,
                         op,
@@ -1222,6 +1225,7 @@ fn dispatch_ticket_inner(
                         focus_queue,
                         focus_capacity,
                         &applied,
+                        &report.native,
                         ticket.command.as_ref(),
                         ticket.command_seq,
                         op,
@@ -1731,6 +1735,53 @@ fn retain_stable_geometry(
     (merged, fresh_key)
 }
 
+/// Publish the applied reply's outstanding native creation authorizations
+/// for the adapter-facing read surface. `native` is the report's own native
+/// order — the order the core minted a new desire against — and a desire
+/// keeps the baseline of its first publication while it stays outstanding,
+/// so a topology move after the mint never rewrites the authorization's
+/// mint-time baseline. Desires absent from the reply (settled, pending, or
+/// ambiguous) drop from the surface. Read-only: nothing here executes a
+/// creation or changes settlement.
+fn publish_native_creations(
+    shared: &Arc<Mutex<Shared>>,
+    reply: &WorldReplyV4,
+    native: &[tiler_core::world_report::NativeObservation],
+) {
+    let mut guard = lock_shared(shared);
+    let previous = std::mem::take(&mut guard.last_native_creations);
+    let sid_order = |output: &tiler_core::directional::OutputId| -> Vec<u64> {
+        native
+            .iter()
+            .find(|row| row.output == *output)
+            .map(|row| {
+                row.native_order
+                    .iter()
+                    .filter_map(|id| id.strip_prefix("space-")?.parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    guard.last_native_creations = reply
+        .native_creations
+        .iter()
+        .map(|desire| crate::runtime_types::NativeCreationRequest {
+            operation_id: desire.operation_id.clone(),
+            logical_workspace: desire.logical_workspace.clone(),
+            target_output: desire.target_output.0.clone(),
+            order_before: previous
+                .iter()
+                .find(|request| {
+                    request.operation_id == desire.operation_id
+                        && request.logical_workspace == desire.logical_workspace
+                        && request.target_output == desire.target_output.0
+                })
+                .map(|request| request.order_before.clone())
+                .unwrap_or_else(|| sid_order(&desire.target_output)),
+        })
+        .collect();
+}
+
 /// Consume one applied world reply: current-scope controlled frames into
 /// per-app latest-wins slots, focus requests into the outbox plus the
 /// owning slot, view-transfer hold settling for pending selects, and the
@@ -1745,6 +1796,7 @@ fn consume_world_reply(
     focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
     focus_capacity: usize,
     reply: &WorldReplyV4,
+    native: &[tiler_core::world_report::NativeObservation],
     _ticket_command: Option<&WorldCommand>,
     _ticket_command_seq: Option<u64>,
     op: &'static str,
@@ -1754,6 +1806,7 @@ fn consume_world_reply(
     seq: u64,
     ticket_request_seq: u64,
 ) {
+    publish_native_creations(shared, reply, native);
     // Currently-actuated scopes as (output, LOGICAL workspace) pairs:
     // native current domains translated through the applied reply's
     // `native_binding` rows (a current-reply live lookup, never a durable
@@ -4786,6 +4839,7 @@ mod tests {
             last_presentation: crate::runtime::empty_world_presentation_v4(),
             last_pager_bindings: Vec::new(),
             last_workspace_desires: Vec::new(),
+            last_native_creations: Vec::new(),
             last_core_generation: String::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),
         }))
@@ -8508,6 +8562,7 @@ mod tests {
                 &focus_queue,
                 16,
                 reply,
+                &[],
                 None,
                 None,
                 "select",
@@ -8974,6 +9029,7 @@ mod tests {
                 &focus_queue,
                 16,
                 reply,
+                &[],
                 None,
                 None,
                 "select",
@@ -9260,6 +9316,7 @@ mod tests {
             focus_queue,
             8,
             reply,
+            &[],
             ticket,
             None,
             "reconcile",

@@ -51,11 +51,11 @@ pub use crate::focus_route::FocusRoute;
 pub use crate::runtime_types::{
     AX_CALL_TIMEOUT, AxCompletion, AxObservation, ClaimedSelect, DesiredFrame, FocusCommand,
     FocusEvidence, FocusRequest, FrameCommand, InputDirection, InputSemanticAction, LifecycleEvent,
-    LifecycleLogEntry, NativeContext, NativeDomain, ObservedWindow, PHASE1_BOUNDS, PHASE1_GAP,
-    PHASE1_GENERATION, PHASE1_OUTER_GAP, PHASE1_OUTPUT, PHASE1_OWNER, PHASE1_WORKSPACE,
-    RuntimeConfig, RuntimeDiagnostics, ScopedBackendSnapshot, ScopedWindowMeta, StartupError,
-    SubmitOutcome, TerminateOutcome, TileBinding, TopologyMode, WorkerReadiness, parse_window_id,
-    window_id,
+    LifecycleLogEntry, NativeContext, NativeCreationRequest, NativeDomain, ObservedWindow,
+    PHASE1_BOUNDS, PHASE1_GAP, PHASE1_GENERATION, PHASE1_OUTER_GAP, PHASE1_OUTPUT, PHASE1_OWNER,
+    PHASE1_WORKSPACE, RuntimeConfig, RuntimeDiagnostics, ScopedBackendSnapshot, ScopedWindowMeta,
+    StartupError, SubmitOutcome, TerminateOutcome, TileBinding, TopologyMode, WorkerReadiness,
+    parse_window_id, window_id,
 };
 pub use crate::scope::{AppScope, ProcessIdentity};
 pub use crate::topology::TopologySnapshot;
@@ -337,6 +337,7 @@ impl Runtime {
                 last_presentation: empty_world_presentation_v4(),
                 last_pager_bindings: Vec::new(),
                 last_workspace_desires: Vec::new(),
+                last_native_creations: Vec::new(),
                 last_core_generation: String::new(),
                 presentation_style: crate::active_border::PresentationStylePx::default(),
             }));
@@ -399,6 +400,7 @@ impl Runtime {
             last_presentation: empty_world_presentation_v4(),
             last_pager_bindings: Vec::new(),
             last_workspace_desires: Vec::new(),
+            last_native_creations: Vec::new(),
             last_core_generation: String::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),
         }));
@@ -1734,6 +1736,16 @@ impl RuntimeHandle {
     /// Snapshot of the last desired geometry the core planned.
     pub fn last_desired_geometry(&self) -> Vec<DesiredFrame> {
         lock_shared(&self.shared).last_desired.clone()
+    }
+
+    /// Outstanding native creation authorizations from the last applied
+    /// reply, with the native order (SIDs) each was first published under.
+    /// Read-only: the create leg still executes against its live pre-order
+    /// and reports the genuine orders around the write; the baseline names
+    /// the mint-time order the core settles an uncorrelated attempt
+    /// against. Empty when no desire is outstanding.
+    pub fn native_creation_requests(&self) -> Vec<NativeCreationRequest> {
+        lock_shared(&self.shared).last_native_creations.clone()
     }
 
     /// Test-only condition wait over structured diagnostics: parks on the
