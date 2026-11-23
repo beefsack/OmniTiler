@@ -51,11 +51,17 @@ the slice-1 evidence below for planning.
   predate the core changes in the table below. Treat both as unverified. Core
   has since moved to one retained focus settlement owner and removed reply
   `effects`, so the blocker may be resolved or changed; re-run its minimal
-  case after the build is restored and before acting on it.
-- **Build.** At `dfb70175`, a Linux `cargo check --offline --locked -p tiler-macos`
-  fails with 77 errors, all core/protocol API drift; `--all-targets` adds 7
+  case against the restored build before acting on it.
+- **Build restored (2026-11-23).** The port below removes the drift: `tiler-macos`
+  builds with `cargo check`, builds `--all-targets`, formats, passes strict
+  clippy and the library tests (1601/0/3). The mock `tests/integration` target
+  is still red (134/16) as a classified harness gap; see
+  [integration triage](#integration-triage-2026-11-23). No core or protocol
+  file changed.
+- **Historical build state.** At `dfb70175`, a Linux `cargo check --offline --locked -p tiler-macos`
+  failed with 77 errors, all core/protocol API drift; `--all-targets` added 7
   from the `tiler-windows` dev-dependency (`HostCaps`/`FieldDef.capabilities`,
-  `59a4e77b`). Code under `cfg(target_os = "macos")` adds an unknown number on
+  `59a4e77b`). Code under `cfg(target_os = "macos")` added an unknown number on
   a macOS host. The pre-port review's 80-error macOS build predates these changes.
 - **No broker.** `tiler-macos` depends on `tiler-core` and `tiler-protocol`
   only, so broker-side protocol work (PW-BR-*), the KDE renderer read
@@ -109,6 +115,153 @@ Stop and write up instead of implementing when a change needs a product or
 contract decision, any `tiler-core` or `tiler-protocol` change, the shared
 host-settled geometry design, or M3 storage. Record findings in this section
 and update the matching backlog items.
+
+### Rebase implementation: build restore (2026-11-23)
+
+Mechanical-only port of `tiler-macos` (and the `tiler-windows` settings-catalog
+compile unit in its dev-dependency path) to the current core/protocol shapes.
+No core, protocol, contract or product-semantics change; no aliases, shims or
+compatibility conversions. Every assertion was ported to the current shape
+except where the old mechanism was deleted by core (listed below).
+
+| Error group | Core change (commit) | macOS port | Files |
+| --- | --- | --- | --- |
+| Typed command IDs and subjects | `877409e8` | Direct typed `FocusDirectional`/`MoveDirectional` commands with `WindowSubject::CurrentFocus`/`FocusDirectionalSubject::CurrentFocus` replacing the `Implicit` wrapper; explicit subjects wrapped in `WindowSubject::Window`; logical ids wrapped in `WorkspaceId`; subject-aware log rendering (no `.0`, no `Display`) | `world_command_map.rs`, `workspace_send.rs` |
+| Retained drag preview split | `9a4c2125` | Read `reply.drag_preview` (`DragPreviewV4`); preview outcomes no longer come from `CommandResult` | `world_runtime.rs`, `drag_fixture.rs` |
+| One validated prepared transition | `dbdb2dd6` | `TransitionResult.outcome` instead of tuple `.0` | `workspace_select.rs`, `drag_fixture.rs`, `world_dispatch.rs` |
+| Unified v4 property attempts | `cb6a31e9` | `WindowFact.last_write` removed (macOS never produced one); report gains `visibility_attempts: Vec::new()` because macOS owns no visibility write lane, so no truthful row exists | `world_builder.rs`, `runtime_core.rs` |
+| Held presentation evidence at ingress | `01eba77d` | `DecodedReportV4` carries `residual` (canonical `None` for adapter-built reports) and `property_attempt_order` | `world_dispatch.rs` |
+| Wire cleanup | `bdefeef6` | `ReplyWireOptionals`/`DecodedReplyV4.wire` removed; `ReportWireOptionals` keeps only cursor-hit, monotonic-clock, creation-receipt and gesture bits (attempt presence derives from the typed rows) | `world_dispatch.rs` |
+| Reply `effects` removed (PW-OUT-03) | `fa60a5f3` | Deleted the vestigial one-shot-effect lane (`spent_effects`, `spend_effect`, `take_unspent_effects`, `focus_effect`); the adapter already ignored the spent list. Focus rides `reply.focus_request` into the retained focus queue. The single test of the deleted mechanism is removed with that reason; the retained-request identity it indirectly covered has its own sequencer tests | `world_sequencer.rs`, `world_dispatch.rs` |
+| Settings catalog host flags | `59a4e77b` | `HostCaps` import, `capabilities` initializers, the local caps constant, its re-export and the drift assertion removed (same treatment as the KDE exporter) | `tiler-windows/settings/windows_catalog.rs`, `tiler-windows/settings/mod.rs` |
+| Automatic maximize clear (PW-EV-02) | `d253fe52` | Clear lane deleted; macOS reports native `maximized: null` (M4) and what remains of the clear path now rides `state.maximized` core-side, so the adapter produces no clear attempt | `world_builder.rs`, `world_runtime.rs` |
+| Tagged dispositions and frame purposes (PW-EV-04) | `92505653` | `FocusFeedback.disposition`, `ViewAttempt.disposition`, `MemberAttempt.disposition`, `FrameAttempt.disposition`/`purpose`; mapping below | `runtime_native.rs`, `runtime_thread.rs`, `runtime_worker.rs`, `diag_cause.rs`, `world_dispatch.rs`, `world_runtime.rs` |
+| Explicit frame attempt identity (PW-EV-06) | `fc6e3935` | Producer-generation frame attempt ids allocated in the sequencer and retained on resend; `attemptMs` is the measured completion stamp or `None`, never an invented zero | `world_runtime.rs`, `world_sequencer.rs` |
+| Fixture engine binding | `d253fe52` fixture constructor removal | `drag_fixture` binds through the genuine production route (`WorldEngine::new` + `world_connection::connect`, macOS capabilities handshake and revision-1 settings) instead of the test-only constructor | `drag_fixture.rs` |
+
+Attempt and frame mapping applied (contract
+[raw attempts](../porting/world-contract.md#raw-attempts-and-settlement)):
+
+| macOS native outcome | v4 evidence |
+| --- | --- |
+| AX completion `Applied` | `called { setter: accepted }`; focus/visibility row reason `""` |
+| AX completion `Failed` | `called { setter: refused }`; reason `native-refused` |
+| AX completion `PartialApplied`/`Timeout` | `called { setter: threw }`; reason `native-refused` |
+| Gate/fence refused before any AX call | focus `not-called { focus-* }` / visibility `not-called { reason }`; old empty reason → `focus-no-reason`; old `focus-unproven` → `focus-foreground-unproven` |
+| Membership consumed with readback already at target | `already-at-target` (membership only) |
+| Ordinary layout frame write | `purpose: layout` |
+| Explicit float-placement frame write | `purpose: float-placement { op, pre }`, `pre` only when a read exists |
+| Frame stamp unavailable / not a native call | `attemptMs: null` for frames; a view/frame/state write with no native call stages no row |
+
+Superseded behavior note: the integration case
+`admission_never_steals_focus_but_explicit_focus_dispatches` asserted the old
+admission-suppression policy. The approved
+[retained-focus resolution](#blocker-suppressed-admission-focus-changes-the-next-implicit-subject)
+replaces it, so that case is ported to the current requirement (one retained
+focus request per cause, admission included) rather than kept as a suppression
+assertion.
+
+### Failure classification after the build restore (2026-11-23)
+
+All 16 failures from the first green build are now classified. No core or
+protocol file was edited.
+
+| Case | Class | Evidence and resolution |
+| --- | --- | --- |
+| `world_builder::tests::direct_target_focus_at_hidden_minimized_refuses_without_effect`, `world_builder::tests::first_transition_same_report_focus_never_restores_hidden` | Port defect (test input) | `WorldCommand::Focus { direction: Some(..) }` is refused by `valid_command_v4`; direct-target focus is directionless in v4. Direction dropped. |
+| `world_runtime_tests::staged_native_attempts_report_absence_not_translated_logical` | Port defect (test input) | `WorldCommand::SwitchView` is not a v4 command; the case is `SelectWorkspace`. |
+| `runtime_thread::trailing_join_tests::selection_focus_null_and_newer_epoch_cancel_without_setter` | Stale premise | Approved same-report precedence publishes the away selection intent's explicit request (`focus-2`, `ExplicitCommand`, `cmd_seq Some(1)`, target `4243_9`, op-1 `after_shown`) instead of cancelling the deferred intent for the admission one. The deferred intent stays bound (`selection_focus_pending` op-1/focus-2), the drop counter is unchanged, close epoch is `focus-2`, zero dispatches and zero queue rows. A later publication that reports the old target focused but carries no proven foreground leg (`focus_evidence`/`sys_focus`/`global_focus` unset) keeps the retained request; observed equality alone no longer retires the lane. Ported to those outcomes, no product change. |
+| `runtime_thread::drag_gesture_handoff_tests` ×3 | Two adapter defects, one stale premise | (1) `world_sequencer::accept_reply` refused a correlated reply whose terminal changes no state (cancel, orphan cancel, late drain) because `state_revision` did not advance, losing the requester's terminal; the monotonic guard now exempts replies that carry a gesture terminal. (2) A repeated stable gesture id reached core a second time and reported `committed: true` again; `handle_drag_gesture` now claims each terminal id through `Sequencer::claim_gesture_terminal` (bounded memory, cleared per generation) so a replay never dispatches, matching the documented at-most-once-by-stable-id rule. (3) The late old press case is fenced pre-dispatch by press-revision drift (same rule as every stale press), so it mints no terminal at all; ported to that outcome. Terminals are additionally filtered to the gesture id carried by the report, so a late drain of an older id never surfaces on a newer ingress. |
+| `dock_swipe_select_tests` ×9 | Host-dependent test premise (not a mapping defect) | The `Refused`/`Threw` mapping is correct; the cases never reached posting because `OwnerSelectBackend::select` read the running host major (`crate::ffi::macos_major()`), and newer host majors refuse the pinned yabai payload by design (`space_switch_edges.rs`, own test). The backend now carries the payload major and offline tests pin the newest supported major (26) through `test_force_os_major`, so the scripted seams exercise the payload itself. `Refused` and `Threw` keep their distinct meanings in every assertion. |
+
+### Native leg attempts (2026-11-23)
+
+Fixture bundle: `just fixture-app <development identity>` → `fixture-verify`
+OK; bundle `io.github.omnitiler.live-fixture`, minos 15.0, dev-signed
+(`spctl` rejects before notarization, expected).
+
+`just preflight-app` (LaunchServices, bundle-attributed): `ax_trusted:true`,
+`post_event_access:true`, `session.lock:Unlocked`, `screen_lock:Absent`,
+`secure_input:Inactive`, `sls_symbols:true`.
+
+Spaces inventory: one display, Spaces `[1,7]`, current `1`, so n = 7 and no
+Space > n exists; the guarded controller must create one.
+
+Proven on the native desktop:
+
+- Signed fixture launched through LaunchServices on the current Space
+  (inspection only, no tiling): two windows spawned over the socket,
+  `scope-inspect --scope io.github.omnitiler.live-fixture` under the probe
+  bundle (`ax_trusted:true`) observed both as `AXWindow`/`AXStandardWindow`
+  with AX frames, CG bounds/layer/onscreen and Space membership; clean
+  `shutdown` (process, socket and run directory gone).
+- The guarded `fixture-leg` controller originally refused before any Space
+  creation, product start, tap or window effect at the CG-title join. The
+  harness now proves the same identity through AX: the announced fixture
+  PID's own `AXWindows` element -> AX title parsed for caller+run tag -> AX
+  window id, corroborated by a fresh title-free CG `(pid, wid)` entry. Never
+  a title or PID guess alone; the AX application element scopes the read to
+  the fixture process. `fixture_post` full-read and commit authentication use
+  `cg_window_list_basic()` for the `(pid, wid)` association and take the
+  window's title from the fixture's own AX element (`ax_title_for_wid`), so
+  the stale-target and incarnation checks keep working title-free. The
+  `fixture-leg` now focuses each owned window through the fixture's own
+  socket before posting its chord; the post path refuses a target that is
+  not the app's selected window, and the leg previously posted to whichever
+  window happened to be focused.
+- After the AX change the signature stage passes (the `--signer` value must
+  be the full `designated => …` tail), the AX join passes and the AX title
+  authentication passes. The leg now refuses at `focus-agreement`:
+  `focus disagreement: focus agreement timeout (5s): want pid N wid X, have
+  slps N workspace N AX (N,Some(Y)) cg_owned=true` — the fixture's own
+  socket focus request did not make the target the AX focused window while
+  the scoped product was running. Admission/reflow and the admission-focus
+  case remain unproven, and no Space > n was reached (directional chords
+  create no owned Space in this controller; owned Space creation is gated on
+  space-mutating chords).
+
+Teardown receipts per attempt: `residue:[]`, `owned_reaped:[]`,
+`product_reaped:true`, `current_restored:true`; Spaces stayed `[1,7]`
+current `1`. One receipt reported `native-topology: separate-Spaces mode
+changed during the leg`; the baseline said `separate_spaces:false` while the
+finish read disagreed, with the Space inventory itself stable before and
+after, so this reads as a baseline-capture disagreement rather than a desktop
+change (no owned residue was reported).
+
+A stale 2026-11-12 receipt whose only mismatch was an appeared protected
+window was inspected and cleared after confirming that window absent and no
+owned residue; copies were kept outside the repository.
+
+Not proven: admission/reflow through the genuine route, the admission-focus
+retained-per-cause case, product chords, and any Space > n behaviour. No live
+leg exposed an adapter defect, so no adapter code changed for it.
+
+### Integration triage (2026-11-23)
+
+Corrected classification of the red `tests/integration` target (previous
+"35 all `failed-snapshot`" reading was wrong: `failed-snapshot` is the fake
+backend's expected legacy-snapshot refusal, not the cause). Counts:
+118 passed / 32 failed at triage start; 134 passed / 16 failed in the
+current tree.
+
+| Group | Root cause | Action |
+| --- | --- | --- |
+| `macos_classification` ×19 | The fixture ran `RuntimeConfig::default()` (synthetic topology) and submitted legacy `AxObservation`s; a v4 report built without a native context carries no screen rows, so no row gained allocation or frame. | Test-only: the fixture starts in `TopologyMode::Native`, publishes the suite's established 1920x1080 single-display snapshot, and the two submit helpers now build `ScopedObservation` rows (exact Space membership, neutral truthful metadata, the classifier's own float origin carried back as the role/subrole/modal fact that produced it). 18 of 21 pass; the three remaining cases are test-side fact projection (nonzero layer, partial-zero hints, position-exact restore). |
+| `runtime_phase1` ×6 | Stale suppression premise plus a missing fixture leg: admission focus is published per cause, but the worker's close-focus lane re-reads the selected oracle (`backend.selected_focus_evidence()`), whose trait default is `None`, so requests ended `focus outcome=unproven-read` → `focus-result not-called`. | `admission_never_steals_focus_but_explicit_focus_dispatches` is ported to one-retained-request-per-cause; per-fake `selected_focus_evidence` is implemented from each fixture's own snapshot. Five cases remain open, needing their own attested evidence and an `internal=unchanged` trace. |
+| `scoped_tile` ×4, `focus_gaps_trace` ×1 | The same selected-oracle leg, plus owner-slot dispatch and lifecycle cases. | Oracle wired. `frontmost_change_clears_and_repromotes_without_backend_change` passes; `focus_dispatches_through_owner_slot_with_exact_target` is blocked on the controller-outbox premise; `deleted_space_retires_domain_and_reseeds` and `stale_select_flight_still_binds_claim_and_never_replays` are untriaged; `focus_gaps_trace` still needs its own diagnostics trace. |
+| `scoped_gates` ×3, `runtime_freshness` ×1 | Not yet triaged to a shared cause. | Open; `midflight_input_stales_the_flight_and_newest_applies_alone` is flaky across identical builds. |
+
+### Offline gates (2026-11-23)
+
+Exact commands from the [macOS environment gate](../macos-dev-environment.md#4-prove-the-portable-offline-cargo-baseline-allowlist-only),
+run after the port:
+
+| Gate | First run | After fixes | Notes |
+| --- | --- | --- | --- |
+| `cargo build --locked -p tiler-core -p tiler-protocol -p tiler-macos` | exit 0 | — | |
+| `cargo test --locked -p tiler-core -p tiler-protocol -p tiler-macos` | exit 101: 4373 passed, 16 failed | exit 101: core 2468 passed / 0 failed, every protocol suite ok, `tiler-macos` lib 1601 passed / 0 failed / 3 ignored; `tests/integration` 134 passed / 16 failed | The integration target is a named mock-harness gap, classified above; no core or protocol failure. |
+| `cargo fmt --all -- --check` | exit 1, two ported test helpers unformatted (`drag_drop.rs`, `native_lifetime_tests.rs`) | exit 0 after `cargo fmt --all` | formatting only, no semantic change |
+| `cargo clippy --locked -p tiler-core -p tiler-protocol -p tiler-macos --all-targets -- -D warnings` | exit 101, 53 `-D warnings` lints (18 lib, 35 test-target) | exit 0 | mechanical lint fixes only: `too_many_arguments` allows per repo convention, private tuple type aliases, `repeat_n`, `clone_on_copy`, needless borrows, `let_and_return`, `collapsible_if`, `field_reassign_with_default`. Two lib lints (`border_runtime.rs` needless return, `native_tile_backend.rs` argument count) were latent in untouched files: the crate did not compile before the port, so the gate had never run. |
 
 ## Pre-port review outcomes (2026-11-10)
 
