@@ -375,6 +375,41 @@ Ranked remaining adapter work: the batch-3 utility mapping with its native
 palette check; a cursor-hit producer (unblocks focus-follows-cursor and
 perpendicular recency). The M3 storage decision stays with its owner.
 
+### Cursor/hover producer: designed, not implemented (2026-11-24)
+
+The adapter never emits the cursor pair: `world_builder.rs` hardcodes
+`cursor: None, cursor_hit: None`, `ReportInput` has no cursor field, and
+`world_runtime.rs` never supplies one, so the `focus-follows-cursor` cause
+and the accepted-hover arm of perpendicular recency are unreachable.
+
+Facts that constrain the implementation:
+
+- Core's only pointer window is the staged report's `cursor_hit`, and it must
+  be a live, non-minimized, non-fullscreen/sticky/host-hidden, homed,
+  current-view tiled member (`world_cursor.rs`).
+- The protocol requires `cursorHit` to be paired with a non-null `cursor`
+  and an id from that same report's `windows` rows (`world_protocol.rs`
+  around :4244-4262), so the pair is emitted together or not at all.
+- KDE emits the hit only when the raw hit resolves to the same report's
+  final emitted windows and omits chrome, foreign and unreadable hits.
+- Both hit-test legs already exist unused: `ffi.rs` `ax_element_at_position`
+  (public `AXUIElementCopyElementAtPosition`, bounded, `noValue` = honest
+  miss) and `ax_hit_test_owner` (bounded parent walk to an exact
+  `(pid, wid)`); the cursor point comes from `synth::cursor_position()`.
+- The main thread must do no AX on a cadence and the engine thread does none
+  today, and reports are only built on an observation/command/terminate, so a
+  pointer move alone currently produces no report.
+
+Designed shape: a bounded observer thread (250 ms tick, 1 s hit refresh,
+retry on an unacked sample) posting a new data-lane job, the sample stored on
+the session, attribution to a homed member at sample time (never re-read at
+build time, or a resting pointer would clear hover memory), and
+`cursor`/`cursor_hit` filled in the builder while `focused_global`,
+`foreground_known` and `focus_changes` stay untouched because hover is an
+observation, never a focus claim. A read-only `cursor-probe` CLI is the
+diagnostic for the pre-attribution observation. Nothing of this is
+implemented yet.
+
 ### Integration triage (2026-11-23)
 
 Corrected classification of the red `tests/integration` target (the earlier
