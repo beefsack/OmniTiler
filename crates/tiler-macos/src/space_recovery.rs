@@ -35,9 +35,11 @@
 //! public legs after the mover exits.
 //!
 //! Prior art (local checkouts only; pinned upstream URLs): Mission Control
-//! traversal follows Hammerspoon's public AX shape (`mc` → `mc.display` on
-//! `AXDisplayID` → `mc.spaces.list[i]` press, 0.3 s stabilize, 2 s group
-//! poll) with the private toggle replaced by a public app launch:
+//! traversal keeps Hammerspoon's public AX identifiers, but on this host
+//! they hang directly off `com.apple.WindowManager` (no `mc` root):
+//! `mc.display` on `AXDisplayID` → `mc.spaces` → `mc.spaces.list[i]` press,
+//! 0.3 s stabilize, 2 s group poll, with the private toggle replaced by a
+//! public app launch:
 //! https://github.com/Hammerspoon/hammerspoon/blob/23e387e2805a9890066366e0ac96c71b27f0cfd5/extensions/spaces/spaces.lua#L84-L152
 //! Per-window SLS membership reads use the pinned yabai shape:
 //! https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c#L665-L705

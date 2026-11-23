@@ -18,15 +18,16 @@ use crate::mc_probe::{
     ActionBudget, FocusLegs, GhosttyWindow, LegLatency, MC_CLEANUP_RESERVE_SECS,
     MC_EFFECT_SETTLE_MS, McAction, McError, McErrorReport, McFailEvidence, McInspectReport,
     McLayout, McLifecycleReport, TopologySnapshot, error_json, focus_restored, removal_eligibility,
-    require_dock_bundle, validate_create_effect, validate_goto_effect, validate_removal_effect,
+    require_dock_bundle, require_mc_surface_bundle, validate_create_effect, validate_goto_effect,
+    validate_removal_effect,
 };
 // macOS-only live dispatch names (used via `live` on macOS; off-mac the stub
 // never touches them, so gate them to keep strict Clippy clean).
 #[cfg(target_os = "macos")]
 use crate::mc_probe::{
     DOCK_BUNDLE_ID, MC_ACTION_PRESS, MC_ACTION_REMOVE_DESKTOP, MC_ACTION_TIMEOUT_MS,
-    MC_AX_TIMEOUT_SECS, MC_GROUP_POLL_MS, MC_ID_DISPLAY, MC_ID_ROOT, MC_ID_SPACES,
-    MC_ID_SPACES_ADD, MC_ID_SPACES_LIST, MC_STABILIZE_MS, require_ax_trust,
+    MC_AX_TIMEOUT_SECS, MC_GROUP_POLL_MS, MC_ID_DISPLAY, MC_ID_SPACES, MC_ID_SPACES_ADD,
+    MC_ID_SPACES_LIST, MC_STABILIZE_MS, MC_SURFACE_BUNDLE_ID, require_ax_trust,
     require_unlocked_session,
 };
 // Read-only observation helpers live in `mc_observe`; re-exported here so
@@ -174,18 +175,45 @@ pub(crate) mod live {
         }
     }
 
-    /// Dock AX element with a FRESH exact bundle verification on every
+    /// Live MC surface PID: exactly one `com.apple.WindowManager` entry
+    /// (never guessed).
+    pub fn mc_surface_pid() -> Result<i32, McError> {
+        let mut found = Vec::new();
+        for (pid, bundle) in crate::ffi::running_apps() {
+            if bundle == MC_SURFACE_BUNDLE_ID {
+                found.push(pid);
+            }
+        }
+        match found.len() {
+            1 if found[0] > 1 => Ok(found[0]),
+            1 => Err(McError::Ownership(
+                "refusing reserved Mission Control surface pid".to_owned(),
+            )),
+            0 => Err(McError::Unsupported(
+                "no live com.apple.WindowManager entry in the running-application table".to_owned(),
+            )),
+            _ => Err(McError::Blocked(format!(
+                "ambiguous Mission Control surface identity ({} entries); refusing to guess",
+                found.len()
+            ))),
+        }
+    }
+
+    /// MC surface AX element with a FRESH exact bundle verification on every
     /// traversal (never the inspect-time PID alone), plus a finite messaging
     /// timeout before any read.
-    fn dock_element(pid: i32) -> Result<crate::ffi::AxElement, McError> {
+    fn mc_surface_element(pid: i32) -> Result<crate::ffi::AxElement, McError> {
         let bundle = crate::ffi::bundle_id_for_pid(pid).unwrap_or_default();
-        super::require_dock_bundle(&bundle)?;
-        let element = crate::ffi::AxElement::application(pid)
-            .ok_or_else(|| McError::System(format!("Dock AX element unavailable for pid {pid}")))?;
+        super::require_mc_surface_bundle(&bundle)?;
+        let element = crate::ffi::AxElement::application(pid).ok_or_else(|| {
+            McError::System(format!(
+                "Mission Control surface AX element unavailable for pid {pid}"
+            ))
+        })?;
         let status = crate::ffi::ax_set_messaging_timeout(&element, MC_AX_TIMEOUT_SECS);
         if status != 0 {
             return Err(McError::System(format!(
-                "Dock AX messaging timeout unset: {}",
+                "Mission Control surface AX messaging timeout unset: {}",
                 crate::ffi::ax_error_name(status)
             )));
         }
@@ -217,9 +245,10 @@ pub(crate) mod live {
         Ok(None)
     }
 
-    /// Read-only MC-group presence (Dock → `AXIdentifier == "mc"`).
+    /// Read-only MC-group presence: a direct `mc.display` child of the
+    /// WindowManager application element.
     pub fn mc_group_present() -> Result<bool, McError> {
-        Ok(child_with_id(&dock_element(dock_pid()?)?, MC_ID_ROOT)?.is_some())
+        Ok(child_with_id(&mc_surface_element(mc_surface_pid()?)?, MC_ID_DISPLAY)?.is_some())
     }
 
     /// Shared bounded poll: first `Some` wins; `None` at the deadline.
@@ -327,16 +356,14 @@ pub(crate) mod live {
         ))
     }
 
-    /// Fresh AX join of one display's `mc.spaces` group: Dock → `mc` →
-    /// `mc.display` with `AXDisplayID == cgid` → `mc.spaces`.
+    /// Fresh AX join of one display's `mc.spaces` group: WindowManager
+    /// application element → `mc.display` with `AXDisplayID == cgid` →
+    /// `mc.spaces`.
     fn spaces_group(cgid: u32) -> Result<crate::ffi::AxElement, McError> {
-        let dock = dock_element(dock_pid()?)?;
-        let mc = child_with_id(&dock, MC_ID_ROOT)?.ok_or_else(|| {
-            McError::System("Mission Control AX group absent mid-lifecycle".to_owned())
-        })?;
-        let displays = crate::ffi::ax_children(&mc).map_err(|code| {
+        let surface = mc_surface_element(mc_surface_pid()?)?;
+        let displays = crate::ffi::ax_children(&surface).map_err(|code| {
             McError::System(format!(
-                "mc AXChildren unreadable: {}",
+                "Mission Control surface AXChildren unreadable: {}",
                 crate::ffi::ax_error_name(code)
             ))
         })?;
@@ -701,6 +728,10 @@ pub(crate) mod live {
     }
 
     pub fn dock_pid() -> Result<i32, McError> {
+        unsupported("Mission Control lifecycle")
+    }
+
+    pub fn mc_surface_pid() -> Result<i32, McError> {
         unsupported("Mission Control lifecycle")
     }
 
@@ -1190,10 +1221,20 @@ pub fn run_mc_inspect() -> Result<String, (i32, String)> {
     let session = crate::ffi::session_state();
     let ax_trusted = crate::ffi::ax_is_process_trusted();
     let post_event_access = crate::ffi::cg_post_event_access_known();
-    let (dock_pid, dock_bundle, presence, presence_error) = match live::dock_pid() {
+    let (dock_pid, dock_bundle, dock_error) = match live::dock_pid() {
         Ok(pid) => {
             let bundle = crate::ffi::bundle_id_for_pid(pid).unwrap_or_default();
-            let (present, err) = match require_dock_bundle(&bundle) {
+            match require_dock_bundle(&bundle) {
+                Ok(()) => (Some(pid), Some(bundle), None),
+                Err(e) => (Some(pid), Some(bundle), Some(e.to_string())),
+            }
+        }
+        Err(e) => (None, None, Some(e.to_string())),
+    };
+    let (surface_pid, surface_bundle, presence, presence_error) = match live::mc_surface_pid() {
+        Ok(pid) => {
+            let bundle = crate::ffi::bundle_id_for_pid(pid).unwrap_or_default();
+            let (present, err) = match require_mc_surface_bundle(&bundle) {
                 Ok(()) => match live::mc_group_present() {
                     Ok(p) => (Some(p), None),
                     Err(e) => (None, Some(e.to_string())),
@@ -1214,6 +1255,9 @@ pub fn run_mc_inspect() -> Result<String, (i32, String)> {
         post_event_access,
         dock_pid,
         dock_bundle,
+        dock_error,
+        mc_surface_pid: surface_pid,
+        mc_surface_bundle: surface_bundle,
         mc_group_present: presence,
         presence_error,
         layout,

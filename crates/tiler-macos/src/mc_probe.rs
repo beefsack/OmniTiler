@@ -25,8 +25,10 @@
 //! glide filters below-normal layers (desktop layer -1) and screensaver 25:
 //! https://github.com/tmandry/glide/blob/ef3b30f88445fe4b517eb4c60023011f6d3725dd/src/actor/window_server.rs#L502
 //!
-//! This probe keeps Hammerspoon's public AX shape but replaces the private
-//! toggle with public `NSWorkspace.launchApplication("Mission Control")`:
+//! This probe keeps Hammerspoon's public AX identifier shape, but on this
+//! host the surface is `com.apple.WindowManager` with no `mc` root hop; it
+//! replaces the private toggle with public
+//! `NSWorkspace.launchApplication("Mission Control")`:
 //! app launch needs no Accessibility trust and no Automation consent. AX
 //! legs still need observed (never prompted) trust. No synthetic input,
 //! AppleScript, or System Events anywhere. TCC: launch needs no grant; AX
@@ -34,15 +36,18 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Exact Dock bundle: the only AX target. Exact match, never substring;
-/// protected bundles refuse even on PID coincidence.
+/// Exact Dock bundle: retained for Dock window/exit-watch identity, not the
+/// MC AX surface. Exact match, never substring; protected bundles refuse
+/// even on PID coincidence.
 pub const DOCK_BUNDLE_ID: &str = "com.apple.dock";
+/// Exact Mission Control AX surface bundle on this host. Its application
+/// element owns the `mc.display` children directly (no `mc` root group).
+pub const MC_SURFACE_BUNDLE_ID: &str = "com.apple.WindowManager";
 /// Read-only Ghostty inclusion substring for the protective snapshot.
 /// Deliberately broader than refusal matching: reads must never miss an
 /// ordinary Ghostty window. Inclusion is read-only and never excludes.
 pub const GHOSTTY_SUBSTR: &str = "ghostty";
 /// Mission Control AX identifiers (Hammerspoon shape).
-pub const MC_ID_ROOT: &str = "mc";
 pub const MC_ID_DISPLAY: &str = "mc.display";
 pub const MC_ID_SPACES: &str = "mc.spaces";
 pub const MC_ID_SPACES_ADD: &str = "mc.spaces.add";
@@ -306,6 +311,28 @@ pub fn require_dock_bundle(bundle: &str) -> Result<(), McError> {
     if bundle != DOCK_BUNDLE_ID {
         return Err(McError::Ownership(format!(
             "refusing Mission Control traversal: target bundle '{bundle}' != '{DOCK_BUNDLE_ID}'"
+        )));
+    }
+    Ok(())
+}
+
+/// Require the exact MC surface bundle for the AX target PID. Empty,
+/// protected (Ghostty/terminals included), or non-surface bundles refuse
+/// before any AX call — traversal never addresses a foreign app.
+pub fn require_mc_surface_bundle(bundle: &str) -> Result<(), McError> {
+    if bundle.is_empty() {
+        return Err(McError::Ownership(
+            "refusing Mission Control traversal: target bundle unreadable".to_owned(),
+        ));
+    }
+    if crate::ownership::is_protected_bundle(bundle) {
+        return Err(McError::Ownership(format!(
+            "refusing Mission Control traversal on protected bundle '{bundle}'"
+        )));
+    }
+    if bundle != MC_SURFACE_BUNDLE_ID {
+        return Err(McError::Ownership(format!(
+            "refusing Mission Control traversal: target bundle '{bundle}' != '{MC_SURFACE_BUNDLE_ID}'"
         )));
     }
     Ok(())
@@ -1209,6 +1236,9 @@ pub struct McInspectReport {
     pub post_event_access: Option<bool>,
     pub dock_pid: Option<i32>,
     pub dock_bundle: Option<String>,
+    pub dock_error: Option<String>,
+    pub mc_surface_pid: Option<i32>,
+    pub mc_surface_bundle: Option<String>,
     pub mc_group_present: Option<bool>,
     pub presence_error: Option<String>,
     pub layout: Option<McLayout>,

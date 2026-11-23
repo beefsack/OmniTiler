@@ -226,6 +226,34 @@ fn dock_gate_matches_exactly_and_refuses_protected() {
 }
 
 #[test]
+fn mc_surface_gate_matches_exactly_and_refuses_other_surfaces() {
+    assert_eq!(MC_SURFACE_BUNDLE_ID, "com.apple.WindowManager");
+    assert_ne!(MC_SURFACE_BUNDLE_ID, DOCK_BUNDLE_ID);
+    assert!(require_mc_surface_bundle(MC_SURFACE_BUNDLE_ID).is_ok());
+    assert!(require_mc_surface_bundle("").is_err());
+    for b in [
+        DOCK_BUNDLE_ID,
+        "com.apple.finder",
+        "com.mitchellh.ghostty",
+        "com.apple.Terminal",
+        "com.googlecode.iterm2",
+    ] {
+        let err = require_mc_surface_bundle(b).unwrap_err();
+        assert!(matches!(err, McError::Ownership(_)), "{b}");
+    }
+}
+
+#[test]
+fn mc_child_identifiers_are_exact_and_distinct() {
+    // The live traversal matches these byte-exactly on AXIdentifier.
+    assert_eq!(MC_ID_DISPLAY, "mc.display");
+    assert_eq!(MC_ID_SPACES, "mc.spaces");
+    assert_eq!(MC_ID_SPACES_LIST, "mc.spaces.list");
+    assert_eq!(MC_ID_SPACES_ADD, "mc.spaces.add");
+    assert_ne!(MC_ID_DISPLAY, MC_ID_SPACES);
+}
+
+#[test]
 fn budget_refuses_inside_reserve_past_deadline_and_past_cap() {
     // Zero-second budget: the reserve already covers the deadline, so even
     // the first main-phase spend refuses deterministically.
