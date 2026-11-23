@@ -3855,8 +3855,8 @@ mod send_join_tests {
         };
         // Same implicit core-owned source mapping as production: no
         // adapter output decision, no native-domain default.
-        let command = crate::world_command_map::send_command_implicit(&action, "4242_7")
-            .expect("armed send maps");
+        let command =
+            crate::world_command_map::send_command_implicit(&action).expect("armed send maps");
         let mut claim = ClaimedSelect::tap(action);
         claim.send_subject = Some("4242_7".to_owned());
         claim.send_generation = Some(1);

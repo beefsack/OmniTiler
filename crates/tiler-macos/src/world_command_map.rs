@@ -8,14 +8,14 @@
 //! subset maps to planner-owned select commands (positional numbered
 //! selects over the adopted ring, relative/previous/trailing unchanged),
 //! the send-shaped actions map to positional planner-owned send commands
-//! for the admission-resolved explicit source, directional focus/move map
-//! to execution-time implicit directional commands (core-owned subject at
-//! execution), every other supported tiling action maps to its existing
-//! core command shape, and anything
+//! for the core-owned implicit source, directional focus/move, keyboard
+//! resize and the toggles map to execution-time implicit subjects
+//! (core-owned subject at execution), and anything
 //! else has no route (capability-refused by the caller). Pure over
 //! retained input state except the keyboard-resize repeat cursor it
 //! advances. The core resolves all targeting from these commands; the
-//! adapter never mints logical ids or re-resolves ordinals.
+//! adapter never mints logical ids, re-resolves ordinals, or substitutes
+//! observed foreground for the execution subject.
 
 use tiler_core::directional::{OutputId, WindowId, WindowSubject, WorkspaceId};
 use tiler_core::world_report::{FocusDirectionalSubject, WorldCommand};
@@ -120,27 +120,26 @@ pub(crate) fn select_command_with_capability(
 }
 
 /// Map one send-shaped action to its planner-owned world command for the
-/// focused-window `window` subject, with a core-owned implicit source.
+/// execution-time core focus subject, with a core-owned implicit source.
 /// Numbered sends (`1..=9`, follow or stay) and trailing send-0 follow ride
 /// positional [`WorldCommand::SendNumbered`]: the ordinal resolves core-side
 /// against the scoped send ring for the core-resolved source, whose order
 /// tracks native Desktop order under host-owned adoption. The source stays
 /// [`SendSource::HomeThenAction`](tiler_core::world_report::SendSource)
 /// (the keyboard send route: retained pre-observation home first, never an
-/// adapter output decision and never a native-domain default). The adapter
-/// pins only subject lifetime/generation/source freshness natively; targeting
-/// is entirely core-owned. Non-send-shaped actions (relative sends, outputs,
-/// selects, basics) have no send route (`None`). Trailing send-0 follow
-/// maps only when `trailing_enabled`; stay-0 never maps.
+/// adapter output decision and never a native-domain default). The subject
+/// is the closed `CurrentFocus` marker: core resolves it at execution from
+/// its logical cursor or eligible observed foreground, so the adapter never
+/// pins observed foreground or guesses a target. Lifecycle/generation/
+/// source-domain freshness pins apply after the reply names the resolved
+/// window. Non-send-shaped actions (relative sends, outputs, selects,
+/// basics) have no send route (`None`). Trailing send-0 follow maps only
+/// when `trailing_enabled`; stay-0 never maps.
 /// Offline test seam over [`send_command_implicit_with_capability`].
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn send_command_implicit(
-    action: &InputSemanticAction,
-    window: &str,
-) -> Option<WorldCommand> {
+pub(crate) fn send_command_implicit(action: &InputSemanticAction) -> Option<WorldCommand> {
     send_command_implicit_with_capability(
         action,
-        window,
         crate::workspace_input::TRAILING_CAPABILITY_ENABLED,
     )
 }
@@ -149,14 +148,13 @@ pub(crate) fn send_command_implicit(
 /// above with `trailing_enabled` threaded from the single capability gate.
 pub(crate) fn send_command_implicit_with_capability(
     action: &InputSemanticAction,
-    window: &str,
     trailing_enabled: bool,
 ) -> Option<WorldCommand> {
     use tiler_core::world_report::SendSource;
     match action {
         InputSemanticAction::WorkspaceSend { index, follow } if (1..=9).contains(index) => {
             Some(WorldCommand::SendNumbered {
-                window: WindowSubject::Window(WindowId(window.to_owned())),
+                window: WindowSubject::CurrentFocus,
                 source: SendSource::HomeThenAction,
                 index: *index,
                 follow: *follow,
@@ -166,7 +164,7 @@ pub(crate) fn send_command_implicit_with_capability(
             index: 0,
             follow: true,
         } if trailing_enabled => Some(WorldCommand::SendNumbered {
-            window: WindowSubject::Window(WindowId(window.to_owned())),
+            window: WindowSubject::CurrentFocus,
             source: SendSource::HomeThenAction,
             index: 0,
             follow: true,
@@ -229,16 +227,17 @@ pub(crate) fn send_command_with_capability(
 }
 
 /// Map one supported tiling input to its world command plus its
-/// diagnostic op token. Directional focus/move ride the execution-time
-/// implicit directional commands (`CurrentFocus` resolves from retained
-/// canonical focus at execution; no placeholder window id is carried),
-/// resize and the toggles keep their
-/// exact legacy [`CoreCommand`](tiler_core::boundary::CoreCommand) shapes under
-/// [`WorldCommand::Operation`](tiler_core::world_report::WorldCommand).
-/// Selects and unsupported actions have no operation route here (`None`).
+/// diagnostic op token. Directional focus/move and keyboard
+/// resize/toggle-float/toggle-orientation ride execution-time implicit
+/// subjects: `CurrentFocus` resolves from retained canonical focus at
+/// execution after preceding actions, so no placeholder window id is
+/// carried and observed foreground is never substituted. The resize repeat
+/// cursor is keyed on the observed foreground when one is reported (the
+/// native continuation proof available adapter-side) and on the implicit
+/// selector otherwise. Selects and unsupported actions have no operation
+/// route here (`None`).
 pub(crate) fn operation_command(
     action: &InputSemanticAction,
-    window: &str,
     retained: &mut RetainedCore,
 ) -> Option<(WorldCommand, &'static str)> {
     use crate::runtime::InputDirection;
@@ -250,6 +249,15 @@ pub(crate) fn operation_command(
         InputDirection::Up => Direction::Up,
         InputDirection::Down => Direction::Down,
     };
+    // Repeat continuation proof: the observed foreground names the press
+    // subject when the host reports one; otherwise both presses share the
+    // implicit core cursor selector (the exact resolved window is core
+    // state, never guessed adapter-side).
+    let repeat_subject = retained
+        .observed_focus
+        .as_ref()
+        .map(|window| window.0.clone())
+        .unwrap_or_default();
     match action {
         InputSemanticAction::FocusStep { direction } => Some((
             WorldCommand::FocusDirectional {
@@ -276,17 +284,19 @@ pub(crate) fn operation_command(
             };
             // Exact Windows/KDE repeat rule, tracked macOS-side as before:
             // the press index continues only on a
-            // focused-window/direction/mode match, restarts otherwise.
+            // subject/direction/mode match, restarts otherwise. The
+            // subject selector is the reported foreground when known, else
+            // the shared implicit core cursor.
             let (press_index, repeat) = crate::runtime_core::resize_repeat_next(
                 retained.resize_repeat.clone(),
-                window,
+                &repeat_subject,
                 direction.as_str(),
                 mode.as_str(),
             );
             retained.resize_repeat = Some(repeat);
             Some((
                 WorldCommand::Operation(CoreCommand::Resize {
-                    window: WindowSubject::Window(WindowId(window.to_owned())),
+                    window: WindowSubject::CurrentFocus,
                     direction: typed_direction,
                     mode: typed_mode,
                     press_index,
@@ -296,14 +306,14 @@ pub(crate) fn operation_command(
         }
         InputSemanticAction::ToggleFloat => Some((
             WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: WindowSubject::Window(WindowId(window.to_owned())),
+                window: WindowSubject::CurrentFocus,
                 float_rect: None,
             }),
             OP_TOGGLE_FLOAT,
         )),
         InputSemanticAction::ToggleOrientation => Some((
             WorldCommand::Operation(CoreCommand::ToggleOrientation {
-                window: WindowSubject::Window(WindowId(window.to_owned())),
+                window: WindowSubject::CurrentFocus,
             }),
             OP_TOGGLE_ORIENTATION,
         )),
@@ -446,7 +456,7 @@ mod directional_codec_tests {
                 expected_move,
             ),
         ] {
-            let (command, token) = operation_command(&action, "4242_7", &mut retained)
+            let (command, token) = operation_command(&action, &mut retained)
                 .unwrap_or_else(|| panic!("{action:?} has an operation route"));
             assert_eq!(token, op);
             assert_eq!(
@@ -665,8 +675,7 @@ mod directional_codec_tests {
         // Control 1: win1 -> win2 plans with one correlated retained
         // explicit focus request and no command result (tiled success
         // carries no result: the request IS the outcome).
-        let (command, op) =
-            operation_command(&right, "4242_7", &mut retained).expect("focus route");
+        let (command, op) = operation_command(&right, &mut retained).expect("focus route");
         assert_eq!(op, OP_FOCUS);
         let second = command_report(
             &ctx,
@@ -709,7 +718,7 @@ mod directional_codec_tests {
         );
 
         // Control 2: arrival on win2, then win2 -> win3.
-        let (command, _) = operation_command(&right, "4242_8", &mut retained).expect("focus route");
+        let (command, _) = operation_command(&right, &mut retained).expect("focus route");
         let third = command_report(
             &ctx,
             &members,
@@ -753,7 +762,7 @@ mod directional_codec_tests {
         // Exhausted edge: arrival on win3, then win3 + right retains.
         // Accepted envelope, typed Rejected(OperationRefused), no focus
         // effect, sequence consumed.
-        let (command, _) = operation_command(&right, "4242_9", &mut retained).expect("focus route");
+        let (command, _) = operation_command(&right, &mut retained).expect("focus route");
         let edge_command = command.clone();
         let fourth = command_report(
             &ctx,
@@ -941,33 +950,34 @@ mod trailing_command_tests {
         assert!(crate::workspace_input::is_armed_select_with(&select0, true));
         assert!(crate::workspace_input::is_armed_send_with(&send0, true));
         assert!(!crate::workspace_input::is_armed_send_with(&stay0, true));
-        // Implicit production mapping resolves the source core-side: no
-        // adapter output decision, no native-domain default.
+        // Implicit production mapping resolves both the subject and the
+        // source core-side: the closed current-focus marker, no adapter
+        // output decision and no native-domain default.
         assert_eq!(
-            send_command_implicit(&send1, "4242_7"),
+            send_command_implicit(&send1),
             Some(WorldCommand::SendNumbered {
-                window: WindowSubject::Window(WindowId("4242_7".to_owned())),
+                window: WindowSubject::CurrentFocus,
                 source: SendSource::HomeThenAction,
                 index: 1,
                 follow: true,
             })
         );
         assert_eq!(
-            send_command_implicit_with_capability(&send0, "4242_7", true),
+            send_command_implicit_with_capability(&send0, true),
             Some(WorldCommand::SendNumbered {
-                window: WindowSubject::Window(WindowId("4242_7".to_owned())),
+                window: WindowSubject::CurrentFocus,
                 source: SendSource::HomeThenAction,
                 index: 0,
                 follow: true,
             })
         );
         assert_eq!(
-            send_command_implicit_with_capability(&send0, "4242_7", false),
+            send_command_implicit_with_capability(&send0, false),
             None,
             "capability-disabled send-0 has no route"
         );
         assert_eq!(
-            send_command_implicit_with_capability(&stay0, "4242_7", true),
+            send_command_implicit_with_capability(&stay0, true),
             None,
             "stay-0 never maps"
         );

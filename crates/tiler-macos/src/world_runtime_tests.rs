@@ -169,7 +169,6 @@ fn select_commands_cover_exactly_the_armed_subset() {
 #[test]
 fn operation_commands_cover_every_supported_tiling_action() {
     let mut retained = RetainedCore::default();
-    let window = "1001_7";
     for (action, op) in [
         (
             InputSemanticAction::FocusStep {
@@ -196,13 +195,39 @@ fn operation_commands_cover_every_supported_tiling_action() {
             OP_TOGGLE_ORIENTATION,
         ),
     ] {
-        let (command, token) = operation_command(&action, window, &mut retained)
+        let (command, token) = operation_command(&action, &mut retained)
             .unwrap_or_else(|| panic!("{action:?} has an operation route"));
         assert_eq!(token, op);
         assert!(
             tiler_core::world_report::valid_command(&command),
             "{action:?} carries a valid world command"
         );
+        // Every operation shape names the execution-time core subject; no
+        // observed foreground is substituted adapter-side.
+        match &command {
+            tiler_core::world_report::WorldCommand::FocusDirectional {
+                window: tiler_core::world_report::FocusDirectionalSubject::CurrentFocus,
+                ..
+            }
+            | tiler_core::world_report::WorldCommand::MoveDirectional {
+                window: tiler_core::directional::WindowSubject::CurrentFocus,
+                ..
+            }
+            | tiler_core::world_report::WorldCommand::Operation(
+                tiler_core::boundary::CoreCommand::Resize {
+                    window: tiler_core::directional::WindowSubject::CurrentFocus,
+                    ..
+                }
+                | tiler_core::boundary::CoreCommand::ToggleFloat {
+                    window: tiler_core::directional::WindowSubject::CurrentFocus,
+                    ..
+                }
+                | tiler_core::boundary::CoreCommand::ToggleOrientation {
+                    window: tiler_core::directional::WindowSubject::CurrentFocus,
+                },
+            ) => {}
+            other => panic!("{action:?} must carry the current-focus subject, got {other:?}"),
+        }
     }
     // Workspace actions never ride the operation route (planner-owned
     // selects or refusals only).
@@ -215,7 +240,7 @@ fn operation_commands_cover_every_supported_tiling_action() {
         InputSemanticAction::WorkspacePrevious,
     ] {
         assert!(
-            operation_command(&action, window, &mut retained).is_none(),
+            operation_command(&action, &mut retained).is_none(),
             "{action:?} is never an operation"
         );
     }

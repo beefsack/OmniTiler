@@ -1860,14 +1860,15 @@ pub(crate) fn process_job(
                 crate::stage_timing::finish(shared, span, crate::stage_timing::outcome::DISPATCHED);
                 return;
             }
-            // The subject is observed truth, never planned focus.
-            let Some(window) = retained.observed_focus.clone() else {
-                lock_shared(shared).diagnostics.input_refused_no_focus += 1;
-                emit(shared, 0, 0, 0, "input", "refused-no-focus", 0);
-                crate::stage_timing::finish(shared, span, "refused-no-focus");
-                return;
-            };
-            let Some((command, op)) = operation_command(&action, &window.0, retained) else {
+            // The subject is the execution-time core focus: the command
+            // carries the closed current-focus marker and core resolves it
+            // from its logical cursor or eligible observed foreground after
+            // preceding actions. No observed-focus substitution and no
+            // pre-dispatch observed-focus/domain refusal: an unresolved
+            // subject surfaces as core's own `focus-unknown`, and an
+            // off-current resolved target never reaches native actuation
+            // because reply frames only apply in current scopes.
+            let Some((command, op)) = operation_command(&action, retained) else {
                 // Unarmed workspace actions refuse in the guard above and
                 // armed selects enqueue in their lane too (sends refuse in
                 // the guard as well), so this is unreachable (adding an
@@ -1880,30 +1881,7 @@ pub(crate) fn process_job(
                 guard.notify_test_waiters();
             }
             emit(shared, 0, 0, 0, "input", op, 0);
-            // Native mode resolves the subject's homed domain: an unmapped
-            // subject refuses instead of planning the skeleton, and a
-            // hidden-domain subject never dispatches (no input writes or
-            // focus moves into an off-current Space). Synthetic mode keeps
-            // the skeleton report.
             let dispatch = dispatch_context(shared, session);
-            if session.is_native() && lock_shared(shared).native_context.is_some() {
-                let Some(key) = retained.window_domains.get(&window.0).cloned() else {
-                    lock_shared(shared).diagnostics.input_refused_no_focus += 1;
-                    emit(shared, 0, 0, 0, "input", "refused-no-domain", 0);
-                    crate::stage_timing::finish(shared, span, "refused-no-domain");
-                    return;
-                };
-                let current = lock_shared(shared)
-                    .native_context
-                    .clone()
-                    .is_some_and(|ctx| ctx.is_current(&key));
-                if !current {
-                    lock_shared(shared).diagnostics.input_refused_no_focus += 1;
-                    emit(shared, 0, 0, 0, "input", "refused-hidden-domain", 0);
-                    crate::stage_timing::finish(shared, span, "refused-hidden-domain");
-                    return;
-                }
-            }
             if let Some(span) = span {
                 crate::stage_timing::record(
                     shared,
@@ -2679,15 +2657,86 @@ pub(crate) fn pin_stay_claim(
     }
 }
 
+/// Pin the armed-send claim's subject legs at apply time from the window
+/// core actually resolved: the retained window transfer published for
+/// `operation_id`. The dispatched `SendNumbered` carries only the closed
+/// current-focus marker, so the adapter cannot know the subject before core
+/// resolves it; these are the same native gates (managed-current homing,
+/// lifetime, fullscreen, minimized, source freshness) applied to the resolved
+/// window instead of a substituted observed foreground. A reply without a
+/// window transfer for this operation, an unparsable/unknown lifetime, an
+/// unmapped subject, an off-current source, a fullscreen or minimized
+/// subject, and a missing source SID all refuse with the existing send
+/// vocabulary and no claim is stored. On success the subject lifetime,
+/// generation, source domain and its admission-topology SID are pinned into
+/// the claim; returns the source domain for stay-return pinning.
+fn pin_send_subject(
+    session: &mut WorldSession,
+    retained: &RetainedCore,
+    ctx: &crate::runtime_types::NativeContext,
+    claim: &mut crate::runtime_types::ClaimedSelect,
+    operation_id: &str,
+) -> Result<tiler_core::session::DomainKey, &'static str> {
+    let window = session
+        .engine_mut()
+        .retained_transfers()
+        .into_iter()
+        .find_map(|target| match target.kind {
+            tiler_core::world_report::TransferKind::Window(window)
+                if target.operation_id == operation_id =>
+            {
+                Some(window)
+            }
+            _ => None,
+        })
+        .ok_or("refused-send-bad-subject")?;
+    let (subject_pid, _) =
+        crate::runtime_types::parse_window_id(&window.0).ok_or("refused-send-bad-subject")?;
+    if !retained.apps.contains_key(&subject_pid) {
+        return Err("refused-send-no-lifetime");
+    }
+    let facts = retained
+        .engine_managed_facts_for(&window.0, Some(ctx))
+        .ok_or("refused-send-no-domain")?;
+    if !facts.source_current {
+        return Err("refused-send-hidden-domain");
+    }
+    // Fullscreen refusal: a fullscreen subject owns its Space - dragging
+    // it would tear the Space. A classifier-excluded minimized subject has
+    // no input-reaching titlebar. Both read from retained observation
+    // truth (the drain re-proves them fresh before any post).
+    if facts.fullscreen {
+        return Err("refused-send-fullscreen");
+    }
+    if facts.minimized {
+        return Err("refused-send-minimized");
+    }
+    let Some(source_sid) = ctx
+        .domains
+        .iter()
+        .find(|d| d.output == facts.source.output && d.workspace == facts.source.workspace)
+        .map(|d| d.space)
+    else {
+        return Err("refused-send-no-source");
+    };
+    claim.send_subject = Some(window.0.clone());
+    claim.send_generation = Some(facts.generation);
+    claim.send_source = Some(facts.source.clone());
+    claim.send_source_sid = Some(source_sid);
+    Ok(facts.source)
+}
+
 /// Armed-send lane (numbered sends 1..9 product path plus the
 /// capability-gated trailing send-0 follow): admission, a positional
-/// planner-owned `SendNumbered` world command for the explicit source, and
-/// when the reply applies, or when a stale-observation refusal proves the
-/// command already executed core-side — one bound pending claim for the
-/// main-thread send drain. Other core refusals drop the claim (never actuated, never
-/// replayed). The subject is observed truth (never planned focus): the
-/// focused window must be homed to a currently-actuated domain and must
-/// not read native fullscreen (game/fullscreen foregrounds never drag).
+/// planner-owned `SendNumbered` world command for the core-owned implicit
+/// source, and when the reply applies, or when a stale-observation refusal
+/// proves the command already executed core-side — one bound pending claim
+/// for the main-thread send drain. Other core refusals drop the claim (never
+/// actuated, never replayed). The subject is core's execution-time focus:
+/// the adapter never substitutes observed foreground or refuses before
+/// dispatch for a missing local focus. After the reply, the resolved window's
+/// lifetime/generation/source freshness and managed-current homing,
+/// fullscreen and minimized gates run through [`pin_send_subject`].
 /// No admission-time ordinal-to-SID pin and no adapter output decision:
 /// the dispatched command resolves the ordinal core-side against the
 /// adopted ring for the core-owned implicit source, and the accepted
@@ -2698,11 +2747,8 @@ pub(crate) fn pin_stay_claim(
 /// reinterpretation. Unbound trailing without a creation desire binds no
 /// SID (missing bindings never create); unbound trailing WITH a desire
 /// binds the desire but no SID, refused pending the desire-gated native
-/// creation seam (prerequisite blocker, not a settled refusal). The
-/// subject lifetime
-/// (`send_generation`) and source domain (`send_source`) pin here from
-/// retained engine truth - never re-sampled at dispatch. Stay claims pin
-/// the core-proven post-send source focus after dispatch and before the
+/// creation seam (prerequisite blocker, not a settled refusal). Stay claims
+/// pin the core-proven post-send source focus after dispatch and before the
 /// claim store through [`pin_stay_claim`] (unknown refuses and stores
 /// nothing); dormant while stays are unarmed in
 /// [`crate::workspace_input::is_armed_send`].
@@ -2763,49 +2809,19 @@ fn handle_send_action_with(
             return;
         }
     };
-    let Some(window) = retained.observed_focus.clone() else {
-        refuse_send_claim(shared, "refused-send-no-focus");
-        return;
-    };
     let Some(ctx) = lock_shared(shared).native_context.clone() else {
         refuse_send_claim(shared, "refused-send-no-topology");
         return;
     };
-    // Managed-current homing from the narrow retained publication: an
-    // unmapped subject refuses instead of planning the skeleton, and a
-    // hidden-domain subject never dispatches (no drag out of an off-current
-    // Space). The fullscreen, minimized-exclusion, and lifetime pins ride
-    // the same publication - never cached topology, static scope, or
-    // dispatch-time re-sampling.
-    let Some((subject_pid, _)) = crate::runtime_types::parse_window_id(&window.0) else {
-        refuse_send_claim(shared, "refused-send-bad-subject");
-        return;
-    };
-    let Some(facts) = retained.engine_managed_facts_for(&window.0, Some(ctx.as_ref())) else {
-        if !retained.apps.contains_key(&subject_pid) {
-            refuse_send_claim(shared, "refused-send-no-lifetime");
-        } else {
-            refuse_send_claim(shared, "refused-send-no-domain");
-        }
-        return;
-    };
-    let key = facts.source.clone();
-    if !facts.source_current {
-        refuse_send_claim(shared, "refused-send-hidden-domain");
-        return;
-    }
-    // Fullscreen refusal: a fullscreen subject owns its Space - dragging
-    // it would tear the Space. A classifier-excluded minimized subject has
-    // no input-reaching titlebar. Both read from retained observation
-    // truth (the drain re-proves them fresh before any post).
-    if facts.fullscreen {
-        refuse_send_claim(shared, "refused-send-fullscreen");
-        return;
-    }
-    if facts.minimized {
-        refuse_send_claim(shared, "refused-send-minimized");
-        return;
-    }
+    // The subject is the execution-time core focus: the command below
+    // carries the closed current-focus marker and core resolves it from its
+    // logical cursor or eligible observed foreground. No observed-focus
+    // substitution and no pre-dispatch observed-focus refusal: an
+    // unresolved subject surfaces as core's own `focus-unknown` (the claim
+    // is never stored, so no native drag runs). The managed-current
+    // homing, lifetime, fullscreen/minimized and source-freshness gates run
+    // after the reply names the window core actually resolved (see
+    // [`pin_send_subject`]).
     // The trailing `index 0` follow binds NO admission SID (the Space may
     // not exist yet): only an accepted reply's retained transfer plus its
     // live binding binds a plan through `bind_send_plan`. Unbound trailing
@@ -2815,31 +2831,13 @@ fn handle_send_action_with(
     // seam (prerequisite blocker, not a settled refusal — see the drain).
     let Some(command) = crate::world_command_map::send_command_implicit_with_capability(
         &claim.action,
-        &window.0,
         trailing_enabled,
     ) else {
         refuse_send_claim(shared, "refused-send-unarmed");
         return;
     };
-    // Stay-return pin: the exact native SID of the admission-pinned source
-    // domain under this admission topology (never a drain-time guess). This
-    // is native freshness for the return-leg actuation pin, not a policy
-    // decision: targeting itself resolved core-side above.
-    let Some(source_sid) = ctx
-        .domains
-        .iter()
-        .find(|d| d.output == key.output && d.workspace == key.workspace)
-        .map(|d| d.space)
-    else {
-        refuse_send_claim(shared, "refused-send-no-source");
-        return;
-    };
     claim.expected_sid = None;
     claim.topology_revision = Some(ctx.revision);
-    claim.send_subject = Some(window.0.clone());
-    claim.send_generation = Some(facts.generation);
-    claim.send_source = Some(key.clone());
-    claim.send_source_sid = Some(source_sid);
     // Stays pin the core-proven post-send source focus after dispatch and
     // before the claim store; follows store directly. Dormant while stays
     // are unarmed (`is_armed_send` refuses above): no product stay reaches
@@ -2870,23 +2868,33 @@ fn handle_send_action_with(
             // transfer plan ride the stored claim so the drain actuates
             // exactly the core-resolved target through a live SID lookup
             // and reports its native outcome under that identity (raw
-            // attempt evidence, never a verdict).
-            if !stay {
-                let mut claim = claim;
-                if let Some(op) = select_operation.as_deref() {
-                    bind_send_plan(session, &ctx, &mut claim, op);
+            // attempt evidence, never a verdict). The resolved window names
+            // the subject the native gates below run against.
+            let Some(op) = select_operation.as_deref() else {
+                if !stay {
+                    store_select_claim(shared, claim, None);
+                } else {
+                    refuse_send_claim(shared, "refused-send-unknown-source-focus");
                 }
-                store_select_claim(shared, claim, select_operation.as_deref());
-            } else if let Some(op) = select_operation.as_deref() {
-                let mut claim = claim;
-                bind_send_plan(session, &ctx, &mut claim, op);
+                return;
+            };
+            let mut claim = claim;
+            let key = match pin_send_subject(session, retained, &ctx, &mut claim, op) {
+                Ok(key) => key,
+                Err(token) => {
+                    refuse_send_claim(shared, token);
+                    return;
+                }
+            };
+            bind_send_plan(session, &ctx, &mut claim, op);
+            if !stay {
+                store_select_claim(shared, claim, Some(op));
+            } else {
                 let focus = session.engine_mut().stay_source_focus(op, &key);
                 match pin_stay_claim(claim, focus) {
                     Ok(pinned) => store_select_claim(shared, pinned, Some(op)),
                     Err(token) => refuse_send_claim(shared, token),
                 }
-            } else {
-                refuse_send_claim(shared, "refused-send-unknown-source-focus");
             }
         }
         DispatchVerdict::Duplicate => {
@@ -2901,6 +2909,17 @@ fn handle_send_action_with(
             select_operation,
         } => {
             if let Some(operation) = select_operation {
+                // The command already executed core-side (at-most-once):
+                // the retained transfer still names its resolved window, so
+                // the moved subject gates apply here too before any store.
+                let mut claim = claim;
+                let key = match pin_send_subject(session, retained, &ctx, &mut claim, &operation) {
+                    Ok(key) => key,
+                    Err(refusal) => {
+                        refuse_send_claim(shared, refusal);
+                        return;
+                    }
+                };
                 if !stay {
                     store_select_claim(shared, claim, Some(&operation));
                 } else {
@@ -4507,9 +4526,22 @@ mod trailing_join_tests {
             ax_factory: Arc::new(StubAx),
         };
         // Mixed burst through the REAL public ingress (the exact functions
-        // production calls): taps, a focus step, a directional move step,
-        // and a send.
+        // production calls): a send, taps, a focus step, and a directional
+        // move step, in submission order. The send is first so its
+        // execution-time subject is still the pre-select canonical focus
+        // (later selects move the core cursor); it must reach the core and
+        // queue a claim like any tap.
         use crate::runtime_types::SubmitOutcome;
+        assert_eq!(
+            handle.submit_input_action(InputSemanticAction::WorkspaceSend {
+                // Window 4242_7 lives on workspace 1: send-to-2 is the
+                // meaningful move for the pre-select subject and covers the
+                // real move plus follow-view legs in one FIFO drain.
+                index: 2,
+                follow: true,
+            }),
+            SubmitOutcome::Accepted
+        );
         assert_eq!(
             handle.submit_input_action(InputSemanticAction::WorkspaceSelect { index: 2 }),
             SubmitOutcome::Accepted
@@ -4530,18 +4562,7 @@ mod trailing_join_tests {
             handle.submit_input_action(InputSemanticAction::WorkspaceSelect { index: 1 }),
             SubmitOutcome::Accepted
         );
-        assert_eq!(
-            handle.submit_input_action(InputSemanticAction::WorkspaceSend {
-                // Window 4242_7 lives on workspace 1: send-to-2 is the
-                // meaningful move (send-to-1 would be a truthful core
-                // unchanged, not an ingress loss). Covers the real move
-                // plus follow-view legs behind selects in one FIFO drain.
-                index: 2,
-                follow: true,
-            }),
-            SubmitOutcome::Accepted
-        );
-        // Drain the saturated observations plus the FIRST select through
+        // Drain the saturated observations plus the FIRST claim through
         // the real engine job processor, then pop/hold its claim so the
         // first drain is already in progress (select_busy) while the rest
         // of the burst still arrives. The remainder must still reach the
@@ -4572,12 +4593,12 @@ mod trailing_join_tests {
                 "obs", "obs", "obs", "obs", "obs", "obs", "obs", "obs", "obs", "obs", "obs", "obs",
                 "obs", "obs", "obs", "obs", "input",
             ],
-            "first select arrives FIFO behind the saturated lane"
+            "first claim arrives FIFO behind the saturated lane"
         );
         assert_eq!(
             lock_shared(&shared).select_pending.len(),
             1,
-            "first select claim queued before its drain starts"
+            "first claim queued before its drain starts"
         );
         // Pop/hold the first claim: the drain is now in progress.
         let held = handle.claim_select_for_drain().expect("first drains");
@@ -4619,12 +4640,26 @@ mod trailing_join_tests {
             "engine processes the burst FIFO behind the saturated lane"
         );
         // No admission loss while busy: every authorized command reached
-        // the core even though the first drain never released.
-        assert_eq!(
-            lock_shared(&shared).diagnostics.input_select_refused,
-            0,
-            "no busy admission loss"
-        );
+        // the core even though the first drain never released. Core-side
+        // post-dispatch refusals share `input_select_refused`, so admission
+        // loss is read from the admission refusal tokens instead.
+        {
+            let guard = lock_shared(&shared);
+            assert!(
+                !guard.log.iter().any(|entry| {
+                    entry.kind == "input"
+                        && matches!(
+                            entry.outcome,
+                            "refused-send-unarmed"
+                                | "refused-send-no-topology"
+                                | "refused-select-unarmed"
+                                | "refused-select-no-topology"
+                        )
+                }),
+                "no busy admission loss: {:?}",
+                guard.diagnostics.core_replies
+            );
+        }
         assert_eq!(
             lock_shared(&shared).diagnostics.input_select_enqueued,
             3,
@@ -4651,7 +4686,10 @@ mod trailing_join_tests {
         assert_eq!(queued.len(), 2, "remainder queues behind the held drain");
         assert_eq!(
             held.action,
-            InputSemanticAction::WorkspaceSelect { index: 2 }
+            InputSemanticAction::WorkspaceSend {
+                index: 2,
+                follow: true,
+            }
         );
         let mut ops: Vec<String> = vec![held_op.clone()];
         ops.extend(
@@ -4682,11 +4720,8 @@ mod trailing_join_tests {
                 .map(|claim| claim.action.clone())
                 .collect::<Vec<_>>(),
             vec![
+                InputSemanticAction::WorkspaceSelect { index: 2 },
                 InputSemanticAction::WorkspaceSelect { index: 1 },
-                InputSemanticAction::WorkspaceSend {
-                    index: 2,
-                    follow: true,
-                },
             ],
             "mixed-source FIFO preserves submission order behind the held drain"
         );
@@ -9036,6 +9071,122 @@ mod trailing_join_tests {
         assert!(
             !lock_shared(&shared).select_pending.is_empty(),
             "armed production stores the trailing send claim"
+        );
+    }
+
+    /// The adapter no longer substitutes observed foreground or refuses an
+    /// operation row before dispatch when it holds no local focus: the row
+    /// dispatches the closed current-focus marker and the core decides. Here
+    /// the host reports no foreground, yet the core's retained canonical
+    /// subject still owns the cursor, so the operation applies to the
+    /// core-resolved window — never an adapter refusal or guess.
+    #[test]
+    fn operation_without_local_focus_dispatches_and_core_resolves() {
+        let ctx = ctx();
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), retained_send_subject());
+        bootstrap_observation(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            &ctx,
+        );
+        retained.observed_focus = None;
+        retained.observed_focus_known = false;
+        process_job(
+            EngineJob::InputAction {
+                action: InputSemanticAction::ToggleOrientation,
+                trace_id: 0,
+                intake_us: 0,
+                enqueue_us: 0,
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+        );
+        let guard = lock_shared(&shared);
+        assert_eq!(guard.diagnostics.input_forwarded, 1);
+        assert_eq!(
+            guard.diagnostics.input_refused_no_focus, 0,
+            "no pre-dispatch observed-focus refusal remains"
+        );
+        assert_eq!(
+            guard
+                .diagnostics
+                .core_replies
+                .get("toggle-orientation-accepted")
+                .copied(),
+            Some(1),
+            "core resolves the retained subject and applies: {:?}",
+            guard.diagnostics.core_replies
+        );
+        assert!(
+            !guard
+                .diagnostics
+                .core_replies
+                .keys()
+                .any(|k| k == "toggle-orientation-rejected-focus-unknown"),
+            "no focus-unknown with a retained canonical subject"
+        );
+    }
+
+    /// The moved send subject gates run after the reply resolves the window:
+    /// a subject homed to an off-current Space still dispatches (core
+    /// resolves the current-focus marker) and then refuses with the existing
+    /// hidden-domain vocabulary before any claim is stored. The retired
+    /// pre-dispatch gate was keyed on the observed foreground instead.
+    #[test]
+    fn send_hidden_domain_subject_refuses_at_apply_time() {
+        let ctx = ctx();
+        let mut seed = retained_send_subject();
+        seed.window_domains.insert(
+            crate::runtime::window_id(4242, 7),
+            DomainKey {
+                output: output(),
+                workspace: WorkspaceId(crate::topology::workspace_key(277)),
+            },
+        );
+        let app = seed.apps.get_mut(&4242).expect("subject app retained");
+        app.roster.insert(7, roster_entry(observed(7), vec![277]));
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(Arc::clone(&ctx), seed);
+        bootstrap_observation(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            &ctx,
+        );
+        handle_send_action_with(
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            8,
+            ClaimedSelect::tap(InputSemanticAction::WorkspaceSend {
+                index: 0,
+                follow: true,
+            }),
+            true,
+        );
+        let guard = lock_shared(&shared);
+        assert!(
+            guard.select_pending.is_empty(),
+            "a hidden-domain resolved subject stores no claim"
+        );
+        assert_eq!(guard.diagnostics.input_select_refused, 1);
+        assert!(
+            guard.log.iter().any(|entry| {
+                entry.kind == "input" && entry.outcome == "refused-send-hidden-domain"
+            }),
+            "apply-time homing gate uses the existing hidden-domain vocabulary"
         );
     }
 

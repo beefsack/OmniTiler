@@ -2624,10 +2624,10 @@ fn joined_home_send_arrival() -> (RetainedCore, WorldSession, WorldEngine) {
     ));
 
     // First send-2 follow admits over the production implicit route. The
-    // subject is the observed focus (production focus truth); the report
-    // carries it as the staged focused window.
+    // command names the closed current-focus marker; raw truth is
+    // the observed focus, so core resolves it to that window.
     retained.observed_focus = Some(WindowId("4242_7".to_owned()));
-    let send2 = send_command_implicit(&send(2), "4242_7").expect("production send route");
+    let send2 = send_command_implicit(&send(2)).expect("production send route");
     let second = dispatch_join(&mut session, &retained, &ctx, 2, 2, Some(2), Some(send2));
     assert!(validate_report_v4_reason(&second).is_none());
     match handle_report_checked(&mut engine, &second, &[]).outcome {
@@ -2906,7 +2906,7 @@ fn send_numbered_3_to_spare_executes_through_desire_backed_lane() {
         WorldOutcome::Accepted(_)
     ));
     retained.observed_focus = Some(WindowId("4242_7".to_owned()));
-    let send2 = send_command_implicit(&send(2), "4242_7").expect("send-2 maps");
+    let send2 = send_command_implicit(&send(2)).expect("send-2 maps");
     let second = dispatch_join(&mut session, &retained, &ctx277, 2, 2, Some(2), Some(send2));
     assert!(validate_report_v4_reason(&second).is_none());
     assert!(matches!(
@@ -2994,7 +2994,7 @@ fn send_numbered_3_to_spare_executes_through_desire_backed_lane() {
         .sequencer()
         .try_begin_request(None)
         .expect("no flight outstanding");
-    let cmd3 = send_command_implicit(&send(3), "4242_7")
+    let cmd3 = send_command_implicit(&send(3))
         .expect("adapter passes index 3 through; core resolves positionally");
     let fifth = dispatch_join(
         &mut session,
@@ -3899,7 +3899,7 @@ fn return_after_send_follow_with_ax_partial_omit_recovers_target_scope() {
     // A legitimate send to the recovered off-current target admits. The
     // bystander is the current focus (the physical subject on Space 1).
     retained.observed_focus = Some(WindowId("4242_8".to_owned()));
-    let to_off_current = send_command_implicit(&send(2), "4242_8").expect("production send route");
+    let to_off_current = send_command_implicit(&send(2)).expect("production send route");
     let fifth = dispatch_join(
         &mut session,
         &retained,
@@ -4030,7 +4030,7 @@ fn cg_alive_unreadable_membership_holds_target_scope() {
     // `scope-held`. The bystander is the current focus (the physical
     // subject on Space 1).
     retained.observed_focus = Some(WindowId("4242_8".to_owned()));
-    let to_off_current = send_command_implicit(&send(2), "4242_8").expect("production send route");
+    let to_off_current = send_command_implicit(&send(2)).expect("production send route");
     let fifth = dispatch_join(
         &mut session,
         &retained,
@@ -4116,7 +4116,7 @@ fn cg_unreadable_oracle_holds_target_scope() {
         other => panic!("return observation applies, got {other:?}"),
     }
     retained.observed_focus = Some(WindowId("4242_8".to_owned()));
-    let to_off_current = send_command_implicit(&send(2), "4242_8").expect("production send route");
+    let to_off_current = send_command_implicit(&send(2)).expect("production send route");
     let fifth = dispatch_join(
         &mut session,
         &retained,

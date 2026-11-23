@@ -2697,8 +2697,9 @@ fn focus_dispatches_through_owner_slot_with_exact_target() {
 #[test]
 fn worker_focus_withholds_without_evidence() {
     // A worker-published focused window with no main-thread evidence never
-    // promotes: input has no subject (refused-no-focus), so the core is
-    // never contacted for it.
+    // promotes: the adapter holds no observed focus, yet the operation row
+    // still dispatches the closed current-focus marker and lets the core
+    // decide (never an adapter-side refusal).
     let fixture = start(scoped_config());
     fixture
         .handle
@@ -2717,15 +2718,17 @@ fn worker_focus_withholds_without_evidence() {
     assert!(fixture.handle.flush(FLUSH));
     let diagnostics = wait_diagnostics(
         &fixture.handle,
-        |d| d.input_refused_no_focus >= 1,
-        "focus withheld without evidence",
+        |d| {
+            d.input_forwarded >= 1
+                && d.core_replies
+                    .keys()
+                    .any(|k| k.starts_with("toggle-float-"))
+        },
+        "withheld focus still dispatches the core-resolved toggle",
     );
-    assert!(
-        !diagnostics
-            .core_replies
-            .keys()
-            .any(|k| k.starts_with("toggle-float")),
-        "withheld focus must never reach the core: {diagnostics:?}"
+    assert_eq!(
+        diagnostics.input_refused_no_focus, 0,
+        "no adapter-side observed-focus refusal remains: {diagnostics:?}"
     );
     shutdown_clean(&fixture);
 }
@@ -2855,8 +2858,12 @@ fn effect_hook_rebinds_frontmost_every_iteration() {
 fn frontmost_change_clears_and_repromotes_without_backend_change() {
     // A workspace frontmost change alone (no AX notification, no frames,
     // backend snapshot static) still re-resolves the global-focus verdict:
-    // disagreement clears observed focus (input loses its subject), and a
-    // later agreement re-promotes it. Steady frontmost never reasserts.
+    // disagreement clears observed focus, and a later agreement re-promotes
+    // it. The cleared row still dispatches with the execution-time subject
+    // (the core decides; here its cursor is empty and the observed subject
+    // is gone, so it refuses focus-unknown) instead of an adapter-side
+    // refusal, and the re-promoted subject dispatches normally. Steady
+    // frontmost never reasserts.
     let fixture = start(scoped_config());
     fixture
         .handle
@@ -2908,12 +2915,18 @@ fn frontmost_change_clears_and_repromotes_without_backend_change() {
         .expect("send focus chord");
     wait_diagnostics(
         &fixture.handle,
-        |d| d.input_refused_no_focus >= 1,
-        "cleared focus refuses input",
+        |d| d.input_forwarded >= 1 && d.core_replies.keys().any(|k| k.starts_with("focus-")),
+        "cleared focus still dispatches and the core replies",
+    );
+    assert_eq!(
+        fixture.handle.diagnostics().input_refused_no_focus,
+        0,
+        "no adapter-side observed-focus refusal remains"
     );
 
-    // Agreement returns: republish once more and the subject re-promotes
-    // (the SAME owner dispatches the exact target window again).
+    // Agreement returns: republish once more and the subject re-promotes;
+    // the next chord still dispatches with the execution-time subject (no
+    // adapter-side gate, exact target resolved core-side).
     let republished = fixture.handle.diagnostics().observations_published;
     fixture
         .handle
@@ -2933,8 +2946,15 @@ fn frontmost_change_clears_and_repromotes_without_backend_change() {
             tap_us: 0,
         })
         .expect("send focus chord");
-    let cmd = wait_focus(&fixture);
-    assert_eq!((cmd.pid, cmd.wid), (APP_A, 2));
+    let diagnostics = wait_diagnostics(
+        &fixture.handle,
+        |d| d.input_forwarded >= 2 && d.core_replies.values().sum::<u64>() >= 2,
+        "re-promoted subject dispatches",
+    );
+    assert_eq!(
+        diagnostics.input_refused_no_focus, 0,
+        "no adapter-side observed-focus refusal remains"
+    );
 
     // Steady frontmost never reasserts: no further republish while nothing
     // changes. The settlement fence proves the worker drained every pass,
