@@ -2470,6 +2470,19 @@ fn input_eos_is_observed_not_spun() {
         |d| d.unexpected_eos >= 1,
         "unexpected input EOS",
     );
+    // The counter and its log entry are published from *inside* the exiting
+    // owner thread (`runtime_input.rs` EOS arm) before that thread returns,
+    // so they prove the disconnect was observed but not that the join edge
+    // `RuntimeHandle::is_running` reads (`input_handle.is_finished()`) has
+    // landed. Settle on the join-visible death under a genuine failure bound
+    // (never an ignored timeout), then assert the stop once.
+    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
+    while fixture.handle.is_running() {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
     assert!(
         !fixture.handle.is_running(),
         "dead input owner must read as stopped"
