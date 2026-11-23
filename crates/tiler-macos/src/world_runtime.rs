@@ -31,9 +31,8 @@
 //! - Hidden/unreadable scopes never actuate: frames emit only for
 //!   currently-actuated domains carrying `Controlled` frame authority with
 //!   an effective frame. Holds preserve native state (no writes).
-//! - One-shot effects spend before first dispatch (sequencer-owned); the
-//!   reply snapshot is plan truth, never a success claim — feedback rows
-//!   stage only proven drain outcomes.
+//! - The reply snapshot is plan truth, never a success claim — feedback
+//!   rows stage only proven drain outcomes.
 //! - Empty native contexts never actuate (same as the KDE null): native
 //!   mode with no derived context refuses instead of reporting.
 //!
@@ -50,8 +49,8 @@ use tiler_core::gesture::GestureIngress;
 use tiler_core::session::DomainKey;
 use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
-    FocusFeedback, FrameAttempt, FrameSetter, HoldReason, MemberAttempt, NativeCreationAttempt,
-    ViewAttempt, WorldCommand, WorldReportV4,
+    FocusFeedback, FrameAttempt, FramePurpose, FrameSetter, HoldReason, MemberAttempt,
+    NativeCreationAttempt, ViewAttempt, WorldCommand, WorldReportV4,
 };
 
 use crate::focus_route::FocusRoute;
@@ -354,7 +353,7 @@ impl WorldSession {
     pub(crate) fn stage_view_attempt(
         &mut self,
         operation_id: &str,
-        setter: FrameSetter,
+        disposition: FrameSetter,
         pre_sid: Option<u64>,
         post_sid: Option<u64>,
         baseline_sid: Option<u64>,
@@ -380,10 +379,10 @@ impl WorldSession {
             operation_id: operation_id.to_owned(),
             target_output: target_output.clone(),
             target_workspace,
-            setter,
-            pre: pre_sid.map(&to_native),
-            post: post_sid.map(&to_native),
-            baseline: baseline_sid.map(&to_native),
+            disposition,
+            pre: pre_sid.map(to_native),
+            post: post_sid.map(to_native),
+            baseline: baseline_sid.map(to_native),
             attempt_ms: 0,
         };
         self.pending_views.insert(operation_id.to_owned(), attempt);
@@ -431,9 +430,9 @@ impl WorldSession {
             window: window.clone(),
             target_output: target_output.clone(),
             target_workspace,
-            setter,
-            pre: pre_sid.map(&to_native),
-            post: post_sid.map(&to_native),
+            disposition: setter.into(),
+            pre: pre_sid.map(to_native),
+            post: post_sid.map(to_native),
             attempt_ms: 0,
         };
         self.pending_members
@@ -554,6 +553,7 @@ impl WorldSession {
 
     /// Test-only peek at the staged close-focus feedback row without
     /// draining (cross-module dispatch tests assert first-wins staging).
+    #[cfg(test)]
     pub(crate) fn peek_close_feedback(&self) -> Option<FocusFeedback> {
         self.pending_close_feedback.clone()
     }
@@ -960,7 +960,6 @@ pub(crate) fn build_dispatch_report(
                 frames: &frame_rows,
                 member_attempts: &member_rows,
                 view_attempts: &view_rows,
-                clear_attempts: &[],
                 creation_attempts: &creation_rows,
                 focus_feedback: &focus_rows,
                 gesture,
@@ -1036,14 +1035,13 @@ pub(crate) fn build_dispatch_report(
                 memory: &memory,
                 closed: &closed_flat,
                 unknown: &[],
-                raw: &*crate::runtime_types::EMPTY_RAW_FACTS,
+                raw: &crate::runtime_types::EMPTY_RAW_FACTS,
                 roster_incomplete: false,
                 minimized: &minimized,
                 unreadable: &empty_unreadable,
                 frames: &frame_rows,
                 member_attempts: &member_rows,
                 view_attempts: &view_rows,
-                clear_attempts: &[],
                 creation_attempts: &creation_rows,
                 focus_feedback: &focus_rows,
                 gesture,
@@ -1083,19 +1081,13 @@ pub(crate) fn map_gesture_preview(
     reply: &tiler_core::world_report::WorldReplyV4,
 ) -> crate::drag_drop::PreviewOutcome {
     use crate::drag_drop::PreviewOutcome;
-    use tiler_core::world_report::CommandResult;
-    match &reply.command_result {
-        Some(CommandResult::DragPreview {
-            rect,
-            hover,
-            target,
-            ..
-        }) => PreviewOutcome::Show {
-            rect: *rect,
-            hover_prior: hover.clone().map(Box::new),
-            target: target.clone(),
+    match &reply.drag_preview {
+        Some(preview) => PreviewOutcome::Show {
+            rect: preview.rect,
+            hover_prior: preview.hover.clone().map(Box::new),
+            target: preview.target.clone(),
         },
-        _ => PreviewOutcome::HideTransient { reason: "held" },
+        None => PreviewOutcome::HideTransient { reason: "held" },
     }
 }
 
@@ -1110,6 +1102,19 @@ pub(crate) fn completion_setter(completion: &AxCompletion) -> FrameSetter {
         AxCompletion::PartialApplied { .. } => FrameSetter::Threw,
         AxCompletion::Failed { .. } => FrameSetter::Refused,
         AxCompletion::Timeout { .. } => FrameSetter::Threw,
+    }
+}
+
+/// Genuine elapsed time for one completion, when the worker reported one:
+/// applied/partial writes carry `elapsed_ms`, timeouts carry `timeout_ms`,
+/// and a proven failure reports no duration (`None`, never a fabricated 0).
+pub(crate) fn completion_attempt_ms(completion: &AxCompletion) -> Option<u64> {
+    match completion {
+        AxCompletion::Applied { elapsed_ms } | AxCompletion::PartialApplied { elapsed_ms, .. } => {
+            Some(*elapsed_ms)
+        }
+        AxCompletion::Timeout { timeout_ms } => Some(*timeout_ms),
+        AxCompletion::Failed { .. } => None,
     }
 }
 
@@ -1159,12 +1164,15 @@ pub(crate) fn track_write(
 
 /// Stage one raw frame attempt for an explicit placement token: only rows
 /// carrying a `frame_operation` settle anything core-side, and only with
-/// the recorded setter disposition (never false success). `dpi_before` /
+/// the recorded disposition (never false success). `dpi_before` /
 /// `dpi_after` are always `None` (no per-window basis, never guessed);
 /// `prewrite` is always `None` (no pre-write read at completion time —
 /// only an explicit refusal with an unchanged readable preimage would
 /// prove refusal, so a bare refusal latches ambiguity, never a verdict).
-/// Ordinary frame writes stay on the completions counters and logs.
+/// `attempt_ms` rides only a genuinely reported duration (a proven failure
+/// reports none). Each fresh attempt takes one producer-minted identity;
+/// the same staged row keeps it across report resends. Ordinary frame
+/// writes stay on the completions counters and logs.
 /// Consumes the correlation entry (one completion per command) and drops
 /// stale generations (a relaunched PID never settles under an old
 /// command). Returns whether an attempt row staged (the caller advances
@@ -1191,18 +1199,22 @@ pub(crate) fn stage_write_feedback(
     let Some(operation) = operation else {
         return false;
     };
+    let attempt_id = session.sequencer().next_frame_attempt_id();
     session.pending_frames.insert(
         window.clone(),
         FrameAttempt {
             window: WindowId(window),
             target,
-            setter: completion_setter(completion),
+            disposition: completion_setter(completion),
             readback: completion_readback(completion),
             dpi_before: None,
             dpi_after: None,
-            attempt_ms: 0,
-            operation_id: Some(operation),
-            prewrite: None,
+            attempt_id,
+            attempt_ms: completion_attempt_ms(completion),
+            purpose: FramePurpose::FloatPlacement {
+                operation_id: operation,
+                prewrite: None,
+            },
         },
     );
     true
@@ -1230,7 +1242,7 @@ mod tests {
     use std::sync::Arc;
 
     use tiler_core::directional::WindowId;
-    use tiler_core::world_report::{FocusFeedback, VisibilityReason, VisibilitySetter};
+    use tiler_core::world_report::{FocusDisposition, FocusFeedback, FocusNoCallReason};
 
     use crate::focus_route::FocusRoute;
 
@@ -1249,8 +1261,9 @@ mod tests {
             id: id.to_owned(),
             target: WindowId("1001_2".to_owned()),
             revision,
-            setter: VisibilitySetter::NotCalled,
-            reason: VisibilityReason::Empty,
+            disposition: FocusDisposition::NotCalled {
+                reason: FocusNoCallReason::NoReason,
+            },
             pre: Some(WindowId("1001_2".to_owned())),
             post: Some(WindowId("1001_2".to_owned())),
             foreground_proven: true,

@@ -1091,6 +1091,20 @@ pub(crate) fn fixture_designated_tail(exe: &str) -> Result<String, String> {
     extract_designated_tail(&combined).map_err(|e| format!("signature: {e}"))
 }
 
+/// Truthful title for exactly one window of the fixture PID without Screen
+/// Recording: the fixture's own AX application element is enumerated (bounded
+/// by `MAX_WINDOWS`) and the element whose AX window id equals `wid` supplies
+/// its AX title. `None` when AX cannot name that window (never a guess).
+#[cfg(target_os = "macos")]
+fn ax_title_for_wid(pid: u32, wid: u32) -> Option<String> {
+    let app = crate::ffi::AxElement::application(pid as i32)?;
+    let elements = app.windows().ok()?;
+    elements
+        .iter()
+        .find(|element| crate::ffi::ax_window_id(element) == Some(wid))
+        .and_then(|element| crate::ffi::ax_window_title(element).ok().flatten())
+}
+
 /// Plain-data process identity reads (no decisions): live bundle plus
 /// executable plus launch date from one OS lookup. The caller refuses
 /// whatever its contract requires.
@@ -1243,11 +1257,14 @@ impl FixtureTransport for LiveTransport {
         let pid_i32 = i32::try_from(sess.pid)
             .map_err(|_| format!("full-reads: pid {} out of range", sess.pid))?;
         let identity = crate::ffi::ns_app_identity_for_pid(pid_i32);
-        let cg_entry = crate::ffi::cg_window_list_all()
+        // Title-free CG join (pid, wid) plus the fixture's own AX title for
+        // exactly this window: the CG title leg needs Screen Recording, which
+        // this harness never uses.
+        let cg_entry = crate::ffi::cg_window_list_basic()
             .map_err(|e| format!("full-reads: CG snapshot refused ({e})"))?
             .into_iter()
             .find(|window| window.wid == wid)
-            .map(|window| (window.pid, window.title));
+            .map(|window| (window.pid, ax_title_for_wid(window.pid, wid)));
         let ax_contains = ax_contains_wid(sess.pid, wid).is_ok();
         Ok(FullReads {
             socket_reply,
@@ -1275,18 +1292,18 @@ impl FixtureTransport for LiveTransport {
         // Cheap final authority immediately before a post: identity
         // continuity, then the CG entry, then frontmost LAST (a foreign
         // foreground - including the hosting terminal - read here refuses
-        // before the window server is touched). No socket exchange, no AX
-        // enumeration, no subprocess: bounded native reads only. The
-        // unavoidable host calls are exactly these three; no settle sleep
-        // or re-authentication is added.
+        // before the window server is touched). No socket exchange, no
+        // subprocess; the only AX read is this one window's own title inside
+        // the fixture's bounded `AXWindows` list (Screen Recording is never
+        // required). No settle sleep or re-authentication is added.
         let pid_i32 = i32::try_from(sess.pid)
             .map_err(|_| format!("commit: pid {} out of range", sess.pid))?;
         let identity = crate::ffi::ns_app_identity_for_pid(pid_i32);
-        let cg_entry = crate::ffi::cg_window_list_all()
+        let cg_entry = crate::ffi::cg_window_list_basic()
             .map_err(|e| format!("commit: CG snapshot refused ({e})"))?
             .into_iter()
             .find(|window| window.wid == wid)
-            .map(|window| (window.pid, window.title));
+            .map(|window| (window.pid, ax_title_for_wid(window.pid, wid)));
         let front_pid = crate::ffi::frontmost_app().map(|(pid, _)| pid);
         Ok(CommitReads {
             exe: identity.exe,

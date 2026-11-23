@@ -181,8 +181,7 @@ pub(crate) enum EngineJob {
         issued_rev: u64,
         adapter_incarnation: String,
         core_generation: String,
-        setter: tiler_core::world_report::VisibilitySetter,
-        reason: tiler_core::world_report::VisibilityReason,
+        disposition: tiler_core::world_report::FocusDisposition,
         pre: Option<WindowId>,
         post: Option<WindowId>,
         foreground_proven: bool,
@@ -1237,6 +1236,22 @@ fn handle_drag_gesture(
             settled: None,
         };
     }
+    // At-most-once by stable gesture id: a terminal whose id was already
+    // incorporated (transport replay, doubled ingress) never reaches core
+    // again, so one gesture can never commit twice. Only a release or a
+    // cancel settles; Started/Updated are safe to repeat.
+    if matches!(
+        ingress.phase,
+        tiler_core::gesture::GesturePhase::Released | tiler_core::gesture::GesturePhase::Cancelled
+    ) && !session.sequencer().claim_gesture_terminal(ingress.id)
+    {
+        return DragGestureReply {
+            preview: PreviewOutcome::HideTransient {
+                reason: "replayed-terminal",
+            },
+            settled: None,
+        };
+    }
     {
         let mut guard = lock_shared(shared);
         guard.diagnostics.input_forwarded += 1;
@@ -2131,8 +2146,7 @@ pub(crate) fn process_job(
             issued_rev,
             adapter_incarnation,
             core_generation,
-            setter,
-            reason,
+            disposition,
             pre,
             post,
             foreground_proven,
@@ -2143,18 +2157,27 @@ pub(crate) fn process_job(
             // staged row under the original stamp. First-wins bounded;
             // later rows drop until the next dispatch drains. Diagnostics
             // mirror `note_completion` freshness without inventing a
-            // backend completion: the setter names the token. The row
+            // backend completion: the disposition names the token. The row
             // stages only for the exact still-current request: a result
             // whose lifetime died or whose identity no longer names the
             // current record (null/newer supersession, session alias) is
-            // stale evidence, counted and never staged. The setter, reason,
+            // stale evidence, counted and never staged. The disposition
             // and pre/post legs stage verbatim: raw facts only, never an
             // adapter verdict.
-            let (token, count): (&'static str, u64) = match setter {
-                tiler_core::world_report::VisibilitySetter::Accepted => ("applied", attempt_ms),
-                tiler_core::world_report::VisibilitySetter::Refused => ("refused", 0),
-                tiler_core::world_report::VisibilitySetter::Threw => ("threw", 0),
-                tiler_core::world_report::VisibilitySetter::NotCalled => ("not-called", 0),
+            let (token, count): (&'static str, u64) = match disposition {
+                tiler_core::world_report::FocusDisposition::Called {
+                    setter: tiler_core::world_report::FrameSetter::Accepted,
+                    ..
+                } => ("applied", attempt_ms),
+                tiler_core::world_report::FocusDisposition::Called {
+                    setter: tiler_core::world_report::FrameSetter::Refused,
+                    ..
+                } => ("refused", 0),
+                tiler_core::world_report::FocusDisposition::Called {
+                    setter: tiler_core::world_report::FrameSetter::Threw,
+                    ..
+                } => ("threw", 0),
+                tiler_core::world_report::FocusDisposition::NotCalled { .. } => ("not-called", 0),
             };
             lock_shared(shared).count_completion(token);
             // Focus settlement: same per-action TOTAL convention as frame
@@ -2240,8 +2263,7 @@ pub(crate) fn process_job(
                     id: close_id,
                     target,
                     revision: issued_rev,
-                    setter,
-                    reason,
+                    disposition,
                     pre,
                     post,
                     foreground_proven,
@@ -3146,6 +3168,9 @@ mod trailing_join_tests {
     use crate::world_runtime::{WorldSession, build_dispatch_report};
     use crate::world_sequencer::ObservationClock;
 
+    /// Immutable request tuple plus sampled stamps that dedup one capture.
+    type ArrivalCaptureAttemptKey = (String, u64, String, String, u64, u64, u64, u64);
+
     const UUID_1: &str = "A1B2C3D4-E5F6-47A8-B9C0-D1E2F3A4B5C6";
 
     fn output() -> OutputId {
@@ -3476,8 +3501,9 @@ mod trailing_join_tests {
             issued_rev: rev,
             adapter_incarnation: session.incarnation().to_owned(),
             core_generation: session.sequencer().bound_generation(),
-            setter: tiler_core::world_report::VisibilitySetter::NotCalled,
-            reason: tiler_core::world_report::VisibilityReason::IdentityStale,
+            disposition: tiler_core::world_report::FocusDisposition::NotCalled {
+                reason: tiler_core::world_report::FocusNoCallReason::IdentityStale,
+            },
             pre: None,
             post: None,
             foreground_proven: false,
@@ -3745,8 +3771,8 @@ mod trailing_join_tests {
         );
         if let Some(staged) = session.peek_close_feedback() {
             panic!(
-                "bind-time no-call staged reason={:?} setter={:?} target={}",
-                staged.reason, staged.setter, staged.target.0
+                "bind-time no-call staged disposition={:?} target={}",
+                staged.disposition, staged.target.0
             );
         }
         assert_eq!(
@@ -3792,8 +3818,11 @@ mod trailing_join_tests {
         );
         let staged = session.peek_close_feedback().expect("accepted stages");
         assert_eq!(
-            staged.setter,
-            tiler_core::world_report::VisibilitySetter::Accepted
+            staged.disposition,
+            tiler_core::world_report::FocusDisposition::Called {
+                setter: tiler_core::world_report::FrameSetter::Accepted,
+                reason: tiler_core::world_report::VisibilityReason::Empty,
+            }
         );
     }
 
@@ -3922,8 +3951,11 @@ mod trailing_join_tests {
                 .peek_close_feedback()
                 .expect("actuated feedback stages");
             assert_eq!(
-                staged.setter,
-                tiler_core::world_report::VisibilitySetter::Accepted,
+                staged.disposition,
+                tiler_core::world_report::FocusDisposition::Called {
+                    setter: tiler_core::world_report::FrameSetter::Accepted,
+                    reason: tiler_core::world_report::VisibilityReason::Empty,
+                },
                 "round {round}: every actuated feedback reports Accepted"
             );
             assert_eq!(
@@ -4083,12 +4115,15 @@ mod trailing_join_tests {
         crate::stage_timing::note_focus(4242, 1, 5, 778_001, t0_us);
         let mut job = close_result(&session, 4242, 1, "close-focus-7", 7, 9);
         if let EngineJob::CloseFocusResult {
-            ref mut setter,
+            ref mut disposition,
             ref mut attempt_ms,
             ..
         } = job
         {
-            *setter = tiler_core::world_report::VisibilitySetter::Accepted;
+            *disposition = tiler_core::world_report::FocusDisposition::Called {
+                setter: tiler_core::world_report::FrameSetter::Accepted,
+                reason: tiler_core::world_report::VisibilityReason::Empty,
+            };
             *attempt_ms = 3;
         }
         process_job(
@@ -4224,7 +4259,8 @@ mod trailing_join_tests {
             !session.sequencer().bound_generation().is_empty(),
             "handshake mints a bound generation"
         );
-        for (pid, wid, sid) in [(4243u32, 9u32, 277u64)] {
+        {
+            let (pid, wid, sid) = (4243u32, 9u32, 277u64);
             let app = retained.apps.get(&pid).expect("fixture app retained");
             let entry = app.roster.get(&wid).expect("fixture roster row retained");
             assert_eq!(entry.spaces, vec![sid], "fixture row homed to its Space");
@@ -4956,7 +4992,7 @@ mod trailing_join_tests {
             "unreleased away intent superseded by the newer switch"
         );
         // The bound op names a retained View transfer in the live session.
-        let transfer = session
+        let _transfer = session
             .engine_mut()
             .retained_transfers()
             .into_iter()
@@ -5619,7 +5655,7 @@ mod trailing_join_tests {
         }
         let capture_inbox = Arc::new(Inbox::new(16));
         let cell = lock_shared(&shared).native_cell.clone();
-        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut last_attempt: Option<ArrivalCaptureAttemptKey> = None;
         let mut pids: Vec<u32> = reads
             .iter()
             .filter_map(|read| read.owner_pid)
@@ -5667,10 +5703,7 @@ mod trailing_join_tests {
             .selection_focus_pending
             .clone()
             .expect("capture keeps the intent for release");
-        let stamp = stamped
-            .proven_stamp
-            .clone()
-            .expect("capture stamps the intent");
+        let stamp = stamped.proven_stamp.expect("capture stamps the intent");
         {
             let guard = lock_shared(&shared);
             assert_eq!(stamp.obs, guard.clock.get());
@@ -5750,8 +5783,7 @@ mod trailing_join_tests {
         assert_eq!(fake.reads, 2, "fresh baseline plus post read");
         match &job {
             EngineJob::CloseFocusResult {
-                setter,
-                reason,
+                disposition,
                 pre,
                 post,
                 foreground_proven,
@@ -5761,10 +5793,12 @@ mod trailing_join_tests {
                 ..
             } => {
                 assert_eq!(
-                    *setter,
-                    tiler_core::world_report::VisibilitySetter::Accepted
+                    *disposition,
+                    tiler_core::world_report::FocusDisposition::Called {
+                        setter: tiler_core::world_report::FrameSetter::Accepted,
+                        reason: tiler_core::world_report::VisibilityReason::Empty,
+                    }
                 );
-                assert_eq!(*reason, tiler_core::world_report::VisibilityReason::Empty);
                 assert_eq!(
                     *pre,
                     Some(tiler_core::directional::WindowId("4242_7".to_owned()))
@@ -6103,7 +6137,7 @@ mod trailing_join_tests {
                 .expect("flight opens for the skipped settle");
             let report = build_dispatch_report(
                 &mut session,
-                &mut retained,
+                &retained,
                 &crate::world_runtime::DispatchContext::Native(Arc::clone(&moved_ctx)),
                 &[],
                 ticket.observation_seq,
@@ -6438,7 +6472,7 @@ mod trailing_join_tests {
         }
         let capture_inbox = Arc::new(Inbox::new(16));
         let cell = lock_shared(&shared).native_cell.clone();
-        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut last_attempt: Option<ArrivalCaptureAttemptKey> = None;
         let mut pids: Vec<u32> = reads
             .iter()
             .filter_map(|read| read.owner_pid)
@@ -6548,8 +6582,7 @@ mod trailing_join_tests {
         assert_eq!(fake.reads, 2, "fresh baseline plus post read");
         match &job {
             EngineJob::CloseFocusResult {
-                setter,
-                reason,
+                disposition,
                 pre,
                 post,
                 foreground_proven,
@@ -6559,10 +6592,12 @@ mod trailing_join_tests {
                 ..
             } => {
                 assert_eq!(
-                    *setter,
-                    tiler_core::world_report::VisibilitySetter::Accepted
+                    *disposition,
+                    tiler_core::world_report::FocusDisposition::Called {
+                        setter: tiler_core::world_report::FrameSetter::Accepted,
+                        reason: tiler_core::world_report::VisibilityReason::Empty,
+                    }
                 );
-                assert_eq!(*reason, tiler_core::world_report::VisibilityReason::Empty);
                 assert_eq!(
                     *pre,
                     Some(tiler_core::directional::WindowId("4242_7".to_owned()))
@@ -7249,7 +7284,7 @@ mod trailing_join_tests {
         }
         let capture_inbox = Arc::new(Inbox::new(16));
         let cell = lock_shared(&shared).native_cell.clone();
-        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut last_attempt: Option<ArrivalCaptureAttemptKey> = None;
         let mut pids: Vec<u32> = reads
             .iter()
             .filter_map(|read| read.owner_pid)
@@ -7297,10 +7332,7 @@ mod trailing_join_tests {
             .selection_focus_pending
             .clone()
             .expect("capture keeps the intent for release");
-        let stamp = stamped
-            .proven_stamp
-            .clone()
-            .expect("capture stamps the intent");
+        let stamp = stamped.proven_stamp.expect("capture stamps the intent");
         {
             let guard = lock_shared(&shared);
             assert_eq!(stamp.obs, guard.clock.get());
@@ -7385,10 +7417,13 @@ mod trailing_join_tests {
         assert_eq!(fake.dispatches, 1, "owner dispatches exactly once");
         assert_eq!(fake.reads, 2, "fresh baseline plus post read");
         match &job {
-            EngineJob::CloseFocusResult { setter, .. } => assert_eq!(
-                *setter,
-                tiler_core::world_report::VisibilitySetter::Accepted
-            ),
+            EngineJob::CloseFocusResult { disposition, .. } => assert!(matches!(
+                disposition,
+                tiler_core::world_report::FocusDisposition::Called {
+                    setter: tiler_core::world_report::FrameSetter::Accepted,
+                    ..
+                }
+            )),
             _ => panic!("expected CloseFocusResult"),
         }
         process_job(
@@ -7667,9 +7702,11 @@ mod trailing_join_tests {
 
     #[test]
     fn selection_focus_null_and_newer_epoch_cancel_without_setter() {
-        // Latest/null epoch cancellation: a genuine newer non-explicit
-        // publication cancels the unstarted deferred intent, and a genuine
-        // null (focus-satisfied) publication retires the epoch — the old
+        // Retained-focus publication: a newer non-explicit publication
+        // re-publishes the away intent's explicit request (explicit beats
+        // admission in same-report precedence), so the deferred intent
+        // stays bound and nothing actuates; a genuine null
+        // (focus-satisfied) publication then retires the epoch — the old
         // operation never reaches any setter (zero queue rows, zero slot
         // commands, zero dispatches throughout).
         let (mut session, mut retained, shared, inbox, focus_queue, _ctx) =
@@ -7700,7 +7737,7 @@ mod trailing_join_tests {
         let scoped = |windows: Vec<ObservedWindow>,
                       focused: Option<u32>,
                       min10: bool,
-                      seq: u64,
+                      _seq: u64,
                       rev: u64| {
             crate::runtime_types::ScopedBackendSnapshot {
                 windows,
@@ -7741,40 +7778,57 @@ mod trailing_join_tests {
             .last_reply()
             .expect("reply retained")
             .focus_request
-            .expect("admission mints its own request");
-        assert_eq!(late_req.target.0, "4243_10");
-        assert_ne!(late_req.id, "focus-2");
-        assert!(lock_shared(&shared).selection_focus_pending.is_none());
+            .expect("publication retains one request per cause");
+        // Approved same-report cause precedence publishes the explicit
+        // request carried by the away selection intent; the newcomer's
+        // automatic-admission effect does not override it. The deferred
+        // intent therefore stays bound to the published request instead of
+        // being cancelled: nothing was actuated and nothing is dropped.
+        assert_eq!(late_req.id, "focus-2");
+        assert_eq!(
+            late_req.cause,
+            tiler_core::world_report::FocusRequestCause::ExplicitCommand
+        );
+        assert_eq!(late_req.cmd_seq, Some(1));
+        assert_eq!(late_req.target.0, "4243_9", "{late_req:?}");
+        assert_eq!(
+            late_req.after_shown.as_ref().map(|shown| shown.op.as_str()),
+            Some("op-1")
+        );
         {
-            let after = lock_shared(&shared).diagnostics.focus_dropped_full;
-            // Two counted events, both genuine: the bind refusal drops the
-            // one deferred intent (op-1 cancelled), and the refusal arm
-            // stages the admission's own no-call row with its own count.
+            let guard = lock_shared(&shared);
+            let pending = guard
+                .selection_focus_pending
+                .as_ref()
+                .expect("the deferred intent survives publication");
+            assert_eq!(pending.operation_id, "op-1");
+            assert_eq!(pending.focus_id, "focus-2");
+            assert_eq!(pending.window.0, "4243_9");
             assert_eq!(
-                after,
-                dropped_before + 2,
-                "admission cancels the deferred intent and no-calls its own (before={dropped_before} after={after})"
+                guard.diagnostics.focus_dropped_full, dropped_before,
+                "publication drops no deferred intent"
+            );
+            assert_eq!(
+                guard.close_focus_current.as_ref().map(|e| e.id.clone()),
+                Some(late_req.id.clone())
+            );
+            assert_eq!(guard.diagnostics.focus_dispatched, 0);
+            assert!(
+                guard
+                    .apps
+                    .get(&4243)
+                    .and_then(|app| app.focus.take())
+                    .is_none(),
+                "a deferred intent arms no slot command"
             );
         }
-        assert_eq!(
-            lock_shared(&shared)
-                .close_focus_current
-                .as_ref()
-                .map(|e| e.id.clone()),
-            Some(late_req.id.clone())
-        );
-        assert_eq!(lock_shared(&shared).diagnostics.focus_dispatched, 0);
         assert!(crate::runtime_shared::lock_focus(&focus_queue).is_empty());
-        assert!(
-            lock_shared(&shared)
-                .apps
-                .get(&4243)
-                .and_then(|app| app.focus.take())
-                .is_none(),
-            "cancelled intent arms no slot command"
-        );
-        // Null publication: the owner reports the old target focused, so
-        // the core retires the lane and the adapter epoch retires to None.
+        // Focus-satisfaction publication: the owner reports the old target
+        // focused, but without a proven foreground leg (`focused_wid` alone
+        // is not proof: `focus_evidence`, `sys_focus` and `global_focus`
+        // stay unset), so the core keeps the retained request instead of
+        // retiring the lane. The historical case retired on observed
+        // equality; proven-foreground gating supersedes that premise.
         process_job(
             EngineJob::ScopedObservation {
                 pid: 4243,
@@ -7793,18 +7847,33 @@ mod trailing_join_tests {
             &focus_queue,
             8,
         );
+        let still = session
+            .sequencer()
+            .last_reply()
+            .expect("reply retained")
+            .focus_request
+            .expect("unproven focus keeps the retained request");
+        assert_eq!(still.id, "focus-2");
+        assert_eq!(still.target.0, "4243_9");
         assert_eq!(
-            session
-                .sequencer()
-                .last_reply()
-                .expect("reply retained")
-                .focus_request,
-            None,
-            "target equality retires the lane"
+            lock_shared(&shared)
+                .close_focus_current
+                .as_ref()
+                .map(|e| e.id.clone()),
+            Some("focus-2".to_owned())
         );
-        assert!(lock_shared(&shared).close_focus_current.is_none());
-        assert!(lock_shared(&shared).selection_focus_pending.is_none());
-        assert_eq!(lock_shared(&shared).diagnostics.focus_dispatched, 0);
+        {
+            // The intent stays deferred while the retained request is
+            // unproven: no slot command, no dispatch, no queue row.
+            let guard = lock_shared(&shared);
+            let pending = guard
+                .selection_focus_pending
+                .as_ref()
+                .expect("unproven retention keeps the deferred intent");
+            assert_eq!(pending.operation_id, "op-1");
+            assert_eq!(pending.focus_id, "focus-2");
+            assert_eq!(guard.diagnostics.focus_dispatched, 0);
+        }
         assert!(crate::runtime_shared::lock_focus(&focus_queue).is_empty());
         assert!(session.peek_close_feedback().is_none());
         assert_eq!(away_op, "op-1");
@@ -8152,7 +8221,13 @@ mod trailing_join_tests {
             "req-3",
         )
         .expect("nonempty context reports");
-        match session.engine_mut().handle_report(&report, &[]).0 {
+        match tiler_protocol::world_admission::handle_report_checked(
+            session.engine_mut(),
+            &report,
+            &[],
+        )
+        .outcome
+        {
             WorldOutcome::Accepted(_) => {}
             other => panic!("hold observation must accept, got {other:?}"),
         }
@@ -8235,7 +8310,7 @@ mod trailing_join_tests {
                 operation_id: "op-9".to_owned(),
                 target_output: output(),
                 target_workspace: "ws-9".to_owned(),
-                setter: FrameSetter::Accepted,
+                disposition: FrameSetter::Accepted,
                 pre: None,
                 post: None,
                 baseline: None,
@@ -8249,7 +8324,9 @@ mod trailing_join_tests {
                 window: WindowId("4242_7".to_owned()),
                 target_output: output(),
                 target_workspace: "ws-9".to_owned(),
-                setter: FrameSetter::Threw,
+                disposition: tiler_core::world_report::MemberDisposition::Called(
+                    FrameSetter::Threw,
+                ),
                 pre: None,
                 post: None,
                 attempt_ms: 0,
@@ -8265,13 +8342,16 @@ mod trailing_join_tests {
                     w: 100,
                     h: 100,
                 },
-                setter: FrameSetter::Accepted,
+                disposition: FrameSetter::Accepted,
                 readback: None,
                 dpi_before: None,
                 dpi_after: None,
-                attempt_ms: 0,
-                operation_id: Some("op-7".to_owned()),
-                prewrite: None,
+                attempt_id: 1,
+                attempt_ms: None,
+                purpose: tiler_core::world_report::FramePurpose::FloatPlacement {
+                    operation_id: "op-7".to_owned(),
+                    prewrite: None,
+                },
             },
         );
         // Fixed-hint window homed to the live domain: the next real build
@@ -8400,7 +8480,13 @@ mod trailing_join_tests {
                 crate::world_connection::macos_capabilities(),
             )
             .expect("bound test engine");
-        match prove_engine.handle_report(&report, &[]).0 {
+        match tiler_protocol::world_admission::handle_report_checked(
+            &mut prove_engine,
+            &report,
+            &[],
+        )
+        .outcome
+        {
             tiler_core::world_engine::WorldOutcome::Accepted(reply)
             | tiler_core::world_engine::WorldOutcome::Duplicate(reply) => {
                 let desired = reply
@@ -8969,10 +9055,7 @@ mod trailing_join_tests {
         };
         use crate::native_tile_backend::build_scoped_snapshot;
         use crate::runtime_shared::AppRecord;
-        use tiler_protocol::world_protocol::{
-            CreationReceiptWire, CursorHitWire, DecodedReportV4, GestureIngressWire,
-            ReportWireOptionals, decode_report_v4, encode_report_v4,
-        };
+        use tiler_protocol::world_protocol::{decode_report_v4, encode_report_v4};
 
         const PID: u32 = 4242;
         const GENERATION: u64 = 1;
@@ -9294,21 +9377,7 @@ mod trailing_join_tests {
         )
         .expect("verification report builds from admitted truth");
         session.sequencer().clear_flight();
-        let mono_present = verify.monotonic_ms != 0;
-        let decoded_input = DecodedReportV4 {
-            report: verify,
-            wire: ReportWireOptionals {
-                cursor_hit: CursorHitWire::Absent,
-                monotonic_ms_present: mono_present,
-                frame_attempts_present: false,
-                member_attempts_present: false,
-                view_attempts_present: false,
-                clear_attempts_present: false,
-                creation_attempts_present: false,
-                gesture_ingress: GestureIngressWire::Absent,
-            },
-            creation_receipts: Vec::<CreationReceiptWire>::new(),
-        };
+        let decoded_input = crate::world_dispatch::decoded_report_for_encode(&verify);
         let wire = encode_report_v4(&decoded_input).expect("producer bytes encode");
         let back = decode_report_v4(&wire).expect("producer bytes decode");
         assert_eq!(back.report.windows.len(), 3);
@@ -9728,7 +9797,9 @@ mod trailing_join_tests {
         seq += 1;
         let toggle = tiler_core::world_report::WorldCommand::Operation(
             tiler_core::boundary::CoreCommand::ToggleFloat {
-                window: "4242_1".to_owned(),
+                window: tiler_core::directional::WindowSubject::Window(
+                    tiler_core::directional::WindowId("4242_1".to_owned()),
+                ),
                 float_rect: None,
             },
         );
@@ -10189,7 +10260,13 @@ mod trailing_join_tests {
                 ),
                 "drain-verified after read rides the native post key"
             );
-            let reply = match session.engine_mut().handle_report(&report, &[]).0 {
+            let reply = match tiler_protocol::world_admission::handle_report_checked(
+                session.engine_mut(),
+                &report,
+                &[],
+            )
+            .outcome
+            {
                 WorldOutcome::Accepted(reply) => reply,
                 other => panic!("expected accepted, got {other:?}"),
             };
@@ -10221,7 +10298,13 @@ mod trailing_join_tests {
             )
             .expect("nonempty context reports");
             assert!(report.view_attempts.is_empty() && report.member_attempts.is_empty());
-            let reply = match session.engine_mut().handle_report(&report, &[]).0 {
+            let reply = match tiler_protocol::world_admission::handle_report_checked(
+                session.engine_mut(),
+                &report,
+                &[],
+            )
+            .outcome
+            {
                 WorldOutcome::Accepted(reply) => reply,
                 other => panic!("expected accepted, got {other:?}"),
             };
@@ -10386,7 +10469,13 @@ mod trailing_join_tests {
                 ),
                 "drain-verified arrival rides the native post key"
             );
-            let reply = match session.engine_mut().handle_report(&report, &[]).0 {
+            let reply = match tiler_protocol::world_admission::handle_report_checked(
+                session.engine_mut(),
+                &report,
+                &[],
+            )
+            .outcome
+            {
                 WorldOutcome::Accepted(reply) => reply,
                 other => panic!("expected accepted, got {other:?}"),
             };
@@ -10427,7 +10516,13 @@ mod trailing_join_tests {
             )
             .expect("nonempty context reports");
             assert!(report.member_attempts.is_empty() && report.view_attempts.is_empty());
-            let reply = match session.engine_mut().handle_report(&report, &[]).0 {
+            let reply = match tiler_protocol::world_admission::handle_report_checked(
+                session.engine_mut(),
+                &report,
+                &[],
+            )
+            .outcome
+            {
                 WorldOutcome::Accepted(reply) => reply,
                 other => panic!("expected accepted, got {other:?}"),
             };
@@ -11182,8 +11277,13 @@ mod drag_gesture_handoff_tests {
         );
         assert!(
             replay.settled.is_none(),
-            "consumed id replays dead with no second terminal"
+            "a resubmitted release never re-settles: at-most-once by stable gesture id ({:?})",
+            replay.settled
         );
+        assert!(matches!(
+            replay.preview,
+            PreviewOutcome::HideTransient { .. }
+        ));
     }
 
     #[test]
@@ -11421,7 +11521,11 @@ mod drag_gesture_handoff_tests {
             orphan,
             Some(9),
         );
-        assert!(replay.settled.is_none(), "consumed orphan replays dead");
+        assert!(
+            replay.settled.is_none(),
+            "a resubmitted cancel never re-settles: at-most-once by stable gesture id ({:?})",
+            replay.settled
+        );
         assert!(matches!(
             replay.preview,
             PreviewOutcome::HideTransient { .. }
@@ -11569,13 +11673,14 @@ mod drag_gesture_handoff_tests {
             late,
             Some(9),
         );
-        match reply.settled {
-            Some(settled) => {
-                assert_eq!(settled.id, 61);
-                assert!(!settled.committed, "late old terminal never commits");
-            }
-            None => panic!("late old terminal records its uncommitted drain"),
-        }
+        // A late old press revision is fenced before dispatch (same drift
+        // rule as every stale press): no terminal is minted at all, so the
+        // late gesture can never commit or actuate.
+        assert!(
+            reply.settled.is_none(),
+            "late old press is refused pre-dispatch: {:?}",
+            reply.settled
+        );
         assert!(
             matches!(reply.preview, PreviewOutcome::HideTransient { .. }),
             "late old terminal shows no stale slot"

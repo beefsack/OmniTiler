@@ -26,10 +26,12 @@ serde_json = "1"
 tiler-core = { path = "../tiler-core" }
 tiler-protocol = { path = "../tiler-protocol" }
 
+[dev-dependencies]
+# Engine test constructors for adapter unit tests (`new_test_bound*`).
+tiler-core = { path = "../tiler-core", features = ["test-support"] }
 # Test-only pin of the actual Windows portable policy: comparing real
 # `tiler_windows::tiling` predicates against `tiler-core::window_policy`
 # without a core dependency cycle and without rewiring either adapter.
-[dev-dependencies]
 tiler-windows = { path = "../tiler-windows" }
 
 [target.'cfg(target_os = "macos")'.dependencies]

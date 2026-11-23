@@ -1440,6 +1440,7 @@ fn owner_backend_select_wires_before_gates_and_seams() {
         t_base: Instant::now(),
         fixture_gate: None,
     });
+    backend.test_force_os_major(26);
     let before = before_row(&order, 48201);
     backend
         .select(&before, 48203)
@@ -1516,6 +1517,7 @@ fn owner_backend_create_refuses_cancelled_and_locked_without_touch() {
                 t_base: Instant::now(),
                 fixture_gate: None,
             });
+        backend.test_force_os_major(26);
         let before = before_row(&[48201], 48201);
         assert!(
             backend.create(&before).is_err(),
@@ -1598,7 +1600,7 @@ fn trailing_backend(
     let mut gate = FakeExitGate::new(std::rc::Rc::clone(&log));
     gate.arm_results = arm_results.into();
     gate.await_results = await_results.into();
-    let backend = OwnerSelectBackend::pinned_with(crate::dock_swipe_select::OwnerBackendArgs {
+    let mut backend = OwnerSelectBackend::pinned_with(crate::dock_swipe_select::OwnerBackendArgs {
         legs,
         latch,
         cancel: Arc::clone(&cancel),
@@ -1618,6 +1620,7 @@ fn trailing_backend(
         t_base: Instant::now(),
         fixture_gate: None,
     });
+    backend.test_force_os_major(26);
     (backend, log, cancel)
 }
 
@@ -2065,7 +2068,7 @@ fn async_backend(
         published_separate: None,
         settle_deadline: Duration::from_millis(deadline_ms),
     };
-    let backend = OwnerSelectBackend::pinned_with(crate::dock_swipe_select::OwnerBackendArgs {
+    let mut backend = OwnerSelectBackend::pinned_with(crate::dock_swipe_select::OwnerBackendArgs {
         legs,
         latch,
         cancel: Arc::clone(&cancel),
@@ -2087,6 +2090,7 @@ fn async_backend(
         t_base: Instant::now(),
         fixture_gate: None,
     });
+    backend.test_force_os_major(26);
     (backend, cancel)
 }
 
@@ -2222,6 +2226,7 @@ fn drain_intermediate_notification_confirms_without_replay() {
         t_base: Instant::now(),
         fixture_gate: None,
     });
+    backend.test_force_os_major(26);
     let mut state = SelectionState::default();
     let success = drain_claimed_select_with(
         &mut state,
@@ -2404,7 +2409,7 @@ fn gated_backend(
         published_separate: None,
         settle_deadline: Duration::from_millis(3000),
     };
-    let backend = OwnerSelectBackend::pinned_with(crate::dock_swipe_select::OwnerBackendArgs {
+    let mut backend = OwnerSelectBackend::pinned_with(crate::dock_swipe_select::OwnerBackendArgs {
         legs,
         latch,
         cancel,
@@ -2424,6 +2429,7 @@ fn gated_backend(
         t_base: Instant::now(),
         fixture_gate: gate,
     });
+    backend.test_force_os_major(26);
     // The shared order log records every "append"/"arm"/"await"/"disarm":
     // empty scripted result queues panic on any delegate call, so an empty
     // log plus no panic proves zero actuator calls.

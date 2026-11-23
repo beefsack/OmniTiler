@@ -33,9 +33,12 @@ use crate::runtime_types::{
 };
 use tiler_core::directional::WindowId;
 use tiler_core::world_report::{
-    AfterShownMember, ArrivalBracket, ArrivalLocation, VisibilityReason, VisibilitySample,
-    VisibilitySetter,
+    AfterShownMember, ArrivalBracket, ArrivalLocation, FocusDisposition, FocusNoCallReason,
+    VisibilitySample,
 };
+
+/// Immutable request tuple plus the sampled stamps that dedup one capture.
+type ArrivalCaptureKey = (String, u64, String, String, u64, u64, u64, u64);
 
 /// Bound for one worker multiplex slice: frame waits and backend
 /// observation pumps share this cadence. Command wake stays immediate
@@ -376,8 +379,8 @@ pub(crate) fn arrival_capture_due(
     revision: u64,
     context_generation: u64,
     generation: u64,
-    last_attempt: &Option<(String, u64, String, String, u64, u64, u64, u64)>,
-) -> Option<(String, u64, String, String, u64, u64, u64, u64)> {
+    last_attempt: &Option<ArrivalCaptureKey>,
+) -> Option<ArrivalCaptureKey> {
     let (focus_id, issued_revision, adapter_incarnation, core_generation) = pending?;
     if owned_members == 0 {
         return None;
@@ -418,7 +421,7 @@ pub(crate) fn maybe_send_arrival_capture(
     shared: &Arc<Mutex<Shared>>,
     cell: &NativeContextCell,
     inbox: &Arc<Inbox>,
-    last_attempt: &mut Option<(String, u64, String, String, u64, u64, u64, u64)>,
+    last_attempt: &mut Option<ArrivalCaptureKey>,
 ) -> bool {
     let (focus_id, issued_revision, adapter_incarnation, core_generation, members): (
         String,
@@ -715,7 +718,7 @@ pub(crate) fn close_arrival_brackets(
         out.push(ArrivalBracket {
             window: member.win.clone(),
             obs: cap.obs,
-            before: cap.before.clone(),
+            before: cap.before,
             location: ArrivalLocation::Native {
                 home: Some(tiler_core::world_report::WorkspaceRef::Native {
                     output: home_output,
@@ -723,7 +726,7 @@ pub(crate) fn close_arrival_brackets(
                 }),
             },
             frame: cap.frame,
-            after: cap.after.clone(),
+            after: cap.after,
         });
     }
     (out, now)
@@ -744,8 +747,7 @@ pub(crate) fn handle_close_focus_command(
     shared: &Arc<Mutex<Shared>>,
 ) -> EngineJob {
     let fresh: Option<(u32, Option<u32>)> = backend.selected_focus_evidence();
-    let build = |setter: VisibilitySetter,
-                 reason: VisibilityReason,
+    let build = |disposition: FocusDisposition,
                  pre: Option<WindowId>,
                  post: Option<WindowId>,
                  foreground_proven: bool,
@@ -756,8 +758,7 @@ pub(crate) fn handle_close_focus_command(
             cmd.request_id,
             &close.close_id,
             close.target.0.as_str(),
-            setter,
-            reason,
+            disposition,
             pre.as_ref().map(|w| w.0.as_str()),
             post.as_ref().map(|w| w.0.as_str()),
             foreground_proven,
@@ -772,8 +773,7 @@ pub(crate) fn handle_close_focus_command(
             issued_rev: close.issued_revision,
             adapter_incarnation: close.adapter_incarnation.clone(),
             core_generation: close.core_generation.clone(),
-            setter,
-            reason,
+            disposition,
             pre,
             post,
             foreground_proven,
@@ -794,8 +794,9 @@ pub(crate) fn handle_close_focus_command(
                 0,
             );
             build(
-                VisibilitySetter::NotCalled,
-                VisibilityReason::IdentityStale,
+                FocusDisposition::NotCalled {
+                    reason: FocusNoCallReason::IdentityStale,
+                },
                 None,
                 None,
                 false,
@@ -815,8 +816,9 @@ pub(crate) fn handle_close_focus_command(
                 0,
             );
             build(
-                VisibilitySetter::NotCalled,
-                VisibilityReason::Superseded,
+                FocusDisposition::NotCalled {
+                    reason: FocusNoCallReason::Superseded,
+                },
                 None,
                 None,
                 false,
@@ -843,8 +845,9 @@ pub(crate) fn handle_close_focus_command(
                     0,
                 );
                 return build(
-                    VisibilitySetter::NotCalled,
-                    VisibilityReason::Superseded,
+                    FocusDisposition::NotCalled {
+                        reason: FocusNoCallReason::Superseded,
+                    },
                     None,
                     None,
                     false,
@@ -870,8 +873,9 @@ pub(crate) fn handle_close_focus_command(
                     );
                     let proven = Some(close.target.clone());
                     build(
-                        VisibilitySetter::NotCalled,
-                        VisibilityReason::Empty,
+                        FocusDisposition::NotCalled {
+                            reason: FocusNoCallReason::NoReason,
+                        },
                         proven.clone(),
                         proven,
                         true,
@@ -892,8 +896,9 @@ pub(crate) fn handle_close_focus_command(
                     );
                     let foreground_proven = fresh.is_some();
                     build(
-                        VisibilitySetter::NotCalled,
-                        VisibilityReason::ForegroundChanged,
+                        FocusDisposition::NotCalled {
+                            reason: FocusNoCallReason::ForegroundChanged,
+                        },
                         close.fallback_pre.clone(),
                         fresh,
                         foreground_proven,
@@ -913,8 +918,9 @@ pub(crate) fn handle_close_focus_command(
                         1,
                     );
                     build(
-                        VisibilitySetter::NotCalled,
-                        VisibilityReason::FocusUnproven,
+                        FocusDisposition::NotCalled {
+                            reason: FocusNoCallReason::ForegroundUnproven,
+                        },
                         close.fallback_pre.clone(),
                         None,
                         false,
@@ -1013,7 +1019,7 @@ pub(crate) fn handle_close_focus_command(
                             cmd.request_id,
                         );
                     }
-                    let (setter, reason) = close_completion_disposition(&completion);
+                    let disposition = close_completion_disposition(&completion);
                     let attempt_ms = close_attempt_ms(&completion);
                     crate::diag_cause::emit_focus_done(pid, cmd.request_id, &completion);
                     let post =
@@ -1029,8 +1035,7 @@ pub(crate) fn handle_close_focus_command(
                         Vec::new()
                     };
                     build(
-                        setter,
-                        reason,
+                        disposition,
                         pre,
                         post,
                         foreground_proven,
@@ -1109,7 +1114,7 @@ pub(crate) fn app_worker_main(
     // evidence-only attempt per immutable request tuple plus watermark,
     // topology revision, context generation, and app generation, never a
     // polling timer or retry.
-    let mut last_capture_sent: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+    let mut last_capture_sent: Option<ArrivalCaptureKey> = None;
     // Seen frontmost for the change-triggered refresh below: initialized to
     // the currently published value so worker start alone never re-reads.
     let mut seen_frontmost = lock_shared(&shared)
@@ -2110,7 +2115,7 @@ mod arrival_capture_dedupe_tests {
     }
 
     fn test_shared(pending: crate::runtime_shared::DeferredSelectionFocus) -> Arc<Mutex<Shared>> {
-        let shared = Arc::new(Mutex::new(Shared {
+        Arc::new(Mutex::new(Shared {
             config: crate::runtime_types::RuntimeConfig::default(),
             handles_live: 0,
             generation_counter: 0,
@@ -2157,8 +2162,7 @@ mod arrival_capture_dedupe_tests {
             last_workspace_desires: Vec::new(),
             last_core_generation: String::new(),
             presentation_style: crate::active_border::PresentationStylePx::default(),
-        }));
-        shared
+        }))
     }
 
     #[test]

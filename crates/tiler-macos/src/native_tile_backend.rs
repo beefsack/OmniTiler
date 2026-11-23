@@ -620,6 +620,7 @@ pub fn validate_identity_triple(
 /// Anything else — join disagreement, unreadable start token, or any
 /// identity drift (possible PID reuse) — returns `None` and the caller
 /// omits the member, never a reused wid.
+#[allow(clippy::too_many_arguments)]
 pub fn attest_capture_owner(
     identity: &ProcessIdentity,
     unscoped: bool,

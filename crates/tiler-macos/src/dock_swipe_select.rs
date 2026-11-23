@@ -1035,6 +1035,11 @@ pub(crate) struct OwnerSelectBackend<T: SwipeTopology, P: SwipePoster> {
     /// actuate only owned SIDs and creates refuse (the controller owns
     /// creation). `None` leaves the normal product unchanged.
     fixture_gate: Option<crate::fixture_gate::FixtureSpaceGate>,
+    /// The gesture payload the select leg dispatches under. Production
+    /// reads the running OS major; offline tests pin the newest supported
+    /// major so the scripted seams exercise the payload itself rather than
+    /// this host's refusal gate (which has its own test).
+    os_major: Option<u32>,
 }
 
 /// Production owner backend over live seams.
@@ -1060,7 +1065,15 @@ impl<T: SwipeTopology, P: SwipePoster> OwnerSelectBackend<T, P> {
             op: args.op,
             t_base: args.t_base,
             fixture_gate: args.fixture_gate,
+            os_major: crate::ffi::macos_major(),
         }
+    }
+
+    /// Pin the gesture payload major (tests only): the scripted seams
+    /// exercise the pinned payload independent of the host OS.
+    #[cfg(test)]
+    pub(crate) fn test_force_os_major(&mut self, major: u32) {
+        self.os_major = Some(major);
     }
 
     /// Test-only readback of the injected poster (lets offline tests prove
@@ -1260,7 +1273,7 @@ impl<T: SwipeTopology, P: SwipePoster> SelectionBackend for OwnerSelectBackend<T
         let gates = self.gate_reads.read_gates();
         let req = SwipeRequest {
             target: sid,
-            os_major: crate::ffi::macos_major(),
+            os_major: self.os_major,
             before: Some(before),
             op: self.op.as_deref(),
             t_base: self.t_base,

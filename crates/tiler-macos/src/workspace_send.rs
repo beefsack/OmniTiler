@@ -89,6 +89,7 @@
 /// No modifier-plus-drag product trigger exists.
 use std::path::Path;
 
+use tiler_core::directional::WindowSubject;
 use tiler_core::world_report::{FrameSetter, SendSource, WorldCommand};
 
 use crate::desktop_shortcuts::{ApplyOutcome, DesktopShortcutStore, apply_with_store_to};
@@ -1421,6 +1422,16 @@ pub(crate) fn describe_send_source(source: &SendSource) -> String {
     }
 }
 
+/// Plain window subject token for the refusal line: explicit windows render
+/// their id, execution-time focus renders its intent. Pure.
+#[must_use]
+fn describe_window_subject(subject: &WindowSubject) -> String {
+    match subject {
+        WindowSubject::Window(id) => id.0.clone(),
+        WindowSubject::CurrentFocus => "current-focus".to_owned(),
+    }
+}
+
 /// Plain send-command shape for the refusal line: `(subject, index,
 /// follow, source)`. Numbered sends carry the positional index, relative
 /// sends carry the signed delta, direct sends carry `direct`, directional
@@ -1436,7 +1447,7 @@ pub(crate) fn describe_send_command(command: &WorldCommand) -> (String, String, 
             index,
             follow,
         } => (
-            window.0.clone(),
+            describe_window_subject(window),
             index.to_string(),
             *follow,
             describe_send_source(source),
@@ -1447,7 +1458,7 @@ pub(crate) fn describe_send_command(command: &WorldCommand) -> (String, String, 
             delta,
             follow,
         } => (
-            window.0.clone(),
+            describe_window_subject(window),
             format!("relative{delta:+}"),
             *follow,
             describe_send_source(source),
@@ -1458,17 +1469,17 @@ pub(crate) fn describe_send_command(command: &WorldCommand) -> (String, String, 
             target_workspace,
             follow,
         } => (
-            window.0.clone(),
+            describe_window_subject(window),
             "direct".to_owned(),
             *follow,
-            format!("{}/{}", target_output.0, target_workspace),
+            format!("{}/{}", target_output.0, target_workspace.0.as_str()),
         ),
         WorldCommand::SendDirectional {
             window,
             direction,
             follow,
         } => (
-            window.0.clone(),
+            describe_window_subject(window),
             "directional".to_owned(),
             *follow,
             direction.as_wire_str().to_owned(),

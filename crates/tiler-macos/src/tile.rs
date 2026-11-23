@@ -5132,7 +5132,6 @@ mod tests {
                     visible: Some(true),
                     suppression_owned: None,
                 },
-                last_write: None,
             }
         }
         fn ingress(token: &str) -> PresentationIngressV4 {
@@ -5219,7 +5218,7 @@ mod tests {
                 frames: Vec::new(),
                 member_attempts: Vec::new(),
                 view_attempts: Vec::new(),
-                clear_attempts: Vec::new(),
+                visibility_attempts: Vec::new(),
                 creation_attempts: Vec::new(),
                 held_attempts: Vec::new(),
                 state_attempts: Vec::new(),
@@ -5233,17 +5232,23 @@ mod tests {
             tiler_core::world_engine::WorldEngine::new_test_host_owned("gen-1", "adapter-1")
                 .expect("bound host engine");
         for seq in 1..=3u64 {
-            match engine
-                .handle_report(&host_report(seq, "win-a", ingress("win-a")), &[])
-                .0
+            match tiler_protocol::world_admission::handle_report_checked(
+                &mut engine,
+                &host_report(seq, "win-a", ingress("win-a")),
+                &[],
+            )
+            .outcome
             {
                 WorldOutcome::Accepted(_) => {}
                 other => panic!("expected accepted, got {other:?}"),
             }
         }
-        let reply = match engine
-            .handle_report(&host_report(4, "win-a", ingress("win-a")), &[])
-            .0
+        let reply = match tiler_protocol::world_admission::handle_report_checked(
+            &mut engine,
+            &host_report(4, "win-a", ingress("win-a")),
+            &[],
+        )
+        .outcome
         {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),
@@ -5403,7 +5408,6 @@ mod tests {
                     visible: Some(true),
                     suppression_owned: None,
                 },
-                last_write: None,
             }
         }
         fn v4_ingress() -> PresentationIngressV4 {
@@ -5479,7 +5483,7 @@ mod tests {
             frames: Vec::new(),
             member_attempts: Vec::new(),
             view_attempts: Vec::new(),
-            clear_attempts: Vec::new(),
+            visibility_attempts: Vec::new(),
             creation_attempts: Vec::new(),
             held_attempts: Vec::new(),
             state_attempts: Vec::new(),
@@ -5488,10 +5492,13 @@ mod tests {
             intent_records: Vec::new(),
             renderer_input: None,
         };
-        let reply = match engine.handle_report(&report, &[]).0 {
-            WorldOutcome::Accepted(reply) => reply,
-            other => panic!("expected accepted, got {other:?}"),
-        };
+        let reply =
+            match tiler_protocol::world_admission::handle_report_checked(&mut engine, &report, &[])
+                .outcome
+            {
+                WorldOutcome::Accepted(reply) => reply,
+                other => panic!("expected accepted, got {other:?}"),
+            };
         assert!(
             !reply.presentation.pager.is_empty(),
             "engine publishes pager content"

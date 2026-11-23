@@ -8,7 +8,7 @@
 //! AX-moved classification, no consume/replay, host-native movement only.
 //!
 //! Reuses the shared world gesture route (gesture ingress per report plus
-//! correlated [`CommandResult::DragPreview`](tiler_core::world_report::CommandResult)
+//! correlated [`DragPreviewV4`](tiler_core::world_report::DragPreviewV4)
 //! and [`GestureSettled`](tiler_core::gesture::GestureSettled) results) and
 //! the filled above-target carrier intent (BorderCarrier ordering +
 //! group-underlay fill parsing and geometry). Centre is unsupported (no
@@ -1579,7 +1579,7 @@ mod tests {
     /// native Space, and a retained [`WorldEngine`](tiler_core::world_engine::WorldEngine)
     /// converging them. Reports ride gesture ingress per phase (Started on
     /// arm, Updated per sample, Released/Cancelled terminally); results
-    /// correlate from `command_result` (preview) and `gesture_settled`
+    /// correlate from `reply.drag_preview` (preview) and `gesture_settled`
     /// (terminal commit), never from a direct engine oracle.
     struct WorldDrag {
         engine: tiler_core::world_engine::WorldEngine,
@@ -1641,7 +1641,6 @@ mod tests {
                     visible: Some(true),
                     suppression_owned: None,
                 },
-                last_write: None,
             }
         }
 
@@ -1716,7 +1715,7 @@ mod tests {
                 frames: Vec::new(),
                 member_attempts: Vec::new(),
                 view_attempts: Vec::new(),
-                clear_attempts: Vec::new(),
+                visibility_attempts: Vec::new(),
                 creation_attempts: Vec::new(),
                 held_attempts: Vec::new(),
                 state_attempts: Vec::new(),
@@ -1733,7 +1732,13 @@ mod tests {
             gesture: Option<GestureIngress>,
         ) -> tiler_core::world_report::WorldReplyV4 {
             let report = self.report(w1, gesture);
-            match self.engine.handle_report(&report, &[]).0 {
+            match tiler_protocol::world_admission::handle_report_checked(
+                &mut self.engine,
+                &report,
+                &[],
+            )
+            .outcome
+            {
                 WorldOutcome::Accepted(reply)
                 | WorldOutcome::Duplicate(reply)
                 | WorldOutcome::CommandConsumed(reply) => reply,
@@ -1761,8 +1766,8 @@ mod tests {
         }
 
         fn to_preview(reply: &tiler_core::world_report::WorldReplyV4) -> PreviewOutcome {
-            match &reply.command_result {
-                Some(tiler_core::world_report::CommandResult::DragPreview {
+            match &reply.drag_preview {
+                Some(tiler_core::world_report::DragPreviewV4 {
                     rect,
                     hover,
                     target,
@@ -1837,7 +1842,7 @@ mod tests {
             )),
         );
         assert!(
-            started.command_result.is_none(),
+            started.drag_preview.is_none(),
             "start binds only, never previews"
         );
         // Zero movement against the immutable START point holds with no

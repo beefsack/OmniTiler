@@ -333,6 +333,7 @@ impl LifetimeMemory {
 /// a policy echo, never inferred from legacy classification). Every other
 /// fact stays null per the `unavailable_facts` declaration (including
 /// `class`/`title`, which have no truthful macOS source here).
+#[allow(clippy::too_many_arguments)]
 fn v4_fact(
     window: WindowId,
     output: Option<OutputId>,
@@ -387,7 +388,6 @@ fn v4_fact(
             visible: None,
             suppression_owned: None,
         },
-        last_write: None,
     }
 }
 

@@ -24,12 +24,12 @@ use tiler_core::geometry::Rect;
 use tiler_core::gesture::{GestureIngress, GestureSettled};
 use tiler_core::world_engine::WorldOutcome;
 use tiler_core::world_report::{
-    OneShotEffect, ScopeAuthority, WorldCommand, WorldReplyV4, WorldReportV4,
+    AttemptLaneV4, FocusNoCallReason, ScopeAuthority, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 use tiler_protocol::world_protocol::{
     CreationReceiptWire, CursorHitWire, DecodedReplyV4, DecodedReportV4, GestureIngressWire,
-    ReplyWireOptionals, ReportWireOptionals, decode_reply_v4_for_host, decode_report_v4,
-    encode_reply_v4, encode_report_v4,
+    ReportWireOptionals, decode_reply_v4_for_host, decode_report_v4, encode_reply_v4,
+    encode_report_v4,
 };
 
 use crate::focus_route::FocusRoute;
@@ -99,24 +99,42 @@ fn is_retained_fullscreen(retained: &RetainedCore, window: &str) -> bool {
         .is_some_and(|w| w.fullscreen)
 }
 
-/// Production byte-codec transact: the typed report encodes through the
-/// genuine v4 codec ([`encode_report_v4`]), decodes back to the wire-typed
-/// report ([`decode_report_v4`]), runs the real engine, then the typed reply
-/// encodes ([`encode_reply_v4`]) and decodes ([`decode_reply_v4_for_host`]
-/// against the production [`macos_capabilities`](crate::world_connection::macos_capabilities))
-/// before the sequencer ever sees it. Any codec leg failure returns its
-/// static kind; callers refuse explicitly and never fall back to a direct
-/// typed call. A wrong-capability row (above/warp/sticky, all false on
-/// macOS) refuses here as `snapshot-invalid` with its fixed rule token,
-/// before sequencer acceptance or any actuation. Wire metadata is inferred canonically: absent cursor-hit/gesture
-/// stay absent, `monotonic_ms` rides iff nonzero (attempt stamps preserved),
-/// attempt lanes ride iff non-empty, and creation receipts keep
-/// `created` null unless the row carries causal proof (`Some`).
-pub(crate) fn codec_transact(
-    session: &mut WorldSession,
-    report: &WorldReportV4,
-) -> Result<WorldOutcome, &'static str> {
-    let decoded_report = DecodedReportV4 {
+/// Canonical property-attempt lane order for one typed report: rows grouped
+/// per lane in wire order (`frame`, `member`, `view`, `state`,
+/// `visibility`), exactly the sequence the encoder consumes. Production
+/// reports carry no held attempt rows, so the length equals the sum of the
+/// five lane vecs.
+fn property_attempt_order(report: &WorldReportV4) -> Vec<AttemptLaneV4> {
+    let mut order = Vec::with_capacity(
+        report.frames.len()
+            + report.member_attempts.len()
+            + report.view_attempts.len()
+            + report.state_attempts.len()
+            + report.visibility_attempts.len(),
+    );
+    let lanes = [
+        (AttemptLaneV4::Frame, report.frames.len()),
+        (AttemptLaneV4::Member, report.member_attempts.len()),
+        (AttemptLaneV4::View, report.view_attempts.len()),
+        (AttemptLaneV4::State, report.state_attempts.len()),
+        (AttemptLaneV4::Visibility, report.visibility_attempts.len()),
+    ];
+    for (lane, len) in lanes {
+        order.extend(std::iter::repeat_n(lane, len));
+    }
+    order
+}
+
+/// Canonical decoded-report envelope for one typed report: the same
+/// metadata the production codec infers, shared with the adapter tests so
+/// they feed the envelope the codec really produces rather than a hand
+/// assembled copy. Wire metadata is inferred canonically: absent
+/// cursor-hit/gesture stay absent, `monotonic_ms` rides iff nonzero
+/// (attempt stamps preserved), attempt lanes ride iff non-empty, and
+/// creation receipts keep `created` null unless the row carries causal
+/// proof (`Some`).
+pub(crate) fn decoded_report_for_encode(report: &WorldReportV4) -> DecodedReportV4 {
+    DecodedReportV4 {
         report: report.clone(),
         wire: ReportWireOptionals {
             cursor_hit: match &report.cursor_hit {
@@ -124,16 +142,13 @@ pub(crate) fn codec_transact(
                 Some(_) => CursorHitWire::Id,
             },
             monotonic_ms_present: report.monotonic_ms != 0,
-            frame_attempts_present: !report.frames.is_empty(),
-            member_attempts_present: !report.member_attempts.is_empty(),
-            view_attempts_present: !report.view_attempts.is_empty(),
-            clear_attempts_present: !report.clear_attempts.is_empty(),
             creation_attempts_present: !report.creation_attempts.is_empty(),
             gesture_ingress: match &report.gesture {
                 None => GestureIngressWire::Absent,
                 Some(_) => GestureIngressWire::Present,
             },
         },
+        property_attempt_order: property_attempt_order(report),
         creation_receipts: report
             .creation_attempts
             .iter()
@@ -144,7 +159,27 @@ pub(crate) fn codec_transact(
                 Some(_) => CreationReceiptWire::Id,
             })
             .collect(),
-    };
+        // Production reports carry no held attempt rows, so no protocol
+        // residual evidence exists to re-encode.
+        residual: None,
+    }
+}
+
+/// Production byte-codec transact: the typed report encodes through the
+/// genuine v4 codec ([`encode_report_v4`]), decodes back to the wire-typed
+/// report ([`decode_report_v4`]), runs the real engine, then the typed reply
+/// encodes ([`encode_reply_v4`]) and decodes ([`decode_reply_v4_for_host`]
+/// against the production [`macos_capabilities`](crate::world_connection::macos_capabilities))
+/// before the sequencer ever sees it. Any codec leg failure returns its
+/// static kind; callers refuse explicitly and never fall back to a direct
+/// typed call. A wrong-capability row (above/warp/sticky, all false on
+/// macOS) refuses here as `snapshot-invalid` with its fixed rule token,
+/// before sequencer acceptance or any actuation.
+pub(crate) fn codec_transact(
+    session: &mut WorldSession,
+    report: &WorldReportV4,
+) -> Result<WorldOutcome, &'static str> {
+    let decoded_report = decoded_report_for_encode(report);
     let mut legs = crate::stage_timing::LegClock::new();
     let report_wire = encode_report_v4(&decoded_report).map_err(|_| "codec-report-encode")?;
     legs.leg(crate::stage_timing::stage::CODEC_REPORT_ENC);
@@ -155,7 +190,7 @@ pub(crate) fn codec_transact(
         &admitted.report,
         &[],
     )
-    .0;
+    .outcome;
     legs.leg(crate::stage_timing::stage::CORE);
     // Capability truth at reply decode: the production macOS host declares
     // above/warp/native-sticky false, and the engine gates all three rows
@@ -164,13 +199,9 @@ pub(crate) fn codec_transact(
     let host = crate::world_connection::macos_capabilities();
     match outcome {
         WorldOutcome::Accepted(reply) => {
-            let suspended = reply.presentation.suspended_output.is_some();
             let decoded = DecodedReplyV4 {
                 roster_plan: None,
                 reply,
-                wire: ReplyWireOptionals {
-                    suspended_output_present: suspended,
-                },
             };
             let reply_wire = encode_reply_v4(&decoded).map_err(|_| "codec-reply-encode")?;
             legs.leg(crate::stage_timing::stage::CODEC_REPLY_ENC);
@@ -180,13 +211,9 @@ pub(crate) fn codec_transact(
             Ok(WorldOutcome::Accepted(back.reply))
         }
         WorldOutcome::CommandConsumed(reply) => {
-            let suspended = reply.presentation.suspended_output.is_some();
             let decoded = DecodedReplyV4 {
                 roster_plan: None,
                 reply,
-                wire: ReplyWireOptionals {
-                    suspended_output_present: suspended,
-                },
             };
             let reply_wire = encode_reply_v4(&decoded).map_err(|_| "codec-reply-encode")?;
             legs.leg(crate::stage_timing::stage::CODEC_REPLY_ENC);
@@ -196,13 +223,9 @@ pub(crate) fn codec_transact(
             Ok(WorldOutcome::CommandConsumed(back.reply))
         }
         WorldOutcome::Duplicate(reply) => {
-            let suspended = reply.presentation.suspended_output.is_some();
             let decoded = DecodedReplyV4 {
                 roster_plan: None,
                 reply,
-                wire: ReplyWireOptionals {
-                    suspended_output_present: suspended,
-                },
             };
             let reply_wire = encode_reply_v4(&decoded).map_err(|_| "codec-reply-encode")?;
             legs.leg(crate::stage_timing::stage::CODEC_REPLY_ENC);
@@ -217,7 +240,7 @@ pub(crate) fn codec_transact(
 
 /// Adapter-side fail-closed gate for unpersisted intent desires: the core has
 /// no durable backend yet, so any nonempty `intent_desired` refuses before
-/// any dependent native apply (no effect spend, no slot/outbox write).
+/// any dependent native apply (no slot/outbox write).
 /// Ordinary admission/reflow emits none, so this never fires honestly.
 fn intent_desired_hold(reply: &WorldReplyV4) -> bool {
     !reply.intent_desired.is_empty()
@@ -230,7 +253,7 @@ fn intent_desired_hold(reply: &WorldReplyV4) -> bool {
 /// Never clears: no filesystem storage/backend or recovery exists, so no
 /// later empty reply can prove persistence, and nothing here claims
 /// durability. Call at every real apply route after acceptance and before
-/// any effect spend, slot/outbox write, or presentation publish.
+/// any slot/outbox write or presentation publish.
 fn unpersisted_hold(session: &mut WorldSession, reply: &WorldReplyV4) -> bool {
     if session.unpersisted_intent_hold() {
         return true;
@@ -438,6 +461,7 @@ pub(crate) fn dispatch_gesture_report(
     Option<GestureSettled>,
 ) {
     use crate::drag_drop::PreviewOutcome;
+    let gesture_id = ingress.id;
     if !session.connection_bound() {
         count_token(shared, &format!("{op}-refused-no-connection"));
         emit(
@@ -575,8 +599,8 @@ pub(crate) fn dispatch_gesture_report(
                         None,
                     );
                 }
-                let Some(effects) = spend_if_coherent(
-                    session, retained, shared, inbox, &dispatch, &applied, op, pid, generation, seq,
+                let Some(()) = prove_coherent(
+                    retained, shared, inbox, &dispatch, &applied, op, pid, generation, seq,
                 ) else {
                     count_token(shared, &format!("{op}-refused-stale-observation"));
                     emit(
@@ -598,7 +622,12 @@ pub(crate) fn dispatch_gesture_report(
                     );
                 };
                 let preview = map_gesture_preview(&applied);
-                let settled = applied.gesture_settled;
+                // A terminal belongs to the gesture this report carries:
+                // a reply that still settles an older id is a late
+                // drain, not this report's terminal.
+                let settled = applied
+                    .gesture_settled
+                    .filter(|settled| settled.id == gesture_id);
                 consume_world_reply(
                     session,
                     retained,
@@ -606,7 +635,6 @@ pub(crate) fn dispatch_gesture_report(
                     focus_queue,
                     focus_capacity,
                     &applied,
-                    &effects,
                     ticket.command.as_ref(),
                     ticket.command_seq,
                     op,
@@ -660,8 +688,8 @@ pub(crate) fn dispatch_gesture_report(
                         None,
                     );
                 }
-                let Some(effects) = spend_if_coherent(
-                    session, retained, shared, inbox, &dispatch, &applied, op, pid, generation, seq,
+                let Some(()) = prove_coherent(
+                    retained, shared, inbox, &dispatch, &applied, op, pid, generation, seq,
                 ) else {
                     count_token(shared, &format!("{op}-refused-stale-observation"));
                     emit(
@@ -683,7 +711,12 @@ pub(crate) fn dispatch_gesture_report(
                     );
                 };
                 let preview = map_gesture_preview(&applied);
-                let settled = applied.gesture_settled;
+                // A terminal belongs to the gesture this report carries:
+                // a reply that still settles an older id is a late
+                // drain, not this report's terminal.
+                let settled = applied
+                    .gesture_settled
+                    .filter(|settled| settled.id == gesture_id);
                 consume_world_reply(
                     session,
                     retained,
@@ -691,7 +724,6 @@ pub(crate) fn dispatch_gesture_report(
                     focus_queue,
                     focus_capacity,
                     &applied,
-                    &effects,
                     ticket.command.as_ref(),
                     ticket.command_seq,
                     op,
@@ -730,7 +762,9 @@ pub(crate) fn dispatch_gesture_report(
             (
                 DispatchVerdict::Duplicate,
                 map_gesture_preview(&reply),
-                reply.gesture_settled,
+                reply
+                    .gesture_settled
+                    .filter(|settled| settled.id == gesture_id),
             )
         }
         WorldOutcome::Rejected { kind, .. } => {
@@ -1002,9 +1036,8 @@ fn dispatch_ticket_inner(
                             select_operation: None,
                         };
                     }
-                    let Some(effects) = spend_if_coherent(
-                        session, retained, shared, inbox, &dispatch, &applied, op, pid, generation,
-                        seq,
+                    let Some(()) = prove_coherent(
+                        retained, shared, inbox, &dispatch, &applied, op, pid, generation, seq,
                     ) else {
                         // The accepted command (if any) already executed
                         // core-side, so a planner-owned select binds exactly
@@ -1052,7 +1085,6 @@ fn dispatch_ticket_inner(
                         focus_queue,
                         focus_capacity,
                         &applied,
-                        &effects,
                         ticket.command.as_ref(),
                         ticket.command_seq,
                         op,
@@ -1132,8 +1164,7 @@ fn dispatch_ticket_inner(
         WorldOutcome::CommandConsumed(reply) => {
             // Fresh report, already-consumed command: the observation
             // reconciled, the command never re-executed. Consumed exactly
-            // like an accept (effects dedupe by id, so replays never
-            // reapply).
+            // like an accept (the sequencer applies it as observation).
             match session.sequencer().accept_reply(&reply) {
                 ReplyVerdict::Applied(applied) => {
                     if unpersisted_hold(session, &applied) {
@@ -1152,9 +1183,8 @@ fn dispatch_ticket_inner(
                             select_operation: None,
                         };
                     }
-                    let Some(effects) = spend_if_coherent(
-                        session, retained, shared, inbox, &dispatch, &applied, op, pid, generation,
-                        seq,
+                    let Some(()) = prove_coherent(
+                        retained, shared, inbox, &dispatch, &applied, op, pid, generation, seq,
                     ) else {
                         // The accepted command (if any) already executed
                         // core-side, so a planner-owned select binds exactly
@@ -1192,7 +1222,6 @@ fn dispatch_ticket_inner(
                         focus_queue,
                         focus_capacity,
                         &applied,
-                        &effects,
                         ticket.command.as_ref(),
                         ticket.command_seq,
                         op,
@@ -1394,7 +1423,7 @@ fn maybe_retry(
 /// Post-accept emission coherence: an accepted reply still must not touch
 /// native setters unless its snapshot provably incorporates every
 /// submitted input. Three legs, all re-read here (after acceptance, before
-/// effects spend or any slot/outbox write):
+/// any slot/outbox write):
 ///
 /// - watermark equality: the shared clock still equals the reply's stamped
 ///   observation. Any submit since the ticket fails this, so an old report
@@ -1509,13 +1538,12 @@ fn will_incorporate(guard: &Shared, retained: &RetainedCore, job: &CoherencePend
 }
 
 /// Run the post-accept test rendezvous (if set), then prove emission
-/// coherence for one accepted reply. Returns the newly spent one-shot
-/// effects when the snapshot is still current; returns `None` (counted as
-/// `stale-observation`, spending nothing) when input landed between
-/// acceptance and emission — the queued successors converge instead.
+/// coherence for one accepted reply. Returns `Some(())` when the snapshot is
+/// still current; returns `None` (counted as `stale-observation`, emitting
+/// nothing) when input landed between acceptance and emission — the queued
+/// successors converge instead.
 #[allow(clippy::too_many_arguments)]
-fn spend_if_coherent(
-    session: &mut WorldSession,
+fn prove_coherent(
     retained: &RetainedCore,
     shared: &Arc<Mutex<Shared>>,
     inbox: &Arc<Inbox>,
@@ -1525,7 +1553,7 @@ fn spend_if_coherent(
     pid: u32,
     generation: u64,
     seq: u64,
-) -> Option<Vec<OneShotEffect>> {
+) -> Option<()> {
     // Deterministic-test rendezvous (see `PostAcceptHook`): a test parks
     // here to advance the watermark between acceptance and emission.
     // Cloned out under a short lock, invoked with no locks held;
@@ -1541,8 +1569,7 @@ fn spend_if_coherent(
     // Freshness is re-proven AFTER acceptance and BEFORE any native
     // setter: input that landed mid-flight (or a topology that moved
     // under the dispatch snapshot) refuses here even though the sequencer
-    // accepted. Effects stay unspent and nothing emits. See
-    // `emission_coherent`.
+    // accepted. Nothing emits. See `emission_coherent`.
     if !emission_coherent(shared, inbox, dispatch, applied, retained) {
         count_token(shared, &format!("{op}-refused-stale-observation"));
         emit(
@@ -1556,9 +1583,7 @@ fn spend_if_coherent(
         );
         return None;
     }
-    // Spend one-shot effects BEFORE first native dispatch: duplicates and
-    // repeated diffs never reapply.
-    Some(session.sequencer().take_unspent_effects(applied))
+    Some(())
 }
 
 fn count_token(shared: &Arc<Mutex<Shared>>, token: &str) {
@@ -1707,7 +1732,7 @@ fn retain_stable_geometry(
 }
 
 /// Consume one applied world reply: current-scope controlled frames into
-/// per-app latest-wins slots, focus effects into the outbox plus the
+/// per-app latest-wins slots, focus requests into the outbox plus the
 /// owning slot, view-transfer hold settling for pending selects, and the
 /// desired-geometry snapshot. Hidden/unreadable scopes never emit: only
 /// currently-actuated domains with `Controlled` frame authority and an
@@ -1720,7 +1745,6 @@ fn consume_world_reply(
     focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
     focus_capacity: usize,
     reply: &WorldReplyV4,
-    _effects: &[OneShotEffect],
     _ticket_command: Option<&WorldCommand>,
     _ticket_command_seq: Option<u64>,
     op: &'static str,
@@ -2013,7 +2037,7 @@ fn consume_world_reply(
             continue;
         }
         if let Some(operation) = row.frame_operation.clone().as_deref() {
-            if !session.spend_frame_op(&operation) {
+            if !session.spend_frame_op(operation) {
                 continue;
             }
             frame_ops.push((row.lifetime.0.clone(), operation.to_string()));
@@ -2268,6 +2292,7 @@ fn emit_world_frames(
 /// explicit command without dependencies dispatches at once while
 /// superseding any pending intent. Never the ticket: the frozen request
 /// projection is the whole dependency.
+#[cfg(test)]
 pub(crate) fn request_binds_selection(req: &tiler_core::world_report::FocusRequest) -> bool {
     use tiler_core::world_report::FocusRequestCause;
     req.cause == FocusRequestCause::ExplicitCommand && req.after_shown.is_some()
@@ -2668,19 +2693,18 @@ fn bind_selection_focus_from_request(
     req: &tiler_core::world_report::FocusRequest,
     route: FocusRoute,
     observed_focus: Option<WindowId>,
-) -> (Option<tiler_core::world_report::VisibilityReason>, bool) {
-    use tiler_core::world_report::VisibilityReason;
+) -> (Option<FocusNoCallReason>, bool) {
     if let Some(seq) = req.cmd_seq {
         let mut guard = lock_shared(shared);
         guard.selection_focus_floor_seq = guard.selection_focus_floor_seq.max(seq);
     }
     let Some(after) = req.after_shown.as_ref() else {
         drop_selection_focus_locked(shared, "superseded-no-after-shown");
-        return (Some(VisibilityReason::FocusUnproven), false);
+        return (Some(FocusNoCallReason::ForegroundUnproven), false);
     };
     let Some((fpid, _fwid)) = parse_window_id(&req.target.0) else {
         drop_selection_focus_locked(shared, "unproven-target");
-        return (Some(VisibilityReason::IdentityStale), false);
+        return (Some(FocusNoCallReason::IdentityStale), false);
     };
     // Bind-time baselines, read fresh at dispatch (never guessed): the
     // owning app generation, the engine's worker-gated observed focus, and
@@ -2710,7 +2734,7 @@ fn bind_selection_focus_from_request(
         deferred_selection_focus_for_request(req, reply, &incarnation, &core_gen, route, baselines)
     else {
         drop_selection_focus_locked(shared, "unproven-baseline");
-        return (Some(VisibilityReason::FocusUnproven), false);
+        return (Some(FocusNoCallReason::ForegroundUnproven), false);
     };
     // Epoch bracket: sample the original stamp BEFORE the whole proof and
     // native mapping evaluation; a moved epoch after the full proof binds
@@ -2719,7 +2743,7 @@ fn bind_selection_focus_from_request(
     match frozen_members_proof(shared, retained, reply, after) {
         FrozenProof::Refused => {
             drop_selection_focus_locked(shared, "unproven-baseline");
-            return (Some(VisibilityReason::FocusUnproven), false);
+            return (Some(FocusNoCallReason::ForegroundUnproven), false);
         }
         FrozenProof::NotReady => {
             bind_deferred_selection_focus(shared, &deferred);
@@ -2757,6 +2781,15 @@ fn bind_selection_focus_from_request(
     let parent_settled = selection_parent_settled(session, reply, &deferred.operation_id);
     let arrived = native_arrival_ready(shared, deferred.expected_sid);
     (None, parent_settled && arrived)
+}
+
+/// Diagnostic outcome token for a deferred-selection bind refusal. The
+/// binder yields no other no-call reasons, so these two tokens cover it.
+fn deferred_refusal_token(reason: FocusNoCallReason) -> &'static str {
+    match reason {
+        FocusNoCallReason::IdentityStale => "deferred-refused-identity-stale",
+        _ => "deferred-refused-focus-unproven",
+    }
 }
 
 /// Latest-wins bind of one deferred selection intent (counted
@@ -3496,9 +3529,7 @@ fn dispatch_close_focus(
     use crate::runtime_shared::CloseFocusEpoch;
     use tiler_core::directional::WorkspaceId;
     use tiler_core::session::DomainKey;
-    use tiler_core::world_report::{
-        FocusFeedback, FocusRequestCause, VisibilityReason, VisibilitySetter,
-    };
+    use tiler_core::world_report::{FocusDisposition, FocusFeedback, FocusRequestCause};
 
     let incarnation = reply.adapter_incarnation.clone();
     let core_gen = reply.core_generation.clone();
@@ -3707,7 +3738,7 @@ fn dispatch_close_focus(
                         0,
                         seq,
                         crate::diag_cause::focus_cause_kind(req.cause),
-                        crate::diag_cause::deferred_refusal_outcome(reason),
+                        deferred_refusal_token(reason),
                         observed.is_some(),
                         retained.observed_focus_known,
                         observed.as_ref() == Some(&req.target),
@@ -3719,15 +3750,14 @@ fn dispatch_close_focus(
                         observed.as_ref().map(|w| w.0.as_str()),
                         retained.observed_focus_known,
                         seq,
-                        crate::diag_cause::deferred_refusal_outcome(reason),
+                        deferred_refusal_token(reason),
                     );
                 }
                 session.stage_close_feedback(FocusFeedback {
                     id: req.id.clone(),
                     target: req.target.clone(),
                     revision: req.issued_revision,
-                    setter: VisibilitySetter::NotCalled,
-                    reason,
+                    disposition: FocusDisposition::NotCalled { reason },
                     pre: retained.observed_focus.clone(),
                     post: None,
                     foreground_proven: false,
@@ -3807,8 +3837,9 @@ fn dispatch_close_focus(
             id: req.id.clone(),
             target: req.target.clone(),
             revision: req.issued_revision,
-            setter: VisibilitySetter::NotCalled,
-            reason: VisibilityReason::Empty,
+            disposition: FocusDisposition::NotCalled {
+                reason: FocusNoCallReason::NoReason,
+            },
             pre: Some(req.target.clone()),
             post: Some(req.target.clone()),
             foreground_proven: fallback_known,
@@ -3825,7 +3856,7 @@ fn dispatch_close_focus(
     // No-call helper: spends once, stages one raw row, counts the drop.
     let no_call = |session: &mut WorldSession,
                    shared: &Arc<Mutex<Shared>>,
-                   reason: VisibilityReason,
+                   reason: FocusNoCallReason,
                    outcome: &'static str,
                    target_pid: u32,
                    app_gen: u64| {
@@ -3834,8 +3865,7 @@ fn dispatch_close_focus(
             id: req.id.clone(),
             target: req.target.clone(),
             revision: req.issued_revision,
-            setter: VisibilitySetter::NotCalled,
-            reason,
+            disposition: FocusDisposition::NotCalled { reason },
             pre: fallback_pre.clone(),
             post: None,
             foreground_proven: false,
@@ -3875,7 +3905,7 @@ fn dispatch_close_focus(
         no_call(
             session,
             shared,
-            VisibilityReason::IdentityStale,
+            FocusNoCallReason::IdentityStale,
             "no-call-parse-identity-stale",
             0,
             0,
@@ -3898,7 +3928,7 @@ fn dispatch_close_focus(
         no_call(
             session,
             shared,
-            VisibilityReason::IdentityStale,
+            FocusNoCallReason::IdentityStale,
             "no-call-app-identity-stale",
             fpid,
             0,
@@ -3909,7 +3939,7 @@ fn dispatch_close_focus(
         no_call(
             session,
             shared,
-            VisibilityReason::IdentityStale,
+            FocusNoCallReason::IdentityStale,
             "no-call-home-identity-stale",
             fpid,
             app_generation,
@@ -3920,7 +3950,7 @@ fn dispatch_close_focus(
         no_call(
             session,
             shared,
-            VisibilityReason::Unreadable,
+            FocusNoCallReason::Unreadable,
             "no-call-scope-unreadable",
             fpid,
             app_generation,
@@ -3944,7 +3974,7 @@ fn dispatch_close_focus(
                     no_call(
                         session,
                         shared,
-                        VisibilityReason::Unreadable,
+                        FocusNoCallReason::Unreadable,
                         "no-call-native-unreadable",
                         fpid,
                         app_generation,
@@ -3956,7 +3986,7 @@ fn dispatch_close_focus(
                     no_call(
                         session,
                         shared,
-                        VisibilityReason::IdentityStale,
+                        FocusNoCallReason::IdentityStale,
                         "no-call-native-missing-identity-stale",
                         fpid,
                         app_generation,
@@ -3970,7 +4000,7 @@ fn dispatch_close_focus(
         no_call(
             session,
             shared,
-            VisibilityReason::ShowBlocked,
+            FocusNoCallReason::ShowBlocked,
             "no-call-minimized-show-blocked",
             fpid,
             app_generation,
@@ -3985,7 +4015,7 @@ fn dispatch_close_focus(
         no_call(
             session,
             shared,
-            VisibilityReason::IdentityStale,
+            FocusNoCallReason::IdentityStale,
             "no-call-roster-missing-identity-stale",
             fpid,
             app_generation,
@@ -3996,7 +4026,7 @@ fn dispatch_close_focus(
         no_call(
             session,
             shared,
-            VisibilityReason::ShowBlocked,
+            FocusNoCallReason::ShowBlocked,
             "no-call-roster-meta-show-blocked",
             fpid,
             app_generation,
@@ -4009,7 +4039,7 @@ fn dispatch_close_focus(
             no_call(
                 session,
                 shared,
-                VisibilityReason::ShowBlocked,
+                FocusNoCallReason::ShowBlocked,
                 "no-call-excluded-show-blocked",
                 fpid,
                 app_generation,
@@ -4020,7 +4050,7 @@ fn dispatch_close_focus(
             no_call(
                 session,
                 shared,
-                VisibilityReason::Unsupported,
+                FocusNoCallReason::Unsupported,
                 "no-call-excluded-unsupported",
                 fpid,
                 app_generation,
@@ -4046,7 +4076,7 @@ fn dispatch_close_focus(
         no_call(
             session,
             shared,
-            VisibilityReason::Fullscreen,
+            FocusNoCallReason::Fullscreen,
             "no-call-fullscreen",
             fpid,
             app_generation,
@@ -4059,7 +4089,7 @@ fn dispatch_close_focus(
         no_call(
             session,
             shared,
-            VisibilityReason::FocusUnproven,
+            FocusNoCallReason::ForegroundUnproven,
             "no-call-focus-unproven",
             fpid,
             app_generation,
@@ -4071,7 +4101,7 @@ fn dispatch_close_focus(
         no_call(
             session,
             shared,
-            VisibilityReason::Superseded,
+            FocusNoCallReason::Superseded,
             "no-call-outbox-full-superseded",
             fpid,
             app_generation,
@@ -4132,8 +4162,9 @@ fn dispatch_close_focus(
                 id: req.id.clone(),
                 target: req.target.clone(),
                 revision: req.issued_revision,
-                setter: VisibilitySetter::NotCalled,
-                reason: VisibilityReason::Superseded,
+                disposition: FocusDisposition::NotCalled {
+                    reason: FocusNoCallReason::Superseded,
+                },
                 pre: binding.fallback_pre.clone(),
                 post: None,
                 foreground_proven: false,
@@ -4199,8 +4230,9 @@ fn dispatch_close_focus(
                         id: req.id.clone(),
                         target: req.target.clone(),
                         revision: req.issued_revision,
-                        setter: VisibilitySetter::NotCalled,
-                        reason: VisibilityReason::IdentityStale,
+                        disposition: FocusDisposition::NotCalled {
+                            reason: FocusNoCallReason::IdentityStale,
+                        },
                         pre: fallback_for_slot.clone(),
                         post: None,
                         foreground_proven: false,
@@ -4217,8 +4249,9 @@ fn dispatch_close_focus(
                     id: req.id.clone(),
                     target: req.target.clone(),
                     revision: req.issued_revision,
-                    setter: VisibilitySetter::NotCalled,
-                    reason: VisibilityReason::IdentityStale,
+                    disposition: FocusDisposition::NotCalled {
+                        reason: FocusNoCallReason::IdentityStale,
+                    },
                     pre: fallback_for_slot.clone(),
                     post: None,
                     foreground_proven: false,
@@ -4239,8 +4272,9 @@ fn dispatch_close_focus(
                     id: req.id.clone(),
                     target: req.target.clone(),
                     revision: req.issued_revision,
-                    setter: VisibilitySetter::NotCalled,
-                    reason: VisibilityReason::Superseded,
+                    disposition: FocusDisposition::NotCalled {
+                        reason: FocusNoCallReason::Superseded,
+                    },
                     pre: binding.fallback_pre.clone(),
                     post: None,
                     foreground_proven: false,
@@ -4380,10 +4414,47 @@ fn settle_select_transfers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Immutable request tuple plus sampled stamps that dedup one capture.
+    type ArrivalCaptureAttemptKey = (String, u64, String, String, u64, u64, u64, u64);
+    /// Strict bind harness legs: session, retained core, shared state,
+    /// focus queue, and the synthetic reply.
+    type StrictBindParts = (
+        WorldSession,
+        RetainedCore,
+        Arc<Mutex<Shared>>,
+        Arc<Mutex<Vec<FocusRequest>>>,
+        tiler_core::world_report::WorldReplyV4,
+    );
+    /// Focus-3 arrival bind harness: strict legs plus the live focus slot.
+    type Focus3BindParts = (
+        WorldSession,
+        RetainedCore,
+        Arc<Mutex<Shared>>,
+        Arc<Mutex<Vec<FocusRequest>>>,
+        Arc<FocusSlot>,
+        tiler_core::world_report::WorldReplyV4,
+    );
     use tiler_core::directional::OutputId;
 
     fn output() -> OutputId {
         OutputId("macos-display-1".to_owned())
+    }
+
+    /// The disposition every accepted native focus write reports: one setter
+    /// call that natively reported success with no mechanical reason.
+    fn accepted_disposition() -> tiler_core::world_report::FocusDisposition {
+        tiler_core::world_report::FocusDisposition::Called {
+            setter: tiler_core::world_report::FrameSetter::Accepted,
+            reason: tiler_core::world_report::VisibilityReason::Empty,
+        }
+    }
+
+    /// A focus no-call with its bounded mechanical reason.
+    fn not_called_disposition(
+        reason: tiler_core::world_report::FocusNoCallReason,
+    ) -> tiler_core::world_report::FocusDisposition {
+        tiler_core::world_report::FocusDisposition::NotCalled { reason }
     }
 
     fn empty_reply() -> tiler_core::world_report::WorldReplyV4 {
@@ -4401,9 +4472,8 @@ mod tests {
             outputs: Vec::new(),
             windows: Vec::new(),
             transfers: Vec::new(),
-            effects: Vec::new(),
             focus_request: None,
-            command_result: None,
+            drag_preview: None,
             gesture_settled: None,
             operation_settled: Vec::new(),
             native_creations: Vec::new(),
@@ -4420,9 +4490,9 @@ mod tests {
         use tiler_core::directional::WindowId;
         // Fail-closed latch through the production gate (the same
         // `unpersisted_hold` the four real apply sites call, after
-        // acceptance and before any effect spend or slot/outbox write):
-        // the first applied reply carries an opaque save, the next
-        // carries none, yet both hold.
+        // acceptance and before any slot/outbox write): the first applied
+        // reply carries an opaque save, the next carries none, yet both
+        // hold.
         let mut session = focus_session();
         let shared = focus_shared();
         let focus_queue = Arc::new(Mutex::new(Vec::new()));
@@ -4433,7 +4503,6 @@ mod tests {
                 win: WindowId("4242_7".to_owned()),
                 data: Some(tiler_core::intent_data::IntentData::new(Some(true), None)),
             });
-        first.effects.push(focus_effect(5));
         assert!(
             unpersisted_hold(&mut session, &first),
             "write reply must hold"
@@ -4442,17 +4511,9 @@ mod tests {
             session.unpersisted_intent_hold(),
             "latch sets on the write reply"
         );
-        // No dependent effect spent at gate time: the held reply's effect
-        // is still unspent (production never reached `spend_if_coherent`).
-        assert_eq!(
-            session.sequencer().take_unspent_effects(&first).len(),
-            1,
-            "held reply spends no effects"
-        );
         // Later reply without writes stays held: never clears simply
         // because the later reply has no writes.
-        let mut second = empty_reply();
-        second.effects.push(focus_effect(6));
+        let second = empty_reply();
         assert!(
             unpersisted_hold(&mut session, &second),
             "latch must hold the later empty reply"
@@ -4460,11 +4521,6 @@ mod tests {
         assert!(
             session.unpersisted_intent_hold(),
             "latch persists across dispatches"
-        );
-        assert_eq!(
-            session.sequencer().take_unspent_effects(&second).len(),
-            1,
-            "latched hold still spends no effects"
         );
         // No dependent native write/presentation queued either route:
         // neither gate call touched slots, outbox, or retained presentation.
@@ -4515,9 +4571,7 @@ mod tests {
     #[test]
     fn capability_truth_at_reply_decode_refuses_host_unsupported_rows() {
         use tiler_core::world_report::{ScopeAuthority, StateProperty, StateTarget};
-        use tiler_protocol::world_protocol::{
-            DecodedReplyV4, ReplyWireOptionals, decode_reply_v4, encode_reply_v4,
-        };
+        use tiler_protocol::world_protocol::{DecodedReplyV4, decode_reply_v4, encode_reply_v4};
         // Capability truth at reply decode: production `codec_transact`
         // decodes through `decode_reply_v4_for_host` against the actual
         // production `macos_capabilities` (above/warp/native-sticky all
@@ -4541,7 +4595,6 @@ mod tests {
                 floating: false,
                 float_origin: None,
                 frame_operation: None,
-                clear_operation: None,
                 command_seq: None,
                 visibility: None,
                 visibility_authority: ScopeAuthority::Untouched,
@@ -4550,15 +4603,13 @@ mod tests {
                     value: true,
                     authority: ScopeAuthority::Untouched,
                     command_seq: None,
+                    automatic_clear: false,
                 }],
             });
         tainted.cursor_warp = Some((4, 4));
         let wire = encode_reply_v4(&DecodedReplyV4 {
             roster_plan: None,
             reply: tainted,
-            wire: ReplyWireOptionals {
-                suspended_output_present: false,
-            },
         })
         .expect("tainted reply encodes");
         // Shape decode accepts the rows; the host-gated decode refuses on
@@ -4575,9 +4626,6 @@ mod tests {
         let warp_wire = encode_reply_v4(&DecodedReplyV4 {
             roster_plan: None,
             reply: warp_only,
-            wire: ReplyWireOptionals {
-                suspended_output_present: false,
-            },
         })
         .expect("warp-only reply encodes");
         let error = super::decode_reply_v4_for_host(&warp_wire, &host)
@@ -4598,7 +4646,6 @@ mod tests {
                 floating: false,
                 float_origin: None,
                 frame_operation: None,
-                clear_operation: None,
                 command_seq: None,
                 visibility: None,
                 visibility_authority: ScopeAuthority::Untouched,
@@ -4607,14 +4654,12 @@ mod tests {
                     value: true,
                     authority: ScopeAuthority::Untouched,
                     command_seq: None,
+                    automatic_clear: false,
                 }],
             });
         let sticky_wire = encode_reply_v4(&DecodedReplyV4 {
             roster_plan: None,
             reply: sticky_only,
-            wire: ReplyWireOptionals {
-                suspended_output_present: false,
-            },
         })
         .expect("sticky-only reply encodes");
         let error = super::decode_reply_v4_for_host(&sticky_wire, &host)
@@ -4628,9 +4673,6 @@ mod tests {
         let clean_wire = encode_reply_v4(&DecodedReplyV4 {
             roster_plan: None,
             reply: empty_reply(),
-            wire: ReplyWireOptionals {
-                suspended_output_present: false,
-            },
         })
         .expect("ordinary reply encodes");
         super::decode_reply_v4_for_host(&clean_wire, &host)
@@ -4678,7 +4720,10 @@ mod tests {
                 source: SendSource::Explicit(_),
                 index: 2,
                 follow: true,
-            }) => assert_eq!(window, WindowId("4242_7".to_owned())),
+            }) => assert_eq!(
+                window,
+                tiler_core::directional::WindowSubject::Window(WindowId("4242_7".to_owned()))
+            ),
             other => panic!("send-2 must map to positional SendNumbered, got {other:?}"),
         }
         // The empty reply carries no transfers: no pending claim settles.
@@ -4803,11 +4848,6 @@ mod tests {
             Arc::new(crate::world_sequencer::ObservationClock::new()),
             &[],
         )
-    }
-
-    fn focus_effect(seq: u64) -> OneShotEffect {
-        use tiler_core::directional::WindowId;
-        OneShotEffect::explicit_focus(seq, WindowId("4242_7".to_owned()), seq + 100)
     }
 
     fn pending_op3() -> DeferredSelectionFocus {
@@ -4937,7 +4977,7 @@ mod tests {
         pid: u32,
         generation: u64,
         reads: Vec<crate::runtime_types::BracketRead>,
-        last_attempt: &mut Option<(String, u64, String, String, u64, u64, u64, u64)>,
+        last_attempt: &mut Option<ArrivalCaptureAttemptKey>,
     ) -> Arc<Inbox> {
         let inbox = Arc::new(Inbox::new(16));
         let mut backend = CaptureBackend { reads };
@@ -4984,8 +5024,10 @@ mod tests {
             issued_rev: pending.issued_revision,
             adapter_incarnation: pending.adapter_incarnation.clone(),
             core_generation: pending.core_generation.clone(),
-            setter: tiler_core::world_report::VisibilitySetter::Accepted,
-            reason: tiler_core::world_report::VisibilityReason::Empty,
+            disposition: tiler_core::world_report::FocusDisposition::Called {
+                setter: tiler_core::world_report::FrameSetter::Accepted,
+                reason: tiler_core::world_report::VisibilityReason::Empty,
+            },
             pre: pending
                 .prior_focus
                 .clone()
@@ -5270,13 +5312,7 @@ mod tests {
     // Strict frozen-proof harness: genuine roster/homing/context rows at
     // the live revision (never a waiver). Defaults prove everything except
     // currency (space-3 readable but not current): bind defers.
-    fn strict_bind_parts() -> (
-        WorldSession,
-        RetainedCore,
-        Arc<Mutex<Shared>>,
-        Arc<Mutex<Vec<FocusRequest>>>,
-        tiler_core::world_report::WorldReplyV4,
-    ) {
+    fn strict_bind_parts() -> StrictBindParts {
         strict_bind_parts_for("focus-9", 9, 9, "op-9")
     }
 
@@ -5284,18 +5320,7 @@ mod tests {
     /// `afterShown` op/obs, request id/revision/seq, and reply watermark all
     /// ride the given values. Lets arrival-proof tests bind the exact tuple
     /// their release legs assert (e.g. op-3) instead of hand-placing it.
-    fn strict_bind_parts_for(
-        id: &str,
-        rev: u64,
-        seq: u64,
-        op: &str,
-    ) -> (
-        WorldSession,
-        RetainedCore,
-        Arc<Mutex<Shared>>,
-        Arc<Mutex<Vec<FocusRequest>>>,
-        tiler_core::world_report::WorldReplyV4,
-    ) {
+    fn strict_bind_parts_for(id: &str, rev: u64, seq: u64, op: &str) -> StrictBindParts {
         let session = focus_session();
         let shared = focus_shared();
         lock_shared(&shared).native_context = Some(mock_space_context(false));
@@ -5420,7 +5445,7 @@ mod tests {
             "bind defers without captures"
         );
         assert!(lock_focus(&focus_queue).is_empty(), "defer queues nothing");
-        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut last_attempt: Option<ArrivalCaptureAttemptKey> = None;
         let inbox = drive_arrival_capture_once(
             &mut session,
             &mut retained,
@@ -5520,7 +5545,7 @@ mod tests {
         );
         assert!(lock_focus(&focus_queue).is_empty(), "defer queues nothing");
         assert!(slot.take().is_none(), "defer sets no slot command");
-        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut last_attempt: Option<ArrivalCaptureAttemptKey> = None;
         let inbox = drive_arrival_capture_once(
             &mut session,
             &mut retained,
@@ -5759,8 +5784,8 @@ mod tests {
             after_minimized: Some(false),
             after_hidden: Some(false),
         }];
-        let mut last_owner: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
-        let mut last_peer: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut last_owner: Option<ArrivalCaptureAttemptKey> = None;
+        let mut last_peer: Option<ArrivalCaptureAttemptKey> = None;
         let inbox_owner = drive_arrival_capture_once(
             &mut session,
             &mut retained,
@@ -5849,14 +5874,13 @@ mod tests {
         // (4242, 7).
         let released_cmd = {
             let guard = lock_shared(&shared);
-            let slot = guard
+            guard
                 .apps
                 .get(&CLOSE_PID)
                 .expect("app")
                 .focus
                 .take()
-                .expect("owner slot carries the release");
-            slot
+                .expect("owner slot carries the release")
         };
         assert_eq!(released_cmd.window, "4242_7");
         let released_close = released_cmd.close.clone().expect("unified close route");
@@ -5881,15 +5905,14 @@ mod tests {
         assert_eq!(genuine.dispatches, 1, "full set dispatches once");
         let arrival = match &job {
             crate::runtime_thread::EngineJob::CloseFocusResult {
-                setter, arrival, ..
+                disposition,
+                arrival,
+                ..
             } => {
-                assert_eq!(
-                    *setter,
-                    tiler_core::world_report::VisibilitySetter::Accepted
-                );
+                assert_eq!(*disposition, accepted_disposition());
                 arrival.clone()
             }
-            other => panic!("expected CloseFocusResult"),
+            _other => panic!("expected CloseFocusResult"),
         };
         assert_eq!(arrival.len(), 2, "setter emits the full peer set");
         for row in &arrival {
@@ -5936,10 +5959,7 @@ mod tests {
             .peek_close_feedback()
             .expect("owner setter stages truthful feedback");
         assert_eq!(staged.id, "focus-2pid");
-        assert_eq!(
-            staged.setter,
-            tiler_core::world_report::VisibilitySetter::Accepted
-        );
+        assert_eq!(staged.disposition, accepted_disposition());
         assert_eq!(
             staged.arrival.len(),
             2,
@@ -5996,7 +6016,7 @@ mod tests {
             None,
         );
         assert!(lock_shared(&shared).selection_focus_pending.is_some());
-        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut last_attempt: Option<ArrivalCaptureAttemptKey> = None;
         let mut null_reads = capture_reads_for_frozen_member();
         null_reads[0].frame = None;
         let inbox = drive_arrival_capture_once(
@@ -6115,7 +6135,7 @@ mod tests {
             None,
         );
         assert!(lock_shared(&shared).selection_focus_pending.is_some());
-        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut last_attempt: Option<ArrivalCaptureAttemptKey> = None;
         let _inbox = drive_arrival_capture_once(
             &mut session,
             &mut retained,
@@ -6270,8 +6290,8 @@ mod tests {
         assert!(lock_focus(&focus_queue).is_empty());
         let feedback = session.peek_close_feedback().expect("refusal row staged");
         assert_eq!(
-            feedback.reason,
-            tiler_core::world_report::VisibilityReason::FocusUnproven
+            feedback.disposition,
+            not_called_disposition(tiler_core::world_report::FocusNoCallReason::ForegroundUnproven)
         );
     }
 
@@ -6416,7 +6436,7 @@ mod tests {
             "issuing publication defers"
         );
         assert!(lock_focus(&focus_queue).is_empty());
-        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut last_attempt: Option<ArrivalCaptureAttemptKey> = None;
         let inbox = drive_arrival_capture_once(
             &mut session,
             &mut retained,
@@ -6555,7 +6575,7 @@ mod tests {
             lock_shared(&shared).selection_focus_pending.is_some(),
             "bind defers without captures"
         );
-        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut last_attempt: Option<ArrivalCaptureAttemptKey> = None;
         let _inbox = drive_arrival_capture_once(
             &mut session,
             &mut retained,
@@ -6760,7 +6780,7 @@ mod tests {
             &applied,
             None,
         );
-        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut last_attempt: Option<ArrivalCaptureAttemptKey> = None;
         let _inbox = drive_arrival_capture_once(
             &mut session,
             &mut retained,
@@ -6817,12 +6837,11 @@ mod tests {
         assert_eq!(genuine.dispatches, 1, "genuine row dispatches once");
         match &job {
             crate::runtime_thread::EngineJob::CloseFocusResult {
-                setter, arrival, ..
+                disposition,
+                arrival,
+                ..
             } => {
-                assert_eq!(
-                    *setter,
-                    tiler_core::world_report::VisibilitySetter::Accepted
-                );
+                assert_eq!(*disposition, accepted_disposition());
                 assert_eq!(arrival.len(), 1, "exactly the stamped home row");
                 match &arrival[0].location {
                     tiler_core::world_report::ArrivalLocation::Native { home } => match home {
@@ -6837,7 +6856,7 @@ mod tests {
                     other => panic!("expected native arm, got {other:?}"),
                 }
             }
-            other => panic!("expected CloseFocusResult"),
+            _other => panic!("expected CloseFocusResult"),
         }
         // Replacement capture through the real bracket mapper: same tuple,
         // same obs/revision/cell stamp, singleton home on Space 7 instead of
@@ -6956,7 +6975,7 @@ mod tests {
             &applied,
             None,
         );
-        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut last_attempt: Option<ArrivalCaptureAttemptKey> = None;
         let _inbox = drive_arrival_capture_once(
             &mut session,
             &mut retained,
@@ -7285,7 +7304,7 @@ mod tests {
         // the intent is gone (never a retry), a repeat completion reports
         // NoPending, and nothing queues. Covers wrong-Space, stale app, and
         // outbox backpressure drops.
-        for (post, frontmost, floor, terminate, cap) in [
+        for (post, frontmost, _floor, terminate, cap) in [
             (Some(9), Some(4242), 0u64, false, usize::MAX),
             (Some(3), Some(4242), 0u64, true, usize::MAX),
             (Some(3), Some(4242), 0u64, false, 0usize),
@@ -7508,14 +7527,7 @@ mod tests {
     /// synthetic strict fixture, but every proof below runs through the real
     /// owner capture path (`maybe_send_arrival_capture` over a real inbox,
     /// `Inbox::recv`, real `process_job`).
-    fn bind_focus3_arrival_ready() -> (
-        WorldSession,
-        RetainedCore,
-        Arc<Mutex<Shared>>,
-        Arc<Mutex<Vec<FocusRequest>>>,
-        Arc<FocusSlot>,
-        tiler_core::world_report::WorldReplyV4,
-    ) {
+    fn bind_focus3_arrival_ready() -> Focus3BindParts {
         let (mut session, mut retained, shared, focus_queue, mut reply) =
             strict_bind_parts_for("focus-3", 3, 3, "op-3");
         let slot = live_focus_app(&shared, CLOSE_PID, CLOSE_GEN);
@@ -7590,7 +7602,7 @@ mod tests {
         let (mut session, mut retained, shared, focus_queue, slot, _) = bind_focus3_arrival_ready();
         let inbox = Arc::new(Inbox::new(16));
         let cell = lock_shared(&shared).native_cell.clone();
-        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut last_attempt: Option<ArrivalCaptureAttemptKey> = None;
         let mut backend = MovingClockBackend {
             shared: Arc::clone(&shared),
             reads: capture_reads_for_frozen_member(),
@@ -7716,7 +7728,7 @@ mod tests {
         let inbox = Arc::new(Inbox::new(16));
         let cell = lock_shared(&shared).native_cell.clone();
         let gen_before = cell.generation();
-        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut last_attempt: Option<ArrivalCaptureAttemptKey> = None;
         let mut backend = RepublishCellBackend {
             shared: Arc::clone(&shared),
             ctx: live_ctx,
@@ -7815,7 +7827,7 @@ mod tests {
         }
         let (mut session, mut retained, shared, focus_queue, slot, _) = bind_focus3_arrival_ready();
         let cell = lock_shared(&shared).native_cell.clone();
-        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut last_attempt: Option<ArrivalCaptureAttemptKey> = None;
         // Wrong-owner attestation: the backend attests another PID's window.
         let mut wrong_owner = capture_reads_for_frozen_member();
         wrong_owner[0].owner_pid = Some(9999);
@@ -7934,7 +7946,7 @@ mod tests {
         let (mut session, mut retained, shared, focus_queue, slot, _) = bind_focus3_arrival_ready();
         let inbox = Arc::new(Inbox::new(16));
         let cell = lock_shared(&shared).native_cell.clone();
-        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut last_attempt: Option<ArrivalCaptureAttemptKey> = None;
         let mut backend = ReplaceAppBackend {
             shared: Arc::clone(&shared),
             reads: capture_reads_for_frozen_member(),
@@ -8046,7 +8058,7 @@ mod tests {
             .as_mut()
             .expect("bound intent")
             .prior_focus = Some(format!("{CLOSE_PID}_8"));
-        let mut last_attempt: Option<(String, u64, String, String, u64, u64, u64, u64)> = None;
+        let mut last_attempt: Option<ArrivalCaptureAttemptKey> = None;
         let inbox = drive_arrival_capture_once(
             &mut session,
             &mut retained,
@@ -8108,7 +8120,7 @@ mod tests {
                 assert_eq!(*cmd_id, queued.command_seq);
                 assert_eq!(target, &queued.window);
             }
-            other => panic!("expected SelectionFocusDeferred"),
+            _other => panic!("expected SelectionFocusDeferred"),
         }
         assert!(session.peek_close_feedback().is_none());
         // Engine deferral: the exact still-current queued tuple resets its
@@ -8194,15 +8206,14 @@ mod tests {
         assert_eq!(genuine.dispatches, 1, "new evidence performs one setter");
         match &job {
             crate::runtime_thread::EngineJob::CloseFocusResult {
-                setter, arrival, ..
+                disposition,
+                arrival,
+                ..
             } => {
-                assert_eq!(
-                    *setter,
-                    tiler_core::world_report::VisibilitySetter::Accepted
-                );
+                assert_eq!(*disposition, accepted_disposition());
                 assert_eq!(arrival.len(), 1);
             }
-            other => panic!("expected CloseFocusResult"),
+            _other => panic!("expected CloseFocusResult"),
         }
         crate::runtime_thread::process_job(
             job,
@@ -8334,7 +8345,6 @@ mod tests {
                     visible: Some(true),
                     suppression_owned: None,
                 },
-                last_write: None,
             }
         }
         fn ingress() -> PresentationIngressV4 {
@@ -8394,7 +8404,7 @@ mod tests {
                 frames: Vec::new(),
                 member_attempts: Vec::new(),
                 view_attempts: Vec::new(),
-                clear_attempts: Vec::new(),
+                visibility_attempts: Vec::new(),
                 creation_attempts: Vec::new(),
                 held_attempts: Vec::new(),
                 state_attempts: Vec::new(),
@@ -8406,7 +8416,12 @@ mod tests {
         }
 
         let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
-        let controlled = match engine.handle_report(&report(1, true), &[]).0 {
+        let checked = tiler_protocol::world_admission::handle_report_checked(
+            &mut engine,
+            &report(1, true),
+            &[],
+        );
+        let controlled = match checked.outcome {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("controlled report must accept, got {other:?}"),
         };
@@ -8424,7 +8439,12 @@ mod tests {
                 .any(|row| row.lifetime.0 == "4242_7" && row.effective_frame.is_some()),
             "first reply carries geometry: {controlled:?}"
         );
-        let held = match engine.handle_report(&report(2, false), &[]).0 {
+        let checked = tiler_protocol::world_admission::handle_report_checked(
+            &mut engine,
+            &report(2, false),
+            &[],
+        );
+        let held = match checked.outcome {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("incomplete-inventory report must accept held, got {other:?}"),
         };
@@ -8488,7 +8508,6 @@ mod tests {
                 &focus_queue,
                 16,
                 reply,
-                &[],
                 None,
                 None,
                 "select",
@@ -8531,7 +8550,12 @@ mod tests {
 
         // Recovery refreshes once: a controlled reply for the same view
         // publishes fresh geometry again.
-        let recovered = match engine.handle_report(&report(3, true), &[]).0 {
+        let checked = tiler_protocol::world_admission::handle_report_checked(
+            &mut engine,
+            &report(3, true),
+            &[],
+        );
+        let recovered = match checked.outcome {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("recovery report must accept, got {other:?}"),
         };
@@ -8571,7 +8595,6 @@ mod tests {
             frame_authority: ScopeAuthority::Hold(reason),
             membership_authority: ScopeAuthority::Hold(reason),
             frame_operation: None,
-            clear_operation: None,
             floating: false,
             float_origin: None,
             command_seq: None,
@@ -8654,7 +8677,6 @@ mod tests {
             frame_authority: tiler_core::world_report::ScopeAuthority::Controlled,
             membership_authority: tiler_core::world_report::ScopeAuthority::Controlled,
             frame_operation: None,
-            clear_operation: None,
             floating: false,
             float_origin: None,
             command_seq: None,
@@ -8837,7 +8859,6 @@ mod tests {
             frame_authority: tiler_core::world_report::ScopeAuthority::Controlled,
             membership_authority: tiler_core::world_report::ScopeAuthority::Controlled,
             frame_operation: None,
-            clear_operation: None,
             floating: false,
             float_origin: None,
             command_seq: None,
@@ -8920,7 +8941,6 @@ mod tests {
             frame_authority: authority,
             membership_authority: authority,
             frame_operation: None,
-            clear_operation: None,
             floating: false,
             float_origin: None,
             command_seq: None,
@@ -8954,7 +8974,6 @@ mod tests {
                 &focus_queue,
                 16,
                 reply,
-                &[],
                 None,
                 None,
                 "select",
@@ -9067,6 +9086,7 @@ mod tests {
                 follow: false,
                 held: true,
                 command_seq: None,
+                parent: None,
             });
         settle_select_transfers(&mut session, &shared, &reply, 0, 0, 0);
         let guard = lock_shared(&shared);
@@ -9240,7 +9260,6 @@ mod tests {
             focus_queue,
             8,
             reply,
-            &[],
             ticket,
             None,
             "reconcile",
@@ -9492,12 +9511,8 @@ mod tests {
             .expect("refusal stages one row");
         assert_eq!(staged.id, "close-focus-5");
         assert_eq!(
-            staged.setter,
-            tiler_core::world_report::VisibilitySetter::NotCalled
-        );
-        assert_eq!(
-            staged.reason,
-            tiler_core::world_report::VisibilityReason::IdentityStale
+            staged.disposition,
+            not_called_disposition(tiler_core::world_report::FocusNoCallReason::IdentityStale)
         );
         assert_eq!(lock_shared(&shared).diagnostics.focus_dropped_full, 1);
         let dropped_before = lock_shared(&shared).diagnostics.focus_dropped_full;
@@ -9546,12 +9561,8 @@ mod tests {
         assert!(slot.take().is_none(), "satisfied sets no slot");
         let staged = session.peek_close_feedback().expect("satisfied stages");
         assert_eq!(
-            staged.setter,
-            tiler_core::world_report::VisibilitySetter::NotCalled
-        );
-        assert_eq!(
-            staged.reason,
-            tiler_core::world_report::VisibilityReason::Empty
+            staged.disposition,
+            not_called_disposition(tiler_core::world_report::FocusNoCallReason::NoReason)
         );
         assert_eq!(staged.pre, Some(close_target(9)));
         assert_eq!(staged.post, Some(close_target(9)));
@@ -9570,7 +9581,7 @@ mod tests {
         let focus_queue = Arc::new(Mutex::new(Vec::new()));
         let reply = close_reply_for(&session, "close-focus-7", 7, 9);
         let ticket = tiler_core::world_report::WorldCommand::Focus {
-            window: close_target(8),
+            window: tiler_core::directional::WindowSubject::Window(close_target(8)),
             direction: Some(tiler_core::directional::Direction::Left),
         };
         consume_close(
@@ -9680,8 +9691,8 @@ mod tests {
         );
         let staged = session.peek_close_feedback().expect("saturation stages");
         assert_eq!(
-            staged.reason,
-            tiler_core::world_report::VisibilityReason::Superseded
+            staged.disposition,
+            not_called_disposition(tiler_core::world_report::FocusNoCallReason::Superseded)
         );
 
         // Stopped slot: ownership lost spends into IdentityStale no-call.
@@ -9711,8 +9722,8 @@ mod tests {
         assert!(slot2.take().is_none(), "stopped slot carries no command");
         let staged2 = session2.peek_close_feedback().expect("slot loss stages");
         assert_eq!(
-            staged2.reason,
-            tiler_core::world_report::VisibilityReason::IdentityStale
+            staged2.disposition,
+            not_called_disposition(tiler_core::world_report::FocusNoCallReason::IdentityStale)
         );
         assert_eq!(
             lock_shared(&shared2).diagnostics.focus_dispatched,
@@ -9836,8 +9847,9 @@ mod tests {
             id: "close-focus-7".to_owned(),
             target: close_target(9),
             revision: 7,
-            setter: tiler_core::world_report::VisibilitySetter::NotCalled,
-            reason: tiler_core::world_report::VisibilityReason::IdentityStale,
+            disposition: tiler_core::world_report::FocusDisposition::NotCalled {
+                reason: tiler_core::world_report::FocusNoCallReason::IdentityStale,
+            },
             pre: Some(close_target(7)),
             post: None,
             foreground_proven: false,
@@ -9849,8 +9861,9 @@ mod tests {
             id: "close-focus-6".to_owned(),
             target: close_target(9),
             revision: 6,
-            setter: tiler_core::world_report::VisibilitySetter::NotCalled,
-            reason: tiler_core::world_report::VisibilityReason::Superseded,
+            disposition: tiler_core::world_report::FocusDisposition::NotCalled {
+                reason: tiler_core::world_report::FocusNoCallReason::Superseded,
+            },
             pre: Some(close_target(7)),
             post: None,
             foreground_proven: false,
@@ -9928,7 +9941,6 @@ mod tests {
                     visible: Some(true),
                     suppression_owned: None,
                 },
-                last_write: None,
             }
         }
         fn report(
@@ -9972,7 +9984,7 @@ mod tests {
                 frames: Vec::new(),
                 member_attempts: Vec::new(),
                 view_attempts: Vec::new(),
-                clear_attempts: Vec::new(),
+                visibility_attempts: Vec::new(),
                 creation_attempts: Vec::new(),
                 held_attempts: Vec::new(),
                 state_attempts: Vec::new(),
@@ -9983,12 +9995,13 @@ mod tests {
             }
         }
         let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
-        let accepted = |engine: &mut WorldEngine, report: &WorldReportV4| match engine
-            .handle_report(report, &[])
-            .0
-        {
-            WorldOutcome::Accepted(reply) => reply,
-            other => panic!("expected accepted, got {other:?}"),
+        let accepted = |engine: &mut WorldEngine, report: &WorldReportV4| {
+            match tiler_protocol::world_admission::handle_report_checked(engine, report, &[])
+                .outcome
+            {
+                WorldOutcome::Accepted(reply) => reply,
+                other => panic!("expected accepted, got {other:?}"),
+            }
         };
         accepted(
             &mut engine,
@@ -10048,9 +10061,6 @@ mod tests {
             &tiler_protocol::world_protocol::DecodedReplyV4 {
                 roster_plan: None,
                 reply: closed.clone(),
-                wire: tiler_protocol::world_protocol::ReplyWireOptionals {
-                    suspended_output_present: false,
-                },
             },
         )
         .expect("latest reply encodes");
@@ -10212,7 +10222,6 @@ mod tests {
                     visible: Some(true),
                     suppression_owned: None,
                 },
-                last_write: None,
             }
         }
         fn report(
@@ -10267,7 +10276,7 @@ mod tests {
                 frames: Vec::new(),
                 member_attempts: Vec::new(),
                 view_attempts: Vec::new(),
-                clear_attempts: Vec::new(),
+                visibility_attempts: Vec::new(),
                 creation_attempts: Vec::new(),
                 held_attempts: Vec::new(),
                 state_attempts: Vec::new(),
@@ -10286,12 +10295,13 @@ mod tests {
             crate::world_connection::macos_capabilities(),
         )
         .expect("producer binds the consumer handshake");
-        let accepted = |engine: &mut WorldEngine, report: &WorldReportV4| match engine
-            .handle_report(report, &[])
-            .0
-        {
-            WorldOutcome::Accepted(reply) => reply,
-            other => panic!("expected accepted, got {other:?}"),
+        let accepted = |engine: &mut WorldEngine, report: &WorldReportV4| {
+            match tiler_protocol::world_admission::handle_report_checked(engine, report, &[])
+                .outcome
+            {
+                WorldOutcome::Accepted(reply) => reply,
+                other => panic!("expected accepted, got {other:?}"),
+            }
         };
         accepted(
             &mut engine,
@@ -10400,9 +10410,6 @@ mod tests {
             &tiler_protocol::world_protocol::DecodedReplyV4 {
                 roster_plan: None,
                 reply: latest.clone(),
-                wire: tiler_protocol::world_protocol::ReplyWireOptionals {
-                    suspended_output_present: false,
-                },
             },
         )
         .expect("latest reply encodes");
@@ -10463,8 +10470,7 @@ mod tests {
         assert_eq!(fake.reads, 2, "fresh baseline plus post read");
         match &job {
             crate::runtime_thread::EngineJob::CloseFocusResult {
-                setter,
-                reason,
+                disposition,
                 pre,
                 post,
                 foreground_proven,
@@ -10474,11 +10480,7 @@ mod tests {
                 issued_rev,
                 ..
             } => {
-                assert_eq!(
-                    *setter,
-                    tiler_core::world_report::VisibilitySetter::Accepted
-                );
-                assert_eq!(*reason, tiler_core::world_report::VisibilityReason::Empty);
+                assert_eq!(*disposition, accepted_disposition());
                 assert_eq!(*pre, Some(close_target(7)));
                 assert_eq!(*post, Some(close_target(9)));
                 assert!(*foreground_proven);
@@ -10487,7 +10489,7 @@ mod tests {
                 assert_eq!(*issued_rev, req.issued_revision);
                 assert_eq!(*target, close_target(9));
             }
-            other => panic!("expected CloseFocusResult"),
+            _other => panic!("expected CloseFocusResult"),
         }
         let inbox = Arc::new(Inbox::new(16));
         crate::runtime_thread::process_job(
@@ -10501,14 +10503,7 @@ mod tests {
         );
         let staged = session.peek_close_feedback().expect("accepted stages");
         assert_eq!(staged.id, req.id);
-        assert_eq!(
-            staged.setter,
-            tiler_core::world_report::VisibilitySetter::Accepted
-        );
-        assert_eq!(
-            staged.reason,
-            tiler_core::world_report::VisibilityReason::Empty
-        );
+        assert_eq!(staged.disposition, accepted_disposition());
         assert_eq!(staged.pre, Some(close_target(7)));
         assert_eq!(staged.post, Some(close_target(9)));
         // Duplicate latest replays nothing new: the production dispatcher
@@ -10602,7 +10597,12 @@ mod tests {
                 closed_ids,
                 focused,
             );
-            match session2.engine_mut().handle_report(&rep, &[]).0 {
+            let checked = tiler_protocol::world_admission::handle_report_checked(
+                session2.engine_mut(),
+                &rep,
+                &[],
+            );
+            match checked.outcome {
                 WorldOutcome::Accepted(_) => {}
                 other => panic!("expected accepted, got {other:?}"),
             }
@@ -10615,7 +10615,12 @@ mod tests {
             vec!["4242_8"],
             "4242_7",
         );
-        let closed2 = match session2.engine_mut().handle_report(&close_rep, &[]).0 {
+        let checked = tiler_protocol::world_admission::handle_report_checked(
+            session2.engine_mut(),
+            &close_rep,
+            &[],
+        );
+        let closed2 = match checked.outcome {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),
         };
@@ -10625,9 +10630,6 @@ mod tests {
             &tiler_protocol::world_protocol::DecodedReplyV4 {
                 roster_plan: None,
                 reply: closed2.clone(),
-                wire: tiler_protocol::world_protocol::ReplyWireOptionals {
-                    suspended_output_present: false,
-                },
             },
         )
         .expect("latest reply encodes");
@@ -10670,12 +10672,12 @@ mod tests {
         assert_eq!(stuck.dispatches, 1);
         match &job2 {
             crate::runtime_thread::EngineJob::CloseFocusResult {
-                setter, pre, post, ..
+                disposition,
+                pre,
+                post,
+                ..
             } => {
-                assert_eq!(
-                    *setter,
-                    tiler_core::world_report::VisibilitySetter::Accepted
-                );
+                assert_eq!(*disposition, accepted_disposition());
                 assert_eq!(*pre, Some(close_target(7)));
                 assert_eq!(
                     *post,
@@ -10683,7 +10685,7 @@ mod tests {
                     "post unchanged baseline stays honest"
                 );
             }
-            other => panic!("expected CloseFocusResult"),
+            _other => panic!("expected CloseFocusResult"),
         }
         let inbox2 = Arc::new(Inbox::new(16));
         crate::runtime_thread::process_job(
@@ -10712,7 +10714,12 @@ mod tests {
             "4242_7",
         );
         retain_rep.focus_feedback = vec![first.clone()];
-        let retained_outcome = match session2.engine_mut().handle_report(&retain_rep, &[]).0 {
+        let checked = tiler_protocol::world_admission::handle_report_checked(
+            session2.engine_mut(),
+            &retain_rep,
+            &[],
+        );
+        let retained_outcome = match checked.outcome {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),
         };
@@ -10792,24 +10799,21 @@ mod tests {
         assert_eq!(unknown.dispatches, 0, "unproven performs no call");
         match &job {
             crate::runtime_thread::EngineJob::CloseFocusResult {
-                setter,
-                reason,
+                disposition,
                 pre,
                 post,
                 ..
             } => {
                 assert_eq!(
-                    *setter,
-                    tiler_core::world_report::VisibilitySetter::NotCalled
-                );
-                assert_eq!(
-                    *reason,
-                    tiler_core::world_report::VisibilityReason::FocusUnproven
+                    *disposition,
+                    not_called_disposition(
+                        tiler_core::world_report::FocusNoCallReason::ForegroundUnproven
+                    )
                 );
                 assert_eq!(*pre, Some(close_target(7)));
                 assert!(post.is_none());
             }
-            other => panic!("expected CloseFocusResult"),
+            _other => panic!("expected CloseFocusResult"),
         }
         // Changed baseline performs no call: a third window names
         // ForegroundChanged with zero dispatches.
@@ -10844,24 +10848,21 @@ mod tests {
         assert_eq!(moved.dispatches, 0, "changed baseline performs no call");
         match &job_c {
             crate::runtime_thread::EngineJob::CloseFocusResult {
-                setter,
-                reason,
+                disposition,
                 pre,
                 post,
                 ..
             } => {
                 assert_eq!(
-                    *setter,
-                    tiler_core::world_report::VisibilitySetter::NotCalled
-                );
-                assert_eq!(
-                    *reason,
-                    tiler_core::world_report::VisibilityReason::ForegroundChanged
+                    *disposition,
+                    not_called_disposition(
+                        tiler_core::world_report::FocusNoCallReason::ForegroundChanged
+                    )
                 );
                 assert_eq!(*pre, Some(close_target(7)));
                 assert_eq!(*post, Some(close_target(5)));
             }
-            other => panic!("expected CloseFocusResult"),
+            _other => panic!("expected CloseFocusResult"),
         }
         // Null epoch while taken cancels with zero dispatches.
         let mut session_n = focus_session();
@@ -10901,17 +10902,13 @@ mod tests {
         );
         assert_eq!(nulled.dispatches, 0, "null epoch cancels with no call");
         match &job_n {
-            crate::runtime_thread::EngineJob::CloseFocusResult { setter, reason, .. } => {
+            crate::runtime_thread::EngineJob::CloseFocusResult { disposition, .. } => {
                 assert_eq!(
-                    *setter,
-                    tiler_core::world_report::VisibilitySetter::NotCalled
-                );
-                assert_eq!(
-                    *reason,
-                    tiler_core::world_report::VisibilityReason::Superseded
+                    *disposition,
+                    not_called_disposition(tiler_core::world_report::FocusNoCallReason::Superseded)
                 );
             }
-            other => panic!("expected CloseFocusResult"),
+            _other => panic!("expected CloseFocusResult"),
         }
         // Newer epoch while taken cancels with zero dispatches.
         let mut session_w = focus_session();
@@ -10953,17 +10950,13 @@ mod tests {
         );
         assert_eq!(newer.dispatches, 0, "newer epoch cancels with no call");
         match &job_w {
-            crate::runtime_thread::EngineJob::CloseFocusResult { setter, reason, .. } => {
+            crate::runtime_thread::EngineJob::CloseFocusResult { disposition, .. } => {
                 assert_eq!(
-                    *setter,
-                    tiler_core::world_report::VisibilitySetter::NotCalled
-                );
-                assert_eq!(
-                    *reason,
-                    tiler_core::world_report::VisibilityReason::Superseded
+                    *disposition,
+                    not_called_disposition(tiler_core::world_report::FocusNoCallReason::Superseded)
                 );
             }
-            other => panic!("expected CloseFocusResult"),
+            _other => panic!("expected CloseFocusResult"),
         }
     }
 
@@ -11096,7 +11089,6 @@ mod tests {
                     visible: Some(true),
                     suppression_owned: None,
                 },
-                last_write: None,
             }
         }
         fn report(
@@ -11148,7 +11140,7 @@ mod tests {
                 frames: Vec::new(),
                 member_attempts: Vec::new(),
                 view_attempts: Vec::new(),
-                clear_attempts: Vec::new(),
+                visibility_attempts: Vec::new(),
                 creation_attempts: Vec::new(),
                 held_attempts: Vec::new(),
                 state_attempts: Vec::new(),
@@ -11167,12 +11159,13 @@ mod tests {
             crate::world_connection::macos_capabilities(),
         )
         .expect("producer binds the consumer handshake");
-        let accepted = |engine: &mut WorldEngine, report: &WorldReportV4| match engine
-            .handle_report(report, &[])
-            .0
-        {
-            WorldOutcome::Accepted(reply) => reply,
-            other => panic!("expected accepted, got {other:?}"),
+        let accepted = |engine: &mut WorldEngine, report: &WorldReportV4| {
+            match tiler_protocol::world_admission::handle_report_checked(engine, report, &[])
+                .outcome
+            {
+                WorldOutcome::Accepted(reply) => reply,
+                other => panic!("expected accepted, got {other:?}"),
+            }
         };
         accepted(
             &mut engine,
@@ -11202,7 +11195,9 @@ mod tests {
                 "4242_7",
                 Some(2),
                 Some(WorldCommand::Focus {
-                    window: CoreWindowId("4242_8".to_owned()),
+                    window: tiler_core::directional::WindowSubject::Window(CoreWindowId(
+                        "4242_8".to_owned(),
+                    )),
                     direction: None,
                 }),
             ),
@@ -11264,9 +11259,6 @@ mod tests {
             &tiler_protocol::world_protocol::DecodedReplyV4 {
                 roster_plan: None,
                 reply: latest.clone(),
-                wire: tiler_protocol::world_protocol::ReplyWireOptionals {
-                    suspended_output_present: false,
-                },
             },
         )
         .expect("latest reply encodes");
@@ -11314,21 +11306,18 @@ mod tests {
         );
         match &job {
             crate::runtime_thread::EngineJob::CloseFocusResult {
-                setter,
+                disposition,
                 target,
                 issued_rev,
                 close_id,
                 ..
             } => {
-                assert_eq!(
-                    *setter,
-                    tiler_core::world_report::VisibilitySetter::Accepted
-                );
+                assert_eq!(*disposition, accepted_disposition());
                 assert_eq!(close_id, &req.id);
                 assert_eq!(*issued_rev, req.issued_revision);
                 assert_eq!(*target, close_target(8));
             }
-            other => panic!("expected CloseFocusResult"),
+            _other => panic!("expected CloseFocusResult"),
         }
         let inbox = Arc::new(Inbox::new(16));
         crate::runtime_thread::process_job(
@@ -11342,10 +11331,7 @@ mod tests {
         );
         let staged = session.peek_close_feedback().expect("accepted stages");
         assert_eq!(staged.id, req.id);
-        assert_eq!(
-            staged.setter,
-            tiler_core::world_report::VisibilitySetter::Accepted
-        );
+        assert_eq!(staged.disposition, accepted_disposition());
         // Duplicate latest replays nothing new: no second slot command, no
         // second owner dispatch, first staged row keeps its stamp.
         consume_close(
@@ -11469,7 +11455,6 @@ mod tests {
                     visible: Some(true),
                     suppression_owned: None,
                 },
-                last_write: None,
             }
         }
         fn report(
@@ -11519,7 +11504,7 @@ mod tests {
                 frames: Vec::new(),
                 member_attempts: Vec::new(),
                 view_attempts: Vec::new(),
-                clear_attempts: Vec::new(),
+                visibility_attempts: Vec::new(),
                 creation_attempts: Vec::new(),
                 held_attempts: Vec::new(),
                 state_attempts: Vec::new(),
@@ -11538,12 +11523,13 @@ mod tests {
             crate::world_connection::macos_capabilities(),
         )
         .expect("producer binds the consumer handshake");
-        let accepted = |engine: &mut WorldEngine, report: &WorldReportV4| match engine
-            .handle_report(report, &[])
-            .0
-        {
-            WorldOutcome::Accepted(reply) => reply,
-            other => panic!("expected accepted, got {other:?}"),
+        let accepted = |engine: &mut WorldEngine, report: &WorldReportV4| {
+            match tiler_protocol::world_admission::handle_report_checked(engine, report, &[])
+                .outcome
+            {
+                WorldOutcome::Accepted(reply) => reply,
+                other => panic!("expected accepted, got {other:?}"),
+            }
         };
         accepted(
             &mut engine,
@@ -11610,9 +11596,6 @@ mod tests {
             &tiler_protocol::world_protocol::DecodedReplyV4 {
                 roster_plan: None,
                 reply: latest.clone(),
-                wire: tiler_protocol::world_protocol::ReplyWireOptionals {
-                    suspended_output_present: false,
-                },
             },
         )
         .expect("latest reply encodes");
@@ -11660,21 +11643,18 @@ mod tests {
         );
         match &job {
             crate::runtime_thread::EngineJob::CloseFocusResult {
-                setter,
+                disposition,
                 target,
                 issued_rev,
                 close_id,
                 ..
             } => {
-                assert_eq!(
-                    *setter,
-                    tiler_core::world_report::VisibilitySetter::Accepted
-                );
+                assert_eq!(*disposition, accepted_disposition());
                 assert_eq!(close_id, &req.id);
                 assert_eq!(*issued_rev, req.issued_revision);
                 assert_eq!(*target, close_target(8));
             }
-            other => panic!("expected CloseFocusResult"),
+            _other => panic!("expected CloseFocusResult"),
         }
         let inbox = Arc::new(Inbox::new(16));
         crate::runtime_thread::process_job(
@@ -11688,10 +11668,7 @@ mod tests {
         );
         let staged = session.peek_close_feedback().expect("accepted stages");
         assert_eq!(staged.id, req.id);
-        assert_eq!(
-            staged.setter,
-            tiler_core::world_report::VisibilitySetter::Accepted
-        );
+        assert_eq!(staged.disposition, accepted_disposition());
         // Duplicate latest replays nothing new: no second slot command, no
         // second owner dispatch, first staged row keeps its stamp.
         consume_close(
@@ -11812,7 +11789,6 @@ mod tests {
                     visible: Some(true),
                     suppression_owned: None,
                 },
-                last_write: None,
             }
         }
         fn report(
@@ -11864,7 +11840,7 @@ mod tests {
                 frames: Vec::new(),
                 member_attempts: Vec::new(),
                 view_attempts: Vec::new(),
-                clear_attempts: Vec::new(),
+                visibility_attempts: Vec::new(),
                 creation_attempts: Vec::new(),
                 held_attempts: Vec::new(),
                 state_attempts: Vec::new(),
@@ -11887,12 +11863,13 @@ mod tests {
             )],
         )
         .expect("producer binds the consumer handshake");
-        let accepted = |engine: &mut WorldEngine, report: &WorldReportV4| match engine
-            .handle_report(report, &[])
-            .0
-        {
-            WorldOutcome::Accepted(reply) => reply,
-            other => panic!("expected accepted, got {other:?}"),
+        let accepted = |engine: &mut WorldEngine, report: &WorldReportV4| {
+            match tiler_protocol::world_admission::handle_report_checked(engine, report, &[])
+                .outcome
+            {
+                WorldOutcome::Accepted(reply) => reply,
+                other => panic!("expected accepted, got {other:?}"),
+            }
         };
         let pair = || {
             vec![
@@ -11979,9 +11956,6 @@ mod tests {
             &tiler_protocol::world_protocol::DecodedReplyV4 {
                 roster_plan: None,
                 reply: latest.clone(),
-                wire: tiler_protocol::world_protocol::ReplyWireOptionals {
-                    suspended_output_present: false,
-                },
             },
         )
         .expect("latest reply encodes");
@@ -12029,21 +12003,18 @@ mod tests {
         );
         match &job {
             crate::runtime_thread::EngineJob::CloseFocusResult {
-                setter,
+                disposition,
                 target,
                 issued_rev,
                 close_id,
                 ..
             } => {
-                assert_eq!(
-                    *setter,
-                    tiler_core::world_report::VisibilitySetter::Accepted
-                );
+                assert_eq!(*disposition, accepted_disposition());
                 assert_eq!(close_id, &req.id);
                 assert_eq!(*issued_rev, req.issued_revision);
                 assert_eq!(*target, close_target(8));
             }
-            other => panic!("expected CloseFocusResult"),
+            _other => panic!("expected CloseFocusResult"),
         }
         let inbox = Arc::new(Inbox::new(16));
         crate::runtime_thread::process_job(
@@ -12057,10 +12028,7 @@ mod tests {
         );
         let staged = session.peek_close_feedback().expect("accepted stages");
         assert_eq!(staged.id, req.id);
-        assert_eq!(
-            staged.setter,
-            tiler_core::world_report::VisibilitySetter::Accepted
-        );
+        assert_eq!(staged.disposition, accepted_disposition());
         // Duplicate latest replays nothing new: no second slot command, no
         // second owner dispatch, first staged row keeps its stamp.
         consume_close(

@@ -9,8 +9,8 @@
 //! core-owned half lives in [`WorldEngine`](tiler_core::world_engine::WorldEngine).
 //! No actuation here: this module mints sequences, tracks the single
 //! outstanding flight, and gates incoming replies. Unit B consumes
-//! [`WorldSequencer::accept_reply`] plus [`WorldSequencer::take_unspent_effects`]
-//! on the core-owned engine thread before any native dispatch.
+//! [`WorldSequencer::accept_reply`] on the core-owned engine thread before
+//! any native dispatch.
 //!
 //! Contract (mirrors the KDE `WorldAdapterState` rules in TS form):
 //! - The observation watermark ([`ObservationClock`]) is an atomic counter
@@ -29,12 +29,8 @@
 //!   ready, carries a strictly newer `state_revision`, names the outstanding
 //!   flight request, and still matches the current watermark. Anything else
 //!   refuses with a static reason and changes no state.
-//! - One-shot effects are spent BEFORE first native dispatch
-//!   ([`take_unspent_effects`](WorldSequencer::take_unspent_effects) marks
-//!   each returned effect spent): duplicates and later unrelated replies
-//!   carrying the same effect id never reapply.
 //! - A new bound generation (re-bootstrap) resets flights, ordering,
-//!   spent sets, close-focus accounting, and both counters, exactly like
+//!   close-focus accounting, and all counters, exactly like
 //!   the core-side incarnation reset. Native windows are untouched (there
 //!   are none owned here).
 //! - Close focus observes only the coherent LATEST envelope: a stable
@@ -58,9 +54,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tiler_core::directional::WindowId;
 #[cfg(test)]
 use tiler_core::world_engine::WorldEngine;
-use tiler_core::world_report::{
-    EffectCause, EffectKind, FocusRequest, OneShotEffect, WorldCommand, WorldReplyV4,
-};
+use tiler_core::world_report::{FocusRequest, WorldCommand, WorldReplyV4};
 
 /// Thread-safe observation watermark. `invalidate` advances synchronously on
 /// every invalidating input (plain atomics: never blocks, even mid-flight);
@@ -122,6 +116,10 @@ pub(crate) struct RequestTicket {
     pub command: Option<WorldCommand>,
 }
 
+/// How many recent settled gesture ids the sequencer remembers for the
+/// at-most-once terminal guard.
+const TERMINAL_MEMORY: usize = 16;
+
 /// Freshness verdict for one reply. `Applied` carries the accepted snapshot
 /// (Unit B reconciles/actuates from it); `Refused` names the static reason
 /// and changes no sequencer state.
@@ -139,8 +137,9 @@ struct SequencerState {
     flight: Option<Flight>,
     last_revision: u64,
     has_accepted: bool,
-    spent_effects: BTreeSet<String>,
     spent_commands: BTreeSet<u64>,
+    settled_gestures: BTreeSet<u64>,
+    next_frame_attempt: u64,
     last_reply: Option<WorldReplyV4>,
     close_current: Option<CloseFocusRecord>,
     close_retired_rev: u64,
@@ -183,7 +182,7 @@ pub(crate) enum CloseEnvelope {
 /// input submitter holds the same clock (via [`Shared`](crate::runtime::Shared)),
 /// so input arriving while a request is outstanding advances the CURRENT
 /// watermark and the in-flight reply refuses as stale instead of actuating
-/// over newer input. The flight/effects state stays engine-thread-owned.
+/// over newer input. The flight/frame-attempt state stays engine-thread-owned.
 #[derive(Debug)]
 pub(crate) struct WorldSequencer {
     adapter_incarnation: String,
@@ -220,8 +219,9 @@ impl WorldSequencer {
                 flight: None,
                 last_revision: 0,
                 has_accepted: false,
-                spent_effects: BTreeSet::new(),
                 spent_commands: BTreeSet::new(),
+                settled_gestures: BTreeSet::new(),
+                next_frame_attempt: 1,
                 last_reply: None,
                 close_current: None,
                 close_retired_rev: 0,
@@ -272,6 +272,22 @@ impl WorldSequencer {
     /// Last applied reply snapshot, if any.
     pub(crate) fn last_reply(&self) -> Option<WorldReplyV4> {
         self.lock().last_reply.clone()
+    }
+
+    /// Claim one gesture terminal id for at-most-once incorporation.
+    /// Returns `false` when this id was already claimed (transport replay
+    /// or a doubled report), so the caller dispatches nothing and the
+    /// core can never incorporate the same stable gesture twice. The
+    /// window keeps the newest [`TERMINAL_MEMORY`] ids only.
+    pub(crate) fn claim_gesture_terminal(&self, id: u64) -> bool {
+        let mut state = self.lock();
+        if !state.settled_gestures.insert(id) {
+            return false;
+        }
+        while state.settled_gestures.len() > TERMINAL_MEMORY {
+            state.settled_gestures.pop_first();
+        }
+        true
     }
 
     /// True once `seq` was claimed for a command (at-most-once dispatch).
@@ -359,7 +375,17 @@ impl WorldSequencer {
                 reason: "not-ready",
             };
         }
-        if state.has_accepted && reply.state_revision <= state.last_revision {
+        // A correlated gesture terminal may legitimately change no state
+        // (cancel, orphan cancel, late uncommitted drain), so core does not
+        // advance `state_revision` for it. Dropping it as stale would lose
+        // the requester's terminal; the terminal is identified by this
+        // flight's `request_id` and consumed at most once downstream by its
+        // stable gesture id, so it is safe to accept. Ordinary replies keep
+        // the monotonic guard (duplicate transport replies stay refused).
+        if state.has_accepted
+            && reply.state_revision <= state.last_revision
+            && reply.gesture_settled.is_none()
+        {
             return ReplyVerdict::Refused {
                 reason: "stale-revision",
             };
@@ -380,27 +406,19 @@ impl WorldSequencer {
         ReplyVerdict::Applied(Box::new(reply.clone()))
     }
 
-    /// Spend one one-shot effect id before its first native dispatch.
-    /// Returns false when already spent (the dispatch must be skipped).
-    pub(crate) fn spend_effect(&self, id: &str) -> bool {
-        self.lock().spent_effects.insert(id.to_owned())
-    }
-
-    /// Filter one accepted reply's effects to the never-spent ones, spending
-    /// each returned id. Unit B calls this BEFORE dispatch so duplicates and
-    /// repeated diffs never reapply.
-    pub(crate) fn take_unspent_effects(&self, reply: &WorldReplyV4) -> Vec<OneShotEffect> {
+    /// Mint the identity for one new native frame attempt. Every fresh
+    /// attempt takes one id; the same staged row keeps it across resends.
+    /// Starts at 1 and resets with the bound generation.
+    pub(crate) fn next_frame_attempt_id(&self) -> u64 {
         let mut state = self.lock();
-        reply
-            .effects
-            .iter()
-            .filter(|effect| state.spent_effects.insert(effect.id.clone()))
-            .cloned()
-            .collect()
+        let id = state.next_frame_attempt;
+        state.next_frame_attempt = state.next_frame_attempt.saturating_add(1);
+        id
     }
 
     /// Re-bootstrap under a new core generation: resets flights, ordering,
-    /// spent sets, close-focus accounting, and both counters. The watermark clock is left alone
+    /// spent commands, frame-attempt identity, close-focus accounting, and
+    /// every counter. The watermark clock is left alone
     /// (it names local input recency, not core state).
     pub(crate) fn bind_generation(&self, core_generation: &str) {
         let mut state = self.lock();
@@ -410,8 +428,9 @@ impl WorldSequencer {
         state.flight = None;
         state.last_revision = 0;
         state.has_accepted = false;
-        state.spent_effects.clear();
         state.spent_commands.clear();
+        state.settled_gestures.clear();
+        state.next_frame_attempt = 1;
         state.last_reply = None;
         state.close_current = None;
         state.close_retired_rev = 0;
@@ -439,10 +458,10 @@ impl WorldSequencer {
     ) -> CloseEnvelope {
         let mut state = self.lock();
         let Some(req) = request else {
-            if let Some(prev) = state.close_current.take() {
-                if prev.issued_revision > state.close_retired_rev {
-                    state.close_retired_rev = prev.issued_revision;
-                }
+            if let Some(prev) = state.close_current.take()
+                && prev.issued_revision > state.close_retired_rev
+            {
+                state.close_retired_rev = prev.issued_revision;
             }
             return CloseEnvelope::Absent;
         };
@@ -555,27 +574,6 @@ pub(crate) fn command_operation_id(command_seq: u64) -> String {
     format!("op-{command_seq}")
 }
 
-/// Mint the stable one-shot effect identity for one focus dispatch.
-#[must_use]
-pub(crate) fn focus_effect_id(command_seq: u64) -> String {
-    format!("effect-focus-{command_seq}")
-}
-
-/// Build the at-most-once focus effect the core emits for a focus command
-/// (test/fixture helper sharing the production id shape).
-#[must_use]
-pub(crate) fn focus_effect(command_seq: u64, window: &str, issued_revision: u64) -> OneShotEffect {
-    OneShotEffect {
-        id: focus_effect_id(command_seq),
-        kind: EffectKind::Focus,
-        target: WindowId(window.to_owned()),
-        issued_revision,
-        cause: EffectCause::ExplicitCommand,
-        command_seq: Some(command_seq),
-        await_shown: false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -627,9 +625,8 @@ mod tests {
             outputs: Vec::new(),
             windows: Vec::new(),
             transfers: Vec::new(),
-            effects: Vec::new(),
             focus_request: None,
-            command_result: None,
+            drag_preview: None,
             gesture_settled: None,
             operation_settled: Vec::new(),
             native_creations: Vec::new(),
@@ -776,26 +773,6 @@ mod tests {
     }
 
     #[test]
-    fn effects_spend_before_dispatch_at_most_once() {
-        let sequencer = WorldSequencer::new(INCARNATION, GENERATION);
-        let mut answered = reply("req-1", 0, 1, true, GENERATION);
-        answered.effects = vec![focus_effect(1, "1001_1", 1), focus_effect(2, "1001_2", 1)];
-        let first = sequencer.take_unspent_effects(&answered);
-        assert_eq!(first.len(), 2, "first dispatch spends both");
-        assert!(sequencer.take_unspent_effects(&answered).is_empty());
-        // A duplicate reply carrying one old plus one new effect dispatches
-        // only the new one.
-        let mut later = answered.clone();
-        later.effects.push(focus_effect(3, "1001_3", 2));
-        let third = sequencer.take_unspent_effects(&later);
-        assert_eq!(third.len(), 1);
-        assert_eq!(third[0].id, focus_effect_id(3));
-        // Direct spend refuses repeats too.
-        assert!(!sequencer.spend_effect(&focus_effect_id(3)));
-        assert!(sequencer.spend_effect("effect-focus-9"));
-    }
-
-    #[test]
     fn commands_claim_once_and_survive_transport_loss() {
         let sequencer = WorldSequencer::new(INCARNATION, GENERATION);
         let action = || WorldCommand::SelectTrailing {
@@ -818,9 +795,8 @@ mod tests {
             .try_begin_request(None)
             .expect("observation-only retry");
         assert!(retry.command_seq.is_none());
-        // Identity helpers share the production shape.
+        // Identity helper shares the production shape.
         assert_eq!(command_operation_id(seq), format!("op-{seq}"));
-        assert_eq!(focus_effect_id(seq), format!("effect-focus-{seq}"));
     }
 
     fn close_request(
@@ -1119,7 +1095,7 @@ mod tests {
             frames: Vec::new(),
             member_attempts: Vec::new(),
             view_attempts: Vec::new(),
-            clear_attempts: Vec::new(),
+            visibility_attempts: Vec::new(),
             creation_attempts: Vec::new(),
             held_attempts: Vec::new(),
             state_attempts: Vec::new(),
@@ -1130,7 +1106,9 @@ mod tests {
             intent_records: Vec::new(),
             renderer_input: None,
         };
-        match unbound.handle_report(&report, &[]).0 {
+        match tiler_protocol::world_admission::handle_report_checked(&mut unbound, &report, &[])
+            .outcome
+        {
             tiler_core::world_engine::WorldOutcome::Rejected { .. } => {}
             tiler_core::world_engine::WorldOutcome::Accepted(_)
             | tiler_core::world_engine::WorldOutcome::Duplicate(_)

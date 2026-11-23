@@ -949,7 +949,13 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
     );
     input.raw = &raw;
     let first = crate::world_builder::build_report(&mut input);
-    let adopted = match session.engine_mut().handle_report(&first, &[]).0 {
+    let adopted = match tiler_protocol::world_admission::handle_report_checked(
+        session.engine_mut(),
+        &first,
+        &[],
+    )
+    .outcome
+    {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("adopt report must accept, got {other:?}"),
     };
@@ -969,8 +975,9 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
     let logical_a = logical_for(&native_a);
     let logical_b = logical_for(&native_b);
     assert_ne!(logical_a, logical_b, "adoption binds distinct logical ids");
-    // View transfer via SwitchView to the hidden logical view retains
-    // operation `op-2`; staging native Space reads ride the native keys.
+    // View transfer via the v4 direct selection (`SwitchView` is refused by
+    // `valid_command_v4`) to the hidden logical view retains operation
+    // `op-2`; staging native Space reads ride the native keys.
     let owned_second = "req-2".to_owned();
     let mut second = crate::world_builder::ReportInput::new(
         &incarnation,
@@ -989,12 +996,18 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
     );
     second.raw = &raw;
     second.command_seq = Some(2);
-    second.command = Some(tiler_core::world_report::WorldCommand::SwitchView {
+    second.command = Some(tiler_core::world_report::WorldCommand::SelectWorkspace {
         output: output.clone(),
-        workspace: logical_b.clone(),
+        workspace: WorkspaceId(logical_b.clone()),
     });
     let second_report = crate::world_builder::build_report(&mut second);
-    match session.engine_mut().handle_report(&second_report, &[]).0 {
+    match tiler_protocol::world_admission::handle_report_checked(
+        session.engine_mut(),
+        &second_report,
+        &[],
+    )
+    .outcome
+    {
         WorldOutcome::Accepted(_) => {}
         other => panic!("switch-view must accept, got {other:?}"),
     }
@@ -1020,13 +1033,19 @@ fn staged_native_attempts_report_absence_not_translated_logical() {
     third.raw = &raw;
     third.command_seq = Some(3);
     third.command = Some(tiler_core::world_report::WorldCommand::Send {
-        window: WindowId("1001_7".to_owned()),
+        window: tiler_core::directional::WindowSubject::Window(WindowId("1001_7".to_owned())),
         target_output: output.clone(),
-        target_workspace: logical_b.clone(),
+        target_workspace: WorkspaceId(logical_b.clone()),
         follow: false,
     });
     let third_report = crate::world_builder::build_report(&mut third);
-    match session.engine_mut().handle_report(&third_report, &[]).0 {
+    match tiler_protocol::world_admission::handle_report_checked(
+        session.engine_mut(),
+        &third_report,
+        &[],
+    )
+    .outcome
+    {
         WorldOutcome::Accepted(_) => {}
         other => panic!("send must accept, got {other:?}"),
     };
@@ -1204,24 +1223,8 @@ fn staged_appended_sid_never_claims_causal_created_identity() {
 
     // Codec seam: the production receipt rule maps `None` to explicit null
     // (never absent), and the null round-trips back to `None`.
-    use tiler_protocol::world_protocol::{
-        CreationReceiptWire, CursorHitWire, DecodedReportV4, GestureIngressWire,
-        ReportWireOptionals, decode_report_v4, encode_report_v4,
-    };
-    let decoded = DecodedReportV4 {
-        report: report.clone(),
-        wire: ReportWireOptionals {
-            cursor_hit: CursorHitWire::Absent,
-            monotonic_ms_present: report.monotonic_ms != 0,
-            frame_attempts_present: !report.frames.is_empty(),
-            member_attempts_present: !report.member_attempts.is_empty(),
-            view_attempts_present: !report.view_attempts.is_empty(),
-            clear_attempts_present: !report.clear_attempts.is_empty(),
-            creation_attempts_present: !report.creation_attempts.is_empty(),
-            gesture_ingress: GestureIngressWire::Absent,
-        },
-        creation_receipts: vec![CreationReceiptWire::Null],
-    };
+    use tiler_protocol::world_protocol::{CreationReceiptWire, decode_report_v4, encode_report_v4};
+    let decoded = crate::world_dispatch::decoded_report_for_encode(&report);
     let wire = encode_report_v4(&decoded).expect("report encodes");
     let back = decode_report_v4(&wire).expect("report decodes");
     assert_eq!(
@@ -1281,9 +1284,8 @@ fn restart_sessions_mint_distinct_tokens_and_fence_old_traffic() {
             outputs: Vec::new(),
             windows: Vec::new(),
             transfers: Vec::new(),
-            effects: Vec::new(),
             focus_request: None,
-            command_result: None,
+            drag_preview: None,
             gesture_settled: None,
             operation_settled: Vec::new(),
             native_creations: Vec::new(),
@@ -1391,7 +1393,12 @@ fn restart_sessions_mint_distinct_tokens_and_fence_old_traffic() {
     .expect("synthetic report builds");
     assert!(
         matches!(
-            old.engine_mut().handle_report(&old_report, &[]).0,
+            tiler_protocol::world_admission::handle_report_checked(
+                old.engine_mut(),
+                &old_report,
+                &[]
+            )
+            .outcome,
             WorldOutcome::Accepted(_)
                 | WorldOutcome::Duplicate(_)
                 | WorldOutcome::CommandConsumed(_)
@@ -1400,7 +1407,12 @@ fn restart_sessions_mint_distinct_tokens_and_fence_old_traffic() {
     );
     assert!(
         matches!(
-            new.engine_mut().handle_report(&old_report, &[]).0,
+            tiler_protocol::world_admission::handle_report_checked(
+                new.engine_mut(),
+                &old_report,
+                &[]
+            )
+            .outcome,
             WorldOutcome::Rejected { .. }
         ),
         "old report must not be admitted after restart"
@@ -1491,7 +1503,12 @@ fn reused_pid_shape_with_distinct_nonces_fences_old_traffic() {
     .expect("synthetic report builds");
     assert!(
         matches!(
-            old.engine_mut().handle_report(&old_report, &[]).0,
+            tiler_protocol::world_admission::handle_report_checked(
+                old.engine_mut(),
+                &old_report,
+                &[]
+            )
+            .outcome,
             WorldOutcome::Accepted(_)
                 | WorldOutcome::Duplicate(_)
                 | WorldOutcome::CommandConsumed(_)
@@ -1500,7 +1517,12 @@ fn reused_pid_shape_with_distinct_nonces_fences_old_traffic() {
     );
     assert!(
         matches!(
-            new.engine_mut().handle_report(&old_report, &[]).0,
+            tiler_protocol::world_admission::handle_report_checked(
+                new.engine_mut(),
+                &old_report,
+                &[]
+            )
+            .outcome,
             WorldOutcome::Rejected { .. }
         ),
         "old report must not be admitted after restart under a reused PID"
@@ -1589,7 +1611,12 @@ fn entropy_failure_session_stays_unbound_and_admits_nothing() {
     .expect("synthetic report builds");
     assert!(
         matches!(
-            session.engine_mut().handle_report(&report, &[]).0,
+            tiler_protocol::world_admission::handle_report_checked(
+                session.engine_mut(),
+                &report,
+                &[]
+            )
+            .outcome,
             WorldOutcome::Rejected { .. }
         ),
         "unbound session must reject even its own report"

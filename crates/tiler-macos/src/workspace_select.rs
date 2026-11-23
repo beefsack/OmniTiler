@@ -1810,7 +1810,7 @@ pub(crate) fn run_batch_step(
         &report,
         &[],
     )
-    .0
+    .outcome
     {
         tiler_core::world_engine::WorldOutcome::Accepted(reply) => reply,
         tiler_core::world_engine::WorldOutcome::CommandConsumed(reply) => reply,

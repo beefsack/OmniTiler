@@ -21,9 +21,13 @@ use crate::runtime::{
 use crate::runtime_core::{
     RetainedApp, RetainedCore, clear_focus_into, note_scoped_members, partition_scoped_members,
 };
-use crate::runtime_types::{
-    CloseFocusBinding, FocusCommand, ScopedBackendSnapshot, parse_window_id,
-};
+use crate::runtime_types::{FocusCommand, ScopedBackendSnapshot};
+
+// Only the retained close-gate helpers below (compiled under `cfg(test)`)
+// still read these; the production close lane moved to core-retained
+// settlement. Tracked as dead-weight cleanup in the handover.
+#[cfg(test)]
+use crate::runtime_types::{CloseFocusBinding, parse_window_id};
 
 /// Pure fence for one taken focus command: PID/generation staleness
 /// first (a relaunched lifetime must never dispatch), then topology
@@ -123,6 +127,7 @@ pub(crate) fn gate_close_baseline(
 /// Cause-specific exemption: an explicit user command bypasses the
 /// same-domain fullscreen steal guard (the intent IS the foreground move);
 /// every other cause keeps it.
+#[cfg(test)]
 pub(crate) fn gate_close_retained(
     close: &CloseFocusBinding,
     retained: &RetainedCore,
@@ -205,6 +210,7 @@ pub(crate) fn gate_close_retained(
 /// Full owner pre-call verdict for one close-focus command: the retained
 /// no-call legs first, then the fresh baseline recheck. Pure over
 /// already-read state plus one fresh read.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CloseOwnerGate {
     AlreadyTarget,
@@ -219,6 +225,7 @@ pub(crate) enum CloseOwnerGate {
 /// Combine [`gate_close_retained`] with [`gate_close_baseline`]: retained
 /// refusal wins (no fresh read needed), otherwise the fresh baseline
 /// decides. Unknown or changed baselines refuse without calling.
+#[cfg(test)]
 pub(crate) fn gate_close_owner(
     close: &CloseFocusBinding,
     retained: &RetainedCore,
@@ -262,22 +269,22 @@ pub(crate) fn gate_close_owner(
 /// [`crate::world_runtime::completion_setter`] for the close lane.
 pub(crate) fn close_completion_disposition(
     completion: &crate::runtime_types::AxCompletion,
-) -> (
-    tiler_core::world_report::VisibilitySetter,
-    tiler_core::world_report::VisibilityReason,
-) {
-    use tiler_core::world_report::{VisibilityReason, VisibilitySetter};
+) -> tiler_core::world_report::FocusDisposition {
+    use tiler_core::world_report::{FocusDisposition, FrameSetter, VisibilityReason};
     match completion {
-        crate::runtime_types::AxCompletion::Applied { .. } => {
-            (VisibilitySetter::Accepted, VisibilityReason::Empty)
-        }
-        crate::runtime_types::AxCompletion::Failed { .. } => {
-            (VisibilitySetter::Refused, VisibilityReason::NativeRefused)
-        }
+        crate::runtime_types::AxCompletion::Applied { .. } => FocusDisposition::Called {
+            setter: FrameSetter::Accepted,
+            reason: VisibilityReason::Empty,
+        },
+        crate::runtime_types::AxCompletion::Failed { .. } => FocusDisposition::Called {
+            setter: FrameSetter::Refused,
+            reason: VisibilityReason::NativeRefused,
+        },
         crate::runtime_types::AxCompletion::PartialApplied { .. }
-        | crate::runtime_types::AxCompletion::Timeout { .. } => {
-            (VisibilitySetter::Threw, VisibilityReason::NativeRefused)
-        }
+        | crate::runtime_types::AxCompletion::Timeout { .. } => FocusDisposition::Called {
+            setter: FrameSetter::Threw,
+            reason: VisibilityReason::NativeRefused,
+        },
     }
 }
 
@@ -295,17 +302,18 @@ pub(crate) fn close_attempt_ms(completion: &crate::runtime_types::AxCompletion) 
 
 /// Build one truthful close-focus feedback row under the original stamp:
 /// the frozen close id, target, and issuing revision ride verbatim; the
-/// mechanical setter/reason plus the genuine pre/post reads ride alongside.
+/// mechanical disposition plus the genuine pre/post reads ride alongside.
 /// `arrival` stays empty (a focus write proves no Space arrival); the
 /// caller supplies the proven post read (`None` unknown, never invented).
 /// Never stage an `Accepted` row before the actual owner attempt — this
 /// constructor runs only on the result path.
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn close_feedback_row(
     close_id: &str,
     target: &WindowId,
     issued_revision: u64,
-    setter: tiler_core::world_report::VisibilitySetter,
-    reason: tiler_core::world_report::VisibilityReason,
+    disposition: tiler_core::world_report::FocusDisposition,
     pre: Option<WindowId>,
     post: Option<WindowId>,
     foreground_proven: bool,
@@ -315,8 +323,7 @@ pub(crate) fn close_feedback_row(
         id: close_id.to_owned(),
         target: target.clone(),
         revision: issued_revision,
-        setter,
-        reason,
+        disposition,
         pre,
         post,
         foreground_proven,
@@ -1100,7 +1107,7 @@ mod tests {
     use tiler_core::geometry::Rect;
     use tiler_core::session::DomainKey;
     use tiler_core::size_hints::WindowSizeHints;
-    use tiler_core::world_report::{VisibilityReason, VisibilitySetter};
+    use tiler_core::world_report::{FocusDisposition, FrameSetter, VisibilityReason};
 
     const CLOSE_PID: u32 = 4242;
     const CLOSE_WID: u32 = 7;
@@ -1748,13 +1755,19 @@ mod tests {
         // never claimed here — later observations prove it).
         assert_eq!(
             close_completion_disposition(&AxCompletion::Applied { elapsed_ms: 5 }),
-            (VisibilitySetter::Accepted, VisibilityReason::Empty),
+            FocusDisposition::Called {
+                setter: FrameSetter::Accepted,
+                reason: VisibilityReason::Empty,
+            },
         );
         assert_eq!(
             close_completion_disposition(&AxCompletion::Failed {
                 reason: "nope".to_owned(),
             }),
-            (VisibilitySetter::Refused, VisibilityReason::NativeRefused),
+            FocusDisposition::Called {
+                setter: FrameSetter::Refused,
+                reason: VisibilityReason::NativeRefused,
+            },
         );
         assert_eq!(
             close_completion_disposition(&AxCompletion::PartialApplied {
@@ -1765,11 +1778,17 @@ mod tests {
                 readback_xywh: None,
                 readback_unreadable: true,
             }),
-            (VisibilitySetter::Threw, VisibilityReason::NativeRefused),
+            FocusDisposition::Called {
+                setter: FrameSetter::Threw,
+                reason: VisibilityReason::NativeRefused,
+            },
         );
         assert_eq!(
             close_completion_disposition(&AxCompletion::Timeout { timeout_ms: 9 }),
-            (VisibilitySetter::Threw, VisibilityReason::NativeRefused),
+            FocusDisposition::Called {
+                setter: FrameSetter::Threw,
+                reason: VisibilityReason::NativeRefused,
+            },
         );
     }
 
@@ -1813,8 +1832,10 @@ mod tests {
             "close-focus-3",
             &target,
             3,
-            VisibilitySetter::Accepted,
-            VisibilityReason::Empty,
+            FocusDisposition::Called {
+                setter: FrameSetter::Accepted,
+                reason: VisibilityReason::Empty,
+            },
             Some(pre.clone()),
             Some(target.clone()),
             true,
@@ -1823,8 +1844,13 @@ mod tests {
         assert_eq!(row.id, "close-focus-3");
         assert_eq!(row.target, target);
         assert_eq!(row.revision, 3);
-        assert_eq!(row.setter, VisibilitySetter::Accepted);
-        assert_eq!(row.reason, VisibilityReason::Empty);
+        assert_eq!(
+            row.disposition,
+            FocusDisposition::Called {
+                setter: FrameSetter::Accepted,
+                reason: VisibilityReason::Empty,
+            }
+        );
         assert_eq!(row.pre, Some(pre));
         assert_eq!(row.post, Some(target));
         assert!(row.foreground_proven);
@@ -1833,17 +1859,19 @@ mod tests {
     }
 
     fn bound_a() -> RetainedCore {
-        let mut retained = RetainedCore::default();
-        retained.observed_focus = Some(WindowId("100_7".to_owned()));
-        retained.observed_focus_known = true;
-        retained
+        RetainedCore {
+            observed_focus: Some(WindowId("100_7".to_owned())),
+            observed_focus_known: true,
+            ..Default::default()
+        }
     }
 
     fn known_empty() -> RetainedCore {
-        let mut retained = RetainedCore::default();
-        retained.observed_focus = None;
-        retained.observed_focus_known = true;
-        retained
+        RetainedCore {
+            observed_focus: None,
+            observed_focus_known: true,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -2019,9 +2047,11 @@ mod tests {
         use crate::world_sequencer::ObservationClock;
 
         fn report_for(focus: Option<&str>, known: bool) -> (String, bool) {
-            let mut retained = RetainedCore::default();
-            retained.observed_focus = focus.map(|f| WindowId(f.to_owned()));
-            retained.observed_focus_known = known;
+            let retained = RetainedCore {
+                observed_focus: focus.map(|f| WindowId(f.to_owned())),
+                observed_focus_known: known,
+                ..Default::default()
+            };
             let mut session = WorldSession::new(
                 false,
                 FocusRoute::Slps,

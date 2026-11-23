@@ -915,6 +915,10 @@ fn run_leg_body_macos(
                 "fixture-leg: interrupted (SIGINT/SIGTERM latched); restoring".to_owned(),
             ));
         }
+        // Each chord is driven to its OWN window: focus it through the
+        // fixture's own socket first (the post path refuses a target that is
+        // not the app's selected window), then post.
+        driver.focus(caller, *wid)?;
         let report: serde_json::Value =
             serde_json::from_str(&driver.post(caller, *wid, chord, opts.modifier)?)
                 .map_err(|e| (1, e.to_string()))?;
@@ -950,10 +954,16 @@ fn spawn_owned_windows(socket: &str, nonce: &str, callers: &[String]) -> Result<
     Ok(())
 }
 
-/// Join every caller to its live native window ID: the socket snapshot's
-/// server-controlled title must match a fresh CG window of the fixture PID
-/// with the same caller and run tag. Unjoined callers refuse before any
-/// post; pre-existing foreign windows never match (caller/run-tag join).
+/// Join every caller to its live native window ID through AX identity.
+/// The fixture bundle is AX-trusted (`preflight-app` proves it), so the
+/// join is: announced fixture PID -> its own `AXWindows` -> the
+/// server-controlled title parsed for caller+run tag -> AX window id,
+/// corroborated by a fresh title-free CG (pid, wid) entry. CG titles need
+/// Screen Recording, which this leg never uses, and neither a title nor a
+/// PID is trusted alone: the AX application element scopes the read to the
+/// announced fixture process, and the CG basic join proves the same wid is
+/// a live window of that PID. Unjoined callers refuse before any post;
+/// pre-existing foreign windows never match (caller/run-tag join).
 #[cfg(target_os = "macos")]
 fn join_fixture_windows(
     pid: u32,
@@ -961,35 +971,48 @@ fn join_fixture_windows(
     nonce: &str,
     callers: &[String],
 ) -> Result<Vec<(String, u32)>, String> {
-    let mut joined = Vec::new();
-    let windows = crate::ffi::cg_window_list_all()
+    let app = crate::ffi::AxElement::application(pid as i32)
+        .ok_or_else(|| format!("fixture-leg: no AX application element for pid {pid}"))?;
+    let elements = app
+        .windows()
+        .map_err(|code| format!("fixture-leg: AXWindows unreadable for pid {pid} ({code})"))?;
+    let cg = crate::ffi::cg_window_list_basic()
         .map_err(|e| format!("fixture-leg: CG snapshot unreadable ({e})"))?;
+    let mut joined = Vec::new();
     for caller in callers {
         let snapshot = crate::fixture_post::socket_snapshot_for(socket, nonce, caller)
             .map_err(|e| format!("fixture-leg: caller {caller} snapshot refused ({e})"))?;
         let mut wid = None;
-        for window in &windows {
-            if window.pid != pid {
-                continue;
-            }
-            let Some(title) = window.title.as_deref() else {
+        for element in &elements {
+            let Ok(Some(title)) = crate::ffi::ax_window_title(element) else {
                 continue;
             };
-            match crate::fixture_post::parse_fixture_title(title) {
-                Ok((native_caller, native_tag))
-                    if native_caller == *caller && native_tag == snapshot.run_tag =>
-                {
-                    wid = Some(window.wid);
-                    break;
-                }
-                _ => {}
+            let Ok((native_caller, native_tag)) = crate::fixture_post::parse_fixture_title(&title)
+            else {
+                continue;
+            };
+            if native_caller != *caller || native_tag != snapshot.run_tag {
+                continue;
             }
+            let Some(window) = crate::ffi::ax_window_id(element) else {
+                continue;
+            };
+            // Independent corroboration: the same window id must be a live
+            // CG window owned by the announced fixture PID.
+            if !cg
+                .iter()
+                .any(|entry| entry.pid == pid && entry.wid == window)
+            {
+                continue;
+            }
+            wid = Some(window);
+            break;
         }
         match wid {
             Some(wid) => joined.push((caller.clone(), wid)),
             None => {
                 return Err(format!(
-                    "fixture-leg: caller {caller} has no live native window join; refusing"
+                    "fixture-leg: caller {caller} has no live AX window join; refusing"
                 ));
             }
         }

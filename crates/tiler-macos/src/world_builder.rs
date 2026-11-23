@@ -59,9 +59,9 @@ use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::gesture::GestureIngress;
 use tiler_core::session::DomainKey;
 use tiler_core::world_report::{
-    ClearAttempt, FrameAttempt, HoldReason, MemberAttempt, NativeCreationAttempt,
-    NativeObservation, NativeOccupancy, NativeWorkspaceFact, OutputIdentity, PresentationRowV4,
-    ScreenReport, ViewAttempt, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReportV4,
+    FrameAttempt, HoldReason, MemberAttempt, NativeCreationAttempt, NativeObservation,
+    NativeOccupancy, NativeWorkspaceFact, OutputIdentity, PresentationRowV4, ScreenReport,
+    ViewAttempt, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReportV4,
 };
 
 use crate::runtime_core::{LifetimeMemory, MinimizedRecord, collect_window_facts, minimized_fact};
@@ -273,8 +273,6 @@ pub(crate) struct ReportInput<'a> {
     pub member_attempts: &'a [MemberAttempt],
     /// Raw mechanical view attempts (latest-wins per owning view phase).
     pub view_attempts: &'a [ViewAttempt],
-    /// Raw mechanical maximize-clear attempts (latest-wins per operation).
-    pub clear_attempts: &'a [ClearAttempt],
     /// Raw mechanical native creation attempts (latest-wins per operation).
     pub creation_attempts: &'a [NativeCreationAttempt],
     /// Raw close-focus feedback rows (bounded staged row, forwarded once
@@ -355,7 +353,6 @@ impl<'a> ReportInput<'a> {
             frames: &[],
             member_attempts: &[],
             view_attempts: &[],
-            clear_attempts: &[],
             creation_attempts: &[],
             focus_feedback: &[],
             gesture: None,
@@ -625,7 +622,6 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReportV4 {
                             visible: None,
                             suppression_owned: None,
                         },
-                        last_write: None,
                     });
                 }
             }
@@ -671,10 +667,13 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReportV4 {
         frames: input.frames.to_vec(),
         member_attempts: input.member_attempts.to_vec(),
         view_attempts: input.view_attempts.to_vec(),
-        clear_attempts: input.clear_attempts.to_vec(),
         creation_attempts: input.creation_attempts.to_vec(),
         held_attempts: Vec::new(),
         state_attempts: Vec::new(),
+        // macOS owns no native visibility write lane: requests are composed
+        // core-side and no adapter setter ever runs, so there is no truthful
+        // visibility evidence to report. Empty, never fabricated rows.
+        visibility_attempts: Vec::new(),
         focus_feedback: input.focus_feedback.to_vec(),
         presentation: PresentationRowV4::Valid(input.presentation.clone()),
         intent_records: Vec::new(),
@@ -852,10 +851,19 @@ mod tests {
         report: &WorldReportV4,
         engine: &mut WorldEngine,
     ) -> tiler_core::world_report::WorldReplyV4 {
-        match engine.handle_report(report, &[]).0 {
+        match tiler_protocol::world_admission::handle_report_checked(engine, report, &[]).outcome {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),
         }
+    }
+
+    /// No native focus request may name a hidden lifetime: the effect lane is
+    /// gone, so the retained focus request is the only minted focus signal.
+    fn no_focus_request_for(reply: &tiler_core::world_report::WorldReplyV4, id: &str) -> bool {
+        reply
+            .focus_request
+            .as_ref()
+            .is_none_or(|request| request.target.0 != id)
     }
 
     #[test]
@@ -924,7 +932,9 @@ mod tests {
         // Session feedback path: one bounded raw row rides the report once
         // with its original stamp, verbatim — never re-stamped, never
         // fabricated.
-        use tiler_core::world_report::{FocusFeedback, VisibilityReason, VisibilitySetter};
+        use tiler_core::world_report::{
+            FocusDisposition, FocusFeedback, FrameSetter, VisibilityReason,
+        };
         let ctx = two_display_ctx();
         let (members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
@@ -948,8 +958,10 @@ mod tests {
             id: "close-focus-3".to_owned(),
             target: WindowId("1001_2".to_owned()),
             revision: 3,
-            setter: VisibilitySetter::Accepted,
-            reason: VisibilityReason::Empty,
+            disposition: FocusDisposition::Called {
+                setter: FrameSetter::Accepted,
+                reason: VisibilityReason::Empty,
+            },
             pre: None,
             post: None,
             foreground_proven: false,
@@ -1308,7 +1320,9 @@ mod tests {
         assert_eq!(engine.state_revision(), 1);
 
         // Identical latest resend: duplicate, no new revision.
-        match engine.handle_report(&first, &[]).0 {
+        match tiler_protocol::world_admission::handle_report_checked(&mut engine, &first, &[])
+            .outcome
+        {
             WorldOutcome::Duplicate(cached) => {
                 assert_eq!(cached.state_revision, 1);
                 assert_eq!(engine.state_revision(), 1);
@@ -1662,20 +1676,26 @@ mod tests {
 
         // Older request sequence: superseded, never executed.
         let stale_req = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 6, 4);
-        match engine.handle_report(&stale_req, &[]).0 {
+        match tiler_protocol::world_admission::handle_report_checked(&mut engine, &stale_req, &[])
+            .outcome
+        {
             WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "request-superseded"),
             other => panic!("expected superseded, got {other:?}"),
         }
         // Older observation sequence on a fresh request: stale observation.
         let stale_obs = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 4, 6);
-        match engine.handle_report(&stale_obs, &[]).0 {
+        match tiler_protocol::world_admission::handle_report_checked(&mut engine, &stale_obs, &[])
+            .outcome
+        {
             WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "observation-stale"),
             other => panic!("expected observation-stale, got {other:?}"),
         }
         // Foreign core generation: mismatch without state.
         let mut foreign = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 6, 6);
         foreign.core_generation = "gen-2".to_owned();
-        match engine.handle_report(&foreign, &[]).0 {
+        match tiler_protocol::world_admission::handle_report_checked(&mut engine, &foreign, &[])
+            .outcome
+        {
             WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "generation-mismatch"),
             other => panic!("expected generation-mismatch, got {other:?}"),
         }
@@ -1816,12 +1836,13 @@ mod tests {
         // stays plain (no adapter policy bit); the ToggleFloat command is
         // the explicit tile authority.
         use tiler_core::boundary::CoreCommand;
+        use tiler_core::directional::WindowSubject;
         use tiler_core::world_report::WorldCommand;
         let memory = LifetimeMemory::from_reply(&reply);
         let mut third = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 3, 3);
         third.command_seq = Some(3);
         third.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: "1001_1".to_owned(),
+            window: WindowSubject::Window(WindowId("1001_1".to_owned())),
             float_rect: None,
         }));
         assert!(validate_report_v4_reason(&third).is_none());
@@ -1884,40 +1905,8 @@ mod tests {
         // windowless (true+empty) both validate and preserve the bit through
         // the genuine v4 codec. Unknown (false+empty) validates too but
         // carries the opposite bit; false+nonempty refuses.
-        use tiler_protocol::world_protocol::{
-            CreationReceiptWire, CursorHitWire, DecodedReportV4, GestureIngressWire,
-            ReportWireOptionals, decode_report_v4, encode_report_v4,
-        };
-
-        fn wire(report: WorldReportV4) -> DecodedReportV4 {
-            DecodedReportV4 {
-                wire: ReportWireOptionals {
-                    cursor_hit: match &report.cursor_hit {
-                        None => CursorHitWire::Absent,
-                        Some(_) => CursorHitWire::Id,
-                    },
-                    monotonic_ms_present: report.monotonic_ms != 0,
-                    frame_attempts_present: !report.frames.is_empty(),
-                    member_attempts_present: !report.member_attempts.is_empty(),
-                    view_attempts_present: !report.view_attempts.is_empty(),
-                    clear_attempts_present: !report.clear_attempts.is_empty(),
-                    creation_attempts_present: !report.creation_attempts.is_empty(),
-                    gesture_ingress: match &report.gesture {
-                        None => GestureIngressWire::Absent,
-                        Some(_) => GestureIngressWire::Present,
-                    },
-                },
-                creation_receipts: report
-                    .creation_attempts
-                    .iter()
-                    .map(|row| match &row.created_native {
-                        None => CreationReceiptWire::Null,
-                        Some(_) => CreationReceiptWire::Id,
-                    })
-                    .collect(),
-                report,
-            }
-        }
+        use crate::world_dispatch::decoded_report_for_encode;
+        use tiler_protocol::world_protocol::{decode_report_v4, encode_report_v4};
 
         let ctx = two_display_ctx();
         let (members, closed, unreadable) = empty_maps();
@@ -1938,8 +1927,10 @@ mod tests {
         assert_eq!(bound.focused_global, "4242_7");
         assert!(bound.foreground_known, "bound agreement is known");
         assert!(validate_report_v4_reason(&bound).is_none());
-        let back = decode_report_v4(&encode_report_v4(&wire(bound)).expect("bound encodes"))
-            .expect("bound decodes");
+        let back = decode_report_v4(
+            &encode_report_v4(&decoded_report_for_encode(&bound)).expect("bound encodes"),
+        )
+        .expect("bound decodes");
         assert!(back.report.foreground_known);
         assert_eq!(back.report.focused_global, "4242_7");
 
@@ -1969,8 +1960,10 @@ mod tests {
         assert!(known_none.focused_global.is_empty());
         assert!(known_none.foreground_known);
         assert!(validate_report_v4_reason(&known_none).is_none());
-        let back = decode_report_v4(&encode_report_v4(&wire(known_none)).expect("none encodes"))
-            .expect("none decodes");
+        let back = decode_report_v4(
+            &encode_report_v4(&decoded_report_for_encode(&known_none)).expect("none encodes"),
+        )
+        .expect("none decodes");
         assert!(back.report.foreground_known);
         assert!(back.report.focused_global.is_empty());
 
@@ -2000,8 +1993,10 @@ mod tests {
         assert!(!unknown.foreground_known);
         assert!(unknown.focused_global.is_empty());
         assert!(validate_report_v4_reason(&unknown).is_none());
-        let back = decode_report_v4(&encode_report_v4(&wire(unknown)).expect("unknown encodes"))
-            .expect("unknown decodes");
+        let back = decode_report_v4(
+            &encode_report_v4(&decoded_report_for_encode(&unknown)).expect("unknown encodes"),
+        )
+        .expect("unknown decodes");
         assert!(!back.report.foreground_known);
 
         // Inconsistent: false+nonempty refuses on both validation and encode.
@@ -2021,7 +2016,7 @@ mod tests {
             validate_report_v4_reason(&bad),
             Some("focused-unknown-mismatch")
         );
-        assert!(encode_report_v4(&wire(bad)).is_err());
+        assert!(encode_report_v4(&decoded_report_for_encode(&bad)).is_err());
     }
 
     #[test]
@@ -2029,7 +2024,9 @@ mod tests {
         // Raw mechanical attempts ride the report; the core derives every
         // verdict. An unmatched operation id is forged evidence: staged
         // but never settling anything.
-        use tiler_core::world_report::{FrameAttempt, FrameSetter, MemberAttempt, ViewAttempt};
+        use tiler_core::world_report::{
+            FrameAttempt, FramePurpose, FrameSetter, MemberAttempt, MemberDisposition, ViewAttempt,
+        };
         let ctx = two_display_ctx();
         let (mut members, closed, unreadable) = empty_maps();
         let memory = empty_memory();
@@ -2054,20 +2051,20 @@ mod tests {
         let frames = [FrameAttempt {
             window: WindowId("1001_1".to_owned()),
             target: rect(0, 25, 1440, 875),
-            setter: FrameSetter::Accepted,
+            disposition: FrameSetter::Accepted,
             readback: Some(rect(0, 25, 1440, 875)),
             dpi_before: None,
             dpi_after: None,
-            attempt_ms: 0,
-            operation_id: None,
-            prewrite: None,
+            attempt_id: 1,
+            attempt_ms: None,
+            purpose: FramePurpose::Layout,
         }];
         let member_attempts = [MemberAttempt {
             operation_id: "op-9".to_owned(),
             window: WindowId("1001_1".to_owned()),
             target_output: OutputId("macos-display-1".to_owned()),
             target_workspace: "ws-1".to_owned(),
-            setter: FrameSetter::Accepted,
+            disposition: MemberDisposition::Called(FrameSetter::Accepted),
             pre: None,
             post: None,
             attempt_ms: 0,
@@ -2076,7 +2073,7 @@ mod tests {
             operation_id: "op-9".to_owned(),
             target_output: OutputId("macos-display-1".to_owned()),
             target_workspace: "ws-1".to_owned(),
-            setter: FrameSetter::Accepted,
+            disposition: FrameSetter::Accepted,
             pre: None,
             post: None,
             baseline: None,
@@ -2208,7 +2205,6 @@ mod tests {
     /// semantics are untested.
     #[test]
     fn hidden_omission_vs_flagged_minimized_geometry_parity() {
-        use tiler_core::world_report::EffectKind;
         let ctx = two_display_ctx();
         let d1 = key("macos-display-1", "space-11");
         let memory = empty_memory();
@@ -2248,12 +2244,8 @@ mod tests {
                 .expect("tiled row")
                 .allocation
         };
-        let no_focus_for = |reply: &tiler_core::world_report::WorldReplyV4| {
-            reply
-                .effects
-                .iter()
-                .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7"))
-        };
+        let no_focus_for =
+            |reply: &tiler_core::world_report::WorldReplyV4| no_focus_request_for(reply, "1001_7");
         // Bootstrap both engines identically.
         let mut omit_engine = production_engine();
         let mut flag_engine = production_engine();
@@ -2402,7 +2394,7 @@ mod tests {
         use crate::runtime_core::{RetainedApp, RetainedCore, note_scoped_members};
         use crate::runtime_types::{ExcludedOmission, ScopedBackendSnapshot};
         use crate::world_runtime::{minimized_entries, refresh_minimized};
-        use tiler_core::world_report::{EffectKind, HoldReason, ScopeAuthority};
+        use tiler_core::world_report::{HoldReason, ScopeAuthority};
         let ctx = two_display_ctx();
         let d1 = key("macos-display-1", "space-11");
         let memory = empty_memory();
@@ -2536,10 +2528,7 @@ mod tests {
         );
         assert!(desired.allocation.is_none() && desired.effective_frame.is_none());
         assert!(
-            reply
-                .effects
-                .iter()
-                .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7")),
+            no_focus_request_for(&reply, "1001_7"),
             "hide mints no focus for the hidden lifetime"
         );
         assert!(
@@ -2559,10 +2548,7 @@ mod tests {
         );
         let back_reply = accepted(&back, &mut engine);
         assert!(
-            back_reply
-                .effects
-                .iter()
-                .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7")),
+            no_focus_request_for(&back_reply, "1001_7"),
             "restore mints no focus (host owns it)"
         );
         let flat = vec![WindowId("1001_7".to_owned())];
@@ -2603,12 +2589,12 @@ mod tests {
     /// minimized-reported hidden lifetime must refuse `focus-unknown` with
     /// no focus effect, and the minimized hold survives. The refusal rides
     /// either the top-level `Rejected` outcome (no revision) or, on an
-    /// accepted v4 report, `command_result: Rejected(focus-unknown)` (the
+    /// accepted v4 report, a settlement result `Rejected(focus-unknown)` (the
     /// observations incorporate but the command is refused without
     /// mutation); both shapes refuse, neither focuses the hidden lifetime.
     #[test]
     fn direct_target_focus_at_hidden_minimized_refuses_without_effect() {
-        use tiler_core::world_report::{EffectKind, HoldReason, ScopeAuthority};
+        use tiler_core::world_report::{HoldReason, ScopeAuthority};
         let ctx = two_display_ctx();
         let d1 = key("macos-display-1", "space-11");
         let memory = empty_memory();
@@ -2682,32 +2668,35 @@ mod tests {
         );
         input.command_seq = Some(3);
         input.command = Some(WorldCommand::Focus {
-            window: WindowId("1001_7".to_owned()),
-            direction: Some(tiler_core::directional::Direction::Left),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("1001_7".to_owned())),
+            // v4 direct-target focus names the window with no direction;
+            // a directional command is `FocusDirectional` and is invalid
+            // here (`world_report_v4_checks::valid_command_v4`).
+            direction: None,
         });
         let report = build_report(&mut input);
         assert!(validate_report_v4_reason(&report).is_none());
         let revision_before = engine.state_revision();
-        match engine.handle_report(&report, &[]).0 {
+        let transition =
+            tiler_protocol::world_admission::handle_report_checked(&mut engine, &report, &[]);
+        let (outcome, settlements) = (transition.outcome, transition.dispositions);
+        match outcome {
             WorldOutcome::Rejected { kind, .. } => {
                 assert_eq!(kind, "focus-unknown");
                 assert_eq!(engine.state_revision(), revision_before);
             }
             WorldOutcome::Accepted(reply) => {
-                use tiler_core::world_report::{CommandRejectKind, CommandResult};
+                use tiler_core::world_report::{CommandDisposition, CommandRejectKind};
                 assert_eq!(
-                    reply.command_result,
-                    Some(CommandResult::Rejected {
-                        kind: CommandRejectKind::FocusUnknown,
-                    }),
+                    settlements.first().map(|row| &row.disposition),
+                    Some(&CommandDisposition::Refused(
+                        CommandRejectKind::FocusUnknown
+                    )),
                     "accepted report still refuses the hidden focus command"
                 );
                 assert!(
-                    reply
-                        .effects
-                        .iter()
-                        .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7")),
-                    "no focus effect for the hidden lifetime"
+                    no_focus_request_for(&reply, "1001_7"),
+                    "no focus request for the hidden lifetime"
                 );
             }
             other => panic!("direct-target focus at hidden must refuse, got {other:?}"),
@@ -2734,11 +2723,8 @@ mod tests {
             ScopeAuthority::Hold(HoldReason::Minimized)
         );
         assert!(
-            reply
-                .effects
-                .iter()
-                .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7")),
-            "no focus effect for the hidden lifetime"
+            no_focus_request_for(&reply, "1001_7"),
+            "no focus request for the hidden lifetime"
         );
     }
 
@@ -2750,7 +2736,6 @@ mod tests {
     /// lifetime it must mint no focus effect and never restore geometry.
     #[test]
     fn directional_source_focus_from_hidden_mints_no_effect() {
-        use tiler_core::world_report::EffectKind;
         let ctx = two_display_ctx();
         let d1 = key("macos-display-1", "space-11");
         let memory = empty_memory();
@@ -2824,18 +2809,19 @@ mod tests {
         );
         input.command_seq = Some(3);
         input.command = Some(WorldCommand::FocusDirectional {
-            window: WindowId("1001_7".to_owned()),
+            window: tiler_core::world_report::FocusDirectionalSubject::Window(WindowId(
+                "1001_7".to_owned(),
+            )),
             direction: tiler_core::directional::Direction::Right,
         });
         let report = build_report(&mut input);
         assert!(validate_report_v4_reason(&report).is_none());
-        match engine.handle_report(&report, &[]).0 {
+        match tiler_protocol::world_admission::handle_report_checked(&mut engine, &report, &[])
+            .outcome
+        {
             WorldOutcome::Accepted(reply) => {
                 assert!(
-                    reply
-                        .effects
-                        .iter()
-                        .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7")),
+                    no_focus_request_for(&reply, "1001_7"),
                     "directional source at hidden mints no focus for it"
                 );
                 assert!(
@@ -2871,7 +2857,7 @@ mod tests {
     /// an adapter fix.
     #[test]
     fn first_transition_same_report_focus_never_restores_hidden() {
-        use tiler_core::world_report::{EffectKind, HoldReason, ScopeAuthority};
+        use tiler_core::world_report::{HoldReason, ScopeAuthority};
         let ctx = two_display_ctx();
         let d1 = key("macos-display-1", "space-11");
         let partial_scope = key("macos-display-1", "space-12");
@@ -2944,8 +2930,11 @@ mod tests {
             );
             input.command_seq = Some(2);
             input.command = Some(WorldCommand::Focus {
-                window: WindowId("1001_7".to_owned()),
-                direction: Some(tiler_core::directional::Direction::Left),
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "1001_7".to_owned(),
+                )),
+                // Direct-target focus is directionless in v4.
+                direction: None,
             });
             let raw = realistic_raw_for(&hidden_members);
             input.raw = &raw;
@@ -2968,7 +2957,9 @@ mod tests {
                 assert!(!report.inventory_complete, "partial AX holds inventory");
             }
             let revision_before = engine.state_revision();
-            match engine.handle_report(&report, &[]).0 {
+            match tiler_protocol::world_admission::handle_report_checked(&mut engine, &report, &[])
+                .outcome
+            {
                 WorldOutcome::Rejected { kind, .. } => {
                     assert_eq!(kind, "focus-unknown", "{label}: rejected as focus-unknown");
                     assert_eq!(
@@ -2979,12 +2970,9 @@ mod tests {
                 }
                 WorldOutcome::Accepted(reply) => {
                     assert!(
-                        reply
-                            .effects
-                            .iter()
-                            .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7")),
-                        "{label}: core-semantics blocker if this mints focus on hidden, effects={:?}",
-                        reply.effects,
+                        no_focus_request_for(&reply, "1001_7"),
+                        "{label}: core-semantics blocker if this mints a focus request on hidden, request={:?}",
+                        reply.focus_request,
                     );
                     let row = reply
                         .windows
@@ -3028,10 +3016,7 @@ mod tests {
                 "{label}: follow-up restores no geometry"
             );
             assert!(
-                reply
-                    .effects
-                    .iter()
-                    .all(|e| !(e.kind == EffectKind::Focus && e.target.0 == "1001_7")),
+                no_focus_request_for(&reply, "1001_7"),
                 "{label}: follow-up mints no focus for hidden"
             );
         }
@@ -3380,6 +3365,7 @@ mod tests {
         // has no AX float state), so the wire re-asserts floating from
         // the core-published placement and the exception survives.
         use tiler_core::boundary::CoreCommand;
+        use tiler_core::directional::WindowSubject;
         use tiler_core::world_report::WorldCommand;
         let ctx = two_display_ctx();
         let d1 = key("macos-display-1", "space-11");
@@ -3410,7 +3396,7 @@ mod tests {
         let mut second = assemble(&ctx, &members, &memory, &closed, &unreadable, &[], "", 2, 2);
         second.command_seq = Some(2);
         second.command = Some(WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: "1001_3".to_owned(),
+            window: WindowSubject::Window(WindowId("1001_3".to_owned())),
             float_rect: None,
         }));
         assert!(validate_report_v4_reason(&second).is_none());
@@ -3480,10 +3466,7 @@ mod tests {
 
     /// Unhomed focus: unknown currency fails closed to hidden-workspace.
     fn no_home() -> FocusEligibilityFacts {
-        FocusEligibilityFacts {
-            home_current: None,
-            ..eligible()
-        }
+        FocusEligibilityFacts { home_current: None }
     }
 
     #[test]
@@ -3657,7 +3640,6 @@ mod tests {
         for eligibility in [
             FocusEligibilityFacts {
                 home_current: Some(false),
-                ..eligible()
             },
             no_home(),
         ] {

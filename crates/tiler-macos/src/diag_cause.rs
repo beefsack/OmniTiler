@@ -983,11 +983,11 @@ pub(crate) fn emit_focus_done(pid: u32, cmd: u64, completion: &crate::runtime_ty
     );
 }
 
-/// One owner focus-feedback line per no-call terminal: the typed setter +
-/// reason that withheld the AX attempt plus the pre/post identities already
-/// in scope at the build site. Covers every no-call exit in one place (the
-/// `dispatched` path reports via `focus-done` instead). `pre`/`post` are
-/// opaque window ids (`None` = empty there). No new reads: every value
+/// One owner focus-feedback line per terminal: the typed disposition that
+/// withheld or reported the AX attempt plus the pre/post identities already
+/// in scope at the build site. Covers every exit in one place (the
+/// `dispatched` path reports its own `focus-done` alongside). `pre`/`post`
+/// are opaque window ids (`None` = empty there). No new reads: every value
 /// rides the build closure's existing facts. Disabled: one flag load plus
 /// one clock read.
 #[allow(clippy::too_many_arguments)]
@@ -996,8 +996,7 @@ pub(crate) fn emit_focus_feedback(
     cmd: u64,
     close_id: &str,
     target: &str,
-    setter: tiler_core::world_report::VisibilitySetter,
-    reason: tiler_core::world_report::VisibilityReason,
+    disposition: tiler_core::world_report::FocusDisposition,
     pre: Option<&str>,
     post: Option<&str>,
     proven: bool,
@@ -1006,6 +1005,14 @@ pub(crate) fn emit_focus_feedback(
     if !enabled() {
         return;
     }
+    let (setter, reason) = match disposition {
+        tiler_core::world_report::FocusDisposition::Called { setter, reason } => {
+            (setter.as_str(), reason_token(reason))
+        }
+        tiler_core::world_report::FocusDisposition::NotCalled { reason } => {
+            ("not-called", reason.as_str())
+        }
+    };
     eprintln!(
         "tiler-diag stage=focus-feedback stamp_us={} pid={} cmd={} close={} target={} setter={} reason={} pre={} post={} proven={} attempt_ms={}",
         crate::stage_timing::now_us(),
@@ -1013,8 +1020,8 @@ pub(crate) fn emit_focus_feedback(
         cmd,
         diag_id(close_id),
         diag_id(target),
-        setter.as_str(),
-        reason_token(reason),
+        setter,
+        reason,
         pre.map(diag_id).unwrap_or("unavailable"),
         post.map(diag_id).unwrap_or("unavailable"),
         u64::from(proven),

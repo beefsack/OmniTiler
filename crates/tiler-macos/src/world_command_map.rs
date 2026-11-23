@@ -17,8 +17,8 @@
 //! advances. The core resolves all targeting from these commands; the
 //! adapter never mints logical ids or re-resolves ordinals.
 
-use tiler_core::directional::OutputId;
-use tiler_core::world_report::WorldCommand;
+use tiler_core::directional::{OutputId, WindowId, WindowSubject, WorkspaceId};
+use tiler_core::world_report::{FocusDirectionalSubject, WorldCommand};
 
 use crate::runtime::{InputSemanticAction, NativeContext};
 use crate::runtime_core::RetainedCore;
@@ -94,7 +94,7 @@ pub(crate) fn select_command_with_capability(
         InputSemanticAction::IndicatorSelectWorkspace { output, workspace } => {
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId(output.clone()),
-                workspace: workspace.clone(),
+                workspace: WorkspaceId(workspace.clone()),
             })
         }
         InputSemanticAction::WorkspaceSelect { index } if (1..=9).contains(index) => {
@@ -156,7 +156,7 @@ pub(crate) fn send_command_implicit_with_capability(
     match action {
         InputSemanticAction::WorkspaceSend { index, follow } if (1..=9).contains(index) => {
             Some(WorldCommand::SendNumbered {
-                window: tiler_core::directional::WindowId(window.to_owned()),
+                window: WindowSubject::Window(WindowId(window.to_owned())),
                 source: SendSource::HomeThenAction,
                 index: *index,
                 follow: *follow,
@@ -166,7 +166,7 @@ pub(crate) fn send_command_implicit_with_capability(
             index: 0,
             follow: true,
         } if trailing_enabled => Some(WorldCommand::SendNumbered {
-            window: tiler_core::directional::WindowId(window.to_owned()),
+            window: WindowSubject::Window(WindowId(window.to_owned())),
             source: SendSource::HomeThenAction,
             index: 0,
             follow: true,
@@ -209,7 +209,7 @@ pub(crate) fn send_command_with_capability(
     match action {
         InputSemanticAction::WorkspaceSend { index, follow } if (1..=9).contains(index) => {
             Some(WorldCommand::SendNumbered {
-                window: tiler_core::directional::WindowId(window.to_owned()),
+                window: WindowSubject::Window(WindowId(window.to_owned())),
                 source: SendSource::Explicit(output),
                 index: *index,
                 follow: *follow,
@@ -219,7 +219,7 @@ pub(crate) fn send_command_with_capability(
             index: 0,
             follow: true,
         } if trailing_enabled => Some(WorldCommand::SendNumbered {
-            window: tiler_core::directional::WindowId(window.to_owned()),
+            window: WindowSubject::Window(WindowId(window.to_owned())),
             source: SendSource::Explicit(output),
             index: 0,
             follow: true,
@@ -230,9 +230,9 @@ pub(crate) fn send_command_with_capability(
 
 /// Map one supported tiling input to its world command plus its
 /// diagnostic op token. Directional focus/move ride the execution-time
-/// implicit directional commands (the core resolves the subject from
-/// retained canonical focus at execution; the inner carries a placeholder
-/// empty subject that never executes), resize and the toggles keep their
+/// implicit directional commands (`CurrentFocus` resolves from retained
+/// canonical focus at execution; no placeholder window id is carried),
+/// resize and the toggles keep their
 /// exact legacy [`CoreCommand`](tiler_core::boundary::CoreCommand) shapes under
 /// [`WorldCommand::Operation`](tiler_core::world_report::WorldCommand).
 /// Selects and unsupported actions have no operation route here (`None`).
@@ -243,8 +243,7 @@ pub(crate) fn operation_command(
 ) -> Option<(WorldCommand, &'static str)> {
     use crate::runtime::InputDirection;
     use tiler_core::boundary::CoreCommand;
-    use tiler_core::directional::{Direction, SameAxisMove, WindowId};
-    let empty = || WindowId(String::new());
+    use tiler_core::directional::{Direction, SameAxisMove};
     let map_direction = |direction: InputDirection| match direction {
         InputDirection::Left => Direction::Left,
         InputDirection::Right => Direction::Right,
@@ -253,18 +252,18 @@ pub(crate) fn operation_command(
     };
     match action {
         InputSemanticAction::FocusStep { direction } => Some((
-            WorldCommand::Implicit(Box::new(WorldCommand::FocusDirectional {
-                window: empty(),
+            WorldCommand::FocusDirectional {
+                window: FocusDirectionalSubject::CurrentFocus,
                 direction: map_direction(*direction),
-            })),
+            },
             OP_FOCUS,
         )),
         InputSemanticAction::MoveStep { direction } => Some((
-            WorldCommand::Implicit(Box::new(WorldCommand::MoveDirectional {
-                window: empty(),
+            WorldCommand::MoveDirectional {
+                window: WindowSubject::CurrentFocus,
                 direction: map_direction(*direction),
                 same_axis: SameAxisMove::default(),
-            })),
+            },
             OP_MOVE,
         )),
         InputSemanticAction::ResizeStep { direction, mode } => {
@@ -287,7 +286,7 @@ pub(crate) fn operation_command(
             retained.resize_repeat = Some(repeat);
             Some((
                 WorldCommand::Operation(CoreCommand::Resize {
-                    window: window.to_owned(),
+                    window: WindowSubject::Window(WindowId(window.to_owned())),
                     direction: typed_direction,
                     mode: typed_mode,
                     press_index,
@@ -297,14 +296,14 @@ pub(crate) fn operation_command(
         }
         InputSemanticAction::ToggleFloat => Some((
             WorldCommand::Operation(CoreCommand::ToggleFloat {
-                window: window.to_owned(),
+                window: WindowSubject::Window(WindowId(window.to_owned())),
                 float_rect: None,
             }),
             OP_TOGGLE_FLOAT,
         )),
         InputSemanticAction::ToggleOrientation => Some((
             WorldCommand::Operation(CoreCommand::ToggleOrientation {
-                window: window.to_owned(),
+                window: WindowSubject::Window(WindowId(window.to_owned())),
             }),
             OP_TOGGLE_ORIENTATION,
         )),
@@ -325,16 +324,13 @@ mod directional_codec_tests {
     /// with `command-invalid`.
     #[test]
     fn directional_production_map_encodes_through_genuine_v4_codec() {
-        use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
+        use tiler_core::directional::{OutputId, WorkspaceId};
         use tiler_core::geometry::Rect;
         use tiler_core::session::DomainKey;
         use tiler_core::size_hints::WindowSizeHints;
         use tiler_core::world_report::{HoldReason, WorldCommand};
         use tiler_core::world_report_v4_checks::validate_report_v4_reason;
-        use tiler_protocol::world_protocol::{
-            CreationReceiptWire, CursorHitWire, DecodedReportV4, GestureIngressWire,
-            ReportWireOptionals, decode_report_v4, encode_report_v4,
-        };
+        use tiler_protocol::world_protocol::{decode_report_v4, encode_report_v4};
 
         use crate::runtime_core::{LifetimeMemory, RetainedCore};
         use crate::runtime_types::{
@@ -421,20 +417,19 @@ mod directional_codec_tests {
         let req_id = "req-7".to_owned();
 
         let mut retained = RetainedCore::default();
-        // The approved v4 shapes: execution-time implicit subjects (the
-        // core resolves the window from retained canonical focus at
-        // execution; the inner carries a placeholder empty subject that
-        // never executes). Same-axis stays the default
+        // The approved v4 shapes: execution-time implicit subjects (`CurrentFocus`
+        // resolves from retained canonical focus at execution; no placeholder
+        // subject is carried). Same-axis stays the default
         // (`group-with-neighbor`, matching the prior legacy intent).
-        let expected_focus = WorldCommand::Implicit(Box::new(WorldCommand::FocusDirectional {
-            window: WindowId(String::new()),
+        let expected_focus = WorldCommand::FocusDirectional {
+            window: FocusDirectionalSubject::CurrentFocus,
             direction: tiler_core::directional::Direction::Left,
-        }));
-        let expected_move = WorldCommand::Implicit(Box::new(WorldCommand::MoveDirectional {
-            window: WindowId(String::new()),
+        };
+        let expected_move = WorldCommand::MoveDirectional {
+            window: WindowSubject::CurrentFocus,
             direction: tiler_core::directional::Direction::Right,
             same_axis: tiler_core::directional::SameAxisMove::default(),
-        }));
+        };
         for (action, op, expected) in [
             (
                 InputSemanticAction::FocusStep {
@@ -486,33 +481,7 @@ mod directional_codec_tests {
                 validate_report_v4_reason(&report).is_none(),
                 "{op} production report validates"
             );
-            let decoded = DecodedReportV4 {
-                wire: ReportWireOptionals {
-                    cursor_hit: match &report.cursor_hit {
-                        None => CursorHitWire::Absent,
-                        Some(_) => CursorHitWire::Id,
-                    },
-                    monotonic_ms_present: report.monotonic_ms != 0,
-                    frame_attempts_present: !report.frames.is_empty(),
-                    member_attempts_present: !report.member_attempts.is_empty(),
-                    view_attempts_present: !report.view_attempts.is_empty(),
-                    clear_attempts_present: !report.clear_attempts.is_empty(),
-                    creation_attempts_present: !report.creation_attempts.is_empty(),
-                    gesture_ingress: match &report.gesture {
-                        None => GestureIngressWire::Absent,
-                        Some(_) => GestureIngressWire::Present,
-                    },
-                },
-                creation_receipts: report
-                    .creation_attempts
-                    .iter()
-                    .map(|row| match &row.created_native {
-                        None => CreationReceiptWire::Null,
-                        Some(_) => CreationReceiptWire::Id,
-                    })
-                    .collect(),
-                report,
-            };
+            let decoded = crate::world_dispatch::decoded_report_for_encode(&report);
             let wire = encode_report_v4(&decoded).expect(
                 "production-mapped directional command encodes through the genuine v4 codec",
             );
@@ -537,12 +506,12 @@ mod directional_codec_tests {
         use tiler_core::size_hints::WindowSizeHints;
         use tiler_core::world_engine::{WorldEngine, WorldOutcome};
         use tiler_core::world_report::{
-            CommandRejectKind, CommandResult, EffectKind, FocusRequestCause, HoldReason,
-            WorldCommand, WorldReportV4,
+            CommandDisposition, CommandRejectKind, FocusRequestCause, HoldReason, WorldCommand,
+            WorldReportV4,
         };
         use tiler_core::world_report_v4_checks::validate_report_v4_reason;
         use tiler_protocol::world_protocol::{
-            DecodedReplyV4, ReplyWireOptionals, decode_reply_v4_for_host, encode_reply_v4,
+            DecodedReplyV4, decode_reply_v4_for_host, encode_reply_v4,
         };
 
         use crate::runtime_core::{LifetimeMemory, RetainedCore};
@@ -622,6 +591,7 @@ mod directional_codec_tests {
         let memory = LifetimeMemory::empty();
         let unreadable: BTreeMap<DomainKey, HoldReason> = BTreeMap::new();
 
+        #[allow(clippy::too_many_arguments)]
         fn command_report(
             ctx: &NativeContext,
             members: &BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
@@ -685,7 +655,9 @@ mod directional_codec_tests {
             None,
             None,
         );
-        match engine.handle_report(&first, &[]).0 {
+        match tiler_protocol::world_admission::handle_report_checked(&mut engine, &first, &[])
+            .outcome
+        {
             WorldOutcome::Accepted(_) => {}
             other => panic!("admit accepted, got {other:?}"),
         }
@@ -708,14 +680,21 @@ mod directional_codec_tests {
             Some(2),
             Some(command),
         );
-        let reply = match engine.handle_report(&second, &[]).0 {
+        let transition =
+            tiler_protocol::world_admission::handle_report_checked(&mut engine, &second, &[]);
+        let reply = match transition.outcome {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("control step accepted, got {other:?}"),
         };
         assert!(
-            reply.command_result.is_none(),
-            "tiled success carries no result, got {:?}",
-            reply.command_result
+            matches!(
+                transition.dispositions.as_slice(),
+                [tiler_core::world_report::BatchDisposition {
+                    disposition: CommandDisposition::Executed(None),
+                    ..
+                }]
+            ),
+            "tiled success carries no one-shot result or focus effect"
         );
         let req = reply
             .focus_request
@@ -725,12 +704,8 @@ mod directional_codec_tests {
         assert_eq!(req.cmd_seq, Some(2));
         assert_eq!(req.target, WindowId("4242_8".to_owned()));
         assert!(
-            reply
-                .effects
-                .iter()
-                .all(|effect| effect.kind != EffectKind::Focus),
-            "no Focus effect under retained requests, got {:?}",
-            reply.effects
+            reply.focus_request.is_some(),
+            "retained request is the only focus signal under the deleted effect lane"
         );
 
         // Control 2: arrival on win2, then win2 -> win3.
@@ -747,14 +722,21 @@ mod directional_codec_tests {
             Some(3),
             Some(command),
         );
-        let reply = match engine.handle_report(&third, &[]).0 {
+        let transition =
+            tiler_protocol::world_admission::handle_report_checked(&mut engine, &third, &[]);
+        let reply = match transition.outcome {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("control step accepted, got {other:?}"),
         };
         assert!(
-            reply.command_result.is_none(),
-            "tiled success carries no result, got {:?}",
-            reply.command_result
+            matches!(
+                transition.dispositions.as_slice(),
+                [tiler_core::world_report::BatchDisposition {
+                    disposition: CommandDisposition::Executed(None),
+                    ..
+                }]
+            ),
+            "tiled success carries no one-shot result or focus effect"
         );
         let req = reply
             .focus_request
@@ -764,12 +746,8 @@ mod directional_codec_tests {
         assert_eq!(req.cmd_seq, Some(3));
         assert_eq!(req.target, WindowId("4242_9".to_owned()));
         assert!(
-            reply
-                .effects
-                .iter()
-                .all(|effect| effect.kind != EffectKind::Focus),
-            "no Focus effect under retained requests, got {:?}",
-            reply.effects
+            reply.focus_request.is_some(),
+            "retained request is the only focus signal under the deleted effect lane"
         );
 
         // Exhausted edge: arrival on win3, then win3 + right retains.
@@ -789,15 +767,20 @@ mod directional_codec_tests {
             Some(4),
             Some(command),
         );
-        let reply = match engine.handle_report(&fourth, &[]).0 {
+        let transition =
+            tiler_protocol::world_admission::handle_report_checked(&mut engine, &fourth, &[]);
+        let reply = match transition.outcome {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("edge step reconciles Accepted, got {other:?}"),
         };
-        assert_eq!(
-            reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused,
-            }),
+        assert!(
+            matches!(
+                transition.dispositions.as_slice(),
+                [tiler_core::world_report::BatchDisposition {
+                    disposition: CommandDisposition::Refused(CommandRejectKind::OperationRefused),
+                    ..
+                }]
+            ),
             "exhausted edge refuses typed operation-refused"
         );
         assert!(
@@ -805,39 +788,31 @@ mod directional_codec_tests {
             "fresh refusal is not a consumed replay"
         );
         assert!(
-            reply
-                .effects
-                .iter()
-                .all(|effect| effect.kind != EffectKind::Focus),
-            "no focus effect at the exhausted edge: {:?}",
-            reply.effects
+            reply.focus_request.is_none(),
+            "no focus request at the exhausted edge: {:?}",
+            reply.focus_request
         );
-        // The typed refusal survives the genuine reply codec.
-        let suspended = reply.presentation.suspended_output.is_some();
+        // Command refusals settle in typed dispositions, not the reply wire.
+        // The accepted envelope with no focus request still round-trips.
         let wire = encode_reply_v4(&DecodedReplyV4 {
             roster_plan: None,
-            reply,
-            wire: ReplyWireOptionals {
-                suspended_output_present: suspended,
-            },
+            reply: reply.clone(),
         })
         .expect("edge reply encodes");
         let back = decode_reply_v4_for_host(&wire, &crate::world_connection::macos_capabilities())
             .expect("edge reply decodes");
         assert_eq!(
-            back.reply.command_result,
-            Some(CommandResult::Rejected {
-                kind: CommandRejectKind::OperationRefused,
-            }),
-            "typed refusal round-trips the wire"
+            back.reply.state_revision, reply.state_revision,
+            "accepted envelope revision round-trips the wire"
+        );
+        assert_eq!(
+            back.reply.command_consumed, reply.command_consumed,
+            "fresh refusal stays unconsumed across the wire"
         );
         assert!(
-            back.reply
-                .effects
-                .iter()
-                .all(|effect| effect.kind != EffectKind::Focus),
-            "no focus effect after wire round-trip: {:?}",
-            back.reply.effects
+            back.reply.focus_request.is_none(),
+            "no focus request after wire round-trip: {:?}",
+            back.reply.focus_request
         );
         // At-most-once: replaying the refused seq never re-executes.
         let replay = command_report(
@@ -854,7 +829,8 @@ mod directional_codec_tests {
         );
         assert!(
             matches!(
-                engine.handle_report(&replay, &[]).0,
+                tiler_protocol::world_admission::handle_report_checked(&mut engine, &replay, &[])
+                    .outcome,
                 WorldOutcome::CommandConsumed(_)
             ),
             "refused seq replays as CommandConsumed"
@@ -913,7 +889,7 @@ mod trailing_command_tests {
         assert_eq!(
             send_command(&send1, "4242_7", output.clone()),
             Some(WorldCommand::SendNumbered {
-                window: tiler_core::directional::WindowId("4242_7".to_owned()),
+                window: WindowSubject::Window(WindowId("4242_7".to_owned())),
                 source: SendSource::Explicit(output.clone()),
                 index: 1,
                 follow: true,
@@ -926,7 +902,7 @@ mod trailing_command_tests {
         assert_eq!(
             send_command(&send0, "4242_7", output.clone()),
             Some(WorldCommand::SendNumbered {
-                window: tiler_core::directional::WindowId("4242_7".to_owned()),
+                window: WindowSubject::Window(WindowId("4242_7".to_owned())),
                 source: SendSource::Explicit(output.clone()),
                 index: 0,
                 follow: true,
@@ -935,7 +911,7 @@ mod trailing_command_tests {
         assert_eq!(
             send_command_with_capability(&send0, "4242_7", output.clone(), true),
             Some(WorldCommand::SendNumbered {
-                window: tiler_core::directional::WindowId("4242_7".to_owned()),
+                window: WindowSubject::Window(WindowId("4242_7".to_owned())),
                 source: SendSource::Explicit(output.clone()),
                 index: 0,
                 follow: true,
@@ -970,7 +946,7 @@ mod trailing_command_tests {
         assert_eq!(
             send_command_implicit(&send1, "4242_7"),
             Some(WorldCommand::SendNumbered {
-                window: tiler_core::directional::WindowId("4242_7".to_owned()),
+                window: WindowSubject::Window(WindowId("4242_7".to_owned())),
                 source: SendSource::HomeThenAction,
                 index: 1,
                 follow: true,
@@ -979,7 +955,7 @@ mod trailing_command_tests {
         assert_eq!(
             send_command_implicit_with_capability(&send0, "4242_7", true),
             Some(WorldCommand::SendNumbered {
-                window: tiler_core::directional::WindowId("4242_7".to_owned()),
+                window: WindowSubject::Window(WindowId("4242_7".to_owned())),
                 source: SendSource::HomeThenAction,
                 index: 0,
                 follow: true,
@@ -1013,7 +989,7 @@ mod trailing_command_tests {
             select_command(&action, Some(OutputId(crate::topology::output_key(1)))),
             Some(WorldCommand::SelectWorkspace {
                 output: OutputId("out-a".to_owned()),
-                workspace: "ws-spare".to_owned(),
+                workspace: WorkspaceId("ws-spare".to_owned()),
             })
         );
         assert!(
@@ -1246,12 +1222,19 @@ mod trailing_command_tests {
         .expect("production capabilities bind");
         assert!(
             matches!(
-                probe.handle_report(&first, &[]).0,
+                tiler_protocol::world_admission::handle_report_checked(&mut probe, &first, &[])
+                    .outcome,
                 WorldOutcome::Accepted(_)
             ),
             "spare fixture is engine-accepted"
         );
-        let reply1 = match session.engine_mut().handle_report(&first, &[]).0 {
+        let reply1 = match tiler_protocol::world_admission::handle_report_checked(
+            session.engine_mut(),
+            &first,
+            &[],
+        )
+        .outcome
+        {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),
         };
@@ -1347,7 +1330,7 @@ mod trailing_command_tests {
             command,
             Some(WorldCommand::SelectWorkspace {
                 output: output.clone(),
-                workspace: spare.clone(),
+                workspace: WorkspaceId(spare.clone()),
             })
         );
         // Dispatch the exact-id command: the core retains the View
@@ -1373,7 +1356,13 @@ mod trailing_command_tests {
             ticket2.command_seq,
             command,
         );
-        let reply2 = match session.engine_mut().handle_report(&second, &[]).0 {
+        let reply2 = match tiler_protocol::world_admission::handle_report_checked(
+            session.engine_mut(),
+            &second,
+            &[],
+        )
+        .outcome
+        {
             WorldOutcome::Accepted(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),
         };

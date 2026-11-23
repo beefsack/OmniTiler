@@ -627,7 +627,7 @@ pub fn decide_border_reply(input: &BorderReplyTick<'_>) -> Result<BorderShowPara
     // outsets / witness join is later-slice work). Fail closed rather than
     // fabricating carrier geometry from adapter state.
     let _ = primary_h;
-    return Err("bad-geometry");
+    Err("bad-geometry")
 }
 
 /// One carrier effect per tick: at most one panel call, only on change.

@@ -3561,7 +3561,7 @@ mod send_join_tests {
     use tiler_core::geometry::Rect;
     use tiler_core::session::DomainKey;
     use tiler_core::size_hints::WindowSizeHints;
-    use tiler_core::world_report::FrameSetter;
+    use tiler_core::world_report::{FrameSetter, MemberDisposition};
 
     use crate::focus_route::FocusRoute;
     use crate::runtime::{FocusRequest, Shared, lock_shared, window_id};
@@ -4305,7 +4305,10 @@ mod send_join_tests {
             .pending_members
             .get(&(operation.clone(), "4242_7".to_owned()))
             .expect("member attempt staged");
-        assert_eq!(staged.setter, FrameSetter::Accepted);
+        assert_eq!(
+            staged.disposition,
+            MemberDisposition::from(FrameSetter::Accepted)
+        );
         assert!(matches!(
             staged.pre.as_ref(),
             Some(tiler_core::world_report::WorkspaceRef::Native { workspace, .. })

@@ -8,7 +8,7 @@
 //! (published-facts plus explicit AX/WindowServer join), the main-thread
 //! [`crate::drag_session::DragSession`] (arm/sample/release lifecycle), and
 //! the world gesture route (gesture ingress per report plus correlated
-//! [`CommandResult::DragPreview`](tiler_core::world_report::CommandResult)
+//! [`drag_preview`](tiler_core::world_report::WorldReplyV4::drag_preview)
 //! and [`GestureSettled`](tiler_core::gesture::GestureSettled) results from
 //! a retained [`WorldEngine`](tiler_core::world_engine::WorldEngine)) with
 //! the pure overlay and ordering verdicts. Two independent fixture windows
@@ -22,7 +22,6 @@
 //! ([`FixtureLegEvidence`]) covering the press proof, the world before/after
 //! snapshot, expected versus applied frames, overlay intent and ordering,
 //! gate decision counts, capture release, and restoration.
-
 use std::collections::BTreeMap;
 
 use serde::Serialize;
@@ -32,7 +31,7 @@ use tiler_core::gesture::GestureIngress;
 use tiler_core::session::DomainKey;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
-use tiler_core::world_report::{CommandResult, WorldReportV4};
+use tiler_core::world_report::WorldReportV4;
 
 use crate::border_runtime::{BorderAppRecord, BorderWindowFacts};
 use crate::classifier::{AppFacts, AxFacts, CgFacts};
@@ -156,15 +155,14 @@ fn fences_ok() -> DragFences {
 }
 
 /// Real-engine binding for this fixture: production macOS capabilities bound
-/// to the fixture generation/incarnation (never the synthetic full-support
-/// test default, which would hold every realistic row unreadable).
+/// through the same genuine connection handshake the product uses, under the
+/// fixture generation/incarnation (never the synthetic full-support test
+/// default, which would hold every realistic row unreadable).
 fn production_engine() -> WorldEngine {
-    WorldEngine::new_test_bound_with_capabilities(
-        "drag-fixture-gen",
-        "drag-fixture-1",
-        crate::world_connection::macos_capabilities(),
-    )
-    .expect("production capabilities bind")
+    let mut engine = WorldEngine::new("drag-fixture-gen").expect("valid generation");
+    crate::world_connection::connect(&mut engine, "drag-fixture-1", &[])
+        .expect("macOS handshake and settings bind");
+    engine
 }
 
 /// Realistic macOS raw native facts for every member window: ordinary
@@ -373,7 +371,7 @@ impl DragFixture {
             "fixture report validates"
         );
         match tiler_protocol::world_admission::handle_report_checked(&mut self.engine, &report, &[])
-            .0
+            .outcome
         {
             WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => reply,
             other => panic!("fixture report must apply, got {other:?}"),
@@ -389,18 +387,13 @@ impl DragFixture {
     }
 
     fn to_preview(reply: &tiler_core::world_report::WorldReplyV4) -> PreviewOutcome {
-        match &reply.command_result {
-            Some(CommandResult::DragPreview {
-                rect,
-                hover,
-                target,
-                ..
-            }) => PreviewOutcome::Show {
-                rect: *rect,
-                hover_prior: hover.clone().map(Box::new),
-                target: target.clone(),
+        match &reply.drag_preview {
+            Some(preview) => PreviewOutcome::Show {
+                rect: preview.rect,
+                hover_prior: preview.hover.clone().map(Box::new),
+                target: preview.target.clone(),
             },
-            _ => PreviewOutcome::HideTransient { reason: "held" },
+            None => PreviewOutcome::HideTransient { reason: "held" },
         }
     }
 
@@ -512,7 +505,7 @@ impl DragFixture {
                 .expect("armed gesture must offer a bind ingress");
             let started = self.dispatch(Some(started_ingress), self.frames());
             assert!(
-                started.command_result.is_none(),
+                started.drag_preview.is_none(),
                 "start binds only, never previews"
             );
         }
@@ -592,7 +585,7 @@ impl DragFixture {
                 .expect("armed gesture must offer a bind ingress");
             let started = self.dispatch(Some(started_ingress), self.frames());
             assert!(
-                started.command_result.is_none(),
+                started.drag_preview.is_none(),
                 "start binds only, never previews"
             );
         }

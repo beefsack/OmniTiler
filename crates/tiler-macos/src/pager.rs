@@ -328,7 +328,6 @@ mod tests {
                 visible: Some(true),
                 suppression_owned: None,
             },
-            last_write: None,
         }
     }
 
@@ -406,7 +405,7 @@ mod tests {
             frames: Vec::new(),
             member_attempts: Vec::new(),
             view_attempts: Vec::new(),
-            clear_attempts: Vec::new(),
+            visibility_attempts: Vec::new(),
             creation_attempts: Vec::new(),
             held_attempts: Vec::new(),
             state_attempts: Vec::new(),
@@ -418,7 +417,9 @@ mod tests {
     }
 
     fn accepted(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldPresentationV4 {
-        match engine.handle_report(report, &[]).0 {
+        match tiler_protocol::world_admission::handle_report_checked(&mut *engine, report, &[])
+            .outcome
+        {
             WorldOutcome::Accepted(reply) => reply.presentation,
             WorldOutcome::Duplicate(reply) => reply.presentation,
             other => panic!("expected accepted, got {other:?}"),
@@ -771,7 +772,9 @@ mod tests {
     }
 
     fn accepted_reply(engine: &mut WorldEngine, report: &WorldReportV4) -> WorldReplyV4 {
-        match engine.handle_report(report, &[]).0 {
+        match tiler_protocol::world_admission::handle_report_checked(&mut *engine, report, &[])
+            .outcome
+        {
             WorldOutcome::Accepted(reply) => reply,
             WorldOutcome::Duplicate(reply) => reply,
             other => panic!("expected accepted, got {other:?}"),
