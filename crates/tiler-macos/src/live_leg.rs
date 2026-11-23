@@ -1305,8 +1305,10 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         // retain for audit (retention blocks the next persist until
         // inspected, so residue is never silently dropped). A failure also
         // persists the residue artifact beside the receipt.
-        let clean =
-            product_reaped && current_restored && mismatches.is_empty() && residue.is_empty();
+        let clean = product_reaped
+            && current_restored
+            && !mismatches.iter().any(BaselineMismatch::is_blocking)
+            && residue.is_empty();
         let receipt_retained = if clean {
             match remove_baseline_receipt(&self.receipt_path) {
                 Ok(()) => false,
@@ -1318,8 +1320,10 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         } else {
             true
         };
-        let clean =
-            product_reaped && current_restored && mismatches.is_empty() && residue.is_empty();
+        let clean = product_reaped
+            && current_restored
+            && !mismatches.iter().any(BaselineMismatch::is_blocking)
+            && residue.is_empty();
         if !clean {
             write_residue_artifact(
                 &self.receipt_path,
@@ -1359,7 +1363,7 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         self.finished = true;
         let clean = report.product_reaped
             && report.current_restored
-            && report.mismatches.is_empty()
+            && !report.mismatches.iter().any(BaselineMismatch::is_blocking)
             && report.residue.is_empty()
             && !report.receipt_retained;
         if !clean {
@@ -1408,7 +1412,7 @@ impl<T: LegTransport> Drop for LiveLeg<'_, T> {
             let report = self.finish_inner();
             let clean = report.product_reaped
                 && report.current_restored
-                && report.mismatches.is_empty()
+                && !report.mismatches.iter().any(BaselineMismatch::is_blocking)
                 && report.residue.is_empty()
                 && !report.receipt_retained;
             if !clean {
@@ -2040,6 +2044,7 @@ mod tests {
             mismatches: vec![BaselineMismatch {
                 category: "native-topology".to_owned(),
                 detail: "display 0 current Space 22 != starting 11".to_owned(),
+                benign: false,
             }],
             residue: vec!["owned pid 4242 still present".to_owned()],
             caffeinate_reaped: true,

@@ -5,9 +5,12 @@
 //! Every fixture leg captures this baseline BEFORE any input, product startup,
 //! or settings mutation, persists it atomically to the private per-user
 //! recovery directory, and compares it on teardown. Any unreadable category
-//! aborts the leg before anything is touched; any teardown mismatch aborts
-//! with the residue reported and never silently passes, and user state is
-//! never automatically overwritten.
+//! aborts the leg before anything is touched; any blocking teardown mismatch
+//! aborts with the residue reported and never silently passes, and user state
+//! is never automatically overwritten. The one classified exception is host
+//! window churn that the shared cg-diff predicate proves benign (same pid,
+//! both records offscreen, identical layer and bounds): those raw rows stay
+//! in the report with `benign:true` and do not block restoration.
 //!
 //! Categories (all required, exact values not counts):
 //! - protected windows: raw PID, window ID, layer, onscreen, and bounds for
@@ -481,17 +484,100 @@ pub fn remove_baseline_receipt(path: &Path) -> Result<(), String> {
 }
 
 /// One teardown mismatch: the category plus the exact residue. Never an
-/// automatic overwrite: mismatches abort with this evidence.
+/// automatic overwrite: mismatches abort with this evidence. `benign` is a
+/// classification only: the raw row (pid, wid, geometry detail) always
+/// stays in the report; a benign row is host churn that does not block a
+/// clean restoration claim.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BaselineMismatch {
     pub category: String,
     pub detail: String,
+    /// True only for the same-pid offscreen identical-geometry replacement
+    /// classified by [`crate::cg_diff::classify_benign_churn`]. Serialized
+    /// for the receipt; old artifacts without it deserialize as blocking.
+    #[serde(default)]
+    pub benign: bool,
+}
+
+impl BaselineMismatch {
+    /// True when this raw row must still block a clean teardown claim.
+    #[must_use]
+    pub const fn is_blocking(&self) -> bool {
+        !self.benign
+    }
 }
 
 fn key_windows(
     windows: &[ProtectedWindow],
 ) -> std::collections::HashMap<(u32, u32), &ProtectedWindow> {
     windows.iter().map(|w| ((w.pid, w.wid), w)).collect()
+}
+
+fn cg_basic(window: &ProtectedWindow) -> crate::ffi::CgWindowBasic {
+    crate::ffi::CgWindowBasic {
+        wid: window.wid,
+        pid: window.pid,
+        layer: window.layer,
+        onscreen: window.onscreen,
+        bounds: crate::ffi::CgBounds {
+            x: window.x,
+            y: window.y,
+            w: window.w,
+            h: window.h,
+        },
+    }
+}
+
+/// Classify teardown window churn with the same predicate `cg-diff` already
+/// owns: a same-pid replacement whose old and new records are both offscreen
+/// and whose layer and bounds are identical is benign host churn. The
+/// teardown has no operator-supplied pid allowlist, so candidates are every
+/// pid present in the missing/added rows; [`crate::cg_diff::classify_benign_churn`]
+/// still requires equal missing/added counts per pid and pairs them by wid.
+/// Returns the exact raw keys to annotate; no row is dropped.
+fn benign_churn_windows(
+    before: &std::collections::HashMap<(u32, u32), &ProtectedWindow>,
+    after: &std::collections::HashMap<(u32, u32), &ProtectedWindow>,
+    owned_windows: &[(u32, u32)],
+) -> std::collections::HashMap<(u32, u32), crate::cg_diff::BenignChurnPair> {
+    let mut missing = Vec::new();
+    for (key, window) in before {
+        if !owned_windows.contains(key) && !after.contains_key(key) {
+            missing.push(cg_basic(window));
+        }
+    }
+    let mut added = Vec::new();
+    for (key, window) in after {
+        if !owned_windows.contains(key) && !before.contains_key(key) {
+            added.push(cg_basic(window));
+        }
+    }
+    let mut pids: Vec<u32> = missing
+        .iter()
+        .chain(added.iter())
+        .map(|window| window.pid)
+        .collect();
+    pids.sort_unstable();
+    pids.dedup();
+    let mut classified = std::collections::HashMap::new();
+    for pair in crate::cg_diff::classify_benign_churn(&missing, &added, &pids) {
+        classified.insert((pair.pid, pair.missing_wid), pair.clone());
+        classified.insert((pair.pid, pair.added_wid), pair);
+    }
+    classified
+}
+
+fn benign_detail(pair: &crate::cg_diff::BenignChurnPair) -> String {
+    format!(
+        "benign host churn: same-pid offscreen replacement at identical layer {} and bounds {}x{}+{}+{} (wid {} -> wid {})",
+        pair.layer,
+        pair.bounds.w,
+        pair.bounds.h,
+        pair.bounds.x,
+        pair.bounds.y,
+        pair.missing_wid,
+        pair.added_wid
+    )
 }
 
 fn protected_pair(processes: &[ProcessBaseline], pid: i32) -> Option<&ProcessBaseline> {
@@ -511,8 +597,12 @@ fn protected_pair(processes: &[ProcessBaseline], pid: i32) -> Option<&ProcessBas
 /// foreign-window add/remove/geometry drift, holder changes (external edits
 /// are preserved and reported, never reverted here), accent presence/RGB
 /// drift, protected-process add/remove, and native Space-set or current
-/// drift. An empty result means exact restoration; a non-empty result aborts
-/// the leg with the residue, never a silent pass.
+/// drift. A missing/added window pair that the shared cg-diff benign-churn
+/// predicate classifies (same pid, both offscreen, identical layer/bounds)
+/// stays in the report as annotated raw rows and is not blocking; every
+/// other row is blocking. A result with no blocking row means exact
+/// restoration plus, at most, present-but-benign host churn; any blocking
+/// row aborts the leg with the residue, never a silent pass.
 #[must_use]
 pub fn compare_teardown(
     before: &LiveBaseline,
@@ -520,10 +610,11 @@ pub fn compare_teardown(
     owned_windows: &[(u32, u32)],
 ) -> Vec<BaselineMismatch> {
     let mut mismatches = Vec::new();
-    let mut push = |category: &str, detail: String| {
+    let mut push = |category: &str, detail: String, benign: bool| {
         mismatches.push(BaselineMismatch {
             category: category.to_owned(),
             detail,
+            benign,
         });
     };
 
@@ -531,22 +622,39 @@ pub fn compare_teardown(
     // superset; add, remove, and any geometry/visibility/layer drift all
     // mismatch. Registered leg-owned pairs are accounted separately (still
     // present means not closed) and never counted as foreign additions.
+    // A missing/added pair that the shared cg-diff predicate classifies as
+    // offscreen identical-geometry host churn stays in the report as two
+    // annotated raw rows; it does not block the clean restoration claim.
     {
         let before_map = key_windows(&before.protected_windows);
         let after_map = key_windows(&after.protected_windows);
         let owned = |key: &(u32, u32)| owned_windows.contains(key);
+        let benign = benign_churn_windows(&before_map, &after_map, owned_windows);
         for (key, window) in &before_map {
             if owned(key) {
                 continue;
             }
             match after_map.get(key) {
-                None => push(
-                    "protected-window",
-                    format!(
-                        "protected window pid {} wid {} gone after the leg; residue: window absent",
-                        key.0, key.1
+                None => match benign.get(key) {
+                    Some(pair) => push(
+                        "protected-window",
+                        format!(
+                            "protected window pid {} wid {} gone after the leg; residue: window absent; {}",
+                            key.0,
+                            key.1,
+                            benign_detail(pair)
+                        ),
+                        true,
                     ),
-                ),
+                    None => push(
+                        "protected-window",
+                        format!(
+                            "protected window pid {} wid {} gone after the leg; residue: window absent",
+                            key.0, key.1
+                        ),
+                        false,
+                    ),
+                },
                 Some(after_window) => {
                     if *after_window != *window {
                         push(
@@ -555,6 +663,7 @@ pub fn compare_teardown(
                                 "protected window pid {} wid {} drifted (layer/onscreen/bounds); residue: geometry not restored",
                                 key.0, key.1
                             ),
+                            false,
                         );
                     }
                 }
@@ -570,15 +679,29 @@ pub fn compare_teardown(
                         "owned window pid {} wid {} still present after the leg; residue: owned window not closed",
                         key.0, key.1
                     ),
+                    false,
                 );
             } else if !before_map.contains_key(key) {
-                push(
-                    "protected-window",
-                    format!(
-                        "protected window pid {} wid {} appeared during the leg; residue: unexpected window present",
-                        key.0, key.1
+                match benign.get(key) {
+                    Some(pair) => push(
+                        "protected-window",
+                        format!(
+                            "protected window pid {} wid {} appeared during the leg; residue: unexpected window present; {}",
+                            key.0,
+                            key.1,
+                            benign_detail(pair)
+                        ),
+                        true,
                     ),
-                );
+                    None => push(
+                        "protected-window",
+                        format!(
+                            "protected window pid {} wid {} appeared during the leg; residue: unexpected window present",
+                            key.0, key.1
+                        ),
+                        false,
+                    ),
+                }
             }
         }
     }
@@ -597,6 +720,7 @@ pub fn compare_teardown(
                     "holder id {} (Desktop {}) unreadable at teardown; residue: holder state unknown",
                     before_holder.symbolic_id, before_holder.desktop
                 ),
+                false,
             ),
             Some(after_holder) => {
                 if after_holder != before_holder {
@@ -606,6 +730,7 @@ pub fn compare_teardown(
                             "holder id {} (Desktop {}) changed during the leg; residue: external edit preserved, never overwritten",
                             before_holder.symbolic_id, before_holder.desktop
                         ),
+                        false,
                     );
                 }
             }
@@ -617,6 +742,7 @@ pub fn compare_teardown(
         push(
             "accent",
             "system accent changed during the leg; residue: accent not restored".to_owned(),
+            false,
         );
     }
 
@@ -638,6 +764,7 @@ pub fn compare_teardown(
                         "protected process pid {} ({}) gone or rebound after the leg; residue: process identity changed",
                         process.pid, process.bundle
                     ),
+                    false,
                 ),
             }
         }
@@ -654,6 +781,7 @@ pub fn compare_teardown(
                         "protected process pid {} ({}) appeared during the leg; residue: unexpected protected process",
                         process.pid, process.bundle
                     ),
+                    false,
                 );
             }
         }
@@ -670,6 +798,7 @@ pub fn compare_teardown(
                 before.native.displays.len(),
                 after.native.displays.len()
             ),
+            false,
         );
     } else {
         for (before_display, after_display) in before
@@ -685,6 +814,7 @@ pub fn compare_teardown(
                         "display {} Space set changed; residue: Spaces created or destroyed",
                         before_display.index
                     ),
+                    false,
                 );
             }
             if after_display.current != before_display.current {
@@ -694,6 +824,7 @@ pub fn compare_teardown(
                         "display {} current Space {} != starting {}; residue: starting Space not restored",
                         before_display.index, after_display.current, before_display.current
                     ),
+                    false,
                 );
             }
         }
@@ -702,6 +833,7 @@ pub fn compare_teardown(
         push(
             "native-topology",
             "separate-Spaces mode changed during the leg; residue: mode not restored".to_owned(),
+            false,
         );
     }
 
@@ -1092,6 +1224,77 @@ mod tests {
             compare_teardown(&before, &mode_flipped, &[])
                 .iter()
                 .any(|m| m.category == "native-topology")
+        );
+    }
+
+    #[test]
+    fn teardown_classifies_only_offscreen_identical_same_pid_churn() {
+        // The cursor-service shape: one offscreen 64x64 window replaced by
+        // another of the same pid, layer, and bounds. Both raw rows stay in
+        // the report, classified benign.
+        let mut before = good_baseline();
+        {
+            let window = &mut before.protected_windows[0];
+            window.pid = 52832;
+            window.wid = 1849;
+            window.layer = 0;
+            window.onscreen = false;
+            window.x = 1186.0;
+            window.y = 1043.0;
+            window.w = 64.0;
+            window.h = 64.0;
+            window.bundle = Some("com.apple.TextInputUI.xpc.CursorUIViewService".to_owned());
+            window.bundle_protected = false;
+            window.bundle_ghostty = false;
+        }
+        let mut benign = before.clone();
+        benign.protected_windows[0].wid = 1861;
+        let mismatches = compare_teardown(&before, &benign, &[]);
+        assert_eq!(mismatches.len(), 2, "raw rows must stay: {mismatches:?}");
+        assert!(
+            mismatches
+                .iter()
+                .all(|m| m.category == "protected-window" && !m.is_blocking()),
+            "expected two benign raw rows: {mismatches:?}"
+        );
+        assert!(
+            mismatches
+                .iter()
+                .any(|m| m.detail.contains("benign host churn")
+                    && m.detail.contains("wid 1849 -> wid 1861")),
+            "classification must name both wids: {mismatches:?}"
+        );
+
+        // Anything outside the predicate still blocks: onscreen on either
+        // side, different geometry, or a different pid.
+        let mut onscreen = before.clone();
+        onscreen.protected_windows[0].wid = 1861;
+        onscreen.protected_windows[0].onscreen = true;
+        let rows = compare_teardown(&before, &onscreen, &[]);
+        assert_eq!(rows.len(), 2, "raw rows must stay: {rows:?}");
+        assert!(
+            rows.iter().all(BaselineMismatch::is_blocking),
+            "onscreen replacement must block: {rows:?}"
+        );
+
+        let mut moved = before.clone();
+        moved.protected_windows[0].wid = 1861;
+        moved.protected_windows[0].w = 65.0;
+        let rows = compare_teardown(&before, &moved, &[]);
+        assert_eq!(rows.len(), 2, "raw rows must stay: {rows:?}");
+        assert!(
+            rows.iter().all(BaselineMismatch::is_blocking),
+            "geometry change must block: {rows:?}"
+        );
+
+        let mut other_pid = before.clone();
+        other_pid.protected_windows[0].wid = 1861;
+        other_pid.protected_windows[0].pid = 52833;
+        let rows = compare_teardown(&before, &other_pid, &[]);
+        assert_eq!(rows.len(), 2, "raw rows must stay: {rows:?}");
+        assert!(
+            rows.iter().all(BaselineMismatch::is_blocking),
+            "a different pid must block: {rows:?}"
         );
     }
 
