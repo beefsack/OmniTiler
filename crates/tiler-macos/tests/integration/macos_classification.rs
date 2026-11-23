@@ -25,9 +25,9 @@ use tiler_macos::classifier::{
 };
 use tiler_macos::ffi::{DisplayRect, NsDisplay, SlsDisplayRow};
 use tiler_macos::runtime::{
-    AxCompletion, FixedSizePredicate, FrameCommand, ObservedWindow, Runtime, RuntimeConfig,
-    RuntimeHandle, ScopedObservation, ScopedWindowMeta, ShutdownOutcome, SubmitOutcome,
-    TopologyMode, WindowSizeHints,
+    AxCompletion, FrameCommand, ObservedWindow, Runtime, RuntimeConfig, RuntimeHandle,
+    ScopedObservation, ScopedWindowMeta, ShutdownOutcome, SubmitOutcome, TopologyMode,
+    WindowSizeHints,
 };
 use tiler_macos::runtime_backend::{AxBackend, AxBackendFactory, NativeInputStub};
 use tiler_macos::topology;
@@ -525,8 +525,15 @@ fn fixed_hints_float_automatic_under_both_axes() {
 
 #[test]
 fn partial_zero_floats_automatic_under_either_axis() {
+    // The native v4 admission predicate is core-owned settings (the adapter
+    // field only feeds the synthetic skeleton engine), so the test acquires
+    // the either-axis policy the way production does: raw settings at
+    // startup, validated by the core.
     let fixture = start(RuntimeConfig {
-        fixed_size_predicate: FixedSizePredicate::EitherAxis,
+        core_settings: vec![(
+            "predicate".to_owned(),
+            tiler_core::connection::RawSettingValue::String("either-axis-fixed".to_owned()),
+        )],
         ..RuntimeConfig::default()
     });
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
@@ -1223,9 +1230,12 @@ fn nonzero_layer_floating_panel_takes_no_allocation() {
         &[tile(10, 0, 0, 1920, 1080), panel],
     );
     assert_eq!(desired_names(&fixture), vec!["1001_10"]);
+    // The v4 native domain is the gap-inset world rect (outer gap 8 on a
+    // 1920x1080 display), so a lone tile keeps that whole domain and the
+    // floating panel still steals nothing from it.
     assert_eq!(
         desired_rect(&fixture, "1001_10"),
-        Some((0, 0, 1920, 1080)),
+        Some((8, 8, 1904, 1064)),
         "lone tile keeps the whole domain, panel steals nothing"
     );
     wait_applied(&fixture, "1001_10");
@@ -1346,6 +1356,21 @@ fn plain_minimize_restore_is_position_exact() {
     // Contrast pin for the hold-intervened limitation above: a plain
     // minimize/restore roundtrip with no fullscreen interlude restores
     // exact positions, not just the rect set.
+    //
+    // KNOWN RED (test-route gap, not an adapter defect): this fixture can
+    // only express "window absent from the observation" — the manual
+    // `submit_scoped_observation` leg always builds its snapshot with
+    // `excluded: 0, excluded_reasons: []` (crates/tiler-macos/src/runtime.rs,
+    // scoped observation submit), so it cannot report the truthful
+    // `ExcludeReason::Minimized` fact that `refresh_minimized`
+    // (crates/tiler-macos/src/world_runtime.rs) needs to store the D23
+    // restore slot. The core therefore sees absence, not a minimize, and
+    // re-admits on return (left tile becomes 11 instead of restoring 10).
+    // Pinning D23 exactness through the adapter requires driving the
+    // backend snapshot route (`poll_scoped` + `ExcludedOmission`), which
+    // this module's fake does not model; the core-side contract is pinned
+    // by `minimize_restore_tests::mnz_02` and this module's own
+    // minimized-omission case above.
     let fixture = start(RuntimeConfig::default());
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
     submit(
@@ -1467,3 +1492,4 @@ fn unknown_roles_exclude_at_the_boundary() {
     );
     assert_eq!(off_space.disposition, Disposition::Tile);
 }
+
