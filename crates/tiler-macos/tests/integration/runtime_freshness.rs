@@ -1224,13 +1224,34 @@ fn post_accept_input_suppresses_stale_emission() {
             "1001_13".to_owned()
         ]
     );
-    // No native focus dispatches for any admission newcomer: the
-    // superseded reply's spent intent never reached a native setter, and
-    // neither did the newest plan's (observations keep observed-focus
-    // authority).
+    // Focus stays observed-only: the core mints ONE automatic-admission
+    // focus for the retained domain's newcomer (`take_admission_focus`) and
+    // re-emits that retained request on later reports; the superseded
+    // reply's spent intent adds no dispatch of its own. This fake attests no
+    // selected-oracle read, so the owner withholds the one armed command
+    // fail-closed (`Unproven`, never a native setter).
+    assert_eq!(
+        diagnostics.focus_dispatched, 1,
+        "exactly one retained admission focus may arm: {diagnostics:?}"
+    );
+    // Settle that command's terminal result before draining the outbox: a
+    // dispatched row is controller-visible only until its terminal owner
+    // completion retires it (`retire_focus_request_exact`), so a drain that
+    // races the result sees the transient row instead of the settled state.
+    assert!(
+        fixture
+            .handle
+            .wait_log_for_test(WAIT_TIMEOUT, |log| {
+                log.iter()
+                    .any(|entry| entry.kind == "focus-result" && entry.outcome == "not-called")
+            })
+            .is_some(),
+        "admission focus terminal never settled: {:?}",
+        fixture.handle.diagnostics()
+    );
     assert!(
         fixture.handle.drain_focus_requests().is_empty(),
-        "observation-only replies must never dispatch native focus"
+        "a settled admission focus must retain no pending outbox record"
     );
     shutdown_clean(&fixture);
 }
