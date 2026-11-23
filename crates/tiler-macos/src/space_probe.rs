@@ -23,7 +23,10 @@
 //!
 //! Failure rule everywhere: a failed probe or restore still attempts the
 //! starting-Space return and the owned-Space cleanup, collects residue, and
-//! refuses. Cleanup never forces a removal it cannot prove empty.
+//! refuses. Cleanup never forces a removal it cannot prove empty. Every leg
+//! also returns its verified Mission Control close state ([`McLegState`]);
+//! an unverified close is carried into the refusal text and residue, never
+//! discarded.
 
 use serde::{Deserialize, Serialize};
 
@@ -79,21 +82,59 @@ impl SpaceTopology {
     }
 }
 
+/// Mission Control state carried out of one native Space leg. `closed` is
+/// true only when the leg verified absence (the AX presence group gone AND
+/// no Mission Control presentation windows left); a shortfall names what
+/// was still visible, so a later refusal reports it instead of discarding
+/// it. Legs that cannot verify the close return `closed: false`, never a
+/// silent success.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct McLegState {
+    pub closed: bool,
+    pub shortfall: Option<String>,
+}
+
+impl McLegState {
+    /// Named shortfall for a refusal/probe stage; `None` when verified.
+    #[must_use]
+    pub fn shortfall_text(&self, leg: &str) -> Option<String> {
+        if self.closed {
+            return None;
+        }
+        Some(match self.shortfall.as_deref() {
+            Some(shortfall) => {
+                format!("Mission Control close not verified after {leg}: {shortfall}")
+            }
+            None => format!("Mission Control close not verified after {leg}"),
+        })
+    }
+}
+
+/// One created Space plus the leg's Mission Control state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatedSpace {
+    pub sid: u64,
+    pub mc: McLegState,
+}
+
 /// Narrow native seam. Production ([`LiveNativeSpaces`]) calls the existing
 /// owned Mission Control route; each method verifies its own effect before
 /// returning (exact append, validated goto, proven absence), so the
-/// orchestration never trusts a dispatch receipt.
+/// orchestration never trusts a dispatch receipt. Each leg also returns its
+/// verified Mission Control close state; a close shortfall is data the
+/// caller must surface, never a discarded detail.
 pub trait NativeSpaces {
     /// Fresh display/Space/current rows.
     fn space_snapshot(&mut self) -> Result<SpaceTopology, String>;
-    /// Create exactly one Space on `display`; returns the appended SID after
-    /// verifying the append (one new SID, currents unchanged).
-    fn space_create(&mut self, display: usize) -> Result<u64, String>;
+    /// Create exactly one Space on `display`; returns the appended SID and
+    /// the leg's Mission Control close state after verifying the append (one
+    /// new SID, currents unchanged).
+    fn space_create(&mut self, display: usize) -> Result<CreatedSpace, String>;
     /// Go to `sid` on `display` with the exact-effect readback.
-    fn space_goto(&mut self, display: usize, sid: u64) -> Result<(), String>;
+    fn space_goto(&mut self, display: usize, sid: u64) -> Result<McLegState, String>;
     /// Remove exactly `sid` after proving it empty, then verify absence.
     /// Never replayed, never forced.
-    fn space_remove(&mut self, sid: u64) -> Result<(), String>;
+    fn space_remove(&mut self, sid: u64) -> Result<McLegState, String>;
     /// Prove `sid` currently holds no tiler-relevant occupants.
     fn space_require_empty(&mut self, sid: u64) -> Result<(), String>;
     /// Mission Control presence readback (`None` when unreadable; never a
@@ -142,20 +183,28 @@ fn cleanup_probe_space<S: NativeSpaces>(
     temp: Option<u64>,
     residue: &mut Vec<String>,
 ) {
-    if let Err(e) = spaces.space_goto(display, starting) {
-        residue.push(format!(
+    match spaces.space_goto(display, starting) {
+        Ok(mc) => {
+            if let Some(note) = mc.shortfall_text("cleanup return") {
+                residue.push(format!("probe cleanup: {note}"));
+            }
+        }
+        Err(e) => residue.push(format!(
             "probe cleanup: return to starting Space {starting} refused ({e})"
-        ));
+        )),
     }
     if let Some(temp) = temp {
         match spaces.space_require_empty(temp) {
-            Ok(()) => {
-                if let Err(e) = spaces.space_remove(temp) {
-                    residue.push(format!(
-                        "probe cleanup: owned temp Space {temp} removal refused ({e}); residue: temp Space remains"
-                    ));
+            Ok(()) => match spaces.space_remove(temp) {
+                Ok(mc) => {
+                    if let Some(note) = mc.shortfall_text("cleanup removal") {
+                        residue.push(format!("probe cleanup: {note}"));
+                    }
                 }
-            }
+                Err(e) => residue.push(format!(
+                    "probe cleanup: owned temp Space {temp} removal refused ({e}); residue: temp Space remains"
+                )),
+            },
             Err(e) => residue.push(format!(
                 "probe cleanup: owned temp Space {temp} not provably empty ({e}); residue: temp Space remains, never forced"
             )),
@@ -163,31 +212,58 @@ fn cleanup_probe_space<S: NativeSpaces>(
     }
 }
 
+/// Record one leg's Mission Control shortfall (if any) for later refusal
+/// text. A verified leg records nothing.
+fn record_mc(state: &McLegState, leg: &str, notes: &mut Vec<String>) {
+    if let Some(note) = state.shortfall_text(leg) {
+        notes.push(note);
+    }
+}
+
 /// Execute the pre-mutation return proof: snapshot, create one owned temp on
 /// display 0, prove it empty, go away to it, return to the starting current,
 /// remove only it after re-proving emptiness, and verify the final currents
 /// equal the starting currents. A failure at any step still attempts the
-/// starting return and the owned-temp cleanup before refusing.
+/// starting return and the owned-temp cleanup before refusing. Every leg's
+/// unverified Mission Control close is carried into the refusal text and
+/// residue; a probe whose legs all pass but whose closes stayed unverified
+/// refuses at `probe-mc` instead of proceeding with Mission Control possibly
+/// still displayed.
 pub fn probe_return_to_starting<S: NativeSpaces>(
     spaces: &mut S,
     starting: &NativeBaseline,
 ) -> Result<SpaceProbeProof, ProbeFailure> {
-    let fail = |stage: &'static str, error: String, residue: Vec<String>| ProbeFailure {
-        stage,
-        error,
-        residue,
+    let fail = |stage: &'static str,
+                error: String,
+                mut residue: Vec<String>,
+                mc_notes: &[String]|
+     -> ProbeFailure {
+        if mc_notes.is_empty() {
+            return ProbeFailure {
+                stage,
+                error,
+                residue,
+            };
+        }
+        residue.extend(mc_notes.iter().cloned());
+        ProbeFailure {
+            stage,
+            error: format!("{error}; {}", mc_notes.join("; ")),
+            residue,
+        }
     };
     let starting_topo = SpaceTopology::from_baseline(starting);
     let Some(first) = starting_topo.displays.first() else {
-        return Err(fail(
-            "probe-entry",
-            "starting topology has no displays; refusing".to_owned(),
-            Vec::new(),
-        ));
+        return Err(ProbeFailure {
+            stage: "probe-entry",
+            error: "starting topology has no displays; refusing".to_owned(),
+            residue: Vec::new(),
+        });
     };
     let display = 0;
     let starting_sid = first.current;
     let mut steps = Vec::new();
+    let mut mc_notes: Vec<String> = Vec::new();
     // Entry: the current must already be the starting current; a drifted
     // entry restores once before the probe (one attempt, never a loop).
     match spaces.space_snapshot() {
@@ -195,7 +271,10 @@ pub fn probe_return_to_starting<S: NativeSpaces>(
             steps.push("snapshot-before".to_owned());
             if before.displays.get(display).map(|row| row.current) != Some(starting_sid) {
                 match spaces.space_goto(display, starting_sid) {
-                    Ok(()) => steps.push("entry-restore".to_owned()),
+                    Ok(mc) => {
+                        record_mc(&mc, "entry restore", &mut mc_notes);
+                        steps.push("entry-restore".to_owned());
+                    }
                     Err(e) => {
                         return Err(fail(
                             "probe-entry",
@@ -203,6 +282,7 @@ pub fn probe_return_to_starting<S: NativeSpaces>(
                             vec![format!(
                                 "residue: display {display} not on starting Space {starting_sid}"
                             )],
+                            &mc_notes,
                         ));
                     }
                 }
@@ -213,6 +293,7 @@ pub fn probe_return_to_starting<S: NativeSpaces>(
                 "probe-entry",
                 format!("pre-probe snapshot unreadable ({e})"),
                 vec!["residue: starting topology unknown".to_owned()],
+                &mc_notes,
             ));
         }
     }
@@ -220,15 +301,17 @@ pub fn probe_return_to_starting<S: NativeSpaces>(
     // seam's own check: exactly one new SID on this display, currents
     // untouched everywhere. A rogue append refuses here, never probed.
     let temp = match spaces.space_create(display) {
-        Ok(temp) => {
+        Ok(created) => {
+            record_mc(&created.mc, "create", &mut mc_notes);
             steps.push("create-temp".to_owned());
-            temp
+            created.sid
         }
         Err(e) => {
             return Err(fail(
                 "probe-create",
                 format!("owned temp Space creation refused ({e})"),
                 vec!["residue: no temp created, starting Space untouched".to_owned()],
+                &mc_notes,
             ));
         }
     };
@@ -263,6 +346,7 @@ pub fn probe_return_to_starting<S: NativeSpaces>(
                     "probe-create",
                     "post-create Space set is not exactly one append".to_owned(),
                     residue,
+                    &mc_notes,
                 ));
             }
             steps.push("verify-append".to_owned());
@@ -274,6 +358,7 @@ pub fn probe_return_to_starting<S: NativeSpaces>(
                 "probe-create",
                 format!("post-create snapshot unreadable ({e})"),
                 residue,
+                &mc_notes,
             ));
         }
     }
@@ -285,40 +370,57 @@ pub fn probe_return_to_starting<S: NativeSpaces>(
             "probe-empty",
             format!("owned temp Space {temp} not provably empty ({e})"),
             residue,
+            &mc_notes,
         ));
     }
     steps.push("temp-empty".to_owned());
     // Away: the proof must exercise a DIFFERENT Space.
-    if let Err(e) = spaces.space_goto(display, temp) {
-        let mut residue = Vec::new();
-        cleanup_probe_space(spaces, display, starting_sid, Some(temp), &mut residue);
-        return Err(fail(
-            "probe-away",
-            format!("goto owned temp Space {temp} refused ({e})"),
-            residue,
-        ));
+    match spaces.space_goto(display, temp) {
+        Ok(mc) => {
+            record_mc(&mc, "goto owned temp", &mut mc_notes);
+            steps.push("goto-away".to_owned());
+        }
+        Err(e) => {
+            let mut residue = Vec::new();
+            cleanup_probe_space(spaces, display, starting_sid, Some(temp), &mut residue);
+            return Err(fail(
+                "probe-away",
+                format!("goto owned temp Space {temp} refused ({e})"),
+                residue,
+                &mc_notes,
+            ));
+        }
     }
-    steps.push("goto-away".to_owned());
     // Back: return to the starting current with the exact-effect readback.
-    if let Err(e) = spaces.space_goto(display, starting_sid) {
-        let mut residue = Vec::new();
-        cleanup_probe_space(spaces, display, starting_sid, Some(temp), &mut residue);
-        return Err(fail(
-            "probe-back",
-            format!("return to starting Space {starting_sid} refused ({e})"),
-            residue,
-        ));
+    match spaces.space_goto(display, starting_sid) {
+        Ok(mc) => {
+            record_mc(&mc, "goto back", &mut mc_notes);
+            steps.push("goto-back".to_owned());
+        }
+        Err(e) => {
+            let mut residue = Vec::new();
+            cleanup_probe_space(spaces, display, starting_sid, Some(temp), &mut residue);
+            return Err(fail(
+                "probe-back",
+                format!("return to starting Space {starting_sid} refused ({e})"),
+                residue,
+                &mc_notes,
+            ));
+        }
     }
-    steps.push("goto-back".to_owned());
     // Remove only the owned temp after re-proving emptiness.
     match spaces.space_require_empty(temp) {
         Ok(()) => match spaces.space_remove(temp) {
-            Ok(()) => steps.push("remove-temp".to_owned()),
+            Ok(mc) => {
+                record_mc(&mc, "remove temp", &mut mc_notes);
+                steps.push("remove-temp".to_owned());
+            }
             Err(e) => {
                 return Err(fail(
                     "probe-remove",
                     format!("owned temp Space {temp} removal refused ({e})"),
                     vec![format!("residue: owned temp Space {temp} remains")],
+                    &mc_notes,
                 ));
             }
         },
@@ -329,6 +431,7 @@ pub fn probe_return_to_starting<S: NativeSpaces>(
                 vec![format!(
                     "residue: owned temp Space {temp} remains, never forced"
                 )],
+                &mc_notes,
             ));
         }
     }
@@ -346,6 +449,7 @@ pub fn probe_return_to_starting<S: NativeSpaces>(
                         "probe-verify",
                         format!("final currents != starting currents on display {index}"),
                         residue,
+                        &mc_notes,
                     ));
                 }
             }
@@ -358,8 +462,20 @@ pub fn probe_return_to_starting<S: NativeSpaces>(
                 "probe-verify",
                 format!("final snapshot unreadable ({e})"),
                 residue,
+                &mc_notes,
             ));
         }
+    }
+    // Topology is proven, but a leg could not verify Mission Control closed.
+    // Do not hand the leg on with MC possibly displayed; name the stage and
+    // the shortfall.
+    if !mc_notes.is_empty() {
+        return Err(fail(
+            "probe-mc",
+            "Mission Control close was not verified during the probe".to_owned(),
+            Vec::new(),
+            &mc_notes,
+        ));
     }
     Ok(SpaceProbeProof {
         display,
@@ -376,6 +492,10 @@ pub struct RestoreReport {
     pub already_exact: Vec<(usize, u64)>,
     pub restored: Vec<(usize, u64)>,
     pub failed: Vec<String>,
+    /// Mission Control close shortfalls seen on restore legs: the current
+    /// was restored but the close could not be verified. Reported as
+    /// residue, never as a restore failure.
+    pub mc_notes: Vec<String>,
 }
 
 impl RestoreReport {
@@ -397,6 +517,7 @@ pub fn restore_starting_currents<S: NativeSpaces>(
         already_exact: Vec::new(),
         restored: Vec::new(),
         failed: Vec::new(),
+        mc_notes: Vec::new(),
     };
     let current = match spaces.space_snapshot() {
         Ok(topo) => topo,
@@ -415,7 +536,14 @@ pub fn restore_starting_currents<S: NativeSpaces>(
                 report.already_exact.push((row.index, row.current));
             }
             _ => match spaces.space_goto(row.index, row.current) {
-                Ok(()) => report.restored.push((row.index, row.current)),
+                Ok(mc) => {
+                    if let Some(note) = mc.shortfall_text("starting-current restore") {
+                        report
+                            .mc_notes
+                            .push(format!("display {}: {note}", row.index));
+                    }
+                    report.restored.push((row.index, row.current));
+                }
                 Err(e) => report.failed.push(format!(
                     "display {}: return to starting Space {} refused ({e})",
                     row.index, row.current
@@ -427,14 +555,15 @@ pub fn restore_starting_currents<S: NativeSpaces>(
 }
 
 /// Remove exactly one leg-created Space: pin it to its creation display,
-/// re-prove emptiness, remove, and let the seam verify absence. Anything
-/// else (unlocatable, moved display, occupied) refuses with residue, never
-/// a forced removal.
+/// re-prove emptiness, remove, and let the seam verify absence. Returns the
+/// verified Mission Control close state so a teardown can report a close
+/// shortfall. Anything else (unlocatable, moved display, occupied) refuses
+/// with residue, never a forced removal.
 pub fn remove_owned_space<S: NativeSpaces>(
     spaces: &mut S,
     display: usize,
     sid: u64,
-) -> Result<(), String> {
+) -> Result<McLegState, String> {
     let topo = spaces
         .space_snapshot()
         .map_err(|e| format!("owned-space removal: snapshot unreadable ({e}); refusing"))?;
@@ -500,42 +629,29 @@ impl NativeSpaces for LiveNativeSpaces {
         Ok(SpaceTopology { displays })
     }
 
-    fn space_create(&mut self, display: usize) -> Result<u64, String> {
+    fn space_create(&mut self, display: usize) -> Result<CreatedSpace, String> {
         let mut budget = self.budget();
         let before = crate::mc_lifecycle::live::fresh_snapshot()
             .map_err(|e| format!("pre-create snapshot unreadable ({e})"))?;
-        let before_row = before.displays.get(display).ok_or_else(|| {
+        before.displays.get(display).ok_or_else(|| {
             format!(
                 "display {display} unknown ({} displays); refusing",
                 before.displays.len()
             )
         })?;
-        let before_spaces = before_row.spaces.clone();
-        let before_current = before_row.current;
-        crate::mc_lifecycle::live::mc_add_space(display, &mut budget, false)
+        let outcome = crate::mc_lifecycle::live::mc_add_space(display, &mut budget, false)
             .map_err(|e| format!("add-Space press refused ({e})"))?;
-        // Exact-append verification on a fresh readback: exactly one new
-        // SID on this display, currents untouched, nothing else moved.
-        let after = crate::mc_lifecycle::live::fresh_snapshot()
-            .map_err(|e| format!("post-create snapshot unreadable ({e})"))?;
-        let after_row = after
-            .displays
-            .get(display)
-            .ok_or_else(|| format!("display {display} gone after create; refusing"))?;
-        if after_row.current != before_current {
-            return Err("post-create current moved; refusing without an exact append".to_owned());
-        }
-        let mut appended: Vec<u64> = after_row
-            .spaces
-            .iter()
-            .filter(|sid| !before_spaces.contains(sid))
-            .copied()
-            .collect();
-        appended.sort_unstable();
-        appended.dedup();
-        if appended.len() != 1 || after_row.spaces.len() != before_spaces.len() + 1 {
-            return Err("post-create Space set is not exactly one append; refusing".to_owned());
-        }
+        // The append lands asynchronously (observed: the immediate post-press
+        // read still showed the preimage), so poll the exact-append
+        // validator within its bounded settle window. Poll only: the
+        // dispatched press is never replayed.
+        let (after, appended) = crate::mc_lifecycle::await_create_effect(&before, display)
+            .ok_or_else(|| {
+                format!(
+                    "post-create Space set is not exactly one append within {}ms; refusing",
+                    crate::mc_probe::MC_EFFECT_SETTLE_MS
+                )
+            })?;
         // The new SID must be uniquely locatable (never ambiguous).
         let topo = SpaceTopology {
             displays: after
@@ -547,26 +663,38 @@ impl NativeSpaces for LiveNativeSpaces {
                 })
                 .collect(),
         };
-        match topo.locate(appended[0]) {
-            Some((found_display, _)) if found_display == display => Ok(appended[0]),
+        match topo.locate(appended) {
+            Some((found_display, _)) if found_display == display => Ok(CreatedSpace {
+                sid: appended,
+                mc: McLegState {
+                    closed: !outcome.mc_open,
+                    shortfall: outcome.close_error,
+                },
+            }),
             _ => Err("appended Space not uniquely located on its display; refusing".to_owned()),
         }
     }
 
-    fn space_goto(&mut self, display: usize, sid: u64) -> Result<(), String> {
+    fn space_goto(&mut self, display: usize, sid: u64) -> Result<McLegState, String> {
         let mut budget = self.budget();
         let before = crate::mc_lifecycle::live::fresh_snapshot()
             .map_err(|e| format!("pre-goto snapshot unreadable ({e})"))?;
         crate::mc_lifecycle::goto_sid_verified(&before, display, sid, &mut budget, false)
-            .map(|_| ())
+            .map(|(_, close)| McLegState {
+                closed: close.is_none(),
+                shortfall: close,
+            })
             .map_err(|e| format!("goto Space {sid} refused ({e})"))
     }
 
-    fn space_remove(&mut self, sid: u64) -> Result<(), String> {
+    fn space_remove(&mut self, sid: u64) -> Result<McLegState, String> {
         let mut budget = self.budget();
         let mut dispatched = false;
         crate::mc_lifecycle::remove_sid_verified(sid, &mut budget, false, &mut dispatched)
-            .map(|_| ())
+            .map(|(_, close)| McLegState {
+                closed: close.is_none(),
+                shortfall: close,
+            })
             .map_err(|e| format!("remove Space {sid} refused ({e})"))
     }
 
@@ -694,7 +822,7 @@ mod tests {
             self.snapshot_now()
         }
 
-        fn space_create(&mut self, display: usize) -> Result<u64, String> {
+        fn space_create(&mut self, display: usize) -> Result<CreatedSpace, String> {
             self.log.push("create");
             if self.fail == Some(FailAt::Create) {
                 return Err("model create refused".to_owned());
@@ -714,10 +842,16 @@ mod tests {
             if self.rogue == Some(Rogue::StealCurrent) {
                 self.current[display] = temp;
             }
-            Ok(temp)
+            Ok(CreatedSpace {
+                sid: temp,
+                mc: McLegState {
+                    closed: true,
+                    shortfall: None,
+                },
+            })
         }
 
-        fn space_goto(&mut self, display: usize, sid: u64) -> Result<(), String> {
+        fn space_goto(&mut self, display: usize, sid: u64) -> Result<McLegState, String> {
             let temp_target = self.last_temp();
             if Some(sid) == temp_target {
                 self.log.push("goto-temp");
@@ -733,13 +867,16 @@ mod tests {
             match self.locate(sid) {
                 Some((found_display, _)) if found_display == display => {
                     self.current[display] = sid;
-                    Ok(())
+                    Ok(McLegState {
+                        closed: true,
+                        shortfall: None,
+                    })
                 }
                 _ => Err(format!("model Space {sid} not on display {display}")),
             }
         }
 
-        fn space_remove(&mut self, sid: u64) -> Result<(), String> {
+        fn space_remove(&mut self, sid: u64) -> Result<McLegState, String> {
             self.log.push("remove");
             if self.fail == Some(FailAt::Remove) {
                 return Err("model remove refused".to_owned());
@@ -751,7 +888,10 @@ mod tests {
                     if self.locate(sid).is_some() {
                         return Err("model Space still present after remove".to_owned());
                     }
-                    Ok(())
+                    Ok(McLegState {
+                        closed: true,
+                        shortfall: None,
+                    })
                 }
                 None => Err(format!("model Space {sid} unknown")),
             }
@@ -959,7 +1099,7 @@ mod tests {
     #[test]
     fn remove_owned_space_pins_display_and_emptiness() {
         let mut model = ModelSpaces::new(vec![(vec![11, 22], 11)]);
-        let temp = model.space_create(0).expect("create");
+        let temp = model.space_create(0).expect("create").sid;
         // Occupied temp refuses without removal.
         model.occupied.push(temp);
         let err = remove_owned_space(&mut model, 0, temp).unwrap_err();

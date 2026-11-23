@@ -5,14 +5,18 @@
 //!
 //! Leg contract per action: gates → fresh SLS join → budgeted toggle (gates
 //! immediately pre-toggle) → stabilize → gates → fresh re-join with drift
-//! rejection → AX tree join with exact list-count match → budgeted press with
-//! gates immediately pre-press → effect readback → close attempt. A sent
+//! rejection → AX tree join with exact-list-count match → budgeted press with
+//! gates immediately pre-press → effect readback → verified close. A sent
 //! press always yields an outcome carrying the post-press snapshot and MC
 //! presence, even when the close fails, so a press is never lost to a close
-//! error. Error paths close MC only when this leg opened it and gates still
-//! pass. A dispatched-but-unverified remove is never replayed in cleanup
-//! (indices shift under a missing Space); goto restoration re-targets by
-//! fresh SID join, which is safe.
+//! error. The close is verified against both MC signals (the AX presence
+//! group AND the CG presentation windows, since the group disappears before
+//! the transform settles): a goto press is never toggled before its own
+//! dismissal is observed, and an absent surface is never toggled back open.
+//! Error paths close MC only when this leg opened it and gates still pass. A
+//! dispatched-but-unverified remove is never replayed in cleanup (indices
+//! shift under a missing Space); goto restoration re-targets by fresh SID
+//! join, which is safe.
 
 use crate::mc_probe::{
     ActionBudget, FocusLegs, GhosttyWindow, LegLatency, MC_CLEANUP_RESERVE_SECS,
@@ -35,6 +39,54 @@ use crate::mc_probe::{
 pub(crate) use crate::mc_observe::{
     capture_focus_legs, enumerate_window_members, snapshot_ghostty_windows, verify_space_empty,
 };
+
+/// Which press this leg sends: only a goto press dismisses Mission Control
+/// by itself (its expected end state is verified absence), while create and
+/// remove presses leave it displayed. A close must never be toggled from a
+/// presence read taken while an auto-dismissal is still in flight.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McDismissal {
+    Auto,
+    Manual,
+}
+
+/// Pure post-press close decision from the observed Mission Control state.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloseDecision {
+    /// Absence is verified (presence absent and no presentation windows);
+    /// nothing to do and nothing to toggle.
+    Done,
+    /// Mission Control is demonstrably displayed: one presence-checked
+    /// close is allowed.
+    Toggle,
+    /// No verified absence, but presence does not read true either: wait
+    /// for the surface to settle. Toggling now could reopen a dismissal
+    /// that is already in flight, and skipping the wait would probe an
+    /// emptiness read against lingering presentation windows.
+    Await,
+}
+
+/// The single close rule: only a verified-absent surface is a no-op, only a
+/// presence-true surface may be toggled, and an auto-dismissing press is
+/// never toggled before its own dismissal was observed (or ruled out).
+#[cfg(any(target_os = "macos", test))]
+fn decide_close(
+    dismissal: McDismissal,
+    verified_closed: bool,
+    present: Option<bool>,
+) -> CloseDecision {
+    if verified_closed {
+        CloseDecision::Done
+    } else if dismissal == McDismissal::Auto {
+        CloseDecision::Await
+    } else if present == Some(true) {
+        CloseDecision::Toggle
+    } else {
+        CloseDecision::Await
+    }
+}
 
 /// Budget spend for one dispatch: main-phase legs spend inside the work
 /// window; cleanup legs spend inside the reserve up to the deadline.
@@ -290,6 +342,53 @@ pub(crate) mod live {
         }
     }
 
+    /// MC-surface windows above the subnormal desktop seam: the presentation
+    /// overlay, thumbnails, and buttons that exist only while Mission
+    /// Control is displayed (observed: layers 14/19 overlay plus layer-0
+    /// controls; closed leaves only the subnormal wallpaper windows). The AX
+    /// presence group disappears before this CG transform settles, and those
+    /// windows can still be Space members when an emptiness read runs, so a
+    /// close is not verified on presence absence alone.
+    fn mc_presentation_windows_present() -> Result<bool, McError> {
+        let pid = mc_surface_pid()?;
+        let pid_u32 = u32::try_from(pid).map_err(|_| {
+            McError::System(format!(
+                "Mission Control surface pid {pid} out of range for the window list"
+            ))
+        })?;
+        let windows = crate::ffi::cg_window_list_basic()
+            .map_err(|e| McError::Unsupported(format!("CG window list unreadable: {e}")))?;
+        // PID-reuse fence: the identity that authorized this read must still
+        // hold after it; any drift voids the verification.
+        if mc_surface_pid()? != pid {
+            return Err(McError::Blocked(
+                "Mission Control surface identity changed during the close verification; refusing"
+                    .to_owned(),
+            ));
+        }
+        Ok(windows.iter().any(|w| w.pid == pid_u32 && w.layer >= 0))
+    }
+
+    /// Verified Mission Control absence: the AX presence group is absent AND
+    /// no MC-surface presentation window remains above the subnormal desktop
+    /// seam. Read failures propagate (never read as closed).
+    pub fn mc_closed_verified() -> Result<bool, McError> {
+        if mc_group_present()? {
+            return Ok(false);
+        }
+        Ok(!mc_presentation_windows_present()?)
+    }
+
+    /// Bounded poll for verified absence (same 2 s shape and slice as
+    /// [`poll_group`]; read failures are poll data, the deadline names the
+    /// verdict).
+    fn await_mc_closed() -> bool {
+        poll_until_ms(MC_GROUP_POLL_MS, 100, || {
+            mc_closed_verified().ok().filter(|closed| *closed)
+        })
+        .unwrap_or(false)
+    }
+
     /// Open iff absent: presence read, gates immediately pre-toggle, one
     /// public app-launch toggle at most, bounded presence poll as proof.
     pub fn mc_open() -> Result<bool, McError> {
@@ -306,19 +405,34 @@ pub(crate) mod live {
         Ok(true)
     }
 
-    /// Close iff present (goto auto-closes; already-closed is a no-op).
+    /// Close iff displayed, verified against both MC signals before
+    /// returning: presence absent AND no presentation windows left, bounded
+    /// by the existing 2 s poll. Presence is always read first, so a close
+    /// is never toggled into an absent surface (which would reopen it); an
+    /// already-absent surface with a lingering transform is waited out, not
+    /// toggled. Returns `true` when this call sent the close.
     pub fn mc_close() -> Result<bool, McError> {
-        if !mc_group_present()? {
-            return Ok(false);
+        if mc_group_present()? {
+            action_gates()?;
+            if !crate::ffi::mc_launch_toggle() {
+                return Err(McError::System(
+                    "Mission Control close launch not sent (NSWorkspace refused)".to_owned(),
+                ));
+            }
+            if await_mc_closed() {
+                Ok(true)
+            } else {
+                Err(McError::System(format!(
+                    "Mission Control close did not verify within {MC_GROUP_POLL_MS}ms (presence or presentation windows remained)"
+                )))
+            }
+        } else if await_mc_closed() {
+            Ok(false)
+        } else {
+            Err(McError::System(format!(
+                "Mission Control presence is absent but its presentation windows remained for {MC_GROUP_POLL_MS}ms"
+            )))
         }
-        action_gates()?;
-        if !crate::ffi::mc_launch_toggle() {
-            return Err(McError::System(
-                "Mission Control close launch not sent (NSWorkspace refused)".to_owned(),
-            ));
-        }
-        poll_group(false)?;
-        Ok(true)
     }
 
     fn stabilize() {
@@ -424,14 +538,62 @@ pub(crate) mod live {
         Ok(())
     }
 
-    /// Close attempt folded into leg endings: records the close shortfall (if
-    /// any) and re-reads presence. Never turns a sent press into `Err`.
-    fn finish_press(mut outcome: super::PressOutcome) -> super::PressOutcome {
-        if let Err(e) = mc_close() {
-            outcome.close_error = Some(e.to_string());
+    /// Close attempt folded into leg endings: the press kind decides whether
+    /// a dismissal is already in flight (goto) or MC is expected displayed
+    /// (create/remove), and a presence-checked close plus a bounded verified
+    /// absence is recorded. Never turns a sent press into `Err`, and keeps
+    /// the shortfall contract exact: `mc_open == false` iff `close_error ==
+    /// None`, both meaning absence was verified.
+    fn finish_press(
+        mut outcome: super::PressOutcome,
+        dismissal: super::McDismissal,
+    ) -> super::PressOutcome {
+        match close_after_press(dismissal) {
+            Ok(()) => {
+                outcome.mc_open = false;
+                outcome.close_error = None;
+            }
+            Err(e) => {
+                // Re-read once: the surface may have settled while the
+                // bounded attempt was failing.
+                outcome.mc_open = !mc_closed_verified().unwrap_or(false);
+                outcome.close_error = outcome.mc_open.then(|| e.to_string());
+            }
         }
-        outcome.mc_open = mc_group_present().unwrap_or(true);
         outcome
+    }
+
+    /// Post-press close: never toggles a verified-absent surface, never
+    /// toggles an auto-dismissing press before its dismissal was observed,
+    /// and waits out a presented-but-unsettled surface instead of reopening
+    /// it. At most one presence-checked close is sent; the shortfall names
+    /// what was still visible at the deadline.
+    fn close_after_press(dismissal: super::McDismissal) -> Result<(), McError> {
+        let verified = mc_closed_verified().unwrap_or(false);
+        let present = if verified {
+            None
+        } else {
+            mc_group_present().ok()
+        };
+        match super::decide_close(dismissal, verified, present) {
+            super::CloseDecision::Done => Ok(()),
+            super::CloseDecision::Toggle => mc_close().map(|_| ()),
+            super::CloseDecision::Await => {
+                if await_mc_closed() {
+                    return Ok(());
+                }
+                // The post-press AX surface may have re-rendered after the
+                // transient: only a presence-true read justifies one
+                // presence-checked close from here.
+                if mc_group_present()? {
+                    mc_close().map(|_| ())
+                } else {
+                    Err(McError::System(format!(
+                        "Mission Control presence is absent but its presentation windows remained for {MC_GROUP_POLL_MS}ms; not toggling (would reopen)"
+                    )))
+                }
+            }
+        }
     }
 
     /// Shared leg skeleton: budgeted open → stabilize → caller press →
@@ -439,6 +601,7 @@ pub(crate) mod live {
     /// only when this leg opened it.
     fn run_mc_leg(
         open_spend: &str,
+        dismissal: super::McDismissal,
         budget: &mut ActionBudget,
         cleanup: bool,
         press: impl FnOnce(&mut ActionBudget) -> Result<super::PressOutcome, McError>,
@@ -447,7 +610,7 @@ pub(crate) mod live {
         let opened = mc_open()?;
         stabilize();
         match press(budget) {
-            Ok(outcome) => Ok(finish_press(outcome)),
+            Ok(outcome) => Ok(finish_press(outcome, dismissal)),
             Err(e) => {
                 if opened && let Err(c) = mc_close() {
                     let reason = format!("{e}; MC close on error path also failed: {c}");
@@ -473,9 +636,13 @@ pub(crate) mod live {
         action_gates()?;
         let snapshot = fresh_snapshot()?;
         let (cgid, _) = display_cgid_of(&snapshot, display)?;
-        run_mc_leg("add-open", budget, cleanup, |b| {
-            mc_add_pressed(cgid, b, cleanup)
-        })
+        run_mc_leg(
+            "add-open",
+            super::McDismissal::Manual,
+            budget,
+            cleanup,
+            |b| mc_add_pressed(cgid, b, cleanup),
+        )
     }
 
     /// Pinned add helper for the effect-thread trailing preparation: the
@@ -495,17 +662,23 @@ pub(crate) mod live {
         action_gates()?;
         let snapshot = fresh_snapshot()?;
         let (cgid, _) = display_cgid_of_pinned(&snapshot, display, pinned_cgid, pinned_uuid)?;
-        run_mc_leg("add-open", budget, cleanup, |b| {
-            let fresh = fresh_snapshot()?;
-            let (cgid_fresh, _) =
-                display_cgid_of_pinned(&fresh, display, pinned_cgid, pinned_uuid)?;
-            if cgid_fresh != cgid {
-                return Err(McError::Blocked(format!(
-                    "CG display ID changed during open (was {cgid}, now {cgid_fresh}); refusing stale dispatch"
-                )));
-            }
-            mc_add_pressed(cgid, b, cleanup)
-        })
+        run_mc_leg(
+            "add-open",
+            super::McDismissal::Manual,
+            budget,
+            cleanup,
+            |b| {
+                let fresh = fresh_snapshot()?;
+                let (cgid_fresh, _) =
+                    display_cgid_of_pinned(&fresh, display, pinned_cgid, pinned_uuid)?;
+                if cgid_fresh != cgid {
+                    return Err(McError::Blocked(format!(
+                        "CG display ID changed during open (was {cgid}, now {cgid_fresh}); refusing stale dispatch"
+                    )));
+                }
+                mc_add_pressed(cgid, b, cleanup)
+            },
+        )
     }
 
     fn mc_add_pressed(
@@ -548,9 +721,13 @@ pub(crate) mod live {
             ))
         })?;
         let (cgid, _) = display_cgid_of(&snap0, d0)?;
-        run_mc_leg("goto-open", budget, cleanup, |b| {
-            mc_goto_pressed(sid, &snap0, cgid, b, cleanup)
-        })
+        run_mc_leg(
+            "goto-open",
+            super::McDismissal::Auto,
+            budget,
+            cleanup,
+            |b| mc_goto_pressed(sid, &snap0, cgid, b, cleanup),
+        )
     }
 
     fn mc_goto_pressed(
@@ -620,9 +797,13 @@ pub(crate) mod live {
             ))
         })?;
         let (cgid, _) = display_cgid_of(&snap0, d0)?;
-        run_mc_leg("remove-open", budget, cleanup, |b| {
-            mc_remove_pressed(sid, &snap0, cgid, b, cleanup)
-        })
+        run_mc_leg(
+            "remove-open",
+            super::McDismissal::Manual,
+            budget,
+            cleanup,
+            |b| mc_remove_pressed(sid, &snap0, cgid, b, cleanup),
+        )
     }
 
     fn mc_remove_pressed(
@@ -736,6 +917,10 @@ pub(crate) mod live {
     }
 
     pub fn mc_group_present() -> Result<bool, McError> {
+        unsupported("Mission Control lifecycle")
+    }
+
+    pub fn mc_closed_verified() -> Result<bool, McError> {
         unsupported("Mission Control lifecycle")
     }
 
@@ -864,11 +1049,36 @@ pub(crate) fn require_user_temp(temp: u64) -> Result<(), McError> {
     }
 }
 
+/// Create effect helper: the append lands asynchronously (an observed add
+/// press read unchanged immediately post-press), so poll fresh readbacks
+/// within [`MC_EFFECT_SETTLE_MS`] until the exact-append validator accepts
+/// one. Returns the accepted snapshot and new SID, or `None` at the
+/// deadline. Poll only — the dispatched press is never replayed.
+pub(crate) fn await_create_effect(
+    before: &TopologySnapshot,
+    display: usize,
+) -> Option<(TopologySnapshot, u64)> {
+    let t0 = std::time::Instant::now();
+    loop {
+        if let Ok(snapshot) = live::fresh_snapshot()
+            && let Ok(sid) = validate_create_effect(before, &snapshot, display)
+        {
+            return Some((snapshot, sid));
+        }
+        if t0.elapsed() >= std::time::Duration::from_millis(MC_EFFECT_SETTLE_MS) {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
 /// Goto helper: SID-accepting dispatch plus exact-current readback against
 /// the `from` baseline. A sent press settles asynchronously, so a failed
 /// immediate readback polls fresh snapshots within [`MC_EFFECT_SETTLE_MS`]
 /// (poll only — the dispatched press is never replayed) before the timeout
-/// names the actual diff. Returns (post-goto snapshot, close shortfall).
+/// names the actual diff. Returns (post-goto snapshot, close shortfall);
+/// `None` means the leg verified Mission Control absent (presence gone and
+/// no presentation windows left), never merely a missing presence read.
 pub(crate) fn goto_sid_verified(
     from: &TopologySnapshot,
     display: usize,
@@ -913,7 +1123,9 @@ pub(crate) fn goto_sid_verified(
 }
 
 /// Removal helper: fresh emptiness scan, fresh eligibility, SID-accepting
-/// dispatch, exact removal-effect readback. Returns (scan, close shortfall).
+/// dispatch, exact removal-effect readback. Returns (scan, close shortfall);
+/// `None` means the leg verified Mission Control absent, never merely a
+/// missing presence read.
 /// Sets `remove_dispatched` once a press is sent, even when the effect stays
 /// unverified — cleanup must never replay it.
 pub(crate) fn remove_sid_verified(
@@ -1023,8 +1235,9 @@ fn restore_currents_to(
 }
 
 /// Best-effort MC close where safely possible: gates must pass (a locked or
-/// untrusted session is left alone) and MC must read present. Every outcome
-/// is noted; nothing is assumed.
+/// untrusted session is left alone). `mc_close` itself reads presence first
+/// (never toggles an absent surface) and waits out a lingering presentation
+/// transform, so every outcome here is a verified-absence verdict.
 pub(crate) fn safe_close_mc(notes: &mut Vec<String>) {
     if live::action_gates().is_err() {
         notes.push(
@@ -1032,15 +1245,12 @@ pub(crate) fn safe_close_mc(notes: &mut Vec<String>) {
         );
         return;
     }
-    match live::mc_group_present() {
-        Ok(false) => notes.push("MC already absent".to_owned()),
-        Ok(true) => match live::mc_close() {
-            Ok(_) => notes.push("MC closed".to_owned()),
-            Err(e) => notes.push(format!(
-                "MC close failed: {e}; presence preserved in report"
-            )),
-        },
-        Err(e) => notes.push(format!("MC presence unreadable, close not attempted: {e}")),
+    match live::mc_close() {
+        Ok(true) => notes.push("MC closed".to_owned()),
+        Ok(false) => notes.push("MC already absent and verified".to_owned()),
+        Err(e) => notes.push(format!(
+            "MC close not verified: {e}; presence preserved in report"
+        )),
     }
 }
 
@@ -1551,12 +1761,13 @@ pub fn run_mc_lifecycle(
             )),
         ));
     }
-    // MC must read absent at the end; one safe close attempt, then verdict.
-    // No visual claim is made beyond the presence boolean.
-    let mut mc_absent = !live::mc_group_present().unwrap_or(true);
+    // MC must read verified-absent at the end (presence AND no presentation
+    // windows; the AX group disappears before the CG transform settles);
+    // one safe close attempt, then verdict.
+    let mut mc_absent = live::mc_closed_verified().unwrap_or(false);
     if !mc_absent {
         safe_close_mc(&mut ctx.notes);
-        mc_absent = !live::mc_group_present().unwrap_or(true);
+        mc_absent = live::mc_closed_verified().unwrap_or(false);
     }
     if !mc_absent {
         return Err(ctx.fail(
@@ -1602,4 +1813,58 @@ pub fn run_mc_lifecycle(
         caffeinate_reaped: reaped,
     };
     serde_json::to_string(&report).map_err(|e| (1, e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CloseDecision, McDismissal, decide_close};
+
+    #[test]
+    fn close_only_toggles_a_demonstrably_present_surface() {
+        // A create/remove press leaves MC displayed: one presence-checked
+        // close is the only action.
+        assert_eq!(
+            decide_close(McDismissal::Manual, false, Some(true)),
+            CloseDecision::Toggle
+        );
+        // Absent or unreadable presence is never a toggle signal; it waits
+        // for a settle instead (a blind toggle can reopen a dismissal).
+        assert_eq!(
+            decide_close(McDismissal::Manual, false, Some(false)),
+            CloseDecision::Await
+        );
+        assert_eq!(
+            decide_close(McDismissal::Manual, false, None),
+            CloseDecision::Await
+        );
+    }
+
+    #[test]
+    fn auto_dismissing_press_never_toggles_before_its_dismissal_verifies() {
+        // A goto press dismisses MC by itself: even a presence-true read
+        // taken during the dismissal must not toggle it back open.
+        assert_eq!(
+            decide_close(McDismissal::Auto, false, Some(true)),
+            CloseDecision::Await
+        );
+        assert_eq!(
+            decide_close(McDismissal::Auto, false, Some(false)),
+            CloseDecision::Await
+        );
+    }
+
+    #[test]
+    fn verified_absence_is_done_even_if_presence_reads_stale() {
+        // The verified predicate (presence + no presentation windows) wins
+        // over a stale presence-true read, so a closed surface is never
+        // toggled open.
+        assert_eq!(
+            decide_close(McDismissal::Manual, true, Some(true)),
+            CloseDecision::Done
+        );
+        assert_eq!(
+            decide_close(McDismissal::Auto, true, Some(false)),
+            CloseDecision::Done
+        );
+    }
 }

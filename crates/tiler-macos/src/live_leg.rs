@@ -375,15 +375,19 @@ impl NativeSpaces for LiveLegTransport {
         self.spaces.space_snapshot()
     }
 
-    fn space_create(&mut self, display: usize) -> Result<u64, String> {
+    fn space_create(&mut self, display: usize) -> Result<crate::space_probe::CreatedSpace, String> {
         self.spaces.space_create(display)
     }
 
-    fn space_goto(&mut self, display: usize, sid: u64) -> Result<(), String> {
+    fn space_goto(
+        &mut self,
+        display: usize,
+        sid: u64,
+    ) -> Result<crate::space_probe::McLegState, String> {
         self.spaces.space_goto(display, sid)
     }
 
-    fn space_remove(&mut self, sid: u64) -> Result<(), String> {
+    fn space_remove(&mut self, sid: u64) -> Result<crate::space_probe::McLegState, String> {
         self.spaces.space_remove(sid)
     }
 
@@ -1277,6 +1281,9 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         for failure in &restore.failed {
             residue.push(format!("starting-Space restore: {failure}"));
         }
+        for note in &restore.mc_notes {
+            residue.push(format!("starting-Space restore: {note}"));
+        }
         let current_restored = restore.clean();
         // 3. Close exactly the registered run-owned fixture windows.
         for window in self.owned_windows.clone() {
@@ -1299,8 +1306,13 @@ impl<'a, T: LegTransport> LiveLeg<'a, T> {
         }
         // 5. Remove only leg-created Spaces, each pinned and proven empty.
         for (display, sid) in self.owned_spaces.clone() {
-            if let Err(e) = remove_owned_space(&mut *self.transport, display, sid) {
-                residue.push(format!("owned Space {sid}: {e}"));
+            match remove_owned_space(&mut *self.transport, display, sid) {
+                Ok(mc) => {
+                    if let Some(note) = mc.shortfall_text("owned-Space removal") {
+                        residue.push(format!("owned Space {sid}: {note}"));
+                    }
+                }
+                Err(e) => residue.push(format!("owned Space {sid}: {e}")),
             }
         }
         // 6. Stop the awake companion (exact child, reaped).
@@ -1624,7 +1636,10 @@ mod tests {
             }
             Ok(self.topo())
         }
-        fn space_create(&mut self, display: usize) -> Result<u64, String> {
+        fn space_create(
+            &mut self,
+            display: usize,
+        ) -> Result<crate::space_probe::CreatedSpace, String> {
             self.order.borrow_mut().push("create");
             if self.fail_space_at == Some("create") {
                 return Err("injected create refusal".to_owned());
@@ -1636,9 +1651,19 @@ mod tests {
             let temp = self.next_sid;
             self.next_sid += 1;
             row.push(temp);
-            Ok(temp)
+            Ok(crate::space_probe::CreatedSpace {
+                sid: temp,
+                mc: crate::space_probe::McLegState {
+                    closed: true,
+                    shortfall: None,
+                },
+            })
         }
-        fn space_goto(&mut self, display: usize, sid: u64) -> Result<(), String> {
+        fn space_goto(
+            &mut self,
+            display: usize,
+            sid: u64,
+        ) -> Result<crate::space_probe::McLegState, String> {
             self.order.borrow_mut().push("goto");
             if self.fail_space_at == Some("goto") {
                 return Err("injected goto refusal".to_owned());
@@ -1651,9 +1676,12 @@ mod tests {
                 return Err(format!("model Space {sid} not on display {display}"));
             }
             self.current[display] = sid;
-            Ok(())
+            Ok(crate::space_probe::McLegState {
+                closed: true,
+                shortfall: None,
+            })
         }
-        fn space_remove(&mut self, sid: u64) -> Result<(), String> {
+        fn space_remove(&mut self, sid: u64) -> Result<crate::space_probe::McLegState, String> {
             self.order.borrow_mut().push("remove");
             if self.fail_space_at == Some("remove") {
                 return Err("injected remove refusal".to_owned());
@@ -1661,7 +1689,10 @@ mod tests {
             for row in &mut self.spaces {
                 if let Some(index) = row.iter().position(|s| *s == sid) {
                     row.remove(index);
-                    return Ok(());
+                    return Ok(crate::space_probe::McLegState {
+                        closed: true,
+                        shortfall: None,
+                    });
                 }
             }
             Err(format!("model Space {sid} unknown"))

@@ -823,11 +823,17 @@ pub fn create_space_owned(
     let outcome =
         crate::mc_lifecycle::live::mc_add_space_pinned(display, cgid, uuid, &mut budget, false)
             .map_err(spaces_error_from_mc)?;
-    // A sent press is never replayed: a missing post snapshot is reported as
-    // an unverified effect, not a second dispatch.
-    let after = match outcome.after {
-        Some(snapshot) => Some(snapshot),
-        None => crate::mc_lifecycle::live::fresh_snapshot().ok(),
+    // A sent press is never replayed. The append lands asynchronously (an
+    // observed add press read unchanged immediately post-press), so poll the
+    // exact-append validator within its bounded settle window and only fall
+    // back to the immediate post-press snapshot at the deadline; a missing
+    // post snapshot is reported as an unverified effect, not a second
+    // dispatch.
+    let after = match crate::mc_lifecycle::await_create_effect(&before, display) {
+        Some((snapshot, _)) => Some(snapshot),
+        None => outcome
+            .after
+            .or_else(|| crate::mc_lifecycle::live::fresh_snapshot().ok()),
     };
     let separate_after = crate::ffi::ns_separate_spaces();
     let appended_sid = after

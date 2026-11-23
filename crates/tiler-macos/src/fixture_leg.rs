@@ -939,14 +939,22 @@ fn run_leg_body_macos(
         let owned_range =
             plan_owned_destinations(&opts.chords, first.spaces.len()).map_err(|e| (2, e))?;
         for _ in owned_range {
-            let sid = leg.transport_mut().space_create(0).map_err(|e| {
+            let created = leg.transport_mut().space_create(0).map_err(|e| {
                 (
                     1,
                     format!("fixture-leg: owned destination creation refused ({e})"),
                 )
             })?;
-            leg.note_owned_space(0, sid);
-            owned_sids.push(sid);
+            // Register before any refusal so teardown removes exactly this
+            // owned Space.
+            leg.note_owned_space(0, created.sid);
+            owned_sids.push(created.sid);
+            if let Some(shortfall) = created.mc.shortfall_text("owned destination create") {
+                return Err((
+                    1,
+                    format!("fixture-leg: owned destination creation: {shortfall}"),
+                ));
+            }
         }
     }
     // Pending product launch BEFORE `open`: wrapper exit is never native
