@@ -10,7 +10,7 @@
 //! `v`, `revision`, and `bindings` stay native and are never mapped here.
 
 use tiler_core::settings_catalog::{
-    FieldDef, HostCaps, PanelSlot, SectionDef, SettingValue, Timing, Validity, find_field,
+    FieldDef, PanelSlot, SectionDef, SettingValue, Timing, Validity, find_field,
 };
 use tiler_core::settings_catalog::{TAB_DESKTOP_INTEGRATION, TAB_SHORTCUTS};
 
@@ -69,13 +69,6 @@ pub const WINDOWS_SECTIONS: &[SectionDef] = &[
     },
 ];
 
-/// Windows-only capabilities: exposed on Windows only.
-pub const WINDOWS_ONLY_CAPS: HostCaps = HostCaps {
-    windows: true,
-    kde: false,
-    macos: false,
-};
-
 /// Windows-only field IDs.
 pub const WINDOWS_FIELD_TAKEOVER: &str = "keyboard.takeover";
 pub const WINDOWS_FIELD_ALLOW_WIN_L: &str = "keyboard.allow-win-l";
@@ -103,7 +96,6 @@ pub const WINDOWS_ONLY_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Applies live on the next owner pump. Existing staged takeover stays on the native apply path.",
-        capabilities: WINDOWS_ONLY_CAPS,
         bounds_reason: "Boolean field; no numeric bound.",
     },
     FieldDef {
@@ -120,7 +112,6 @@ pub const WINDOWS_ONLY_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Applies live on the next owner pump; never claims reliable OS lock suppression.",
-        capabilities: WINDOWS_ONLY_CAPS,
         bounds_reason: "Boolean field; no numeric bound.",
     },
     FieldDef {
@@ -137,7 +128,6 @@ pub const WINDOWS_ONLY_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Applies live on the next owner pump; never touches registry or policy.",
-        capabilities: WINDOWS_ONLY_CAPS,
         bounds_reason: "Boolean field; no numeric bound.",
     },
     FieldDef {
@@ -154,7 +144,6 @@ pub const WINDOWS_ONLY_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Live edits hot-apply on the next owner pump.",
-        capabilities: WINDOWS_ONLY_CAPS,
         bounds_reason: "Boolean field; no numeric bound.",
     },
     FieldDef {
@@ -171,7 +160,6 @@ pub const WINDOWS_ONLY_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Live edits hot-apply on the next owner pump.",
-        capabilities: WINDOWS_ONLY_CAPS,
         bounds_reason: "Fixed #rrggbb grammar; malformed colors refuse instead of guessing.",
     },
     FieldDef {
@@ -188,7 +176,6 @@ pub const WINDOWS_ONLY_FIELDS: &[FieldDef] = &[
         options: &[],
         timing: Timing::Live,
         timing_help: "Live edits hot-apply on the next owner pump.",
-        capabilities: WINDOWS_ONLY_CAPS,
         bounds_reason: "Boolean field; no numeric bound.",
     },
 ];
@@ -880,7 +867,6 @@ mod tests {
             assert!(!field.help.is_empty(), "{}", field.id);
             assert!(!field.timing_help.is_empty(), "{}", field.id);
             assert!(!field.bounds_reason.is_empty(), "{}", field.id);
-            assert_eq!(field.capabilities, WINDOWS_ONLY_CAPS, "{}", field.id);
             assert_eq!(
                 tiler_core::settings_catalog::validate_field_value(field, &field.default),
                 Validity::Valid,
