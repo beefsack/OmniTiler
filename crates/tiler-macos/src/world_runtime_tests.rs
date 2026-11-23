@@ -1647,3 +1647,151 @@ fn entropy_failure_session_stays_unbound_and_admits_nothing() {
         "unbound session must reject even its own report"
     );
 }
+
+/// One current native domain matching [`domain_key`]'s output/workspace, so
+/// a retained homed member is emitted as a window row.
+fn cursor_ctx() -> NativeContext {
+    NativeContext {
+        revision: 3,
+        domains: vec![NativeDomain {
+            cg_id: 1,
+            uuid: None,
+            output: OutputId("macos-display-1".to_owned()),
+            workspace: WorkspaceId("space-11".to_owned()),
+            space: 11,
+            current: true,
+            readable: true,
+            bounds: Rect {
+                x: 0,
+                y: 0,
+                w: 1440,
+                h: 900,
+            },
+            visible: Rect {
+                x: 0,
+                y: 25,
+                w: 1440,
+                h: 875,
+            },
+        }],
+        skipped: Vec::new(),
+    }
+}
+
+fn cursor_session() -> WorldSession {
+    WorldSession::new(
+        true,
+        crate::focus_route::FocusRoute::Slps,
+        std::sync::Arc::new(crate::world_sequencer::ObservationClock::new()),
+        &[],
+    )
+}
+
+#[test]
+fn cursor_hit_attributes_only_live_homed_members() {
+    let domain = domain_key();
+    let retained = retained_with_window(1001, 1, &domain);
+    assert_eq!(
+        attribute_cursor_hit(&retained, Some((1001, 1))),
+        Some(WindowId("1001_1".to_owned())),
+        "exactly homed live member attributes"
+    );
+    // Chrome/desk or unreadable hit: the hit test honestly returns nothing.
+    assert_eq!(attribute_cursor_hit(&retained, None), None);
+    // Foreign app: no live retained generation under that pid.
+    assert_eq!(attribute_cursor_hit(&retained, Some((4242, 1))), None);
+    // Unhomed window of a known app.
+    assert_eq!(attribute_cursor_hit(&retained, Some((1001, 2))), None);
+    // Stale homing without a live app row never attributes (a relaunch
+    // clears retained rows, so an old (pid, wid) cannot resurrect).
+    let mut stale = RetainedCore::default();
+    stale.window_domains.insert(window_id(1001, 1), domain);
+    assert_eq!(attribute_cursor_hit(&stale, Some((1001, 1))), None);
+}
+
+#[test]
+fn stored_cursor_sample_persists_across_reports_without_claiming_focus() {
+    let domain = domain_key();
+    let retained = retained_with_window(1001, 1, &domain);
+    let hit = WindowId("1001_1".to_owned());
+    let mut session = cursor_session();
+    assert!(session.note_cursor_sample(CursorSample {
+        seq: 7,
+        point: (40, 50),
+        hit: Some(hit.clone()),
+    }));
+    // A repeated/older observer sequence never replaces the sample.
+    assert!(!session.note_cursor_sample(CursorSample {
+        seq: 7,
+        point: (0, 0),
+        hit: None,
+    }));
+    assert_eq!(
+        session.cursor_sample(),
+        Some(&CursorSample {
+            seq: 7,
+            point: (40, 50),
+            hit: Some(hit.clone()),
+        })
+    );
+
+    let dispatch = DispatchContext::Native(std::sync::Arc::new(cursor_ctx()));
+    // Two successive reports both carry the same sample: it is never
+    // consumed by a build (a resting pointer keeps its hover memory).
+    for request in 1..=2 {
+        let report = build_dispatch_report(
+            &mut session,
+            &retained,
+            &dispatch,
+            &[],
+            request,
+            request,
+            None,
+            None,
+            None,
+            &format!("req-{request}"),
+        )
+        .expect("native context reports");
+        assert_eq!(report.cursor, Some((40, 50)));
+        assert_eq!(report.cursor_hit, Some(hit.clone()));
+        // Hover is observation, never a focus claim.
+        assert_eq!(report.focused_global, "");
+        assert!(!report.foreground_known);
+        assert_eq!(report.focus_changes, None);
+    }
+}
+
+#[test]
+fn cursor_hit_withheld_when_the_window_is_not_emitted() {
+    let domain = domain_key();
+    let retained = retained_with_window(1001, 1, &domain);
+    let mut session = cursor_session();
+    // Attribution happened at sample time for a window that is no longer
+    // part of the report's emitted rows (e.g. closed since): the pair is
+    // withheld, but the stored sample survives for the next report.
+    assert!(session.note_cursor_sample(CursorSample {
+        seq: 3,
+        point: (5, 6),
+        hit: Some(WindowId("1001_2".to_owned())),
+    }));
+    let dispatch = DispatchContext::Native(std::sync::Arc::new(cursor_ctx()));
+    let report = build_dispatch_report(
+        &mut session,
+        &retained,
+        &dispatch,
+        &[],
+        1,
+        1,
+        None,
+        None,
+        None,
+        "req-1",
+    )
+    .expect("native context reports");
+    assert_eq!(report.cursor, None);
+    assert_eq!(report.cursor_hit, None);
+    assert!(
+        session.cursor_sample().is_some(),
+        "sample is never consumed"
+    );
+}

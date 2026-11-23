@@ -114,6 +114,28 @@ pub(crate) struct SwitchSettlement {
     pub focus: SwitchFocus,
 }
 
+/// One pointer sample stored on the session: the pointer point plus the
+/// window attributed to it AT SAMPLE TIME.
+///
+/// Attribution happens once, on the engine thread, when the sample job is
+/// processed — never at build time. A resting pointer therefore keeps its
+/// hover memory across reports (and after the pointer later moves or the
+/// window closes, the stored sample still names what was hovered). The
+/// unattributed raw owner is deliberately not kept: a later homing can
+/// never resurrect a foreign/chrome hit, and the builder only withholds a
+/// hit whose window no longer appears in the report it is shaping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CursorSample {
+    /// Observer sequence (monotonic per observer). Retries repeat the same
+    /// sequence; the engine acks per sequence, never a boolean.
+    pub seq: u64,
+    /// Pointer point in integer CG top-left points.
+    pub point: (i32, i32),
+    /// Homed member window under the pointer, or `None` for chrome,
+    /// foreign apps, and unreadable hits.
+    pub hit: Option<WindowId>,
+}
+
 /// Engine-thread-owned world session: the retained [`WorldEngine`], the
 /// adapter-side [`WorldSequencer`], pending attempt feedback, and the
 /// completion-correlation maps. None of this is shared: submitters reach
@@ -160,6 +182,11 @@ pub(crate) struct WorldSession {
     /// Staged on covering roster prune and terminate; drained only on an
     /// applied or duplicate reply, never on NoReport or refusal.
     pub(crate) pending_closes: BTreeSet<WindowId>,
+    /// Latest pointer sample (sample-time attributed hit). Persists across
+    /// dispatches: a build never clears it, so a resting pointer keeps its
+    /// hover memory and every report re-pairs the same sample until the
+    /// observer posts a newer one.
+    cursor_sample: Option<CursorSample>,
     /// Startup-resolved presentation style numbers for the report ingress.
     /// Synced from shared state on every dispatch (the engine thread owns
     /// this copy; the main thread publishes it once at startup).
@@ -244,6 +271,7 @@ impl WorldSession {
                 pending_close_feedback: None,
                 coverage_gap: false,
                 pending_closes: BTreeSet::new(),
+                cursor_sample: None,
                 presentation_style: crate::active_border::PresentationStylePx::default(),
                 connection_bound: false,
                 initial_settings: None,
@@ -283,6 +311,7 @@ impl WorldSession {
             pending_close_feedback: None,
             coverage_gap: false,
             pending_closes: BTreeSet::new(),
+            cursor_sample: None,
             presentation_style: crate::active_border::PresentationStylePx::default(),
             connection_bound,
             initial_settings,
@@ -579,6 +608,30 @@ impl WorldSession {
         self.coverage_gap
     }
 
+    /// Store one sample-time attributed pointer sample. Returns whether the
+    /// sample was accepted: a repeated or older observer sequence is ignored
+    /// (the observer retries one pending sample until the engine acks it, so
+    /// a duplicate delivery carries no new truth), while the newest sample
+    /// always replaces the stored one. The sample is never cleared by a
+    /// build: reports re-pair the stored sample, so a resting pointer keeps
+    /// its hover memory.
+    pub(crate) fn note_cursor_sample(&mut self, sample: CursorSample) -> bool {
+        if self
+            .cursor_sample
+            .as_ref()
+            .is_some_and(|stored| stored.seq >= sample.seq)
+        {
+            return false;
+        }
+        self.cursor_sample = Some(sample);
+        true
+    }
+
+    /// The stored pointer sample, if any (read-only; never consumed).
+    pub(crate) fn cursor_sample(&self) -> Option<&CursorSample> {
+        self.cursor_sample.as_ref()
+    }
+
     fn take_view_attempts(&mut self) -> Vec<ViewAttempt> {
         std::mem::take(&mut self.pending_views)
             .into_values()
@@ -863,6 +916,27 @@ fn report_members(
     out
 }
 
+/// Attribute one AX hit owner `(pid, wid)` to a live retained member window.
+///
+/// Both legs must be current: the window must be exactly homed
+/// ([`RetainedCore::window_domains`]) and its app must still be a live
+/// retained generation ([`RetainedCore::apps`]). A chained app relaunch
+/// clears its retained rows, so a stale `(pid, wid)` never resurrects
+/// through a new generation. Foreign apps, chrome/desk surfaces (the hit
+/// test returns no owning window), and unreadable hits (`owner` None)
+/// attribute to nothing.
+pub(crate) fn attribute_cursor_hit(
+    retained: &RetainedCore,
+    owner: Option<(u32, u32)>,
+) -> Option<WindowId> {
+    let (pid, wid) = owner?;
+    let id = window_id(pid, wid);
+    if !retained.window_domains.contains_key(&id) || !retained.apps.contains_key(&pid) {
+        return None;
+    }
+    Some(WindowId(id))
+}
+
 /// Dispatch context for one report: native topology plus the skeleton
 /// fallback. Empty native contexts never report (KDE null parity).
 pub(crate) enum DispatchContext {
@@ -912,6 +986,14 @@ pub(crate) fn build_dispatch_report(
     // genuine windowless proof, otherwise unknown. Never invent known from
     // bare absence.
     let foreground_known = !focused_global.is_empty() || retained.observed_focus_known;
+    // Stored pointer sample (sample-time attribution): never consumed here,
+    // so a resting pointer keeps its hover memory across reports. The
+    // builder withholds the pair unless the hit still names a window row
+    // emitted below, and a missing sample omits the pair entirely.
+    let (cursor, cursor_hit) = match session.cursor_sample() {
+        Some(sample) => (Some(sample.point), sample.hit.clone()),
+        None => (None, None),
+    };
     match dispatch {
         DispatchContext::Native(ctx) => {
             let keys: Vec<DomainKey> = ctx
@@ -1042,6 +1124,8 @@ pub(crate) fn build_dispatch_report(
                 gesture_barrier: false,
                 primary_output: None,
                 monotonic_ms: crate::input_eligibility::now_ms(),
+                cursor,
+                cursor_hit,
                 presentation,
             };
             let report = build_report(&mut input);
@@ -1124,6 +1208,8 @@ pub(crate) fn build_dispatch_report(
                 gesture_barrier: false,
                 primary_output: None,
                 monotonic_ms: crate::input_eligibility::now_ms(),
+                cursor,
+                cursor_hit,
                 presentation: crate::world_builder::build_presentation_ingress(
                     &focused_global,
                     &members,

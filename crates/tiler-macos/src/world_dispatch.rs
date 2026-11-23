@@ -52,6 +52,8 @@ fn reply_token(op: &'static str, outcome: &'static str) -> &'static str {
     match (op, outcome) {
         ("reconcile", "accepted") => "reconcile-accepted",
         ("reconcile", "consumed") => "reconcile-consumed",
+        ("cursor", "accepted") => "cursor-accepted",
+        ("cursor", "consumed") => "cursor-consumed",
         ("focus", "accepted") => "focus-accepted",
         ("focus", "consumed") => "focus-consumed",
         ("move", "accepted") => "move-accepted",
@@ -5179,6 +5181,7 @@ mod tests {
             start: Instant::now(),
             apps: BTreeMap::new(),
             clock: Arc::new(crate::world_sequencer::ObservationClock::new()),
+            cursor_ack_seq: 0,
             midflight_hook: Mutex::new(None),
             post_accept_hook: Mutex::new(None),
             topology: None,

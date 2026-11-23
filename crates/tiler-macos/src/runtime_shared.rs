@@ -308,6 +308,11 @@ pub(crate) struct Shared {
     /// no new input must not move the mark); reports stamp only actually
     /// submitted input.
     pub(crate) clock: Arc<ObservationClock>,
+    /// Engine-acknowledged pointer-sample sequence: the observer posts one
+    /// pending sample at a time and retries it until this reaches that
+    /// sample's sequence (per-sequence ack, never a boolean). Ignored
+    /// duplicate/older deliveries still ack monotonically.
+    pub(crate) cursor_ack_seq: u64,
     /// Deterministic-test rendezvous: when set, the engine thread invokes
     /// the hook once per opened flight (after the ticket stamps the current
     /// watermark, before the report builds) with no locks held, so a test

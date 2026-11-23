@@ -32,6 +32,7 @@ fn main() {
 fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
     match request.command {
         Command::Help => Ok(tiler_macos::cli::help_text()),
+        Command::CursorProbe => tiler_macos::cursor_probe::run(),
         Command::SpacesGrabDiagnose => tiler_macos::space_grab_diagnose::run(),
         Command::McRemoveEmpty {
             space,
@@ -773,6 +774,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             seconds,
             chords,
             preset,
+            focus_follows_cursor,
             signer,
         } => {
             // Development-only fixture leg: the complete real entry point
@@ -783,6 +785,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 preset,
                 modifier: request.modifier,
                 signer,
+                focus_follows_cursor,
             })
         }
         Command::TextEditGrabInspect { record, nonce } => {
@@ -975,6 +978,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             pager_highlight,
             drag,
             indicator,
+            focus_follows_cursor,
         } => {
             // Tile session: explicit start + product selection validated
             // inside; tap product route, Authentic/Compatible preset.
@@ -1017,10 +1021,16 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             // settings route: core owns validation/defaulting with per-field
             // diagnostics, so invalid values never refuse startup here.
             // Collected BEFORE `border` shadows the CLI struct below.
-            let core_settings = tiler_macos::dev_selection::collect_raw_core_settings(
+            let mut core_settings = tiler_macos::dev_selection::collect_raw_core_settings(
                 &border,
                 file.active_border.as_ref(),
             );
+            if focus_follows_cursor {
+                core_settings.push((
+                    "focusFollowsCursor".to_owned(),
+                    tiler_core::connection::RawSettingValue::Bool(true),
+                ));
+            }
             let border = tiler_macos::dev_selection::resolve_border_config(
                 &border,
                 file.active_border.as_ref(),

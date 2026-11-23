@@ -307,6 +307,17 @@ pub(crate) struct ReportInput<'a> {
     /// Adapter monotonic clock in milliseconds (arbitrary process epoch).
     /// `0` means unreported (stage 1: no clock source claimed).
     pub monotonic_ms: u64,
+    /// Sampled pointer point in integer CG top-left points. Paired emission
+    /// only: the pair rides when [`Self::cursor_hit`] is also set AND that
+    /// window appears in this same report's `windows` rows; otherwise both
+    /// omit (core refuses an unpaired or unresolved hit). The sample is
+    /// produced by the engine thread's stored cursor sample, never
+    /// re-attributed here.
+    pub cursor: Option<(i32, i32)>,
+    /// Window attributed to the pointer at SAMPLE time (engine thread).
+    /// The builder never re-reads AX or re-attributes: it only withholds a
+    /// stale hit that no longer resolves to an emitted window row.
+    pub cursor_hit: Option<WindowId>,
     /// Presentation ingress facts for the reply presentation shapes (see
     /// [`build_presentation_ingress`]). Built by the dispatcher from
     /// retained truth.
@@ -364,9 +375,21 @@ impl<'a> ReportInput<'a> {
             gesture_barrier: false,
             primary_output: None,
             monotonic_ms: 0,
+            cursor: None,
+            cursor_hit: None,
             presentation: tiler_core::world_report::PresentationIngressV4::default(),
         }
     }
+}
+
+/// Core carried-point bound (`valid_carried_point` in
+/// `world_report_v4_checks`): a point outside this inclusive range is
+/// withheld rather than emitted unvalidated, so every produced report
+/// still passes [`validate_report_v4_reason`](
+/// tiler_core::world_report_v4_checks::validate_report_v4_reason).
+fn valid_cursor_point(point: (i32, i32)) -> bool {
+    const LIMIT: i32 = 32768;
+    (-LIMIT..=LIMIT).contains(&point.0) && (-LIMIT..=LIMIT).contains(&point.1)
 }
 
 /// Build one complete world report. Infallible over the typed inputs; id
@@ -635,6 +658,22 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReportV4 {
         && input.ctx.skipped.is_empty()
         && !input.roster_incomplete;
 
+    // Cursor/hover is observation, never a focus claim (focus truth rides
+    // `focused_global`/`foreground_known` untouched). Paired emission only:
+    // both halves present AND the sample-time hit still names a window row
+    // emitted in THIS report. A hit that no longer resolves (closed,
+    // minimized, foreign, or otherwise withheld) omits the pair rather than
+    // naming a window the core cannot join; the sample itself stays on the
+    // session, so a resting pointer keeps its hover memory across reports.
+    let (cursor, cursor_hit) = match (input.cursor, input.cursor_hit.as_ref()) {
+        (Some(point), Some(hit))
+            if valid_cursor_point(point) && windows.iter().any(|row| &row.window == hit) =>
+        {
+            (Some(point), Some(hit.clone()))
+        }
+        _ => (None, None),
+    };
+
     WorldReportV4 {
         contract_version: WORLD_CONTRACT_VERSION_V4,
         adapter_incarnation: input.adapter_incarnation.to_owned(),
@@ -651,8 +690,8 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReportV4 {
         closed,
         native,
         held_native: Vec::new(),
-        cursor: None,
-        cursor_hit: None,
+        cursor,
+        cursor_hit,
         focused_global: input.focused_global.to_owned(),
         foreground_known: input.foreground_known,
         focus_changes: None,
@@ -3982,5 +4021,77 @@ mod tests {
         let mut engine = production_engine();
         let reply = accepted(&report, &mut engine);
         assert_eq!(reply.presentation.foreground, "1001_1");
+    }
+
+    /// Build one report carrying an explicit cursor sample pair over one
+    /// homed member window (`1001_1` on display-1 space-11).
+    fn cursor_report(cursor: Option<(i32, i32)>, cursor_hit: Option<WindowId>) -> WorldReportV4 {
+        let ctx = two_display_ctx();
+        let members: BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> = BTreeMap::from([(
+            key("macos-display-1", "space-11"),
+            vec![(1001u32, observed(1, 0, 0, 100, 100))],
+        )]);
+        let memory = empty_memory();
+        let closed: Vec<WindowId> = Vec::new();
+        let unreadable: BTreeMap<DomainKey, HoldReason> = BTreeMap::new();
+        let owned_id = "req-cursor".to_owned();
+        let mut input = ReportInput::new(
+            INCARNATION,
+            GENERATION,
+            &ctx,
+            1,
+            1,
+            &owned_id,
+            &members,
+            &memory,
+            &closed,
+            &unreadable,
+            &[],
+            "",
+            false,
+        );
+        let raw = realistic_raw_for(&members);
+        input.raw = &raw;
+        input.cursor = cursor;
+        input.cursor_hit = cursor_hit;
+        build_report(&mut input)
+    }
+
+    #[test]
+    fn cursor_pair_rides_only_with_a_hit_emitted_in_the_same_report() {
+        let hit = WindowId("1001_1".to_owned());
+        let report = cursor_report(Some((10, 20)), Some(hit.clone()));
+        assert_eq!(report.cursor, Some((10, 20)));
+        assert_eq!(report.cursor_hit, Some(hit));
+        assert!(validate_report_v4_reason(&report).is_none());
+
+        // Hit names a window this report does not emit: both halves are
+        // withheld rather than emitting an unjoinable pair.
+        let report = cursor_report(Some((10, 20)), Some(WindowId("1001_2".to_owned())));
+        assert_eq!(report.cursor, None);
+        assert_eq!(report.cursor_hit, None);
+        assert!(validate_report_v4_reason(&report).is_none());
+
+        // A half-set pair never rides.
+        let report = cursor_report(Some((10, 20)), None);
+        assert_eq!(report.cursor, None);
+        assert_eq!(report.cursor_hit, None);
+
+        // Out-of-bound points are withheld so the report still validates.
+        let report = cursor_report(Some((40_000, 0)), Some(WindowId("1001_1".to_owned())));
+        assert_eq!(report.cursor, None);
+        assert_eq!(report.cursor_hit, None);
+        assert!(validate_report_v4_reason(&report).is_none());
+    }
+
+    #[test]
+    fn cursor_pair_never_claims_focus() {
+        // Hover is observation: the focus fields stay exactly as supplied
+        // (empty/unknown here), with the pair present.
+        let report = cursor_report(Some((10, 20)), Some(WindowId("1001_1".to_owned())));
+        assert_eq!(report.cursor, Some((10, 20)));
+        assert_eq!(report.focused_global, "");
+        assert!(!report.foreground_known);
+        assert_eq!(report.focus_changes, None);
     }
 }

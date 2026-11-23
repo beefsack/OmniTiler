@@ -300,6 +300,7 @@ impl Runtime {
                 start: Instant::now(),
                 apps: BTreeMap::new(),
                 clock: Arc::new(ObservationClock::new()),
+                cursor_ack_seq: 0,
                 midflight_hook: Mutex::new(None),
                 post_accept_hook: Mutex::new(None),
                 topology: None,
@@ -363,6 +364,7 @@ impl Runtime {
             start: Instant::now(),
             apps: BTreeMap::new(),
             clock: Arc::new(ObservationClock::new()),
+            cursor_ack_seq: 0,
             midflight_hook: Mutex::new(None),
             post_accept_hook: Mutex::new(None),
             topology: None,
@@ -800,6 +802,49 @@ impl RuntimeHandle {
             lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
             SubmitOutcome::EngineQueueFull
         }
+    }
+
+    /// Submit one bounded pointer/hover sample from the cursor observer.
+    /// `seq` is the observer's monotonic delivery identity (retries repeat
+    /// the same sequence); `point` is the integer CG top-left point;
+    /// `owner` is the AX hit owner read at sample time or `None` for an
+    /// honest miss (chrome/desk, foreign app, unreadable). The engine
+    /// attributes the owner against live retained truth at job time and
+    /// stores the sample on the session — the observer never touches
+    /// retained state.
+    ///
+    /// Data lane: a saturated queue refuses as `EngineQueueFull` (counted)
+    /// and the observer keeps the sample pending for a bounded retry. The
+    /// shared watermark advances before enqueue (see `invalidate_clock`),
+    /// so the report this sample dispatches is stamped as newer observed
+    /// input rather than racing an in-flight reply.
+    pub(crate) fn submit_cursor_sample(
+        &self,
+        seq: u64,
+        point: (i32, i32),
+        owner: Option<(u32, u32)>,
+    ) -> SubmitOutcome {
+        if !engine_alive(&self.shared) {
+            return SubmitOutcome::AdmissionClosed;
+        }
+        // Bump before enqueue (see `invalidate_clock`).
+        invalidate_clock(&self.shared);
+        if self
+            .inbox
+            .try_send_data(EngineJob::CursorSample { seq, point, owner })
+        {
+            SubmitOutcome::Accepted
+        } else {
+            lock_shared(&self.shared).diagnostics.data_dropped_full += 1;
+            SubmitOutcome::EngineQueueFull
+        }
+    }
+
+    /// The engine-acknowledged pointer-sample sequence (per-sequence ack,
+    /// never a boolean). The observer retries its one pending sample until
+    /// this reaches that sample's `seq`.
+    pub(crate) fn cursor_sample_ack(&self) -> u64 {
+        lock_shared(&self.shared).cursor_ack_seq
     }
 
     /// Publish a native topology snapshot from the main-thread controller.

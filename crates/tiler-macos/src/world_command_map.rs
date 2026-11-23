@@ -25,6 +25,7 @@ use crate::runtime_core::RetainedCore;
 
 /// Static op tokens for diagnostics/ring (legacy `core_replies` vocabulary
 /// carries over as `{op}-{outcome}`; tests pin the prefixes).
+pub(crate) const OP_CURSOR: &str = "cursor";
 pub(crate) const OP_RECONCILE: &str = "reconcile";
 pub(crate) const OP_FOCUS: &str = "focus";
 pub(crate) const OP_MOVE: &str = "move";

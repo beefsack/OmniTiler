@@ -397,6 +397,7 @@ mod tests {
             start: Instant::now(),
             apps: BTreeMap::new(),
             clock: Arc::new(ObservationClock::new()),
+            cursor_ack_seq: 0,
             midflight_hook: std::sync::Mutex::new(None),
             post_accept_hook: std::sync::Mutex::new(None),
             topology: None,

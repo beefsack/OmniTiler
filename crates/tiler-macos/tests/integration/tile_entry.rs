@@ -576,6 +576,7 @@ fn tile_request(words: &[&str]) -> TileRequest {
         pager_highlight: _,
         drag: _,
         indicator: _,
+        focus_follows_cursor: _,
     } = parsed.command
     else {
         panic!("expected tile, got {:?}", parsed.command);

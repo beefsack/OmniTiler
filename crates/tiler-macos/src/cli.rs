@@ -222,6 +222,7 @@ pub enum Command {
         seconds: u64,
         chords: Vec<String>,
         preset: crate::input_policy::InputPreset,
+        focus_follows_cursor: bool,
         signer: String,
     },
     TextEditGrabInspect {
@@ -305,6 +306,7 @@ pub enum Command {
     ProcIdentity {
         pid: u32,
     },
+    CursorProbe,
     SpacesGrabDiagnose,
     CgInspect,
     CgDiff {
@@ -398,6 +400,9 @@ pub enum Command {
         /// Raw workspace-indicator selections (all unset = defaults; the
         /// settings file fills the gaps in `main`, then startup config).
         indicator: crate::workspace_indicator::IndicatorCli,
+        /// Push output.focusFollowsCursor true through the core settings
+        /// route (CLI only; never writes settings files).
+        focus_follows_cursor: bool,
     },
     WorkspaceIndicatorStatus,
     WorkspaceIndicatorProof {
@@ -482,7 +487,7 @@ pub fn help_text() -> String {
             \x20 \x20 --watchdog-only is 2..=5s with no helper/posts: arms the tap,\n\
             \x20 \x20 parks past the hard watchdog, dirty exit is the evidence; input LIVE only,\n\
             \x20 \x20 no tiling, no frame writes)\n\
-           \x20 tile --user-start (--scope BUNDLE [--scope BUNDLE ...] | --unscoped [--exclude BUNDLE ...]) [--seconds N] [--input tap|off] [--preset authentic|compatible] [--log normal|verbose|trace] [--ctrl meta|ctrl|alt|shift]\n\
+           \x20 tile --user-start (--scope BUNDLE [--scope BUNDLE ...] | --unscoped [--exclude BUNDLE ...]) [--seconds N] [--input tap|off] [--preset authentic|compatible] [--log normal|verbose|trace] [--ctrl meta|ctrl|alt|shift] [--focus-follows-cursor]\n\
            \x20 \x20 (tile session: explicit --user-start plus a product selection are\n\
            \x20 \x20 mandatory — either a non-empty scoped allowlist (Ghostty/own/\n\
            \x20 \x20 unknown bundles never write) or --unscoped for ordinary apps on\n\
@@ -526,6 +531,7 @@ pub fn help_text() -> String {
            \x20 \x20 fixture-owned Space gate (exact fixture scope, never\n\
            \x20 \x20 unscoped, explicit harness run directory; absent leaves\n\
            \x20 \x20 the normal product unchanged);\n\
+           \x20 \x20 --focus-follows-cursor pushes output.focus-follows-cursor true to the core settings route (CLI only; never writes settings files);\n\
            \x20 \x20 Compatible writes no native settings; Authentic ensures\n\
            \x20 \x20 Switch to Desktop 1..9 holders once at startup (even with\n\
            \x20 \x20 --input off) with owned preimages, explicit\n\
@@ -725,6 +731,7 @@ pub fn help_text() -> String {
              \x20 spaces-select [--display N] --action ID [--action ID ...]\n\
              \x20 \x20 (select-only batch, e.g. workspace-select-0, workspace-select-1, workspace-previous; changes persist, history lasts this invocation; the product tile arms the 18 existing-Space selects as hotkeys, trailing select-0 stays explicit-only)\n\
              \x20 spaces-grab-diagnose (bounded owned helper, unfiltered CG/AX/input hit snapshots before/after MC; zero synthetic posts)\n\
+             \x20 cursor-probe (read-only one-shot pointer/AX hit/role diagnostic; no posts, no settings writes)\n\
              \x20 spaces-drag-transfer --original SID (--temp SID | --temporary) [--seconds N] --allow-untested [--numbered]\n\
             \x20 \x20 (bounded owned titlebar-drag transfer, default 120s,\n\
             \x20 \x20 minimum 60s: one owned helper, independent public\n\
@@ -2240,6 +2247,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             let mut seconds = 90u64;
             let mut chords: Vec<String> = Vec::new();
             let mut preset = crate::input_policy::InputPreset::Compatible;
+            let mut focus_follows_cursor = false;
             let mut signer: Option<String> = None;
             let mut j = 0;
             while j < args.len() {
@@ -2263,6 +2271,9 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                         j += 1;
                         signer = Some(args.get(j).ok_or("--signer needs a value")?.clone());
                     }
+                    "--focus-follows-cursor" => {
+                        focus_follows_cursor = true;
+                    }
                     other => return Err(format!("fixture-leg: unknown arg '{other}'")),
                 }
                 j += 1;
@@ -2281,6 +2292,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 seconds,
                 chords,
                 preset,
+                focus_follows_cursor,
                 signer: signer.ok_or("fixture-leg needs --signer")?,
             }
         }
@@ -2674,6 +2686,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             let mut excluded: Vec<String> = Vec::new();
             let mut diag_stay: Option<u8> = None;
             let mut diag_trailing_click = false;
+            let mut focus_follows_cursor = false;
             let mut log = crate::tile::TileLogLevel::default();
             let mut run_dir: Option<String> = None;
             let mut fixture_owned_spaces: Vec<u64> = Vec::new();
@@ -2837,6 +2850,9 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                     "--no-workspace-indicator-icons" => {
                         indicator.icons = Some(false);
                     }
+                    "--focus-follows-cursor" => {
+                        focus_follows_cursor = true;
+                    }
                     other => return Err(format!("tile: unknown arg '{other}'")),
                 }
                 j += 1;
@@ -2858,6 +2874,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 pager_highlight,
                 drag,
                 indicator,
+                focus_follows_cursor,
                 diag_stay,
                 diag_trailing_click,
             }
@@ -3312,6 +3329,12 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 benign_pids,
             }
         }
+        "cursor-probe" => {
+            if !args.is_empty() {
+                return Err("cursor-probe takes no arguments".to_owned());
+            }
+            Command::CursorProbe
+        }
         "spaces-grab-diagnose" => {
             if !args.is_empty() {
                 return Err("spaces-grab-diagnose takes no arguments".to_owned());
@@ -3350,6 +3373,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             | Command::TextEditGrabInspect { .. }
             | Command::CgOwnedWindows { .. }
             | Command::CgInspect
+            | Command::CursorProbe
             | Command::CgDiff { .. }
             | Command::OwnedFrame { .. }
             | Command::FixtureFrameSample { .. }

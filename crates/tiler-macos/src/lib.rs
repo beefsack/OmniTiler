@@ -37,6 +37,8 @@ pub mod cli;
 #[cfg(test)]
 mod cli_tests;
 pub mod config;
+mod cursor_observer;
+pub mod cursor_probe;
 pub mod desktop_shortcuts;
 #[cfg(test)]
 mod desktop_shortcuts_tests;

@@ -900,6 +900,7 @@ fn fixture_commands_parse_with_announcement_identity_and_fixture_chords() {
             chords,
             preset,
             signer,
+            focus_follows_cursor: _,
         } => {
             assert_eq!(seconds, 120);
             assert_eq!(chords, vec!["focus-h".to_owned(), "select-1".to_owned()]);
@@ -930,6 +931,22 @@ fn fixture_commands_parse_with_announcement_identity_and_fixture_chords() {
         }
         _ => panic!("fixture-leg defaults must parse"),
     }
+    let with_ffc = parse_args(&argv(&[
+        "fixture-leg",
+        "--chord",
+        "focus-h",
+        "--signer",
+        "designated => test",
+        "--focus-follows-cursor",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        with_ffc.command,
+        Command::FixtureLeg {
+            focus_follows_cursor: true,
+            ..
+        }
+    ));
     // Missing chords, unknown chords, and a missing signer refuse at parse
     // (exit 2), before any baseline or effect.
     assert!(parse_args(&argv(&["fixture-leg", "--signer", "designated => test"])).is_err());
@@ -2544,6 +2561,33 @@ fn tile_never_implies_scope_or_start() {
 }
 
 #[test]
+fn tile_focus_follows_cursor_defaults_off_and_parses_explicitly() {
+    let absent = parse_args(&argv(&["tile"])).unwrap();
+    assert!(matches!(
+        absent.command,
+        Command::Tile {
+            focus_follows_cursor: false,
+            ..
+        }
+    ));
+    let present = parse_args(&argv(&[
+        "tile",
+        "--user-start",
+        "--unscoped",
+        "--focus-follows-cursor",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        present.command,
+        Command::Tile {
+            focus_follows_cursor: true,
+            ..
+        }
+    ));
+    assert!(help_text().contains("[--focus-follows-cursor]"));
+}
+
+#[test]
 fn tile_diag_stay_index_parses_and_defaults_to_none() {
     // Absent flag: no injection (product table unchanged).
     let r = parse_args(&argv(&["tile", "--user-start", "--scope", "x"])).unwrap();
@@ -3317,6 +3361,16 @@ fn grab_diagnose_is_explicit_mutation_and_takes_no_arguments() {
     let mut extra = args;
     extra.push("--ignored".to_owned());
     assert!(crate::cli::parse_args(&extra).is_err());
+}
+
+#[test]
+fn cursor_probe_is_read_only_and_takes_no_arguments() {
+    let request = parse_args(&argv(&["cursor-probe"])).unwrap();
+    assert_eq!(request.command, Command::CursorProbe);
+    assert!(!request.may_mutate);
+    let error = parse_args(&argv(&["cursor-probe", "--ignored"])).unwrap_err();
+    assert_eq!(error, "cursor-probe takes no arguments");
+    assert!(help_text().contains("cursor-probe"));
 }
 
 #[test]

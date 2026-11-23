@@ -101,6 +101,8 @@ pub struct FixtureLegOpts {
     /// verification output at preflight; machine-specific, never hardcoded
     /// here). Empty refuses before any post.
     pub signer: String,
+    /// Forward the tile command's CLI-only focus-follows-cursor override.
+    pub focus_follows_cursor: bool,
 }
 
 /// Own signed bundle root for a controller executable running from the
@@ -484,6 +486,9 @@ fn product_argv(
         "--run-dir".to_owned(),
         product_dir.to_string_lossy().into_owned(),
     ];
+    if opts.focus_follows_cursor {
+        argv.push("--focus-follows-cursor".to_owned());
+    }
     for sid in owned_sids {
         argv.push("--fixture-owned-space".to_owned());
         argv.push(sid.to_string());
@@ -1156,6 +1161,7 @@ mod tests {
             preset: InputPreset::Compatible,
             modifier: ProbeModifier::Ctrl,
             signer: "designated => test".to_owned(),
+            focus_follows_cursor: false,
         }
     }
 
@@ -1248,6 +1254,16 @@ mod tests {
         let argv = product_argv(&post, product_dir, &[], None);
         assert!(!argv.iter().any(|arg| arg == "--fixture-owned-space"));
         assert!(!argv.iter().any(|arg| arg == "--fixture-starting-space"));
+        assert!(!argv.iter().any(|arg| arg == "--focus-follows-cursor"));
+        let mut ffc = test_opts(vec!["focus-h"]);
+        ffc.focus_follows_cursor = true;
+        let argv = product_argv(&ffc, product_dir, &[], None);
+        assert_eq!(
+            argv.iter()
+                .filter(|arg| *arg == "--focus-follows-cursor")
+                .count(),
+            1
+        );
     }
 
     #[test]

@@ -26,7 +26,7 @@ use crate::runtime_lifecycle::EngineExit;
 use crate::runtime_log::sanitize_backend_reason;
 use crate::runtime_types::ScopedBackendSnapshot;
 use crate::world_command_map::{
-    OP_DRAG_GESTURE, OP_RECONCILE, OP_SELECT, OP_SEND, OP_TERMINATE, operation_command,
+    OP_CURSOR, OP_DRAG_GESTURE, OP_RECONCILE, OP_SELECT, OP_SEND, OP_TERMINATE, operation_command,
     select_command, select_output,
 };
 use crate::world_dispatch::{DispatchVerdict, dispatch_gesture_report, dispatch_report};
@@ -47,6 +47,21 @@ pub(crate) enum EngineJob {
     Terminate {
         pid: u32,
         generation: u64,
+    },
+    /// Pointer/hover sample from the bounded cursor observer (the only
+    /// thread performing AX hit tests on a cadence): the pointer point plus
+    /// the AX hit owner read at sample time (`None` = honest miss: chrome/
+    /// desk, foreign app, or unreadable). The engine attributes the owner to
+    /// a live homed member at JOB time, stores the sample on the session
+    /// (persisting across dispatches, never re-read at build time), acks the
+    /// sequence, and dispatches one report so focus-follows-cursor can
+    /// mint. Hover is observation, never a focus claim. Data lane (drops
+    /// counted when full, never blocking); the observer retries one pending
+    /// sample until the ack reaches its sequence.
+    CursorSample {
+        seq: u64,
+        point: (i32, i32),
+        owner: Option<(u32, u32)>,
     },
     Observation {
         pid: u32,
@@ -354,6 +369,7 @@ impl EngineJob {
             self,
             Self::Observation { .. }
                 | Self::ScopedObservation { .. }
+                | Self::CursorSample { .. }
                 | Self::ViewAttempt { .. }
                 | Self::MemberAttempt { .. }
                 | Self::NativeCreation { .. }
@@ -1576,6 +1592,41 @@ pub(crate) fn process_job(
                 generation,
                 0,
             );
+        }
+        EngineJob::CursorSample { seq, point, owner } => {
+            // Ack every delivery, including a duplicate/older sequence: the
+            // observer's bounded retry ends on the ack, not on acceptance.
+            {
+                let mut guard = lock_shared(shared);
+                guard.cursor_ack_seq = guard.cursor_ack_seq.max(seq);
+            }
+            // Sample-time attribution: the hit is resolved exactly once,
+            // here, and the stored sample is never re-attributed at build
+            // time — a resting pointer keeps its hover memory.
+            let hit = crate::world_runtime::attribute_cursor_hit(retained, owner);
+            let sample = crate::world_runtime::CursorSample { seq, point, hit };
+            if session.note_cursor_sample(sample) {
+                // A stored sample dispatches one report so the core can mint
+                // focus-follows-cursor; hover never claims focus itself.
+                let dispatch = dispatch_context(shared, session);
+                dispatch_report(
+                    session,
+                    retained,
+                    shared,
+                    inbox,
+                    focus_queue,
+                    focus_capacity,
+                    dispatch,
+                    Vec::new(),
+                    None,
+                    None,
+                    false,
+                    OP_CURSOR,
+                    0,
+                    0,
+                    seq,
+                );
+            }
         }
         EngineJob::Observation {
             pid,
@@ -3237,6 +3288,7 @@ mod trailing_join_tests {
             start: Instant::now(),
             apps: BTreeMap::new(),
             clock: Arc::new(ObservationClock::new()),
+            cursor_ack_seq: 0,
             midflight_hook: Mutex::new(None),
             post_accept_hook: Mutex::new(None),
             topology: None,
@@ -4257,6 +4309,51 @@ mod trailing_join_tests {
             Arc::new(Inbox::new(16)),
             Arc::new(Mutex::new(Vec::new())),
         )
+    }
+
+    #[test]
+    fn cursor_sample_job_stores_acks_and_dispatches_one_report() {
+        use tiler_core::directional::WindowId;
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(ctx(), retained_occupied_trailing());
+        process_job(
+            EngineJob::CursorSample {
+                seq: 1,
+                point: (10, 20),
+                owner: Some((4243, 9)),
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            0,
+        );
+        // The engine acks the sample sequence and stores the sample-time
+        // attributed hit on the session (never re-attributed at build time).
+        assert_eq!(lock_shared(&shared).cursor_ack_seq, 1);
+        assert_eq!(
+            session.cursor_sample(),
+            Some(&crate::world_runtime::CursorSample {
+                seq: 1,
+                point: (10, 20),
+                hit: Some(WindowId("4243_9".to_owned())),
+            })
+        );
+        // The job dispatched exactly one report through the production reply
+        // path: both cursor outcomes are enumerated in `reply_token`, so a
+        // live cursor reply can never hit the debug-assert fallback.
+        let replies = lock_shared(&shared).diagnostics.core_replies.clone();
+        let cursor_replies: u64 = replies
+            .iter()
+            .filter(|(token, _)| token.starts_with("cursor-"))
+            .map(|(_, count)| *count)
+            .sum();
+        assert_eq!(cursor_replies, 1, "one cursor report: {replies:?}");
+        assert!(
+            replies.contains_key("cursor-accepted") || replies.contains_key("cursor-consumed"),
+            "cursor dispatch takes the enumerated reply path: {replies:?}"
+        );
     }
 
     /// Fixture admission gate: the genuine handshake binds the session
@@ -10871,6 +10968,7 @@ mod drag_gesture_handoff_tests {
             start: Instant::now(),
             apps: BTreeMap::new(),
             clock: Arc::new(ObservationClock::new()),
+            cursor_ack_seq: 0,
             midflight_hook: Mutex::new(None),
             post_accept_hook: Mutex::new(None),
             topology: None,

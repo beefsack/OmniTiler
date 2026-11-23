@@ -2415,6 +2415,20 @@ mod native {
         // takes flags before its first park).
         select_controller.set_wake(wake_signal.clone());
         send_controller.set_wake(wake_signal.clone());
+        // Bounded pointer/hover observer (`phase1-cursor`): the only thread
+        // that performs AX hit tests on a cadence (the main thread stays
+        // AppKit-only; the engine thread does no AX). Spawned after the last
+        // fallible setup; a spawn denial merely leaves hover unsampled
+        // (tiling and focus are unaffected) and is reported once. The
+        // observer is stopped and joined before engine shutdown below, so no
+        // sample races teardown.
+        let mut cursor_observer = match crate::cursor_observer::spawn(handle.clone()) {
+            Ok(observer) => Some(observer),
+            Err(reason) => {
+                eprintln!("tiler-macos: cursor observer not started: {reason}");
+                None
+            }
+        };
         // Bounded runs end at the soft deadline (the watchdog above is the
         // hard lifetime); unbounded product runs loop until owner exit or
         // exact-PID stop.
@@ -3797,6 +3811,12 @@ mod native {
                 }
             }
         }
+        // Stop the hover observer before the engine: it submits through the
+        // same inbox, so joining first guarantees no cursor sample races
+        // shutdown (the handle's drop is the safety net).
+        if let Some(observer) = cursor_observer.as_mut() {
+            observer.stop();
+        }
         let report = handle.shutdown(SHUTDOWN_BOUND);
         let diagnostics = handle.diagnostics();
         // The hard lifetime is met on bounded runs: cancel the watchdog
@@ -4107,6 +4127,7 @@ mod native {
                 start: Instant::now(),
                 apps: BTreeMap::new(),
                 clock: Arc::new(crate::world_sequencer::ObservationClock::new()),
+                cursor_ack_seq: 0,
                 midflight_hook: std::sync::Mutex::new(None),
                 post_accept_hook: std::sync::Mutex::new(None),
                 topology: None,
