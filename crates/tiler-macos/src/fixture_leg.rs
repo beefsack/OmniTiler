@@ -608,10 +608,27 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
                 "teardown": teardown,
             })
             .to_string()),
-            Err(teardown) => Err((
-                teardown.0,
-                format!("chords posted but teardown refused: {}", teardown.1),
-            )),
+            Err(teardown) => {
+                // Chords were posted and proven before `finish`; keep their
+                // driver reports in the refusal so the completed posts stay
+                // auditable instead of being dropped with the teardown
+                // detail. The teardown body is already JSON; embed it as
+                // data when it parses (a malformed body stays a string).
+                let teardown_body = match serde_json::from_str::<serde_json::Value>(&teardown.1) {
+                    Ok(value) => value,
+                    Err(_) => serde_json::Value::String(teardown.1),
+                };
+                Err((
+                    teardown.0,
+                    serde_json::json!({
+                        "stage": "leg-finish",
+                        "error": "chords posted but teardown refused",
+                        "chords": reports,
+                        "teardown": teardown_body,
+                    })
+                    .to_string(),
+                ))
+            }
         },
         Err(error) => {
             if let Err(teardown) = leg.finish() {

@@ -154,6 +154,10 @@ const SOCKET_SPAWN_REQUEST_ID: &str = "fixture-harness-spawn";
 /// unambiguous there).
 const SOCKET_CLOSE_REQUEST_ID: &str = "fixture-harness-close";
 
+/// Request id for the harness's own focus-acquisition exchanges (one
+/// connection per call, so a constant stays unambiguous there).
+const SOCKET_FOCUS_REQUEST_ID: &str = "fixture-harness-focus";
+
 /// Request id for the harness's own server-shutdown exchange.
 const SOCKET_SHUTDOWN_REQUEST_ID: &str = "fixture-harness-shutdown";
 
@@ -249,6 +253,93 @@ pub fn send_fixture_close(
     {
         let _ = (socket_path, request);
         Err("socket: fixture transport is Unix-only".to_owned())
+    }
+}
+
+/// Focus one exact caller window through the fixture's own supported
+/// control: one nonce-gated `set` carrying the one-shot `focus:true` action.
+/// The fixture host performs its native focus request (winit `focus_window`:
+/// activate the app, then make that window key), which is what moves the
+/// selected window when the fixture is already frontmost. The harness's
+/// SLPS dispatch only fronts the app; its key-window event record is a
+/// same-app no-op, so it cannot select a different window of that app.
+/// A request only: arrival is proven separately by
+/// [`crate::focus::await_agreement`], never this reply. Unix-only like
+/// every other fixture exchange.
+pub fn send_fixture_focus(
+    socket_path: &str,
+    nonce: &str,
+    caller: &str,
+) -> Result<serde_json::Value, String> {
+    if !caller_id_valid(caller) {
+        return Err("focus: caller id malformed; refusing".to_owned());
+    }
+    let request = serde_json::json!({
+        "v": 1,
+        "request_id": SOCKET_FOCUS_REQUEST_ID,
+        "nonce": nonce,
+        "op": "set",
+        "ids": [caller],
+        "patch": {"focus": true},
+    });
+    #[cfg(unix)]
+    {
+        socket_round_trip(socket_path, &request, SOCKET_FOCUS_REQUEST_ID)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (socket_path, request);
+        Err("socket: fixture transport is Unix-only".to_owned())
+    }
+}
+
+/// Pure focus-request verdict over one fixture `set` reply: the request id
+/// must echo ours, the request must be `ok`, the selected caller's entry
+/// must be `ok`, and its per-field outcomes must carry an accepted
+/// `focus`. Server text and per-window detail never travel into the error.
+/// An accepted request is still only dispatch: the caller proves arrival
+/// with the focus agreement oracle. Unit-tested.
+pub(crate) fn parse_fixture_focus_reply(
+    reply: &serde_json::Value,
+    request_id: &str,
+    caller: &str,
+) -> Result<(), String> {
+    let echo = reply
+        .get("request_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if echo != request_id {
+        return Err("focus: socket reply id mismatch".to_owned());
+    }
+    if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Err("focus: fixture server refused the focus request".to_owned());
+    }
+    let entry = reply
+        .get("result")
+        .and_then(|result| result.get("windows"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|windows| {
+            windows
+                .iter()
+                .find(|entry| entry.get("id").and_then(serde_json::Value::as_str) == Some(caller))
+        })
+        .ok_or_else(|| "focus: fixture reply lacks the caller entry".to_owned())?;
+    if entry.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Err("focus: fixture server refused the caller window".to_owned());
+    }
+    let accepted = entry
+        .get("fields")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|fields| {
+            fields.iter().any(|outcome| {
+                outcome.get("field").and_then(serde_json::Value::as_str) == Some("focus")
+                    && outcome.get("status").and_then(serde_json::Value::as_str) == Some("accepted")
+            })
+        });
+    if accepted {
+        Ok(())
+    } else {
+        Err("focus: fixture server did not accept the focus action".to_owned())
     }
 }
 
@@ -1932,6 +2023,15 @@ impl<'a, T: FixtureTransport> FixtureDriver<'a, T> {
         let proof_us = proof_start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
         let dispatch = crate::focus::dispatch_focus(self.session.pid, wid)
             .map_err(|e| refuse("focus-dispatch", e.to_string()))?;
+        // The SLPS dispatch above fronts the fixture app but cannot select a
+        // different window of an app that is already frontmost (its key
+        // event record is a same-app no-op). The fixture's own supported
+        // focus action activates it and makes exactly that window key; its
+        // arrival is still proven by the selected oracle below, never by
+        // the request's accepted reply.
+        send_fixture_focus(&self.session.socket_path, &self.session.nonce, caller)
+            .and_then(|reply| parse_fixture_focus_reply(&reply, SOCKET_FOCUS_REQUEST_ID, caller))
+            .map_err(|e| refuse("focus-request", format!("dispatch sent but {e}")))?;
         let (agreement, latency_ms) =
             crate::focus::await_agreement(self.session.pid, wid, Duration::from_secs(5))
                 .map_err(|e| refuse("focus-agreement", e.to_string()))?;
@@ -3914,7 +4014,7 @@ mod tests {
         let path_string = path.to_string_lossy().into_owned();
         let nonce = NONCE.to_owned();
         std::thread::spawn(move || {
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let (mut conn, _) = server.accept().expect("test accept");
                 conn.set_read_timeout(Some(Duration::from_secs(5))).ok();
                 let mut reader = BufReader::new(conn.try_clone().expect("test clone"));
@@ -3937,6 +4037,17 @@ mod tests {
                             ]},
                         })
                     }
+                    "set" => {
+                        assert_eq!(request["ids"], serde_json::json!(["a"]));
+                        assert_eq!(request["patch"], serde_json::json!({"focus": true}));
+                        serde_json::json!({
+                            "v": 1, "request_id": request_id, "ok": true,
+                            "result": {"windows": [{
+                                "id": "a", "ok": true,
+                                "fields": [{"field": "focus", "status": "accepted"}],
+                            }]},
+                        })
+                    }
                     "shutdown" => serde_json::json!({
                         "v": 1, "request_id": request_id, "ok": true, "result": {},
                     }),
@@ -3951,8 +4062,55 @@ mod tests {
         assert_eq!(close["ok"], true);
         assert!(send_fixture_close(&path_string, NONCE, &[]).is_err());
         assert!(send_fixture_close(&path_string, NONCE, &["bad id"]).is_err());
+        let focus = send_fixture_focus(&path_string, NONCE, "a").expect("focus exchanges");
+        parse_fixture_focus_reply(&focus, SOCKET_FOCUS_REQUEST_ID, "a")
+            .expect("accepted focus request parses");
+        assert!(send_fixture_focus(&path_string, NONCE, "bad id").is_err());
         let down = send_fixture_shutdown(&path_string, NONCE).expect("shutdown exchanges");
         assert_eq!(down["ok"], true);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn focus_reply_parser_requires_an_accepted_focus_action() {
+        let accepted = serde_json::json!({
+            "v": 1, "request_id": SOCKET_FOCUS_REQUEST_ID, "ok": true,
+            "result": {"windows": [{
+                "id": "a", "ok": true,
+                "fields": [{"field": "focus", "status": "accepted"}],
+            }]},
+        });
+        parse_fixture_focus_reply(&accepted, SOCKET_FOCUS_REQUEST_ID, "a")
+            .expect("accepted focus parses");
+        // Reply-id drift, request refusal, unknown caller, unsupported
+        // focus, and a missing field list all refuse; server text never
+        // travels into the error.
+        let mut wrong_id = accepted.clone();
+        wrong_id["request_id"] = serde_json::json!("other-id");
+        assert!(parse_fixture_focus_reply(&wrong_id, SOCKET_FOCUS_REQUEST_ID, "a").is_err());
+        let refused = serde_json::json!({
+            "v": 1, "request_id": SOCKET_FOCUS_REQUEST_ID,
+            "ok": false, "error": "bad nonce",
+        });
+        let err = parse_fixture_focus_reply(&refused, SOCKET_FOCUS_REQUEST_ID, "a").unwrap_err();
+        assert!(!err.contains("bad nonce"), "server text leaks: {err}");
+        let unknown = serde_json::json!({
+            "v": 1, "request_id": SOCKET_FOCUS_REQUEST_ID, "ok": true,
+            "result": {"windows": [{"id": "a", "ok": false, "fields": []}]},
+        });
+        assert!(parse_fixture_focus_reply(&unknown, SOCKET_FOCUS_REQUEST_ID, "a").is_err());
+        let unsupported = serde_json::json!({
+            "v": 1, "request_id": SOCKET_FOCUS_REQUEST_ID, "ok": true,
+            "result": {"windows": [{
+                "id": "a", "ok": true,
+                "fields": [{"field": "focus", "status": "unsupported"}],
+            }]},
+        });
+        assert!(parse_fixture_focus_reply(&unsupported, SOCKET_FOCUS_REQUEST_ID, "a").is_err());
+        let missing = serde_json::json!({
+            "v": 1, "request_id": SOCKET_FOCUS_REQUEST_ID, "ok": true,
+            "result": {"windows": []},
+        });
+        assert!(parse_fixture_focus_reply(&missing, SOCKET_FOCUS_REQUEST_ID, "a").is_err());
     }
 }
