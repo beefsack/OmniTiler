@@ -509,6 +509,15 @@ impl WorldSequencer {
         self.warp_spent = warp_spent;
     }
 
+    /// Read back the witness fields staged for the next report, exactly as
+    /// [`Self::note_report_witness`] left them: the raw-input pointer
+    /// generation (`None` when uninstalled) and the exact warp id spent
+    /// this generation. Read-only; the staged values are unchanged.
+    #[must_use]
+    pub(super) fn report_witness(&self) -> (Option<u64>, Option<String>) {
+        (self.pointer_activity, self.warp_spent.clone())
+    }
+
     /// Stage one raw view attempt for the next report, replacing any entry
     /// for the same owning view phase (same ack semantics as frames).
     pub(super) fn note_view_attempt(&mut self, attempt: ViewAttempt) {

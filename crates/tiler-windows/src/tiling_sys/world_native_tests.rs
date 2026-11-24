@@ -511,6 +511,7 @@ struct Env {
 }
 
 fn env_with(base_hwnd: u64) -> Env {
+    static ENV_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     reset_script();
     // Scripted fixtures exercise the durable marker lane offline: the base
     // HWND owns marker slots while every other native read stays with the
@@ -519,8 +520,12 @@ fn env_with(base_hwnd: u64) -> Env {
     crate::product_hide::sys::fake::register_marks(base_hwnd);
     let mut state = test_state();
     state.ensure_device(DEV1);
+    // One directory per environment, not per base HWND: several tests share
+    // a fixture HWND, and parallel `LedgerStore` opens on the same directory
+    // would contend on its lock.
+    let seq = ENV_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = std::env::temp_dir().join(format!(
-        "omnitiler-world-native-{}-{base_hwnd}",
+        "omnitiler-world-native-{}-{base_hwnd}-{seq}",
         std::process::id()
     ));
     std::fs::create_dir_all(&tmp).expect("temp dir");
