@@ -3164,10 +3164,7 @@ pub(super) fn apply_world_reply(
         }
         // Arm the view phase immediately before dispatch; late proofs
         // cannot rearm it, so a possibly-executed switch never repeats.
-        // An unreadable pre is the one exception: the switch may have run
-        // to reveal a hidden target, so a later readable pass must report
-        // the proof instead of leaving the flight permanently unreadable.
-        if pre.is_some() && !effects.mark_view_spent(&op) {
+        if !effects.mark_view_spent(&op) {
             stats.held += 1;
             continue;
         }
