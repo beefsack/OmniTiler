@@ -404,6 +404,11 @@ struct TileLoop {
     /// `oN` ids). Synced from live monitor areas; native-wire ids only,
     /// never rings/views/tiling/history policy.
     output_tokens: HashMap<String, String>,
+    /// Adapter-read physical identity per live GDI device name, refreshed on
+    /// every monitor check including identity-only changes. A device with no
+    /// entry is explicit unknown; a failed identity query clears the map
+    /// rather than retaining a stale guess.
+    monitor_identities: HashMap<String, tiler_core::world_report::OutputIdentity>,
     /// Adapter-retained last applied logical homing per Engine token (from
     /// the last applied reply rows). Receipts prove this commitment with
     /// fresh evidence; the core remains the sole homing authority.
@@ -911,6 +916,7 @@ mod scope_sends;
 mod scope_hotplug;
 
 mod monitors;
+pub(crate) mod output_identity;
 mod shell;
 mod tray_select;
 

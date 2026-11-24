@@ -72,6 +72,7 @@ pub(super) fn test_state() -> TileLoop {
         applied_homing: std::collections::HashMap::new(),
         applied_views: std::collections::HashMap::new(),
         output_tokens: std::collections::HashMap::new(),
+        monitor_identities: std::collections::HashMap::new(),
         member_tokens: std::collections::BTreeMap::new(),
         member_rects: std::collections::HashMap::new(),
         hidden_claims: std::collections::BTreeMap::new(),

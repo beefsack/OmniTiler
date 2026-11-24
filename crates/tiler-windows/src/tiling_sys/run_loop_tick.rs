@@ -285,6 +285,11 @@ pub(super) fn run_active_tick(
     // instead of a fixed 2s poll.
     if monitor_check {
         let fresh = all_monitors()?;
+        // Identity refreshes on every monitor check, including an
+        // identity-only change: a panel/port swap with unchanged rectangles
+        // must still refresh. A failed query is unknown for every output
+        // rather than a retained guess.
+        state.monitor_identities = crate::ffi::monitor_identities().unwrap_or_default();
         let devices: Vec<String> = areas.iter().map(|a| a.device.clone()).collect();
         let fresh_devices: Vec<String> = fresh.iter().map(|a| a.device.clone()).collect();
         let geometry_changed = fresh.len() != *monitor_count

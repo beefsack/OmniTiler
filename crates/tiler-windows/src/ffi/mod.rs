@@ -47,6 +47,7 @@
 
 pub mod accent;
 pub mod cloak;
+pub mod display_identity;
 pub mod dpi;
 pub mod enumeration;
 pub mod fs;
@@ -75,6 +76,7 @@ pub use cloak::{
     EXPECTED_BUILD as CLOAK_EXPECTED_BUILD, check_experimental_gate, cloak_hwnd, cloak_mask_of,
     taskbar_add_tab, taskbar_delete_tab, uncloak_hwnd,
 };
+pub use display_identity::monitor_identities;
 pub use dpi::{set_process_pm_v2, system_metric, system_metric_for_dpi, thread_pm_v2_active};
 pub use enumeration::{
     MonitorInfo, enumerate_child_windows, enumerate_monitors, enumerate_windows,

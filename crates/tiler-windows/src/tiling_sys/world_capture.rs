@@ -259,6 +259,9 @@ pub(super) struct OwnerInputs<'a> {
     /// Mechanical device-to-wire-output map (native device keys to opaque
     /// `oN` ids). Native-wire ids only, never rings/views/tiling/history.
     pub output_tokens: &'a HashMap<String, String>,
+    /// Adapter-read physical identity per live GDI device name (same keys as
+    /// `areas[].device`). Absent entry is explicit unknown.
+    pub monitor_identities: &'a HashMap<String, OutputIdentity>,
     /// Adapter-retained cached output context as a neutral device fact
     /// (empty when none): the report maps it to wire for the core-owned
     /// migration/control action legs. Never an adapter output decision.
@@ -333,6 +336,7 @@ impl TileLoop {
         scope: &'a [String],
         settings_live: &'a Option<LiveSettings>,
         output_tokens: &'a HashMap<String, String>,
+        monitor_identities: &'a HashMap<String, OutputIdentity>,
         active_output: &'a str,
         applied_homing: &'a HashMap<String, (String, String)>,
         applied_views: &'a HashMap<String, String>,
@@ -370,6 +374,7 @@ impl TileLoop {
             scope,
             settings_live,
             output_tokens,
+            monitor_identities,
             active_output,
             applied_homing,
             applied_views,
@@ -415,6 +420,7 @@ impl TileLoop {
             scope: &self.scope,
             settings_live: &self.settings_live,
             output_tokens: &self.output_tokens,
+            monitor_identities: &self.monitor_identities,
             active_output: self.active_output.as_str(),
             applied_homing: &self.applied_homing,
             applied_views: &self.applied_views,
@@ -1427,9 +1433,13 @@ pub(super) fn capture_world(
             // Effective per-monitor DPI measured at the enumeration seam:
             // adapter units per logical pixel.
             scale: f64::from(area.dpi) / 96.0,
-            // No physical-identity producer (QDC/SetupAPI EDID) on this
-            // route yet: explicit unknown, never fabricated strings.
-            identity: OutputIdentity::unknown(),
+            // Adapter-read physical identity for this exact device; a device
+            // the map does not know is explicit unknown, never fabricated.
+            identity: state
+                .monitor_identities
+                .get(&area.device)
+                .cloned()
+                .unwrap_or_else(OutputIdentity::unknown),
         });
     }
     // Every device the adapter knows a live wire id for, whether or not its
@@ -2349,5 +2359,128 @@ mod foreground_output_tests {
         ));
         let captured = capture_world(&inputs, Some(&observed), &[], &areas, 101);
         assert!(captured.foreground_output.is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Adapter identity side-map capture: a screen carries exactly the
+    /// adapter-read identity for its own device, and an absent key is
+    /// explicit unknown.
+    mod identity_capture_tests {
+        use super::super::super::MonitorArea;
+        use super::super::super::rmax03_adapter_tests::test_state;
+        use super::super::capture_world;
+        use tiler_core::geometry::Rect;
+        use tiler_core::world_report::OutputIdentity;
+
+        fn area(device: &str, x: i32) -> MonitorArea {
+            MonitorArea {
+                device: device.to_owned(),
+                work: Rect {
+                    x,
+                    y: 0,
+                    w: 800,
+                    h: 560,
+                },
+                full: Rect {
+                    x,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                },
+                dpi: 96,
+            }
+        }
+
+        fn areas() -> Vec<MonitorArea> {
+            vec![area("DEV-A", 0), area("DEV-B", 800)]
+        }
+
+        fn identity(
+            manufacturer: &str,
+            model: &str,
+            serial: &str,
+            connector: &str,
+        ) -> OutputIdentity {
+            OutputIdentity {
+                manufacturer: Some(manufacturer.to_owned()),
+                model: Some(model.to_owned()),
+                serial: Some(serial.to_owned()),
+                connector: Some(connector.to_owned()),
+            }
+        }
+
+        /// Identity carried on the screen row for one live device (the
+        /// capture keys screens by wire output id, so the wire id must be
+        /// read before the seam borrows the state).
+        fn screen_identity(
+            state: &super::super::super::TileLoop,
+            device: &str,
+        ) -> OutputIdentity {
+            let wire = state.wire_of(device).expect("device carries a wire id");
+            let captured = capture_world(&state.inputs(), Some(&[]), &[], &areas(), 0);
+            let screen = captured
+                .screens
+                .iter()
+                .find(|screen| screen.output.0 == wire)
+                .expect("device rides a screen row");
+            screen.identity.clone()
+        }
+
+        #[test]
+        fn identity_rides_the_device_side_map() {
+            let mut state = test_state();
+            state.ensure_device("DEV-A");
+            state.ensure_device("DEV-B");
+            let expected = identity("Acme", "Panel-9000", "SN-123", "DP-1");
+            state
+                .monitor_identities
+                .insert("DEV-A".to_owned(), expected.clone());
+
+            assert_eq!(screen_identity(&state, "DEV-A"), expected);
+            assert_eq!(screen_identity(&state, "DEV-B"), OutputIdentity::unknown());
+        }
+
+        #[test]
+        fn identity_missing_from_the_map_is_unknown() {
+            let mut state = test_state();
+            state.ensure_device("DEV-A");
+            state.ensure_device("DEV-B");
+
+            assert_eq!(screen_identity(&state, "DEV-A"), OutputIdentity::unknown());
+            assert_eq!(screen_identity(&state, "DEV-B"), OutputIdentity::unknown());
+        }
+
+        #[test]
+        fn identity_overbound_text_is_carried_whole() {
+            let mut state = test_state();
+            state.ensure_device("DEV-A");
+            state.ensure_device("DEV-B");
+            let overbound = "m".repeat(300);
+            state.monitor_identities.insert(
+                "DEV-A".to_owned(),
+                identity("Acme", &overbound, "SN-123", "DP-1"),
+            );
+
+            let carried = screen_identity(&state, "DEV-A");
+            let model = carried.model.expect("model rides the identity");
+            assert_eq!(model.len(), 300);
+            assert_eq!(model, overbound);
+        }
+
+        #[test]
+        fn identity_entry_for_absent_device_is_ignored() {
+            let mut state = test_state();
+            state.ensure_device("DEV-A");
+            state.ensure_device("DEV-B");
+            state.monitor_identities.insert(
+                "DEV-GONE".to_owned(),
+                identity("Acme", "Panel-9000", "SN-123", "DP-1"),
+            );
+
+            assert_eq!(screen_identity(&state, "DEV-A"), OutputIdentity::unknown());
+            assert_eq!(screen_identity(&state, "DEV-B"), OutputIdentity::unknown());
+        }
     }
 }

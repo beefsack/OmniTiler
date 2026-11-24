@@ -216,6 +216,7 @@ pub(super) fn run_tile_loop(
         applied_homing: HashMap::new(),
         applied_views: HashMap::new(),
         output_tokens: HashMap::new(),
+        monitor_identities: HashMap::new(),
         member_tokens: std::collections::BTreeMap::new(),
         member_rects: HashMap::new(),
         hidden_claims: std::collections::BTreeMap::new(),
@@ -377,6 +378,9 @@ pub(super) fn run_tile_loop(
     // logical rings/views from the first report screens. The cached output
     // context primes below; trailing lifecycle is core-owned.
     sync_monitor_outputs(&mut state, &areas);
+    // Physical identity is an adapter-read fact independent of geometry.
+    // A failed query is unknown for every output this run.
+    state.monitor_identities = crate::ffi::monitor_identities().unwrap_or_default();
     if state.active_output.is_empty()
         && let Some(first) = state.known_outputs.first().cloned()
     {
