@@ -1138,6 +1138,33 @@ run after the port:
   fullscreen replacement, and a live display work-area change. Do not infer
   those from the offline fakes.
 
+## D4 native intent-store restart proof (2026-11-24)
+
+- Scope: one bounded signed-fixture leg at `1c90b677`, using an isolated
+  intent store under the leg's owned run directory. The real per-user store
+  fingerprint was unchanged before/after and no `intent-v1*` row appeared
+  there. The probe/harness changes were diagnostic-only and were not ported.
+- Sequence: launch fixture A (two windows) → first product → float A and
+  confirm the durable row before B exists → launch fixture B (two windows)
+  → second product ingests the staggered report → orderly stop → third
+  product over the same store → focus, add a B window, toggle another A
+  window → stop and exact teardown.
+- Evidence: A's float row was durable before B's PID existed; B's row was
+  hydrated on its later report. A and B float frames were identical before
+  and after restart. Store rows were byte-identical after the first stop,
+  after the second stop and after restart. The post-restart toggle wrote and
+  read back a new row. Both products reported `shutdown_clean:true`; teardown
+  left no fixture/probe processes, run directories or receipts.
+- Assertion limit: the probe's `frames_equal_across_restart` was hardcoded and
+  its tile predicate ignored tile position. The observed App A tile/float
+  overlap is the documented float-outside-tree model plus slot re-adoption,
+  not late hydration: two tiles split the work area while floats keep native
+  frames. A future rerun should compare the tile-rect multiset, keep float
+  size+position exact, and record expected overlap rather than failing it.
+- Unproved here: store failure/recovery, re-login namespace rejection,
+  numeric launch-date stability beyond the observed in-session rows, and
+  native visual z-order after restart.
+
 ## Transferable KDE lessons
 
 - Fail closed: unknown never matches; setter acceptance is not native settlement ([runner oracles](v4-phase2-kde-scenario-runner.md#selected-design)).
