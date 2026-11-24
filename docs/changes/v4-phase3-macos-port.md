@@ -1166,6 +1166,11 @@ run after the port:
   interaction, external move/resize clear, fullscreen replacement,
   send/output/work-area changes and restart-to-base. Do not infer those from
   the offline fakes or from this apply/restore proof.
+- External-clear attempt (not retained): a synthetic ordinary-frame AX write
+  while maximized was read as an observation but carried no committed
+  gesture, and the product re-applied the composed overlay. Core clear is
+  gesture-commit attributed, so a native external-clear proof needs a real
+  move/resize (physical or an attributed gesture), not a raw frame write.
 
 ## D4 native intent-store restart proof (2026-11-24)
 
