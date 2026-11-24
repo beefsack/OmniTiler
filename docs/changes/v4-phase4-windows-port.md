@@ -319,19 +319,51 @@ not exercised; moving the iconic window itself as the sent subject is also
 unproven. The strict stress harness still cannot encode this row without a
 minimize/restore observation op and a minimized-aware oracle.
 
+#### Multi-output send + positive retained warp (manual fixture, 2026-11-25, clean 1d00b766)
+
+Two connected outputs with different effective scales (primary 1.25,
+secondary 1.0) were used read-only; no display mode or DPI change. Both
+outputs reported presence-only identity `[manufacturer=true, model=true,
+serial=true, connector=false]`; no identity values were read. The settings
+preimage was captured and restored byte-exact. Startup settings were accepted
+at revision 4; after both fixture windows were admitted and the source
+focused, a live settings update at revision 5 enabled `core.cursor_warp`,
+which the owner logged as accepted and adopted before dispatch. One fixture
+window per output was admitted controlled (`o1/ws-1`, `o2/ws-2`), and the
+accepted `desired_geometry` carried exactly two screen rows with positive
+scales.
+
+`send-output --follow --direction right` dispatched through the exact-owner
+CLI (edge `cli`, production `workspace-output` send-applied tick 7). The
+settled accepted row was tick 8: subject `o2/ws-2`, both authorities
+controlled, frame `960x1032 @ 3520,355`; native readback matched exactly
+(delta 0), inside the destination, visible, windowed, focused; the source
+output carried zero desires; no pending transfers or operations; exactly two
+sentinel titles (no ghost/duplicate). The same mint apply (tick 7, index 96)
+carried `warp-0`, target = subject, revision 12, output `o2`, workspace
+`ws-2`, point `[4000,871]`, `pointer_baseline: 0`, `warp_capability: true`,
+and `cursor_warps: 1`. The requested point equals the clamp of both the
+mint-time and settled subject-frame centre. Actual cursor readback after
+settlement was `[4000,871]`; all post-dispatch `pointer_activity` values
+remained `0`, so the adapter's setter did not self-count. The retirement ack
+`warp_spent: warp-0` is a staged report witness and appears on the next
+emitted apply row (index 105), not the mint row; that row split is expected.
+The finally path restored the pre-test cursor with bounded `SetCursorPos` and
+readback, stopped the exact owner, shut down the fixture, restored the
+settings bytes and SPI state, and left no owned ledger, process, request
+file, or fixture window.
+
 Not run in this evidence (explicit TBD, not claimed):
 
-- Multi-monitor/mixed-DPI transitions: the stress harness is single-output by
-  contract and refuses a multi-screen report; no multi-output fixture seam.
 - Forced-crash/R12 recovery: no isolated throwaway session was used; the
   bounded owned-resource crash lane is unrun.
-- Fullscreen/game safety: no fixture op creates fullscreen or paused-game
-  conditions; unrun.
-- Live settings revisions (refused and `RestartRequired`): no fixture op
-  drives revisions through the live owner; unrun.
-- End-to-end positive warp on multi-output choreography: the single-output
-  harness refuses multi-screen, and the C3 live receipt only proves the
-  witness/setter property, not a core-minted cross-output warp; unrun.
+- Fullscreen/game safety: the fixture supports fullscreen mode, but no
+  fullscreen or paused-game leg has run; game/anti-cheat acceptance remains
+  user-owned.
+- Live settings refused revision and `RestartRequired`: the accepted startup
+  and live cursor-warp revisions are proven above, and unit tests cover the
+  refused/restart paths; no live fixture seam has exercised those two
+  outcomes.
 - Iconic window as the moved subject and the minimized-preserving reveal
   (`SW_SHOWMINNOACTIVE`): unproven. The iconic-resident mover-send evidence
   above is manual; the strict stress schema has no `minimize`/`restore`
