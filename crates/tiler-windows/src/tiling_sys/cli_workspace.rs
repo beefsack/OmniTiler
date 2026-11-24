@@ -6,11 +6,11 @@ use super::*;
 /// Reuses the production Win+F11 authority verbatim: the `toggle_gate_outcome`
 /// suspend/elevated fence (owned-fullscreen exemption preserved), a fresh
 /// observation, the live-foreground `snap_origins` origin (never a carried
-/// HWND), the `member_matches` origin binding, the `revalidate_target`
+/// HWND), the `member_matches` origin binding, and the `revalidate_target`
 /// focus/identity/scope/lifetime/proof gates with the focus-relaxed overlay
-/// allowance, and the `fullscreen_toggle_decision` direction (including the
-/// app-owned R-MAX-05 refusal) plus `enter_fullscreen`/`exit_fullscreen_owned`
-/// with the same post-restore reconcile. Consume-once, exact-owner, and proof
+/// allowance; the direction (including the app-owned R-MAX-05 refusal) and
+/// the enter/exit actuation are the core's `ToggleFullscreen` command on the
+/// single state lane. Consume-once, exact-owner, and proof
 /// refusal ride the shared `poll_workspace_cli_request` prefix; this runs only
 /// after those pass. Logs `fullscreen-toggle` with edge `cli`.
 fn dispatch_fullscreen_cli_toggle(
@@ -142,7 +142,7 @@ fn dispatch_fullscreen_cli_toggle(
     let from = origin.token.clone();
     let proof_mode = state.allowlist.is_some();
     let member_tag = state.member_tags.get(&member_key).map(String::as_str);
-    let target = match revalidate_target(
+    if let Err(reason) = revalidate_target(
         expected,
         me,
         fulls,
@@ -154,60 +154,60 @@ fn dispatch_fullscreen_cli_toggle(
         &state.scope_hosts,
         true,
     ) {
-        Ok(target) => target,
-        Err(reason) => {
-            if reason == "identity-changed" {
-                drop_member_state(state, &member_key);
-            }
-            let mut line = settle(reason);
-            line["origin"] = serde_json::Value::from(origin.token.clone());
-            log_json_at(&state.log_path, line);
-            return;
+        if reason == "identity-changed" {
+            drop_member_state(state, &member_key);
         }
-    };
-    let _held = &target.held;
-    let now_fullscreen = target.window.facts.captionless_fullscreen;
-    let meta = read_fullscreen_meta(member_key.hwnd);
-    let (target_label, outcome) = match fullscreen_toggle_decision(now_fullscreen, meta.is_some()) {
-        crate::tiling::FullscreenToggle::RefuseAppOwned => {
-            ("fullscreen", "fullscreen-refused-app-owned")
-        }
-        crate::tiling::FullscreenToggle::Enter => {
-            let full = output_for_rect(areas, &target.window.visible);
-            let full = areas
-                .iter()
-                .find(|a| a.device == full)
-                .map(|area| area.full)
-                .or_else(|| areas.first().map(|area| area.full));
-            match full {
-                Some(full) => ("fullscreen", enter_fullscreen(member_key.hwnd, full)),
-                None => ("fullscreen", "unknown-output"),
-            }
-        }
-        crate::tiling::FullscreenToggle::ExitOwned => {
-            let meta = meta.expect("decision owns metadata");
-            let outcome = exit_fullscreen_owned(member_key.hwnd, &meta);
-            if outcome == "restored" && !meta.was_maximized {
-                let fulls_owned = fulls.to_vec();
-                reconcile_tick(state, me, store, dir, &fulls_owned, areas);
-            }
-            ("restored", outcome)
-        }
-    };
-    log_json_at(
-        &state.log_path,
-        serde_json::json!({
-            "event": "fullscreen-toggle",
-            "tick": tick,
-            "correlation": correlation.as_str(),
-            "edge": "cli",
-            "disposition": "consumed",
-            "outcome": outcome,
-            "target": target_label,
-            "origin": origin.token,
-            "window": from,
-        }),
+        let mut line = settle(reason);
+        line["origin"] = serde_json::Value::from(origin.token.clone());
+        log_json_at(&state.log_path, line);
+        return;
+    }
+    // World-owned toggle: the core decides the direction from its staged
+    // facts and owned-fullscreen metadata and refuses an app-owned frame
+    // with its closed kind; the applied reply performs the enter/exit
+    // through the single state lane. The applied reply IS the outcome; this
+    // seam never writes natively.
+    let foreground = crate::ffi::foreground_window();
+    let reply = super::world_tick::run_world_command(
+        state,
+        me,
+        store,
+        dir,
+        &observed,
+        &retained,
+        areas,
+        foreground,
+        fulls,
+        tiler_core::world_report::WorldCommand::ToggleFullscreen {
+            window: tiler_core::directional::WindowSubject::Window(
+                tiler_core::directional::WindowId(from.clone()),
+            ),
+        },
+        super::observation::sample_cursor(),
     );
+    let (outcome, target_label) = super::keyboard_overlays::state_toggle_labels(
+        reply.as_ref(),
+        &from,
+        tiler_core::world_report::StateProperty::Fullscreen,
+        "fullscreen",
+    );
+    let mut line = serde_json::json!({
+        "event": "fullscreen-toggle",
+        "tick": tick,
+        "correlation": correlation.as_str(),
+        "edge": "cli",
+        "disposition": "consumed",
+        "outcome": outcome,
+        "target": target_label,
+        "origin": origin.token,
+        "window": from,
+    });
+    if let Some(tiler_core::world_report::CommandResult::Rejected { kind }) =
+        reply.as_ref().and_then(|outcome| outcome.result.as_ref())
+    {
+        line["cause"] = serde_json::Value::from(kind.as_str());
+    }
+    log_json_at(&state.log_path, line);
 }
 
 /// Exact-owner out-of-hook float toggle for the normal `tile` loop only

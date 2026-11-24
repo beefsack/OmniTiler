@@ -156,11 +156,12 @@ use crate::model::ProcessIdentity;
 use crate::native_guards::WindowKey;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use tiler_core::directional::{OutputId, WindowId};
+use tiler_core::intent_data::IntentData;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_report::{
-    AuthorityScope, HeldScreenRow, NativeWorkspaceFact, OutputIdentity, PresentationIngressV4,
-    PresentationPagerFrameV4, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport,
-    VisibilityFact, WindowFact,
+    AuthorityScope, FullscreenOwner, HeldScreenRow, IntentRecord, NativeWorkspaceFact,
+    OutputIdentity, PresentationIngressV4, PresentationPagerFrameV4, RowDiagnostic,
+    RowDiagnosticKind, RowDiagnosticLane, ScreenReport, VisibilityFact, WindowFact,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::WS_EX_TOOLWINDOW;
 
@@ -218,6 +219,20 @@ pub(super) struct OwnerInputs<'a> {
     /// their own reads. A claim with no entry holds as unreadable rather
     /// than inventing suppression or host hiding.
     pub hidden_reads: Option<&'a BTreeMap<WindowKey, HiddenClaimRead>>,
+    /// Owned fullscreen metadata for this tick's bound lifetimes, keyed by
+    /// the exact lifetime (built by the tick from the marker read before
+    /// capture, or `None` for offline fixtures). A fullscreen fact whose key
+    /// has no entry is app-owned: absence of metadata never proves the
+    /// project owns the entry, so it is never exitable here.
+    pub(super) fullscreen_meta:
+        Option<&'a BTreeMap<WindowKey, super::fullscreen::FullscreenMeta>>,
+    /// Canonical marker-storage observations for this tick's bound
+    /// lifetimes, keyed by the exact lifetime (built by the tick before
+    /// capture, or `None` for offline fixtures). A key with no entry
+    /// publishes no intent record: an unprovided read is unknown, never an
+    /// inferred desire.
+    pub(super) intent_storage:
+        Option<&'a BTreeMap<WindowKey, super::world_diff::IntentStorage>>,
     pub minimized_omitted: &'a HashSet<WindowKey>,
     pub pending_closed: &'a BTreeMap<String, PendingClosed>,
     pub scope: &'a [String],
@@ -274,6 +289,21 @@ pub(super) struct OwnerInputs<'a> {
     /// pager order; unknown keys drop, and an empty snapshot falls back to
     /// observed-then-retained order.
     pub presentation_native_order: Vec<crate::native_guards::WindowKey>,
+}
+
+#[cfg(test)]
+impl<'a> OwnerInputs<'a> {
+    /// Offline fixture seam: ride the canonical intent-record lane exactly
+    /// as a production tick's durable marker read does. `inputs()` leaves
+    /// the lane absent (no inferred desire); tests modeling durable
+    /// sticky/float markers attach one map for the whole fixture.
+    pub(super) fn with_intent_storage(
+        mut self,
+        storage: &'a BTreeMap<WindowKey, super::world_diff::IntentStorage>,
+    ) -> Self {
+        self.intent_storage = Some(storage);
+        self
+    }
 }
 
 impl TileLoop {
@@ -333,6 +363,8 @@ impl TileLoop {
             fixed_origin_overrides,
             hidden_claims,
             hidden_reads: None,
+            fullscreen_meta: None,
+            intent_storage: None,
             minimized_omitted,
             pending_closed,
             scope,
@@ -376,6 +408,8 @@ impl TileLoop {
             fixed_origin_overrides: &self.fixed_origin_overrides,
             hidden_claims: &self.hidden_claims,
             hidden_reads: None,
+            fullscreen_meta: None,
+            intent_storage: None,
             minimized_omitted: &self.minimized_omitted,
             pending_closed: &self.pending_closed,
             scope: &self.scope,
@@ -633,6 +667,11 @@ pub(super) struct CapturedWorld {
     /// held narrowly (`unreadable`) instead of carrying a fabricated scale.
     pub(super) held_screens: Vec<HeldScreenRow>,
     pub(super) windows: Vec<WindowFact>,
+    /// Canonical intent records for observed exact member lifetimes: one row
+    /// per bound token with a WindowFact this capture, sourced only from the
+    /// tick's canonical marker reads (`data` is the encoded core record,
+    /// never an inferred desire). Empty when no read proves a marker.
+    pub(super) intent_records: Vec<IntentRecord>,
     pub(super) closed: Vec<WindowId>,
     /// Cursor-first switch target for subsequent selections (report ingress
     /// only; never an adapter output decision). Backfills the default when
@@ -873,6 +912,11 @@ struct FactSeed<'a> {
     /// (hidden-workspace claims); `None` keeps the flags-derived value.
     host_hidden: Option<bool>,
     fullscreen: Option<bool>,
+    /// Owned fullscreen metadata for this exact lifetime from the tick's
+    /// marker read (`None` for unreadable/minimized lanes and for any
+    /// lifetime without owned metadata). A fullscreen row with no metadata
+    /// is app-owned: never exitable, never a fabricated project preimage.
+    fullscreen_meta: Option<&'a super::fullscreen::FullscreenMeta>,
     maximized: Option<bool>,
     minimized: Option<bool>,
 }
@@ -902,9 +946,19 @@ fn window_fact(seed: FactSeed<'_>) -> WindowFact {
         live,
         host_hidden,
         fullscreen,
+        fullscreen_meta,
         maximized,
         minimized,
     } = seed;
+    // Fullscreen ownership is proven only by the tick's owned metadata for
+    // this exact lifetime; a live fullscreen row without it is app-owned and
+    // never exitable through the project. Unreadable/non-fullscreen rows
+    // publish neither field (unknown, never a fabricated app default).
+    let (fullscreen_owner, fullscreen_exitable) = match fullscreen {
+        Some(true) if fullscreen_meta.is_some() => (Some(FullscreenOwner::Tiler), Some(true)),
+        Some(true) => (Some(FullscreenOwner::App), Some(false)),
+        _ => (None, None),
+    };
     WindowFact {
         window: WindowId(token.to_owned()),
         output,
@@ -961,8 +1015,8 @@ fn window_fact(seed: FactSeed<'_>) -> WindowFact {
             }),
         activation_policy: None,
         layer: None,
-        fullscreen_owner: None,
-        fullscreen_exitable: None,
+        fullscreen_owner,
+        fullscreen_exitable,
         // Availability is the adapter's capability to suppress this window,
         // not proof that a claim already exists: ordinary readable rows are
         // suppressible on demand, hidden rows proved it, and unreadable rows
@@ -1306,6 +1360,7 @@ pub(super) fn capture_world(
                 live: None,
                 host_hidden: None,
                 fullscreen: None,
+                fullscreen_meta: None,
                 maximized: None,
                 minimized: None,
             }));
@@ -1327,6 +1382,7 @@ pub(super) fn capture_world(
                 live: None,
                 host_hidden: None,
                 fullscreen: None,
+                fullscreen_meta: None,
                 maximized: None,
                 minimized: Some(true),
             }));
@@ -1585,6 +1641,7 @@ pub(super) fn capture_world(
                     live: None,
                     host_hidden: None,
                     fullscreen: Some(fullscreen),
+                    fullscreen_meta: state.fullscreen_meta.and_then(|map| map.get(&key)),
                     maximized: Some(maximized),
                     minimized: Some(false),
                 }));
@@ -1614,6 +1671,7 @@ pub(super) fn capture_world(
                 live: None,
                 host_hidden: None,
                 fullscreen: Some(window.facts.captionless_fullscreen),
+                fullscreen_meta: state.fullscreen_meta.and_then(|map| map.get(&key)),
                 maximized: Some(window.facts.maximized),
                 minimized: Some(false),
             }));
@@ -1736,6 +1794,7 @@ pub(super) fn capture_world(
                 live: None,
                 host_hidden: None,
                 fullscreen: Some(row.fullscreen),
+                fullscreen_meta: state.fullscreen_meta.and_then(|map| map.get(key)),
                 maximized: Some(row.maximized),
                 minimized: Some(false),
             }));
@@ -1857,6 +1916,7 @@ pub(super) fn capture_world(
                 live: Some(read),
                 host_hidden: None,
                 fullscreen: Some(fullscreen),
+                fullscreen_meta: state.fullscreen_meta.and_then(|map| map.get(key)),
                 maximized: Some(maximized),
                 minimized: Some(false),
             }));
@@ -1978,6 +2038,38 @@ pub(super) fn capture_world(
     // Facts are the whole window lane: v4 has no adapter receipt or
     // workspace projection to attach.
     let windows = facts;
+    // Canonical intent rows for observed exact member lifetimes: the key
+    // must still be bound and its WindowFact must exist in this capture.
+    // Sticky dominates (its marker already implies float); an explicit
+    // float/tile marker rides alone; all-absent storage publishes nothing.
+    // Unreadable storage has no map entry, so it never fabricates a record.
+    // Deduped by token (first bound lifetime wins).
+    let mut intent_records: Vec<IntentRecord> = Vec::new();
+    let mut intent_seen: HashSet<&str> = HashSet::new();
+    for (key, token) in state.member_tokens {
+        if !windows.iter().any(|fact| fact.window.0 == *token) {
+            continue;
+        }
+        let Some(storage) = state.intent_storage.and_then(|map| map.get(key)) else {
+            continue;
+        };
+        let data = if let Some(prior) = storage.sticky_prior {
+            IntentData::new(Some(true), Some(prior))
+        } else if storage.float {
+            IntentData::new(Some(true), None)
+        } else if storage.tile {
+            IntentData::new(Some(false), None)
+        } else {
+            continue;
+        };
+        if !intent_seen.insert(token.as_str()) {
+            continue;
+        }
+        intent_records.push(IntentRecord {
+            win: WindowId(token.clone()),
+            data: tiler_core::intent_data::encode_intent_data(&data),
+        });
+    }
     // Neutral migration/control action context (core-owned policy):
     // the live foreground frame grounded to a live device and mapped to
     // wire, the adapter-retained cache mapped to wire, and the ordered
@@ -2037,6 +2129,7 @@ pub(super) fn capture_world(
         screens,
         held_screens,
         windows,
+        intent_records,
         closed,
         // One foreground sample drives both fields: the presentation
         // ingress already resolved the tick's observed row when no richer

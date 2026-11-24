@@ -56,7 +56,7 @@
 //! fresh window and visibility facts, never from echoed desire. Unknown stays
 //! unknown so the core retains pending flights instead of settling on a guess.
 
-use super::world_diff::{FreshWindow, NativeOps};
+use super::world_diff::{FreshWindow, IntentStorage, NativeOps, StateWrite};
 use crate::product_hide::sys::{VisibilityPostDiag, VisibilityPostTrace};
 
 /// Trace-only native hide-claim lane: the world actuator's post sink arms
@@ -80,11 +80,13 @@ pub(super) type RevealClaimFn = fn(
 use super::{AllowEntry, HiddenRecord, MonitorArea, ObservedWindow, ScopeHostChild, TokenMap};
 use crate::model::{ProcessIdentity, WindowIdentity};
 use crate::native::HeldProcess;
-use crate::native_guards::WindowKey;
+use crate::native_guards::{MarkerSlot, WindowKey};
 use crate::storage::LedgerStore;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use tiler_core::geometry::Rect;
+use tiler_core::intent_data::IntentData;
+use tiler_core::world_report::StateProperty;
 use windows_sys::Win32::Foundation::HWND;
 
 #[path = "world_native_frame.rs"]
@@ -1614,6 +1616,104 @@ pub(super) fn apply_hidden_seeds(
     }
 }
 
+/// Raise or release the persistent `WS_EX_TOPMOST` band under the R12 durable
+/// preimage. A raise persists the original band first and never runs native
+/// when persistence fails; a release restores only this lifetime's exact
+/// stored row and then clears it. No retries, no guessed lifetimes.
+fn write_above(native: &mut LiveNative<'_>, key: &WindowKey, value: bool) -> StateWrite {
+    let Some(tag) = native.member_tags.get(key).cloned().filter(|tag| !tag.is_empty()) else {
+        return StateWrite::NotAttempted;
+    };
+    if value {
+        let prior = super::workspace_mode::read_topmost_now(key.hwnd);
+        if prior {
+            // Someone else already owns the band: no preimage, no ownership
+            // claim, no write.
+            return StateWrite::NotAttempted;
+        }
+        let Some(row) = super::above_preimage::AbovePreimage::new(
+            key.hwnd,
+            key.pid,
+            &key.creation,
+            &tag,
+            prior,
+            &native.me.process_creation,
+        ) else {
+            return StateWrite::NotAttempted;
+        };
+        if super::above_preimage::persist(native.dir, &row).is_err() {
+            return StateWrite::NotAttempted;
+        }
+        if !super::workspace_mode::set_topmost_band(key.hwnd, true) {
+            // The durable row stays: a later release still owns the original
+            // band.
+            return StateWrite::Threw;
+        }
+        StateWrite::Called(true)
+    } else {
+        let Some(row) =
+            super::above_preimage::load(native.dir, key.hwnd, key.pid, &key.creation, &tag)
+        else {
+            // No owned preimage: this lifetime's above was never raised by
+            // the project, so there is nothing to restore.
+            return StateWrite::NotAttempted;
+        };
+        let set = super::workspace_mode::set_topmost_band(key.hwnd, row.prior_topmost);
+        if !set && row.prior_topmost {
+            return StateWrite::Threw;
+        }
+        let _ = super::above_preimage::clear(native.dir, key.hwnd, key.pid, &key.creation, &tag);
+        StateWrite::Called(true)
+    }
+}
+
+/// Canonical intent-storage peek for one window handle: the exact three
+/// durable marker properties the intent record mirrors, read fresh through
+/// the safe marker wrappers. A gone HWND has no marker storage (markers die
+/// with the window), so it reads as canonical absence, never write authority
+/// (the write path re-proves liveness and fails closed). A marker that is
+/// present but unreadable makes the whole read unknown (`None`), never a
+/// partial guess; absent markers read as their canonical no-intent value.
+pub(super) fn intent_storage_of(hwnd: u64) -> Option<IntentStorage> {
+    // A scripted test window is not a real Win32 HWND but does carry the
+    // same marker slots; production windows satisfy the liveness check.
+    let scripted = {
+        #[cfg(test)]
+        {
+            crate::product_hide::sys::fake::marker_active(hwnd)
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    };
+    if !scripted && !crate::ffi::is_window(hwnd) {
+        // Markers die with the window: a lifetime with no live HWND has no
+        // marker storage. Never write authority on its own.
+        return Some(IntentStorage::default());
+    }
+    let sticky_prior = match crate::product_hide::sys::peek_sticky_raw(hwnd) {
+        MarkerSlot::Absent => None,
+        MarkerSlot::Value(value) => crate::tiling::parse_sticky_marker(value),
+        MarkerSlot::Unreadable => return None,
+    };
+    let float = match crate::product_hide::sys::peek_float_intent_raw(hwnd) {
+        MarkerSlot::Absent => false,
+        MarkerSlot::Value(value) => crate::tiling::parse_float_intent_marker(value).is_some(),
+        MarkerSlot::Unreadable => return None,
+    };
+    let tile = match crate::product_hide::sys::peek_tile_override_raw(hwnd) {
+        MarkerSlot::Absent => false,
+        MarkerSlot::Value(value) => crate::tiling::parse_tile_override_marker(value).is_some(),
+        MarkerSlot::Unreadable => return None,
+    };
+    Some(IntentStorage {
+        sticky_prior,
+        float,
+        tile,
+    })
+}
+
 impl NativeOps for LiveNative<'_> {
     fn read_window(&mut self, token: &str) -> Option<FreshWindow> {
         let key = self.key_of(token)?;
@@ -2366,6 +2466,128 @@ impl NativeOps for LiveNative<'_> {
 
     fn poll_external_invalidation(&mut self) -> bool {
         (self.prims.hook_pending)()
+    }
+
+    fn read_state(&mut self, token: &str, property: StateProperty) -> Option<bool> {
+        let key = self.key_of(token)?;
+        match property {
+            StateProperty::Maximized => Some(super::probes::is_zoomed_now(key.hwnd)),
+            StateProperty::Fullscreen => {
+                super::probes::live_overlay_flags(key.hwnd, self.fulls).1
+            }
+            StateProperty::Above => Some(super::workspace_mode::read_topmost_now(key.hwnd)),
+            // Windows has no native sticky property: the composition caps
+            // keep sticky out of the state lane, so this read is honestly
+            // unreadable instead of a fabricated mirror.
+            StateProperty::Sticky => None,
+        }
+    }
+
+    fn write_state(&mut self, token: &str, property: StateProperty, value: bool) -> StateWrite {
+        let Some(key) = self.key_of(token) else {
+            return StateWrite::NotAttempted;
+        };
+        let Some(expected) = self.member_identity.get(&key).cloned() else {
+            return StateWrite::NotAttempted;
+        };
+        // Full identity plus lifetime proof immediately before any native
+        // write: a recycled handle or a stale tag never takes actuation.
+        if !self.identity_ok(&key, &expected) || !self.lifetime_ok(&key) {
+            return StateWrite::NotAttempted;
+        }
+        match property {
+            StateProperty::Maximized => match super::probes::toggle_zoom_async(key.hwnd, value) {
+                "threw" => StateWrite::Threw,
+                _ => StateWrite::Called(true),
+            },
+            StateProperty::Fullscreen => {
+                if value {
+                    // Enter needs a live frame-derived output anchor; an
+                    // unreadable frame refuses before any write.
+                    let Some(frame) = self.read_frame(token) else {
+                        return StateWrite::NotAttempted;
+                    };
+                    let device =
+                        super::directional_resolution::output_for_rect(&self.areas, &frame);
+                    let Some(full) = self
+                        .areas
+                        .iter()
+                        .find(|area| area.device == device)
+                        .map(|area| area.full)
+                        .or_else(|| self.areas.first().map(|area| area.full))
+                    else {
+                        return StateWrite::NotAttempted;
+                    };
+                    match super::fullscreen::enter_fullscreen(key.hwnd, full) {
+                        "threw" => StateWrite::Threw,
+                        _ => StateWrite::Called(true),
+                    }
+                } else {
+                    // Exit is project-owned only: app-owned fullscreen has
+                    // no metadata and is never touched (capture publishes
+                    // `fullscreen_exitable=false` there, so the core never
+                    // asks).
+                    let Some(meta) = super::fullscreen::read_fullscreen_meta(key.hwnd) else {
+                        return StateWrite::NotAttempted;
+                    };
+                    match super::fullscreen::exit_fullscreen_owned(key.hwnd, &meta) {
+                        "threw" => StateWrite::Threw,
+                        _ => StateWrite::Called(true),
+                    }
+                }
+            }
+            StateProperty::Above => write_above(self, &key, value),
+            StateProperty::Sticky => StateWrite::NotAttempted,
+        }
+    }
+
+    fn read_intent_storage(&mut self, token: &str) -> Option<IntentStorage> {
+        let key = self.key_of(token)?;
+        intent_storage_of(key.hwnd)
+    }
+
+    fn write_intent_storage(&mut self, token: &str, data: Option<IntentData>) -> Result<(), ()> {
+        let key = self.key_of(token).ok_or(())?;
+        let expected = self.member_identity.get(&key).cloned().ok_or(())?;
+        if !self.identity_ok(&key, &expected) || !self.lifetime_ok(&key) {
+            return Err(());
+        }
+        let current = self.read_intent_storage(token).ok_or(())?;
+        let desired = IntentStorage::from_data(data);
+        let hwnd = key.hwnd;
+        // Sticky first: install overwrites our own property, and clearing
+        // requires the exact live prior value so a foreign value is never
+        // destroyed.
+        match desired.sticky_prior {
+            Some(prior) => crate::product_hide::sys::install_sticky_marker(hwnd, prior)
+                .map_err(|_| ())?,
+            None => {
+                if let Some(prior) = current.sticky_prior {
+                    let removed = crate::product_hide::sys::remove_sticky_marker(hwnd, prior)
+                        .map_err(|_| ())?;
+                    if !removed {
+                        return Err(());
+                    }
+                }
+            }
+        }
+        if desired.float {
+            crate::product_hide::sys::install_float_intent_marker(hwnd).map_err(|_| ())?;
+        } else if current.float {
+            crate::product_hide::sys::remove_float_intent_marker(hwnd).map_err(|_| ())?;
+        }
+        if desired.tile {
+            crate::product_hide::sys::install_tile_override_marker(hwnd).map_err(|_| ())?;
+        } else if current.tile {
+            crate::product_hide::sys::remove_tile_override_marker(hwnd).map_err(|_| ())?;
+        }
+        // Read-back proof: only canonical storage is a success, so the core
+        // never treats a half-applied marker set as saved.
+        if self.read_intent_storage(token) == Some(desired) {
+            Ok(())
+        } else {
+            Err(())
+        }
     }
 
     fn foreground_state(&mut self) -> super::world_diff::ForegroundState {

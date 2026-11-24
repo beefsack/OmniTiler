@@ -388,6 +388,13 @@ fn read_prop_slot(hwnd_u64: u64, name: &str) -> MarkerSlot {
 /// is logged no-intent, a failed read is diagnosed no-intent.
 /// Read-only. A recycled HWND starts without our property.
 pub fn peek_sticky_raw(hwnd_u64: u64) -> MarkerSlot {
+    #[cfg(test)]
+    if let Some(slot) = fake::peek_sticky_mark(hwnd_u64) {
+        return match slot {
+            Some(value) => MarkerSlot::Value(value),
+            None => MarkerSlot::Absent,
+        };
+    }
     read_prop_slot(hwnd_u64, STICKY_PROP)
 }
 
@@ -408,6 +415,13 @@ pub fn peek_float_intent_raw(hwnd_u64: u64) -> MarkerSlot {
 /// reads it in item 8.
 #[allow(dead_code)]
 pub fn peek_tile_override_raw(hwnd_u64: u64) -> MarkerSlot {
+    #[cfg(test)]
+    if let Some(slot) = fake::peek_tile_mark(hwnd_u64) {
+        return match slot {
+            Some(value) => MarkerSlot::Value(value),
+            None => MarkerSlot::Absent,
+        };
+    }
     read_prop_slot(hwnd_u64, TILE_OVERRIDE_PROP)
 }
 
@@ -427,6 +441,21 @@ pub fn read_sticky_marker(hwnd_u64: u64) -> Option<bool> {
 /// mismatch fails closed with no runtime map change and no removal.
 pub fn install_sticky_marker(hwnd_u64: u64, prior_floating: bool) -> Result<()> {
     let value = crate::tiling::sticky_marker_value(prior_floating);
+    #[cfg(test)]
+    if fake::marker_active(hwnd_u64) {
+        if !fake::store_sticky_mark(hwnd_u64, value) {
+            return Err(err("error: SetProp failed"));
+        }
+        return match peek_sticky_raw(hwnd_u64) {
+            MarkerSlot::Value(back)
+                if crate::tiling::parse_sticky_marker(back) == Some(prior_floating) =>
+            {
+                Ok(())
+            }
+            MarkerSlot::Unreadable => Err(err("error: sticky marker read error")),
+            _ => Err(err("error: sticky marker readback mismatch")),
+        };
+    }
     if !crate::ffi::set_prop(hwnd_u64, STICKY_PROP, value as usize) {
         return Err(err("error: SetProp failed"));
     }
@@ -442,6 +471,24 @@ pub fn install_sticky_marker(hwnd_u64: u64, prior_floating: bool) -> Result<()> 
 /// owns the window now (never touch it). A failed read errors without
 /// mutating. Identity fencing stays with the caller.
 pub fn remove_sticky_marker(hwnd_u64: u64, expected_prior: bool) -> Result<bool> {
+    #[cfg(test)]
+    if fake::marker_active(hwnd_u64) {
+        match peek_sticky_raw(hwnd_u64) {
+            MarkerSlot::Absent => return Ok(true),
+            MarkerSlot::Unreadable => return Err(err("error: sticky marker read error")),
+            MarkerSlot::Value(value) => {
+                if crate::tiling::parse_sticky_marker(value) != Some(expected_prior) {
+                    return Ok(false);
+                }
+            }
+        }
+        fake::remove_sticky_mark(hwnd_u64);
+        return match peek_sticky_raw(hwnd_u64) {
+            MarkerSlot::Absent => Ok(true),
+            MarkerSlot::Unreadable => Err(err("error: sticky marker read error")),
+            MarkerSlot::Value(_) => Err(err("error: sticky marker remove failed")),
+        };
+    }
     if !crate::ffi::is_window(hwnd_u64) {
         return Ok(true);
     }
@@ -492,7 +539,7 @@ pub fn read_tile_override_marker(hwnd_u64: u64) -> bool {
 pub fn install_float_intent_marker(hwnd_u64: u64) -> Result<()> {
     let value = crate::tiling::float_intent_marker_value();
     #[cfg(test)]
-    if fake::active(hwnd_u64) {
+    if fake::marker_active(hwnd_u64) {
         if !fake::store_float_mark(hwnd_u64, value) {
             return Err(err("error: SetProp failed"));
         }
@@ -521,6 +568,19 @@ pub fn install_float_intent_marker(hwnd_u64: u64) -> Result<()> {
 #[allow(dead_code)]
 pub fn install_tile_override_marker(hwnd_u64: u64) -> Result<()> {
     let value = crate::tiling::tile_override_marker_value();
+    #[cfg(test)]
+    if fake::marker_active(hwnd_u64) {
+        if !fake::store_tile_mark(hwnd_u64, value) {
+            return Err(err("error: SetProp failed"));
+        }
+        return match peek_tile_override_raw(hwnd_u64) {
+            MarkerSlot::Value(back) if crate::tiling::parse_tile_override_marker(back).is_some() => {
+                Ok(())
+            }
+            MarkerSlot::Unreadable => Err(err("error: tile override marker read error")),
+            _ => Err(err("error: tile override marker readback mismatch")),
+        };
+    }
     if !crate::ffi::set_prop(hwnd_u64, TILE_OVERRIDE_PROP, value as usize) {
         return Err(err("error: SetProp failed"));
     }
@@ -539,6 +599,15 @@ pub fn install_tile_override_marker(hwnd_u64: u64) -> Result<()> {
 /// mutating further. Corrupt residue on our own property name is
 /// cleaned under the caller's identity plus lifetime fences.
 pub fn remove_float_intent_marker(hwnd_u64: u64) -> Result<()> {
+    #[cfg(test)]
+    if fake::marker_active(hwnd_u64) {
+        fake::remove_float_mark(hwnd_u64);
+        return match peek_float_intent_raw(hwnd_u64) {
+            MarkerSlot::Absent => Ok(()),
+            MarkerSlot::Unreadable => Err(err("error: float intent marker read error")),
+            MarkerSlot::Value(_) => Err(err("error: float intent marker remove failed")),
+        };
+    }
     if !crate::ffi::is_window(hwnd_u64) {
         return Ok(());
     }
@@ -561,6 +630,15 @@ pub fn remove_float_intent_marker(hwnd_u64: u64) -> Result<()> {
 /// no caller in item 8.
 #[allow(dead_code)]
 pub fn remove_tile_override_marker(hwnd_u64: u64) -> Result<()> {
+    #[cfg(test)]
+    if fake::marker_active(hwnd_u64) {
+        fake::remove_tile_mark(hwnd_u64);
+        return match peek_tile_override_raw(hwnd_u64) {
+            MarkerSlot::Absent => Ok(()),
+            MarkerSlot::Unreadable => Err(err("error: tile override marker read error")),
+            MarkerSlot::Value(_) => Err(err("error: tile override marker remove failed")),
+        };
+    }
     if !crate::ffi::is_window(hwnd_u64) {
         return Ok(());
     }
@@ -2112,6 +2190,20 @@ pub(crate) mod fake {
         /// marker install/peek roundtrips run offline; unregistered HWNDs
         /// fall through to the OS exactly as before.
         static FLOAT_MARKS: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
+        /// Scripted sticky-float marker slots by HWND (same shape as
+        /// [`FLOAT_MARKS`]): the sticky property stores the prior-float
+        /// value the durable intent record carries.
+        static STICKY_MARKS: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
+        /// Scripted tile-override marker slots by HWND (same shape as
+        /// [`FLOAT_MARKS`]); presence means the explicit tile win owns the
+        /// window.
+        static TILE_MARKS: RefCell<HashMap<u64, u64>> = RefCell::new(HashMap::new());
+        /// HWNDs with scripted marker slots only: the rest of the native
+        /// surface stays with the caller's primitives. Lets fixtures that
+        /// script everything else through their own tables still exercise
+        /// the marker install/read-back lane offline.
+        static MARK_ONLY: RefCell<std::collections::HashSet<u64>> =
+            RefCell::new(std::collections::HashSet::new());
     }
 
     pub(crate) fn any_registered() -> bool {
@@ -2131,6 +2223,9 @@ pub(crate) mod fake {
     pub(crate) fn unregister_all() {
         WINDOWS.with(|map| map.borrow_mut().clear());
         FLOAT_MARKS.with(|map| map.borrow_mut().clear());
+        STICKY_MARKS.with(|map| map.borrow_mut().clear());
+        TILE_MARKS.with(|map| map.borrow_mut().clear());
+        MARK_ONLY.with(|set| set.borrow_mut().clear());
         POST_LOG.with(|log| log.borrow_mut().clear());
         POST_MODE_LOG.with(|log| log.borrow_mut().clear());
         SNAPSHOT_LOG.with(|log| log.borrow_mut().clear());
@@ -2139,6 +2234,25 @@ pub(crate) mod fake {
 
     pub(crate) fn active(hwnd: u64) -> bool {
         WINDOWS.with(|map| map.borrow().contains_key(&hwnd))
+    }
+
+    /// Test-only marker-only registration: the HWND owns scripted marker
+    /// slots without standing in for any other OS read. Fixtures script
+    /// the rest of the native surface through their own tables.
+    pub(crate) fn register_marks(hwnd: u64) {
+        MARK_ONLY.with(|set| {
+            set.borrow_mut().insert(hwnd);
+        });
+    }
+
+    pub(crate) fn clear_marks() {
+        MARK_ONLY.with(|set| set.borrow_mut().clear());
+    }
+
+    /// Scripted marker slots exist for full fakes and marker-only
+    /// registrations alike.
+    pub(crate) fn marker_active(hwnd: u64) -> bool {
+        active(hwnd) || MARK_ONLY.with(|set| set.borrow().contains(&hwnd))
     }
 
     pub(crate) fn with<R>(hwnd: u64, f: impl FnOnce(&FakeWindow) -> R) -> Option<R> {
@@ -2154,7 +2268,7 @@ pub(crate) mod fake {
     /// value present, `None` absent, including destroyed fakes whose
     /// markers die with the window).
     pub(crate) fn peek_float_mark(hwnd: u64) -> Option<Option<u64>> {
-        if !active(hwnd) {
+        if !marker_active(hwnd) {
             return None;
         }
         Some(FLOAT_MARKS.with(|map| map.borrow().get(&hwnd).copied()))
@@ -2164,15 +2278,85 @@ pub(crate) mod fake {
     /// OS (unregistered HWND) or mirrors a failed `SetProp` (destroyed
     /// fake); `true` stores and reads back through the same table.
     pub(crate) fn store_float_mark(hwnd: u64, value: u64) -> bool {
-        if !active(hwnd) {
+        store_mark(&FLOAT_MARKS, hwnd, value)
+    }
+
+    /// Scripted sticky-float marker read: same contract as
+    /// [`Self::peek_float_mark`].
+    pub(crate) fn peek_sticky_mark(hwnd: u64) -> Option<Option<u64>> {
+        if !marker_active(hwnd) {
+            return None;
+        }
+        Some(STICKY_MARKS.with(|map| map.borrow().get(&hwnd).copied()))
+    }
+
+    /// Scripted sticky-float marker write: same contract as
+    /// [`Self::store_float_mark`].
+    pub(crate) fn store_sticky_mark(hwnd: u64, value: u64) -> bool {
+        store_mark(&STICKY_MARKS, hwnd, value)
+    }
+
+    /// Scripted tile-override marker read: same contract as
+    /// [`Self::peek_float_mark`].
+    pub(crate) fn peek_tile_mark(hwnd: u64) -> Option<Option<u64>> {
+        if !marker_active(hwnd) {
+            return None;
+        }
+        Some(TILE_MARKS.with(|map| map.borrow().get(&hwnd).copied()))
+    }
+
+    /// Scripted tile-override marker write: same contract as
+    /// [`Self::store_float_mark`].
+    pub(crate) fn store_tile_mark(hwnd: u64, value: u64) -> bool {
+        store_mark(&TILE_MARKS, hwnd, value)
+    }
+
+    /// Scripted marker removal: `true` when verifiably absent afterwards
+    /// (removed or already absent), `false` for an unregistered HWND so
+    /// the caller falls through to the OS.
+    pub(crate) fn remove_sticky_mark(hwnd: u64) -> bool {
+        remove_mark(&STICKY_MARKS, hwnd)
+    }
+
+    pub(crate) fn remove_tile_mark(hwnd: u64) -> bool {
+        remove_mark(&TILE_MARKS, hwnd)
+    }
+
+    pub(crate) fn remove_float_mark(hwnd: u64) -> bool {
+        remove_mark(&FLOAT_MARKS, hwnd)
+    }
+
+    fn store_mark(
+        table: &'static std::thread::LocalKey<RefCell<HashMap<u64, u64>>>,
+        hwnd: u64,
+        value: u64,
+    ) -> bool {
+        if !marker_active(hwnd) {
             return false;
         }
-        if with(hwnd, |w| w.alive).unwrap_or(false) {
-            FLOAT_MARKS.with(|map| map.borrow_mut().insert(hwnd, value));
+        let alive = if active(hwnd) {
+            with(hwnd, |w| w.alive).unwrap_or(false)
+        } else {
+            // Marker-only registrations are test-trusted live slots.
+            true
+        };
+        if alive {
+            table.with(|map| map.borrow_mut().insert(hwnd, value));
             true
         } else {
             false
         }
+    }
+
+    fn remove_mark(
+        table: &'static std::thread::LocalKey<RefCell<HashMap<u64, u64>>>,
+        hwnd: u64,
+    ) -> bool {
+        if !marker_active(hwnd) {
+            return false;
+        }
+        table.with(|map| map.borrow_mut().remove(&hwnd));
+        true
     }
 
     pub(crate) fn record_post(hwnd: u64, hide: bool, pumped: bool) {

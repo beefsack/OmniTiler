@@ -75,8 +75,9 @@ use tiler_core::ids::{GenerationId, OwnerId};
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
     BatchDisposition, BatchSettlement, CommandDisposition, CommandResult, FocusFeedback,
-    FrameAttempt, FrameWitness, MemberAttempt, PresentationRowV4, RendererInput, ViewAttempt,
-    VisibilityAttempt, WORLD_CONTRACT_VERSION_V4, WorldCommand, WorldReplyV4, WorldReportV4,
+    FrameAttempt, FrameWitness, MemberAttempt, PresentationRowV4, RendererInput, StateAttempt,
+    StateProperty, ViewAttempt, VisibilityAttempt, WORLD_CONTRACT_VERSION_V4, WorldCommand,
+    WorldReplyV4, WorldReportV4,
 };
 
 /// One outstanding sequenced report: the exact facts the core incorporation
@@ -97,6 +98,7 @@ struct SequencerFlight {
     delivered_members: Vec<MemberAttempt>,
     delivered_views: Vec<ViewAttempt>,
     delivered_visibility: Vec<VisibilityAttempt>,
+    delivered_state: Vec<StateAttempt>,
     delivered_focus: Vec<FocusFeedback>,
 }
 
@@ -190,6 +192,10 @@ pub(super) struct WorldSequencer {
     /// Latest-wins visibility readbacks per window lifetime, drained into
     /// the next report (same ack semantics as frames).
     pending_visibility: BTreeMap<String, VisibilityAttempt>,
+    /// Latest-wins native state attempts per `(window lifetime, property)`,
+    /// drained into the next report. Paired publishes keep both entries
+    /// because the key carries the property.
+    pending_state: BTreeMap<(String, StateProperty), StateAttempt>,
     /// Latest-wins focus feedback per request id, drained into the next
     /// report (same ack semantics as frames).
     pending_focus: BTreeMap<String, FocusFeedback>,
@@ -299,6 +305,7 @@ impl WorldSequencer {
             pending_members: BTreeMap::new(),
             pending_views: BTreeMap::new(),
             pending_visibility: BTreeMap::new(),
+            pending_state: BTreeMap::new(),
             pending_focus: BTreeMap::new(),
             last_desired: None,
             last_settlements: Vec::new(),
@@ -491,6 +498,13 @@ impl WorldSequencer {
             .insert(attempt.window.0.clone(), attempt);
     }
 
+    /// Stage one raw native state attempt for the next report, replacing any
+    /// entry for the same `(lifetime, property)` slot (same ack semantics).
+    pub(super) fn note_state_attempt(&mut self, attempt: StateAttempt) {
+        self.pending_state
+            .insert((attempt.window.0.clone(), attempt.property), attempt);
+    }
+
     /// Stage one focus feedback row for the next report, replacing any
     /// entry for the same request id (same ack semantics as frames).
     pub(super) fn note_focus_feedback(&mut self, feedback: FocusFeedback) {
@@ -526,6 +540,7 @@ impl WorldSequencer {
             || !self.pending_members.is_empty()
             || !self.pending_views.is_empty()
             || !self.pending_visibility.is_empty()
+            || !self.pending_state.is_empty()
             || !self.pending_focus.is_empty()
             || !self.outstanding_closes(captured).is_empty()
     }
@@ -598,6 +613,14 @@ impl WorldSequencer {
         view_attempts.sort_by(|a, b| a.operation_id.cmp(&b.operation_id));
         let visibility_attempts: Vec<VisibilityAttempt> =
             self.pending_visibility.values().cloned().collect();
+        let mut state_attempts: Vec<StateAttempt> =
+            self.pending_state.values().cloned().collect();
+        state_attempts.sort_by(|a, b| {
+            a.window
+                .0
+                .cmp(&b.window.0)
+                .then_with(|| a.property.cmp(&b.property))
+        });
         let focus_feedback: Vec<FocusFeedback> = self.pending_focus.values().cloned().collect();
         WorldReportV4 {
             contract_version: WORLD_CONTRACT_VERSION_V4,
@@ -633,11 +656,11 @@ impl WorldSequencer {
             view_attempts,
             creation_attempts: Vec::new(),
             held_attempts: Vec::new(),
-            state_attempts: Vec::new(),
+            state_attempts,
             visibility_attempts,
             focus_feedback,
             presentation: PresentationRowV4::Valid(presentation),
-            intent_records: Vec::new(),
+            intent_records: captured.intent_records.clone(),
             renderer_input,
         }
     }
@@ -692,6 +715,7 @@ impl WorldSequencer {
             self.pending_frames.remove(&id.0);
             self.pending_members
                 .retain(|(_, window), _| window != &id.0);
+            self.pending_state.retain(|(token, _), _| token != &id.0);
         }
         let request_seq = self.next_request_seq;
         let report = self.assemble(
@@ -721,6 +745,7 @@ impl WorldSequencer {
             delivered_members: report.member_attempts.clone(),
             delivered_views: report.view_attempts.clone(),
             delivered_visibility: report.visibility_attempts.clone(),
+            delivered_state: report.state_attempts.clone(),
             delivered_focus: report.focus_feedback.clone(),
         });
         self.next_request_seq += 1;
@@ -994,6 +1019,7 @@ impl WorldSequencer {
         self.pending_members.clear();
         self.pending_views.clear();
         self.pending_visibility.clear();
+        self.pending_state.clear();
         self.pending_focus.clear();
         self.last_desired = None;
         self.last_settlements.clear();
@@ -1063,6 +1089,16 @@ impl WorldSequencer {
                 .is_some_and(|pending| pending == delivered)
             {
                 self.pending_visibility.remove(&delivered.window.0);
+            }
+        }
+        for delivered in &flight.delivered_state {
+            let key = (delivered.window.0.clone(), delivered.property);
+            if self
+                .pending_state
+                .get(&key)
+                .is_some_and(|pending| pending == delivered)
+            {
+                self.pending_state.remove(&key);
             }
         }
         for delivered in &flight.delivered_focus {

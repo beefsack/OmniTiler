@@ -276,10 +276,22 @@ impl WorldOwner {
         for attempt in self.diff.take_visibility_attempts() {
             self.seq.note_visibility_attempt(attempt);
         }
+        for attempt in self.diff.take_state_attempts() {
+            self.seq.note_state_attempt(attempt);
+        }
         for feedback in self.diff.take_focus_feedback() {
             self.seq.note_focus_feedback(feedback);
         }
         stats
+    }
+
+    /// Drain marker-mirror updates proven by the last apply pass. The tick
+    /// applies them to its sticky/float/tile tables only after the durable
+    /// native storage write succeeded; a held reply pushes nothing.
+    pub(super) fn take_intent_mirror_updates(
+        &mut self,
+    ) -> Vec<(String, super::world_diff::IntentStorage)> {
+        self.diff.take_intent_mirror_updates()
     }
 
     pub(super) fn last_reply(&self) -> Option<&WorldReplyV4> {

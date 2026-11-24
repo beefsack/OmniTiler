@@ -2,12 +2,58 @@
 use super::*;
 use crate::snapkey::{QueuedFullscreenIntent, QueuedMaximizeIntent};
 
+/// Core-result labels for one world-owned state toggle. The closed
+/// [`tiler_core::world_report::CommandResult`] speaks first (a maximize
+/// direction or a typed refusal), then the published state target names the
+/// fullscreen/sticky direction, and an absent reply is a dispatch refusal,
+/// never a guessed direction.
+pub(super) fn state_toggle_labels(
+    reply: Option<&super::world_tick::WorldCommandOutcome>,
+    window: &str,
+    property: tiler_core::world_report::StateProperty,
+    toggle: &'static str,
+) -> (&'static str, &'static str) {
+    let Some(reply) = reply else {
+        return ("dispatch-refused", toggle);
+    };
+    if let Some(result) = reply.result.as_ref() {
+        return match result {
+            tiler_core::world_report::CommandResult::Maximize { maximized, .. } => {
+                let direction = if *maximized { "maximized" } else { "restored" };
+                (direction, direction)
+            }
+            tiler_core::world_report::CommandResult::Rejected { .. } => ("rejected", toggle),
+            _ => ("accepted", toggle),
+        };
+    }
+    let value = reply
+        .reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == window)
+        .and_then(|row| row.state.iter().find(|target| target.property == property))
+        .map(|target| target.value);
+    match (property, value) {
+        (tiler_core::world_report::StateProperty::Fullscreen, Some(true)) => {
+            ("accepted", "fullscreen")
+        }
+        (tiler_core::world_report::StateProperty::Fullscreen, Some(false)) => {
+            ("accepted", "restored")
+        }
+        (tiler_core::world_report::StateProperty::Sticky, Some(true)) => ("accepted", "sticky-on"),
+        (tiler_core::world_report::StateProperty::Sticky, Some(false)) => {
+            ("accepted", "sticky-off")
+        }
+        _ => ("accepted", toggle),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn dispatch_maximize_intent(
     state: &mut TileLoop,
     me: &ProcessIdentity,
-    _store: &LedgerStore,
-    _dir: &Path,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     intent: QueuedMaximizeIntent,
@@ -268,45 +314,59 @@ pub(super) fn dispatch_maximize_intent(
         );
         return;
     }
-    let zoomed = is_zoomed_now(member_key.hwnd);
-    let wanted = !zoomed;
-    // Discrete-toggle parity (provisional): each fresh discrete
-    // Win+M down dispatches exactly one native toggle attempt.
-    // Held repeats never reach this drain (the classifier emits
-    // them as non-announce trace-only), so no persistent fence is
-    // kept: a press after a native restore simply dispatches
-    // again. Matches KDE's visible toggle while fixing the sticky
-    // `attempted` refusal after a native restore.
-    let outcome = toggle_zoom_async(member_key.hwnd, wanted);
-    if crate::tiling::restore_wake_arm(outcome, !wanted) {
-        state.restore_wake = Some(RestoreWake {
-            key: member_key.clone(),
-            token: from.clone(),
-            until: Instant::now() + Duration::from_millis(crate::tiling::RESTORE_WAKE_MS),
-        });
-    }
-    log_json_at(
-        log_path,
-        serde_json::json!({
-            "event": "maximize-toggle",
-            "tick": tick,
-            "correlation": correlation.as_str(),
-            "edge": intent.edge.as_str(),
-            "disposition": "consumed",
-            "outcome": outcome,
-            "target": if wanted { "maximized" } else { "restored" },
-            "origin": origin.token,
-            "window": from,
-        }),
+    // World-owned toggle: the core decides the direction from its staged
+    // facts (fullscreen always maximizes with a fullscreen clear), and the
+    // applied reply performs the state write through the single state lane.
+    // The applied reply IS the outcome; this seam never writes natively.
+    let foreground = crate::ffi::foreground_window();
+    let reply = super::world_tick::run_world_command(
+        state,
+        me,
+        store,
+        dir,
+        &observed,
+        &retained,
+        areas,
+        foreground,
+        fulls,
+        tiler_core::world_report::WorldCommand::ToggleMaximize {
+            window: tiler_core::directional::WindowSubject::Window(
+                tiler_core::directional::WindowId(from.clone()),
+            ),
+        },
+        super::observation::sample_cursor(),
     );
+    let (outcome, target) = state_toggle_labels(
+        reply.as_ref(),
+        &from,
+        tiler_core::world_report::StateProperty::Maximized,
+        "maximize",
+    );
+    let mut line = serde_json::json!({
+        "event": "maximize-toggle",
+        "tick": tick,
+        "correlation": correlation.as_str(),
+        "edge": intent.edge.as_str(),
+        "disposition": "consumed",
+        "outcome": outcome,
+        "target": target,
+        "origin": origin.token,
+        "window": from,
+    });
+    if let Some(tiler_core::world_report::CommandResult::Rejected { kind }) =
+        reply.as_ref().and_then(|outcome| outcome.result.as_ref())
+    {
+        line["cause"] = serde_json::Value::from(kind.as_str());
+    }
+    log_json_at(log_path, line);
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn dispatch_fullscreen_intent(
     state: &mut TileLoop,
     me: &ProcessIdentity,
-    _store: &LedgerStore,
-    _dir: &Path,
+    store: &LedgerStore,
+    dir: &Path,
     fulls: &[Rect],
     areas: &[MonitorArea],
     intent: QueuedFullscreenIntent,
@@ -352,8 +412,9 @@ pub(super) fn dispatch_fullscreen_intent(
     // parity): newly intercepted suspended/elevated chords settle
     // here with no side effects. The suspend read exempts the
     // verified managed foreground, so exiting our owned
-    // fullscreen still proceeds; app-owned frames refuse below
-    // via the metadata decision, never guessing restoration.
+    // fullscreen still proceeds; app-owned frames refuse in the
+    // core with its closed `fullscreen-not-exitable` kind, never
+    // guessing restoration.
     if let Some(outcome) = crate::tiling::toggle_gate_outcome(
         suspend_read(state, me, fulls).veto.block,
         foreground_elevated(me),
@@ -461,8 +522,8 @@ pub(super) fn dispatch_fullscreen_intent(
     // Fresh pre-effect revalidation through the production target
     // gate (focus/overlay classifier, held process
     // integrity/identity, lifetime tag, host-child, proof scope)
-    // immediately before any style/`SetWindowPos` effect, using
-    // the held handle across effects. Replaces the stale
+    // immediately before the world command, so the core only sees
+    // a freshly proven target. Replaces the stale
     // tick-observation gates: the expected window is the fresh
     // eligible observation when present, otherwise a retained
     // the geometry classifier is focus-relaxed (overlays allowed).
@@ -548,7 +609,7 @@ pub(super) fn dispatch_fullscreen_intent(
     };
     let proof_mode = state.allowlist.is_some();
     let member_tag = state.member_tags.get(&member_key).map(String::as_str);
-    let target = match revalidate_target(
+    if let Err(reason) = revalidate_target(
         expected,
         me,
         fulls,
@@ -560,83 +621,67 @@ pub(super) fn dispatch_fullscreen_intent(
         &state.scope_hosts,
         true,
     ) {
-        Ok(target) => target,
-        Err(reason) => {
-            if reason == "identity-changed" {
-                drop_member_state(state, &member_key);
-            }
-            log_json_at(
-                log_path,
-                serde_json::json!({
-                    "event": "fullscreen-toggle",
-                    "tick": tick,
-                    "correlation": correlation.as_str(),
-                    "edge": intent.edge.as_str(),
-                    "disposition": "consumed",
-                    "outcome": reason,
-                    "origin": origin.token,
-                }),
-            );
-            return;
+        if reason == "identity-changed" {
+            drop_member_state(state, &member_key);
         }
-    };
-    // The held process keeps liveness authority across the style
-    // and frame effects below; the HWND pid is rechecked by the
-    // setters' readbacks, never trusted from the tick.
-    let _held = &target.held;
-    // Fresh pre-effect state plus our restoration metadata decide
-    // the direction: owned metadata wins over geometry, so a press
-    // on any owned frame exits even when the frame no longer
-    // covers a monitor (external move or partial restore).
-    // Entering is always project-owned; an app-owned frame
-    // refuses with a bounded reason instead of guessing.
-    let now_fullscreen = target.window.facts.captionless_fullscreen;
-    let meta = read_fullscreen_meta(member_key.hwnd);
-    let (target, outcome) = match fullscreen_toggle_decision(now_fullscreen, meta.is_some()) {
-        crate::tiling::FullscreenToggle::RefuseAppOwned => {
-            ("fullscreen", "fullscreen-refused-app-owned")
-        }
-        crate::tiling::FullscreenToggle::Enter => {
-            // The revalidation above already proved fresh
-            // eligibility (or a maximized overlay, where
-            // fullscreen wins): enter with the fresh frame as
-            // the output anchor, never a stale tick read.
-            let full = output_for_rect(areas, &target.window.visible);
-            let full = areas
-                .iter()
-                .find(|a| a.device == full)
-                .map(|area| area.full)
-                .or_else(|| areas.first().map(|area| area.full));
-            match full {
-                Some(full) => ("fullscreen", enter_fullscreen(member_key.hwnd, full)),
-                None => ("fullscreen", "unknown-output"),
-            }
-        }
-        crate::tiling::FullscreenToggle::ExitOwned => {
-            let meta = meta.expect("decision owns metadata");
-            let outcome = exit_fullscreen_owned(member_key.hwnd, &meta);
-            // A clean exit to a normal frame restores the current
-            // core allocation in the same action; a reasserted
-            // maximize converges as a retained overlay next tick.
-            if outcome == "restored" && !meta.was_maximized {
-                let fulls_owned = fulls.to_vec();
-                reconcile_tick(state, me, _store, _dir, &fulls_owned, areas);
-            }
-            ("restored", outcome)
-        }
-    };
-    log_json_at(
-        log_path,
-        serde_json::json!({
-            "event": "fullscreen-toggle",
-            "tick": tick,
-            "correlation": correlation.as_str(),
-            "edge": intent.edge.as_str(),
-            "disposition": "consumed",
-            "outcome": outcome,
-            "target": target,
-            "origin": origin.token,
-            "window": from,
-        }),
+        log_json_at(
+            log_path,
+            serde_json::json!({
+                "event": "fullscreen-toggle",
+                "tick": tick,
+                "correlation": correlation.as_str(),
+                "edge": intent.edge.as_str(),
+                "disposition": "consumed",
+                "outcome": reason,
+                "origin": origin.token,
+            }),
+        );
+        return;
+    }
+    // World-owned toggle: the core decides the direction from its staged
+    // facts and owned-fullscreen metadata, refuses an app-owned frame with
+    // its closed kind (never guessing restoration), and the applied reply
+    // performs the enter/exit through the single state lane. The applied
+    // reply IS the outcome; this seam never writes natively.
+    let foreground = crate::ffi::foreground_window();
+    let reply = super::world_tick::run_world_command(
+        state,
+        me,
+        store,
+        dir,
+        &observed,
+        &retained,
+        areas,
+        foreground,
+        fulls,
+        tiler_core::world_report::WorldCommand::ToggleFullscreen {
+            window: tiler_core::directional::WindowSubject::Window(
+                tiler_core::directional::WindowId(from.clone()),
+            ),
+        },
+        super::observation::sample_cursor(),
     );
+    let (outcome, target) = state_toggle_labels(
+        reply.as_ref(),
+        &from,
+        tiler_core::world_report::StateProperty::Fullscreen,
+        "fullscreen",
+    );
+    let mut line = serde_json::json!({
+        "event": "fullscreen-toggle",
+        "tick": tick,
+        "correlation": correlation.as_str(),
+        "edge": intent.edge.as_str(),
+        "disposition": "consumed",
+        "outcome": outcome,
+        "target": target,
+        "origin": origin.token,
+        "window": from,
+    });
+    if let Some(tiler_core::world_report::CommandResult::Rejected { kind }) =
+        reply.as_ref().and_then(|outcome| outcome.result.as_ref())
+    {
+        line["cause"] = serde_json::Value::from(kind.as_str());
+    }
+    log_json_at(log_path, line);
 }

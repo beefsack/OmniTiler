@@ -14,10 +14,13 @@
 //! its desires with fresh proof.
 
 use super::world_capture::capture_world;
-use super::world_diff::{FreshHost, NativeOps};
+use super::world_diff::{FreshHost, IntentStorage, NativeOps};
 use super::world_native::{LiveNative, NativePrimitives};
-use super::{MonitorArea, ObservedWindow, RetainedRow, TileLoop, live_foreground_window};
-use std::collections::HashMap;
+use super::world_owner::WorldOwner;
+use super::{
+    FullscreenMeta, MonitorArea, ObservedWindow, RetainedRow, TileLoop, live_foreground_window,
+};
+use std::collections::{BTreeMap, HashMap};
 use tiler_core::world_report::{
     CommandResult, RendererInput, TransferKind, WorldCommand, WorldReplyV4,
 };
@@ -1553,6 +1556,21 @@ pub(super) fn run_observation_tick(
         ref float_topmost_prev,
         ..
     } = *state;
+    // Canonical fullscreen ownership and intent-storage reads for this
+    // tick's bound lifetimes, built from the disjoint table borrows before
+    // every capture below (capture stays pure over the seam). A failed read
+    // leaves its key absent: unknown/app-owned fullscreen and no intent
+    // record, never an inferred desire.
+    let fullscreen_meta: BTreeMap<crate::native_guards::WindowKey, FullscreenMeta> = member_tokens
+        .keys()
+        .filter_map(|key| super::read_fullscreen_meta(key.hwnd).map(|meta| (key.clone(), meta)))
+        .collect();
+    let intent_storage: BTreeMap<crate::native_guards::WindowKey, IntentStorage> = member_tokens
+        .keys()
+        .filter_map(|key| {
+            super::world_native::intent_storage_of(key.hwnd).map(|storage| (key.clone(), storage))
+        })
+        .collect();
     // Invalidate synchronously on every tick input (dirty-until-ack).
     world.invalidate();
     // One monotonic sample for this tick (same epoch as the log stamp):
@@ -1594,6 +1612,8 @@ pub(super) fn run_observation_tick(
         presentation_native_order.clone(),
     );
     inputs.hidden_reads = Some(&hidden_reads);
+    inputs.fullscreen_meta = Some(&fullscreen_meta);
+    inputs.intent_storage = Some(&intent_storage);
     let report = match world.try_dispatch_observation(
         &inputs,
         Some(observed),
@@ -1658,6 +1678,8 @@ pub(super) fn run_observation_tick(
         presentation_native_order.clone(),
     );
     inputs.hidden_reads = Some(&hidden_reads);
+    inputs.fullscreen_meta = Some(&fullscreen_meta);
+    inputs.intent_storage = Some(&intent_storage);
     let captured = capture_world(&inputs, Some(observed), retained, areas, foreground_hwnd);
     let mut inputs = TileLoop::owner_inputs(
         member_tokens,
@@ -1927,6 +1949,18 @@ pub(super) fn run_observation_tick(
             )
         },
     );
+    // Durable marker storage proven earlier in this pass mirrors into the
+    // adapter tables here, after every shared input borrow has ended. A
+    // held/failed reconcile pushed nothing, so these tables never lead the
+    // native truth.
+    apply_intent_mirrors(
+        world,
+        member_tokens,
+        &mut state.sticky,
+        &mut state.floated,
+        &mut state.fixed_tile_overrides,
+        &mut state.fixed_origin_overrides,
+    );
     for (token, home) in proven_h {
         applied_homing.insert(token, home);
     }
@@ -2129,6 +2163,54 @@ fn run_observation_core_only(
     }
 }
 
+/// Apply durable marker-storage results to the adapter's mechanical
+/// sticky/float/tile mirrors. Only storage the apply pass itself proved (the
+/// atomic publish succeeded) reaches here; a held or failed reconcile pushes
+/// nothing, so these tables never lead the native truth. Sticky dominates,
+/// matching capture's precedence; the fixed tile marker mirrors the durable
+/// win exactly as marker hydration does.
+fn apply_intent_mirrors(
+    world: &mut WorldOwner,
+    member_tokens: &BTreeMap<crate::native_guards::WindowKey, String>,
+    sticky: &mut BTreeMap<crate::native_guards::WindowKey, bool>,
+    floated: &mut std::collections::BTreeSet<crate::native_guards::WindowKey>,
+    fixed_tile_overrides: &mut std::collections::BTreeSet<crate::native_guards::WindowKey>,
+    fixed_origin_overrides: &mut std::collections::BTreeSet<crate::native_guards::WindowKey>,
+) {
+    for (token, storage) in world.take_intent_mirror_updates() {
+        let Some(key) = member_tokens
+            .iter()
+            .find(|(_, live)| live.as_str() == token)
+            .map(|(key, _)| key.clone())
+        else {
+            continue;
+        };
+        match storage.sticky_prior {
+            Some(prior) => {
+                sticky.insert(key.clone(), prior);
+                floated.remove(&key);
+                fixed_tile_overrides.remove(&key);
+            }
+            None if storage.float => {
+                sticky.remove(&key);
+                floated.insert(key.clone());
+                fixed_tile_overrides.remove(&key);
+            }
+            None if storage.tile => {
+                sticky.remove(&key);
+                floated.remove(&key);
+                fixed_tile_overrides.insert(key.clone());
+                fixed_origin_overrides.insert(key);
+            }
+            _ => {
+                sticky.remove(&key);
+                floated.remove(&key);
+                fixed_tile_overrides.remove(&key);
+            }
+        }
+    }
+}
+
 /// Shared command dispatch core: admission preamble, catch-up fence check
 /// (superseded leg only), capture, single dispatch, deliver, then either the
 /// full native plan/apply pass (`Apply`) or the superseded order-only tail
@@ -2249,6 +2331,20 @@ fn run_world_command_impl(
         ref float_topmost_prev,
         ..
     } = *state;
+    // Canonical fullscreen ownership and intent-storage reads for this
+    // command tick's bound lifetimes, built before both captures below
+    // (capture stays pure over the seam). A failed read leaves its key
+    // absent: unknown/app-owned fullscreen and no intent record.
+    let fullscreen_meta: BTreeMap<crate::native_guards::WindowKey, FullscreenMeta> = member_tokens
+        .keys()
+        .filter_map(|key| super::read_fullscreen_meta(key.hwnd).map(|meta| (key.clone(), meta)))
+        .collect();
+    let intent_storage: BTreeMap<crate::native_guards::WindowKey, IntentStorage> = member_tokens
+        .keys()
+        .filter_map(|key| {
+            super::world_native::intent_storage_of(key.hwnd).map(|storage| (key.clone(), storage))
+        })
+        .collect();
     world.invalidate();
     // One monotonic sample for this command tick (same contract as the
     // observation path above).
@@ -2289,6 +2385,8 @@ fn run_world_command_impl(
             presentation_native_order.clone(),
         );
         inputs.hidden_reads = Some(&hidden_reads);
+        inputs.fullscreen_meta = Some(&fullscreen_meta);
+        inputs.intent_storage = Some(&intent_storage);
         match world.try_dispatch_command(
             &inputs,
             Some(observed),
@@ -2504,6 +2602,8 @@ fn run_world_command_impl(
         presentation_native_order.clone(),
     );
     inputs.hidden_reads = Some(&hidden_reads);
+    inputs.fullscreen_meta = Some(&fullscreen_meta);
+    inputs.intent_storage = Some(&intent_storage);
     let captured = capture_world(&inputs, Some(observed), retained, areas, foreground_hwnd);
     let mut inputs = TileLoop::owner_inputs(
         member_tokens,
@@ -2752,6 +2852,18 @@ fn run_world_command_impl(
                 true,
             )
         },
+    );
+    // Durable marker storage proven earlier in this pass mirrors into the
+    // adapter tables here, after every shared input borrow has ended. A
+    // held/failed reconcile pushed nothing, so these tables never lead the
+    // native truth.
+    apply_intent_mirrors(
+        world,
+        member_tokens,
+        &mut state.sticky,
+        &mut state.floated,
+        &mut state.fixed_tile_overrides,
+        &mut state.fixed_origin_overrides,
     );
     for (token, home) in proven_h {
         applied_homing.insert(token, home);

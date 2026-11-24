@@ -352,6 +352,48 @@ pub(super) fn adopt_restart_markers(
     // from the previous observation holds no authority here until this
     // observation revalidates its marker, lifetime, and pid fences below.
     state.restart_reject_hold.clear();
+    // R12 startup recovery (once per process): restore durable topmost
+    // preimages left by a previous tiler session whose exact lifetime is
+    // still observed. Only full identity plus stored-tag proof restores, and
+    // the current session's own live preimages are never touched. A missing
+    // or corrupt slot restores nothing (the slot is not authority).
+    if !state.above_preimage_restore_done {
+        state.above_preimage_restore_done = true;
+        let live_preimages: Vec<super::above_preimage::LiveLifetime<'_>> = observed
+            .iter()
+            .filter_map(|window| {
+                let key = crate::native_guards::WindowKey {
+                    hwnd: window.hwnd,
+                    pid: window.identity.pid,
+                    creation: window.identity.process_creation.clone(),
+                };
+                let tag = state.member_tags.get(&key)?;
+                Some(super::above_preimage::LiveLifetime {
+                    hwnd: window.hwnd,
+                    pid: window.identity.pid,
+                    creation: window.identity.process_creation.as_str(),
+                    tag: tag.as_str(),
+                })
+            })
+            .collect();
+        if !live_preimages.is_empty() {
+            let restored = super::above_preimage::restore_leftovers(
+                &state.durable_dir,
+                me.process_creation.as_str(),
+                &live_preimages,
+            );
+            if restored > 0 {
+                log_json_at(
+                    &state.log_path,
+                    serde_json::json!({
+                        "event": "above-preimage-restore",
+                        "outcome": "restored",
+                        "count": restored,
+                    }),
+                );
+            }
+        }
+    }
     // Stage every admitted valid marker before the first domain commit, so
     // no marker window is ever admitted as an ordinary tile first. No Engine
     // commits and no map writes in this pass (the already-floating fast path

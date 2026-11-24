@@ -191,6 +191,8 @@ pub(super) fn run_tile_loop(
         suspended_limited: false,
         log_path: log_path.clone(),
         audit_path: audit_path.clone(),
+        durable_dir: dir.to_path_buf(),
+        above_preimage_restore_done: false,
         keyboard,
         inner_gap,
         outer_gap,

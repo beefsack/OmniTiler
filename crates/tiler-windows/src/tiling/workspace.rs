@@ -189,11 +189,11 @@ impl WorkspaceDirection {
 /// The CLI only queues a bounded single-pending request file; the owner loop
 /// validates the full owner binding and dispatches through the existing
 /// `workspace_do_select` / `workspace_do_send` resolvers (plus the pure
-/// history resolvers) or, for `--fullscreen`, through the existing
-/// project-owned fullscreen toggle (`fullscreen_toggle_decision` +
-/// `enter_fullscreen`/`exit_fullscreen_owned` with the `RefuseAppOwned`
-/// R-MAX-05 refusal), or, for `--float`/`--sticky`, through the existing
-/// hook float/sticky dispatch arms (`dispatch_float_intent` /
+/// history resolvers) or, for `--fullscreen`, through the core-owned
+/// fullscreen toggle (`WorldCommand::ToggleFullscreen` dispatched by the
+/// world tick; the core applies the app-owned refusal from the captured
+/// `fullscreen_exitable` fact), or, for `--float`/`--sticky`, through the
+/// existing hook float/sticky dispatch arms (`dispatch_float_intent` /
 /// `dispatch_sticky_intent` with every production fence). No synthetic
 /// input, no keyboard acceptance, never a proof path.
 #[derive(Debug, Clone, PartialEq, Eq)]

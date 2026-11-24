@@ -81,9 +81,8 @@ use self::fullscreen::{
     exit_fullscreen_owned_with,
 };
 use self::fullscreen::{
-    FullscreenMeta, clear_fullscreen_meta, effective_stale_meta_via_effects, enter_fullscreen,
-    exit_fullscreen_owned, holdable_key, live_style_for_retire, read_fullscreen_meta,
-    track_fullscreen_holds,
+    FullscreenMeta, clear_fullscreen_meta, effective_stale_meta_via_effects, holdable_key,
+    live_style_for_retire, read_fullscreen_meta, track_fullscreen_holds,
 };
 use self::geometry::{ApplySummary, audit_json};
 use self::gesture_tick::gesture_tick;
@@ -147,7 +146,7 @@ use self::preview::{PreviewBound, PreviewStartBinding};
 pub use self::probes::live_overlay_flags;
 use self::probes::{
     WriteTarget, is_zoomed_now, pid_current, restore_wake_probe, restore_zoom_placement,
-    revalidate_target, toggle_zoom_async,
+    revalidate_target,
 };
 pub use self::proof_commands::{
     cmd_hide_proof, cmd_shortcut_proof, cmd_tile_proof, cmd_workspace_proof,
@@ -253,7 +252,7 @@ use crate::tiling::{
     RESIZE_REQUEST_FILE, ResizeOptions, SEND_OUTPUT_REQUEST_FILE, ScopeHostChild,
     SendOutputOptions, SkipReason, StatelessVerdict, TileOptions, TileProofOptions, TokenMap,
     WindowFacts, WorkspaceAction, WorkspaceOptions, allow_match, allowlist_digest, classify,
-    classify_focus, fullscreen_toggle_decision, hosted_child_allows, inspect_stateless_verdict,
+    classify_focus, hosted_child_allows, inspect_stateless_verdict,
     is_borderless_fullscreen, parse_allowlist, parse_directional_request,
     parse_migrate_workspace_request, parse_resize_request, parse_send_output_request,
     parse_workspace_request, scope_allows, scope_exe_basename, tiling_domain_bounds_with,
@@ -334,6 +333,13 @@ struct TileLoop {
     suspended_limited: bool,
     log_path: std::path::PathBuf,
     audit_path: Option<std::path::PathBuf>,
+    /// Durable ledger directory (owner lock already held): the adapter-owned
+    /// atomic slot home for R12 native preimages. Never a policy input.
+    durable_dir: std::path::PathBuf,
+    /// One-shot R12 startup recovery latch: durable topmost preimages left
+    /// by a previous tiler session are restored on the first admission
+    /// preamble only, so later ticks never rescan the slot.
+    above_preimage_restore_done: bool,
     /// Product keyboard policy for this run (takeover switch + Win+L opt-in).
     /// Live settings edits update this in place; the hook gate republishes
     /// every pump and the classifier applies policy plus the rebound table
@@ -941,6 +947,11 @@ mod drag_preview;
 mod probes;
 
 mod fullscreen;
+
+// R12 durable topmost preimages for the persistent-above lane: one
+// lifetime-bound adapter-owned atomic slot outliving the tiler, written
+// before a raise and restored only on an exact-lifetime match.
+mod above_preimage;
 
 mod admission;
 

@@ -512,6 +512,11 @@ struct Env {
 
 fn env_with(base_hwnd: u64) -> Env {
     reset_script();
+    // Scripted fixtures exercise the durable marker lane offline: the base
+    // HWND owns marker slots while every other native read stays with the
+    // scripted primitives (production never registers).
+    crate::product_hide::sys::fake::clear_marks();
+    crate::product_hide::sys::fake::register_marks(base_hwnd);
     let mut state = test_state();
     state.ensure_device(DEV1);
     let tmp = std::env::temp_dir().join(format!(

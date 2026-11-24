@@ -84,16 +84,70 @@ use super::world_capture::{CapturedWorld, OwnerInputs, capture_facts_rideable};
 use super::{ObservedWindow, RetainedRow};
 use crate::native_guards::WindowKey;
 use crate::tiling::WindowFacts;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
+use tiler_core::intent_data::IntentData;
 use tiler_core::world_report::{
     AfterShownMember, ArrivalBracket, ArrivalLocation, AuthorityScope, FocusDisposition,
     FocusFeedback, FocusNoCallReason, FrameAttempt, FramePurpose, FrameSetter, HoldReason,
-    LastWritePath, MemberAttempt, MemberDisposition, ScopeAuthority, TransferKind,
-    TransferTargetV4, ViewAttempt, VisibilityAttempt, VisibilityDisposition, VisibilityFact,
-    VisibilityReason, VisibilitySample, WorkspaceRef, WorldReplyV4,
+    LastWritePath, MemberAttempt, MemberDisposition, ScopeAuthority, StateAttempt, StateProperty,
+    TransferKind, TransferTargetV4, ViewAttempt, VisibilityAttempt, VisibilityDisposition,
+    VisibilityFact, VisibilityReason, VisibilitySample, WorkspaceRef, WorldReplyV4,
 };
+
+/// One adapter marker-storage observation for a window lifetime: the exact
+/// three durable marker properties the canonical intent record mirrors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) struct IntentStorage {
+    pub(super) sticky_prior: Option<bool>,
+    pub(super) float: bool,
+    pub(super) tile: bool,
+}
+
+impl IntentStorage {
+    /// Canonical storage for one desired intent row. Sticky dominates (its
+    /// marker already implies float); an explicit float/tile marker rides
+    /// alone; the null boundary clears all three markers.
+    pub(super) fn from_data(data: Option<IntentData>) -> Self {
+        let Some(data) = data else {
+            return Self::default();
+        };
+        if let Some(prior) = data.sticky_prior {
+            return Self {
+                sticky_prior: Some(prior),
+                float: false,
+                tile: false,
+            };
+        }
+        match data.float {
+            Some(true) => Self {
+                sticky_prior: None,
+                float: true,
+                tile: false,
+            },
+            Some(false) => Self {
+                sticky_prior: None,
+                float: false,
+                tile: true,
+            },
+            None => Self::default(),
+        }
+    }
+}
+
+/// Mechanical shape of one state actuation attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StateWrite {
+    /// No native call ran: the live property or the durable preimage was
+    /// unreadable/unwritable, so the target holds with no evidence.
+    NotAttempted,
+    /// Exactly one native call ran and reported acceptance (`true`) or an
+    /// explicit refusal (`false`).
+    Called(bool),
+    /// Throwing or ambiguous native call.
+    Threw,
+}
 
 /// Fresh offline window facts for one managed lifetime: the observation-time
 /// baseline plus the shape of every fresh re-read through [`NativeOps`].
@@ -480,6 +534,42 @@ pub(super) trait NativeOps {
     fn poll_external_invalidation(&mut self) -> bool {
         false
     }
+
+    /// Fresh native state value for one window property (`None` when
+    /// unreadable, foreign, or the lifetime no longer proves). This is the
+    /// immediate pre/post read around a state write, never a captured echo.
+    /// The default is unreadable (fail closed).
+    fn read_state(&mut self, token: &str, property: StateProperty) -> Option<bool> {
+        let _ = (token, property);
+        None
+    }
+
+    /// One native state actuation for the exact target. `NotAttempted` means
+    /// no native call ran (unreadable prerequisite or a failed durable
+    /// preimage), so the caller reports nothing; `Called` reports the one
+    /// call's acceptance/refusal; `Threw` reports an ambiguous call. The
+    /// default never calls native code.
+    fn write_state(&mut self, token: &str, property: StateProperty, value: bool) -> StateWrite {
+        let _ = (token, property, value);
+        StateWrite::NotAttempted
+    }
+
+    /// Fresh durable marker storage for one exact lifetime (`None` when
+    /// unreadable). Used to prove an intent reconcile is already equal (zero
+    /// redundant writes).
+    fn read_intent_storage(&mut self, token: &str) -> Option<IntentStorage> {
+        let _ = token;
+        None
+    }
+
+    /// Publish the canonical marker storage for one exact lifetime in one
+    /// atomic step. `Ok(())` only after the storage reads back canonical;
+    /// any failure keeps the previous storage and authorizes no dependent
+    /// write. The default fails closed.
+    fn write_intent_storage(&mut self, token: &str, data: Option<IntentData>) -> Result<(), ()> {
+        let _ = (token, data);
+        Err(())
+    }
 }
 
 /// In-memory offline native. Seeded from a [`FreshHost`] baseline (windows
@@ -550,6 +640,26 @@ pub(super) struct FakeNative {
     /// Windows whose DPI changes across the write (deterministic stand-in
     /// for a cross-monitor rescale under the call).
     pub(super) dpi_flip: HashSet<String>,
+    /// Scripted live native state per `(token, property)`: present = that
+    /// value, absent = unreadable (never a fabricated default).
+    pub(super) state: HashMap<(String, StateProperty), bool>,
+    /// State slots whose native setter reports an explicit refusal.
+    pub(super) fail_state: HashSet<(String, StateProperty)>,
+    /// State slots whose native setter throws (ambiguous completion).
+    pub(super) throw_state: HashSet<(String, StateProperty)>,
+    /// Every native state call attempted, in call order.
+    pub(super) state_writes: Vec<(String, StateProperty, bool)>,
+    /// Scripted R12 preimage publication failure for an above raise.
+    pub(super) fail_above_preimage: bool,
+    /// Scripted marker storage per token: present = readable storage,
+    /// absent = unreadable. Writes update it unless a failure is armed.
+    pub(super) intent_storage: HashMap<String, IntentStorage>,
+    /// Tokens whose marker storage reads unreadable (holds the reply);
+    /// every other unscripted token reads canonical empty storage.
+    pub(super) unreadable_intent: HashSet<String>,
+    pub(super) fail_intent: HashSet<String>,
+    /// Every durable marker-storage publish attempted, in call order.
+    pub(super) intent_writes: Vec<(String, Option<IntentData>)>,
 }
 
 #[cfg(test)]
@@ -924,6 +1034,40 @@ impl NativeOps for FakeNative {
     fn poll_external_invalidation(&mut self) -> bool {
         std::mem::take(&mut self.pending_invalidation)
     }
+    fn read_state(&mut self, token: &str, property: StateProperty) -> Option<bool> {
+        self.state.get(&(token.to_owned(), property)).copied()
+    }
+    fn write_state(&mut self, token: &str, property: StateProperty, value: bool) -> StateWrite {
+        let key = (token.to_owned(), property);
+        if property == StateProperty::Above && value && self.fail_above_preimage {
+            // Durable preimage publication failed: no native call at all.
+            return StateWrite::NotAttempted;
+        }
+        self.state_writes.push((token.to_owned(), property, value));
+        if self.throw_state.contains(&key) {
+            return StateWrite::Threw;
+        }
+        if self.fail_state.contains(&key) {
+            return StateWrite::Called(false);
+        }
+        self.state.insert(key, value);
+        StateWrite::Called(true)
+    }
+    fn read_intent_storage(&mut self, token: &str) -> Option<IntentStorage> {
+        if self.unreadable_intent.contains(token) {
+            return None;
+        }
+        Some(self.intent_storage.get(token).copied().unwrap_or_default())
+    }
+    fn write_intent_storage(&mut self, token: &str, data: Option<IntentData>) -> Result<(), ()> {
+        if self.fail_intent.contains(token) {
+            return Err(());
+        }
+        self.intent_writes.push((token.to_owned(), data));
+        self.intent_storage
+            .insert(token.to_owned(), IntentStorage::from_data(data));
+        Ok(())
+    }
 }
 
 /// At-most-once dispatch fences for transfers, floats, views, and focus
@@ -1137,6 +1281,35 @@ pub(super) struct HostDiff {
     /// Consumed at apply entry; observation ticks and every other command
     /// leave it false.
     selection_focus_authority: bool,
+    /// Durable at-most-once state writes per `(lifetime, property)`. An
+    /// unchanged `(value, command_seq)` redelivers the stored attempt with
+    /// zero native calls, so a lost acknowledgement can never re-run a
+    /// native write. A new value or command sequence replaces the record.
+    /// Retained for departed lifetimes (bounded by windows ever toggled in
+    /// the session) so an observation gap cannot re-run a write; cleared on
+    /// generation reset.
+    state_writes: BTreeMap<(String, StateProperty), StateWriteRecord>,
+    /// One-shot automatic maximize clears already applied, per
+    /// `(lifetime, property, value)`: an automatic clear is at most once per
+    /// tuple, and a later honest opposite non-automatic write re-arms it.
+    auto_clear_spent: BTreeSet<(String, StateProperty, bool)>,
+    /// Latest-wins state attempts per `(lifetime, property)` produced by
+    /// this apply pass, drained into the next report by the owner. Keyed by
+    /// the property so a paired Fullscreen→Maximized publish keeps both.
+    pending_state: BTreeMap<(String, StateProperty), StateAttempt>,
+    /// Marker-mirror updates proven by this apply's intent reconcile, in
+    /// lifetime order. The owner drains them to update its tables only
+    /// after the durable storage write succeeded; a failed write leaves
+    /// every adapter mirror untouched.
+    pending_intent_mirror: Vec<(String, IntentStorage)>,
+}
+
+/// Durable at-most-once record for one `(lifetime, property)` state slot.
+#[derive(Debug, Clone)]
+struct StateWriteRecord {
+    value: bool,
+    command_seq: Option<u64>,
+    attempt: StateAttempt,
 }
 
 impl HostDiff {
@@ -1161,7 +1334,31 @@ impl HostDiff {
             focus_records: BTreeMap::new(),
             pending_focus: BTreeMap::new(),
             selection_focus_authority: false,
+            state_writes: BTreeMap::new(),
+            auto_clear_spent: BTreeSet::new(),
+            pending_state: BTreeMap::new(),
+            pending_intent_mirror: Vec::new(),
         }
+    }
+
+    /// Drain this pass's state attempts for the next report, ordered by
+    /// lifetime and then property for deterministic correlation.
+    pub(super) fn take_state_attempts(&mut self) -> Vec<StateAttempt> {
+        let mut rows: Vec<StateAttempt> = std::mem::take(&mut self.pending_state)
+            .into_values()
+            .collect();
+        rows.sort_by(|a, b| {
+            a.window
+                .0
+                .cmp(&b.window.0)
+                .then_with(|| state_property_rank(a.property).cmp(&state_property_rank(b.property)))
+        });
+        rows
+    }
+
+    /// Drain marker-mirror updates proven by the last apply pass.
+    pub(super) fn take_intent_mirror_updates(&mut self) -> Vec<(String, IntentStorage)> {
+        std::mem::take(&mut self.pending_intent_mirror)
     }
 
     /// Arm the one-shot desktop exception for the next apply pass. The
@@ -1286,6 +1483,10 @@ impl HostDiff {
         self.focus_records.clear();
         self.pending_visibility.clear();
         self.pending_focus.clear();
+        self.state_writes.clear();
+        self.auto_clear_spent.clear();
+        self.pending_state.clear();
+        self.pending_intent_mirror.clear();
     }
 
     /// Bound every table against the current reply and baseline: spent and
@@ -2863,6 +3064,167 @@ fn frame_setter(wrote: Option<bool>) -> FrameSetter {
     }
 }
 
+/// Ordered property phase rank: the paired publish from `ToggleMaximize`
+/// while fullscreen carries `Fullscreen=false` plus `Maximized=true`, so the
+/// clear must land before the dependent maximize. Sticky is last because its
+/// marker lane may rehome; above sits between them as an independent bit.
+fn state_property_rank(property: StateProperty) -> u8 {
+    match property {
+        StateProperty::Fullscreen => 0,
+        StateProperty::Maximized => 1,
+        StateProperty::Above => 2,
+        StateProperty::Sticky => 3,
+        // The convention all core callers follow. Any new property must
+        // decide its phase here deliberately.
+    }
+}
+
+/// Reconcile every retained intent desire into durable marker storage before
+/// any dependent write.
+///
+/// A desired row for a window outside this reply's fresh baseline, an
+/// unreadable current storage, or a failed atomic publish holds the WHOLE
+/// reply (`None`): no visibility, state, frame, or membership write may run
+/// while the marker preimage the core believes it changed is unproven, and
+/// the next reply retries. Equal storage writes nothing. Absent rows carry
+/// no authority and touch nothing.
+fn reconcile_intent(
+    reply: &WorldReplyV4,
+    fresh: &FreshHost,
+    ops: &mut dyn NativeOps,
+    mirror: &mut Vec<(String, IntentStorage)>,
+) -> Option<()> {
+    for row in &reply.intent_desired {
+        if !fresh.baseline.contains_key(&row.win.0) {
+            return None;
+        }
+        let current = ops.read_intent_storage(&row.win.0)?;
+        let desired = IntentStorage::from_data(row.data);
+        if current != desired && ops.write_intent_storage(&row.win.0, row.data).is_err() {
+            return None;
+        }
+        mirror.push((row.win.0.clone(), desired));
+    }
+    Some(())
+}
+
+/// Stage controlled native state targets in ordered property phases.
+///
+/// Only `StateTarget.authority == Controlled` actuates; anything else is the
+/// core's explicit hold and reports nothing. Hidden/iconic/unreadable rows
+/// and unreadable pre-reads hold with no attempt and no native call, so a
+/// possibly-executed write is never invented and an unreadable prerequisite
+/// is never papered over. A durable `(value, command_seq)` record redelivers
+/// its original attempt with zero native calls, which makes acknowledgement
+/// loss harmless; a new value or command sequence replaces the record. An
+/// automatic clear runs at most once per `(lifetime, property, value)`.
+#[allow(clippy::too_many_arguments)]
+fn stage_state_targets(
+    reply: &WorldReplyV4,
+    fresh: &FreshHost,
+    ops: &mut dyn NativeOps,
+    gate: &mut DiffGate,
+    entry_obs: u64,
+    state_writes: &mut BTreeMap<(String, StateProperty), StateWriteRecord>,
+    auto_clear_spent: &mut BTreeSet<(String, StateProperty, bool)>,
+    pending_state: &mut BTreeMap<(String, StateProperty), StateAttempt>,
+    attempt_ms: u64,
+    stats: &mut ApplyStats,
+) {
+    for row in &reply.windows {
+        if row.state.is_empty() {
+            continue;
+        }
+        if gate.current_obs != entry_obs {
+            stats.stopped_mid_apply = true;
+            return;
+        }
+        if !scope_controlled(reply, &row.output.0, &row.workspace) {
+            continue;
+        }
+        let Some(base) = fresh.baseline.get(&row.lifetime.0) else {
+            continue;
+        };
+        if base.hidden || base.iconic {
+            continue;
+        }
+        let mut targets = row.state.clone();
+        targets.sort_by_key(|target| state_property_rank(target.property));
+        for target in targets {
+            if target.authority != ScopeAuthority::Controlled {
+                continue;
+            }
+            let key = (row.lifetime.0.clone(), target.property);
+            if target.automatic_clear
+                && auto_clear_spent.contains(&(key.0.clone(), key.1, target.value))
+            {
+                // One-shot: this exact automatic clear already ran once.
+                continue;
+            }
+            if let Some(record) = state_writes.get(&key)
+                && record.value == target.value
+                && record.command_seq == target.command_seq
+            {
+                // Acknowledgement lost: redeliver the original attempt with
+                // the revision it acted on and never touch native again.
+                pending_state.insert(key, record.attempt.clone());
+                continue;
+            }
+            let Some(pre) = ops.read_state(&row.lifetime.0, target.property) else {
+                stats.held += 1;
+                continue;
+            };
+            if pre == target.value {
+                // Already at the target: no native call, no attempt row.
+                // The reply's own observation proves the value.
+                continue;
+            }
+            if !ensure_fresh(reply, gate, entry_obs, ops) {
+                stats.stopped_mid_apply = true;
+                return;
+            }
+            let disposition = match ops.write_state(&row.lifetime.0, target.property, target.value) {
+                StateWrite::NotAttempted => {
+                    stats.held += 1;
+                    continue;
+                }
+                StateWrite::Called(accepted) => frame_setter(Some(accepted)),
+                StateWrite::Threw => frame_setter(None),
+            };
+            let attempt = StateAttempt {
+                window: row.lifetime.clone(),
+                property: target.property,
+                target: target.value,
+                // The acted-on reply's revision, never a target-local one:
+                // the core correlates against [binding revision, latest].
+                revision: reply.state_revision,
+                disposition,
+                pre: Some(pre),
+                post: ops.read_state(&row.lifetime.0, target.property),
+                attempt_ms,
+            };
+            state_writes.insert(
+                key.clone(),
+                StateWriteRecord {
+                    value: target.value,
+                    command_seq: target.command_seq,
+                    attempt: attempt.clone(),
+                },
+            );
+            if target.automatic_clear {
+                auto_clear_spent.insert((key.0.clone(), key.1, target.value));
+            } else {
+                // An honest explicit write re-arms the one-shot automatic
+                // clear for this property.
+                auto_clear_spent.retain(|(token, property, _)| {
+                    token != &key.0 || *property != key.1
+                });
+            }
+            pending_state.insert(key, attempt);
+        }
+    }
+}
+
 /// Diff one ready reply against fresh proof and actuate through `ops`.
 ///
 /// The caller owns generation/observation advancement: `state.gate.current_obs`
@@ -3050,7 +3412,21 @@ fn apply_world_reply_inner(
         focus_records,
         pending_focus,
         selection_focus_authority: _,
+        state_writes,
+        auto_clear_spent,
+        pending_state,
+        pending_intent_mirror,
     } = state;
+
+    // 0a. Intent reconcile precedes every dependent write: markers are the
+    // preimage the core's own intent records and sticky/float lanes ride.
+    // Any unreadable/failed publish holds the whole reply and retries.
+    if reconcile_intent(reply, fresh, ops, pending_intent_mirror).is_none() {
+        stats.held += 1;
+        stats.stopped_mid_apply = true;
+        finalize(&mut stats);
+        return stats;
+    }
 
     // Entry foreground for the NA remembered-focus guard.
     let mut fg_baseline = ops.foreground_state();
@@ -3074,6 +3450,27 @@ fn apply_world_reply_inner(
         pending_visibility,
         visibility_writes,
         &mut revealed_this_pass,
+        &mut stats,
+    );
+    if stats.stopped_mid_apply {
+        drain_visibility_posts(&mut stats, ops);
+        finalize(&mut stats);
+        return stats;
+    }
+
+    // 0b. Independent state targets in ordered property phases (the paired
+    // fullscreen clear precedes its dependent maximize). Each property
+    // proves its own authority, preimage, and freshness.
+    stage_state_targets(
+        reply,
+        fresh,
+        ops,
+        gate,
+        entry_obs,
+        state_writes,
+        auto_clear_spent,
+        pending_state,
+        attempt_ms,
         &mut stats,
     );
     if stats.stopped_mid_apply {
