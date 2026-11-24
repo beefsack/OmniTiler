@@ -411,8 +411,8 @@ function New-CleanApply([int]$Tick, [int]$Rev, [string]$Delivery) {
   return @{
     event = "world-apply"; tick = $Tick; delivery = $Delivery; revision = $Rev
     command_result = "ok"; geometry_status = "paired"; desired_geometry_omitted = 0
-    members_omitted = 0; views_omitted = 0; frames_omitted = 0; clears_omitted = 0
-    clear_holds_omitted = 0; desired_operations_omitted = 0; operation_settled_omitted = 0
+    members_omitted = 0; views_omitted = 0; frames_omitted = 0
+    desired_operations_omitted = 0; operation_settled_omitted = 0
     focus_effects_omitted = 0; focus_dispatch_omitted = 0; inflight_events_omitted = 0
     foreground_meta_omitted = 0; visibility_posts_omitted = 0
     desired_windows_omitted = 0; desired_outputs_omitted = 0; desired_workspaces_omitted = 0
@@ -454,7 +454,7 @@ $m = 0
 Expect-Throw { Wait-StressFreshApply $logPath ([ref]$m) 15 2 "omitted" } "omitted" "nonzero-omission"
 
 $corrupt = New-CleanApply 15 9 "accepted"
-$corrupt.Remove("clear_holds_omitted")
+$corrupt.Remove("foreground_meta_omitted")
 Write-MockLog @(($corrupt | ConvertTo-Json -Depth 8 -Compress))
 $m = 0
 Expect-Throw { Wait-StressFreshApply $logPath ([ref]$m) 15 2 "missing" } "missing" "missing-omission-field"

@@ -391,8 +391,8 @@ function Test-StressApplyClean($Event, [string]$Tag) {
   # omission. Source: apply_diag_value in
   # crates/tiler-windows/src/tiling_sys/world_tick.rs. A missing field is a
   # refusal, never a pass.
-  foreach ($f in @("members_omitted", "views_omitted", "frames_omitted", "clears_omitted",
-      "clear_holds_omitted", "desired_operations_omitted", "operation_settled_omitted",
+  foreach ($f in @("members_omitted", "views_omitted", "frames_omitted",
+      "desired_operations_omitted", "operation_settled_omitted",
       "focus_effects_omitted", "focus_dispatch_omitted", "inflight_events_omitted",
       "foreground_meta_omitted", "visibility_posts_omitted", "desired_windows_omitted",
       "desired_outputs_omitted", "desired_workspaces_omitted", "held_scopes_omitted",
