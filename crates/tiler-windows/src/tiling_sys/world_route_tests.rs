@@ -143,9 +143,6 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             None,
         )
         .expect("dispatch");
-    // Fresh bootstrap proves nothing yet: no view receipts (nothing
-    // applied, so nothing is proven).
-    assert!(report.views.is_empty(), "no receipts before proof");
     assert_eq!(report.windows.len(), 1);
     assert_eq!(report.windows[0].window.0, "w1");
     let reply = match seq.deliver(&report) {
@@ -179,11 +176,6 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             None,
         )
         .expect("dispatch");
-    assert_eq!(
-        second.views, report.views,
-        "no receipt before proof, got {:?}",
-        second.views
-    );
     let geometry_reply = match seq.deliver(&second) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
@@ -221,17 +213,12 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             0,
             Some(tiler_core::world_report::WorldCommand::SelectWorkspace {
                 output: tiler_core::directional::OutputId(state.output_token("DEV1")),
-                workspace: target.clone(),
+                workspace: tiler_core::directional::WorkspaceId(target.clone()),
             }),
         )
         .expect("command dispatch");
     // The command report still proves the actual (old) view, never the
     // desired one.
-    assert_eq!(
-        commanded.views, report.views,
-        "actual view proven, not desire, got {:?}",
-        commanded.views
-    );
     let reply = match seq.deliver(&commanded) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
@@ -260,11 +247,6 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             None,
         )
         .expect("dispatch");
-    assert_eq!(
-        pending.views, report.views,
-        "old view proven, target never echoed, got {:?}",
-        pending.views
-    );
     let reply = match seq.deliver(&pending) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
@@ -331,7 +313,6 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         &mut Vec::new(),
         &mut vmembers,
         &mut vviews,
-        &mut Vec::new(),
         0,
     );
     assert_eq!(vstats.view_writes, 1, "stats: {vstats:?}");
@@ -344,7 +325,18 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     assert!(
         vviews
             .iter()
-            .any(|a| a.operation_id == view_op && a.post.as_deref() == Some(target.as_str())),
+            .any(|a| {
+                a.operation_id == view_op
+                    && a.post.as_ref().is_some_and(|reference| {
+                        matches!(
+                            reference,
+                            tiler_core::world_report::WorkspaceRef::Logical {
+                                output,
+                                workspace,
+                            } if output.0 == out_token && workspace.0 == target
+                        )
+                    })
+            }),
         "view actuation proves: {vviews:?}"
     );
     vdiff.gate.note_applied(&reply);
@@ -363,14 +355,6 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             None,
         )
         .expect("dispatch");
-    assert_eq!(
-        echoed.views.len(),
-        1,
-        "proven view echoes, got {:?}",
-        echoed.views
-    );
-    assert_eq!(echoed.views[0].output.0, out_token);
-    assert_eq!(echoed.views[0].view, target);
     let reply = match seq.deliver(&echoed) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
@@ -404,7 +388,6 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         0,
     );
     assert_eq!(stats.held, 0, "stats: {stats:?}");
@@ -417,7 +400,6 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         &geometry_reply,
         &fresh,
         &mut native,
-        &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
@@ -434,13 +416,13 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             w: 100,
             h: 100,
         },
-        setter: tiler_core::world_report::FrameSetter::Accepted,
+        disposition: tiler_core::world_report::FrameSetter::Accepted,
         readback: None,
         dpi_before: None,
         dpi_after: None,
-        attempt_ms: 7,
-        operation_id: None,
-        prewrite: None,
+        attempt_id: 0,
+        attempt_ms: Some(7),
+        purpose: tiler_core::world_report::FramePurpose::Layout,
     });
     assert_eq!(seq.pending_frames_len(), 1);
     seq.invalidate();
@@ -475,7 +457,6 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         frames_acked: Vec::new(),
         members_acked: Vec::new(),
         views_acked: Vec::new(),
-        clears_acked: Vec::new(),
     };
     let pruned = seq.apply_close_receipt(&mut pending, &ack_receipt);
     assert_eq!(pruned, vec!["w9".to_owned()]);
@@ -880,7 +861,10 @@ fn arrival_reply(
         ready: true,
         command_consumed: false,
         scopes: vec![ScopeStatus {
-            scope: format!("{out}/ws1"),
+            scope: tiler_core::world_report::AuthorityScope::Workspace {
+                output: tiler_core::directional::OutputId(out.to_owned()),
+                workspace: tiler_core::directional::WorkspaceId("ws1".to_owned()),
+            },
             authority: Auth::Controlled,
         }],
         workspaces: Vec::new(),
@@ -1217,7 +1201,7 @@ fn busy_command_reports_unverified_not_cached_reply() {
     );
     assert!(
         reply.is_none(),
-        "busy command must not replay the cached reply, got {reply:?}"
+        "busy command must not replay the cached reply"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1331,7 +1315,9 @@ fn rejected_command_catchup_never_strands_the_next_command() {
     )
     .expect("seed converges");
     let focus = |window: &str, direction: &str| WorldCommand::FocusDirectional {
-        window: WindowId(window.to_owned()),
+        window: tiler_core::world_report::FocusDirectionalSubject::Window(WindowId(
+            window.to_owned(),
+        )),
         direction: tiler_core::directional::Direction::parse_wire(direction).expect("direction"),
     };
     let command = |state: &mut super::TileLoop, window: &str, direction: &str| {
@@ -1604,7 +1590,7 @@ fn journey_snapshot_refreshes_at_command_delivery_before_callback() {
         &fulls,
         tiler_core::world_report::WorldCommand::SelectWorkspace {
             output: tiler_core::directional::OutputId(out),
-            workspace: target,
+            workspace: tiler_core::directional::WorkspaceId(target),
         },
         None,
     )
@@ -1623,7 +1609,7 @@ fn journey_snapshot_refreshes_at_command_delivery_before_callback() {
     assert_eq!(edges[0].observed_command_seq_at_delivery, want_seq);
     assert_eq!(
         edges[0].observed_core_revision_at_delivery,
-        reply.state_revision
+        reply.reply.state_revision
     );
     // An observation delivery also refreshes the revision before native
     // pumps, without assigning another command sequence.

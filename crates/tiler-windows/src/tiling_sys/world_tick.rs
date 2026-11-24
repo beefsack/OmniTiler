@@ -166,7 +166,7 @@ pub(super) fn merge_applied_transfers(
     proven_h: &mut HashMap<String, (String, String)>,
     proven_v: &mut HashMap<String, String>,
 ) {
-    use tiler_core::world_report::{FrameSetter, TransferKind};
+    use tiler_core::world_report::{FrameSetter, MemberDisposition, TransferKind};
     for transfer in &reply.transfers {
         let proven = match &transfer.kind {
             TransferKind::Window(window) => member_attempts.iter().any(|attempt| {
@@ -174,9 +174,12 @@ pub(super) fn merge_applied_transfers(
                     && attempt.window == *window
                     && attempt.target_output == transfer.target_output
                     && attempt.target_workspace == transfer.target_workspace
-                    && (attempt.post.as_ref().is_some_and(|(out, ws)| {
-                        out == &transfer.target_output && ws == &transfer.target_workspace
-                    }) || (matches!(attempt.setter, FrameSetter::Accepted)
+                    && (attempt.post.as_ref().is_some_and(|reference| {
+                        workspace_ref_covers(reference, &transfer.target_output, &transfer.target_workspace)
+                    }) || (matches!(
+                        attempt.disposition,
+                        MemberDisposition::Called(FrameSetter::Accepted)
+                    )
                         && reply
                             .windows
                             .iter()
@@ -193,7 +196,9 @@ pub(super) fn merge_applied_transfers(
                 attempt.operation_id == transfer.operation_id
                     && attempt.target_output == transfer.target_output
                     && attempt.target_workspace == transfer.target_workspace
-                    && attempt.post.as_deref() == Some(transfer.target_workspace.as_str())
+                    && attempt.post.as_ref().is_some_and(|reference| {
+                        workspace_ref_covers(reference, &transfer.target_output, &transfer.target_workspace)
+                    })
             }),
         };
         if !proven {
@@ -527,6 +532,26 @@ fn member_disposition_str(
     }
 }
 
+/// Project one authority scope into trace JSON (`Output` or explicit
+/// `Workspace`), never the Rust struct (which is not `Serialize`).
+fn authority_scope_value(scope: &tiler_core::world_report::AuthorityScope) -> serde_json::Value {
+    match scope {
+        tiler_core::world_report::AuthorityScope::Output(output) => {
+            serde_json::json!({
+                "kind": "output",
+                "out": output.0.clone(),
+            })
+        }
+        tiler_core::world_report::AuthorityScope::Workspace { output, workspace } => {
+            serde_json::json!({
+                "kind": "workspace",
+                "out": output.0.clone(),
+                "ws": workspace.0.clone(),
+            })
+        }
+    }
+}
+
 /// Whether one typed workspace reference proves exactly `output` plus the
 /// logical workspace token. Only the logical namespace can prove a logical
 /// transfer target; a native reference never does, even when its native id
@@ -550,7 +575,7 @@ fn workspace_ref_covers(
 /// the diff dispatched a setter this pass: setter-side write counts never
 /// fabricate a proof row. Desired homing/views ride labeled `desired_*`,
 /// never as observed proof. Pending window-operation desire (published
-/// `frame_operation`/`clear_operation` tokens) rides labeled
+/// `frame_operation` tokens) rides labeled
 /// `desired_operations`, one row per actual token; actual raw frame writes
 /// ride `frames`; terminal core verdicts ride `operation_settled`. The three
 /// stay distinct: desire is pending intent, attempts are mechanical facts,
@@ -775,7 +800,7 @@ fn apply_diag_value(
             serde_json::json!({
                 "id": row.id.clone(),
                 "output": row.output.0.clone(),
-                "scope": row.scope.clone(),
+                "scope": authority_scope_value(&row.scope),
                 "order": row.order,
                 "tiling_mode": row.tiling_mode.as_str(),
                 "existence": row.existence,
@@ -820,7 +845,7 @@ fn apply_diag_value(
         .take(MAX_APPLY_DIAG_SCOPES)
         .map(|status| {
             serde_json::json!({
-                "scope": status.scope.clone(),
+                "scope": authority_scope_value(&status.scope),
                 "authority": status.authority.as_str(),
                 "reason": status.authority.hold_reason().map(|reason| reason.as_str()),
             })
@@ -1168,7 +1193,6 @@ fn apply_diag_value(
     out["geometry_report"] = serde_json::json!({
         "request": report.request_id.clone(),
         "observation": report.observation_seq,
-        "owner": report.owner.clone(),
         "incarnation": report.adapter_incarnation.clone(),
         "generation": report.core_generation.clone(),
     });
@@ -1213,7 +1237,6 @@ fn log_apply_diag(
             stats,
             member_attempts,
             view_attempts,
-            clear_attempts,
             frame_attempts,
             reply,
         ) || hover_changed
@@ -1234,7 +1257,7 @@ fn log_apply_diag(
         stats,
         member_attempts,
         view_attempts,
-        clear_attempts,
+        command_result,
         frame_attempts,
         fresh_route,
         cursor_hit,
@@ -1721,7 +1744,6 @@ pub(super) fn run_observation_tick(
     let mut frame_attempts = Vec::new();
     let mut member_attempts = Vec::new();
     let mut view_attempts = Vec::new();
-    let mut clear_attempts = Vec::new();
     let mut stats = world.apply_accepted(
         &reply,
         &fresh,
@@ -1729,7 +1751,6 @@ pub(super) fn run_observation_tick(
         &mut frame_attempts,
         &mut member_attempts,
         &mut view_attempts,
-        &mut clear_attempts,
         tick_ms,
     );
     #[cfg(test)]
@@ -1815,7 +1836,7 @@ pub(super) fn run_observation_tick(
             &stats,
             &member_attempts,
             &view_attempts,
-            &clear_attempts,
+            None,
             &frame_attempts,
             fresh_route_value(
                 &captured.focused_global,
@@ -1854,7 +1875,7 @@ pub(super) fn run_observation_tick(
         &stats,
         &member_attempts,
         &view_attempts,
-        &clear_attempts,
+        None,
         &frame_attempts,
         fresh_route_value(
             &captured.focused_global,
@@ -1928,9 +1949,6 @@ pub(super) fn run_observation_tick(
         for attempt in view_attempts {
             world.note_view_attempt(attempt);
         }
-    }
-    for attempt in clear_attempts {
-        world.note_clear_attempt(attempt);
     }
     let mut pending = std::mem::take(pending_closed);
     let (ack_outcome, pruned) = world.ack(&reply, &mut pending);
@@ -2148,7 +2166,7 @@ fn run_world_command_impl(
     command: WorldCommand,
     cursor: Option<(i32, i32)>,
     mode: CommandApplyMode,
-) -> Option<tiler_core::world_report::WorldReply> {
+) -> Option<WorldCommandOutcome> {
     let trace = state.trace;
     let tick = state.tick;
     let log_path = state.log_path.clone();
@@ -2353,6 +2371,7 @@ fn run_world_command_impl(
         }
     };
     let outcome = world.deliver_production(&report);
+    let result = world.last_command_result().cloned();
     let (delivery, reply) = match outcome {
         tiler_core::world_engine::WorldOutcome::Accepted(reply) => ("accepted", reply),
         tiler_core::world_engine::WorldOutcome::Duplicate(reply) => ("duplicate", reply),
@@ -2439,14 +2458,17 @@ fn run_world_command_impl(
             // advanced core-side, but NO native planning, NO applied
             // watermark, NO trace proof, NO gesture clearing. The latest
             // full pass owns all of those.
-            super::world_sequencer::AckOutcome::Applied(_) => return Some(reply),
+            super::world_sequencer::AckOutcome::Applied(_) => return Some(WorldCommandOutcome { reply, result }),
             // Stale but correlated: incorporation acked where it happened,
             // catch-up scheduled. Return the cached reply like the full
             // path so the caller can still count the command as ordered;
             // the next dispatch services the owed catch-up through the
             // same fence as today.
             super::world_sequencer::AckOutcome::Stale(_) => {
-                return world.last_reply().cloned();
+                return world
+                    .last_reply()
+                    .cloned()
+                    .map(|reply| WorldCommandOutcome { reply, result });
             }
             super::world_sequencer::AckOutcome::Ignored { .. } => return None,
         }
@@ -2585,7 +2607,6 @@ fn run_world_command_impl(
     let mut frame_attempts = Vec::new();
     let mut member_attempts = Vec::new();
     let mut view_attempts = Vec::new();
-    let mut clear_attempts = Vec::new();
     let mut stats = world.apply_accepted(
         &reply,
         &fresh,
@@ -2593,7 +2614,6 @@ fn run_world_command_impl(
         &mut frame_attempts,
         &mut member_attempts,
         &mut view_attempts,
-        &mut clear_attempts,
         tick_ms,
     );
     #[cfg(test)]
@@ -2667,7 +2687,7 @@ fn run_world_command_impl(
             &stats,
             &member_attempts,
             &view_attempts,
-            &clear_attempts,
+            result.as_ref(),
             &frame_attempts,
             fresh_route_value(
                 &captured.focused_global,
@@ -2706,7 +2726,7 @@ fn run_world_command_impl(
         &stats,
         &member_attempts,
         &view_attempts,
-        &clear_attempts,
+        result.as_ref(),
         &frame_attempts,
         fresh_route_value(
             &captured.focused_global,
@@ -2777,9 +2797,6 @@ fn run_world_command_impl(
             world.note_view_attempt(attempt);
         }
     }
-    for attempt in clear_attempts {
-        world.note_clear_attempt(attempt);
-    }
     let ack_outcome = ack_close_receipts(&mut *world, pending_closed, &reply, applied_homing);
     match ack_outcome {
         super::world_sequencer::AckOutcome::Applied(_) => {
@@ -2794,7 +2811,7 @@ fn run_world_command_impl(
                 );
                 world.note_trace_proof(proof_row);
             }
-            Some(reply)
+            Some(WorldCommandOutcome { reply, result })
         }
         // Stale command deliveries keep the existing cached-reply contract
         // (callers resubmit after the next observation tick runs the
@@ -2808,7 +2825,10 @@ fn run_world_command_impl(
                     &reply,
                 );
             }
-            world.last_reply().cloned()
+            world
+                .last_reply()
+                .cloned()
+                .map(|reply| WorldCommandOutcome { reply, result })
         }
         super::world_sequencer::AckOutcome::Ignored { .. } => None,
     }
@@ -2837,7 +2857,7 @@ pub(super) fn run_world_command(
     fulls: &[tiler_core::geometry::Rect],
     command: WorldCommand,
     cursor: Option<(i32, i32)>,
-) -> Option<tiler_core::world_report::WorldReply> {
+) -> Option<WorldCommandOutcome> {
     run_world_command_impl(
         state,
         me,
@@ -2901,7 +2921,7 @@ pub(super) fn run_world_command_core_only(
     fulls: &[tiler_core::geometry::Rect],
     command: WorldCommand,
     cursor: Option<(i32, i32)>,
-) -> Option<tiler_core::world_report::WorldReply> {
+) -> Option<WorldCommandOutcome> {
     run_world_command_impl(
         state,
         me,
@@ -2933,7 +2953,7 @@ pub(super) fn observe_and_command_core_only(
     fulls: &[tiler_core::geometry::Rect],
     areas: &[MonitorArea],
     command: WorldCommand,
-) -> Option<tiler_core::world_report::WorldReply> {
+) -> Option<WorldCommandOutcome> {
     let cursor = super::observation::sample_cursor();
     let mut skipped: Vec<(String, String)> = Vec::new();
     let mut retained: Vec<RetainedRow> = Vec::new();
@@ -2957,7 +2977,7 @@ pub(super) fn observe_and_command(
     fulls: &[tiler_core::geometry::Rect],
     areas: &[MonitorArea],
     command: WorldCommand,
-) -> Option<tiler_core::world_report::WorldReply> {
+) -> Option<WorldCommandOutcome> {
     // One normalized sample for this command snapshot (existing capture
     // sampling only; the focused-fullscreen-game lane never reaches here,
     // so no cursor work runs under it).
@@ -2979,7 +2999,7 @@ pub(super) fn observe_and_command_at(
     areas: &[MonitorArea],
     command: WorldCommand,
     cursor: Option<(i32, i32)>,
-) -> Option<tiler_core::world_report::WorldReply> {
+) -> Option<WorldCommandOutcome> {
     let mut skipped: Vec<(String, String)> = Vec::new();
     let mut retained: Vec<RetainedRow> = Vec::new();
     // Seam-aware foreground read (production-identical; scripted in unit
@@ -3148,8 +3168,10 @@ pub(super) fn dispatch_test_observation(
 #[cfg(test)]
 mod apply_diag_tests {
     use super::*;
-    use tiler_core::directional::{OutputId, WindowId};
-    use tiler_core::world_report::{HoldReason, ScopeAuthority, ScopeStatus, TransferTarget};
+    use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
+    use tiler_core::world_report::{
+        FramePurpose, HoldReason, ScopeAuthority, ScopeStatus, TransferTargetV4, WorkspaceRef,
+    };
 
     fn reply_shell() -> WorldReplyV4 {
         WorldReplyV4 {
@@ -3163,11 +3185,17 @@ mod apply_diag_tests {
             command_consumed: false,
             scopes: vec![
                 ScopeStatus {
-                    scope: "o1/w1".to_owned(),
+                    scope: tiler_core::world_report::AuthorityScope::Workspace {
+                        output: OutputId("o1".to_owned()),
+                        workspace: WorkspaceId("w1".to_owned()),
+                    },
                     authority: ScopeAuthority::Controlled,
                 },
                 ScopeStatus {
-                    scope: "o1/w2".to_owned(),
+                    scope: tiler_core::world_report::AuthorityScope::Workspace {
+                        output: OutputId("o1".to_owned()),
+                        workspace: WorkspaceId("w2".to_owned()),
+                    },
                     authority: ScopeAuthority::Hold(HoldReason::GestureBarrier),
                 },
             ],
@@ -3216,10 +3244,10 @@ mod apply_diag_tests {
         output: &str,
         full: tiler_core::geometry::Rect,
         work: tiler_core::geometry::Rect,
-        gap: i32,
-        outer_gap: i32,
+        _gap: i32,
+        _outer_gap: i32,
         complete: bool,
-        primary: bool,
+        _primary: bool,
     ) -> tiler_core::world_report::ScreenReport {
         tiler_core::world_report::ScreenReport {
             output: OutputId(output.to_owned()),
@@ -3266,7 +3294,6 @@ mod apply_diag_tests {
             frames: Vec::new(),
             member_attempts: Vec::new(),
             view_attempts: Vec::new(),
-            clear_attempts: Vec::new(),
             creation_attempts: Vec::new(),
             held_attempts: Vec::new(),
             state_attempts: Vec::new(),
@@ -3285,7 +3312,6 @@ mod apply_diag_tests {
             geometry_writes: 0,
             membership_writes: 1,
             view_writes: 0,
-            clear_writes: 0,
             creations: 0,
             removals: 0,
             effects: 0,
@@ -3302,8 +3328,6 @@ mod apply_diag_tests {
             inflight_events: Vec::new(),
             inflight_total: 0,
             foreground_meta_omitted: 0,
-            clear_holds: Vec::new(),
-            clear_holds_total: 0,
             visibility_posts: Vec::new(),
             visibility_total: 0,
             show_posts_done_mono_ms: None,
@@ -3321,7 +3345,7 @@ mod apply_diag_tests {
         // never frame proof), clear refusals, and float frame-proven
         // completions share the one carrier. Bounds stay honest.
         use tiler_core::world_report::{
-            ClearAttempt, FrameSetter, OperationEvent, OperationKind, OperationOutcome,
+            OperationEvent, OperationKind, OperationOutcome,
         };
         let mut reply = reply_shell();
         reply.operation_settled = vec![
@@ -3347,14 +3371,6 @@ mod apply_diag_tests {
                 cause: None,
             },
         ];
-        let clears = vec![ClearAttempt {
-            operation_id: "op-13".to_owned(),
-            window: WindowId("w1".to_owned()),
-            setter: FrameSetter::Accepted,
-            pre_maximized: Some(true),
-            post_maximized: Some(false),
-            attempt_ms: 9,
-        }];
         let value = apply_diag_value(
             12,
             &reply,
@@ -3362,8 +3378,7 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[],
-            &clears,
+            &[], None,
             &[],
             fresh_route_value(
                 "w1",
@@ -3378,13 +3393,6 @@ mod apply_diag_tests {
             &[],
             None,
         );
-        // Raw attempts and terminal verdicts stay distinct rows: the
-        // attempt is mechanical proof, the event is the core verdict.
-        let attempt_rows = value["clears"].as_array().expect("clear rows");
-        assert_eq!(attempt_rows.len(), 1);
-        assert_eq!(attempt_rows[0]["op"], serde_json::json!("op-13"));
-        assert_eq!(attempt_rows[0]["setter"], serde_json::json!("accepted"));
-        assert_eq!(value["clears_omitted"], serde_json::json!(0));
         let settled = value["operation_settled"].as_array().expect("settled rows");
         assert_eq!(settled.len(), 3);
         assert_eq!(settled[0]["op"], serde_json::json!("op-13"));
@@ -3425,8 +3433,7 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             fresh_route_value(
                 "w1",
@@ -3454,8 +3461,7 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             fresh_route_value(
                 "w1",
@@ -3499,11 +3505,17 @@ mod apply_diag_tests {
                 window: WindowId(format!("w{n}")),
                 target_output: OutputId("o1".to_owned()),
                 target_workspace: "w2".to_owned(),
-                setter: setters[n % setters.len()],
-                pre: (n % 2 == 0).then(|| (OutputId("o1".to_owned()), format!("w{}", n % 3))),
-                post: (n % 3 == 0).then(|| (OutputId("o1".to_owned()), "w2".to_owned())),
-                native_pre: None,
-                native_post: None,
+                disposition: tiler_core::world_report::MemberDisposition::Called(
+                    setters[n % setters.len()],
+                ),
+                pre: (n % 2 == 0).then(|| WorkspaceRef::Logical {
+                    output: OutputId("o1".to_owned()),
+                    workspace: WorkspaceId(format!("w{}", n % 3)),
+                }),
+                post: (n % 3 == 0).then(|| WorkspaceRef::Logical {
+                    output: OutputId("o1".to_owned()),
+                    workspace: WorkspaceId("w2".to_owned()),
+                }),
                 attempt_ms: n as u64,
             })
             .collect();
@@ -3515,8 +3527,7 @@ mod apply_diag_tests {
             "send",
             &stats,
             &members,
-            &views,
-            &[],
+            &views, None,
             &[],
             fresh_route_value(
                 "w1",
@@ -3558,14 +3569,20 @@ mod apply_diag_tests {
         assert_eq!(rows[1]["setter"], serde_json::json!("refused"));
         assert_eq!(rows[2]["setter"], serde_json::json!("threw"));
         assert_eq!(rows[0]["ws"], serde_json::json!("w2"));
-        assert_eq!(rows[0]["pre"], serde_json::json!("o1/w0"));
+        assert_eq!(
+            rows[0]["pre"],
+            serde_json::json!({"kind": "logical", "out": "o1", "ws": "w0"})
+        );
         assert!(rows[1]["pre"].is_null());
         let view_rows = value["views"].as_array().expect("view rows");
         assert!(view_rows.is_empty());
         assert_eq!(value["views_omitted"], serde_json::json!(0));
         let scopes = value["held_scopes"].as_array().expect("held scopes");
         assert_eq!(scopes.len(), 1);
-        assert_eq!(scopes[0]["scope"], serde_json::json!("o1/w2"));
+        assert_eq!(
+            scopes[0]["scope"],
+            serde_json::json!({"kind": "workspace", "out": "o1", "ws": "w2"})
+        );
         assert_eq!(scopes[0]["authority"], serde_json::json!("hold"));
         assert_eq!(scopes[0]["reason"], serde_json::json!("gesture-barrier"));
         let transfers = value["desired_transfers"]
@@ -3647,7 +3664,6 @@ mod apply_diag_tests {
             &quiet,
             &empty_members,
             &empty_views,
-            &[],
             &empty_frames,
             &idle_reply,
         ));
@@ -3662,7 +3678,6 @@ mod apply_diag_tests {
             &held_only,
             &empty_members,
             &empty_views,
-            &[],
             &empty_frames,
             &idle_reply,
         ));
@@ -3673,7 +3688,6 @@ mod apply_diag_tests {
             &held_only,
             &empty_members,
             &empty_views,
-            &[],
             &empty_frames,
             &idle_reply,
         ));
@@ -3685,15 +3699,14 @@ mod apply_diag_tests {
                 window: WindowId("w3".to_owned()),
                 target_output: OutputId("o1".to_owned()),
                 target_workspace: "w2".to_owned(),
-                setter: FrameSetter::Threw,
+                disposition: tiler_core::world_report::MemberDisposition::Called(
+                    FrameSetter::Threw,
+                ),
                 pre: None,
                 post: None,
-                native_pre: None,
-                native_post: None,
                 attempt_ms: 3,
             }],
             &empty_views,
-            &[],
             &empty_frames,
             &idle_reply,
         ));
@@ -3706,7 +3719,6 @@ mod apply_diag_tests {
             &writes,
             &empty_members,
             &empty_views,
-            &[],
             &empty_frames,
             &idle_reply,
         ));
@@ -3720,7 +3732,6 @@ mod apply_diag_tests {
             &stopped,
             &empty_members,
             &empty_views,
-            &[],
             &empty_frames,
             &idle_reply,
         ));
@@ -3774,7 +3785,6 @@ mod apply_diag_tests {
             &dispatched_unproven,
             &empty_members,
             &empty_views,
-            &[],
             &empty_frames,
             &idle_reply,
         ));
@@ -3825,7 +3835,6 @@ mod apply_diag_tests {
             &held_no_setter,
             &empty_members,
             &empty_views,
-            &[],
             &empty_frames,
             &idle_reply,
         ));
@@ -3847,7 +3856,6 @@ mod apply_diag_tests {
             &quiet,
             &empty_members,
             &empty_views,
-            &[],
             &empty_frames,
             &settled_reply,
         ));
@@ -3862,20 +3870,22 @@ mod apply_diag_tests {
                 w: 960,
                 h: 1040,
             },
-            setter: FrameSetter::Accepted,
+            disposition: FrameSetter::Accepted,
             readback: None,
             dpi_before: None,
             dpi_after: None,
-            attempt_ms: 5,
-            operation_id: Some("op-20".to_owned()),
-            prewrite: None,
+            attempt_id: 0,
+            attempt_ms: Some(5),
+            purpose: FramePurpose::FloatPlacement {
+                operation_id: "op-20".to_owned(),
+                prewrite: None,
+            },
         }];
         assert!(should_log_apply(
             "observation",
             &quiet,
             &empty_members,
             &empty_views,
-            &[],
             &frame_only,
             &idle_reply,
         ));
@@ -3955,8 +3965,7 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &empty_members,
-            &empty_views,
-            &[],
+            &empty_views, None,
             &empty_frames,
             route.clone(),
             None,
@@ -3981,8 +3990,7 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &empty_members,
-            &empty_views,
-            &[],
+            &empty_views, None,
             &empty_frames,
             route,
             None,
@@ -4007,8 +4015,7 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &empty_members,
-            &empty_views,
-            &[],
+            &empty_views, None,
             &empty_frames,
             fresh_route_value(
                 "",
@@ -4078,7 +4085,6 @@ mod apply_diag_tests {
                     &quiet,
                     &empty_members,
                     &empty_views,
-                    &[],
                     &empty_frames,
                     reply,
                 ),
@@ -4101,8 +4107,7 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &empty_members,
-            &empty_views,
-            &[],
+            &empty_views, None,
             &empty_frames,
             route(),
             None,
@@ -4118,8 +4123,7 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &empty_members,
-            &empty_views,
-            &[],
+            &empty_views, None,
             &empty_frames,
             route(),
             None,
@@ -4188,8 +4192,7 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[],
-            &[],
+            &[], None,
             &empty_frames,
             serde_json::json!({}),
             None,
@@ -4238,7 +4241,6 @@ mod apply_diag_tests {
             &landed,
             &empty_members,
             &empty_views,
-            &[],
             &empty_frames,
             &idle_reply,
         ));
@@ -4252,7 +4254,6 @@ mod apply_diag_tests {
             &folded,
             &empty_members,
             &empty_views,
-            &[],
             &empty_frames,
             &idle_reply,
         ));
@@ -4285,7 +4286,6 @@ mod apply_diag_tests {
             &posted,
             &empty_members,
             &empty_views,
-            &[],
             &empty_frames,
             &idle_reply,
         ));
@@ -4296,8 +4296,7 @@ mod apply_diag_tests {
             "observation",
             &posted,
             &empty_members,
-            &empty_views,
-            &[],
+            &empty_views, None,
             &empty_frames,
             serde_json::json!({}),
             None,
@@ -4326,7 +4325,6 @@ mod apply_diag_tests {
             &folded,
             &empty_members,
             &empty_views,
-            &[],
             &empty_frames,
             &idle_reply,
         ));
@@ -4353,8 +4351,7 @@ mod apply_diag_tests {
             "observation",
             &capped,
             &empty_members,
-            &empty_views,
-            &[],
+            &empty_views, None,
             &empty_frames,
             serde_json::json!({}),
             None,
@@ -4385,39 +4382,40 @@ mod apply_diag_tests {
         // (shows issued, arrivals proven, focus confirmed, departures
         // hidden) with no new native query. Unavailable staged phases stay
         // honest zeros, never absent keys.
-        use tiler_core::world_report::{ClearAttempt, FrameSetter, MemberAttempt, ViewAttempt};
+        use tiler_core::world_report::{FrameSetter, MemberAttempt, ViewAttempt};
         let members = vec![MemberAttempt {
             operation_id: "op-3".to_owned(),
             window: WindowId("w3".to_owned()),
             target_output: OutputId("o1".to_owned()),
             target_workspace: "ws2".to_owned(),
-            setter: FrameSetter::Threw,
+            disposition: tiler_core::world_report::MemberDisposition::Called(
+                FrameSetter::Threw,
+            ),
             pre: None,
-            post: Some((OutputId("o1".to_owned()), "ws2".to_owned())),
-            native_pre: None,
-            native_post: None,
+            post: Some(WorkspaceRef::Logical {
+                output: OutputId("o1".to_owned()),
+                workspace: WorkspaceId("ws2".to_owned()),
+            }),
             attempt_ms: 31,
         }];
         let views = vec![ViewAttempt {
             operation_id: "op-7".to_owned(),
             target_output: OutputId("o1".to_owned()),
             target_workspace: "ws2".to_owned(),
-            setter: FrameSetter::Threw,
-            pre: Some("ws1".to_owned()),
-            post: Some("ws2".to_owned()),
-            baseline: Some("ws1".to_owned()),
-            native_pre: None,
-            native_post: None,
-            native_baseline: None,
+            disposition: FrameSetter::Threw,
+            pre: Some(WorkspaceRef::Logical {
+                output: OutputId("o1".to_owned()),
+                workspace: WorkspaceId("ws1".to_owned()),
+            }),
+            post: Some(WorkspaceRef::Logical {
+                output: OutputId("o1".to_owned()),
+                workspace: WorkspaceId("ws2".to_owned()),
+            }),
+            baseline: Some(WorkspaceRef::Logical {
+                output: OutputId("o1".to_owned()),
+                workspace: WorkspaceId("ws1".to_owned()),
+            }),
             attempt_ms: 32,
-        }];
-        let clears = vec![ClearAttempt {
-            operation_id: "op-9".to_owned(),
-            window: WindowId("w9".to_owned()),
-            setter: FrameSetter::Threw,
-            pre_maximized: Some(true),
-            post_maximized: Some(false),
-            attempt_ms: 33,
         }];
         let mut stats = stats_shell();
         stats.staged_reveals = 1;
@@ -4430,8 +4428,7 @@ mod apply_diag_tests {
             "select-workspace",
             &stats,
             &members,
-            &views,
-            &clears,
+            &views, None,
             &[],
             serde_json::json!({}),
             None,
@@ -4444,7 +4441,6 @@ mod apply_diag_tests {
         assert_eq!(value["views"][0]["attempt_ms"], serde_json::json!(32));
         assert_eq!(value["views"][0]["out"], serde_json::json!("o1"));
         assert_eq!(value["views"][0]["ws"], serde_json::json!("ws2"));
-        assert_eq!(value["clears"][0]["attempt_ms"], serde_json::json!(33));
         assert_eq!(value["stats"]["staged_reveals"], serde_json::json!(1));
         assert_eq!(value["stats"]["staged_focus"], serde_json::json!(1));
         assert_eq!(value["stats"]["staged_hides"], serde_json::json!(0));
@@ -4473,8 +4469,7 @@ mod apply_diag_tests {
             "select-workspace",
             &stats,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -4509,8 +4504,7 @@ mod apply_diag_tests {
             "select-workspace",
             &stats_shell(),
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -4550,8 +4544,7 @@ mod apply_diag_tests {
             "select-workspace",
             &stats_shell(),
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -4576,11 +4569,15 @@ mod apply_diag_tests {
         // with its individual hold reason, so the live leg can attribute a
         // quiet native focus to a held dispatch rather than an absent hit.
         let mut reply = reply_shell();
-        reply.effects.push(tiler_core::world_report::OneShotEffect {
+        reply.focus_request = Some(tiler_core::world_report::FocusRequest {
             id: "ffc-w1".to_owned(),
-            kind: tiler_core::world_report::EffectKind::Focus,
             target: WindowId("w1".to_owned()),
             issued_revision: 1,
+            cause: tiler_core::world_report::FocusRequestCause::ExplicitCommand,
+            output: OutputId("o1".to_owned()),
+            workspace: "ws-a".to_owned(),
+            cmd_seq: None,
+            after_shown: None,
         });
         let stats = super::super::world_diff::ApplyStats {
             held: 1,
@@ -4630,8 +4627,7 @@ mod apply_diag_tests {
             "observation",
             &stats,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             Some("w1".to_owned()),
@@ -4781,8 +4777,7 @@ mod apply_diag_tests {
             "observation",
             &stats,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             Some("w1".to_owned()),
@@ -4922,8 +4917,7 @@ mod apply_diag_tests {
             "observation",
             &stats,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             Some("w1".to_owned()),
@@ -5024,8 +5018,7 @@ mod apply_diag_tests {
             "select-workspace",
             &stats,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             Some("w0".to_owned()),
@@ -5040,120 +5033,21 @@ mod apply_diag_tests {
     }
 
     #[test]
-    fn diag_clear_hold_oracle_logs_gate_on_quiet_observation() {
-        // The clear-lane attribution oracle: a published clear desire held
-        // with no setter rides the trace with its exact gate, and the
-        // observation tick carrying it logs instead of staying quiet.
-        let reply = reply_shell();
-        let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
-        let empty_views: Vec<tiler_core::world_report::ViewAttempt> = Vec::new();
-        let empty_frames: Vec<tiler_core::world_report::FrameAttempt> = Vec::new();
-        let idle_reply = reply_shell();
-        let held_clear = super::super::world_diff::ApplyStats {
-            held: 1,
-            clear_holds_total: 1,
-            clear_holds: vec![super::super::world_diff::ClearHoldDiag {
-                op: "op-15".to_owned(),
-                window: "w3".to_owned(),
-                hold: "frame-race",
-            }],
-            ..Default::default()
-        };
-        assert!(should_log_apply(
-            "observation",
-            &held_clear,
-            &empty_members,
-            &empty_views,
-            &[],
-            &empty_frames,
-            &idle_reply,
-        ));
-        let value = apply_diag_value(
-            16,
-            &reply,
-            "accepted",
-            "observation",
-            &held_clear,
-            &empty_members,
-            &empty_views,
-            &[],
-            &empty_frames,
-            serde_json::json!({}),
-            None,
-            false,
-            &report_shell(vec![]),
-            &[],
-            None,
-        );
-        let holds = value["clear_holds"].as_array().expect("clear holds");
-        assert_eq!(holds.len(), 1);
-        assert_eq!(holds[0]["op"], serde_json::json!("op-15"));
-        assert_eq!(holds[0]["window"], serde_json::json!("w3"));
-        assert_eq!(holds[0]["hold"], serde_json::json!("frame-race"));
-        assert_eq!(value["clear_holds_omitted"], serde_json::json!(0));
-        assert_eq!(value["clears"], serde_json::json!([]));
-    }
-
-    #[test]
-    fn diag_clear_holds_bound_rows_and_omit_honestly_past_cap() {
-        // Past-cap regression for the reviewed defect: the omitted count
-        // derives from the unbounded total, never the truncated storage,
-        // so a pass with more held desires than stored rows still reports
-        // the excess instead of a false zero.
-        let reply = reply_shell();
-        let mut stats = super::super::world_diff::ApplyStats {
-            held: 20,
-            ..Default::default()
-        };
-        for n in 0..20 {
-            stats.note_clear_hold(&format!("op-{n}"), "w3", "frame-race");
-        }
-        assert_eq!(
-            stats.clear_holds.len(),
-            super::super::world_diff::MAX_CLEAR_HOLD_DIAG
-        );
-        assert_eq!(stats.clear_holds_total, 20);
-        let value = apply_diag_value(
-            17,
-            &reply,
-            "accepted",
-            "observation",
-            &stats,
-            &[],
-            &[],
-            &[],
-            &[],
-            serde_json::json!({}),
-            None,
-            false,
-            &report_shell(vec![]),
-            &[],
-            None,
-        );
-        let holds = value["clear_holds"].as_array().expect("clear holds");
-        assert_eq!(holds.len(), super::super::world_diff::MAX_CLEAR_HOLD_DIAG);
-        assert_eq!(holds[0]["op"], serde_json::json!("op-0"));
-        assert_eq!(
-            value["clear_holds_omitted"],
-            serde_json::json!(20 - super::super::world_diff::MAX_CLEAR_HOLD_DIAG)
-        );
-    }
-
-    #[test]
     fn diag_focus_oracle_bounds_rows_and_omits_honestly() {
         // Minted FFC effects plus per-effect dispatch rows ride bounded
         // with honest omission: the oracle distinguishes dispatched from
         // held without a per-window dump.
-        use tiler_core::world_report::OneShotEffect;
         let mut reply = reply_shell();
-        reply.effects = (0..10)
-            .map(|n| OneShotEffect {
-                id: format!("ffc-w{n}"),
-                kind: tiler_core::world_report::EffectKind::Focus,
-                target: WindowId(format!("w{n}")),
-                issued_revision: 1,
-            })
-            .collect();
+        reply.focus_request = Some(tiler_core::world_report::FocusRequest {
+            id: "ffc-w0".to_owned(),
+            target: WindowId("w0".to_owned()),
+            issued_revision: 1,
+            cause: tiler_core::world_report::FocusRequestCause::ExplicitCommand,
+            output: OutputId("o1".to_owned()),
+            workspace: "ws-a".to_owned(),
+            cmd_seq: None,
+            after_shown: None,
+        });
         let stats = super::super::world_diff::ApplyStats {
             effects: 1,
             held: 9,
@@ -5205,8 +5099,7 @@ mod apply_diag_tests {
             "observation",
             &stats,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             Some("w0".to_owned()),
@@ -5218,11 +5111,14 @@ mod apply_diag_tests {
         assert_eq!(value["cursor_hit"], serde_json::json!("w0"));
         assert_eq!(value["ffc_enabled"], serde_json::json!(true));
         let minted = value["focus_effects"].as_array().expect("effects");
-        assert_eq!(minted.len(), MAX_APPLY_DIAG_FOCUS);
+        assert_eq!(minted.len(), 1);
         assert_eq!(minted[0]["id"], serde_json::json!("ffc-w0"));
         assert_eq!(minted[0]["target"], serde_json::json!("w0"));
-        assert_eq!(minted[0]["kind"], serde_json::json!("focus"));
-        assert_eq!(value["focus_effects_omitted"], serde_json::json!(2));
+        assert_eq!(
+            minted[0]["kind"],
+            serde_json::json!("explicit-command")
+        );
+        assert_eq!(value["focus_effects_omitted"], serde_json::json!(0));
         let dispatch = value["focus_dispatch"].as_array().expect("dispatch");
         assert_eq!(dispatch.len(), MAX_APPLY_DIAG_FOCUS);
         assert_eq!(dispatch[0]["dispatched"], serde_json::json!(true));
@@ -5234,7 +5130,7 @@ mod apply_diag_tests {
         assert_eq!(dispatch[1]["dispatched"], serde_json::json!(false));
         assert_eq!(dispatch[1]["foreground"], serde_json::json!(false));
         assert_eq!(dispatch[1]["hold"], serde_json::json!("view-not-shown"));
-        assert_eq!(value["focus_dispatch_omitted"], serde_json::json!(2));
+        assert_eq!(value["focus_dispatch_omitted"], serde_json::json!(0));
     }
 
     #[test]
@@ -5256,8 +5152,7 @@ mod apply_diag_tests {
             "send",
             &stats,
             &empty_members,
-            &empty_views,
-            &[],
+            &empty_views, None,
             &[],
             serde_json::json!({}),
             None,
@@ -5275,9 +5170,11 @@ mod apply_diag_tests {
     #[test]
     fn diag_command_kind_is_redacted_vocab() {
         let send = WorldCommand::Send {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId(
+                "w1".to_owned(),
+            )),
             target_output: OutputId("o1".to_owned()),
-            target_workspace: "w2".to_owned(),
+            target_workspace: WorkspaceId("w2".to_owned()),
             follow: true,
         };
         assert_eq!(world_command_kind(&send), "send");
@@ -5290,8 +5187,7 @@ mod apply_diag_tests {
             world_command_kind(&send),
             &stats,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -5308,7 +5204,7 @@ mod apply_diag_tests {
     #[test]
     fn diag_frames_and_desired_operations_stay_separate_and_bounded() {
         // Truthful pending desire vs actual attempts vs terminal verdict:
-        // published `frame_operation`/`clear_operation` tokens ride
+        // published `frame_operation` tokens ride
         // `desired_operations`, actual apply-produced writes ride `frames`,
         // and the core verdict rides `operation_settled`. Desire never
         // claims arrival; only the event proves the retained binding
@@ -5334,7 +5230,10 @@ mod apply_diag_tests {
             floating: true,
             float_origin: None,
             frame_operation: Some("op-20".to_owned()),
-            clear_operation: None,
+            command_seq: None,
+            visibility: None,
+            visibility_authority: tiler_core::world_report::ScopeAuthority::Untouched,
+            state: Vec::new(),
         });
         reply.windows.push(WindowDesire {
             lifetime: WindowId("w-max".to_owned()),
@@ -5347,7 +5246,10 @@ mod apply_diag_tests {
             floating: true,
             float_origin: None,
             frame_operation: None,
-            clear_operation: Some("op-21".to_owned()),
+            command_seq: None,
+            visibility: None,
+            visibility_authority: tiler_core::world_report::ScopeAuthority::Untouched,
+            state: Vec::new(),
         });
         reply.operation_settled.push(OperationEvent {
             window: WindowId("w-max".to_owned()),
@@ -5359,18 +5261,21 @@ mod apply_diag_tests {
         let frames = vec![FrameAttempt {
             window: WindowId("w-float".to_owned()),
             target,
-            setter: FrameSetter::Accepted,
+            disposition: FrameSetter::Accepted,
             readback: Some(target),
             dpi_before: Some(96),
             dpi_after: Some(96),
-            attempt_ms: 7,
-            operation_id: Some("op-20".to_owned()),
-            prewrite: Some(tiler_core::geometry::Rect {
+            attempt_id: 0,
+            attempt_ms: Some(7),
+            purpose: FramePurpose::FloatPlacement {
+                operation_id: "op-20".to_owned(),
+                prewrite: Some(tiler_core::geometry::Rect {
                     x: 0,
                     y: 0,
                     w: 800,
                     h: 600,
                 }),
+            },
         }];
         let quiet = super::super::world_diff::ApplyStats::default();
         let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
@@ -5382,7 +5287,6 @@ mod apply_diag_tests {
             &quiet,
             &empty_members,
             &empty_views,
-            &[],
             &frames,
             &reply_shell(),
         ));
@@ -5391,7 +5295,6 @@ mod apply_diag_tests {
             &quiet,
             &empty_members,
             &empty_views,
-            &[],
             &[],
             &reply,
         ));
@@ -5402,8 +5305,7 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &empty_members,
-            &empty_views,
-            &[],
+            &empty_views, None,
             &frames,
             serde_json::json!({}),
             None,
@@ -5415,19 +5317,21 @@ mod apply_diag_tests {
         let desired = value["desired_operations"]
             .as_array()
             .expect("desired operations");
-        assert_eq!(desired.len(), 2);
+        assert_eq!(desired.len(), 1);
         assert_eq!(desired[0]["op"], serde_json::json!("op-20"));
         assert_eq!(desired[0]["window"], serde_json::json!("w-float"));
         assert_eq!(desired[0]["kind"], serde_json::json!("frame"));
         assert_eq!(desired[0]["target"]["w"], serde_json::json!(960));
-        assert_eq!(desired[1]["op"], serde_json::json!("op-21"));
-        assert_eq!(desired[1]["kind"], serde_json::json!("clear"));
         assert_eq!(value["desired_operations_omitted"], serde_json::json!(0));
         let frame_rows = value["frames"].as_array().expect("frame rows");
         assert_eq!(frame_rows.len(), 1);
         assert_eq!(frame_rows[0]["op"], serde_json::json!("op-20"));
         assert_eq!(frame_rows[0]["window"], serde_json::json!("w-float"));
         assert_eq!(frame_rows[0]["setter"], serde_json::json!("accepted"));
+        assert_eq!(
+            frame_rows[0]["purpose"],
+            serde_json::json!("float-placement")
+        );
         assert_eq!(frame_rows[0]["target"]["x"], serde_json::json!(10));
         assert_eq!(frame_rows[0]["prewrite"]["w"], serde_json::json!(800));
         assert_eq!(frame_rows[0]["readback"]["w"], serde_json::json!(960));
@@ -5462,7 +5366,6 @@ mod apply_diag_tests {
             &empty_members,
             &empty_views,
             &[],
-            &[],
             &idle_reply,
         ));
         let mut reply = reply_shell();
@@ -5483,7 +5386,10 @@ mod apply_diag_tests {
                 floating: true,
                 float_origin: None,
                 frame_operation: Some(format!("op-{n}")),
-                clear_operation: None,
+                command_seq: None,
+                visibility: None,
+                visibility_authority: tiler_core::world_report::ScopeAuthority::Untouched,
+                state: Vec::new(),
             });
         }
         let frames: Vec<FrameAttempt> = (0..20)
@@ -5495,13 +5401,16 @@ mod apply_diag_tests {
                     w: 100,
                     h: 100,
                 },
-                setter: FrameSetter::Accepted,
+                disposition: FrameSetter::Accepted,
                 readback: None,
                 dpi_before: None,
                 dpi_after: None,
-                attempt_ms: n as u64,
-                operation_id: Some(format!("op-{n}")),
-                prewrite: None,
+                attempt_id: 0,
+                attempt_ms: Some(n as u64),
+                purpose: FramePurpose::FloatPlacement {
+                    operation_id: format!("op-{n}"),
+                    prewrite: None,
+                },
             })
             .collect();
         let value = apply_diag_value(
@@ -5511,8 +5420,7 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &empty_members,
-            &empty_views,
-            &[],
+            &empty_views, None,
             &frames,
             serde_json::json!({}),
             None,
@@ -5580,7 +5488,10 @@ mod apply_diag_tests {
             floating: false,
             float_origin: None,
             frame_operation: None,
-            clear_operation: None,
+            command_seq: None,
+            visibility: None,
+            visibility_authority: tiler_core::world_report::ScopeAuthority::Untouched,
+            state: Vec::new(),
         });
         reply.windows.push(WindowDesire {
             lifetime: WindowId("w-held".to_owned()),
@@ -5593,7 +5504,10 @@ mod apply_diag_tests {
             floating: false,
             float_origin: None,
             frame_operation: None,
-            clear_operation: None,
+            command_seq: None,
+            visibility: None,
+            visibility_authority: tiler_core::world_report::ScopeAuthority::Untouched,
+            state: Vec::new(),
         });
         reply.outputs.push(OutputDesire {
             output: OutputId("o1".to_owned()),
@@ -5620,24 +5534,36 @@ mod apply_diag_tests {
             window: WindowId("w-tiled".to_owned()),
             target_output: OutputId("o1".to_owned()),
             target_workspace: "ws-a".to_owned(),
-            setter: FrameSetter::Accepted,
-            pre: Some((OutputId("o1".to_owned()), "ws-a".to_owned())),
-            post: Some((OutputId("o1".to_owned()), "ws-a".to_owned())),
-            native_pre: None,
-            native_post: None,
+            disposition: tiler_core::world_report::MemberDisposition::Called(
+                FrameSetter::Accepted,
+            ),
+            pre: Some(WorkspaceRef::Logical {
+                output: OutputId("o1".to_owned()),
+                workspace: WorkspaceId("ws-a".to_owned()),
+            }),
+            post: Some(WorkspaceRef::Logical {
+                output: OutputId("o1".to_owned()),
+                workspace: WorkspaceId("ws-a".to_owned()),
+            }),
             attempt_ms: 42,
         }];
         let view_attempts = vec![ViewAttempt {
             operation_id: "op-9".to_owned(),
             target_output: OutputId("o1".to_owned()),
             target_workspace: "ws-b".to_owned(),
-            setter: FrameSetter::Accepted,
-            pre: Some("ws-old".to_owned()),
-            post: Some("ws-b".to_owned()),
-            baseline: Some("ws-old".to_owned()),
-            native_pre: None,
-            native_post: None,
-            native_baseline: None,
+            disposition: FrameSetter::Accepted,
+            pre: Some(WorkspaceRef::Logical {
+                output: OutputId("o1".to_owned()),
+                workspace: WorkspaceId("ws-old".to_owned()),
+            }),
+            post: Some(WorkspaceRef::Logical {
+                output: OutputId("o1".to_owned()),
+                workspace: WorkspaceId("ws-b".to_owned()),
+            }),
+            baseline: Some(WorkspaceRef::Logical {
+                output: OutputId("o1".to_owned()),
+                workspace: WorkspaceId("ws-old".to_owned()),
+            }),
             attempt_ms: 42,
         }];
         let value = apply_diag_value(
@@ -5647,8 +5573,7 @@ mod apply_diag_tests {
             "send",
             &stats_shell(),
             &member_attempts,
-            &view_attempts,
-            &[],
+            &view_attempts, None,
             &[],
             serde_json::json!({}),
             None,
@@ -5703,8 +5628,11 @@ mod apply_diag_tests {
         assert_eq!(value["desired_outputs_omitted"], serde_json::json!(0));
         let views = value["views"].as_array().expect("view attempts");
         assert_eq!(views.len(), 1);
-        assert_eq!(views[0]["pre"], serde_json::json!("ws-old"));
-        assert_ne!(outputs[0]["logical_view"], views[0]["pre"]);
+        assert_eq!(
+            views[0]["pre"],
+            serde_json::json!({"kind": "logical", "out": "o1", "ws": "ws-old"})
+        );
+        assert_ne!(outputs[0]["logical_view"], views[0]["pre"]["ws"]);
         // Report geometry basis rides paired alongside desire: wire output
         // ids join `desired_outputs` and attempt `out` fields, with the
         // per-screen settings gaps from the dispatched report.
@@ -5755,7 +5683,10 @@ mod apply_diag_tests {
                 floating: false,
                 float_origin: None,
                 frame_operation: None,
-                clear_operation: None,
+                command_seq: None,
+                visibility: None,
+                visibility_authority: tiler_core::world_report::ScopeAuthority::Untouched,
+                state: Vec::new(),
             });
             reply.outputs.push(OutputDesire {
                 output: OutputId(format!("o{n}")),
@@ -5767,7 +5698,7 @@ mod apply_diag_tests {
                 id: format!("ws-{n}"),
                 output: OutputId("o1".to_owned()),
                 native_binding: None,
-                scope: "o1".to_owned(),
+                scope: tiler_core::world_report::AuthorityScope::Output(OutputId("o1".to_owned())),
                 order: n,
                 tiling_mode: TilingMode::Tiled,
                 existence: true,
@@ -5802,8 +5733,7 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -5865,8 +5795,7 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -5904,8 +5833,7 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -5921,8 +5849,7 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -5954,8 +5881,7 @@ mod apply_diag_tests {
             "send",
             &stats_shell(),
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -6004,8 +5930,7 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -6055,7 +5980,10 @@ mod apply_diag_tests {
                 floating: false,
                 float_origin: None,
                 frame_operation: None,
-                clear_operation: None,
+                command_seq: None,
+                visibility: None,
+                visibility_authority: tiler_core::world_report::ScopeAuthority::Untouched,
+                state: Vec::new(),
             });
         desire_only.outputs.push(OutputDesire {
             output: OutputId("o1".to_owned()),
@@ -6087,7 +6015,6 @@ mod apply_diag_tests {
             &quiet,
             &empty_vecs,
             &empty_views,
-            &[],
             &empty_frames,
             &desire_only,
         ));
@@ -6105,7 +6032,6 @@ mod apply_diag_tests {
             &quiet,
             &empty_vecs,
             &empty_views,
-            &[],
             &empty_frames,
             &settled,
         ));
@@ -6116,8 +6042,7 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &empty_vecs,
-            &empty_views,
-            &[],
+            &empty_views, None,
             &empty_frames,
             serde_json::json!({}),
             None,
@@ -6151,8 +6076,7 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -6217,8 +6141,7 @@ mod apply_diag_tests {
             "observation",
             &stats,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -6246,8 +6169,7 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -6274,8 +6196,7 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -6292,8 +6213,7 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -6317,8 +6237,7 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -6399,8 +6318,7 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -6422,8 +6340,7 @@ mod apply_diag_tests {
             "observation",
             &stats,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -6455,8 +6372,7 @@ mod apply_diag_tests {
             "observation",
             &big_stats,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -6492,8 +6408,7 @@ mod apply_diag_tests {
             "observation",
             &big_stats,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -6526,8 +6441,7 @@ mod apply_diag_tests {
             "observation",
             &big_stats,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -6560,8 +6474,7 @@ mod apply_diag_tests {
             "observation",
             &big_stats,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -6598,8 +6511,7 @@ mod apply_diag_tests {
             "observation",
             &big_stats,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -6658,8 +6570,7 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             route(),
             None,
@@ -6678,8 +6589,7 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             route(),
             None,
@@ -6702,8 +6612,7 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             route(),
             None,
@@ -6726,8 +6635,7 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             route(),
             None,
@@ -6747,8 +6655,7 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             route(),
             None,
@@ -6767,8 +6674,7 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             route(),
             None,
@@ -6791,8 +6697,7 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             route(),
             None,
@@ -6832,8 +6737,7 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             fresh_route_value(
                 "",
@@ -6859,8 +6763,7 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,
@@ -6883,8 +6786,7 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[],
-            &[],
+            &[], None,
             &[],
             serde_json::json!({}),
             None,

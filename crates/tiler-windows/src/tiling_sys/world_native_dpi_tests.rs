@@ -411,7 +411,6 @@ fn cross_dpi_shrink_arrives_exact_and_proves() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert!(
@@ -461,7 +460,6 @@ fn cross_dpi_grow_arrives_exact_and_proves() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert!(
@@ -528,7 +526,6 @@ fn cross_dpi_identity_drift_holds_ambiguous_without_correction() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert!(
@@ -560,7 +557,6 @@ fn cross_dpi_identity_drift_holds_ambiguous_without_correction() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert!(stats.held > 0);
@@ -594,7 +590,6 @@ fn cross_dpi_racing_fullscreen_vetoes_correction() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert!(
@@ -672,7 +667,6 @@ fn cross_dpi_freshly_ineligible_takes_no_correction() {
             &mut Vec::new(),
             &mut members,
             &mut views,
-            &mut Vec::new(),
             0,
         );
         assert!(

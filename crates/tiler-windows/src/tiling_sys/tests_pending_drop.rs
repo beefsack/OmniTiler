@@ -1340,7 +1340,10 @@ fn arrival_reply(
         ready: true,
         command_consumed: false,
         scopes: vec![ScopeStatus {
-            scope: format!("{out}/ws1"),
+            scope: tiler_core::world_report::AuthorityScope::Workspace {
+                output: tiler_core::directional::OutputId(out.to_owned()),
+                workspace: tiler_core::directional::WorkspaceId("ws1".to_owned()),
+            },
             authority: Auth::Controlled,
         }],
         workspaces: Vec::new(),

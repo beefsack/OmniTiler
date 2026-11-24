@@ -122,10 +122,6 @@ fn observation_dispatch_applies_and_projects_presentation() {
     let report = world
         .try_dispatch_observation(&state.inputs(), Some(&observed), &retained, &areas, 0, 0)
         .expect("dispatch");
-    // Fresh bootstrap carries no view receipts: the core mints
-    // rings/views from the live screens, and receipts only ever echo
-    // proven native arrival (never desire).
-    assert!(report.views.is_empty(), "no receipts before proof");
     let outcome = world.deliver_production(&report);
     let reply = match outcome {
         WorldOutcome::Accepted(reply) => reply,
@@ -156,7 +152,7 @@ fn observation_dispatch_applies_and_projects_presentation() {
     assert_eq!(reply.presentation.foreground, "");
     assert_eq!(
         reply.presentation.border.reason,
-        Some(tiler_core::visual::BorderHideReason::Disabled)
+        Some(tiler_core::world_report::BorderHideReasonV4::NoTarget)
     );
     assert!(matches!(
         reply.presentation.underlay,
@@ -186,9 +182,6 @@ fn select_command_retains_view_transfer_without_self_echo() {
     let first = world
         .try_dispatch_observation(&state.inputs(), Some(&observed), &retained, &areas, 0, 0)
         .expect("dispatch");
-    // Fresh bootstrap proves nothing yet: no view receipts (the core
-    // mints rings/views from the live screens).
-    assert!(first.views.is_empty(), "no receipts before proof");
     let reply = match world.deliver_production(&first) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
@@ -196,24 +189,17 @@ fn select_command_retains_view_transfer_without_self_echo() {
     let mut pending = state.pending_closed.clone();
     let _ = world.ack(&reply, &mut pending);
     // Second observation still proves nothing (no native arrival proven):
-    // the report stays receipt-free instead of echoing desire.
+    // v4 carries no view-receipt lane at all.
     world.invalidate();
     let second = world
         .try_dispatch_observation(&state.inputs(), Some(&observed), &retained, &areas, 0, 0)
         .expect("dispatch");
-    assert_eq!(
-        second.views, first.views,
-        "no receipt before proof, got {:?}",
-        second.views
-    );
     let second_reply = match world.deliver_production(&second) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     };
     let mut pending = state.pending_closed.clone();
     let _ = world.ack(&second_reply, &mut pending);
-    // Command an inactive core-minted workspace: the unproven report still
-    // carries no view, so the flight retains without any self-echo.
     let out_token = state.output_token("DEV1");
     let current = second_reply
         .outputs
@@ -239,15 +225,10 @@ fn select_command_retains_view_transfer_without_self_echo() {
             0,
             WorldCommand::SelectWorkspace {
                 output: tiler_core::directional::OutputId(out_token),
-                workspace: target.clone(),
+                workspace: tiler_core::directional::WorkspaceId(target.clone()),
             },
         )
         .expect("command dispatch");
-    assert_eq!(
-        commanded.views, second.views,
-        "actual view proven, never desired, got {:?}",
-        commanded.views
-    );
     let reply = match world.deliver_production(&commanded) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
@@ -287,19 +268,44 @@ fn clamped_target_holds_scope_without_transfer() {
     fn fact(window: &str, output: &str, r: Rect) -> WindowFact {
         WindowFact {
             window: WindowId(window.to_owned()),
-            output: OutputId(output.to_owned()),
+            output: Some(OutputId(output.to_owned())),
             rect: Some(r),
-            floating: false,
-            fit_excluded: false,
-            fullscreen: false,
-            maximized: false,
-            sticky: false,
-            fixed_auto: false,
-            fixed_suppress: false,
-            hints: WindowSizeHints::none(),
-            minimized: false,
-            observed_workspace: None,
-            native_workspace: None,
+            fullscreen: Some(false),
+            maximized: Some(false),
+            sticky: None,
+            minimized: Some(false),
+            hints: Some(WindowSizeHints::none()),
+            native_workspace: tiler_core::world_report::NativeWorkspaceFact::Omitted,
+            host_hidden: Some(false),
+            privileged: None,
+            managed: None,
+            accepts_input: None,
+            activation_inhibited: None,
+            tool_window: Some(false),
+            owned: Some(false),
+            transient: None,
+            modal: None,
+            resizable: None,
+            above: None,
+            below: None,
+            owner: None,
+            parent: None,
+            role: None,
+            app_id: None,
+            executable: Some("C:\\Apps\\test.exe".to_owned()),
+            process_id: Some("424242".to_owned()),
+            class: None,
+            title: None,
+            window_type: Some(tiler_core::world_report::WindowType::Normal),
+            activation_policy: None,
+            layer: None,
+            fullscreen_owner: None,
+            fullscreen_exitable: None,
+            suppression_available: None,
+            visibility: tiler_core::world_report::VisibilityFact {
+                visible: Some(true),
+                suppression_owned: None,
+            },
         }
     }
     let owner = "tiler-windows".to_owned();
@@ -446,21 +452,54 @@ fn tiled_mover_adopts_once_and_floating_mover_half_snaps() {
         }
     }
     fn fact(window: &str, output: &str, r: Rect, floating: bool) -> WindowFact {
+        // A dialog kind is the v4 float origin for this half-snap proof: the
+        // fixed-size alternative would legitimately refuse the 1920x540 half
+        // snap at the constraint gate.
+        let window_type = if floating {
+            tiler_core::world_report::WindowType::Dialog
+        } else {
+            tiler_core::world_report::WindowType::Normal
+        };
         WindowFact {
             window: WindowId(window.to_owned()),
-            output: OutputId(output.to_owned()),
+            output: Some(OutputId(output.to_owned())),
             rect: Some(r),
-            floating,
-            fit_excluded: floating,
-            fullscreen: false,
-            maximized: false,
-            sticky: false,
-            fixed_auto: false,
-            fixed_suppress: false,
-            hints: WindowSizeHints::none(),
-            minimized: false,
-            observed_workspace: None,
-            native_workspace: None,
+            fullscreen: Some(false),
+            maximized: Some(false),
+            sticky: None,
+            minimized: Some(false),
+            hints: Some(WindowSizeHints::none()),
+            native_workspace: tiler_core::world_report::NativeWorkspaceFact::Omitted,
+            host_hidden: Some(false),
+            privileged: None,
+            managed: None,
+            accepts_input: None,
+            activation_inhibited: None,
+            tool_window: Some(false),
+            owned: Some(false),
+            transient: None,
+            modal: None,
+            resizable: None,
+            above: None,
+            below: None,
+            owner: None,
+            parent: None,
+            role: None,
+            app_id: None,
+            executable: Some("C:\\Apps\\test.exe".to_owned()),
+            process_id: Some("424242".to_owned()),
+            class: None,
+            title: None,
+            window_type: Some(window_type),
+            activation_policy: None,
+            layer: None,
+            fullscreen_owner: None,
+            fullscreen_exitable: None,
+            suppression_available: None,
+            visibility: tiler_core::world_report::VisibilityFact {
+                visible: Some(true),
+                suppression_owned: None,
+            },
         }
     }
     for floating_source in [false, true] {

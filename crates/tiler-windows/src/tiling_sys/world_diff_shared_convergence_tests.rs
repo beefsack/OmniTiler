@@ -136,7 +136,6 @@ fn shared_frame_convergence_learns_through_production_sequencing() {
             &mut attempts,
             &mut Vec::new(),
             &mut Vec::new(),
-            &mut Vec::new(),
             1000,
         );
         let emitted = attempts
@@ -147,7 +146,7 @@ fn shared_frame_convergence_learns_through_production_sequencing() {
             emitted.target, baseline,
             "{name}: attempt targets the desire"
         );
-        assert_eq!(emitted.setter, setter, "{name}: mechanical setter rides");
+        assert_eq!(emitted.disposition, setter, "{name}: mechanical setter rides");
         assert_eq!(
             emitted.readback,
             Some(grown),
@@ -353,14 +352,13 @@ fn shared_replacement_reuses_retired_token_fresh_through_sequencing() {
             &mut attempts,
             &mut Vec::new(),
             &mut Vec::new(),
-            &mut Vec::new(),
             1000,
         );
         let emitted = attempts
             .iter()
             .find(|attempt| attempt.window.0 == window)
             .expect("seam emits the raw growth attempt");
-        assert_eq!(emitted.setter, FrameSetter::Accepted);
+        assert_eq!(emitted.disposition, FrameSetter::Accepted);
         assert_eq!(emitted.readback, Some(grown));
         for attempt in &attempts {
             seq.note_frame_attempt(attempt.clone());
@@ -583,14 +581,13 @@ fn shared_observations_record_no_bounds_without_proof_through_sequencing() {
             &mut attempts,
             &mut Vec::new(),
             &mut Vec::new(),
-            &mut Vec::new(),
             1000,
         );
         let emitted = attempts
             .iter()
             .find(|attempt| attempt.window.0 == window)
             .expect("seam emits the raw growth attempt");
-        assert_eq!(emitted.setter, FrameSetter::Accepted);
+        assert_eq!(emitted.disposition, FrameSetter::Accepted);
         assert_eq!(emitted.readback, Some(grown));
         for attempt in &attempts {
             seq.note_frame_attempt(attempt.clone());
@@ -652,13 +649,15 @@ fn shared_observations_record_no_bounds_without_proof_through_sequencing() {
                 "{name}: flagged fact is frameless"
             );
             if condition == "hidden" {
-                assert!(
+                assert_eq!(
                     flagged_fact.minimized,
+                    Some(true),
                     "{name}: iconic-hidden rides minimized: {flagged_fact:?}"
                 );
             } else {
-                assert!(
-                    !flagged_fact.minimized,
+                assert_ne!(
+                    flagged_fact.minimized,
+                    Some(true),
                     "{name}: drift rides unreadable, never minimized: {flagged_fact:?}"
                 );
             }
@@ -683,7 +682,6 @@ fn shared_observations_record_no_bounds_without_proof_through_sequencing() {
                 &fresh2,
                 &mut native2,
                 &mut flagged_attempts,
-                &mut Vec::new(),
                 &mut Vec::new(),
                 &mut Vec::new(),
                 1500,
@@ -725,7 +723,7 @@ fn shared_observations_record_no_bounds_without_proof_through_sequencing() {
                 .frames
                 .iter()
                 .any(|attempt| attempt.window.0 == window
-                    && attempt.setter == FrameSetter::Accepted
+                    && attempt.disposition == FrameSetter::Accepted
                     && attempt.readback == Some(grown)),
             "{name}: only the pre-flag real attempt rides: {:?}",
             report2.frames
@@ -896,7 +894,7 @@ fn shared_settlement_partial_holds_then_completes_through_sequencing() {
             Some(WorldCommand::MigrateWorkspace {
                 source_output: OutputId(out_a.clone()),
                 target_output: OutputId(out_b.clone()),
-                workspace: view_a.clone(),
+                workspace: tiler_core::directional::WorkspaceId(view_a.clone()),
             }),
         );
         let reply = seq_deliver(&mut seq, &report);
@@ -932,7 +930,6 @@ fn shared_settlement_partial_holds_then_completes_through_sequencing() {
             &mut Vec::new(),
             &mut members_out,
             &mut views_out,
-            &mut Vec::new(),
             2000,
         );
         let arrived = members_out
@@ -941,7 +938,10 @@ fn shared_settlement_partial_holds_then_completes_through_sequencing() {
             .expect("arrival attempt rides");
         assert_eq!(
             arrived.post,
-            Some((OutputId(out_b.clone()), view_a.clone())),
+            Some(tiler_core::world_report::WorkspaceRef::Logical {
+                output: OutputId(out_b.clone()),
+                workspace: tiler_core::directional::WorkspaceId(view_a.clone()),
+            }),
             "{name}: arrival proves: {arrived:?}"
         );
         let refused = members_out
@@ -949,13 +949,16 @@ fn shared_settlement_partial_holds_then_completes_through_sequencing() {
             .find(|attempt| attempt.window.0 == *refuse_member)
             .expect("refusal attempt rides");
         assert_eq!(
-            refused.setter,
-            FrameSetter::Refused,
+            refused.disposition,
+            tiler_core::world_report::MemberDisposition::Called(FrameSetter::Refused),
             "{name}: mechanical refusal rides"
         );
         assert_eq!(
             refused.post,
-            Some((OutputId(out_a.clone()), view_a.clone())),
+            Some(tiler_core::world_report::WorkspaceRef::Logical {
+                output: OutputId(out_a.clone()),
+                workspace: tiler_core::directional::WorkspaceId(view_a.clone()),
+            }),
             "{name}: refusal holds the source preimage: {refused:?}"
         );
         for attempt in &members_out {
