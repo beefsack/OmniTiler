@@ -60,6 +60,11 @@ pub(super) struct WorldOwner {
     /// second policy, never regenerated from current caches.
     last_proof: Option<serde_json::Value>,
     has_accepted: bool,
+    /// Offline-test scripting for the two report witness fields (live
+    /// pointer generation, spent warp id). Never present in production;
+    /// unit tests must never read or advance real raw-input state.
+    #[cfg(test)]
+    witness_override: Option<(Option<u64>, Option<String>)>,
 }
 
 /// Owned core projections for one diff pass (homing, rings, views).
@@ -117,6 +122,8 @@ impl WorldOwner {
             last_reply: None,
             last_proof: None,
             has_accepted: false,
+            #[cfg(test)]
+            witness_override: None,
         }
     }
 
@@ -197,6 +204,34 @@ impl WorldOwner {
     /// move this watermark).
     pub(super) fn note_diff_applied(&mut self, reply: &WorldReplyV4) {
         self.diff.gate.note_applied(reply);
+    }
+
+    /// Stage the next report's witness fields from their live sources: the
+    /// loop-thread Raw Input generation (`None` when uninstalled) and the
+    /// generation-scoped exact warp spend. Called before every dispatch; a
+    /// test may script both through [`Self::script_report_witness`] instead
+    /// of touching the OS.
+    fn note_report_witness(&mut self) {
+        #[cfg(test)]
+        if let Some((pointer, spent)) = self.witness_override.clone() {
+            self.seq.note_report_witness(pointer, spent);
+            return;
+        }
+        self.seq.note_report_witness(
+            crate::ffi::raw_input::pointer_activity(),
+            self.diff.warp_spent(),
+        );
+    }
+
+    /// Test-only: script both report witness fields without touching the
+    /// real Raw Input witness or a real setter.
+    #[cfg(test)]
+    pub(super) fn script_report_witness(
+        &mut self,
+        pointer_activity: Option<u64>,
+        warp_spent: Option<String>,
+    ) {
+        self.witness_override = Some((pointer_activity, warp_spent));
     }
 
     #[allow(dead_code)]
@@ -370,6 +405,7 @@ impl WorldOwner {
         foreground_hwnd: u64,
         monotonic_ms: u64,
     ) -> Result<WorldReportV4, DispatchError> {
+        self.note_report_witness();
         self.seq.try_dispatch(
             inputs,
             observed,
@@ -396,6 +432,7 @@ impl WorldOwner {
         command: WorldCommand,
         renderer_input: Option<RendererInput>,
     ) -> Result<WorldReportV4, DispatchError> {
+        self.note_report_witness();
         self.seq.try_dispatch_with_command(
             inputs,
             observed,

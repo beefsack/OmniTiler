@@ -104,6 +104,30 @@ pub fn send_key_pair(vk: u16) -> KeyPairSend {
 /// inline call site).
 pub const HITTEST_TIMEOUT_MS: u32 = 10;
 
+/// One relative mouse-move event through `SendInput` (test support only:
+/// the live Raw Input witness probe). Returns the inserted-event count; the
+/// caller owns the foreground/cursor safety gate, this only injects.
+#[cfg(test)]
+pub fn send_mouse_move_relative(dx: i32, dy: i32) -> u32 {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT_MOUSE, MOUSEEVENTF_MOVE, MOUSEINPUT,
+    };
+    let input = INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
+            mi: MOUSEINPUT {
+                dx,
+                dy,
+                mouseData: 0,
+                dwFlags: MOUSEEVENTF_MOVE,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) }
+}
+
 /// Foreground-rights prime: one `vk`-down plus `vk`-up through `SendInput`
 /// (the OS grants foreground rights to the last input provider), with the
 /// bounded single-release when only the down inserts. Returns how many

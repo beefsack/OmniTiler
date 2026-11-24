@@ -18,7 +18,7 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 | KDE / broker | V4 envelope `v,adapter,gen,source,sourceSeq,nativeInvalid,report`; outer envelope alone carries `v`, `report` holds unversioned capture facts (no nested `v` or broker-owned stamps), and broker constructs the v4 standalone report with correlation, clock and sequences | Apply only eligible bound capture; renderer projection confers no setter authority; prove visibility feedback production in rebuild | Exact remembered source bytes replay before drain; requester-only Take, Wait is wakeup; retry unremembered rejection with a fresh source | Implemented offline; earlier native state-target slice only (`../decisions/contract.md`), not proof of this interface. Shared native roster, capability-gated selector; no KDE warp |
 | Typed shared route | Same facts and bound connection using typed values; caller-owned ordered commands; no wire stamps manufactured for JSON | Prepared typed publication and explicit incorporation; same outbound semantics, independent latest-only apply fence | Typed report-only replay with no new command execution; returned per-sequence outcomes, caller owns issuer delivery | Shared implementation proved offline; not a native port |
 | macOS | Deferred; build the typed route and prove native observations/receipts on port entry | Same obligations; prove setters and recovery locally | Preserve per-issuer outcomes and in-flight evidence | Deferred; no shim or build accommodation |
-| Windows | Deferred; build the typed route and prove capability declarations on port entry | Same obligations; retained warp before advertising it | Preserve per-issuer outcomes and in-flight evidence | Deferred; no shim or build accommodation |
+| Windows | Typed in-process route with bound handshake, revisioned settings and source-first reports; retained warp adapter landed but still declared `warp:false` pending the committed-tree live receipt | Same obligations; exact-once `SetCursorPos` lane gated on host capability, exact live managed foreground, fresh scope/frame/lifetime, and the Raw Input pointer generation | Preserve per-issuer outcomes and in-flight evidence | Adapter implemented and unit-gated; the capability flip is a separate commit after the ignored live probe passes on the clean tree |
 
 <a id="approved-not-yet-implemented-v4"></a>
 
@@ -1626,8 +1626,9 @@ v2 presentation relay are unchanged.
   core request by itself. Neither report observation grants write authority.
 - `warp:false` rejects any non-null `warpRequest` with `warp-capability-false`.
   KDE, macOS and Windows currently declare `warp:false` and therefore emit and
-  accept only `null`. Windows actuation (raw-input witness, `SetCursorPos`,
-  spend-before-move) is intentionally not implemented in this stage.
+  accept only `null`. The Windows exact-once adapter (Raw Input witness,
+  `SetCursorPos`, spend-before-move) is implemented but the capability flip is
+  deferred until its ignored live probe passes on the committed tree.
   [Decision record](../changes/retained-cursor-warp.md).
 
 ### Persistent stacking

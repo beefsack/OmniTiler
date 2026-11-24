@@ -109,6 +109,25 @@ fn staged_state() -> super::super::TileLoop {
 }
 
 #[test]
+fn dispatch_reports_scripted_pointer_witness_and_warp_spend() {
+    let state = staged_state();
+    let owner = "tiler-windows".to_owned();
+    let generation = "rmax03-adapter".to_owned();
+    let mut world = WorldOwner::bootstrap_ids(&owner, &generation).expect("world bootstrap");
+    let observed = vec![observed_window()];
+    let retained: Vec<RetainedRow> = Vec::new();
+    let areas = vec![area()];
+    // Offline seam: script both fields exactly; never touch real raw input
+    // or a real cursor setter.
+    world.script_report_witness(Some(7), Some("warp-2".to_owned()));
+    let report = world
+        .try_dispatch_observation(&state.inputs(), Some(&observed), &retained, &areas, 0, 0)
+        .expect("dispatch");
+    assert_eq!(report.pointer_activity, Some(7));
+    assert_eq!(report.warp_spent.as_deref(), Some("warp-2"));
+}
+
+#[test]
 fn observation_dispatch_applies_and_projects_presentation() {
     let state = staged_state();
     // The holder bootstraps from the same owner/generation bindings

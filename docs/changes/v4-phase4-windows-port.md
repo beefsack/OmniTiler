@@ -112,9 +112,10 @@
 - **R11 Output identity, R10 core scaling, and C3 warp adapter:**
   `OutputIdentity::unknown()` is hardcoded; core `scale_once` does not yet
   scale resize minima, keyboard steps, or group-edge zones. Stage-1
-  core/protocol retained `warpRequest` has landed; Windows still declares
-  `warp:false` and emits/accepts only `null`, with raw-input witness,
-  `SetCursorPos` and spend-before-move deferred until Tasks 1–4 are green.
+  core/protocol retained `warpRequest` and the stage-2 Windows adapter
+  (Raw Input witness, exact-once `SetCursorPos`, `pointerActivity`/`warpSpent`
+  plumbing) have landed, with the capability flip pending the committed-tree
+  live receipt below.
 
 ## Tentative decisions (2026-11-25)
 
@@ -136,23 +137,24 @@ and flagged tentative for later review:
   windows, capture performs lightweight live reads (`IsWindowVisible`, DWM
   cloaked, style/owner/class) with fail-closed hold if unreadable, reporting
   `host_hidden: Some(cloaked)` and `visibility: { visible: Some(vis), suppression_owned: Some(true) }`.
-- **T5 (Truthful incremental capabilities):** Advertise `above: false` and
-  `warp: false` in `windows_capabilities()` until their actuators and R12
-  preimages exist; the stage-1 core/protocol retained request does not change
-  the declaration, and `warp: true` waits for the Windows actuator/witness.
+- **T5 (Truthful incremental capabilities):** Advertise `above: false` in
+  `windows_capabilities()` until its actuator and R12 preimages exist. `warp`
+  stays `false` through `WARP_SUPPORTED`; the stage-2 adapter has landed but
+  the flip is a separate commit after its live probe passes on the clean tree.
 - **T6 (Direct typed connection calls):** Replace the in-process JSON
   encode/decode round-trip in `tiling_sys/settings.rs` with direct typed
   `WorldEngine` handshake/settings calls while keeping `handle_report_checked`
   for reports.
-- **T7 (Windows warp adapter deferred after stage-1 core/protocol):** Stage 1
-  landed the retained `warpRequest` in core/protocol with Q1 resolved as
-  "newer focus decision to another lifetime cancels; same target keeps" and Q2
-  as "newer or unknown `pointerActivity` cancels against the frozen
-  `pointerBaseline`; own warps do not advance the generation", plus report
-  `pointerActivity`/`warpSpent` observations. Windows keeps `warp:false` and
-  emits/accepts only `null` through Tasks 1–4; raw-input witness,
-  `SetCursorPos` and spend-before-move are intentionally not implemented in
-  this stage and flip `warp: true` only when that adapter work lands.
+- **T7 (Windows warp adapter landed; capability still false):** Stage 1 landed
+  the retained `warpRequest` in core/protocol with Q1 ("newer focus decision
+  to another lifetime cancels; same target keeps") and Q2 ("newer or unknown
+  `pointerActivity` cancels against the frozen `pointerBaseline`; own warps do
+  not advance the generation"). Stage 2 adds the Windows exact-once actuator:
+  mouse Raw Input (`RIDEV_INPUTSINK` on the tray HWND) as the raw-input
+  pointer witness (injected input conservatively counts; the adapter's own
+  `SetCursorPos` does not), report `pointerActivity`/`warpSpent` plumbing,
+  spend-before-move by exact request id, and an ignored live probe. `warp`
+  remains `false` until that probe passes on the committed tree.
 
 ## Ordered task plan
 
@@ -226,11 +228,32 @@ and flagged tentative for later review:
   keyboard steps, and group-edge zones once per output via `screen.scale`.
 - Populate Windows `OutputIdentity` (EDID/QDC manufacturer/model/serial with
   connector fallback) for R11.
-- Leave C3 warp adapter work deferred per **T7**: Q1/Q2 and the core/protocol
-  retained request are landed stage 1, so this is Windows witness/actuator work
-  only; keep `warp:false` and the null-only path until it lands.
+- Implement the C3 stage-2 Windows warp adapter per **T7**: mouse Raw Input
+  witness on the tray HWND, report `pointerActivity`/`warpSpent`, exact-once
+  spend by request id, and the ignored live non-increment probe below.
+  `warp` stays `false` until that probe passes on the committed tree; the
+  flip is a separate commit. `cursorWarp` stays off by default.
 - Run the fixture-scoped Windows live acceptance matrix: hidden-target sends
   and restores, iconic mover sends, view switches under native hide lag,
   multi-monitor and mixed-DPI transitions, restart and forced-crash recovery
   with R12 preimages, startup/live settings revisions (including refused and
   `RestartRequired`), and fullscreen/game safety legs.
+
+#### C3 stage-2 live Raw Input witness evidence
+
+Ignored, opt-in probe in `ffi::raw_input`
+(`live_set_cursor_pos_does_not_advance_raw_input_generation`). Its formal
+receipt is a run on the committed stage-2 tree; no `warp:true` claim is made
+before that. A development-worktree run (pre-commit) printed:
+`SetCursorPos gen 0 -> 0 (unchanged)` and `synthetic move inserted=1,
+gen 0 -> 1`.
+
+- Ownership gate: the probe creates its own visible topmost window, requires
+  the foreground HWND plus PID to be that test process and `WindowFromPoint`'s
+  root to be the probe window immediately before every position write, and
+  restores the cursor preimage under the same gate.
+- Limit: Windows Raw Input does not distinguish physical from injected input;
+  the positive leg only proves handler liveness (Raw Input was delivered) and
+  is never used as the capability gate. The non-increment property for the
+  adapter's own `SetCursorPos` is the claim under test; injected motion counts
+  conservatively as user activity.

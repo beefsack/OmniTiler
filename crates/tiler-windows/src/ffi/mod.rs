@@ -29,6 +29,8 @@
 //!   timer-driven message-loop step.
 //! - [`input`]: cursor position, async key state, tick count, key-pair
 //!   sends, foreground-rights prime.
+//! - [`raw_input`]: mouse Raw Input pointer-activity witness (device or
+//!   injected; the adapter own SetCursorPos excluded) (Q2), with the `WM_INPUT` consume path.
 //! - [`dpi`]: DPI awareness and system metrics.
 //! - [`process`]: process/token/query primitives backing `native.rs`.
 //! - [`shell`]: shell launch verbs.
@@ -61,6 +63,7 @@ pub mod pager;
 pub mod pager_trace;
 pub mod process;
 pub mod pump;
+pub mod raw_input;
 pub mod settings_controls;
 pub mod settings_dialog;
 pub mod settings_window;
@@ -122,6 +125,7 @@ pub use process::{
 };
 pub use pump::{MsgWaitOutcome, TimerMessage, drain_messages, msg_wait, msg_wait_raw};
 pub use pump::{kill_thread_timer, prime_thread_queue, set_thread_timer, wait_timer_message};
+pub use raw_input::pointer_activity;
 pub use settings_dialog::{DiscardEnd, PreviewEnd, ask_discard, ask_preview, show_info};
 pub use shell::open_url;
 pub use sync::{create_auto_reset_event, event_signaled, signal_event};

@@ -21,6 +21,12 @@ use tiler_core::connection::{
 };
 use tiler_core::world_engine::WorldEngine;
 
+/// Whether the retained cursor-warp actuator is proven on this adapter.
+/// Stays `false` until the exact-once lane and the live Raw Input
+/// non-increment proof both pass on the committed tree. The handshake and
+/// the apply-lane gate read this single value.
+pub(super) const WARP_SUPPORTED: bool = false;
+
 /// Windows host capabilities: the exact port-notes values for this slice.
 ///
 /// - `host_owned: false`: Windows owns no native workspace domains.
@@ -36,10 +42,11 @@ use tiler_core::world_engine::WorldEngine;
 ///   `StateTarget`/R12 crash-safe preimage lane has not landed, so a
 ///   truth-claiming window would have no honest topmost actuation or
 ///   recovery. Flip to `true` when that task proves both.
-/// - `warp: false`: no retained cursor warp exists yet; C3 is deferred
-///   behind Tasks 1-4, so `cursorWarp=true` is reported as
-///   `unsupported-capability` instead of claiming an actuator. Flip to
-///   `true` when the retained-warp lane lands.
+/// - `warp`: the retained exact-once cursor-warp lane, sourced from
+///   [`WARP_SUPPORTED`]. It stays false until the adapter lane and the live
+///   Raw Input non-increment proof are complete; while false,
+///   `cursorWarp=true` reports `unsupported-capability` instead of claiming
+///   an actuator.
 /// - `native_sticky: false`: no native sticky mechanism.
 /// - `tiled_float_transfer: false`: no professed cross-output float remap.
 /// - `unavailable_facts` is the precise not-yet-produced catalog set in
@@ -67,7 +74,7 @@ pub(super) fn windows_capabilities() -> HostCapabilities {
         fullscreen: true,
         native_sticky: false,
         above: false,
-        warp: false,
+        warp: WARP_SUPPORTED,
         tiled_float_transfer: false,
         unavailable_facts: vec![
             FactName::Privileged,

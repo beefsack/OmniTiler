@@ -2660,6 +2660,17 @@ impl NativeOps for LiveNative<'_> {
         (self.prims.read_cursor)()
     }
 
+    fn warp_capable(&mut self) -> bool {
+        super::settings::WARP_SUPPORTED
+    }
+
+    /// The loop-thread Raw Input witness registered against the tray HWND.
+    /// `None` while the witness is not installed (proof/tray-less runs and
+    /// registration failure); never a synthesized zero.
+    fn pointer_activity(&mut self) -> Option<u64> {
+        crate::ffi::raw_input::pointer_activity()
+    }
+
     /// Mechanical warp with mechanical-only vetoes: a racing external
     /// invalidation or an out-of-bound core point fails closed (the core
     /// never emits those, so this is backstop, never policy). Game,

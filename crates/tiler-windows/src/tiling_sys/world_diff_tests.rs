@@ -3024,11 +3024,13 @@ fn same_pass_reveal_recycled_key_stops_focus_without_trusting_new_baseline() {
     assert!(diff.effects.mark_focus_spent("fx-9"));
 }
 
-// --- stage 4b cursor warp: focus-correlated mechanical application ---
+// --- C3 cursor warp: exact-once retained-request application ---
 //
-// Every warp test below carries the focus effect the point rides with:
-// the adapter warps only while that exact target holds the observed
-// foreground. An effect-less point never moves the cursor.
+// The adapter acts only on `reply.warp_request`: the exact target must hold
+// the live managed foreground, the pointer generation is re-read right
+// before the move, and the request id is spent exactly once (before the
+// setter, or on an already-there satisfaction). Failed gates hold with no
+// spend so the core may re-publish the same request.
 
 /// Retained focus-request fixture for the v4 focus lane. The diff lane
 /// consumes the request id, the exact target, and command correlation;
@@ -3053,12 +3055,17 @@ fn warp_rig(rig: &Rig) -> (HostDiff, FreshHost, FakeNative) {
     let (diff, fresh, mut native) = converted(rig);
     native.views.insert(rig.out.clone(), rig.ws.clone());
     native.cursor = Some((10, 10));
+    // Opt in: the declared actuator is present and the witness reads a
+    // baseline generation. Every other rig stays fail-closed by default.
+    native.warp_capable = true;
+    native.pointer_activity = Some(1);
     (diff, fresh, native)
 }
 
-/// Coherent v4 warp request for the cursor-warp lane. The Windows consumer
-/// reads only the point; the rest of the wire shape mirrors the reply so the
-/// request is well formed. `output`/`workspace` are the `rig()` wire tokens.
+/// Coherent v4 retained-warp request for the C3 lane: the exact frozen
+/// tuple the adapter acts on (never a point-only shape). `output`/
+/// `workspace` are the `rig()` wire tokens; `pointer_baseline` matches the
+/// scripted [`FakeNative`] witness default.
 fn warp_request(reply: &WorldReplyV4, point: (i32, i32)) -> tiler_core::world_report::WarpRequest {
     tiler_core::world_report::WarpRequest {
         id: "warp-windows-test".to_owned(),
@@ -3101,7 +3108,50 @@ fn warp_applies_once_per_observation() {
 }
 
 #[test]
-fn warp_skips_write_when_already_there() {
+fn warp_same_id_on_a_new_observation_never_acts_again() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = warp_rig(&rig);
+    let reply = warp_reply(&rig, Some(focus_request("fx-1", "w1")), (900, 300));
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.cursor_warps, 1);
+    assert_eq!(native.warp_calls, vec![(900, 300)]);
+    // The core re-emits the same retained id under a NEWER observation
+    // watermark: this is a fresh reply, not a duplicate delivery, so only
+    // the exact-id spend fence can stop a second native move.
+    let mut reissued = warp_reply(&rig, Some(focus_request("fx-1", "w1")), (900, 300));
+    reissued.based_on_observation_seq = 8;
+    reissued.state_revision = 2;
+    diff.gate.current_obs = 8;
+    let (stats, _, _) = apply(&mut diff, &reissued, &fresh, &mut native);
+    assert_eq!(stats.cursor_warps, 0);
+    assert_eq!(native.warp_calls, vec![(900, 300)]);
+    assert_eq!(diff.warp_spent().as_deref(), Some("warp-windows-test"));
+}
+
+#[test]
+fn warp_new_id_after_a_spent_id_acts_once() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = warp_rig(&rig);
+    let reply = warp_reply(&rig, Some(focus_request("fx-1", "w1")), (900, 300));
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.cursor_warps, 1);
+    // A distinct generation-scoped id is not blocked by the earlier spend.
+    let mut next = warp_reply(&rig, Some(focus_request("fx-2", "w1")), (910, 310));
+    next.based_on_observation_seq = 8;
+    next.state_revision = 2;
+    next.warp_request.as_mut().unwrap().id = "warp-windows-test-2".to_owned();
+    diff.gate.current_obs = 8;
+    let (stats, _, _) = apply(&mut diff, &next, &fresh, &mut native);
+    assert_eq!(stats.cursor_warps, 1);
+    assert_eq!(native.warp_calls, vec![(900, 300), (910, 310)]);
+    assert_eq!(
+        diff.warp_spent().as_deref(),
+        Some("warp-windows-test-2")
+    );
+}
+
+#[test]
+fn warp_skips_write_when_already_there_but_spends_the_id() {
     let rig = rig();
     let (mut diff, fresh, mut native) = warp_rig(&rig);
     native.cursor = Some((900, 300));
@@ -3111,25 +3161,50 @@ fn warp_skips_write_when_already_there() {
     assert_eq!(stats.cursor_warps, 0);
     assert!(native.warp_calls.is_empty());
     assert!(!stats.stopped_mid_apply);
+    // Contract: an already-there satisfaction makes no native call but does
+    // spend the exact id, so the core retires the request instead of
+    // retaining it forever.
+    assert_eq!(diff.warp_spent().as_deref(), Some("warp-windows-test"));
+    // Duplicate delivery: already spent, still no call.
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.cursor_warps, 0);
+    assert!(native.warp_calls.is_empty());
 }
 
 #[test]
-fn warp_needs_its_focus_request() {
-    // A point with no focus request is stale coordinates, never an order:
-    // consumed without motion so a duplicate never acts on it either.
+fn warp_acts_without_a_focus_request_when_foreground_proves() {
+    // The retained request is independent of the focus row: a satisfied
+    // focus may have cleared it while the warp still awaits its spend.
     let rig = rig();
     let (mut diff, fresh, mut native) = warp_rig(&rig);
+    native.foreground = Some("w1".to_owned());
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
     reply.warp_request = Some(warp_request(&reply, (900, 300)));
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.effects, 0);
-    assert_eq!(stats.cursor_warps, 0);
-    assert!(native.warp_calls.is_empty());
-    assert_eq!(native.cursor, Some((10, 10)));
-    assert!(!stats.stopped_mid_apply);
+    assert_eq!(stats.cursor_warps, 1);
+    assert_eq!(native.warp_calls, vec![(900, 300)]);
+    assert_eq!(diff.warp_spent().as_deref(), Some("warp-windows-test"));
+}
+
+#[test]
+fn warp_holds_when_target_is_not_foreground_then_acts_later() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = warp_rig(&rig);
+    native.foreground = Some("w2".to_owned());
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.warp_request = Some(warp_request(&reply, (900, 300)));
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert!(stats.held >= 1);
     assert!(native.warp_calls.is_empty());
-    assert_eq!(stats.cursor_warps, 0);
+    assert_eq!(diff.warp_spent(), None);
+    // The same retained request acts once the exact target holds the live
+    // managed foreground.
+    native.foreground = Some("w1".to_owned());
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.cursor_warps, 1);
+    assert_eq!(native.warp_calls, vec![(900, 300)]);
+    assert_eq!(diff.warp_spent().as_deref(), Some("warp-windows-test"));
 }
 
 #[test]
@@ -3179,6 +3254,7 @@ fn warp_refusal_holds_without_retry() {
     assert_eq!(stats.held, 1);
     assert!(native.warp_calls.is_empty());
     assert_eq!(native.cursor, Some((10, 10)));
+    assert_eq!(diff.warp_spent().as_deref(), Some("warp-windows-test"));
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert!(native.warp_calls.is_empty());
     assert_eq!(stats.held, 0);
@@ -3194,6 +3270,126 @@ fn warp_throw_stops_the_pass() {
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.cursor_warps, 0);
     assert!(stats.stopped_mid_apply);
+    // Spend is marked before the setter, so even a throw acknowledges the
+    // exact id and never retries it.
+    assert_eq!(diff.warp_spent().as_deref(), Some("warp-windows-test"));
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.cursor_warps, 0);
+    assert!(!stats.stopped_mid_apply);
+    assert_eq!(native.warp_calls.len(), 0);
+}
+
+#[test]
+fn warp_holds_on_newer_pointer_generation_without_spending() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = warp_rig(&rig);
+    native.foreground = Some("w1".to_owned());
+    native.pointer_activity = Some(2);
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.warp_request = Some(warp_request(&reply, (900, 300)));
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert!(stats.held >= 1);
+    assert!(native.warp_calls.is_empty());
+    assert_eq!(diff.warp_spent(), None);
+    // Unknown witness is equally a hold (never spend on an unreadable
+    // generation).
+    native.pointer_activity = None;
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert!(stats.held >= 1);
+    assert!(native.warp_calls.is_empty());
+    assert_eq!(diff.warp_spent(), None);
+    // Back at the baseline, the retained request may finally act.
+    native.pointer_activity = Some(1);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.cursor_warps, 1);
+    assert_eq!(native.warp_calls, vec![(900, 300)]);
+}
+
+#[test]
+fn warp_refuses_an_overbound_point_without_a_call_or_spend() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = warp_rig(&rig);
+    native.foreground = Some("w1".to_owned());
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.warp_request = Some(warp_request(&reply, (40_000, 0)));
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert!(stats.held >= 1);
+    assert!(native.warp_calls.is_empty());
+    assert_eq!(native.cursor, Some((10, 10)));
+    assert_eq!(diff.warp_spent(), None);
+}
+
+#[test]
+fn warp_capability_false_holds_without_a_call_or_spend() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = warp_rig(&rig);
+    native.warp_capable = false;
+    let reply = warp_reply(&rig, Some(focus_request("fx-1", "w1")), (900, 300));
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert!(stats.held >= 1);
+    assert!(native.warp_calls.is_empty());
+    assert_eq!(diff.warp_spent(), None);
+    // A capability flip without a fresh reply still cannot replay a spent
+    // id: after the gate opens the same request acts exactly once.
+    native.warp_capable = true;
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.cursor_warps, 1);
+    assert_eq!(native.warp_calls, vec![(900, 300)]);
+}
+
+#[test]
+fn warp_generation_reset_clears_dedup_and_spent_ack() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = warp_rig(&rig);
+    let reply = warp_reply(&rig, Some(focus_request("fx-1", "w1")), (900, 300));
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.cursor_warps, 1);
+    assert_eq!(diff.warp_spent().as_deref(), Some("warp-windows-test"));
+    assert!(diff.effects.spent_warps.contains("warp-windows-test"));
+    diff.reset_generation("gen-2");
+    assert_eq!(diff.warp_spent(), None);
+    assert!(diff.effects.spent_warps.is_empty());
+}
+
+#[test]
+fn report_carries_exact_scripted_witness_fields() {
+    let rig = rig();
+    let captured = capture_world(
+        &rig.state.inputs(),
+        Some(&rig.observed),
+        &rig.retained,
+        &rig.areas,
+        1001,
+    );
+    let mut seq = WorldSequencer::bootstrap(ADAPTER, GENERATION).expect("bootstrap");
+    // Default: the witness is not installed, so absence is reported as
+    // `None`, never a synthesized zero.
+    let report = seq.assemble(&captured, 7, None, None, 0, None);
+    assert_eq!(report.pointer_activity, None);
+    assert_eq!(report.warp_spent, None);
+    // Scripted values ride the envelope unchanged.
+    seq.note_report_witness(Some(9), Some("warp-3".to_owned()));
+    let report = seq.assemble(&captured, 8, None, None, 0, None);
+    assert_eq!(report.pointer_activity, Some(9));
+    assert_eq!(report.warp_spent.as_deref(), Some("warp-3"));
+    // A generation reset clears the retained spend acknowledgement.
+    assert!(seq.reset_generation("gen-2"));
+    let report = seq.assemble(&captured, 9, None, None, 0, None);
+    assert_eq!(report.pointer_activity, None);
+    assert_eq!(report.warp_spent, None);
+}
+
+#[test]
+fn spent_warp_ack_comes_only_after_a_real_attempt() {
+    let rig = rig();
+    let (mut diff, fresh, mut native) = warp_rig(&rig);
+    let reply = warp_reply(&rig, Some(focus_request("fx-1", "w1")), (900, 300));
+    // Before any apply there is nothing spent.
+    assert_eq!(diff.warp_spent(), None);
+    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.cursor_warps, 1);
+    // The next report carries the exact spent id the core retires.
+    assert_eq!(diff.warp_spent().as_deref(), Some("warp-windows-test"));
 }
 
 #[test]
