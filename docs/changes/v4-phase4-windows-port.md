@@ -293,6 +293,32 @@ All six printed `world-stress final cleanup ok`, `status=pass`, and the new
 warp-witness/geometry assertions in `Test-StressApplyClean` held at every
 accepted apply row.
 
+#### Iconic resident + mover send (manual fixture, 2026-11-25, clean f86c6adf)
+
+Two borderless fixture windows A/B were tiled on one output under the
+fixture-only scope. B was minimized through the fixture (`observed.mode =
+minimized`, `observed.visible = true`; A stayed windowed and took the full
+work area). A fresh accepted row gave B `frame_authority = hold`,
+`frame_hold = minimized`, `membership_authority = controlled`,
+`membership_hold = null`, `allocation = null`, while A stayed controlled with
+no hold. `workspace --send 2` dispatched (`dispatched:true`); the settled row
+moved A to the ordinal-2 workspace on the primary output with zero pending
+transfers/operations/held scopes, and B remained on ordinal 1 with the same
+minimized hold and controlled membership. Selecting 2 then 1 produced fresh
+accepted rows and an A hide/reveal roundtrip (`ShowWindowAsync SW_HIDE`,
+non-activating `SetWindowPos`); B stayed minimized/visible and was never
+moved, hidden, restored, duplicated, or left holding pending intent. Cleanup
+stopped the exact owner, shut down the fixture, restored the settings bytes
+and SPI state, and left no owned ledger, process, or fixture window.
+
+This proves the migrated minimized-resident path: no automatic restore, no
+invented frame/membership hold, and no lingering order workaround during a
+mover send and workspace return. Limits: B was never posted a hide while
+off-view, so the minimized-preserving reveal path (`SW_SHOWMINNOACTIVE`) is
+not exercised; moving the iconic window itself as the sent subject is also
+unproven. The strict stress harness still cannot encode this row without a
+minimize/restore observation op and a minimized-aware oracle.
+
 Not run in this evidence (explicit TBD, not claimed):
 
 - Multi-monitor/mixed-DPI transitions: the stress harness is single-output by
@@ -306,8 +332,8 @@ Not run in this evidence (explicit TBD, not claimed):
 - End-to-end positive warp on multi-output choreography: the single-output
   harness refuses multi-screen, and the C3 live receipt only proves the
   witness/setter property, not a core-minted cross-output warp; unrun.
-- Iconic minimize/restore and mover sends: not covered. Missing seam: the
-  strict stress schema has no `minimize`/`restore` observation op, and the
-  native runner never minimizes a fixture window; adding that op plus
-  fixture spawn/runner support is a core-protocol + fixture change outside
-  this adapter slice.
+- Iconic window as the moved subject and the minimized-preserving reveal
+  (`SW_SHOWMINNOACTIVE`): unproven. The iconic-resident mover-send evidence
+  above is manual; the strict stress schema has no `minimize`/`restore`
+  observation op, and a minimized-aware oracle is still needed before the
+  leg can be encoded there.
