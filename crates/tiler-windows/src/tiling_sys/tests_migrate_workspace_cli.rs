@@ -282,6 +282,7 @@ fn migrate_workspace_applied_path_through_production_route() {
                 w: 800,
                 h: 600,
             },
+            dpi: 96,
         },
         MonitorArea {
             device: "DEV2".to_owned(),
@@ -297,11 +298,34 @@ fn migrate_workspace_applied_path_through_production_route() {
                 w: 800,
                 h: 600,
             },
+            dpi: 96,
         },
     ];
     let fulls: Vec<Rect> = areas.iter().map(|a| a.full).collect();
     state.ensure_device("DEV1");
     state.ensure_device("DEV2");
+    let store = crate::storage::LedgerStore::open(&dir.join("ledger")).expect("ledger");
+    // Put the target output on its second workspace before any target
+    // window is observed: fresh homing then places those windows on ws-2,
+    // leaving the migration's target key (DEV2 + source ws-1) empty.
+    let wire2 = state.wire_of("DEV2").expect("wire 2");
+    super::world_tick::run_world_command(
+        &mut state,
+        &me,
+        &store,
+        &dir,
+        &[],
+        &[],
+        &areas,
+        0,
+        &fulls,
+        tiler_core::world_report::WorldCommand::SelectNumbered {
+            output: Some(tiler_core::directional::OutputId(wire2.clone())),
+            index: 2,
+        },
+        None,
+    )
+    .expect("target view selects");
     let wins: Vec<(u64, &str, u32, &str, Rect)> = vec![
         (
             0x4101,
@@ -418,7 +442,6 @@ fn migrate_workspace_applied_path_through_production_route() {
             member_tag: Some(format!("tag-{hwnd}")),
         })
         .collect();
-    let store = crate::storage::LedgerStore::open(&dir.join("ledger")).expect("ledger");
     inject_pending_observe(observed.clone(), Vec::new(), false);
     inject_pending_suspend(Some(false));
     inject_pending_elevated(Some(false));
@@ -438,6 +461,7 @@ fn migrate_workspace_applied_path_through_production_route() {
     )
     .expect("seed tick converges");
     assert!(seed.ready, "seed converges");
+
     inject_pending_observe(observed.clone(), Vec::new(), false);
     inject_pending_suspend(Some(false));
     inject_pending_elevated(Some(false));
@@ -506,6 +530,7 @@ fn migrate_workspace_refusal_logs_bounded_core_reason() {
             w: 800,
             h: 600,
         },
+        dpi: 96,
     }];
     let fulls: Vec<Rect> = areas.iter().map(|a| a.full).collect();
     state.ensure_device("DEV1");
@@ -650,6 +675,7 @@ fn migrate_workspace_capture_projects_neutral_action_facts() {
                 w: 800,
                 h: 600,
             },
+            dpi: 96,
         },
         MonitorArea {
             device: "DEV-B".to_owned(),
@@ -665,6 +691,7 @@ fn migrate_workspace_capture_projects_neutral_action_facts() {
                 w: 800,
                 h: 600,
             },
+            dpi: 96,
         },
     ];
     let mut state = test_state();
@@ -719,7 +746,7 @@ fn migrate_workspace_dispatch_prefers_pointer_over_stale_cache() {
         inject_pending_tag,
     };
     use tiler_core::geometry::Rect;
-    use tiler_core::world_report::{TransferKind, WorldCommand, WorldReply};
+    use tiler_core::world_report::{TransferKind, WorldCommand, WorldReplyV4};
     struct Fixture {
         state: super::TileLoop,
         me: crate::model::ProcessIdentity,
@@ -754,6 +781,7 @@ fn migrate_workspace_dispatch_prefers_pointer_over_stale_cache() {
                     w: 800,
                     h: 600,
                 },
+                dpi: 96,
             },
             MonitorArea {
                 device: "DEV2".to_owned(),
@@ -769,6 +797,7 @@ fn migrate_workspace_dispatch_prefers_pointer_over_stale_cache() {
                     w: 800,
                     h: 600,
                 },
+                dpi: 96,
             },
         ];
         let fulls: Vec<Rect> = areas.iter().map(|a| a.full).collect();
@@ -864,7 +893,7 @@ fn migrate_workspace_dispatch_prefers_pointer_over_stale_cache() {
         )
         .expect("seed converges");
         assert!(seed.ready, "seed converges");
-        let view_of = |reply: &WorldReply, output: &str| {
+        let view_of = |reply: &WorldReplyV4, output: &str| {
             reply
                 .outputs
                 .iter()
@@ -888,7 +917,7 @@ fn migrate_workspace_dispatch_prefers_pointer_over_stale_cache() {
             view_b,
         }
     }
-    fn migrated(reply: &WorldReply) -> (String, String) {
+    fn migrated(reply: &WorldReplyV4) -> (String, String) {
         let transfer = reply
             .transfers
             .iter()
@@ -915,11 +944,12 @@ fn migrate_workspace_dispatch_prefers_pointer_over_stale_cache() {
         0,
         &fx.fulls,
         WorldCommand::MigrateDirectional {
-            direction: tiler_core::directional::Direction::Left,
+            direction: tiler_core::directional::Direction::Right,
         },
         Some((810, 10)),
     )
-    .expect("pointer resolves a live source");
+    .expect("pointer resolves a live source")
+    .reply;
     assert_eq!(migrated(&reply), (fx.wire1.clone(), fx.view_b.clone()));
     let _ = std::fs::remove_dir_all(&fx.dir);
     // A stale-but-registered cache pins for downstream refusal instead
@@ -962,7 +992,8 @@ fn migrate_workspace_dispatch_prefers_pointer_over_stale_cache() {
         },
         None,
     )
-    .expect("registry order resolves a live source");
+    .expect("registry order resolves a live source")
+    .reply;
     assert_eq!(migrated(&reply), (fx.wire2.clone(), fx.view_a.clone()));
     let _ = std::fs::remove_dir_all(&fx.dir);
     clear_pending_seams();
@@ -1000,6 +1031,7 @@ fn migrate_workspace_tick_and_cli_share_core_resolution() {
             w: 800,
             h: 600,
         },
+        dpi: 96,
     }];
     let fulls: Vec<Rect> = areas.iter().map(|a| a.full).collect();
     state.ensure_device("DEV1");

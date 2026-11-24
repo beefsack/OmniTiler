@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 use super::*;
 use std::collections::HashMap as SelectViewMap;
-use tiler_core::world_report::{TransferKind as SelectTransferKind, WorldReply as SelectReply};
+use tiler_core::world_report::{TransferKind as SelectTransferKind, WorldReplyV4 as SelectReply};
 
 /// Core-resolved select diagnostics for one applied select reply: the
 /// commanded output (native device key) plus the logical view there. The
@@ -155,7 +155,7 @@ fn apply_history(
     let line = match reply.as_ref() {
         Some(applied) => {
             state.tick += 1;
-            match resolved_select_view(state, &before, applied) {
+            match resolved_select_view(state, &before, &applied.reply) {
                 Some((device, view)) => select_resolved_log(
                     "workspace-history",
                     tick,

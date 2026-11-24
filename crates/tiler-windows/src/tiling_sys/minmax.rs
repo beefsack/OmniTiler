@@ -203,6 +203,19 @@ pub(super) fn min_hint_for(window: &ObservedWindow, cx: &HintCx) -> FreshHint {
             cost: QueryCost::default(),
         };
     }
+    // Offline fixtures use fake HWNDs with no native constraint source. A
+    // real `WM_GETMINMAXINFO` on a window that declares no usable constraint
+    // is a successful empty answer; model that instead of an unperformed
+    // query so v4 capture exercises truthful `Some(none())` hints. Tests
+    // that need unknown/failed/timeout outcomes inject them explicitly.
+    #[cfg(test)]
+    if !crate::ffi::is_window(window.hwnd) {
+        return FreshHint {
+            hints: WindowSizeHints::none(),
+            outcome: HintOutcome::NoHint,
+            cost: QueryCost::default(),
+        };
+    }
     let hwnd = window.hwnd as isize as HWND;
     let (min_track, max_track, outcome, cost) = query_outer_tracks(hwnd, cx);
     if outcome != HintOutcome::Hint {

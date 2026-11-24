@@ -1,6 +1,244 @@
 #![forbid(unsafe_code)]
 use super::*;
 
+// ---------------------------------------------------------------------------
+// v4 world connection: genuine handshake plus revisioned raw settings.
+//
+// Windows keeps its own in-process connection primitive (there is no
+// `world_connection` module): the typed request is built from native truth
+// here, encoded with the protocol codec, routed through
+// [`route_connection_request`], and parsed with the protocol codec. The
+// core-minted generation binds the adapter
+// [`WorldSequencer`](super::world_sequencer::WorldSequencer); reports and
+// later settings gate on that bound generation. The engine is owned by the
+// sequencer: no second engine owner exists.
+// ---------------------------------------------------------------------------
+
+use tiler_core::connection::{
+    ApplicationIdentity, FactName, HandshakeReply, HandshakeRequest, HostCapabilities,
+    NativeSelectorScope, RawSettingValue, SettingsReply, SettingsRequest, SettingsStatus,
+};
+use tiler_core::world_engine::WorldEngine;
+use tiler_protocol::connection_protocol::{
+    decode_handshake_reply, decode_settings_reply, encode_handshake_request, encode_settings,
+    route_connection_request,
+};
+
+/// Windows host capabilities: the exact port-notes values for this slice.
+///
+/// - `host_owned: false`: Windows owns no native workspace domains.
+/// - `equal_count: false`, `birth_clear: false`,
+///   `shared_native_roster: false`: no native workspaces, no automatic birth
+///   clears, no shared native roster.
+/// - `native_selector_scope: PerOutput`: each output carries its own view;
+///   Windows has no native selector, so no cross-output selector scope is
+///   claimed.
+/// - `window_suppression: true`: the product hide/restore lane exists.
+/// - `maximize: true`, `fullscreen: true`, `above: true`, `warp: true`:
+///   native actuators exist for each.
+/// - `native_sticky: false`: no native sticky mechanism.
+/// - `tiled_float_transfer: false`: no professed cross-output float remap.
+/// - `unavailable_facts` is the precise not-yet-produced catalog set in
+///   [`FactName`] order: `managed`, `acceptsInput`, `activationInhibited`,
+///   `transient`, `modal`, `resizable`, `above`, `below`, `owner`, `parent`,
+///   `role`, `appId`, `title`, `activationPolicy`, `layer`, `privileged`,
+///   and `class`. The remaining four lanes (`toolWindow`, `owned`,
+///   `executable`, `processId`) are the exact capture-emitted producer set;
+///   an available fact may still be `None` when a single read is honestly
+///   unknown, so availability is a producer claim, never a value claim.
+///   `executable`/`processId` also stay available because [`own_identity`]
+///   supplies both (the support-consistency gate). `privileged` is not
+///   emitted (observe hardcodes `false` as a projected negative) and
+///   `class` is read but not carried, so neither may be declared available.
+#[must_use]
+pub(super) fn windows_capabilities() -> HostCapabilities {
+    HostCapabilities {
+        host_owned: false,
+        equal_count: false,
+        shared_native_roster: false,
+        birth_clear: false,
+        native_selector_scope: NativeSelectorScope::PerOutput,
+        window_suppression: true,
+        maximize: true,
+        fullscreen: true,
+        native_sticky: false,
+        above: true,
+        warp: true,
+        tiled_float_transfer: false,
+        unavailable_facts: vec![
+            FactName::Privileged,
+            FactName::Managed,
+            FactName::AcceptsInput,
+            FactName::ActivationInhibited,
+            FactName::Transient,
+            FactName::Modal,
+            FactName::Resizable,
+            FactName::Above,
+            FactName::Below,
+            FactName::Owner,
+            FactName::Parent,
+            FactName::Role,
+            FactName::AppId,
+            FactName::Class,
+            FactName::Title,
+            FactName::ActivationPolicy,
+            FactName::Layer,
+        ],
+    }
+}
+
+/// Own process identity from native truth only.
+///
+/// - `app_id`: `None` (Windows has no bundle identity source; no support
+///   coupling exists for `appId`).
+/// - `executable`: the own executable path, normalized by slash replacement
+///   plus ASCII lowercase (the same identity rule as
+///   [`crate::lifecycle`]'s path equality); `None` when the identity read
+///   fails, which refuses the handshake instead of claiming support.
+/// - `process_id`: the own pid as a decimal string.
+fn own_identity() -> Option<ApplicationIdentity> {
+    let own = crate::native::current_identity().ok()?;
+    Some(ApplicationIdentity {
+        app_id: None,
+        executable: Some(own.exe_path.replace('/', "\\").to_ascii_lowercase()),
+        process_id: Some(own.pid.to_string()),
+    })
+}
+
+/// Typed handshake request for one adapter incarnation. `None` when own
+/// identity cannot be read: a handshake that cannot prove its own executable
+/// and pid refuses rather than declaring them unavailable while the window
+/// producer emits them.
+#[must_use]
+fn build_handshake_request(adapter: &str) -> Option<HandshakeRequest> {
+    Some(build_handshake_request_with_identity(
+        adapter,
+        own_identity()?,
+    ))
+}
+
+#[must_use]
+fn build_handshake_request_with_identity(
+    adapter: &str,
+    application_identity: ApplicationIdentity,
+) -> HandshakeRequest {
+    HandshakeRequest {
+        adapter: adapter.to_owned(),
+        request: "handshake-1".to_owned(),
+        application_identity,
+        capabilities: windows_capabilities(),
+    }
+}
+
+/// Settings request at one revision: the supplied raw acquisition values.
+/// Core validation/defaulting owns every key; the adapter never clamps or
+/// defaults core-owned values.
+#[must_use]
+fn build_settings_request(
+    adapter: &str,
+    generation: &str,
+    revision: u64,
+    values: Vec<(String, RawSettingValue)>,
+) -> SettingsRequest {
+    SettingsRequest {
+        adapter: adapter.to_owned(),
+        generation: generation.to_owned(),
+        request: format!("settings-{revision}"),
+        revision,
+        values,
+    }
+}
+
+/// Outcome of one genuine handshake plus its initial settings exchange.
+pub(super) struct ConnectOutcome {
+    /// Core-minted generation binding the adapter sequencer.
+    pub(super) generation: String,
+    /// Accepted core reply for the initial revision.
+    pub(super) settings: SettingsReply,
+}
+
+/// Run one revisioned settings exchange against `engine` through the
+/// protocol connection route: encode `values` at `revision`, route through
+/// [`route_connection_request`], and parse the reply with the protocol
+/// codec. Returns the core reply, or `None` when any codec leg fails. Never
+/// retries on a bound wait: the caller decides whether a later revision
+/// supersedes. The sole future live-settings path; the first slice keeps
+/// startup acquisition empty (core defaults, `Missing` diagnostics) because
+/// Windows has no ported core-settings acquisition matrix.
+#[must_use]
+#[allow(dead_code)]
+pub(super) fn apply_settings_revision(
+    engine: &mut WorldEngine,
+    adapter: &str,
+    generation: &str,
+    revision: u64,
+    values: &[(String, RawSettingValue)],
+) -> Option<SettingsReply> {
+    let request = build_settings_request(adapter, generation, revision, values.to_vec());
+    let wire = encode_settings(&request).ok()?;
+    let reply_wire = route_connection_request(engine, &wire).ok()?;
+    decode_settings_reply(&reply_wire).ok()
+}
+
+/// Run one genuine handshake plus the initial (revision 1) settings exchange
+/// against `engine` with the supplied raw acquisition values. Returns the
+/// core-minted generation plus the settings reply on success, `None` when
+/// the handshake refuses (no generation minted, no state mutated), the
+/// settings exchange refuses, or any codec leg fails.
+pub(super) fn connect(
+    engine: &mut WorldEngine,
+    adapter: &str,
+    values: &[(String, RawSettingValue)],
+) -> Option<ConnectOutcome> {
+    connect_with_handshake(
+        engine,
+        adapter,
+        values,
+        build_handshake_request(adapter)?,
+    )
+}
+
+/// Test-only connection with an explicit owner identity. Live windows are
+/// owned by the test process, so the real own-pid handshake would exclude
+/// every fixture as own-process; tests bind a synthetic owner instead.
+#[cfg(test)]
+pub(super) fn connect_with_identity(
+    engine: &mut WorldEngine,
+    adapter: &str,
+    values: &[(String, RawSettingValue)],
+    application_identity: ApplicationIdentity,
+) -> Option<ConnectOutcome> {
+    connect_with_handshake(
+        engine,
+        adapter,
+        values,
+        build_handshake_request_with_identity(adapter, application_identity),
+    )
+}
+
+fn connect_with_handshake(
+    engine: &mut WorldEngine,
+    adapter: &str,
+    values: &[(String, RawSettingValue)],
+    handshake_request: HandshakeRequest,
+) -> Option<ConnectOutcome> {
+    let handshake_wire = encode_handshake_request(&handshake_request).ok()?;
+    let handshake_reply_wire = route_connection_request(engine, &handshake_wire).ok()?;
+    let handshake: HandshakeReply = decode_handshake_reply(&handshake_reply_wire).ok()?;
+    if handshake.kind.is_some() {
+        return None;
+    }
+    let generation = handshake.generation?;
+    let settings = apply_settings_revision(engine, adapter, &generation, 1, values)?;
+    if settings.status != SettingsStatus::Accepted {
+        return None;
+    }
+    Some(ConnectOutcome {
+        generation,
+        settings,
+    })
+}
+
 /// Native foreground veto read: one fresh pass over the live foreground with
 /// exact desktop identity, fresh visibility, caption, DWM frame, and DWM
 /// cloak facts fed into the portable [`crate::native_guards::classify_foreground`] policy.

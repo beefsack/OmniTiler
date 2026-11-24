@@ -1343,6 +1343,7 @@ mod pager_host_tests {
                 device: output.to_owned(),
                 work: full,
                 full,
+                dpi: 96,
             }],
             vec![full],
         )
@@ -1392,6 +1393,7 @@ mod pager_host_tests {
             device: output.clone(),
             work: pager_full(),
             full: pager_full(),
+            dpi: 96,
         }];
         super::super::world_tick::dispatch_test_observation(
             &mut state,
@@ -1403,19 +1405,22 @@ mod pager_host_tests {
             0,
         );
         let ids = state.workspace_ids(&output);
-        assert!(ids.len() >= 2, "active plus a distinct target");
+        let active = ids.first().cloned().expect("active workspace");
+        // v4 collapses an empty non-current trailing workspace, so the
+        // empty bootstrap has one live id. These cases only need a distinct
+        // click target and assert that gated/refused clicks never dispatch;
+        // name the next logical id directly instead of fabricating a live
+        // workspace the core would have to keep for no product reason.
+        let target = ids
+            .iter()
+            .find(|id| **id != active)
+            .cloned()
+            .unwrap_or_else(|| "ws-2".to_owned());
+        assert_ne!(active, target, "active plus a distinct target");
         // Hermetic observation insurance: any accidental dispatch below
         // must still touch no native window. Refused clicks never observe.
         inject_pending_observe(Vec::new(), Vec::new(), false);
-        (
-            state,
-            me,
-            store,
-            tmp,
-            output,
-            ids[0].clone(),
-            ids[1].clone(),
-        )
+        (state, me, store, tmp, output, active, target)
     }
 
     fn push_click(state: &mut super::TileLoop, output: &str, workspace: &str) {
@@ -1929,6 +1934,7 @@ mod pager_host_tests {
             device: output.clone(),
             work: live_frame,
             full: live_frame,
+            dpi: 96,
         }];
         super::super::world_tick::dispatch_test_observation(
             &mut state,
@@ -2179,6 +2185,7 @@ mod pager_host_tests {
             device: output.clone(),
             work: pager_full(),
             full: pager_full(),
+            dpi: 96,
         }];
         inject_pending_observe(
             vec![
@@ -2296,6 +2303,7 @@ mod pager_host_tests {
             device: output.clone(),
             work: pager_full(),
             full: pager_full(),
+            dpi: 96,
         }];
         super::super::world_tick::dispatch_test_observation(
             &mut state,
@@ -2385,6 +2393,7 @@ mod pager_host_tests {
             device: output.clone(),
             work: pager_full(),
             full: pager_full(),
+            dpi: 96,
         }];
         super::super::world_tick::dispatch_test_observation(
             &mut state,
@@ -2499,6 +2508,7 @@ mod pager_host_tests {
             device: output.clone(),
             work: pager_full(),
             full: pager_full(),
+            dpi: 96,
         }];
         super::super::world_tick::dispatch_test_observation(
             &mut state,
@@ -2640,6 +2650,7 @@ mod pager_host_tests {
             device: output.clone(),
             work: pager_full(),
             full: pager_full(),
+            dpi: 96,
         }];
         inject_pending_observe(
             vec![
@@ -2684,6 +2695,7 @@ mod pager_host_tests {
             device: output.to_owned(),
             work: pager_full(),
             full: pager_full(),
+            dpi: 96,
         }];
         let fulls = vec![pager_full()];
         let mut observed = vec![
@@ -2880,6 +2892,7 @@ mod pager_host_tests {
             device: output.clone(),
             work: pager_full(),
             full: pager_full(),
+            dpi: 96,
         }];
         let frame = frame_of_focus();
         let observed = vec![

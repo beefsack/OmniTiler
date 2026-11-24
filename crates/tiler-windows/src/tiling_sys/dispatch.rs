@@ -526,13 +526,15 @@ pub(super) fn dispatch_orientation_intent(
         foreground,
         fulls,
         tiler_core::world_report::WorldCommand::Operation(CoreCommand::ToggleOrientation {
-            window: from.clone(),
+            window: tiler_core::directional::WindowSubject::Window(
+                tiler_core::directional::WindowId(from.clone()),
+            ),
         }),
         super::observation::sample_cursor(),
     );
     let outcome = match reply {
         Some(reply) => {
-            let changed = reply.windows.iter().any(|row| {
+            let changed = reply.reply.windows.iter().any(|row| {
                 row.allocation.is_some_and(|alloc| {
                     observed
                         .iter()
@@ -809,9 +811,11 @@ fn sticky_rehome_to_current(
         foreground,
         fulls,
         tiler_core::world_report::WorldCommand::Send {
-            window: tiler_core::directional::WindowId(from.to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(
+                tiler_core::directional::WindowId(from.to_owned()),
+            ),
             target_output: tiler_core::directional::OutputId(wire),
-            target_workspace: current_ws.to_owned(),
+            target_workspace: tiler_core::directional::WorkspaceId(current_ws.to_owned()),
             follow: false,
         },
         super::observation::sample_cursor(),

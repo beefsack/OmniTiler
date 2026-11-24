@@ -25,6 +25,10 @@ pub(super) struct MonitorArea {
     pub(super) device: String,
     pub(super) work: Rect,
     pub(super) full: Rect,
+    /// Effective per-monitor DPI measured at the enumeration seam
+    /// (`MDT_EFFECTIVE_DPI`). `0` is unknown: the report holds the screen
+    /// instead of carrying a fabricated scale.
+    pub(super) dpi: u32,
 }
 
 /// Display-topology dirty flag, set by the owner-window procedures on
@@ -64,6 +68,7 @@ pub(super) fn all_monitors() -> Result<Vec<MonitorArea>> {
             device: info.device,
             work,
             full,
+            dpi: info.dpi,
         };
         if info.primary {
             areas.insert(0, area);

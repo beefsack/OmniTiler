@@ -23,7 +23,13 @@ fn adopt_seeded(
     areas: &[super::MonitorArea],
     hint_cx: &mut super::HintCx,
 ) {
-    super::world_tick::dispatch_test_observation(state, observed, retained, areas, 0, None, 0);
+    let reply =
+        super::world_tick::dispatch_test_observation(state, observed, retained, areas, 0, None, 0);
+    assert!(
+        reply.is_some(),
+        "restart fixture observation must dispatch: {:?}",
+        state.world.last_reply()
+    );
     super::adopt_restart_markers(state, me, observed, retained, areas, hint_cx);
 }
 
@@ -134,6 +140,12 @@ fn seed_member(
     state.member_rects.insert(token.clone(), frame());
     state.member_identity.insert(key.clone(), me);
     state.member_tags.insert(key.clone(), tag.to_owned());
+    // A successful no-hint read is known-empty, not unknown. Seed the same
+    // truth the production hint pass records so the first observation can
+    // home the member before marker adoption.
+    state
+        .hint_logged
+        .insert(token.clone(), tiler_core::size_hints::WindowSizeHints::none());
     (key, token, output, active)
 }
 
@@ -142,6 +154,7 @@ fn areas_for(output: &str) -> Vec<super::MonitorArea> {
         device: output.to_owned(),
         work: bounds(),
         full: bounds(),
+        dpi: 96,
     }]
 }
 
@@ -890,6 +903,7 @@ fn reject_areas_for(output: &str) -> Vec<super::MonitorArea> {
         device: output.to_owned(),
         work: reject_domain_bounds(),
         full: reject_domain_bounds(),
+        dpi: 96,
     }]
 }
 

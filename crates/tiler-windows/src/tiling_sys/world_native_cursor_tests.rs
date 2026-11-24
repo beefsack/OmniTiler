@@ -53,11 +53,13 @@ fn fixture_areas() -> (Vec<super::super::MonitorArea>, Vec<Rect>) {
             device: DEV1.to_owned(),
             work: rect(0, 0, 800, 560),
             full: rect(0, 0, 800, 600),
+            dpi: 96,
         },
         super::super::MonitorArea {
             device: DEV2.to_owned(),
             work: rect(800, 0, 800, 560),
             full: rect(800, 0, 800, 600),
+            dpi: 96,
         },
     ];
     let fulls = vec![rect(0, 0, 800, 600), rect(800, 0, 800, 600)];
@@ -113,7 +115,7 @@ fn set_calls_for(hwnd: u64) -> usize {
     S_SET_CALLS.with(|m| m.borrow().iter().filter(|(h, _)| *h == hwnd).count())
 }
 
-fn view_of(reply: &WorldReply, output: &str) -> Option<String> {
+fn view_of(reply: &tiler_core::world_report::WorldReplyV4, output: &str) -> Option<String> {
     reply
         .outputs
         .iter()
@@ -693,7 +695,7 @@ fn shared_switch_and_send_cases_resolve_per_fixture() {
                     moving_prims(),
                     by_id[mover].hwnd,
                     Some(WorldCommand::SendNumbered {
-                        window: WindowId(mover.to_owned()),
+                        window: tiler_core::directional::WindowSubject::Window(WindowId(mover.to_owned())),
                         source: tiler_core::world_report::SendSource::Explicit(OutputId(
                             wire.clone(),
                         )),

@@ -52,14 +52,9 @@
 //! fullscreen/hidden holds, and racing invalidation are proven offline
 //! against this exact type. The defaults are the auditable call sites.
 //!
-//! Receipt capture lives in [`super::world_native_receipts`]:
-//! [`attach_workspace_receipts`](super::world_native_receipts::attach_workspace_receipts)
-//! and [`observed_view_receipts`](super::world_native_receipts::observed_view_receipts)
-//! derive the capture's `observed_views` and per-window `observed_workspace`
-//! from fresh visibility plus owner tables. Only exactly-one-visible-workspace (non-sticky) views prove, plus the
-//! memberless-active-with-zero-visible batch-completion case; an empty
-//! workspace never proves by echoing desired state. Unknown stays unknown
-//! so the core retains pending flights instead of settling on a guess.
+//! Observed workspace/view receipts are now core-owned from the capture's
+//! fresh window and visibility facts, never from echoed desire. Unknown stays
+//! unknown so the core retains pending flights instead of settling on a guess.
 
 use super::world_diff::{FreshWindow, NativeOps, SelectionArrivalGrant};
 use crate::product_hide::sys::{VisibilityPostDiag, VisibilityPostTrace};
@@ -1665,10 +1660,6 @@ impl NativeOps for LiveNative<'_> {
                     hidden: self.committed_hidden(&live_key),
                     sticky,
                     floating,
-                    // Fit exclusion has no fresh adapter lane: the core never
-                    // issues frame placements for excluded rows (Untouched
-                    // frame authority), so the row authority already holds.
-                    fit_excluded: false,
                     live_tag: (self.prims.member_tag)(key.hwnd),
                 })
             }
@@ -1713,7 +1704,6 @@ impl NativeOps for LiveNative<'_> {
                     hidden: true,
                     sticky,
                     floating: sticky,
-                    fit_excluded: false,
                     live_tag: (self.prims.member_tag)(record.claim.hwnd),
                 })
             }
@@ -2124,10 +2114,10 @@ impl NativeOps for LiveNative<'_> {
         Ok(true)
     }
 
-    fn selection_arrival_allows(&mut self, effect_id: &str, target: &str) -> bool {
+    fn selection_arrival_allows(&mut self, request_id: &str, target: &str) -> bool {
         self.selection_arrival
             .as_ref()
-            .is_some_and(|grant| grant.allows(effect_id, target))
+            .is_some_and(|grant| grant.allows(request_id, target))
     }
 
     fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
@@ -2568,7 +2558,7 @@ impl<'a> LiveNative<'a> {
     /// stay absent so the caller retains prior receipts.
     pub(super) fn receipt_updates(
         &mut self,
-        reply: &tiler_core::world_report::WorldReply,
+        reply: &tiler_core::world_report::WorldReplyV4,
     ) -> (HashMap<String, (String, String)>, HashMap<String, String>) {
         let mut homing = HashMap::new();
         for row in &reply.windows {

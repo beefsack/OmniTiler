@@ -28,6 +28,7 @@ fn area() -> MonitorArea {
             w: 800,
             h: 600,
         },
+        dpi: 96,
     }
 }
 
@@ -104,6 +105,18 @@ fn seed_member(state: &mut super::TileLoop, hwnd: u64, token: &str) {
             exe_path: "C:\\Apps\\app.exe".to_owned(),
         },
     );
+    // v4 derives fixed-size intent from truthful raw hints: the automatic
+    // float origin is a fixed hint pair the core can prove. The adapter
+    // float table is no longer a classification input.
+    state.hint_logged.insert(
+        token.to_owned(),
+        tiler_core::size_hints::WindowSizeHints {
+            min_w: Some(200),
+            max_w: Some(200),
+            min_h: Some(200),
+            max_h: Some(200),
+        },
+    );
     state.floated.insert(member);
 }
 
@@ -165,7 +178,7 @@ fn dispatch(
     seq: &mut WorldSequencer,
     observed: &[ObservedWindow],
     command: WorldCommand,
-) -> tiler_core::world_report::WorldReply {
+) -> tiler_core::world_report::WorldReplyV4 {
     let areas = vec![area()];
     let retained: Vec<RetainedRow> = Vec::new();
     seq.invalidate();
@@ -180,14 +193,9 @@ fn dispatch(
             Some(command),
         )
         .expect("command dispatches");
-    // Truthful capture: both floats ride with membership evidence and no
-    // invented frames; the command names the window only.
+    // Truthful capture: both managed windows ride with membership evidence
+    // and no invented frames; the command names the window only.
     assert_eq!(report.windows.len(), 2);
-    assert!(
-        report.windows.iter().all(|fact| fact.floating),
-        "lanes capture float truth, got {:?}",
-        report.windows
-    );
     match seq.deliver(&report) {
         WorldOutcome::Accepted(reply) => {
             match seq.ack(&reply) {
@@ -201,103 +209,43 @@ fn dispatch(
 }
 
 #[test]
-fn float_origins_dispatch_world_commands_with_core_owned_decisions() {
-    // No adapter bypass exists: the float-focus target, the constrained
-    // half-snap rect, and the automatic-float refusal all arrive as the
-    // core reply to a dispatched world command.
+fn automatic_float_focus_refuses_from_core_without_adapter_branches() {
+    // No adapter bypass exists: the core refuses a directional focus from
+    // an automatic fixed float with the floating vocabulary and no effect.
     let mut state = test_state();
     let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
     let _ = seq.bootstrap_reply("req-0");
     let observed = bootstrap_floats(&mut state, &mut seq);
-
-    // Float focus resolves the core-selected target with an explicit
-    // focus effect; the canonical encoding round-trips the result.
     let reply = dispatch(
         &mut state,
         &mut seq,
         &observed,
         WorldCommand::FocusDirectional {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::world_report::FocusDirectionalSubject::Window(WindowId("w1".to_owned())),
             direction: tiler_core::directional::Direction::Right,
         },
     );
-    match &reply.command_result {
+    match seq.last_command_result() {
         Some(CommandResult::Directional {
             outcome,
             target,
             rect,
+            cause,
             ..
         }) => {
-            assert_eq!(outcome.as_str(), "focus-float-applied");
-            assert_eq!(target, &Some(WindowId("w2".to_owned())));
+            assert_eq!(
+                outcome.as_str(),
+                "focus-refused-floating",
+                "cause={cause:?} target={target:?}"
+            );
+            assert!(target.is_none());
             assert!(rect.is_none());
         }
-        other => panic!("world-owned float focus, got {other:?}"),
+        other => panic!("world-owned automatic focus refusal, got {other:?}"),
     }
     assert!(
-        reply
-            .effects
-            .iter()
-            .any(|effect| effect.target == WindowId("w2".to_owned())),
-        "explicit focus effect for the core-selected float"
-    );
-    assert_eq!(
-        reply
-            .effects
-            .iter()
-            .filter(|effect| effect.kind == tiler_core::world_report::EffectKind::Focus)
-            .count(),
-        1,
-        "a single spent focus effect, never a duplicate actuation lane"
-    );
-    let wire = tiler_core::world_sizing::encode_reply_canonical(&reply);
-    assert!(
-        wire.contains("\"op\":\"directional\",\"outcome\":\"focus-float-applied\""),
-        "directional result round-trips, got {wire}"
-    );
-
-    // Float move authorizes the bounded half-snap in work-area space
-    // (gap 8 over 800x560) through the uniform retained placement: the
-    // reply row carries the stable frame operation with the authorized
-    // half as its desire, actuated by the generic float lane, never a
-    // bespoke adapter write.
-    let reply = dispatch(
-        &mut state,
-        &mut seq,
-        &observed,
-        WorldCommand::MoveDirectional {
-            window: WindowId("w1".to_owned()),
-            direction: tiler_core::directional::Direction::Right,
-            same_axis: tiler_core::directional::SameAxisMove::default(),
-        },
-    );
-    let half = Rect {
-        x: 404,
-        y: 8,
-        w: 388,
-        h: 544,
-    };
-    match &reply.command_result {
-        Some(CommandResult::Directional { outcome, rect, .. }) => {
-            assert_eq!(outcome.as_str(), "move-float-applied");
-            assert_eq!(*rect, Some(half));
-        }
-        other => panic!("world-owned half-snap, got {other:?}"),
-    }
-    let row = reply
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == "w1")
-        .expect("mover keeps a row");
-    assert!(
-        row.frame_operation.is_some(),
-        "uniform retained placement rides the row, got {:?}",
-        row.frame_operation
-    );
-    assert_eq!(
-        row.effective_frame,
-        Some(half),
-        "the published desire IS the authorized half"
+        reply.focus_request.is_none() && reply.transfers.is_empty(),
+        "refusals stay atomic: no effects, no transfers"
     );
 }
 
@@ -315,19 +263,19 @@ fn automatic_floats_refuse_from_core_without_adapter_branches() {
         &mut seq,
         &observed,
         WorldCommand::MoveDirectional {
-            window: WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             direction: tiler_core::directional::Direction::Right,
             same_axis: tiler_core::directional::SameAxisMove::default(),
         },
     );
-    match &reply.command_result {
+    match seq.last_command_result() {
         Some(CommandResult::Directional { outcome, .. }) => {
             assert_eq!(outcome.as_str(), "move-refused-floating");
         }
         other => panic!("world-owned automatic refusal, got {other:?}"),
     }
     assert!(
-        reply.effects.is_empty() && reply.transfers.is_empty(),
+        reply.focus_request.is_none() && reply.transfers.is_empty(),
         "refusals stay atomic: no effects, no transfers"
     );
 }
@@ -365,7 +313,7 @@ fn observe_only(
     state: &mut super::TileLoop,
     seq: &mut WorldSequencer,
     observed: &[ObservedWindow],
-) -> tiler_core::world_report::WorldReply {
+) -> tiler_core::world_report::WorldReplyV4 {
     let areas = vec![area()];
     let retained: Vec<RetainedRow> = Vec::new();
     seq.invalidate();
@@ -390,150 +338,6 @@ fn observe_only(
         }
         other => panic!("expected accepted, got {other:?}"),
     }
-}
-
-/// Maximized observed window: the live maximized bit rides truthful facts
-/// so the core binds a clear instead of authorizing geometry.
-fn maximized_observed(hwnd: u64, token: &str, x: i32, y: i32) -> ObservedWindow {
-    let mut window = observed(hwnd, token, x, y);
-    window.facts.maximized = true;
-    window
-}
-
-#[test]
-fn maximized_move_publishes_one_shot_clear_desire() {
-    // A maximized move publishes exactly one `clear_operation` desire
-    // under the originating op with a NeedClear result: no placement, no
-    // transfer, no effect, and no second command. The desire (not a
-    // bespoke adapter clear) is the only actuation authority, and the
-    // commandless core settlement resumes it on proof.
-    let mut state = test_state();
-    let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
-    let _ = seq.bootstrap_reply("req-0");
-    state.ensure_device("DEV1");
-    seed_member(&mut state, 101, "w1");
-    seed_member(&mut state, 102, "w2");
-    let observed = vec![
-        maximized_observed(101, "w1", 100, 100),
-        observed(102, "w2", 300, 100),
-    ];
-    let retained: Vec<RetainedRow> = Vec::new();
-    let areas = vec![area()];
-    for _ in 0..2 {
-        seq.invalidate();
-        let report = seq
-            .try_dispatch(
-                &state.inputs(),
-                Some(&observed),
-                &retained,
-                &areas,
-                0,
-                0,
-                None,
-            )
-            .expect("observation dispatches");
-        match seq.deliver(&report) {
-            WorldOutcome::Accepted(reply) => match seq.ack(&reply) {
-                super::world_sequencer::AckOutcome::Applied(_) => {}
-                other => panic!("expected applied, got {other:?}"),
-            },
-            other => panic!("expected accepted, got {other:?}"),
-        }
-    }
-    let reply = dispatch(
-        &mut state,
-        &mut seq,
-        &observed,
-        WorldCommand::MoveDirectional {
-            window: WindowId("w1".to_owned()),
-            direction: tiler_core::directional::Direction::Right,
-            same_axis: tiler_core::directional::SameAxisMove::default(),
-        },
-    );
-    match &reply.command_result {
-        Some(CommandResult::Directional { outcome, .. }) => {
-            assert_eq!(outcome.as_str(), "move-maximize-clear");
-        }
-        other => panic!("world-owned need-clear, got {other:?}"),
-    }
-    let row = reply
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == "w1")
-        .expect("mover keeps a row");
-    let op = row.clear_operation.clone().expect("one-shot clear desire");
-    assert!(
-        row.frame_operation.is_none(),
-        "no placement rides a need-clear"
-    );
-    assert!(
-        reply.effects.is_empty() && reply.transfers.is_empty(),
-        "need-clear stays atomic"
-    );
-    // The second report carries nothing new until the native attempt and
-    // the unmaximized observation arrive: the desire persists with no
-    // re-dispatch and no replay.
-    let pending = observe_only(&mut state, &mut seq, &observed);
-    let rerow = pending
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == "w1")
-        .expect("mover keeps a row");
-    assert_eq!(
-        rerow.clear_operation.as_deref(),
-        Some(op.as_str()),
-        "undispatched desire persists with no re-dispatch"
-    );
-}
-
-#[test]
-fn sequencer_carries_clear_attempts_to_ack() {
-    // Staged clear attempts ride the next report exactly once: the ack
-    // removes exactly-equal entries, so a lost acknowledgement redelivers
-    // while an acknowledged one never replays.
-    use tiler_core::world_report::{ClearAttempt, FrameSetter};
-    let mut state = test_state();
-    let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
-    let _ = seq.bootstrap_reply("req-0");
-    state.ensure_device("DEV1");
-    seq.note_clear_attempt(ClearAttempt {
-        operation_id: "op-7".to_owned(),
-        window: WindowId("w1".to_owned()),
-        setter: FrameSetter::Accepted,
-        pre_maximized: Some(true),
-        post_maximized: Some(false),
-        attempt_ms: 5,
-    });
-    let areas = vec![area()];
-    let retained: Vec<RetainedRow> = Vec::new();
-    seq.invalidate();
-    let report = seq
-        .try_dispatch(&state.inputs(), Some(&[]), &retained, &areas, 0, 0, None)
-        .expect("observation dispatches");
-    assert!(
-        report
-            .clear_attempts
-            .iter()
-            .any(|attempt| attempt.operation_id == "op-7"),
-        "staged attempt rides: {:?}",
-        report.clear_attempts
-    );
-    match seq.deliver(&report) {
-        WorldOutcome::Accepted(reply) => match seq.ack(&reply) {
-            super::world_sequencer::AckOutcome::Applied(_) => {}
-            other => panic!("expected applied, got {other:?}"),
-        },
-        other => panic!("expected accepted, got {other:?}"),
-    }
-    seq.invalidate();
-    let report = seq
-        .try_dispatch(&state.inputs(), Some(&[]), &retained, &areas, 0, 0, None)
-        .expect("observation dispatches");
-    assert!(
-        report.clear_attempts.is_empty(),
-        "acked attempts never redeliver: {:?}",
-        report.clear_attempts
-    );
 }
 
 #[test]
@@ -548,14 +352,14 @@ fn unknown_windows_refuse_stale_with_preserved_cause() {
     for (command, token) in [
         (
             WorldCommand::FocusDirectional {
-                window: WindowId("w9".to_owned()),
+                window: tiler_core::world_report::FocusDirectionalSubject::Window(WindowId("w9".to_owned())),
                 direction: tiler_core::directional::Direction::Right,
             },
             "focus-float-refused-stale",
         ),
         (
             WorldCommand::MoveDirectional {
-                window: WindowId("w9".to_owned()),
+                window: tiler_core::directional::WindowSubject::Window(WindowId("w9".to_owned())),
                 direction: tiler_core::directional::Direction::Right,
                 same_axis: tiler_core::directional::SameAxisMove::default(),
             },
@@ -563,7 +367,7 @@ fn unknown_windows_refuse_stale_with_preserved_cause() {
         ),
     ] {
         let reply = dispatch(&mut state, &mut seq, &observed, command);
-        match &reply.command_result {
+        match seq.last_command_result() {
             Some(CommandResult::Directional {
                 outcome,
                 target,
@@ -577,1184 +381,10 @@ fn unknown_windows_refuse_stale_with_preserved_cause() {
             other => panic!("world-owned stale refusal, got {other:?}"),
         }
         assert!(
-            reply.effects.is_empty() && reply.transfers.is_empty(),
+            reply.focus_request.is_none() && reply.transfers.is_empty(),
             "stale refusals stay atomic"
         );
     }
-}
-
-#[test]
-fn sticky_moves_authorize_through_the_retained_lane_at_the_seam() {
-    // Sticky half-snaps ride the same uniform retained float-placement
-    // lane: the core authorizes the half and the seam actuates it exactly
-    // once under the stable identity; ordinary unsolicited sticky writes
-    // stay prohibited (rows without a `frame_operation` token never take
-    // frame writes).
-    let mut state = test_state();
-    let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
-    let _ = seq.bootstrap_reply("req-0");
-    let observed = bootstrap_floats(&mut state, &mut seq);
-    state.sticky.insert(key(101), true);
-    let reply = dispatch(
-        &mut state,
-        &mut seq,
-        &observed,
-        WorldCommand::MoveDirectional {
-            window: WindowId("w1".to_owned()),
-            direction: tiler_core::directional::Direction::Right,
-            same_axis: tiler_core::directional::SameAxisMove::default(),
-        },
-    );
-    let half = match &reply.command_result {
-        Some(CommandResult::Directional { outcome, rect, .. }) => {
-            assert_eq!(outcome.as_str(), "move-float-applied");
-            rect.expect("authorized half")
-        }
-        other => panic!("world-owned sticky half-snap, got {other:?}"),
-    };
-    assert!(
-        reply.effects.is_empty() && reply.transfers.is_empty(),
-        "half-snaps stay effect/transfer-free"
-    );
-    assert!(
-        reply
-            .windows
-            .iter()
-            .any(|row| row.lifetime.0 == "w1" && row.frame_operation.is_some()),
-        "retained placement rides the half {half:?}"
-    );
-}
-
-#[test]
-fn float_placement_receipt_settles_the_retained_target() {
-    // One shot, then truthfully settled: the authorized half rides the
-    // retained placement exactly once, and native observation at the half
-    // confirms it so the next reply carries no operation and never
-    // re-fights the float.
-    let mut state = test_state();
-    let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
-    let _ = seq.bootstrap_reply("req-0");
-    let floats = bootstrap_floats(&mut state, &mut seq);
-    let reply = dispatch(
-        &mut state,
-        &mut seq,
-        &floats,
-        WorldCommand::MoveDirectional {
-            window: WindowId("w1".to_owned()),
-            direction: tiler_core::directional::Direction::Right,
-            same_axis: tiler_core::directional::SameAxisMove::default(),
-        },
-    );
-    let half = match &reply.command_result {
-        Some(CommandResult::Directional { outcome, rect, .. }) => {
-            assert_eq!(outcome.as_str(), "move-float-applied");
-            rect.expect("authorized half")
-        }
-        other => panic!("world-owned half-snap, got {other:?}"),
-    };
-    let placed = reply
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == "w1")
-        .expect("mover keeps a row");
-    let operation = placed.frame_operation.clone().expect("retained operation");
-    // The native write lands (offline: the next observation reads the
-    // half): the core confirms from normalized facts and drops the
-    // retained target with no retry and no replacement.
-    let settled_observed = vec![
-        observed_rect(101, "w1", half),
-        observed(102, "w2", 300, 100),
-    ];
-    let reply = observe_only(&mut state, &mut seq, &settled_observed);
-    assert!(
-        reply
-            .windows
-            .iter()
-            .find(|row| row.lifetime.0 == "w1")
-            .is_some_and(|row| row.frame_operation.is_none()),
-        "confirmed placement settles the operation {operation}"
-    );
-}
-
-/// Observation-only round naming the live foreground explicitly, so the
-/// captured `focused_global` names the subject instead of unknown.
-fn observe_with_foreground(
-    state: &mut super::TileLoop,
-    seq: &mut WorldSequencer,
-    observed: &[ObservedWindow],
-    foreground: u64,
-) -> tiler_core::world_report::WorldReply {
-    let areas = vec![area()];
-    let retained: Vec<RetainedRow> = Vec::new();
-    seq.invalidate();
-    let report = seq
-        .try_dispatch(
-            &state.inputs(),
-            Some(observed),
-            &retained,
-            &areas,
-            foreground,
-            0,
-            None,
-        )
-        .expect("observation dispatches");
-    match seq.deliver(&report) {
-        WorldOutcome::Accepted(reply) => {
-            match seq.ack(&reply) {
-                super::world_sequencer::AckOutcome::Applied(_) => {}
-                other => panic!("expected applied, got {other:?}"),
-            }
-            reply
-        }
-        other => panic!("expected accepted, got {other:?}"),
-    }
-}
-
-/// B4 integrated production seam (float): actual engine admission, maximize
-/// of the retained subject, NeedClear with the published op token BEFORE
-/// any attempt, the production common diff lane dispatching exactly one
-/// native clear with a correlated accepted attempt, then commandless
-/// continuation under the ORIGINAL op with clear retirement. No fabricated
-/// proof: the attempt is diff-generated from the published desire itself.
-#[test]
-fn maximized_clear_runs_core_desire_through_diff_to_continuation() {
-    use super::world_capture::capture_world;
-    use super::world_diff::{FakeNative, FreshHost, HostDiff, apply_world_reply};
-    use tiler_core::world_report::{ClearAttempt, FrameSetter, OperationOutcome};
-
-    let mut state = test_state();
-    let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
-    let _ = seq.bootstrap_reply("req-0");
-    // Normal admission of two ordinary floats.
-    let _ = bootstrap_floats(&mut state, &mut seq);
-    // Maximize the retained subject with no admission clear for its
-    // lifetime, under exact-subject foreground.
-    let maximized = vec![
-        maximized_observed(101, "w1", 100, 100),
-        observed(102, "w2", 300, 100),
-    ];
-    for _ in 0..2 {
-        observe_with_foreground(&mut state, &mut seq, &maximized, 101);
-    }
-    // One directional move publishes the one-shot clear desire under the
-    // originating op before any attempt exists for it.
-    let reply = dispatch(
-        &mut state,
-        &mut seq,
-        &maximized,
-        WorldCommand::MoveDirectional {
-            window: WindowId("w1".to_owned()),
-            direction: tiler_core::directional::Direction::Right,
-            same_axis: tiler_core::directional::SameAxisMove::default(),
-        },
-    );
-    match &reply.command_result {
-        Some(CommandResult::Directional { outcome, .. }) => {
-            assert_eq!(outcome.as_str(), "move-maximize-clear");
-        }
-        other => panic!("world-owned need-clear, got {other:?}"),
-    }
-    let op = reply
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == "w1")
-        .expect("mover keeps a row")
-        .clear_operation
-        .clone()
-        .expect("one-shot clear desire published before any attempt");
-    assert!(reply.operation_settled.is_empty(), "bind emits no terminal");
-    // Production common diff lane: exactly one native clear from the
-    // published desire, reported as the correlated attempt.
-    let areas = vec![area()];
-    let retained: Vec<RetainedRow> = Vec::new();
-    let captured = capture_world(&state.inputs(), Some(&maximized), &retained, &areas, 101);
-    let fresh = FreshHost::from_sources(&state.inputs(), &maximized, &retained, &captured);
-    let mut native = FakeNative::seeded(&fresh);
-    let mut diff = HostDiff::new("adapter-1", "gen-1");
-    diff.gate.current_obs = reply.based_on_observation_seq;
-    let mut clear_out: Vec<ClearAttempt> = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 1, "{stats:?}");
-    assert_eq!(clear_out.len(), 1);
-    let attempt = &clear_out[0];
-    assert_eq!(attempt.operation_id, op);
-    assert_eq!(attempt.window.0, "w1");
-    assert_eq!(attempt.setter, FrameSetter::Accepted);
-    assert_eq!(attempt.pre_maximized, Some(true));
-    assert_eq!(attempt.post_maximized, Some(false));
-    // Commandless continuation on the diff-generated proof resumes the
-    // original half-snap under the ORIGINAL op with clear retirement: no
-    // second command, no second clear.
-    seq.note_clear_attempt(attempt.clone());
-    let cleared = vec![observed(101, "w1", 100, 100), observed(102, "w2", 300, 100)];
-    let reply = observe_with_foreground(&mut state, &mut seq, &cleared, 101);
-    let row = reply
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == "w1")
-        .expect("mover keeps a row");
-    assert_eq!(row.frame_operation.as_deref(), Some(op.as_str()));
-    assert_eq!(
-        row.clear_operation, None,
-        "clear retired on continuation, never re-actuated"
-    );
-    assert!(
-        reply.operation_settled.iter().any(|event| {
-            event.operation_id == op
-                && event.window.0 == "w1"
-                && event.outcome == OperationOutcome::ClearContinuedFloat
-        }),
-        "continuation observable under original op, got {:?}",
-        reply.operation_settled
-    );
-}
-
-/// B4 integrated production seam (sticky): the same core-desire to
-/// diff-attempt to continuation pattern for a maximized sticky subject,
-/// through the common retained frame lane.
-#[test]
-fn maximized_sticky_clear_runs_core_desire_through_diff_to_continuation() {
-    use super::world_capture::capture_world;
-    use super::world_diff::{FakeNative, FreshHost, HostDiff, apply_world_reply};
-    use tiler_core::world_report::{ClearAttempt, FrameSetter, OperationOutcome};
-
-    let mut state = test_state();
-    let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
-    let _ = seq.bootstrap_reply("req-0");
-    let _ = bootstrap_floats(&mut state, &mut seq);
-    state.sticky.insert(key(101), true);
-    let maximized = vec![
-        maximized_observed(101, "w1", 100, 100),
-        observed(102, "w2", 300, 100),
-    ];
-    for _ in 0..2 {
-        observe_with_foreground(&mut state, &mut seq, &maximized, 101);
-    }
-    let reply = dispatch(
-        &mut state,
-        &mut seq,
-        &maximized,
-        WorldCommand::MoveDirectional {
-            window: WindowId("w1".to_owned()),
-            direction: tiler_core::directional::Direction::Right,
-            same_axis: tiler_core::directional::SameAxisMove::default(),
-        },
-    );
-    match &reply.command_result {
-        Some(CommandResult::Directional { outcome, .. }) => {
-            assert_eq!(outcome.as_str(), "move-maximize-clear");
-        }
-        other => panic!("world-owned sticky need-clear, got {other:?}"),
-    }
-    let op = reply
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == "w1")
-        .expect("mover keeps a row")
-        .clear_operation
-        .clone()
-        .expect("sticky clear desire published before any attempt");
-    let areas = vec![area()];
-    let retained: Vec<RetainedRow> = Vec::new();
-    let captured = capture_world(&state.inputs(), Some(&maximized), &retained, &areas, 101);
-    let fresh = FreshHost::from_sources(&state.inputs(), &maximized, &retained, &captured);
-    assert!(
-        fresh.baseline.get("w1").is_some_and(|window| window.sticky),
-        "sticky rides the diff baseline"
-    );
-    let mut native = FakeNative::seeded(&fresh);
-    let mut diff = HostDiff::new("adapter-1", "gen-1");
-    diff.gate.current_obs = reply.based_on_observation_seq;
-    let mut clear_out: Vec<ClearAttempt> = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 1, "{stats:?}");
-    assert_eq!(clear_out.len(), 1);
-    assert_eq!(clear_out[0].operation_id, op);
-    assert_eq!(clear_out[0].setter, FrameSetter::Accepted);
-    seq.note_clear_attempt(clear_out[0].clone());
-    let cleared = vec![observed(101, "w1", 100, 100), observed(102, "w2", 300, 100)];
-    let reply = observe_with_foreground(&mut state, &mut seq, &cleared, 101);
-    let row = reply
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == "w1")
-        .expect("mover keeps a row");
-    assert_eq!(row.frame_operation.as_deref(), Some(op.as_str()));
-    assert_eq!(row.clear_operation, None);
-    assert!(
-        reply.operation_settled.iter().any(|event| {
-            event.operation_id == op && event.outcome == OperationOutcome::ClearContinuedFloat
-        }),
-        "sticky continuation observable under original op, got {:?}",
-        reply.operation_settled
-    );
-}
-
-/// Command dispatch naming the live foreground explicitly: like
-/// [`dispatch`] but without the float-only capture assertion, so tiled
-/// subjects route the same production path.
-fn dispatch_tiled(
-    state: &mut super::TileLoop,
-    seq: &mut WorldSequencer,
-    observed: &[ObservedWindow],
-    foreground: u64,
-    command: WorldCommand,
-) -> tiler_core::world_report::WorldReply {
-    let areas = vec![area()];
-    let retained: Vec<RetainedRow> = Vec::new();
-    seq.invalidate();
-    let report = seq
-        .try_dispatch(
-            &state.inputs(),
-            Some(observed),
-            &retained,
-            &areas,
-            foreground,
-            0,
-            Some(command),
-        )
-        .expect("command dispatches");
-    match seq.deliver(&report) {
-        WorldOutcome::Accepted(reply) => {
-            match seq.ack(&reply) {
-                super::world_sequencer::AckOutcome::Applied(_) => {}
-                other => panic!("expected applied, got {other:?}"),
-            }
-            reply
-        }
-        other => panic!("expected accepted, got {other:?}"),
-    }
-}
-
-/// B4 integrated production seam (tiled): normal tiled admission, maximize
-/// while keeping the tile slot, NeedClear with the published op token on
-/// the tiled row BEFORE any attempt, the production common diff lane
-/// dispatching exactly one native clear with a correlated accepted
-/// attempt, then commandless continuation under the ORIGINAL op with clear
-/// retirement. Fails absent the tiled publication fix: without the token
-/// the diff lane stages no attempt and nothing continues.
-#[test]
-fn maximized_tiled_clear_runs_core_desire_through_diff_to_continuation() {
-    use super::world_capture::capture_world;
-    use super::world_diff::{FakeNative, FreshHost, HostDiff, apply_world_reply};
-    use tiler_core::world_report::{ClearAttempt, FrameSetter, OperationOutcome};
-
-    let mut state = test_state();
-    let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
-    let _ = seq.bootstrap_reply("req-0");
-    // Normal tiled admission: two readable tiles, never floated.
-    state.ensure_device("DEV1");
-    seed_tiled_member(&mut state, 101, "w1");
-    seed_tiled_member(&mut state, 102, "w2");
-    let tiles = vec![observed(101, "w1", 100, 100), observed(102, "w2", 300, 100)];
-    for _ in 0..2 {
-        observe_with_foreground(&mut state, &mut seq, &tiles, 101);
-    }
-    // Maximize w1 while keeping its tile slot, under exact-subject
-    // foreground.
-    let maximized = vec![
-        maximized_observed(101, "w1", 100, 100),
-        observed(102, "w2", 300, 100),
-    ];
-    for _ in 0..2 {
-        observe_with_foreground(&mut state, &mut seq, &maximized, 101);
-    }
-    // One directional move publishes the one-shot clear desire on the
-    // tiled row itself before any attempt exists for it.
-    let reply = dispatch_tiled(
-        &mut state,
-        &mut seq,
-        &maximized,
-        101,
-        WorldCommand::MoveDirectional {
-            window: WindowId("w1".to_owned()),
-            direction: tiler_core::directional::Direction::Right,
-            same_axis: tiler_core::directional::SameAxisMove::default(),
-        },
-    );
-    match &reply.command_result {
-        Some(CommandResult::Directional { outcome, .. }) => {
-            assert_eq!(outcome.as_str(), "move-maximize-clear");
-        }
-        other => panic!("world-owned tiled need-clear, got {other:?}"),
-    }
-    let row = reply
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == "w1")
-        .expect("mover keeps a row");
-    assert!(
-        !row.floating && row.allocation.is_some(),
-        "tiled route keeps its slot, got {row:?}"
-    );
-    let op = row
-        .clear_operation
-        .clone()
-        .expect("tiled clear desire published before any attempt");
-    assert_eq!(row.frame_operation, None, "tiled rows carry no float token");
-    assert!(reply.operation_settled.is_empty(), "bind emits no terminal");
-    // Production common diff lane: exactly one native clear from the
-    // published tiled desire, reported as the correlated attempt.
-    let areas = vec![area()];
-    let retained: Vec<RetainedRow> = Vec::new();
-    let captured = capture_world(&state.inputs(), Some(&maximized), &retained, &areas, 101);
-    let fresh = FreshHost::from_sources(&state.inputs(), &maximized, &retained, &captured);
-    let mut native = FakeNative::seeded(&fresh);
-    let mut diff = HostDiff::new("adapter-1", "gen-1");
-    diff.gate.current_obs = reply.based_on_observation_seq;
-    let mut clear_out: Vec<ClearAttempt> = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 1, "{stats:?}");
-    assert_eq!(clear_out.len(), 1);
-    let attempt = &clear_out[0];
-    assert_eq!(attempt.operation_id, op);
-    assert_eq!(attempt.window.0, "w1");
-    assert_eq!(attempt.setter, FrameSetter::Accepted);
-    assert_eq!(attempt.pre_maximized, Some(true));
-    assert_eq!(attempt.post_maximized, Some(false));
-    // Commandless continuation on the diff-generated proof resumes the
-    // original tiled intent under the ORIGINAL op with clear retirement:
-    // no second command, no second clear.
-    seq.note_clear_attempt(attempt.clone());
-    let cleared = vec![observed(101, "w1", 100, 100), observed(102, "w2", 300, 100)];
-    let reply = observe_with_foreground(&mut state, &mut seq, &cleared, 101);
-    let row = reply
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == "w1")
-        .expect("mover keeps a row");
-    assert_eq!(
-        row.clear_operation, None,
-        "clear retired on continuation, never re-actuated"
-    );
-    assert!(
-        reply.operation_settled.iter().any(|event| {
-            event.operation_id == op
-                && event.window.0 == "w1"
-                && event.outcome == OperationOutcome::ClearContinuedTiled
-        }),
-        "tiled continuation observable under original op, got {:?}",
-        reply.operation_settled
-    );
-}
-
-/// Fixture-shaped maximized observed window: the live maximized bit rides
-/// truthful facts while the native frame is the monitor-sized maximized
-/// frame (work area), not the retained tile slot. This mirrors the live
-/// fixture sequence where a slotted tile is maximized in place (native
-/// `show == 3` with monitor-sized frames) and the tile slot is retained.
-fn maximized_observed_fullscreen_frame(hwnd: u64, token: &str) -> ObservedWindow {
-    let mut window = observed_rect(
-        hwnd,
-        token,
-        Rect {
-            x: 0,
-            y: 0,
-            w: 800,
-            h: 560,
-        },
-    );
-    window.facts.maximized = true;
-    window
-}
-
-/// B4 production-shaped tiled maximize-clear with unknown managed focus:
-/// the maximized native frame rides fixture-shaped facts while the
-/// foreground names no managed subject (the live `unknown managed focus`
-/// condition). Publication and the common diff dispatch must not depend on
-/// it: the token is published and exactly one accepted clear attempt is
-/// reported, with no hold row. Unknown focus alone never holds the common
-/// clear lane; focus enters only core continuation, never dispatch.
-#[test]
-fn maximized_tiled_clear_with_unknown_focus_still_dispatches() {
-    use super::world_capture::capture_world;
-    use super::world_diff::{FakeNative, FreshHost, HostDiff, apply_world_reply};
-    use tiler_core::world_report::{ClearAttempt, FrameSetter};
-
-    let mut state = test_state();
-    let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
-    let _ = seq.bootstrap_reply("req-0");
-    state.ensure_device("DEV1");
-    seed_tiled_member(&mut state, 101, "w1");
-    seed_tiled_member(&mut state, 102, "w2");
-    let tiles = vec![observed(101, "w1", 100, 100), observed(102, "w2", 300, 100)];
-    for _ in 0..2 {
-        observe_with_foreground(&mut state, &mut seq, &tiles, 0);
-    }
-    // Maximize w1 in place: the native frame grows to the monitor-sized
-    // maximized frame while the tile slot is retained, under unknown
-    // managed focus throughout.
-    let maximized = vec![
-        maximized_observed_fullscreen_frame(101, "w1"),
-        observed(102, "w2", 300, 100),
-    ];
-    for _ in 0..2 {
-        observe_with_foreground(&mut state, &mut seq, &maximized, 0);
-    }
-    let reply = dispatch_tiled(
-        &mut state,
-        &mut seq,
-        &maximized,
-        0,
-        WorldCommand::MoveDirectional {
-            window: WindowId("w1".to_owned()),
-            direction: tiler_core::directional::Direction::Right,
-            same_axis: tiler_core::directional::SameAxisMove::default(),
-        },
-    );
-    match &reply.command_result {
-        Some(CommandResult::Directional { outcome, .. }) => {
-            assert_eq!(outcome.as_str(), "move-maximize-clear");
-        }
-        other => panic!("world-owned tiled need-clear, got {other:?}"),
-    }
-    let row = reply
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == "w1")
-        .expect("mover keeps a row");
-    assert!(
-        !row.floating && row.allocation.is_some(),
-        "tiled route keeps its slot, got {row:?}"
-    );
-    let op = row
-        .clear_operation
-        .clone()
-        .expect("tiled clear desire published under unknown focus");
-    // Production common diff lane under the same unknown focus: exactly
-    // one native clear with a correlated accepted attempt and no hold row.
-    let areas = vec![area()];
-    let retained: Vec<RetainedRow> = Vec::new();
-    let captured = capture_world(&state.inputs(), Some(&maximized), &retained, &areas, 0);
-    assert!(
-        captured.focused_global.is_empty(),
-        "unknown managed focus rides the capture, got {:?}",
-        captured.focused_global
-    );
-    let fresh = FreshHost::from_sources(&state.inputs(), &maximized, &retained, &captured);
-    let mut native = FakeNative::seeded(&fresh);
-    let mut diff = HostDiff::new("adapter-1", "gen-1");
-    diff.gate.current_obs = reply.based_on_observation_seq;
-    let mut clear_out: Vec<ClearAttempt> = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 1, "{stats:?}");
-    assert_eq!(clear_out.len(), 1);
-    assert_eq!(clear_out[0].operation_id, op);
-    assert_eq!(clear_out[0].setter, FrameSetter::Accepted);
-    assert!(
-        stats.clear_holds.is_empty(),
-        "no hold row on a clean dispatch, got {:?}",
-        stats.clear_holds
-    );
-    // Continuation under exact-subject focus is covered by the sibling
-    // tiled test; the unknown-focus continuation lifecycle (abandon versus
-    // hold on a later focus change) is a separate core question and is
-    // not settled here.
-}
-
-/// Trace-only hold oracle for the common clear lane: a held pre-dispatch
-/// gate with zero attempts and zero writes names its exact gate on the
-/// trace. The gesture barrier stands in for any silent-hold gate; the
-/// assertion is the attribution vocabulary itself (op/window/hold with an
-/// honest omitted count), not a claim about the live gate.
-#[test]
-fn maximized_tiled_clear_hold_names_its_gate_with_no_attempt() {
-    use super::world_capture::capture_world;
-    use super::world_diff::{FakeNative, FreshHost, HostDiff, apply_world_reply};
-
-    let mut state = test_state();
-    let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
-    let _ = seq.bootstrap_reply("req-0");
-    state.ensure_device("DEV1");
-    seed_tiled_member(&mut state, 101, "w1");
-    seed_tiled_member(&mut state, 102, "w2");
-    let tiles = vec![observed(101, "w1", 100, 100), observed(102, "w2", 300, 100)];
-    for _ in 0..2 {
-        observe_with_foreground(&mut state, &mut seq, &tiles, 0);
-    }
-    let maximized = vec![
-        maximized_observed_fullscreen_frame(101, "w1"),
-        observed(102, "w2", 300, 100),
-    ];
-    for _ in 0..2 {
-        observe_with_foreground(&mut state, &mut seq, &maximized, 0);
-    }
-    let reply = dispatch_tiled(
-        &mut state,
-        &mut seq,
-        &maximized,
-        0,
-        WorldCommand::MoveDirectional {
-            window: WindowId("w1".to_owned()),
-            direction: tiler_core::directional::Direction::Right,
-            same_axis: tiler_core::directional::SameAxisMove::default(),
-        },
-    );
-    let op = reply
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == "w1")
-        .expect("mover keeps a row")
-        .clear_operation
-        .clone()
-        .expect("published clear token precedes any attempt");
-    // The held gate fires before any setter: zero writes, zero attempts,
-    // one bounded hold row naming the exact gate. The unknown baseline
-    // stands in for any silent-hold gate; the assertion is the attribution
-    // vocabulary itself (op/window/hold), not a claim about the live gate.
-    let areas = vec![area()];
-    let retained: Vec<RetainedRow> = Vec::new();
-    let captured = capture_world(&state.inputs(), Some(&maximized), &retained, &areas, 0);
-    let mut fresh = FreshHost::from_sources(&state.inputs(), &maximized, &retained, &captured);
-    fresh.baseline.remove("w1");
-    let mut native = FakeNative::seeded(&fresh);
-    let mut diff = HostDiff::new("adapter-1", "gen-1");
-    diff.gate.current_obs = reply.based_on_observation_seq;
-    let mut clear_out: Vec<tiler_core::world_report::ClearAttempt> = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 0, "{stats:?}");
-    assert!(clear_out.is_empty(), "held gate reports no attempt");
-    assert!(stats.held >= 1, "{stats:?}");
-    assert_eq!(stats.clear_holds.len(), 1, "{stats:?}");
-    assert_eq!(stats.clear_holds[0].op, op);
-    assert_eq!(stats.clear_holds[0].window, "w1");
-    assert_eq!(stats.clear_holds[0].hold, "unknown-baseline");
-}
-
-/// Racing-input stale stop attribution: an external invalidation consumed
-/// before the clear setter stops the pass with no write and no attempt,
-/// and the unprocessed desire still attributes the stop as
-/// `stale-stopped` (a stop ends the pass; a hold skips one row narrowly).
-/// Like the hold oracle above this asserts the attribution vocabulary,
-/// not a claim about the live gate.
-#[test]
-fn maximized_tiled_clear_stale_stop_attributes_before_dispatch() {
-    use super::world_capture::capture_world;
-    use super::world_diff::{FakeNative, FreshHost, HostDiff, apply_world_reply};
-
-    let mut state = test_state();
-    let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
-    let _ = seq.bootstrap_reply("req-0");
-    state.ensure_device("DEV1");
-    seed_tiled_member(&mut state, 101, "w1");
-    seed_tiled_member(&mut state, 102, "w2");
-    let tiles = vec![observed(101, "w1", 100, 100), observed(102, "w2", 300, 100)];
-    for _ in 0..2 {
-        observe_with_foreground(&mut state, &mut seq, &tiles, 0);
-    }
-    let maximized = vec![
-        maximized_observed_fullscreen_frame(101, "w1"),
-        observed(102, "w2", 300, 100),
-    ];
-    for _ in 0..2 {
-        observe_with_foreground(&mut state, &mut seq, &maximized, 0);
-    }
-    let reply = dispatch_tiled(
-        &mut state,
-        &mut seq,
-        &maximized,
-        0,
-        WorldCommand::MoveDirectional {
-            window: WindowId("w1".to_owned()),
-            direction: tiler_core::directional::Direction::Right,
-            same_axis: tiler_core::directional::SameAxisMove::default(),
-        },
-    );
-    let op = reply
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == "w1")
-        .expect("mover keeps a row")
-        .clear_operation
-        .clone()
-        .expect("published clear token precedes any attempt");
-    // Racing input arrives after the desire is published: the pass stops
-    // with no setter, no attempt, and one `stale-stopped` attribution.
-    let areas = vec![area()];
-    let retained: Vec<RetainedRow> = Vec::new();
-    let captured = capture_world(&state.inputs(), Some(&maximized), &retained, &areas, 0);
-    let fresh = FreshHost::from_sources(&state.inputs(), &maximized, &retained, &captured);
-    let mut native = FakeNative::seeded(&fresh);
-    // Settle the untouched peer at its published target so no earlier
-    // write path probes freshness first: the racing input must survive to
-    // the clear lane's own freshness gate.
-    let w2_target = reply
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == "w2")
-        .and_then(|row| row.effective_frame)
-        .expect("tiled peer publishes a frame target");
-    native.windows.get_mut("w2").expect("seeded peer").frame = Some(w2_target);
-    native.pending_invalidation = true;
-    let mut diff = HostDiff::new("adapter-1", "gen-1");
-    diff.gate.current_obs = reply.based_on_observation_seq;
-    let mut clear_out: Vec<tiler_core::world_report::ClearAttempt> = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 0, "{stats:?}");
-    assert!(clear_out.is_empty(), "stopped pass reports no attempt");
-    assert!(stats.stopped_mid_apply, "{stats:?}");
-    assert_eq!(stats.clear_holds.len(), 1, "{stats:?}");
-    assert_eq!(stats.clear_holds_total, 1, "{stats:?}");
-    assert_eq!(stats.clear_holds[0].op, op);
-    assert_eq!(stats.clear_holds[0].window, "w1");
-    assert_eq!(stats.clear_holds[0].hold, "stale-stopped");
-}
-
-/// Mint a retained-overlay maximize-clear reply: tiled admission for w1/w2,
-/// retained tile slot for w1, maximized subject through the retained lane
-/// with the given observed rect (`None` models an unreadable overlay row),
-/// one directional intent. Returns the owner, sequencer, accepted reply,
-/// published clear op, live-lane peer observations and retained rows for
-/// production-shaped diff inputs.
-#[allow(clippy::type_complexity)]
-fn mint_retained_overlay_clear(
-    retained_rect: Option<Rect>,
-    slot: Rect,
-) -> (
-    super::TileLoop,
-    WorldSequencer,
-    tiler_core::world_report::WorldReply,
-    String,
-    Vec<ObservedWindow>,
-    Vec<RetainedRow>,
-) {
-    let mut state = test_state();
-    let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
-    let _ = seq.bootstrap_reply("req-0");
-    state.ensure_device("DEV1");
-    seed_tiled_member(&mut state, 101, "w1");
-    seed_tiled_member(&mut state, 102, "w2");
-    let tiles = vec![observed(101, "w1", 100, 100), observed(102, "w2", 300, 100)];
-    for _ in 0..2 {
-        observe_with_foreground(&mut state, &mut seq, &tiles, 101);
-    }
-    state.member_rects.insert("w1".to_owned(), slot);
-    let mut maximized_facts = plain_facts();
-    maximized_facts.maximized = true;
-    let retained = vec![RetainedRow {
-        key: key(101),
-        token: "w1".to_owned(),
-        rect: retained_rect,
-        maximized: true,
-        fullscreen: false,
-        facts: Some(maximized_facts),
-    }];
-    let peer = vec![observed(102, "w2", 300, 100)];
-    let areas = vec![area()];
-    seq.invalidate();
-    let report = seq
-        .try_dispatch(
-            &state.inputs(),
-            Some(&peer),
-            &retained,
-            &areas,
-            101,
-            0,
-            Some(WorldCommand::MoveDirectional {
-                window: WindowId("w1".to_owned()),
-                direction: tiler_core::directional::Direction::Right,
-                same_axis: tiler_core::directional::SameAxisMove::default(),
-            }),
-        )
-        .expect("command dispatches");
-    let reply = match seq.deliver(&report) {
-        WorldOutcome::Accepted(reply) => match seq.ack(&reply) {
-            super::world_sequencer::AckOutcome::Applied(_) => reply,
-            other => panic!("expected applied, got {other:?}"),
-        },
-        other => panic!("expected accepted, got {other:?}"),
-    };
-    match &reply.command_result {
-        Some(CommandResult::Directional { outcome, .. }) => {
-            assert_eq!(outcome.as_str(), "move-maximize-clear");
-        }
-        other => panic!("world-owned tiled need-clear, got {other:?}"),
-    }
-    let row = reply
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == "w1")
-        .expect("mover keeps a row");
-    assert!(
-        !row.floating && row.allocation.is_some(),
-        "tiled route keeps its slot, got {row:?}"
-    );
-    let op = row
-        .clear_operation
-        .clone()
-        .expect("tiled clear desire published before any attempt");
-    (state, seq, reply, op, peer, retained)
-}
-
-/// Production-shaped retained-overlay clear: the maximized subject arrives
-/// through the retained lane (`classify` Maximized keeps it out of the live
-/// lane) while the capture substitutes the retained tile slot, but the
-/// production live re-read (`LiveNative::read_window`) returns the maximized
-/// DWM frame. The clear race guard must compare against the observation-time
-/// live frame, never the slot: one accepted attempt under the original op,
-/// then commandless continuation with clear retirement. Fails before the
-/// `observed_frame` baseline correction with a `frame-race` hold and zero
-/// attempts (the live `op-1`/`w29` signature: published token, zero writes,
-/// maximized subject held).
-#[test]
-fn maximized_tiled_clear_retained_overlay_dispatches_from_live_frame() {
-    use super::world_capture::capture_world;
-    use super::world_diff::{FakeNative, FreshHost, HostDiff, apply_world_reply};
-    use tiler_core::world_report::{ClearAttempt, FrameSetter, OperationOutcome};
-
-    let mut state = test_state();
-    let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
-    let _ = seq.bootstrap_reply("req-0");
-    state.ensure_device("DEV1");
-    seed_tiled_member(&mut state, 101, "w1");
-    seed_tiled_member(&mut state, 102, "w2");
-    let tiles = vec![observed(101, "w1", 100, 100), observed(102, "w2", 300, 100)];
-    for _ in 0..2 {
-        observe_with_foreground(&mut state, &mut seq, &tiles, 101);
-    }
-    // Production admission slot for w1: the last tiled snapshot the capture
-    // keeps while the subject is maximized (`snapshot_frames` only tracks
-    // live-lane windows, so the maximized subject keeps its tile slot).
-    let slot = Rect {
-        x: 100,
-        y: 100,
-        w: 200,
-        h: 200,
-    };
-    state.member_rects.insert("w1".to_owned(), slot);
-    // Production maximized shape: the DWM live frame grows to the work area
-    // while the tile slot is retained. `observe` classifies this out of the
-    // live lane into a retained overlay row carrying the LIVE frame.
-    let maximized_live = Rect {
-        x: 0,
-        y: 0,
-        w: 800,
-        h: 560,
-    };
-    let mut maximized_facts = plain_facts();
-    maximized_facts.maximized = true;
-    let retained = vec![RetainedRow {
-        key: key(101),
-        token: "w1".to_owned(),
-        rect: Some(maximized_live),
-        maximized: true,
-        fullscreen: false,
-        facts: Some(maximized_facts),
-    }];
-    let peer = vec![observed(102, "w2", 300, 100)];
-    // One directional intent against the retained-overlay report intake: the
-    // core still publishes the actionable clear token under its op.
-    let areas = vec![area()];
-    seq.invalidate();
-    let report = seq
-        .try_dispatch(
-            &state.inputs(),
-            Some(&peer),
-            &retained,
-            &areas,
-            101,
-            0,
-            Some(WorldCommand::MoveDirectional {
-                window: WindowId("w1".to_owned()),
-                direction: tiler_core::directional::Direction::Right,
-                same_axis: tiler_core::directional::SameAxisMove::default(),
-            }),
-        )
-        .expect("command dispatches");
-    let reply = match seq.deliver(&report) {
-        WorldOutcome::Accepted(reply) => match seq.ack(&reply) {
-            super::world_sequencer::AckOutcome::Applied(_) => reply,
-            other => panic!("expected applied, got {other:?}"),
-        },
-        other => panic!("expected accepted, got {other:?}"),
-    };
-    match &reply.command_result {
-        Some(CommandResult::Directional { outcome, .. }) => {
-            assert_eq!(outcome.as_str(), "move-maximize-clear");
-        }
-        other => panic!("world-owned tiled need-clear, got {other:?}"),
-    }
-    let row = reply
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == "w1")
-        .expect("mover keeps a row");
-    assert!(
-        !row.floating && row.allocation.is_some(),
-        "tiled route keeps its slot, got {row:?}"
-    );
-    let op = row
-        .clear_operation
-        .clone()
-        .expect("tiled clear desire published before any attempt");
-    // Production-shaped diff baseline: the capture substitutes the retained
-    // slot for the overlay row, exactly as the live leg observed.
-    let captured = capture_world(&state.inputs(), Some(&peer), &retained, &areas, 101);
-    let fresh = FreshHost::from_sources(&state.inputs(), &peer, &retained, &captured);
-    assert_eq!(
-        fresh.baseline.get("w1").and_then(|window| window.frame),
-        Some(slot),
-        "overlay baseline rides the retained slot, got {:?}",
-        fresh.baseline.get("w1")
-    );
-    let mut native = FakeNative::seeded(&fresh);
-    // The production live re-read returns the maximized DWM frame, not the
-    // slot: `LiveNative::read_window` re-observes through `observe_window`.
-    native.windows.get_mut("w1").expect("seeded subject").frame = Some(maximized_live);
-    let mut diff = HostDiff::new("adapter-1", "gen-1");
-    diff.gate.current_obs = reply.based_on_observation_seq;
-    let mut clear_out: Vec<ClearAttempt> = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 1, "{stats:?}");
-    assert_eq!(clear_out.len(), 1);
-    let attempt = &clear_out[0];
-    assert_eq!(attempt.operation_id, op);
-    assert_eq!(attempt.window.0, "w1");
-    assert_eq!(attempt.setter, FrameSetter::Accepted);
-    assert_eq!(attempt.pre_maximized, Some(true));
-    assert_eq!(attempt.post_maximized, Some(false));
-    assert!(
-        stats.clear_holds.is_empty(),
-        "live frame proves stability, no hold, got {:?}",
-        stats.clear_holds
-    );
-    // Commandless continuation on the diff-generated proof resumes the
-    // original tiled intent under the ORIGINAL op with clear retirement:
-    // no second command, no second clear.
-    seq.note_clear_attempt(attempt.clone());
-    let reply = observe_with_foreground(&mut state, &mut seq, &tiles, 101);
-    let row = reply
-        .windows
-        .iter()
-        .find(|row| row.lifetime.0 == "w1")
-        .expect("mover keeps a row");
-    assert_eq!(
-        row.clear_operation, None,
-        "clear retired on continuation, never re-actuated"
-    );
-    assert!(
-        reply.operation_settled.iter().any(|event| {
-            event.operation_id == op
-                && event.window.0 == "w1"
-                && event.outcome == OperationOutcome::ClearContinuedTiled
-        }),
-        "tiled continuation observable under original op, got {:?}",
-        reply.operation_settled
-    );
-}
-
-/// Unreadable retained overlay: the retained row carries no observed live
-/// frame while the capture substitutes the slot, and the live re-read
-/// coincidentally equals that slot. Unavailable evidence must hold as
-/// unreadable without dispatching: a slot/live coincidence is not observed
-/// proof and never backfills the baseline. Zero writes, zero attempts, one
-/// honest `hidden-or-unreadable` hold under the original op.
-#[test]
-fn maximized_tiled_clear_unobserved_overlay_holds_without_dispatch() {
-    use super::world_capture::capture_world;
-    use super::world_diff::{FakeNative, FreshHost, HostDiff, apply_world_reply};
-    use tiler_core::world_report::ClearAttempt;
-
-    let slot = Rect {
-        x: 100,
-        y: 100,
-        w: 200,
-        h: 200,
-    };
-    let (state, _seq, reply, op, peer, retained) = mint_retained_overlay_clear(None, slot);
-    let areas = vec![area()];
-    let captured = capture_world(&state.inputs(), Some(&peer), &retained, &areas, 101);
-    let fresh = FreshHost::from_sources(&state.inputs(), &peer, &retained, &captured);
-    assert_eq!(
-        fresh.baseline.get("w1").and_then(|window| window.frame),
-        Some(slot),
-        "overlay baseline rides the retained slot, got {:?}",
-        fresh.baseline.get("w1")
-    );
-    assert_eq!(
-        fresh
-            .baseline
-            .get("w1")
-            .and_then(|window| window.observed_frame),
-        None,
-        "no observed live frame rides an unreadable overlay, got {:?}",
-        fresh.baseline.get("w1")
-    );
-    let mut native = FakeNative::seeded(&fresh);
-    // Coincidental equality: the live re-read happens to equal the retained
-    // slot. This is not observed proof and must not dispatch.
-    native.windows.get_mut("w1").expect("seeded subject").frame = Some(slot);
-    let mut diff = HostDiff::new("adapter-1", "gen-1");
-    diff.gate.current_obs = reply.based_on_observation_seq;
-    let mut clear_out: Vec<ClearAttempt> = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 0, "{stats:?}");
-    assert!(
-        clear_out.is_empty(),
-        "unreadable baseline reports no attempt"
-    );
-    assert!(stats.held >= 1, "{stats:?}");
-    assert_eq!(stats.clear_holds.len(), 1, "{stats:?}");
-    assert_eq!(stats.clear_holds_total, 1, "{stats:?}");
-    assert_eq!(stats.clear_holds[0].op, op);
-    assert_eq!(stats.clear_holds[0].window, "w1");
-    assert_eq!(stats.clear_holds[0].hold, "hidden-or-unreadable");
-}
-
-/// Genuine observed/live disagreement still races: the retained row carries
-/// an observed live frame, the slot is substituted, and the live re-read
-/// returns a different frame (the user moved the window between observation
-/// and dispatch). One honest `frame-race` hold, zero writes, zero attempts.
-#[test]
-fn maximized_tiled_clear_observed_live_mismatch_races_without_dispatch() {
-    use super::world_capture::capture_world;
-    use super::world_diff::{FakeNative, FreshHost, HostDiff, apply_world_reply};
-    use tiler_core::world_report::ClearAttempt;
-
-    let slot = Rect {
-        x: 100,
-        y: 100,
-        w: 200,
-        h: 200,
-    };
-    let observed_live = Rect {
-        x: 0,
-        y: 0,
-        w: 800,
-        h: 560,
-    };
-    let raced_live = Rect {
-        x: 16,
-        y: 0,
-        w: 800,
-        h: 560,
-    };
-    let (state, _seq, reply, op, peer, retained) =
-        mint_retained_overlay_clear(Some(observed_live), slot);
-    let areas = vec![area()];
-    let captured = capture_world(&state.inputs(), Some(&peer), &retained, &areas, 101);
-    let fresh = FreshHost::from_sources(&state.inputs(), &peer, &retained, &captured);
-    assert_eq!(
-        fresh.baseline.get("w1").and_then(|window| window.frame),
-        Some(slot),
-        "overlay baseline rides the retained slot, got {:?}",
-        fresh.baseline.get("w1")
-    );
-    assert_eq!(
-        fresh
-            .baseline
-            .get("w1")
-            .and_then(|window| window.observed_frame),
-        Some(observed_live),
-        "race baseline rides the observed live frame, got {:?}",
-        fresh.baseline.get("w1")
-    );
-    let mut native = FakeNative::seeded(&fresh);
-    // The user moved the window after the observation: the live re-read no
-    // longer matches the observed baseline. The veto must still fire.
-    native.windows.get_mut("w1").expect("seeded subject").frame = Some(raced_live);
-    let mut diff = HostDiff::new("adapter-1", "gen-1");
-    diff.gate.current_obs = reply.based_on_observation_seq;
-    let mut clear_out: Vec<ClearAttempt> = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 0, "{stats:?}");
-    assert!(clear_out.is_empty(), "raced baseline reports no attempt");
-    assert!(stats.held >= 1, "{stats:?}");
-    assert_eq!(stats.clear_holds.len(), 1, "{stats:?}");
-    assert_eq!(stats.clear_holds_total, 1, "{stats:?}");
-    assert_eq!(stats.clear_holds[0].op, op);
-    assert_eq!(stats.clear_holds[0].window, "w1");
-    assert_eq!(stats.clear_holds[0].hold, "frame-race");
 }
 
 /// No-focused-window directional focus (User 2026-10-26): the hook route
@@ -1798,6 +428,7 @@ fn nofocus_areas() -> (Vec<super::MonitorArea>, Vec<Rect>) {
                 w: 800,
                 h: 600,
             },
+            dpi: 96,
         },
         super::MonitorArea {
             device: "DEV2".to_owned(),
@@ -1813,6 +444,7 @@ fn nofocus_areas() -> (Vec<super::MonitorArea>, Vec<Rect>) {
                 w: 800,
                 h: 600,
             },
+            dpi: 96,
         },
     ];
     let fulls: Vec<Rect> = areas.iter().map(|a| a.full).collect();
@@ -1971,7 +603,7 @@ fn nofocus_seeded(name: &str, source_windows: usize, with_target: bool) -> NoFoc
 
 fn nofocus_command(direction: &str) -> WorldCommand {
     WorldCommand::FocusDirectional {
-        window: WindowId(String::new()),
+        window: tiler_core::world_report::FocusDirectionalSubject::NoFocus,
         direction: tiler_core::directional::Direction::parse_wire(direction).expect("direction"),
     }
 }
@@ -1980,7 +612,7 @@ fn nofocus_dispatch(
     fx: &mut NoFocusFixture,
     cursor: Option<(i32, i32)>,
     direction: &str,
-) -> Option<tiler_core::world_report::WorldReply> {
+) -> Option<super::world_tick::WorldCommandOutcome> {
     super::world_tick::run_world_command(
         &mut fx.state,
         &fx.me,
@@ -2002,24 +634,15 @@ fn no_focus_dispatch_crosses_occupied_source_to_existing_selection() {
     // crosses right from the cursor-resolved output and effects the
     // destination's remembered selection, never a source window.
     let mut fx = nofocus_seeded("nofocus-cross", 2, true);
-    let reply = nofocus_dispatch(&mut fx, Some((10, 10)), "right").expect("accepted");
-    assert!(
-        reply.command_result.is_none(),
-        "success rides the effect: {:?}",
-        reply.command_result
-    );
-    let focus: Vec<&tiler_core::world_report::OneShotEffect> = reply
-        .effects
-        .iter()
-        .filter(|effect| effect.kind == tiler_core::world_report::EffectKind::Focus)
-        .collect();
-    assert_eq!(focus.len(), 1, "one focus effect: {:?}", reply.effects);
-    assert_eq!(focus[0].target.0, "w-n1", "existing destination selection");
-    assert!(
-        focus[0].id.starts_with("fx-"),
-        "one-shot effect id: {}",
-        focus[0].id
-    );
+    let outcome = nofocus_dispatch(&mut fx, Some((10, 10)), "right").expect("accepted");
+    let reply = &outcome.reply;
+    assert!(outcome.result.is_none(), "success rides the focus request");
+    let focus = reply
+        .focus_request
+        .as_ref()
+        .expect("one focus request");
+    assert_eq!(focus.target.0, "w-n1", "existing destination selection");
+    assert!(focus.id.starts_with("focus-"), "one-shot focus id: {}", focus.id);
     let _ = (fx.wire1, fx.wire2);
     super::clear_pending_seams();
     let _ = std::fs::remove_dir_all(&fx.dir);
@@ -2030,19 +653,13 @@ fn no_focus_dispatch_empty_source_crosses() {
     // Empty source workspace: no local subject exists, yet the adjacent
     // output's selection is still reached.
     let mut fx = nofocus_seeded("nofocus-empty-src", 0, true);
-    let reply = nofocus_dispatch(&mut fx, Some((10, 10)), "right").expect("accepted");
-    let focus: Vec<&tiler_core::world_report::OneShotEffect> = reply
-        .effects
-        .iter()
-        .filter(|effect| effect.kind == tiler_core::world_report::EffectKind::Focus)
-        .collect();
-    assert_eq!(
-        focus.len(),
-        1,
-        "empty source still crosses: {:?}",
-        reply.effects
-    );
-    assert_eq!(focus[0].target.0, "w-n1");
+    let outcome = nofocus_dispatch(&mut fx, Some((10, 10)), "right").expect("accepted");
+    let focus = outcome
+        .reply
+        .focus_request
+        .as_ref()
+        .expect("empty source still crosses");
+    assert_eq!(focus.target.0, "w-n1");
     super::clear_pending_seams();
     let _ = std::fs::remove_dir_all(&fx.dir);
 }
@@ -2052,13 +669,14 @@ fn no_focus_dispatch_empty_destination_retains() {
     // Adjacent output exists but is empty: no remembered selection, so
     // no effect rather than an invented target.
     let mut fx = nofocus_seeded("nofocus-empty-dst", 1, false);
-    let reply = nofocus_dispatch(&mut fx, Some((10, 10)), "right").expect("accepted");
+    let outcome = nofocus_dispatch(&mut fx, Some((10, 10)), "right").expect("accepted");
+    let reply = &outcome.reply;
     assert!(
-        reply.effects.is_empty(),
+        reply.focus_request.is_none(),
         "empty target: {:?}",
-        reply.effects
+        reply.focus_request
     );
-    match &reply.command_result {
+    match &outcome.result {
         Some(CommandResult::Directional { outcome, cause, .. }) => {
             assert_eq!(outcome.as_str(), "focus-unfocused-retained");
             assert_eq!(cause.as_deref(), Some("no-target"));

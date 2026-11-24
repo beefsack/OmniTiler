@@ -68,7 +68,7 @@ pub(super) fn drop_arrival_verified(
     me: &ProcessIdentity,
     fulls: &[Rect],
     areas: &[MonitorArea],
-    reply: &tiler_core::world_report::WorldReply,
+    reply: &tiler_core::world_report::WorldReplyV4,
     mover_token: &str,
     mover_hwnd: u64,
     expect_device: Option<&str>,
@@ -127,6 +127,7 @@ mod tests {
                     w: 800,
                     h: 600,
                 },
+                dpi: 96,
             },
             MonitorArea {
                 device: "right".to_owned(),
@@ -142,6 +143,7 @@ mod tests {
                     w: 800,
                     h: 600,
                 },
+                dpi: 96,
             },
         ]
     }
@@ -162,6 +164,7 @@ mod tests {
                     w: 800,
                     h: 600,
                 },
+                dpi: 96,
             },
             MonitorArea {
                 device: "east".to_owned(),
@@ -177,6 +180,7 @@ mod tests {
                     w: 800,
                     h: 600,
                 },
+                dpi: 96,
             },
         ]
     }

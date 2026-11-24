@@ -12,7 +12,7 @@ use super::rmax03_adapter_tests::test_state;
 use super::world_capture::{capture_world, resolve_cursor_hit};
 use super::world_diff::{
     ApplyStats, FakeNative, ForegroundState, FreshHost, FreshWindow, GuiFocusState, HostDiff,
-    MAX_CLEAR_HOLD_DIAG, NativeOps, SelectionArrivalGrant, apply_world_reply,
+    NativeOps, SelectionArrivalGrant, apply_world_reply,
 };
 use super::world_sequencer::{AckOutcome, DispatchError, WorldSequencer};
 use super::{HiddenRecord, MonitorArea, ObservedWindow, PendingClosed, RetainedRow, TileLoop};
@@ -20,13 +20,14 @@ use crate::model::{ProcessIdentity, WindowClaimKind, WindowIdentity, WindowShowS
 use crate::native_guards::WindowKey;
 use crate::tiling::{FrameInsets, ObservedTarget, WindowFacts};
 use std::collections::BTreeMap;
-use tiler_core::directional::{OutputId, WindowId};
+use tiler_core::directional::{OutputId, WindowId, WindowSubject, WorkspaceId};
 use tiler_core::geometry::Rect;
 use tiler_core::world_engine::WorldOutcome;
 use tiler_core::world_report::{
-    EffectKind, FrameSetter, HoldReason as CoreHold, OneShotEffect, ScopeAuthority as Auth,
-    ScopeStatus, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION, WindowDesire, WorldCommand,
-    WorldReply, WorldReport,
+    AuthorityScope, BorderHideReasonV4, BorderPresentationV4, FocusRequest, FocusRequestCause,
+    FrameSetter, HoldReason as CoreHold, MemberDisposition, ScopeAuthority as Auth,
+    ScopeStatus, TransferKind, TransferTargetV4, WORLD_CONTRACT_VERSION, WindowDesire, WorldCommand,
+    WorldPresentationV4, WorldReplyV4, WorldReportV4, WorkspaceRef,
 };
 
 pub(super) const ADAPTER: &str = "adapter-1";
@@ -128,6 +129,7 @@ fn one_area(dev: &str) -> Vec<MonitorArea> {
         device: dev.to_owned(),
         work: rect(0, 0, 1920, 1040),
         full: rect(0, 0, 1920, 1080),
+        dpi: 96,
     }]
 }
 
@@ -156,6 +158,12 @@ pub(super) fn rig() -> Rig {
         state
             .applied_homing
             .insert(token.to_owned(), (out.clone(), ws.clone()));
+        // Offline fixtures never run the native hint query; state the
+        // successful empty result these fake HWNDs model so v4 capture
+        // carries known-empty hints instead of an unperformed unknown.
+        state
+            .hint_logged
+            .insert(token.to_owned(), tiler_core::size_hints::WindowSizeHints::none());
     }
     let observed = vec![
         observed_window(&k1, "w1", rect(0, 0, 800, 600), plain_facts()),
@@ -192,8 +200,8 @@ fn converted(rig: &Rig) -> (HostDiff, FreshHost, FakeNative) {
     (diff_at(7), fresh, native)
 }
 
-fn reply_shell(obs: u64, rev: u64, scopes: &[(&str, &str)]) -> WorldReply {
-    WorldReply {
+fn reply_shell(obs: u64, rev: u64, scopes: &[(&str, &str)]) -> WorldReplyV4 {
+    WorldReplyV4 {
         contract_version: WORLD_CONTRACT_VERSION,
         adapter_incarnation: ADAPTER.to_owned(),
         core_generation: GENERATION.to_owned(),
@@ -205,7 +213,10 @@ fn reply_shell(obs: u64, rev: u64, scopes: &[(&str, &str)]) -> WorldReply {
         scopes: scopes
             .iter()
             .map(|(out, ws)| ScopeStatus {
-                scope: format!("{out}/{ws}"),
+                scope: AuthorityScope::Workspace {
+                    output: OutputId((*out).to_owned()),
+                    workspace: tiler_core::directional::WorkspaceId((*ws).to_owned()),
+                },
                 authority: Auth::Controlled,
             })
             .collect(),
@@ -213,13 +224,48 @@ fn reply_shell(obs: u64, rev: u64, scopes: &[(&str, &str)]) -> WorldReply {
         outputs: Vec::new(),
         windows: Vec::new(),
         transfers: Vec::new(),
-        effects: Vec::new(),
-        command_result: None,
+        focus_request: None,
+        drag_preview: None,
         gesture_settled: None,
         operation_settled: Vec::new(),
         native_creations: Vec::new(),
         cursor_warp: None,
-        presentation: tiler_core::world_presentation::WorldPresentation::default(),
+        presentation: WorldPresentationV4 {
+            foreground: String::new(),
+            rev: 0,
+            suspended_output: None,
+            border: BorderPresentationV4 {
+                visible: false,
+                reason: Some(BorderHideReasonV4::NoTarget),
+                subject: None,
+                outsets: None,
+                width: None,
+                radius: None,
+                witness: None,
+            },
+            underlay: tiler_core::world_presentation::PresentationUnderlay::default(),
+            pager: Vec::new(),
+        },
+        intent_desired: Vec::new(),
+        switch_settled: Vec::new(),
+        diagnostics: Vec::new(),
+    }
+}
+
+/// Logical workspace reference for exact raw-attempt assertions.
+fn workspace_ref(out: &str, ws: &str) -> WorkspaceRef {
+    WorkspaceRef::Logical {
+        output: OutputId(out.to_owned()),
+        workspace: WorkspaceId(ws.to_owned()),
+    }
+}
+
+/// Logical workspace string a raw attempt reference names, `None` when the
+/// reference is absent or native-namespaced.
+fn ref_workspace(reference: &Option<WorkspaceRef>) -> Option<&str> {
+    match reference {
+        Some(WorkspaceRef::Logical { workspace, .. }) => Some(workspace.0.as_str()),
+        Some(WorkspaceRef::Native { .. }) | None => None,
     }
 }
 
@@ -235,7 +281,10 @@ fn tiled_row(out: &str, ws: &str, token: &str, target: Rect) -> WindowDesire {
         floating: false,
         float_origin: None,
         frame_operation: None,
-        clear_operation: None,
+        command_seq: None,
+        visibility: None,
+        visibility_authority: Auth::Untouched,
+        state: Vec::new(),
     }
 }
 
@@ -251,7 +300,10 @@ fn member_row(out: &str, ws: &str, token: &str) -> WindowDesire {
         floating: false,
         float_origin: None,
         frame_operation: None,
-        clear_operation: None,
+        command_seq: None,
+        visibility: None,
+        visibility_authority: Auth::Untouched,
+        state: Vec::new(),
     }
 }
 
@@ -262,31 +314,35 @@ fn window_transfer(
     ws: &str,
     held: bool,
     follow: bool,
-) -> TransferTarget {
-    TransferTarget {
+) -> TransferTargetV4 {
+    TransferTargetV4 {
         operation_id: op.to_owned(),
         kind: TransferKind::Window(WindowId(win.to_owned())),
         target_output: OutputId(out.to_owned()),
         target_workspace: ws.to_owned(),
         follow,
         held,
+        command_seq: None,
+        parent: None,
     }
 }
 
-fn view_transfer(op: &str, out: &str, ws: &str) -> TransferTarget {
-    TransferTarget {
+fn view_transfer(op: &str, out: &str, ws: &str) -> TransferTargetV4 {
+    TransferTargetV4 {
         operation_id: op.to_owned(),
         kind: TransferKind::View,
         target_output: OutputId(out.to_owned()),
         target_workspace: ws.to_owned(),
         follow: false,
         held: false,
+        command_seq: None,
+        parent: None,
     }
 }
 
 fn apply(
     diff: &mut HostDiff,
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     fresh: &FreshHost,
     native: &mut FakeNative,
 ) -> (
@@ -304,7 +360,6 @@ fn apply(
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     (stats, members, views)
@@ -314,7 +369,7 @@ fn apply(
 /// proof that writes report raw facts (never verdicts) for the core.
 fn apply_frames(
     diff: &mut HostDiff,
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     fresh: &FreshHost,
     native: &mut FakeNative,
     attempt_ms: u64,
@@ -335,7 +390,6 @@ fn apply_frames(
         &mut frames,
         &mut members,
         &mut views,
-        &mut Vec::new(),
         attempt_ms,
     );
     (stats, frames, members, views)
@@ -359,7 +413,7 @@ fn failed_enumeration_holds_every_scope() {
     assert!(!captured.inventory_complete);
     assert_eq!(captured.windows.len(), 2);
     for fact in &captured.windows {
-        assert!(fact.rect.is_none() && !fact.minimized);
+        assert!(fact.rect.is_none() && fact.minimized.is_none());
     }
     assert!(captured.closed.is_empty());
     assert_eq!(captured.held_members.len(), 2);
@@ -381,7 +435,7 @@ fn token_mismatch_holds_without_inheritance() {
         .iter()
         .find(|f| f.window.0 == "w1")
         .expect("w1 fact");
-    assert!(w1.rect.is_none() && !w1.minimized);
+    assert!(w1.rect.is_none() && w1.minimized.is_none());
     assert!(!captured.inventory_complete);
 }
 
@@ -400,7 +454,7 @@ fn hidden_without_claim_holds() {
     );
     let captured = capture_world(&state.inputs(), Some(&[]), &[], &one_area(DEV1), 0);
     let fact = &captured.windows[0];
-    assert!(fact.rect.is_none() && !fact.minimized);
+    assert!(fact.rect.is_none() && fact.minimized.is_none());
     assert!(!captured.inventory_complete);
 }
 
@@ -429,7 +483,7 @@ fn hidden_iconic_minimizes() {
     );
     let captured = capture_world(&state.inputs(), Some(&[]), &[], &one_area(DEV1), 0);
     let fact = &captured.windows[0];
-    assert!(fact.minimized && fact.rect.is_none());
+    assert!(fact.minimized == Some(true) && fact.rect.is_none());
 }
 
 #[test]
@@ -465,7 +519,7 @@ fn hidden_snapshot_rides_slot_with_verified_fullscreen() {
         .find(|f| f.window.0 == "w1")
         .expect("w1 fact");
     assert_eq!(fact.rect, Some(slot));
-    assert!(fact.fullscreen && !fact.minimized);
+    assert!(fact.fullscreen == Some(true) && fact.minimized == Some(false));
 }
 
 #[test]
@@ -497,8 +551,16 @@ fn minimized_omission_minimizes_frameless_holds() {
         .iter()
         .find(|f| f.window.0 == "w2")
         .expect("w2");
-    assert!(w1.minimized && w1.rect.is_none());
-    assert!(!w2.minimized && w2.rect.is_none());
+    assert!(w1.minimized == Some(true) && w1.rect.is_none());
+    // A retained hold with no facts carries no invented visibility verdict:
+    // v4 reports the frameless row with unknown minimized/fullscreen.
+    assert!(
+        w2.minimized.is_none() && w2.rect.is_none(),
+        "w2 minimized={:?} rect={:?} fullscreen={:?}",
+        w2.minimized,
+        w2.rect,
+        w2.fullscreen
+    );
     assert!(!captured.inventory_complete);
 }
 
@@ -514,7 +576,7 @@ fn scope_excluded_holds_without_geometry() {
         1001,
     );
     for fact in &captured.windows {
-        assert!(fact.rect.is_none() && !fact.minimized);
+        assert!(fact.rect.is_none() && fact.minimized.is_none());
     }
     assert!(!captured.inventory_complete);
 }
@@ -619,7 +681,7 @@ fn retained_overlay_rides_slot_and_holds_tiled_write() {
     let captured = capture_world(&state.inputs(), Some(&[]), &retained, &one_area(DEV1), 0);
     let fact = &captured.windows[0];
     assert_eq!(fact.rect, Some(slot));
-    assert!(fact.maximized);
+    assert!(fact.maximized == Some(true));
     // The reserved lane never takes an automatic tiled write.
     let fresh = FreshHost::from_sources(&state.inputs(), &[], &retained, &captured);
     let mut native = FakeNative::seeded(&fresh);
@@ -650,7 +712,9 @@ fn cloaked_observation_holds_truthfully() {
         .iter()
         .find(|f| f.window.0 == "w1")
         .expect("w1");
-    assert!(w1.rect.is_none() && !w1.minimized);
+    // A cloaked row has no frame authority and carries no minimized claim:
+    // the fact is unknown (`None`), never fabricated false.
+    assert!(w1.rect.is_none() && w1.minimized.is_none());
     assert!(!captured.inventory_complete);
 }
 
@@ -723,7 +787,7 @@ fn clamped_write_reports_raw_attempt_and_obeys_core_hold() {
     let attempt = &frames[0];
     assert_eq!(attempt.window.0, "w1");
     assert_eq!(attempt.target, rect(10, 10, 400, 300));
-    assert_eq!(attempt.setter, FrameSetter::Accepted);
+    assert_eq!(attempt.disposition, FrameSetter::Accepted);
     assert!(
         attempt
             .readback
@@ -765,7 +829,7 @@ fn explicit_refusal_reports_transient_facts_without_verdict() {
     assert_eq!(stats.held, 1);
     assert!(members.is_empty() && views.is_empty());
     assert_eq!(frames.len(), 1);
-    assert_eq!(frames[0].setter, FrameSetter::Refused);
+    assert_eq!(frames[0].disposition, FrameSetter::Refused);
     assert_eq!(frames[0].target, rect(10, 10, 400, 300));
     // A controlled re-desire retries the setter (no local backoff memory).
     let writes = native.frame_writes;
@@ -831,10 +895,6 @@ fn per_flag_live_divergence_holds_without_writes() {
         (
             "floating",
             Box::new(|w: &mut FreshWindow| w.floating = true),
-        ),
-        (
-            "fit-excluded",
-            Box::new(|w: &mut FreshWindow| w.fit_excluded = true),
         ),
     ];
     for (name, diverge) in mutate {
@@ -1013,7 +1073,6 @@ fn invalidation_stops_after_first_write() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         0,
     );
     assert_eq!(stats.geometry_writes, 1);
@@ -1029,7 +1088,7 @@ fn invalidation_stops_after_first_write() {
 /// HONEST DIAGNOSTIC OF THE CURRENT BLOCKER. This test pins the failure
 /// mode behind the live return-focus blocker (the switch's own SHOW/HIDE
 /// WinEvent queue surfaces as a same-pass external invalidation, so the
-/// remembered-focus effect the core emits for a workspace return never
+/// remembered-focus request the core emits for a workspace return never
 /// reaches the setter). It passes by asserting the hold exactly. Do not
 /// read it as approval of the outcome: a retry or re-issue policy needs
 /// a separate product decision, and at-most-once semantics stay unchanged.
@@ -1121,22 +1180,17 @@ fn view_return_base() -> (Rig, HostDiff, FreshHost, FakeNative) {
     (rig, diff, fresh, native)
 }
 
-fn view_return_reply(rig: &Rig) -> WorldReply {
+fn view_return_reply(rig: &Rig) -> WorldReplyV4 {
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
     reply
         .transfers
         .push(view_transfer("op-v", &rig.out, &rig.ws));
-    reply.effects.push(OneShotEffect {
-        id: "fx-9".to_owned(),
-        kind: EffectKind::Focus,
-        target: WindowId("w1".to_owned()),
-        issued_revision: 1,
-    });
+    reply.focus_request = Some(focus_request("fx-9", "w1"));
     reply
 }
 
 #[test]
-fn same_pass_view_invalidation_holds_focus_stale_without_consuming_effect() {
+fn same_pass_view_invalidation_holds_focus_stale_without_consuming_request() {
     // Honest blocker regression: the switch's own SHOW/HIDE edges surface
     // as a same-pass external invalidation, so the trailing remembered-
     // focus effect holds stale without dispatch and without being marked
@@ -1152,7 +1206,6 @@ fn same_pass_view_invalidation_holds_focus_stale_without_consuming_effect() {
         &reply,
         &fresh,
         &mut probe,
-        &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
@@ -1175,7 +1228,7 @@ fn same_pass_view_invalidation_holds_focus_stale_without_consuming_effect() {
     // The effect was dropped without being marked spent: re-marking
     // succeeds because apply never consumed it. Production carries
     // one-shot effects on one reply only, so nothing retries it there.
-    assert!(diff.effects.mark_effect_spent("fx-9"));
+    assert!(diff.effects.mark_focus_spent("fx-9"));
 }
 
 /// Production-contract pending probe: unlike `FakeNative` (which consumes
@@ -1277,7 +1330,6 @@ fn nonconsuming_pending_stops_until_drained() {
                 &mut Vec::new(),
                 &mut Vec::new(),
                 &mut Vec::new(),
-                &mut Vec::new(),
                 0,
             )
         };
@@ -1288,7 +1340,7 @@ fn nonconsuming_pending_stops_until_drained() {
     assert_eq!(stats.effects, 0);
     assert!(stats.stopped_mid_apply);
     assert!(stats.focus_dispatch.is_empty());
-    assert!(diff.effects.mark_effect_spent("fx-9"));
+    assert!(diff.effects.mark_focus_spent("fx-9"));
     // Leg 2: still no drain, fresh gate. The persistent flag stops the
     // pass identically: polling again cannot clear production edges.
     let mut diff = diff_at(7);
@@ -1297,7 +1349,7 @@ fn nonconsuming_pending_stops_until_drained() {
     assert_eq!(stats.effects, 0);
     assert!(stats.stopped_mid_apply);
     assert!(stats.focus_dispatch.is_empty());
-    assert!(diff.effects.mark_effect_spent("fx-9"));
+    assert!(diff.effects.mark_focus_spent("fx-9"));
     // Leg 3: drained, fresh gate. Normal live-reveal path dispatches the
     // view and the remembered focus exactly once.
     probe.drain_pending();
@@ -1465,7 +1517,6 @@ fn remembered_focus_pure_view_nonactivating_dispatches_without_queue() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         0,
     );
     assert_eq!(stats.view_writes, 1);
@@ -1478,7 +1529,7 @@ fn remembered_focus_pure_view_nonactivating_dispatches_without_queue() {
     assert_eq!(row.setter, "accepted");
     assert!(row.foreground);
     assert_eq!(row.hold, None);
-    assert!(!diff.effects.mark_effect_spent("fx-9"));
+    assert!(!diff.effects.mark_focus_spent("fx-9"));
 }
 
 #[test]
@@ -1499,7 +1550,6 @@ fn remembered_focus_pure_view_foreign_foreground_vetoes_with_empty_queue() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         0,
     );
     assert_eq!(stats.view_writes, 1);
@@ -1511,7 +1561,7 @@ fn remembered_focus_pure_view_foreign_foreground_vetoes_with_empty_queue() {
     assert_eq!(row.setter, "skipped");
     assert!(!row.foreground);
     assert_eq!(row.hold, Some("foreground-changed"));
-    assert!(diff.effects.mark_effect_spent("fx-9"));
+    assert!(diff.effects.mark_focus_spent("fx-9"));
     assert!(!probe.inner.is_foreground("w1"));
 }
 
@@ -1533,7 +1583,6 @@ fn remembered_focus_veto_carries_baseline_and_live_identity() {
         &reply,
         &fresh,
         &mut probe,
-        &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
@@ -1647,7 +1696,6 @@ fn remembered_focus_unproven_without_landing_loses_final_focus() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         0,
     );
     assert_eq!(stats.view_writes, 1);
@@ -1660,7 +1708,7 @@ fn remembered_focus_unproven_without_landing_loses_final_focus() {
     assert_eq!(row.hold, Some("foreground-unproven"));
     // Guarded scope: only veto rows carry identities.
     assert!(row.fg_baseline.is_none() && row.fg_live.is_none());
-    assert!(!diff.effects.mark_effect_spent("fx-9"));
+    assert!(!diff.effects.mark_focus_spent("fx-9"));
     assert!(!probe.inner.is_foreground("w1"));
     // Observation-only follow-up: no minted effects, no retry possible.
     let mut diff2 = diff_at(7);
@@ -1670,7 +1718,6 @@ fn remembered_focus_unproven_without_landing_loses_final_focus() {
         &followup,
         &fresh,
         &mut probe,
-        &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
@@ -1713,7 +1760,7 @@ fn remembered_focus_managed_late_landing_proceeds_to_final_focus() {
     assert_eq!(row.setter, "accepted");
     assert!(!row.foreground);
     assert_eq!(row.hold, Some("foreground-unproven"));
-    assert!(!diff.effects.mark_effect_spent("fx-9"));
+    assert!(!diff.effects.mark_focus_spent("fx-9"));
     // The accepted setter is remembered by exact identity plus lifetime.
     assert!(
         diff.in_flight
@@ -1773,14 +1820,13 @@ fn remembered_focus_veto_without_retry_loses_final_focus() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         0,
     );
     assert_eq!(stats.view_writes, 1);
     assert_eq!(stats.effects, 0);
     assert_eq!(probe.inner.views.get(&rig.out), Some(&rig.ws));
     assert!(!probe.inner.is_foreground("w1"));
-    assert!(diff.effects.mark_effect_spent("fx-9"));
+    assert!(diff.effects.mark_focus_spent("fx-9"));
     // Observation-only follow-up: view already shown, no minted effects.
     let mut diff2 = diff_at(7);
     let followup = reply_shell(7, 2, &[(rig.out.as_str(), rig.ws.as_str())]);
@@ -1789,7 +1835,6 @@ fn remembered_focus_veto_without_retry_loses_final_focus() {
         &followup,
         &fresh,
         &mut probe,
-        &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
@@ -1818,7 +1863,6 @@ fn remembered_focus_double_zero_foreground_fails_closed() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         0,
     );
     assert_eq!(stats.view_writes, 1);
@@ -1827,7 +1871,7 @@ fn remembered_focus_double_zero_foreground_fails_closed() {
     let row = &stats.focus_dispatch[0];
     assert!(!row.dispatched);
     assert_eq!(row.hold, Some("foreground-changed"));
-    assert!(diff.effects.mark_effect_spent("fx-9"));
+    assert!(diff.effects.mark_focus_spent("fx-9"));
 }
 
 /// Nonactivating view proof still required: a throwing nonactivating
@@ -1906,7 +1950,6 @@ fn remembered_focus_nonactivating_failed_reveal_holds_for_view() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         0,
     );
     assert_eq!(stats.view_writes, 0);
@@ -1915,7 +1958,7 @@ fn remembered_focus_nonactivating_failed_reveal_holds_for_view() {
     let row = &stats.focus_dispatch[0];
     assert!(!row.dispatched);
     assert_eq!(row.hold, Some("view-not-shown"));
-    assert!(diff.effects.mark_effect_spent("fx-9"));
+    assert!(diff.effects.mark_focus_spent("fx-9"));
 }
 
 /// Recycled HWND still stops: a live key drift fails the pre-setter fence
@@ -1938,7 +1981,6 @@ fn remembered_focus_nonactivating_recycled_hwnd_stops() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         0,
     );
     assert_eq!(stats.view_writes, 1);
@@ -1948,7 +1990,7 @@ fn remembered_focus_nonactivating_recycled_hwnd_stops() {
     assert!(!row.dispatched);
     assert_eq!(row.hold, Some("pre-setter-stop"));
     assert!(stats.stopped_mid_apply);
-    assert!(diff.effects.mark_effect_spent("fx-9"));
+    assert!(diff.effects.mark_focus_spent("fx-9"));
 }
 
 /// Refused focus setter still reports dispatched-but-unproven: the
@@ -1969,7 +2011,6 @@ fn remembered_focus_nonactivating_refused_focus_spends_once() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         0,
     );
     assert_eq!(stats.view_writes, 1);
@@ -1980,7 +2021,7 @@ fn remembered_focus_nonactivating_refused_focus_spends_once() {
     assert_eq!(row.setter, "refused");
     assert!(!row.foreground);
     assert_eq!(row.hold, Some("foreground-unproven"));
-    assert!(!diff.effects.mark_effect_spent("fx-9"));
+    assert!(!diff.effects.mark_focus_spent("fx-9"));
 }
 
 /// Duplicate focus delivery never re-dispatches: the second pass holds
@@ -1999,7 +2040,6 @@ fn remembered_focus_nonactivating_duplicate_holds_spent() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         0,
     );
     assert_eq!(first.effects, 1);
@@ -2008,7 +2048,6 @@ fn remembered_focus_nonactivating_duplicate_holds_spent() {
         &reply,
         &fresh,
         &mut probe,
-        &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
@@ -2108,18 +2147,12 @@ fn remembered_focus_unrelated_view_stays_pumped() {
         .transfers
         .push(view_transfer("op-v", &rig.out, &rig.ws));
     reply.transfers.push(view_transfer("op-v2", &out2, "ws-x"));
-    reply.effects.push(OneShotEffect {
-        id: "fx-9".to_owned(),
-        kind: EffectKind::Focus,
-        target: WindowId("w1".to_owned()),
-        issued_revision: 1,
-    });
+    reply.focus_request = Some(focus_request("fx-9", "w1"));
     let stats = apply_world_reply(
         &mut diff,
         &reply,
         &fresh,
         &mut probe,
-        &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
@@ -2212,7 +2245,6 @@ fn remembered_focus_recycled_same_token_foreground_vetoes() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         0,
     );
     assert_eq!(stats.view_writes, 1);
@@ -2221,7 +2253,7 @@ fn remembered_focus_recycled_same_token_foreground_vetoes() {
     let row = &stats.focus_dispatch[0];
     assert!(!row.dispatched);
     assert_eq!(row.hold, Some("foreground-changed"));
-    assert!(diff.effects.mark_effect_spent("fx-9"));
+    assert!(diff.effects.mark_focus_spent("fx-9"));
 }
 
 #[test]
@@ -2301,7 +2333,6 @@ fn remembered_focus_move_size_start_vetoes_with_empty_queue() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         0,
     );
     assert_eq!(stats.view_writes, 1);
@@ -2312,7 +2343,7 @@ fn remembered_focus_move_size_start_vetoes_with_empty_queue() {
     assert_eq!(row.setter, "refused");
     assert!(!row.foreground);
     assert_eq!(row.hold, Some("foreground-unproven"));
-    assert!(!diff.effects.mark_effect_spent("fx-9"));
+    assert!(!diff.effects.mark_focus_spent("fx-9"));
 }
 
 #[test]
@@ -2356,7 +2387,7 @@ fn prune_bounds_generation_scoped_tables() {
         .attempted_members
         .insert(("op-stale".to_owned(), "w-stale".to_owned()));
     diff.effects.mark_member_attempted("op-1", "w1");
-    diff.effects.mark_effect_spent("fx-stale");
+    diff.effects.mark_focus_spent("fx-stale");
     diff.effects.mark_float_spent("op-stale-float");
     diff.effects.mark_float_spent("op-float-live");
     diff.effects.mark_view_spent("op-stale-view");
@@ -2387,7 +2418,7 @@ fn prune_bounds_generation_scoped_tables() {
     assert!(diff.effects.mark_float_spent("op-stale-float"));
     assert!(!diff.effects.mark_float_spent("op-float-live"));
     assert!(diff.effects.mark_view_spent("op-stale-view"));
-    assert!(diff.effects.mark_effect_spent("fx-stale"));
+    assert!(diff.effects.mark_focus_spent("fx-stale"));
 }
 
 #[test]
@@ -2396,12 +2427,12 @@ fn generation_reset_clears_scoped_state() {
     let (mut diff, fresh, mut native) = converted(&rig);
     diff.effects.mark_member_attempted("op-1", "w1");
     assert!(diff.effects.is_member_attempted("op-1", "w1"));
-    diff.effects.mark_effect_spent("fx-1");
+    diff.effects.mark_focus_spent("fx-1");
     diff.gate
         .note_applied(&reply_shell(7, 5, &[(rig.out.as_str(), rig.ws.as_str())]));
     diff.reset_generation("gen-2");
     assert!(!diff.effects.is_member_attempted("op-1", "w1"));
-    assert!(diff.effects.mark_effect_spent("fx-1"));
+    assert!(diff.effects.mark_focus_spent("fx-1"));
     assert_eq!(diff.gate.current_obs, 0);
     assert!(!diff.gate.has_accepted);
     let mut reply = reply_shell(0, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
@@ -2440,7 +2471,7 @@ fn transfer_throw_holds_ambiguous_without_repeat() {
     assert_eq!(attempt.operation_id, "op-1");
     assert_eq!(attempt.window.0, "w1");
     assert_eq!(attempt.target_output.0, rig.out);
-    assert_eq!(attempt.setter, FrameSetter::Threw);
+    assert_eq!(attempt.disposition, MemberDisposition::Called(FrameSetter::Threw));
     assert!(views.is_empty());
     assert!(diff.effects.is_member_attempted("op-1", "w1"));
     let before = native.membership_writes;
@@ -2474,10 +2505,10 @@ fn transfer_refused_proven_and_third_location_supersedes() {
     assert_eq!(members.len(), 1);
     let attempt = &members[0];
     assert_eq!(attempt.operation_id, "op-2");
-    assert_eq!(attempt.setter, FrameSetter::Refused);
+    assert_eq!(attempt.disposition, MemberDisposition::Called(FrameSetter::Refused));
     assert_eq!(
         attempt.pre,
-        Some((OutputId(rig.out.clone()), rig.ws.clone()))
+        Some(workspace_ref(&rig.out, &rig.ws))
     );
     assert_eq!(attempt.pre, attempt.post);
     assert!(views.is_empty());
@@ -2562,8 +2593,8 @@ fn follow_success_applies_follow_failure_holds_without_view_claim() {
     assert_eq!(views.len(), 1);
     let follow = &views[0];
     assert_eq!(follow.operation_id, "op-5");
-    assert_eq!(follow.setter, FrameSetter::Refused);
-    assert_eq!(follow.post.as_deref(), Some(rig.ws.as_str()));
+    assert_eq!(follow.disposition, FrameSetter::Refused);
+    assert_eq!(ref_workspace(&follow.post), Some(rig.ws.as_str()));
     let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.membership_writes, 0);
     // The spent follow-view phase never repeats.
@@ -2571,18 +2602,13 @@ fn follow_success_applies_follow_failure_holds_without_view_claim() {
 }
 
 #[test]
-fn effect_needs_exact_live_view_and_spends_once() {
+fn focus_request_needs_exact_live_view_and_spends_once() {
     let rig = rig();
     let (mut diff, fresh, mut native) = converted(&rig);
     native.windows.get_mut("w1").unwrap().workspace = rig.ws.clone();
     native.views.insert(rig.out.clone(), "ws-other".to_owned());
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply.effects.push(OneShotEffect {
-        id: "fx-1".to_owned(),
-        kind: EffectKind::Focus,
-        target: WindowId("w1".to_owned()),
-        issued_revision: 1,
-    });
+    reply.focus_request = Some(focus_request("fx-1", "w1"));
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.effects, 0);
     assert!(!native.is_foreground("w1"));
@@ -2626,12 +2652,7 @@ fn focus_dispatches_after_same_pass_view_reveal() {
     }
     native.views.insert(rig.out.clone(), rig.ws.clone());
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply.effects.push(OneShotEffect {
-        id: "fx-9".to_owned(),
-        kind: EffectKind::Focus,
-        target: WindowId("w1".to_owned()),
-        issued_revision: 1,
-    });
+    reply.focus_request = Some(focus_request("fx-9", "w1"));
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.effects, 1);
     assert!(native.is_foreground("w1"));
@@ -2651,12 +2672,7 @@ fn focus_dispatches_after_same_pass_view_reveal() {
     }
     native.views.insert(rig.out.clone(), rig.ws.clone());
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply.effects.push(OneShotEffect {
-        id: "fx-9".to_owned(),
-        kind: EffectKind::Focus,
-        target: WindowId("w1".to_owned()),
-        issued_revision: 1,
-    });
+    reply.focus_request = Some(focus_request("fx-9", "w1"));
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.effects, 0);
     assert!(!native.is_foreground("w1"));
@@ -2690,12 +2706,7 @@ fn same_pass_reveal_recycled_key_stops_focus_without_trusting_new_baseline() {
     }
     native.views.insert(rig.out.clone(), rig.ws.clone());
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply.effects.push(OneShotEffect {
-        id: "fx-9".to_owned(),
-        kind: EffectKind::Focus,
-        target: WindowId("w1".to_owned()),
-        issued_revision: 1,
-    });
+    reply.focus_request = Some(focus_request("fx-9", "w1"));
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.effects, 0);
     assert!(!native.is_foreground("w1"));
@@ -2707,7 +2718,7 @@ fn same_pass_reveal_recycled_key_stops_focus_without_trusting_new_baseline() {
     assert_eq!(row.setter, "skipped");
     assert!(!row.foreground);
     assert_eq!(row.hold, Some("pre-setter-stop"));
-    assert!(diff.effects.mark_effect_spent("fx-9"));
+    assert!(diff.effects.mark_focus_spent("fx-9"));
 }
 
 // --- stage 4b cursor warp: focus-correlated mechanical application ---
@@ -2716,12 +2727,20 @@ fn same_pass_reveal_recycled_key_stops_focus_without_trusting_new_baseline() {
 // the adapter warps only while that exact target holds the observed
 // foreground. An effect-less point never moves the cursor.
 
-fn focus_effect(id: &str, target: &str) -> OneShotEffect {
-    OneShotEffect {
+/// Retained focus-request fixture for the v4 focus lane. The diff lane
+/// consumes the request id, the exact target, and command correlation;
+/// resolved scope labels are carried empty because these synthetic replies
+/// never assert them.
+fn focus_request(id: &str, target: &str) -> FocusRequest {
+    FocusRequest {
         id: id.to_owned(),
-        kind: EffectKind::Focus,
         target: WindowId(target.to_owned()),
         issued_revision: 1,
+        cause: FocusRequestCause::ExplicitCommand,
+        output: OutputId(String::new()),
+        workspace: String::new(),
+        cmd_seq: Some(7),
+        after_shown: None,
     }
 }
 
@@ -2734,9 +2753,9 @@ fn warp_rig(rig: &Rig) -> (HostDiff, FreshHost, FakeNative) {
     (diff, fresh, native)
 }
 
-fn warp_reply(rig: &Rig, effects: Vec<OneShotEffect>, point: (i32, i32)) -> WorldReply {
+fn warp_reply(rig: &Rig, focus: Option<FocusRequest>, point: (i32, i32)) -> WorldReplyV4 {
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply.effects = effects;
+    reply.focus_request = focus;
     reply.cursor_warp = Some(point);
     reply
 }
@@ -2745,7 +2764,7 @@ fn warp_reply(rig: &Rig, effects: Vec<OneShotEffect>, point: (i32, i32)) -> Worl
 fn warp_applies_once_per_observation() {
     let rig = rig();
     let (mut diff, fresh, mut native) = warp_rig(&rig);
-    let reply = warp_reply(&rig, vec![focus_effect("fx-1", "w1")], (900, 300));
+    let reply = warp_reply(&rig, Some(focus_request("fx-1", "w1")), (900, 300));
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.effects, 1);
     assert!(native.is_foreground("w1"));
@@ -2764,7 +2783,7 @@ fn warp_skips_write_when_already_there() {
     let rig = rig();
     let (mut diff, fresh, mut native) = warp_rig(&rig);
     native.cursor = Some((900, 300));
-    let reply = warp_reply(&rig, vec![focus_effect("fx-1", "w1")], (900, 300));
+    let reply = warp_reply(&rig, Some(focus_request("fx-1", "w1")), (900, 300));
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.effects, 1);
     assert_eq!(stats.cursor_warps, 0);
@@ -2773,8 +2792,8 @@ fn warp_skips_write_when_already_there() {
 }
 
 #[test]
-fn warp_needs_its_focus_effect() {
-    // A point with no focus effect is stale coordinates, never an order:
+fn warp_needs_its_focus_request() {
+    // A point with no focus request is stale coordinates, never an order:
     // consumed without motion so a duplicate never acts on it either.
     let rig = rig();
     let (mut diff, fresh, mut native) = warp_rig(&rig);
@@ -2798,7 +2817,7 @@ fn warp_vetoed_when_focus_view_not_shown() {
     let rig = rig();
     let (mut diff, fresh, mut native) = converted(&rig);
     native.cursor = Some((10, 10));
-    let reply = warp_reply(&rig, vec![focus_effect("fx-1", "w1")], (900, 300));
+    let reply = warp_reply(&rig, Some(focus_request("fx-1", "w1")), (900, 300));
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.effects, 0);
     assert!(!native.is_foreground("w1"));
@@ -2814,7 +2833,7 @@ fn warp_vetoed_when_last_focus_failed() {
     let rig = rig();
     let (mut diff, fresh, mut native) = warp_rig(&rig);
     native.fail_focus.insert("w1".to_owned());
-    let reply = warp_reply(&rig, vec![focus_effect("fx-1", "w1")], (900, 300));
+    let reply = warp_reply(&rig, Some(focus_request("fx-1", "w1")), (900, 300));
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.effects, 0);
     assert!(!native.is_foreground("w1"));
@@ -2825,52 +2844,11 @@ fn warp_vetoed_when_last_focus_failed() {
 }
 
 #[test]
-fn warp_follows_last_focus_effect_not_first() {
-    // Two focus effects apply in order; the warp correlates with the last
-    // one only. When the last holds the foreground the warp proceeds even
-    // though the first targeted elsewhere.
-    let rig = rig();
-    let (mut diff, fresh, mut native) = warp_rig(&rig);
-    let reply = warp_reply(
-        &rig,
-        vec![focus_effect("fx-1", "w2"), focus_effect("fx-2", "w1")],
-        (900, 300),
-    );
-    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
-    assert_eq!(stats.effects, 2);
-    assert!(native.is_foreground("w1"));
-    assert_eq!(stats.cursor_warps, 1);
-    assert_eq!(native.warp_calls, vec![(900, 300)]);
-}
-
-#[test]
-fn warp_vetoed_when_last_focus_drifted() {
-    // Same order, but the last focus refuses: the earlier effect lands,
-    // yet the warp must not follow it. The point correlates with the
-    // last effect alone, never the last cross-output one.
-    let rig = rig();
-    let (mut diff, fresh, mut native) = warp_rig(&rig);
-    native.fail_focus.insert("w1".to_owned());
-    let reply = warp_reply(
-        &rig,
-        vec![focus_effect("fx-1", "w2"), focus_effect("fx-2", "w1")],
-        (900, 300),
-    );
-    let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
-    assert_eq!(stats.effects, 1);
-    assert!(native.is_foreground("w2"));
-    assert!(!native.is_foreground("w1"));
-    assert_eq!(stats.cursor_warps, 0);
-    assert!(native.warp_calls.is_empty());
-    assert!(stats.held >= 1);
-}
-
-#[test]
 fn warp_refusal_holds_without_retry() {
     let rig = rig();
     let (mut diff, fresh, mut native) = warp_rig(&rig);
     native.fail_warp = true;
-    let reply = warp_reply(&rig, vec![focus_effect("fx-1", "w1")], (900, 300));
+    let reply = warp_reply(&rig, Some(focus_request("fx-1", "w1")), (900, 300));
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     // Explicit refusal: honestly held, no cursor motion, and the
     // observation is consumed so a duplicate delivery never retries a
@@ -2890,26 +2868,21 @@ fn warp_throw_stops_the_pass() {
     let rig = rig();
     let (mut diff, fresh, mut native) = warp_rig(&rig);
     native.throw_warp = true;
-    let reply = warp_reply(&rig, vec![focus_effect("fx-1", "w1")], (900, 300));
+    let reply = warp_reply(&rig, Some(focus_request("fx-1", "w1")), (900, 300));
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.cursor_warps, 0);
     assert!(stats.stopped_mid_apply);
 }
 
 #[test]
-fn ffc_effect_focuses_hover_target_like_explicit_focus() {
+fn ffc_request_focuses_hover_target_like_explicit_focus() {
     // The core's `ffc-<window>` hover id rides the standard one-shot
     // focus path: exact live view proves, the spent fence dedupes.
     let rig = rig();
     let (mut diff, fresh, mut native) = converted(&rig);
     native.views.insert(rig.out.clone(), rig.ws.clone());
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply.effects.push(OneShotEffect {
-        id: "ffc-w1".to_owned(),
-        kind: EffectKind::Focus,
-        target: WindowId("w1".to_owned()),
-        issued_revision: 1,
-    });
+    reply.focus_request = Some(focus_request("ffc-w1", "w1"));
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.effects, 1);
     assert!(native.is_foreground("w1"));
@@ -3073,24 +3046,31 @@ fn migration_partial_holds_then_completes_with_refill() {
             floating: false,
             float_origin: None,
             frame_operation: None,
-            clear_operation: None,
+            command_seq: None,
+            visibility: None,
+            visibility_authority: Auth::Untouched,
+            state: Vec::new(),
         });
     }
-    reply.transfers.push(TransferTarget {
+    reply.transfers.push(TransferTargetV4 {
         operation_id: mig.to_owned(),
         kind: TransferKind::Migration,
         target_output: OutputId(rig.out.clone()),
         target_workspace: ws_target.clone(),
         follow: false,
         held: false,
+        command_seq: None,
+        parent: None,
     });
-    reply.transfers.push(TransferTarget {
+    reply.transfers.push(TransferTargetV4 {
         operation_id: format!("{mig}-refill"),
         kind: TransferKind::View,
         target_output: OutputId(rig.out.clone()),
         target_workspace: rig.ws.clone(),
         follow: false,
         held: false,
+        command_seq: None,
+        parent: None,
     });
     let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.membership_writes, 1);
@@ -3103,17 +3083,17 @@ fn migration_partial_holds_then_completes_with_refill() {
         .iter()
         .find(|a| a.window.0 == "w1")
         .expect("w1 attempt");
-    assert_eq!(w1.setter, FrameSetter::Accepted);
+    assert_eq!(w1.disposition, MemberDisposition::Called(FrameSetter::Accepted));
     assert_eq!(
         w1.post,
-        Some((OutputId(rig.out.clone()), ws_target.clone()))
+        Some(workspace_ref(&rig.out, &ws_target))
     );
     let w2 = members
         .iter()
         .find(|a| a.window.0 == "w2")
         .expect("w2 attempt");
     assert_eq!(w2.operation_id, mig);
-    assert_eq!(w2.setter, FrameSetter::Threw);
+    assert_eq!(w2.disposition, MemberDisposition::Called(FrameSetter::Threw));
     assert!(views.is_empty());
 
     native.throw_membership.clear();
@@ -3169,24 +3149,31 @@ fn migration_held_refill_never_actuates() {
             floating: false,
             float_origin: None,
             frame_operation: None,
-            clear_operation: None,
+            command_seq: None,
+            visibility: None,
+            visibility_authority: Auth::Untouched,
+            state: Vec::new(),
         });
     }
-    reply.transfers.push(TransferTarget {
+    reply.transfers.push(TransferTargetV4 {
         operation_id: mig.to_owned(),
         kind: TransferKind::Migration,
         target_output: OutputId(rig.out.clone()),
         target_workspace: ws_target.clone(),
         follow: false,
         held: false,
+        command_seq: None,
+        parent: None,
     });
-    reply.transfers.push(TransferTarget {
+    reply.transfers.push(TransferTargetV4 {
         operation_id: format!("{mig}-refill"),
         kind: TransferKind::View,
         target_output: OutputId(rig.out.clone()),
         target_workspace: rig.ws.clone(),
         follow: false,
         held: true,
+        command_seq: None,
+        parent: None,
     });
     let (_, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(
@@ -3201,7 +3188,10 @@ fn held_scope_blocks_geometry() {
     let (mut diff, fresh, mut native) = converted(&rig);
     let mut reply = reply_shell(7, 1, &[]);
     reply.scopes.push(ScopeStatus {
-        scope: format!("{}/{}", rig.out, rig.ws),
+        scope: AuthorityScope::Workspace {
+            output: OutputId(rig.out.clone()),
+            workspace: WorkspaceId(rig.ws.clone()),
+        },
         authority: Auth::Hold(CoreHold::GestureBarrier),
     });
     reply
@@ -3238,11 +3228,11 @@ fn float_token_places_once_fences_and_reports_raw_attempt() {
     let attempt: &FrameAttempt = &frames[0];
     assert_eq!(attempt.window.0, "w1");
     assert_eq!(attempt.target, rect(10, 10, 400, 300));
-    assert_eq!(attempt.setter, FrameSetter::Accepted);
-    assert_eq!(attempt.operation_id.as_deref(), Some("op-9"));
-    assert_eq!(attempt.prewrite, Some(baseline));
+    assert_eq!(attempt.disposition, FrameSetter::Accepted);
+    assert_eq!(attempt.purpose.operation_id(), Some("op-9"));
+    assert_eq!(attempt.purpose.prewrite(), Some(baseline));
     assert_eq!(attempt.readback, Some(rect(10, 10, 400, 300)));
-    assert_eq!(attempt.attempt_ms, 1000);
+    assert_eq!(attempt.attempt_ms, Some(1000));
     // Second dispatch of the same reply never replays: strictly
     // at-most-once transport while the core holds the retained target.
     let writes = native.frame_writes;
@@ -3271,26 +3261,9 @@ fn float_token_places_once_fences_and_reports_raw_attempt() {
         assert_eq!(stats.geometry_writes, 1, "sticky placement actuates");
         assert!(members.is_empty() && views.is_empty());
         assert_eq!(frames.len(), 1, "one raw attempt: {frames:?}");
-        assert_eq!(frames[0].operation_id.as_deref(), Some("op-float-sticky"));
-        assert_eq!(frames[0].setter, FrameSetter::Accepted);
+        assert_eq!(frames[0].purpose.operation_id(), Some("op-float-sticky"));
+        assert_eq!(frames[0].disposition, FrameSetter::Accepted);
     }
-    {
-        let (mut diff, fresh, mut native) = converted(&rig);
-        native.windows.get_mut("w1").unwrap().floating = true;
-        native.windows.get_mut("w1").unwrap().fit_excluded = true;
-        let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-        let mut row = tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300));
-        row.frame_authority = Auth::Untouched;
-        row.frame_operation = Some("op-float-excluded".to_owned());
-        reply.windows.push(row);
-        let (stats, frames, members, views) =
-            apply_frames(&mut diff, &reply, &fresh, &mut native, 1000);
-        assert_eq!(stats.geometry_writes, 0, "live excluded took a float write");
-        assert!(stats.held >= 1);
-        assert!(members.is_empty() && views.is_empty());
-        assert!(frames.is_empty(), "gated lane emits no attempt");
-    }
-
     // Clamp reports accepted-with-mismatch plus the readable preimage and
     // never repeats the setter; refusal, throw, and unreadable proof ride
     // the same raw lane with no verdict.
@@ -3306,11 +3279,11 @@ fn float_token_places_once_fences_and_reports_raw_attempt() {
     assert_eq!(stats.geometry_writes, 1);
     assert_eq!(first_frames.len(), 1);
     assert_eq!(
-        first_frames[0].operation_id.as_deref(),
+        first_frames[0].purpose.operation_id(),
         Some("op-float-clamp")
     );
-    assert_eq!(first_frames[0].setter, FrameSetter::Accepted);
-    assert_eq!(first_frames[0].prewrite, Some(baseline));
+    assert_eq!(first_frames[0].disposition, FrameSetter::Accepted);
+    assert_eq!(first_frames[0].purpose.prewrite(), Some(baseline));
     assert_eq!(first_frames[0].readback, Some(baseline));
     let writes = native.frame_writes;
     let (stats, second_frames, second_members, second_views) =
@@ -3333,11 +3306,11 @@ fn float_token_places_once_fences_and_reports_raw_attempt() {
     assert_eq!(stats.geometry_writes, 0);
     assert_eq!(first_frames.len(), 1);
     assert_eq!(
-        first_frames[0].operation_id.as_deref(),
+        first_frames[0].purpose.operation_id(),
         Some("op-float-throw")
     );
-    assert_eq!(first_frames[0].setter, FrameSetter::Threw);
-    assert_eq!(first_frames[0].prewrite, Some(baseline));
+    assert_eq!(first_frames[0].disposition, FrameSetter::Threw);
+    assert_eq!(first_frames[0].purpose.prewrite(), Some(baseline));
     assert_eq!(first_frames[0].readback, Some(baseline));
     let writes = native.frame_writes;
     let (_, second_frames, second_members, second_views) =
@@ -3452,7 +3425,6 @@ fn view_ok_true_with_unreadable_proof_is_not_refused_proven() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert_eq!(stats.view_writes, 0);
@@ -3463,7 +3435,7 @@ fn view_ok_true_with_unreadable_proof_is_not_refused_proven() {
     assert_eq!(views.len(), 1);
     let got = &views[0];
     assert_eq!(got.operation_id, "op-view-async");
-    assert_eq!(got.setter, FrameSetter::Accepted);
+    assert_eq!(got.disposition, FrameSetter::Accepted);
     assert_eq!(got.post, None);
 }
 
@@ -3499,7 +3471,6 @@ fn view_ok_true_with_third_location_is_not_refused_proven() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert_eq!(stats.view_writes, 0);
@@ -3509,9 +3480,9 @@ fn view_ok_true_with_third_location_is_not_refused_proven() {
     assert!(members.is_empty());
     assert_eq!(views.len(), 1);
     let got = &views[0];
-    assert_eq!(got.setter, FrameSetter::Accepted);
-    assert_eq!(got.post.as_deref(), Some("ws-other"));
-    assert_ne!(got.post.as_deref(), Some("ws-target"));
+    assert_eq!(got.disposition, FrameSetter::Accepted);
+    assert_eq!(ref_workspace(&got.post), Some("ws-other"));
+    assert_ne!(ref_workspace(&got.post), Some("ws-target"));
 }
 
 #[test]
@@ -3552,7 +3523,6 @@ fn stale_reply_must_not_retire_ambiguous_view_fence() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert_eq!(first_stats.held, 1);
@@ -3561,7 +3531,7 @@ fn stale_reply_must_not_retire_ambiguous_view_fence() {
     assert!(members.is_empty());
     assert_eq!(views.len(), 1);
     assert_eq!(views[0].operation_id, op);
-    assert_eq!(views[0].setter, FrameSetter::Threw);
+    assert_eq!(views[0].disposition, FrameSetter::Threw);
     assert_eq!(probe.switches, 1);
     assert!(diff.effects.is_view_spent(op));
 
@@ -3582,7 +3552,6 @@ fn stale_reply_must_not_retire_ambiguous_view_fence() {
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         0,
     );
     assert!(stale_stats.stopped_mid_apply);
@@ -3599,7 +3568,6 @@ fn stale_reply_must_not_retire_ambiguous_view_fence() {
         &mut Vec::new(),
         &mut members,
         &mut views,
-        &mut Vec::new(),
         0,
     );
     assert_eq!(stats.held, 1);
@@ -3609,14 +3577,14 @@ fn stale_reply_must_not_retire_ambiguous_view_fence() {
 
 // --- core-owned frame loop: attempt -> report -> desire -> obeyed ---
 
-pub(super) fn seq_deliver(seq: &mut WorldSequencer, report: &WorldReport) -> WorldReply {
+pub(super) fn seq_deliver(seq: &mut WorldSequencer, report: &WorldReportV4) -> WorldReplyV4 {
     match seq.deliver(report) {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted, got {other:?}"),
     }
 }
 
-pub(super) fn seq_ack(seq: &mut WorldSequencer, reply: &WorldReply) {
+pub(super) fn seq_ack(seq: &mut WorldSequencer, reply: &WorldReplyV4) {
     match seq.ack(reply) {
         AckOutcome::Applied(_) => {}
         other => panic!("expected applied, got {other:?}"),
@@ -3628,7 +3596,7 @@ pub(super) fn dispatch_obs(
     rig: &Rig,
     foreground: u64,
     ms: u64,
-) -> WorldReport {
+) -> WorldReportV4 {
     seq.try_dispatch(
         &rig.state.inputs(),
         Some(&rig.observed),
@@ -3639,20 +3607,6 @@ pub(super) fn dispatch_obs(
         None,
     )
     .expect("dispatch")
-}
-
-#[test]
-fn production_sequencer_reports_opt_out_of_automatic_birth_clear() {
-    // Non-opt-in production route pin: the real capture/sequencer path
-    // reports the capability off, so the core never mints an autonomous
-    // birth clear beside the retained preamble-owned birth route.
-    let rig = rig();
-    let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
-    let report = dispatch_obs(&mut seq, &rig, 1001, 7);
-    assert!(
-        !report.birth_clear,
-        "Windows production stays opted out of automatic birth clears"
-    );
 }
 
 /// Model truthful observation: the next capture reads what the native
@@ -3674,7 +3628,7 @@ pub(super) fn sync_observed_from_native(rig: &mut Rig, native: &FakeNative) {
     }
 }
 
-pub(super) fn tiled_desire(reply: &WorldReply, window: &str) -> (Rect, Auth) {
+pub(super) fn tiled_desire(reply: &WorldReplyV4, window: &str) -> (Rect, Auth) {
     let row = reply
         .windows
         .iter()
@@ -3725,7 +3679,6 @@ fn frame_loop_clamp_suppresses_and_rearms_end_to_end() {
         &mut attempts,
         &mut members,
         &mut views,
-        &mut Vec::new(),
         1000,
     );
     assert_eq!(stats.geometry_writes, 2);
@@ -3736,7 +3689,7 @@ fn frame_loop_clamp_suppresses_and_rearms_end_to_end() {
         .find(|attempt| attempt.window.0 == "w1")
         .expect("lying attempt rides");
     assert_eq!(lying.target, desired);
-    assert_eq!(lying.setter, FrameSetter::Accepted);
+    assert_eq!(lying.disposition, FrameSetter::Accepted);
     assert!(lying.readback.is_some_and(|readback| readback != desired));
     for attempt in &attempts {
         seq.note_frame_attempt(attempt.clone());
@@ -3781,7 +3734,6 @@ fn frame_loop_clamp_suppresses_and_rearms_end_to_end() {
         &mut attempts,
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         2000,
     );
     assert_eq!(native.frame_writes, writes);
@@ -3820,7 +3772,6 @@ fn frame_loop_clamp_suppresses_and_rearms_end_to_end() {
         &fresh,
         &mut native,
         &mut attempts,
-        &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
         3000,
@@ -3863,7 +3814,6 @@ fn frame_loop_transient_backoff_and_retry_end_to_end() {
         &mut attempts,
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         1000,
     );
     assert_eq!(stats.geometry_writes, 1);
@@ -3872,7 +3822,7 @@ fn frame_loop_transient_backoff_and_retry_end_to_end() {
         .iter()
         .find(|attempt| attempt.window.0 == "w1")
         .expect("refusal rides");
-    assert_eq!(refused.setter, FrameSetter::Refused);
+    assert_eq!(refused.disposition, FrameSetter::Refused);
     assert_eq!(refused.target, desired);
     for attempt in &attempts {
         seq.note_frame_attempt(attempt.clone());
@@ -3910,7 +3860,6 @@ fn frame_loop_transient_backoff_and_retry_end_to_end() {
         &mut attempts,
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         1100,
     );
     assert_eq!(native.frame_writes, writes);
@@ -3942,15 +3891,14 @@ fn frame_loop_transient_backoff_and_retry_end_to_end() {
         &mut attempts,
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         2000,
     );
     // The refused setter retries (a failed write never counts as a frame
     // write, so the new stamped attempt is the retry proof).
     assert_eq!(tick3_stats.held, 1);
     assert_eq!(attempts.len(), 1);
-    assert_eq!(attempts[0].attempt_ms, 2000);
-    assert_eq!(attempts[0].setter, FrameSetter::Refused);
+    assert_eq!(attempts[0].attempt_ms, Some(2000));
+    assert_eq!(attempts[0].disposition, FrameSetter::Refused);
 }
 
 /// DPI invalidation loop: a write whose basis flips under the call never
@@ -3986,7 +3934,6 @@ fn frame_loop_dpi_change_never_clamps() {
         &fresh,
         &mut native,
         &mut attempts,
-        &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
         1000,
@@ -4055,9 +4002,9 @@ fn send_roundtrip_actuates_attempts_and_converges_without_remove() {
         .map(|row| row.id.clone())
         .expect("second workspace");
     let send = WorldCommand::Send {
-        window: WindowId("w1".to_owned()),
+        window: WindowSubject::Window(WindowId("w1".to_owned())),
         target_output: OutputId(rig.out.clone()),
-        target_workspace: ws2.clone(),
+        target_workspace: WorkspaceId(ws2.clone()),
         follow: false,
     };
     let report = seq
@@ -4075,7 +4022,14 @@ fn send_roundtrip_actuates_attempts_and_converges_without_remove() {
         WorldOutcome::Accepted(reply) => reply,
         other => panic!("expected accepted send, got {other:?}"),
     };
-    assert_eq!(reply.transfers.len(), 1);
+    assert_eq!(
+        reply.transfers.len(),
+        1,
+        "result={:?} transfers={:?} diag={:?}",
+        seq.last_command_result(),
+        reply.transfers,
+        reply.diagnostics
+    );
     let op = reply.transfers[0].operation_id.clone();
     match seq.ack(&reply) {
         AckOutcome::Applied(_) => {}
@@ -4102,10 +4056,14 @@ fn send_roundtrip_actuates_attempts_and_converges_without_remove() {
     let attempt = &members[0];
     assert_eq!(attempt.operation_id, op);
     assert_eq!(attempt.window.0, "w1");
-    assert_eq!(attempt.setter, FrameSetter::Accepted);
-    assert_eq!(attempt.post, Some((OutputId(rig.out.clone()), ws2.clone())));
+    assert_eq!(attempt.disposition, MemberDisposition::Called(FrameSetter::Accepted));
+    assert_eq!(attempt.post, Some(workspace_ref(&rig.out, &ws2)));
     assert!(views.is_empty());
     diff.gate.note_applied(&reply);
+    // The send-stay focus request targets the source survivor after the
+    // exact live view is shown: model that native view proof before the
+    // second pass so the focus lane validates instead of holding.
+    native.views.insert(rig.out.clone(), rig.ws.clone());
     let writes = native.membership_writes;
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert!(stats.stopped_mid_apply);
@@ -4170,7 +4128,29 @@ fn send_roundtrip_actuates_attempts_and_converges_without_remove() {
         members.is_empty() && views.is_empty(),
         "settled flight re-proves nothing"
     );
-    assert!(!stats.partial);
+    assert!(
+        !stats.partial,
+        "held={} stopped={} writes={} effects={} focus_req={:?} focus={:?} rows={:?} diag={:?}",
+        stats.held,
+        stats.stopped_mid_apply,
+        stats.geometry_writes + stats.membership_writes + stats.view_writes,
+        stats.effects,
+        reply2.focus_request,
+        stats.focus_dispatch,
+        reply2
+            .windows
+            .iter()
+            .map(|row| (
+                row.lifetime.0.as_str(),
+                row.output.0.as_str(),
+                row.workspace.as_str(),
+                row.frame_authority,
+                row.membership_authority,
+                row.effective_frame,
+            ))
+            .collect::<Vec<_>>(),
+        reply2.diagnostics
+    );
     assert_eq!(fingerprint(&rig.state), before);
 }
 
@@ -4200,9 +4180,9 @@ fn rejection_correlates_to_exact_flight_and_fences_catchup() {
     // While catch-up is pending a command is refused without consumption.
     let before = seq.next_request_seq();
     let send = WorldCommand::Send {
-        window: WindowId("w1".to_owned()),
+        window: WindowSubject::Window(WindowId("w1".to_owned())),
         target_output: OutputId(rig.out.clone()),
-        target_workspace: rig.ws.clone(),
+        target_workspace: WorkspaceId(rig.ws.clone()),
         follow: false,
     };
     assert!(matches!(
@@ -4336,9 +4316,9 @@ fn consumed_command_reconciles_without_replay() {
         .find(|row| row.output.0 == rig.out && row.id != current)
         .map(|row| row.id.clone())
         .expect("second workspace");
-    let switch = WorldCommand::SwitchView {
+    let switch = WorldCommand::SelectWorkspace {
         output: OutputId(rig.out.clone()),
-        workspace: ws2.clone(),
+        workspace: WorkspaceId(ws2.clone()),
     };
     let report = seq
         .try_dispatch(
@@ -4406,7 +4386,7 @@ fn float_production_seam_reports_raw_attempt_and_core_holds_token() {
     let baseline = rect(0, 0, 800, 600);
     seq.invalidate();
     let command = WorldCommand::Operation(CoreCommand::ToggleFloat {
-        window: "w1".to_owned(),
+        window: WindowSubject::Window(WindowId("w1".to_owned())),
         float_rect: Some(target),
     });
     let report = seq
@@ -4456,7 +4436,6 @@ fn float_production_seam_reports_raw_attempt_and_core_holds_token() {
         &mut attempts,
         &mut Vec::new(),
         &mut Vec::new(),
-        &mut Vec::new(),
         3000,
     );
     // One write: the floated sibling reflows; the throwing placement writes
@@ -4467,11 +4446,11 @@ fn float_production_seam_reports_raw_attempt_and_core_holds_token() {
         .find(|attempt| attempt.window.0 == "w1")
         .expect("raw float attempt rides: {attempts:?}");
     assert_eq!(attempt.target, target);
-    assert_eq!(attempt.setter, FrameSetter::Threw);
-    assert_eq!(attempt.operation_id.as_deref(), Some(token.as_str()));
-    assert_eq!(attempt.prewrite, Some(baseline));
+    assert_eq!(attempt.disposition, FrameSetter::Threw);
+    assert_eq!(attempt.purpose.operation_id(), Some(token.as_str()));
+    assert_eq!(attempt.purpose.prewrite(), Some(baseline));
     assert_eq!(attempt.readback, Some(baseline));
-    assert_eq!(attempt.attempt_ms, 3000);
+    assert_eq!(attempt.attempt_ms, Some(3000));
     for attempt in &attempts {
         seq.note_frame_attempt(attempt.clone());
     }
@@ -4487,8 +4466,8 @@ fn float_production_seam_reports_raw_attempt_and_core_holds_token() {
         .find(|attempt| attempt.window.0 == "w1")
         .expect("correlated attempt rides");
     assert_eq!(carried.target, target);
-    assert_eq!(carried.operation_id.as_deref(), Some(token.as_str()));
-    assert_eq!(carried.prewrite, Some(baseline));
+    assert_eq!(carried.purpose.operation_id(), Some(token.as_str()));
+    assert_eq!(carried.purpose.prewrite(), Some(baseline));
     let reply2 = seq_deliver(&mut seq, &report2);
     let row = reply2
         .windows
@@ -4500,7 +4479,6 @@ fn float_production_seam_reports_raw_attempt_and_core_holds_token() {
         Some(token.as_str()),
         "ambiguous hold keeps the token"
     );
-    assert_eq!(reply2.command_result, None, "held placement never replays");
     seq_ack(&mut seq, &reply2);
     // After the acknowledgement the held placement still rides the token
     // with no new attempt and no verdict.
@@ -4525,382 +4503,13 @@ fn float_production_seam_reports_raw_attempt_and_core_holds_token() {
     seq_ack(&mut seq, &reply3);
 }
 
-fn clear_row(out: &str, ws: &str, token: &str, op: &str) -> WindowDesire {
-    WindowDesire {
-        lifetime: WindowId(token.to_owned()),
-        output: OutputId(out.to_owned()),
-        workspace: ws.to_owned(),
-        allocation: None,
-        effective_frame: None,
-        frame_authority: Auth::Untouched,
-        membership_authority: Auth::Untouched,
-        floating: true,
-        float_origin: None,
-        frame_operation: None,
-        clear_operation: Some(op.to_owned()),
-    }
-}
+
 
 fn maximized_facts() -> WindowFacts {
     WindowFacts {
         maximized: true,
         ..plain_facts()
     }
-}
-
-/// Fresh maximized rig: w1 reads maximized live, so the clear lane sees a
-/// maximized preimage under full identity and lifetime proof.
-fn maximized_rig() -> (Rig, FreshHost) {
-    let mut rig = rig();
-    rig.observed[0].facts = maximized_facts();
-    let captured = capture_world(
-        &rig.state.inputs(),
-        Some(&rig.observed),
-        &rig.retained,
-        &rig.areas,
-        1001,
-    );
-    assert!(captured.inventory_complete);
-    let fresh =
-        FreshHost::from_sources(&rig.state.inputs(), &rig.observed, &rig.retained, &captured);
-    assert!(
-        fresh
-            .baseline
-            .get("w1")
-            .and_then(|base| base.facts.map(|facts| facts.maximized))
-            .unwrap_or(false),
-        "maximized preimage rides: {fresh:?}"
-    );
-    (rig, fresh)
-}
-
-#[test]
-fn clear_lane_tiled_row_dispatches_once_from_published_desire() {
-    // Tiled production seam: a tiled row carrying the published
-    // `clear_operation` token (allocation + effective frame + token, as the
-    // core now publishes for eligible tiled rows) dispatches the native
-    // clear exactly once via the common lane and reports the correlated
-    // attempt. No fake proof: the attempt comes from the desire itself.
-    use tiler_core::geometry::Rect;
-    let (rig, fresh) = maximized_rig();
-    let mut native = FakeNative::seeded(&fresh);
-    let mut diff = diff_at(7);
-    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    let slot = Rect {
-        x: 0,
-        y: 0,
-        w: 400,
-        h: 500,
-    };
-    reply.windows.push(WindowDesire {
-        lifetime: WindowId("w1".to_owned()),
-        output: OutputId(rig.out.clone()),
-        workspace: rig.ws.clone(),
-        allocation: Some(slot),
-        effective_frame: Some(slot),
-        frame_authority: Auth::Controlled,
-        membership_authority: Auth::Controlled,
-        floating: false,
-        float_origin: None,
-        frame_operation: None,
-        clear_operation: Some("op-clear-tiled-1".to_owned()),
-    });
-    let mut clear_out = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 1, "{stats:?}");
-    assert_eq!(clear_out.len(), 1);
-    assert_eq!(clear_out[0].operation_id, "op-clear-tiled-1");
-    assert_eq!(clear_out[0].setter, FrameSetter::Accepted);
-    assert_eq!(clear_out[0].pre_maximized, Some(true));
-    assert_eq!(clear_out[0].post_maximized, Some(false));
-    // Second apply never re-dispatches (spent phase).
-    let mut clear_again = Vec::new();
-    apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_again,
-        1000,
-    );
-    assert!(clear_again.is_empty(), "{clear_again:?}");
-}
-
-#[test]
-fn clear_lane_dispatches_once_and_reports_accepted_attempt() {
-    // The published `clear_operation` desire dispatches the native clear
-    // exactly once and reports the mechanical attempt (setter plus
-    // pre/post maximized states); the live maximized bit flips so the
-    // next re-read observes it.
-    let (rig, fresh) = maximized_rig();
-    let mut native = FakeNative::seeded(&fresh);
-    let mut diff = diff_at(7);
-    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply
-        .windows
-        .push(clear_row(&rig.out, &rig.ws, "w1", "op-clear-1"));
-    let mut clear_out = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 1, "{stats:?}");
-    assert_eq!(clear_out.len(), 1);
-    let attempt = &clear_out[0];
-    assert_eq!(attempt.operation_id, "op-clear-1");
-    assert_eq!(attempt.window.0, "w1");
-    assert_eq!(attempt.setter, FrameSetter::Accepted);
-    assert_eq!(attempt.pre_maximized, Some(true));
-    assert_eq!(attempt.post_maximized, Some(false));
-    assert_eq!(attempt.attempt_ms, 1000);
-    assert!(
-        !native
-            .windows
-            .get("w1")
-            .and_then(|window| window.facts.map(|facts| facts.maximized))
-            .unwrap_or(true),
-        "live maximized flips"
-    );
-    // A second apply of the same reply never re-dispatches: the spent
-    // clear phase holds silently.
-    let mut clear_again = Vec::new();
-    let restats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_again,
-        1000,
-    );
-    assert!(clear_again.is_empty(), "{clear_again:?}");
-    assert_eq!(native.clear_calls, vec!["w1".to_owned()]);
-    assert_eq!(restats.clear_writes, 0);
-}
-
-#[test]
-fn clear_lane_veto_reports_refused_and_spends() {
-    // Fullscreen subjects veto: the lane reports exactly one correlated
-    // refused attempt with the unchanged maximized preimage and spends the
-    // phase, so a vetoed desire never sits silently unattempted and never
-    // re-actuates.
-    let (mut rig, _) = maximized_rig();
-    rig.observed[0].facts.captionless_fullscreen = true;
-    let captured = capture_world(
-        &rig.state.inputs(),
-        Some(&rig.observed),
-        &rig.retained,
-        &rig.areas,
-        1001,
-    );
-    let fresh =
-        FreshHost::from_sources(&rig.state.inputs(), &rig.observed, &rig.retained, &captured);
-    let mut native = FakeNative::seeded(&fresh);
-    let mut diff = diff_at(7);
-    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply
-        .windows
-        .push(clear_row(&rig.out, &rig.ws, "w1", "op-clear-2"));
-    let mut clear_out = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 0, "{stats:?}");
-    assert_eq!(clear_out.len(), 1);
-    let attempt = &clear_out[0];
-    assert_eq!(attempt.setter, FrameSetter::Refused);
-    assert_eq!(attempt.pre_maximized, Some(true));
-    assert_eq!(attempt.post_maximized, Some(true));
-    assert!(native.clear_calls.is_empty(), "vetoes never dispatch");
-    // The spent veto never re-reports.
-    let mut clear_again = Vec::new();
-    apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_again,
-        1000,
-    );
-    assert!(clear_again.is_empty(), "{clear_again:?}");
-}
-
-#[test]
-fn clear_lane_throw_reports_ambiguous_without_retry() {
-    // A throwing setter reports the ambiguous attempt with a readable
-    // preimage; the spent phase never retries, so the core holds without
-    // re-actuation until truthful later evidence reconciles.
-    let (rig, fresh) = maximized_rig();
-    let mut native = FakeNative::seeded(&fresh);
-    native.throw_clear.insert("w1".to_owned());
-    let mut diff = diff_at(7);
-    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply
-        .windows
-        .push(clear_row(&rig.out, &rig.ws, "w1", "op-clear-3"));
-    let mut clear_out = Vec::new();
-    apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(clear_out.len(), 1);
-    assert_eq!(clear_out[0].setter, FrameSetter::Threw);
-    assert_eq!(clear_out[0].pre_maximized, Some(true));
-    let mut clear_again = Vec::new();
-    apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_again,
-        1000,
-    );
-    assert!(clear_again.is_empty(), "{clear_again:?}");
-    assert_eq!(native.clear_calls.len(), 1);
-}
-
-#[test]
-fn clear_lane_already_unmaximized_skips_without_attempt() {
-    // An already-unmaximized subject takes no write and reports no
-    // attempt: the desire is stale (an external clear without a correlated
-    // attempt abandons core-side), and nothing is spent.
-    let rig = rig();
-    let (mut diff, fresh, mut native) = converted(&rig);
-    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply
-        .windows
-        .push(clear_row(&rig.out, &rig.ws, "w1", "op-clear-4"));
-    let mut clear_out = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert!(clear_out.is_empty(), "{clear_out:?}");
-    assert_eq!(stats.clear_writes, 0);
-    assert!(native.clear_calls.is_empty());
-}
-
-#[test]
-fn clear_lane_sticky_actuates_like_float() {
-    // Sticky subjects clear through the same lane: the explicit
-    // `clear_operation` token is the only authority, while ordinary
-    // unsolicited sticky frame writes stay prohibited elsewhere.
-    let (mut rig, _) = maximized_rig();
-    rig.state.sticky.insert(win_key(1001, 2001, "proc-1"), true);
-    let captured = capture_world(
-        &rig.state.inputs(),
-        Some(&rig.observed),
-        &rig.retained,
-        &rig.areas,
-        1001,
-    );
-    let fresh =
-        FreshHost::from_sources(&rig.state.inputs(), &rig.observed, &rig.retained, &captured);
-    let mut native = FakeNative::seeded(&fresh);
-    assert!(
-        native.windows.get("w1").is_some_and(|window| window.sticky),
-        "sticky rides the baseline"
-    );
-    let mut diff = diff_at(7);
-    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply
-        .windows
-        .push(clear_row(&rig.out, &rig.ws, "w1", "op-clear-5"));
-    let mut clear_out = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 1, "{stats:?}");
-    assert_eq!(clear_out.len(), 1);
-    assert_eq!(clear_out[0].setter, FrameSetter::Accepted);
-}
-
-#[test]
-fn clear_lane_held_scope_vetoes_with_refusal() {
-    // A desire for an uncontrolled scope vetoes with one refused attempt
-    // carrying the best-known maximized preimage, never a silent desire.
-    let (rig, fresh) = maximized_rig();
-    let mut native = FakeNative::seeded(&fresh);
-    let mut diff = diff_at(7);
-    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply
-        .windows
-        .push(clear_row(&rig.out, "ws-elsewhere", "w1", "op-clear-6"));
-    let mut clear_out = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 0, "{stats:?}");
-    assert_eq!(clear_out.len(), 1);
-    assert_eq!(clear_out[0].setter, FrameSetter::Refused);
-    assert_eq!(clear_out[0].pre_maximized, Some(true));
-    assert!(native.clear_calls.is_empty(), "vetoes never dispatch");
 }
 
 #[test]
@@ -4944,8 +4553,7 @@ fn capture_projects_retained_maximized_float_after_observed() {
         .iter()
         .find(|fact| fact.window.0 == "w2")
         .expect("retained maximized float rides");
-    assert!(retained_fact.maximized, "{retained_fact:?}");
-    assert!(retained_fact.floating, "{retained_fact:?}");
+    assert!(retained_fact.maximized == Some(true), "{retained_fact:?}");
     assert_eq!(retained_fact.rect, Some(slot), "{retained_fact:?}");
 }
 
@@ -4995,7 +4603,7 @@ fn hover_trace_changed_tracks_emission_cursor() {
     // quiets repeats of the same triple; any hit/focused/FFC transition
     // re-arms. Pure comparison over already-captured values: no native
     // reads, no policy input.
-    let mut tracker = super::world_diff::EffectTracker::default();
+    let mut tracker = super::world_diff::DispatchFences::default();
     assert!(tracker.hover_trace_changed(Some("w1"), "w1", true));
     tracker.note_hover_traced(Some("w1".to_owned()), "w1".to_owned(), true);
     assert!(!tracker.hover_trace_changed(Some("w1"), "w1", true));
@@ -5020,9 +4628,9 @@ fn hover_trace_changed_tracks_emission_cursor() {
 // setter dispositions stand in for programmatic refusal, never for live
 // foreground behavior.
 
-fn focus_reply(rig: &Rig, id: &str, target: &str) -> WorldReply {
+fn focus_reply(rig: &Rig, id: &str, target: &str) -> WorldReplyV4 {
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply.effects.push(focus_effect(id, target));
+    reply.focus_request = Some(focus_request(id, target));
     reply
 }
 
@@ -5043,7 +4651,7 @@ fn focus_diag_records_dispatched_but_unproven_with_foreground_false() {
     let row = &stats.focus_dispatch[0];
     assert_eq!(row.id, "ffc-w1");
     assert_eq!(row.target, "w1");
-    assert_eq!(row.kind, "focus");
+    assert_eq!(row.kind, "explicit-command");
     assert!(row.dispatched);
     assert_eq!(row.setter, "refused");
     // Immediate foreground proof rides even when false: absence of proof
@@ -5149,7 +4757,7 @@ fn standalone_view_actuates_into_untouched_floating_target() {
     );
     // Core publishes the floating target scope Untouched (never Controlled).
     for status in &mut reply.scopes {
-        if status.scope == format!("{}/{}", rig.out, ws_float) {
+        if status.scope.covers_workspace(&OutputId(rig.out.clone()), ws_float.as_str()) {
             status.authority = Auth::Untouched;
         }
     }
@@ -5165,9 +4773,9 @@ fn standalone_view_actuates_into_untouched_floating_target() {
     assert_eq!(attempt.operation_id, "op-float-view");
     assert_eq!(attempt.target_output.0, rig.out);
     assert_eq!(attempt.target_workspace, ws_float);
-    assert_eq!(attempt.setter, FrameSetter::Accepted);
-    assert_eq!(attempt.pre.as_deref(), Some(rig.ws.as_str()));
-    assert_eq!(attempt.post.as_deref(), Some(ws_float.as_str()));
+    assert_eq!(attempt.disposition, FrameSetter::Accepted);
+    assert_eq!(ref_workspace(&attempt.pre), Some(rig.ws.as_str()));
+    assert_eq!(ref_workspace(&attempt.post), Some(ws_float.as_str()));
     assert_eq!(
         native.views.get(&rig.out).map(String::as_str),
         Some(ws_float.as_str())
@@ -5194,7 +4802,7 @@ fn standalone_view_into_floating_target_keeps_hold_and_refusal_evidence() {
         ],
     );
     for status in &mut reply.scopes {
-        if status.scope == format!("{}/{}", rig.out, ws_float) {
+        if status.scope.covers_workspace(&OutputId(rig.out.clone()), ws_float.as_str()) {
             status.authority = Auth::Hold(CoreHold::Unreadable);
         }
     }
@@ -5222,7 +4830,7 @@ fn standalone_view_into_floating_target_keeps_hold_and_refusal_evidence() {
         ],
     );
     for status in &mut reply.scopes {
-        if status.scope == format!("{}/{}", rig.out, ws_float) {
+        if status.scope.covers_workspace(&OutputId(rig.out.clone()), ws_float.as_str()) {
             status.authority = Auth::Untouched;
         }
     }
@@ -5255,7 +4863,7 @@ fn standalone_view_into_floating_target_keeps_hold_and_refusal_evidence() {
         ],
     );
     for status in &mut reply.scopes {
-        if status.scope == format!("{}/{}", rig.out, ws_float) {
+        if status.scope.covers_workspace(&OutputId(rig.out.clone()), ws_float.as_str()) {
             status.authority = Auth::Untouched;
         }
     }
@@ -5285,7 +4893,7 @@ fn standalone_view_into_floating_target_keeps_hold_and_refusal_evidence() {
         ],
     );
     for status in &mut reply.scopes {
-        if status.scope == format!("{}/{}", rig.out, ws_float) {
+        if status.scope.covers_workspace(&OutputId(rig.out.clone()), ws_float.as_str()) {
             status.authority = Auth::Untouched;
         }
     }
@@ -5299,9 +4907,9 @@ fn standalone_view_into_floating_target_keeps_hold_and_refusal_evidence() {
     assert_eq!(views.len(), 1);
     let attempt = &views[0];
     assert_eq!(attempt.operation_id, "op-float-refused");
-    assert_eq!(attempt.setter, FrameSetter::Refused);
-    assert_eq!(attempt.pre.as_deref(), Some(rig.ws.as_str()));
-    assert_eq!(attempt.post.as_deref(), Some(rig.ws.as_str()));
+    assert_eq!(attempt.disposition, FrameSetter::Refused);
+    assert_eq!(ref_workspace(&attempt.pre), Some(rig.ws.as_str()));
+    assert_eq!(ref_workspace(&attempt.post), Some(rig.ws.as_str()));
     assert!(stats.held >= 1);
     let writes = stats.view_writes;
     let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
@@ -5326,27 +4934,34 @@ fn migration_member_row(out: &str, ws: &str, token: &str) -> WindowDesire {
         floating: false,
         float_origin: None,
         frame_operation: None,
-        clear_operation: None,
+        command_seq: None,
+        visibility: None,
+        visibility_authority: Auth::Untouched,
+        state: Vec::new(),
     }
 }
 
-fn migration_reply(out: &str, ws: &str, refill_ws: &str, mig: &str) -> WorldReply {
+fn migration_reply(out: &str, ws: &str, refill_ws: &str, mig: &str) -> WorldReplyV4 {
     let mut reply = reply_shell(7, 1, &[(out, ws), (out, refill_ws)]);
-    reply.transfers.push(TransferTarget {
+    reply.transfers.push(TransferTargetV4 {
         operation_id: mig.to_owned(),
         kind: TransferKind::Migration,
         target_output: OutputId(out.to_owned()),
         target_workspace: ws.to_owned(),
         follow: false,
         held: false,
+        command_seq: None,
+        parent: None,
     });
-    reply.transfers.push(TransferTarget {
+    reply.transfers.push(TransferTargetV4 {
         operation_id: format!("{mig}-refill"),
         kind: TransferKind::View,
         target_output: OutputId(out.to_owned()),
         target_workspace: refill_ws.to_owned(),
         follow: false,
         held: false,
+        command_seq: None,
+        parent: None,
     });
     reply
 }
@@ -5365,7 +4980,7 @@ fn floating_migration_target_actuates_members_and_view() {
     native.views.insert(rig.out.clone(), rig.ws.clone());
     let mut reply = migration_reply(&rig.out, &ws_target, &rig.ws, mig);
     for status in &mut reply.scopes {
-        if status.scope == format!("{}/{}", rig.out, ws_target) {
+        if status.scope.covers_workspace(&OutputId(rig.out.clone()), ws_target.as_str()) {
             status.authority = Auth::Untouched;
         }
     }
@@ -5381,10 +4996,10 @@ fn floating_migration_target_actuates_members_and_view() {
     assert_eq!(members.len(), 2, "both members dispatch: {members:?}");
     for attempt in &members {
         assert_eq!(attempt.operation_id, mig);
-        assert_eq!(attempt.setter, FrameSetter::Accepted);
+        assert_eq!(attempt.disposition, MemberDisposition::Called(FrameSetter::Accepted));
         assert_eq!(
             attempt.post,
-            Some((OutputId(rig.out.clone()), ws_target.clone()))
+            Some(workspace_ref(&rig.out, &ws_target))
         );
     }
     assert_eq!(
@@ -5397,8 +5012,8 @@ fn floating_migration_target_actuates_members_and_view() {
         .find(|v| v.operation_id == mig)
         .expect("target attempt");
     assert_eq!(target_view.target_workspace, ws_target);
-    assert_eq!(target_view.setter, FrameSetter::Accepted);
-    assert_eq!(target_view.post.as_deref(), Some(ws_target.as_str()));
+    assert_eq!(target_view.disposition, FrameSetter::Accepted);
+    assert_eq!(ref_workspace(&target_view.post), Some(ws_target.as_str()));
     assert!(
         views
             .iter()
@@ -5416,7 +5031,7 @@ fn floating_migration_target_actuates_members_and_view() {
     native.views.insert(rig.out.clone(), rig.ws.clone());
     let mut reply = migration_reply(&rig.out, &ws_target, &rig.ws, mig);
     for status in &mut reply.scopes {
-        if status.scope == format!("{}/{}", rig.out, ws_target) {
+        if status.scope.covers_workspace(&OutputId(rig.out.clone()), ws_target.as_str()) {
             status.authority = Auth::Untouched;
         }
     }
@@ -5456,7 +5071,7 @@ fn floating_refill_actuates_after_target_view_proof() {
     native.views.insert(rig.out.clone(), ws_target.clone());
     let mut reply = migration_reply(&rig.out, &ws_target, &rig.ws, mig);
     for status in &mut reply.scopes {
-        if status.scope == format!("{}/{}", rig.out, rig.ws) {
+        if status.scope.covers_workspace(&OutputId(rig.out.clone()), rig.ws.as_str()) {
             status.authority = Auth::Untouched;
         }
     }
@@ -5467,9 +5082,9 @@ fn floating_refill_actuates_after_target_view_proof() {
     let attempt = &views[0];
     assert_eq!(attempt.operation_id, format!("{mig}-refill"));
     assert_eq!(attempt.target_workspace, rig.ws);
-    assert_eq!(attempt.setter, FrameSetter::Accepted);
-    assert_eq!(attempt.pre.as_deref(), Some(ws_target.as_str()));
-    assert_eq!(attempt.post.as_deref(), Some(rig.ws.as_str()));
+    assert_eq!(attempt.disposition, FrameSetter::Accepted);
+    assert_eq!(ref_workspace(&attempt.pre), Some(ws_target.as_str()));
+    assert_eq!(ref_workspace(&attempt.post), Some(rig.ws.as_str()));
     assert_eq!(stats.view_writes, 1);
     assert_eq!(
         native.views.get(&rig.out).map(String::as_str),
@@ -5487,7 +5102,7 @@ fn floating_refill_actuates_after_target_view_proof() {
         .insert(format!("{}/{}", rig.out, ws_target));
     let mut reply = migration_reply(&rig.out, &ws_target, &rig.ws, mig);
     for status in &mut reply.scopes {
-        if status.scope == format!("{}/{}", rig.out, rig.ws) {
+        if status.scope.covers_workspace(&OutputId(rig.out.clone()), rig.ws.as_str()) {
             status.authority = Auth::Untouched;
         }
     }
@@ -5502,7 +5117,7 @@ fn floating_refill_actuates_after_target_view_proof() {
     assert_eq!(members.len(), 2);
     assert_eq!(views.len(), 1);
     assert_eq!(views[0].operation_id, mig);
-    assert_eq!(views[0].setter, FrameSetter::Refused);
+    assert_eq!(views[0].disposition, FrameSetter::Refused);
     assert!(
         views
             .iter()
@@ -5510,34 +5125,6 @@ fn floating_refill_actuates_after_target_view_proof() {
         "refill waits for target proof: {views:?}"
     );
     assert!(stats.held >= 1);
-}
-
-/// Trace-only hold storage bound: attributions past
-/// [`MAX_CLEAR_HOLD_DIAG`] keep counting in `clear_holds_total` while
-/// storage holds only the first rows in order. This is the regression for
-/// the reviewed defect where the omitted count was derived from the
-/// already-truncated storage and always reported zero past the cap.
-#[test]
-fn clear_hold_attribution_bounds_storage_but_keeps_total() {
-    let mut stats = ApplyStats::default();
-    for n in 0..MAX_CLEAR_HOLD_DIAG + 2 {
-        stats.note_clear_hold(&format!("op-{n}"), "w1", "frame-race");
-    }
-    assert_eq!(stats.clear_holds.len(), MAX_CLEAR_HOLD_DIAG);
-    assert_eq!(stats.clear_holds_total, MAX_CLEAR_HOLD_DIAG + 2);
-    assert_eq!(stats.clear_holds[0].op, "op-0");
-    assert_eq!(
-        stats.clear_holds[MAX_CLEAR_HOLD_DIAG - 1].op,
-        format!("op-{}", MAX_CLEAR_HOLD_DIAG - 1)
-    );
-    assert!(
-        stats
-            .clear_holds
-            .iter()
-            .all(|row| row.window == "w1" && row.hold == "frame-race"),
-        "stored rows keep op/window/hold, got {:?}",
-        stats.clear_holds
-    );
 }
 
 // --- event-driven in-flight focus: a prior accepted activation landing
@@ -5705,18 +5292,18 @@ impl NativeOps for AsyncFocusProbe {
 /// effect, and target ids: every rapid-switch leg needs a distinct view
 /// operation so the at-most-once fence never mistakes a later leg for a
 /// repeat of an earlier one.
-fn inflight_view_reply(rig: &Rig, rev: u64, view_op: &str, fx: &str, target: &str) -> WorldReply {
+fn inflight_view_reply(rig: &Rig, rev: u64, view_op: &str, fx: &str, target: &str) -> WorldReplyV4 {
     let mut reply = reply_shell(7, rev, &[(rig.out.as_str(), rig.ws.as_str())]);
     reply
         .transfers
         .push(view_transfer(view_op, &rig.out, &rig.ws));
-    reply.effects.push(focus_effect(fx, target));
+    reply.focus_request = Some(focus_request(fx, target));
     reply
 }
 
 fn apply_probe(
     diff: &mut HostDiff,
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     fresh: &FreshHost,
     probe: &mut AsyncFocusProbe,
 ) -> ApplyStats {
@@ -5725,7 +5312,6 @@ fn apply_probe(
         reply,
         fresh,
         probe,
-        &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
@@ -5824,7 +5410,7 @@ fn inflight_foreign_foreground_mid_switch_still_vetoes() {
     assert_eq!(row.setter, "skipped");
     assert!(!row.foreground);
     assert_eq!(row.hold, Some("foreground-changed"));
-    assert!(diff.effects.mark_effect_spent("fx-10"));
+    assert!(diff.effects.mark_focus_spent("fx-10"));
     assert!(!probe.inner.is_foreground("w2"));
 }
 
@@ -5866,7 +5452,7 @@ fn inflight_recycled_lifetime_never_qualifies_as_own_landing() {
     assert_eq!(stats2.effects, 0);
     assert_eq!(stats2.focus_dispatch.len(), 1);
     assert_eq!(stats2.focus_dispatch[0].hold, Some("foreground-changed"));
-    assert!(diff.effects.mark_effect_spent("fx-10"));
+    assert!(diff.effects.mark_focus_spent("fx-10"));
 }
 
 /// A same-PID new window (different HWND and creation) never qualifies
@@ -5907,7 +5493,7 @@ fn inflight_same_pid_new_window_never_qualifies_as_own_landing() {
     assert_eq!(stats2.effects, 0);
     assert_eq!(stats2.focus_dispatch.len(), 1);
     assert_eq!(stats2.focus_dispatch[0].hold, Some("foreground-changed"));
-    assert!(diff.effects.mark_effect_spent("fx-10"));
+    assert!(diff.effects.mark_focus_spent("fx-10"));
 }
 
 /// Event-before-event-loop-delivery: the mid-switch landing arrives as a
@@ -6020,7 +5606,7 @@ fn inflight_newer_setter_supersedes_prior_inflight() {
     // superseding (replacing then clearing on landing) the prior in-flight.
     probe.land_setter = true;
     let mut reply2 = reply_shell(7, 2, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply2.effects.push(focus_effect("fx-10", "w2"));
+    reply2.focus_request = Some(focus_request("fx-10", "w2"));
     let stats2 = apply_probe(&mut diff, &reply2, &fresh, &mut probe);
     assert_eq!(stats2.effects, 1);
     assert!(probe.inner.is_foreground("w2"));
@@ -6044,7 +5630,7 @@ fn inflight_newer_setter_supersedes_prior_inflight() {
     assert_eq!(stats3.effects, 0);
     assert_eq!(stats3.focus_dispatch.len(), 1);
     assert_eq!(stats3.focus_dispatch[0].hold, Some("foreground-changed"));
-    assert!(diff.effects.mark_effect_spent("fx-11"));
+    assert!(diff.effects.mark_focus_spent("fx-11"));
 }
 
 /// Target lifetime end clears the in-flight at the next entry: a departed
@@ -6143,9 +5729,9 @@ fn drain_foreground_via_real_loop(hwnds: &[u64]) -> Vec<u64> {
 
 /// Focus-only async setter: no view work, so no bracket runs and the
 /// unproven target is remembered as in-flight.
-fn inflight_focus_only_reply(rig: &Rig, rev: u64, fx: &str, target: &str) -> WorldReply {
+fn inflight_focus_only_reply(rig: &Rig, rev: u64, fx: &str, target: &str) -> WorldReplyV4 {
     let mut reply = reply_shell(7, rev, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply.effects.push(focus_effect(fx, target));
+    reply.focus_request = Some(focus_request(fx, target));
     reply
 }
 
@@ -6645,20 +6231,15 @@ fn visibility_post_attribution_counts_past_row_cap() {
 
 /// Plain focus reply with no view transfer: the target already lives on
 /// the shown view, so the effect dispatches through the setter lane.
-fn plain_focus_reply(rig: &Rig, rev: u64, id: &str, target: &str) -> WorldReply {
+fn plain_focus_reply(rig: &Rig, rev: u64, id: &str, target: &str) -> WorldReplyV4 {
     let mut reply = reply_shell(7, rev, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply.effects.push(OneShotEffect {
-        id: id.to_owned(),
-        kind: EffectKind::Focus,
-        target: WindowId(target.to_owned()),
-        issued_revision: 1,
-    });
+    reply.focus_request = Some(focus_request(id, target));
     reply
 }
 
 fn apply_plain(
     diff: &mut HostDiff,
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     fresh: &FreshHost,
     native: &mut FakeNative,
 ) -> ApplyStats {
@@ -6667,7 +6248,6 @@ fn apply_plain(
         reply,
         fresh,
         native,
-        &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
@@ -6850,209 +6430,6 @@ fn inflight_clearing_carries_edge_stamps_and_target_identity() {
     );
 }
 
-/// Born-shaped held row: the exact shape the core publishes for a born
-/// binding on a held scope (Hold/Hold authorities, no allocation, no frame
-/// write, one-shot `op-born-*` token). See
-/// `crates/tiler-core/src/world_publish.rs` held lanes.
-fn born_held_row(out: &str, ws: &str, token: &str, op: &str) -> WindowDesire {
-    WindowDesire {
-        lifetime: WindowId(token.to_owned()),
-        output: OutputId(out.to_owned()),
-        workspace: ws.to_owned(),
-        allocation: None,
-        effective_frame: None,
-        frame_authority: Auth::Hold(CoreHold::Unreadable),
-        membership_authority: Auth::Hold(CoreHold::Unreadable),
-        floating: false,
-        float_origin: None,
-        frame_operation: None,
-        clear_operation: Some(op.to_owned()),
-    }
-}
-
-#[test]
-fn born_clear_dispatches_once_with_no_geometry_write_then_spends() {
-    // Parity pin (N6): a core-minted `op-born-*` desire actuates through the
-    // identical production 1c clear lane as directional clears (same gates,
-    // same at-most-once spent phase, same mechanical attempt shape) with no
-    // frame/member write. The retained Windows preamble is untouched: this
-    // lane fires only when the preamble left maximized facts behind.
-    let (rig, fresh) = maximized_rig();
-    let mut native = FakeNative::seeded(&fresh);
-    let mut diff = diff_at(7);
-    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply
-        .windows
-        .push(born_held_row(&rig.out, &rig.ws, "w1", "op-born-1"));
-    let mut clear_out = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 1, "{stats:?}");
-    assert_eq!(stats.geometry_writes, 0, "{stats:?}");
-    assert_eq!(clear_out.len(), 1);
-    let attempt = &clear_out[0];
-    assert_eq!(attempt.operation_id, "op-born-1");
-    assert_eq!(attempt.window.0, "w1");
-    assert_eq!(attempt.setter, FrameSetter::Accepted);
-    assert_eq!(attempt.pre_maximized, Some(true));
-    assert_eq!(attempt.post_maximized, Some(false));
-    // Redelivery never re-dispatches: the spent phase holds silently, so a
-    // core retry can never double-clear behind the adapter preamble.
-    let mut clear_again = Vec::new();
-    let restats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_again,
-        1000,
-    );
-    assert!(clear_again.is_empty(), "{clear_again:?}");
-    assert_eq!(restats.clear_writes, 0);
-    assert_eq!(native.clear_calls, vec!["w1".to_owned()]);
-}
-
-#[test]
-fn born_clear_preamble_won_skips_without_second_write() {
-    // No-double pin: when the retained preamble already restored the window
-    // (live reads unmaximized while the staged baseline still shows the
-    // pre-restore maximized preimage), the born desire takes no write and
-    // reports no attempt. The core settles from the staged observation
-    // itself (external-clear abandonment), so the adapter write stays
-    // exactly-once.
-    let (rig, fresh) = maximized_rig();
-    let mut native = FakeNative::seeded(&fresh);
-    native.windows.get_mut("w1").expect("live w1").facts = Some(plain_facts());
-    let mut diff = diff_at(7);
-    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply
-        .windows
-        .push(born_held_row(&rig.out, &rig.ws, "w1", "op-born-2"));
-    let mut clear_out = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 0, "{stats:?}");
-    assert!(clear_out.is_empty(), "{clear_out:?}");
-    assert!(native.clear_calls.is_empty(), "no second native write");
-}
-
-#[test]
-fn born_clear_deferred_corners_hold_unspent_without_attempt() {
-    // No-add pin: gesture and hidden-baseline corners hold the born
-    // desire unspent with no attempt and no write, so the core lane adds
-    // no native behavior where the live window cannot prove authority
-    // (identity drift and uncontrolled scopes veto loudly instead; see the
-    // scope test below). A later readable reply retries the
-    // still-undispatched desire.
-    let (rig, fresh) = maximized_rig();
-    // Gesture barrier.
-    let mut native = FakeNative::seeded(&fresh);
-    native.gesture = true;
-    let mut diff = diff_at(7);
-    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply
-        .windows
-        .push(born_held_row(&rig.out, &rig.ws, "w1", "op-born-3"));
-    let mut clear_out = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 0, "{stats:?}");
-    assert!(clear_out.is_empty(), "{clear_out:?}");
-    assert!(native.clear_calls.is_empty());
-    // Hidden observation baseline.
-    let (rig, fresh) = maximized_rig();
-    let mut fresh = fresh;
-    if let Some(base) = fresh.baseline.get_mut("w1") {
-        base.hidden = true;
-        base.frame = None;
-        base.observed_frame = None;
-    }
-    let mut native = FakeNative::seeded(&fresh);
-    let mut diff = diff_at(7);
-    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply
-        .windows
-        .push(born_held_row(&rig.out, &rig.ws, "w1", "op-born-4"));
-    let mut clear_out = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 0, "{stats:?}");
-    assert!(clear_out.is_empty(), "{clear_out:?}");
-    assert!(native.clear_calls.is_empty());
-}
-
-#[test]
-fn born_clear_uncontrolled_scope_vetoes_with_refusal_like_directional() {
-    // Scope parity pin: a born desire for an uncontrolled scope vetoes with
-    // exactly one correlated refused attempt carrying the maximized
-    // preimage (spending the phase, never silent), identical to the
-    // directional clear veto. No native write fires.
-    let (rig, fresh) = maximized_rig();
-    let mut native = FakeNative::seeded(&fresh);
-    let mut diff = diff_at(7);
-    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply
-        .windows
-        .push(born_held_row(&rig.out, "ws-elsewhere", "w1", "op-born-5"));
-    let mut clear_out = Vec::new();
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut clear_out,
-        1000,
-    );
-    assert_eq!(stats.clear_writes, 0, "{stats:?}");
-    assert_eq!(clear_out.len(), 1);
-    assert_eq!(clear_out[0].operation_id, "op-born-5");
-    assert_eq!(clear_out[0].setter, FrameSetter::Refused);
-    assert_eq!(clear_out[0].pre_maximized, Some(true));
-    assert!(native.clear_calls.is_empty(), "vetoes never dispatch");
-}
-
 // --- staged workspace switch prototype (explicit-selection arrival-ready) ---
 
 /// Occupied -> occupied return rig: `w1` visible on `ws1` holding the
@@ -7061,7 +6438,7 @@ fn born_clear_uncontrolled_scope_vetoes_with_refusal_like_directional() {
 struct StagedRig {
     out: String,
     ws2: String,
-    reply: WorldReply,
+    reply: WorldReplyV4,
 }
 
 fn staged_shapes() -> (Rig, FreshHost, FakeNative, StagedRig) {
@@ -7102,12 +6479,7 @@ fn staged_shapes() -> (Rig, FreshHost, FakeNative, StagedRig) {
     reply
         .transfers
         .push(view_transfer("op-view-9", &rig.out, &ws2));
-    reply.effects.push(OneShotEffect {
-        id: "fx-7".to_owned(),
-        kind: EffectKind::Focus,
-        target: WindowId("w2".to_owned()),
-        issued_revision: 1,
-    });
+    reply.focus_request = Some(focus_request("fx-7", "w2"));
     let staged = StagedRig {
         out: rig.out.clone(),
         ws2,
@@ -7119,7 +6491,7 @@ fn staged_shapes() -> (Rig, FreshHost, FakeNative, StagedRig) {
 fn staged_grant(staged: &StagedRig) -> SelectionArrivalGrant {
     let command = WorldCommand::SelectWorkspace {
         output: OutputId(staged.out.clone()),
-        workspace: staged.ws2.clone(),
+        workspace: WorkspaceId(staged.ws2.clone()),
     };
     SelectionArrivalGrant::for_accepted(Some(&command), Some(7), &staged.reply, "accepted")
         .expect("select must mint the arrival grant")
@@ -7127,7 +6499,7 @@ fn staged_grant(staged: &StagedRig) -> SelectionArrivalGrant {
 
 fn staged_apply(
     diff: &mut HostDiff,
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     fresh: &FreshHost,
     native: &mut FakeNative,
 ) -> (
@@ -7174,7 +6546,7 @@ fn staged_switch_reveals_focuses_then_hides() {
         1,
         "one completing hide attempt, never a reveal row"
     );
-    assert_eq!(views[0].post.as_deref(), Some(staged.ws2.as_str()));
+    assert_eq!(ref_workspace(&views[0].post), Some(staged.ws2.as_str()));
     assert_eq!(stats.staged_reveals, 1);
     assert_eq!(stats.staged_focus, 1);
     assert_eq!(stats.staged_hides, 1);
@@ -7271,7 +6643,6 @@ fn staged_shapes_two_arrivals() -> (FreshHost, FakeNative, StagedRig) {
             hidden: true,
             sticky: false,
             floating: false,
-            fit_excluded: false,
             live_tag: Some("member-tag-1".to_owned()),
         },
     );
@@ -7436,7 +6807,7 @@ fn staged_switch_refused_hide_stays_pending_without_replay() {
     assert!(
         views
             .iter()
-            .all(|v| v.post.as_deref() != Some(staged.ws2.as_str())),
+            .all(|v| ref_workspace(&v.post) != Some(staged.ws2.as_str())),
         "no proven view attempt leaves the pass"
     );
     let (restats, _, reviews) = staged_apply(&mut diff, &staged.reply, &fresh, &mut native);
@@ -7453,7 +6824,7 @@ fn staged_switch_refused_hide_stays_pending_without_replay() {
     assert!(
         reviews
             .iter()
-            .all(|v| v.post.as_deref() != Some(staged.ws2.as_str())),
+            .all(|v| ref_workspace(&v.post) != Some(staged.ws2.as_str())),
         "still no proven view"
     );
 }
@@ -7491,9 +6862,9 @@ fn sticky_return_shapes() -> (HostDiff, FreshHost, FakeNative, String, String, S
 }
 
 /// Focus-only reply controlling both the actual home and the shown view.
-fn sticky_return_reply(out: &str, home: &str, shown: &str) -> WorldReply {
+fn sticky_return_reply(out: &str, home: &str, shown: &str) -> WorldReplyV4 {
     let mut reply = reply_shell(7, 1, &[(out, home), (out, shown)]);
-    reply.effects.push(focus_effect("fx-9", "w1"));
+    reply.focus_request = Some(focus_request("fx-9", "w1"));
     reply
 }
 
@@ -7517,7 +6888,7 @@ fn sticky_focus_return_dispatches_when_home_differs_from_shown() {
     assert!(row.foreground);
     assert_eq!(row.hold, None);
     assert!(
-        !diff.effects.mark_effect_spent("fx-9"),
+        !diff.effects.mark_focus_spent("fx-9"),
         "spent exactly once"
     );
     let (restats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
@@ -7547,7 +6918,7 @@ fn sticky_focus_return_holds_for_ordinary_window_mismatch() {
     let row = &stats.focus_dispatch[0];
     assert!(!row.dispatched);
     assert_eq!(row.hold, Some("view-not-shown"));
-    assert!(diff.effects.mark_effect_spent("fx-9"), "stays unspent");
+    assert!(diff.effects.mark_focus_spent("fx-9"), "stays unspent");
 }
 
 /// Effective authority: the shown view without Controlled scope holds the
@@ -7556,7 +6927,7 @@ fn sticky_focus_return_holds_for_ordinary_window_mismatch() {
 fn sticky_focus_return_holds_when_shown_scope_uncontrolled() {
     let (mut diff, fresh, mut native, out, home, _shown) = sticky_return_shapes();
     let mut reply = reply_shell(7, 1, &[(out.as_str(), home.as_str())]);
-    reply.effects.push(focus_effect("fx-9", "w1"));
+    reply.focus_request = Some(focus_request("fx-9", "w1"));
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.effects, 0);
     assert!(!native.is_foreground("w1"));
@@ -7564,7 +6935,7 @@ fn sticky_focus_return_holds_when_shown_scope_uncontrolled() {
     let row = &stats.focus_dispatch[0];
     assert!(!row.dispatched);
     assert_eq!(row.hold, Some("view-not-shown"));
-    assert!(diff.effects.mark_effect_spent("fx-9"), "stays unspent");
+    assert!(diff.effects.mark_focus_spent("fx-9"), "stays unspent");
 }
 
 /// Wrong output: a live home on an uncontrolled output holds on the home
@@ -7583,7 +6954,7 @@ fn sticky_focus_return_holds_when_home_output_not_controlled() {
     let row = &stats.focus_dispatch[0];
     assert!(!row.dispatched);
     assert_eq!(row.hold, Some("held-scope"));
-    assert!(diff.effects.mark_effect_spent("fx-9"), "stays unspent");
+    assert!(diff.effects.mark_focus_spent("fx-9"), "stays unspent");
 }
 
 /// Not shown: no live view on the home output holds the sticky focus for
@@ -7600,7 +6971,7 @@ fn sticky_focus_return_holds_when_view_unknown() {
     let row = &stats.focus_dispatch[0];
     assert!(!row.dispatched);
     assert_eq!(row.hold, Some("view-not-shown"));
-    assert!(diff.effects.mark_effect_spent("fx-9"), "stays unspent");
+    assert!(diff.effects.mark_focus_spent("fx-9"), "stays unspent");
 }
 
 /// Stale identity: a recycled HWND behind the sticky token stops at the
@@ -7618,7 +6989,7 @@ fn sticky_focus_return_holds_on_recycled_hwnd() {
     assert!(!row.dispatched);
     assert_eq!(row.hold, Some("pre-setter-stop"));
     assert!(stats.stopped_mid_apply);
-    assert!(diff.effects.mark_effect_spent("fx-9"), "stays unspent");
+    assert!(diff.effects.mark_focus_spent("fx-9"), "stays unspent");
 }
 
 /// Stale lifetime: a rotated tag behind the same HWND stops at the
@@ -7636,7 +7007,7 @@ fn sticky_focus_return_holds_on_rotated_tag() {
     assert!(!row.dispatched);
     assert_eq!(row.hold, Some("pre-setter-stop"));
     assert!(stats.stopped_mid_apply);
-    assert!(diff.effects.mark_effect_spent("fx-9"), "stays unspent");
+    assert!(diff.effects.mark_focus_spent("fx-9"), "stays unspent");
 }
 
 /// Hidden target: a live-hidden sticky window holds without dispatch,
@@ -7653,7 +7024,7 @@ fn sticky_focus_return_holds_when_live_hidden() {
     let row = &stats.focus_dispatch[0];
     assert!(!row.dispatched);
     assert_eq!(row.hold, Some("pre-setter-hold"));
-    assert!(diff.effects.mark_effect_spent("fx-9"), "stays unspent");
+    assert!(diff.effects.mark_focus_spent("fx-9"), "stays unspent");
 }
 
 /// Iconic target: a live-minimized sticky window holds without dispatch,
@@ -7670,7 +7041,7 @@ fn sticky_focus_return_holds_when_live_iconic() {
     let row = &stats.focus_dispatch[0];
     assert!(!row.dispatched);
     assert_eq!(row.hold, Some("pre-setter-hold"));
-    assert!(diff.effects.mark_effect_spent("fx-9"), "stays unspent");
+    assert!(diff.effects.mark_focus_spent("fx-9"), "stays unspent");
 }
 
 /// Dead target: an unreadable sticky lifetime holds without dispatch,
@@ -7687,66 +7058,6 @@ fn sticky_focus_return_holds_when_target_dead() {
     let row = &stats.focus_dispatch[0];
     assert!(!row.dispatched);
     assert_eq!(row.hold, Some("pre-setter-hold"));
-    assert!(diff.effects.mark_effect_spent("fx-9"), "stays unspent");
+    assert!(diff.effects.mark_focus_spent("fx-9"), "stays unspent");
 }
 
-/// Guard routing: the NA foreground guard still applies to a sticky
-/// home/shown mismatch via the shown view. A foreign competitor moving
-/// during the nonactivating switch vetoes the sticky focus without
-/// stealing it: unspent, with the view write intact.
-#[test]
-fn sticky_focus_return_competing_foreground_vetoes_without_stealing() {
-    let (mut diff, fresh, mut native, out, home, shown) = sticky_return_shapes();
-    // Arm the nonactivating lane on the shown view: `w2` lives there and
-    // carries the arming focus effect. The view starts elsewhere so the
-    // switch runs and the probe flips the foreground to a foreign
-    // competitor mid-switch.
-    if let Some(live) = native.windows.get_mut("w2") {
-        live.output = out.clone();
-        live.workspace = shown.clone();
-        live.hidden = false;
-    }
-    native.views.insert(out.clone(), "ws-other".to_owned());
-    let mut reply = reply_shell(
-        7,
-        1,
-        &[
-            (out.as_str(), home.as_str()),
-            (out.as_str(), shown.as_str()),
-        ],
-    );
-    reply.transfers.push(view_transfer("op-v", &out, &shown));
-    reply.effects.push(focus_effect("fx-9", "w1"));
-    reply.effects.push(focus_effect("fx-d", "w2"));
-    let mut probe = ForeignDuringNonactivating { inner: native };
-    let stats = apply_world_reply(
-        &mut diff,
-        &reply,
-        &fresh,
-        &mut probe,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        0,
-    );
-    assert_eq!(stats.view_writes, 1);
-    assert_eq!(stats.effects, 0);
-    assert!(
-        !probe.inner.is_foreground("w1"),
-        "competing foreground must not be stolen"
-    );
-    assert_eq!(stats.focus_dispatch.len(), 2);
-    for row in &stats.focus_dispatch {
-        assert!(!row.dispatched);
-        assert_eq!(row.hold, Some("foreground-changed"));
-    }
-    assert!(
-        diff.effects.mark_effect_spent("fx-9"),
-        "sticky stays unspent"
-    );
-    assert!(
-        diff.effects.mark_effect_spent("fx-d"),
-        "arming effect stays unspent"
-    );
-}

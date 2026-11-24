@@ -18,7 +18,17 @@ use super::world_diff::{FreshHost, NativeOps};
 use super::world_native::{LiveNative, NativePrimitives};
 use super::{MonitorArea, ObservedWindow, RetainedRow, TileLoop, live_foreground_window};
 use std::collections::HashMap;
-use tiler_core::world_report::{CommandResult, TransferKind, WorldCommand, WorldReply};
+use tiler_core::world_report::{CommandResult, TransferKind, WorldCommand, WorldReplyV4};
+
+/// One ordered world command's outcome: the incorporated v4 reply plus the
+/// correlated settlement result (`None` when the command did not execute:
+/// duplicate, already-consumed, or rejected). Thin local carrier over the
+/// core's `(WorldOutcome, dispositions)`; the reply carries no
+/// `command_result` and no effects in v4.
+pub(super) struct WorldCommandOutcome {
+    pub(super) reply: WorldReplyV4,
+    pub(super) result: Option<CommandResult>,
+}
 
 // Test-only native-planning proof for latest-only scheduling (offline,
 // native-free): counts `apply_accepted` passes. The command counter covers
@@ -99,7 +109,7 @@ enum CommandApplyMode {
 fn ack_close_receipts(
     world: &mut super::world_owner::WorldOwner,
     pending_closed: &mut std::collections::BTreeMap<String, super::retained::PendingClosed>,
-    reply: &tiler_core::world_report::WorldReply,
+    reply: &tiler_core::world_report::WorldReplyV4,
     applied_homing: &mut std::collections::HashMap<String, (String, String)>,
 ) -> super::world_sequencer::AckOutcome {
     let mut pending = std::mem::take(pending_closed);
@@ -122,7 +132,7 @@ impl TileLoop {
     /// the tick's disjoint borrow of the world owner stays intact.
     pub(super) fn clear_gesture_override_on_incorporation(
         override_slot: &mut Option<tiler_core::gesture::GestureIngress>,
-        reply: &WorldReply,
+        reply: &WorldReplyV4,
     ) {
         if let Some(terminal) = reply.gesture_settled
             && override_slot
@@ -148,7 +158,7 @@ impl TileLoop {
 /// explicit finished batch proof (the live view names the target with zero
 /// stray visibility), never on a desired id echo when no work ran.
 pub(super) fn merge_applied_transfers(
-    reply: &tiler_core::world_report::WorldReply,
+    reply: &tiler_core::world_report::WorldReplyV4,
     member_attempts: &[tiler_core::world_report::MemberAttempt],
     view_attempts: &[tiler_core::world_report::ViewAttempt],
     fresh: &FreshHost,
@@ -227,7 +237,7 @@ pub(super) fn merge_applied_transfers(
 /// the merge); membership-only rows (floating, no frame) skip the check
 /// and settle on the homing plus visibility proof alone.
 fn tiled_frame_matches(
-    reply: &tiler_core::world_report::WorldReply,
+    reply: &tiler_core::world_report::WorldReplyV4,
     native: &mut LiveNative,
     token: &str,
 ) -> bool {
@@ -289,20 +299,24 @@ fn world_command_kind(command: &WorldCommand) -> &'static str {
         WorldCommand::SendDirectional { .. } => "send-directional",
         WorldCommand::MigrateDirectional { .. } => "migrate-directional",
         WorldCommand::ToggleMaximize { .. } => "toggle-maximize",
+        WorldCommand::SetSticky { .. } => "set-sticky",
+        WorldCommand::ToggleSticky { .. } => "toggle-sticky",
+        WorldCommand::SetFullscreen { .. } => "set-fullscreen",
+        WorldCommand::ToggleFullscreen { .. } => "toggle-fullscreen",
         WorldCommand::Operation(_) => "operation",
     }
 }
 
 /// Redacted fixed result vocabulary: the variant alone, never rects,
 /// members, or bounds.
-fn command_result_kind(result: &Option<CommandResult>) -> &'static str {
+fn command_result_kind(result: Option<&CommandResult>) -> &'static str {
     match result {
         None => "none",
-        Some(CommandResult::DragPreview { .. }) => "drag-preview",
         Some(CommandResult::Float { .. }) => "float",
         Some(CommandResult::Directional { .. }) => "directional",
         Some(CommandResult::Migration { .. }) => "migration",
         Some(CommandResult::Maximize { .. }) => "maximize",
+        Some(CommandResult::Rejected { .. }) => "rejected",
     }
 }
 
@@ -397,18 +411,15 @@ fn should_log_apply(
     stats: &super::world_diff::ApplyStats,
     member_attempts: &[tiler_core::world_report::MemberAttempt],
     view_attempts: &[tiler_core::world_report::ViewAttempt],
-    clear_attempts: &[tiler_core::world_report::ClearAttempt],
     frame_attempts: &[tiler_core::world_report::FrameAttempt],
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
 ) -> bool {
     if command_kind != "observation" {
         return true;
     }
     if !member_attempts.is_empty()
         || !view_attempts.is_empty()
-        || !clear_attempts.is_empty()
         || !frame_attempts.is_empty()
-        || !stats.clear_holds.is_empty()
     {
         return true;
     }
@@ -439,7 +450,6 @@ fn should_log_apply(
     stats.geometry_writes
         + stats.membership_writes
         + stats.view_writes
-        + stats.clear_writes
         + stats.creations
         + stats.removals
         + stats.effects
@@ -485,6 +495,54 @@ fn rect_value(rect: tiler_core::geometry::Rect) -> serde_json::Value {
         "w": rect.w,
         "h": rect.h,
     })
+}
+
+fn workspace_ref_value(reference: &tiler_core::world_report::WorkspaceRef) -> serde_json::Value {
+    match reference {
+        tiler_core::world_report::WorkspaceRef::Logical { output, workspace } => {
+            serde_json::json!({
+                "kind": "logical",
+                "out": output.0.clone(),
+                "ws": workspace.0.clone(),
+            })
+        }
+        tiler_core::world_report::WorkspaceRef::Native { output, workspace } => {
+            serde_json::json!({
+                "kind": "native",
+                "out": output.0.clone(),
+                "ws": workspace.as_str(),
+            })
+        }
+    }
+}
+
+/// Mechanical membership disposition token (called setter or the consumed
+/// already-at-target readback).
+fn member_disposition_str(
+    disposition: tiler_core::world_report::MemberDisposition,
+) -> &'static str {
+    match disposition {
+        tiler_core::world_report::MemberDisposition::Called(setter) => setter.as_str(),
+        tiler_core::world_report::MemberDisposition::AlreadyAtTarget => "already-at-target",
+    }
+}
+
+/// Whether one typed workspace reference proves exactly `output` plus the
+/// logical workspace token. Only the logical namespace can prove a logical
+/// transfer target; a native reference never does, even when its native id
+/// happens to spell the same token.
+fn workspace_ref_covers(
+    reference: &tiler_core::world_report::WorkspaceRef,
+    output: &tiler_core::directional::OutputId,
+    workspace: &str,
+) -> bool {
+    match reference {
+        tiler_core::world_report::WorkspaceRef::Logical {
+            output: scope_output,
+            workspace: scope_workspace,
+        } => scope_output == output && scope_workspace.0 == workspace,
+        tiler_core::world_report::WorkspaceRef::Native { .. } => false,
+    }
 }
 
 /// Pure trace-row builder for one apply pass (TRACE-ONLY: no actuation
@@ -536,18 +594,18 @@ fn rect_value(rect: tiler_core::geometry::Rect) -> serde_json::Value {
 #[allow(clippy::too_many_arguments)]
 fn apply_diag_value(
     tick: u64,
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     delivery: &'static str,
     command_kind: &str,
     stats: &super::world_diff::ApplyStats,
     member_attempts: &[tiler_core::world_report::MemberAttempt],
     view_attempts: &[tiler_core::world_report::ViewAttempt],
-    clear_attempts: &[tiler_core::world_report::ClearAttempt],
+    command_result: Option<&CommandResult>,
     frame_attempts: &[tiler_core::world_report::FrameAttempt],
     fresh_route: serde_json::Value,
     cursor_hit: Option<String>,
     ffc_enabled: bool,
-    report: &tiler_core::world_report::WorldReport,
+    report: &tiler_core::world_report::WorldReportV4,
     receipt_views: &[(String, String)],
     receipt_proof_mono_ms: Option<u64>,
 ) -> serde_json::Value {
@@ -560,9 +618,9 @@ fn apply_diag_value(
                 "window": item.window.0.clone(),
                 "out": item.target_output.0.clone(),
                 "ws": item.target_workspace.clone(),
-                "setter": item.setter.as_str(),
-                "pre": item.pre.as_ref().map(|(out, ws)| format!("{out}/{ws}", out = out.0)),
-                "post": item.post.as_ref().map(|(out, ws)| format!("{out}/{ws}", out = out.0)),
+                "setter": member_disposition_str(item.disposition),
+                "pre": item.pre.as_ref().map(workspace_ref_value),
+                "post": item.post.as_ref().map(workspace_ref_value),
                 "attempt_ms": item.attempt_ms,
             })
         })
@@ -575,43 +633,11 @@ fn apply_diag_value(
                 "op": item.operation_id.clone(),
                 "out": item.target_output.0.clone(),
                 "ws": item.target_workspace.clone(),
-                "setter": item.setter.as_str(),
-                "pre": item.pre,
-                "post": item.post,
-                "base": item.baseline,
+                "setter": item.disposition.as_str(),
+                "pre": item.pre.as_ref().map(workspace_ref_value),
+                "post": item.post.as_ref().map(workspace_ref_value),
+                "base": item.baseline.as_ref().map(workspace_ref_value),
                 "attempt_ms": item.attempt_ms,
-            })
-        })
-        .collect();
-    let clear_rows: Vec<serde_json::Value> = clear_attempts
-        .iter()
-        .take(MAX_APPLY_DIAG_ATTEMPTS)
-        .map(|item| {
-            serde_json::json!({
-                "op": item.operation_id.clone(),
-                "window": item.window.0.clone(),
-                "setter": item.setter.as_str(),
-                "pre": item.pre_maximized,
-                "post": item.post_maximized,
-                "attempt_ms": item.attempt_ms,
-            })
-        })
-        .collect();
-    // Trace-only per-clear hold attribution for this pass: one row per
-    // published clear desire that dispatched no setter, naming the exact
-    // pre-dispatch gate. Bounded with an honest omitted count derived
-    // from the unbounded `clear_holds_total`, never the truncated stored
-    // rows. Veto holds ride alongside their correlated refused attempt in
-    // `clears` above; silent holds ride with no attempt and no spent mark.
-    let clear_hold_rows: Vec<serde_json::Value> = stats
-        .clear_holds
-        .iter()
-        .take(MAX_APPLY_DIAG_ATTEMPTS)
-        .map(|item| {
-            serde_json::json!({
-                "op": item.op.clone(),
-                "window": item.window.clone(),
-                "hold": item.hold,
             })
         })
         .collect();
@@ -645,65 +671,56 @@ fn apply_diag_value(
         .iter()
         .take(MAX_APPLY_DIAG_ATTEMPTS)
         .map(|item| {
+            let (purpose, operation_id, prewrite) = match &item.purpose {
+                tiler_core::world_report::FramePurpose::Layout => ("layout", None, None),
+                tiler_core::world_report::FramePurpose::FloatPlacement {
+                    operation_id,
+                    prewrite,
+                } => ("float-placement", Some(operation_id.clone()), *prewrite),
+            };
             serde_json::json!({
-                "op": item.operation_id.clone(),
+                "op": operation_id,
                 "window": item.window.0.clone(),
                 "target": rect_value(item.target),
-                "setter": item.setter.as_str(),
-                "prewrite": item.prewrite.map(rect_value),
+                "setter": item.disposition.as_str(),
+                "purpose": purpose,
+                "prewrite": prewrite.map(rect_value),
                 "readback": item.readback.map(rect_value),
                 "dpi_before": item.dpi_before,
                 "dpi_after": item.dpi_after,
+                "attempt_id": item.attempt_id,
                 "attempt_ms": item.attempt_ms,
             })
         })
         .collect();
-    // Published pending window-operation desire: one row per actual
-    // `frame_operation`/`clear_operation` token in window order (frame then
-    // clear per window), with the frame target when already available.
-    // Bounded with an honest omitted count. Empty on a fresh accepted reply
-    // is truthfully no published operation; it never claims an ambiguous
-    // internally-retained binding retired (only terminal events prove that).
+    // Published pending frame-operation desire: one row per actual
+    // `frame_operation` token in window order, with the frame target when
+    // already available. Bounded with an honest omitted count. Empty on a
+    // fresh accepted reply is truthfully no published operation; it never
+    // claims an ambiguous internally-retained binding retired (only
+    // terminal events prove that).
     let desired_operation_total: usize = reply
         .windows
         .iter()
-        .map(|row| {
-            usize::from(
-                row.frame_operation
-                    .as_deref()
-                    .is_some_and(|op| !op.is_empty()),
-            ) + usize::from(
-                row.clear_operation
-                    .as_deref()
-                    .is_some_and(|op| !op.is_empty()),
-            )
+        .filter(|row| {
+            row.frame_operation
+                .as_deref()
+                .is_some_and(|op| !op.is_empty())
         })
-        .sum();
+        .count();
     let desired_operation_rows: Vec<serde_json::Value> = reply
         .windows
         .iter()
-        .flat_map(|row| {
-            let mut rows = Vec::with_capacity(2);
-            if let Some(op) = row.frame_operation.as_deref()
-                && !op.is_empty()
-            {
-                rows.push(serde_json::json!({
+        .filter_map(|row| {
+            let op = row.frame_operation.as_deref()?;
+            (!op.is_empty()).then(|| {
+                serde_json::json!({
                     "op": op,
                     "window": row.lifetime.0.clone(),
                     "kind": "frame",
                     "target": row.effective_frame.map(rect_value),
-                }));
-            }
-            if let Some(op) = row.clear_operation.as_deref()
-                && !op.is_empty()
-            {
-                rows.push(serde_json::json!({
-                    "op": op,
-                    "window": row.lifetime.0.clone(),
-                    "kind": "clear",
-                }));
-            }
-            rows
+                })
+            })
         })
         .take(MAX_APPLY_DIAG_ATTEMPTS)
         .collect();
@@ -731,7 +748,6 @@ fn apply_diag_value(
                 "floating": row.floating,
                 "float_origin": row.float_origin.map(|origin| origin.as_str()),
                 "frame_op": row.frame_operation.clone(),
-                "clear_op": row.clear_operation.clone(),
             })
         })
         .collect();
@@ -790,10 +806,7 @@ fn apply_diag_value(
                     "output": screen.output.0.clone(),
                     "full": screen.full_rect.map(rect_value),
                     "work": screen.work_area.map(rect_value),
-                    "gap": screen.gap,
-                    "outer_gap": screen.outer_gap,
                     "complete": screen.complete,
-                    "primary": screen.primary,
                 })
             })
             .collect()
@@ -835,14 +848,15 @@ fn apply_diag_value(
         })
         .collect();
     let focus_effects: Vec<serde_json::Value> = reply
-        .effects
+        .focus_request
         .iter()
-        .take(MAX_APPLY_DIAG_FOCUS)
-        .map(|effect| {
+        .map(|request| {
             serde_json::json!({
-                "id": effect.id.clone(),
-                "kind": effect.kind.as_str(),
-                "target": effect.target.0.clone(),
+                "id": request.id.clone(),
+                "kind": request.cause.as_str(),
+                "target": request.target.0.clone(),
+                "out": request.output.0.clone(),
+                "ws": request.workspace.clone(),
             })
         })
         .collect();
@@ -992,7 +1006,7 @@ fn apply_diag_value(
         "delivery": delivery,
         "command": command_kind,
         "command_consumed": reply.command_consumed,
-        "command_result": command_result_kind(&reply.command_result),
+        "command_result": command_result_kind(command_result),
         "invalidation_pending": super::observe::hook_cause_summary()
             .into_iter()
             .map(|(cause, pending)| serde_json::json!({
@@ -1004,7 +1018,6 @@ fn apply_diag_value(
             "geometry_writes": stats.geometry_writes,
             "membership_writes": stats.membership_writes,
             "view_writes": stats.view_writes,
-            "clear_writes": stats.clear_writes,
             "creations": stats.creations,
             "removals": stats.removals,
             "effects": stats.effects,
@@ -1031,14 +1044,6 @@ fn apply_diag_value(
         "views_omitted": view_attempts
             .len()
             .saturating_sub(MAX_APPLY_DIAG_ATTEMPTS.min(view_attempts.len())),
-        "clears": clear_rows,
-        "clears_omitted": clear_attempts
-            .len()
-            .saturating_sub(MAX_APPLY_DIAG_ATTEMPTS.min(clear_attempts.len())),
-        "clear_holds": clear_hold_rows,
-        "clear_holds_omitted": stats
-            .clear_holds_total
-            .saturating_sub(stats.clear_holds.len().min(MAX_APPLY_DIAG_ATTEMPTS)),
         "frames": frame_rows,
         "frames_omitted": frame_attempts
             .len()
@@ -1066,14 +1071,10 @@ fn apply_diag_value(
             .len()
             .saturating_sub(desired_transfers.len()),
         "focus_effects": focus_effects,
-        "focus_effects_omitted": reply
-            .effects
-            .len()
+        "focus_effects_omitted": usize::from(reply.focus_request.is_some())
             .saturating_sub(focus_effects.len()),
         "focus_dispatch": focus_dispatch,
-        "focus_dispatch_omitted": reply
-            .effects
-            .len()
+        "focus_dispatch_omitted": usize::from(reply.focus_request.is_some())
             .saturating_sub(focus_dispatch.len()),
         "inflight_events": inflight_rows,
         "inflight_events_omitted": stats
@@ -1188,18 +1189,18 @@ fn log_apply_diag(
     log_path: &std::path::Path,
     trace: bool,
     tick: u64,
-    reply: &WorldReply,
+    reply: &WorldReplyV4,
     delivery: &'static str,
     command_kind: &str,
     stats: &super::world_diff::ApplyStats,
     member_attempts: &[tiler_core::world_report::MemberAttempt],
     view_attempts: &[tiler_core::world_report::ViewAttempt],
-    clear_attempts: &[tiler_core::world_report::ClearAttempt],
+    command_result: Option<&CommandResult>,
     frame_attempts: &[tiler_core::world_report::FrameAttempt],
     fresh_route: serde_json::Value,
     cursor_hit: Option<String>,
     ffc_enabled: bool,
-    report: &tiler_core::world_report::WorldReport,
+    report: &tiler_core::world_report::WorldReportV4,
     receipt_views: &[(String, String)],
     receipt_proof_mono_ms: Option<u64>,
     hover_changed: bool,
@@ -1457,7 +1458,7 @@ pub(super) fn run_observation_tick(
     fulls: &[tiler_core::geometry::Rect],
     cursor: Option<(i32, i32)>,
     presentation_paused: bool,
-) -> Option<tiler_core::world_report::WorldReply> {
+) -> Option<tiler_core::world_report::WorldReplyV4> {
     let trace = state.trace;
     let tick = state.tick;
     let log_path = state.log_path.clone();
@@ -1481,7 +1482,7 @@ pub(super) fn run_observation_tick(
     // computed before the disjoint split borrows the loop. The game lane
     // sets `presentation_paused` so the core skips presentation work.
     let (presentation_foreground, presentation_chord, presentation_move, presentation_style) =
-        state.presentation_tick_inputs(me, fulls, foreground_hwnd);
+        state.presentation_tick_inputs(me, fulls, foreground_hwnd, observed);
     let presentation_border_enabled = state.border.enabled;
     let presentation_underlay_enabled = state.underlay.enabled;
     // Disjoint borrows: `world` mutably alongside every read-only input
@@ -1923,8 +1924,10 @@ pub(super) fn run_observation_tick(
     for attempt in member_attempts {
         world.note_member_attempt(attempt);
     }
-    for attempt in view_attempts {
-        world.note_view_attempt(attempt);
+    if world.host_owned_workspace_domains() {
+        for attempt in view_attempts {
+            world.note_view_attempt(attempt);
+        }
     }
     for attempt in clear_attempts {
         world.note_clear_attempt(attempt);
@@ -1995,7 +1998,7 @@ fn run_observation_core_only(
     // here like the command dispatch below.
     let presentation_paused = false;
     let (presentation_foreground, presentation_chord, presentation_move, presentation_style) =
-        state.presentation_tick_inputs(me, fulls, foreground_hwnd);
+        state.presentation_tick_inputs(me, fulls, foreground_hwnd, observed);
     let presentation_border_enabled = state.border.enabled;
     let presentation_underlay_enabled = state.underlay.enabled;
     let TileLoop {
@@ -2191,7 +2194,7 @@ fn run_world_command_impl(
     // like the observation path. Commands never run on the game lane, so
     // the pause flag stays clear here.
     let (presentation_foreground, presentation_chord, presentation_move, presentation_style) =
-        state.presentation_tick_inputs(me, fulls, foreground_hwnd);
+        state.presentation_tick_inputs(me, fulls, foreground_hwnd, observed);
     let presentation_border_enabled = state.border.enabled;
     let presentation_underlay_enabled = state.underlay.enabled;
     let presentation_paused = false;
@@ -2769,8 +2772,10 @@ fn run_world_command_impl(
     for attempt in member_attempts {
         world.note_member_attempt(attempt);
     }
-    for attempt in view_attempts {
-        world.note_view_attempt(attempt);
+    if world.host_owned_workspace_domains() {
+        for attempt in view_attempts {
+            world.note_view_attempt(attempt);
+        }
     }
     for attempt in clear_attempts {
         world.note_clear_attempt(attempt);
@@ -3002,7 +3007,7 @@ pub(super) fn dispatch_test_observation(
     foreground_hwnd: u64,
     cursor: Option<(i32, i32)>,
     monotonic_ms: u64,
-) -> Option<tiler_core::world_report::WorldReply> {
+) -> Option<tiler_core::world_report::WorldReplyV4> {
     super::rows::refresh_world_hints(state, observed, retained);
     // Test seeding carries the loop's gesture tables as ingress (same as
     // production): tests needing terminal phases set the override slot
@@ -3146,8 +3151,8 @@ mod apply_diag_tests {
     use tiler_core::directional::{OutputId, WindowId};
     use tiler_core::world_report::{HoldReason, ScopeAuthority, ScopeStatus, TransferTarget};
 
-    fn reply_shell() -> WorldReply {
-        WorldReply {
+    fn reply_shell() -> WorldReplyV4 {
+        WorldReplyV4 {
             contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
             adapter_incarnation: "adapter-1".to_owned(),
             core_generation: "gen-1".to_owned(),
@@ -3169,21 +3174,41 @@ mod apply_diag_tests {
             workspaces: Vec::new(),
             outputs: Vec::new(),
             windows: Vec::new(),
-            transfers: vec![TransferTarget {
+            transfers: vec![TransferTargetV4 {
                 operation_id: "op-3".to_owned(),
                 kind: TransferKind::Window(WindowId("w1".to_owned())),
                 target_output: OutputId("o1".to_owned()),
                 target_workspace: "w2".to_owned(),
                 follow: false,
                 held: false,
+                command_seq: None,
+                parent: None,
             }],
-            effects: Vec::new(),
-            command_result: None,
+            focus_request: None,
+            drag_preview: None,
             gesture_settled: None,
             operation_settled: Vec::new(),
             native_creations: Vec::new(),
             cursor_warp: None,
-            presentation: tiler_core::world_presentation::WorldPresentation::default(),
+            presentation: tiler_core::world_report::WorldPresentationV4 {
+                foreground: String::new(),
+                rev: 0,
+                suspended_output: None,
+                border: tiler_core::world_report::BorderPresentationV4 {
+                    visible: false,
+                    reason: None,
+                    subject: None,
+                    outsets: None,
+                    width: None,
+                    radius: None,
+                    witness: None,
+                },
+                underlay: Default::default(),
+                pager: Vec::new(),
+            },
+            intent_desired: Vec::new(),
+            switch_settled: Vec::new(),
+            diagnostics: Vec::new(),
         }
     }
 
@@ -3200,19 +3225,17 @@ mod apply_diag_tests {
             output: OutputId(output.to_owned()),
             full_rect: Some(full),
             work_area: Some(work),
-            gap,
-            outer_gap,
             complete,
-            primary,
+            scale: 1.0,
+            identity: tiler_core::world_report::OutputIdentity::unknown(),
         }
     }
 
     fn report_shell(
         screens: Vec<tiler_core::world_report::ScreenReport>,
-    ) -> tiler_core::world_report::WorldReport {
-        tiler_core::world_report::WorldReport {
-            contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
-            owner: "owner-1".to_owned(),
+    ) -> tiler_core::world_report::WorldReportV4 {
+        tiler_core::world_report::WorldReportV4 {
+            contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION_V4,
             adapter_incarnation: "adapter-1".to_owned(),
             core_generation: "gen-1".to_owned(),
             observation_seq: 3,
@@ -3220,30 +3243,22 @@ mod apply_diag_tests {
             request_id: "req-9".to_owned(),
             command_seq: None,
             command: None,
-            workspace_mode: tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
             screens,
+            held_screens: Vec::new(),
             windows: Vec::new(),
-            views: Vec::new(),
+            held_windows: Vec::new(),
             closed: Vec::new(),
-            host_owned_workspace_domains: false,
-            equal_workspace_count: false,
-            birth_clear: false,
             native: Vec::new(),
-            fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-            migration_source_refill:
-                tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-            born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-            switch_target: tiler_core::cursor_targeting::SwitchTarget::Cursor,
-            fresh_placement: tiler_core::cursor_targeting::FreshPlacement::CursorOutputMru,
-            focus_follows_cursor: false,
-            cursor_warp: false,
+            held_native: Vec::new(),
             cursor: None,
             cursor_hit: None,
             focused_global: String::new(),
+            foreground_known: false,
+            focus_changes: None,
             action_foreground: None,
             action_cached: None,
             action_outputs: Vec::new(),
-            default_tiled: true,
+            primary_output: None,
             inventory_complete: true,
             gesture_barrier: false,
             gesture: None,
@@ -3253,7 +3268,15 @@ mod apply_diag_tests {
             view_attempts: Vec::new(),
             clear_attempts: Vec::new(),
             creation_attempts: Vec::new(),
-            presentation: tiler_core::world_report::PresentationIngress::disabled(),
+            held_attempts: Vec::new(),
+            state_attempts: Vec::new(),
+            visibility_attempts: Vec::new(),
+            focus_feedback: Vec::new(),
+            presentation: tiler_core::world_report::PresentationRowV4::Valid(
+                tiler_core::world_report::PresentationIngressV4::default(),
+            ),
+            intent_records: Vec::new(),
+            renderer_input: None,
         }
     }
 
@@ -3858,7 +3881,7 @@ mod apply_diag_tests {
         ));
     }
 
-    fn pager_reply_with(foreground: &str, frame: tiler_core::geometry::Rect) -> WorldReply {
+    fn pager_reply_with(foreground: &str, frame: tiler_core::geometry::Rect) -> WorldReplyV4 {
         use tiler_core::world_presentation::{PagerScreen, PagerWindow, PagerWorkspace};
         let mut reply = reply_shell();
         reply.presentation.foreground = foreground.to_owned();
@@ -5343,11 +5366,11 @@ mod apply_diag_tests {
             attempt_ms: 7,
             operation_id: Some("op-20".to_owned()),
             prewrite: Some(tiler_core::geometry::Rect {
-                x: 0,
-                y: 0,
-                w: 800,
-                h: 600,
-            }),
+                    x: 0,
+                    y: 0,
+                    w: 800,
+                    h: 600,
+                }),
         }];
         let quiet = super::super::world_diff::ApplyStats::default();
         let empty_members: Vec<tiler_core::world_report::MemberAttempt> = Vec::new();
@@ -5415,9 +5438,12 @@ mod apply_diag_tests {
         assert_eq!(settled.len(), 1);
         assert_eq!(settled[0]["op"], serde_json::json!("op-21"));
         assert_eq!(settled[0]["outcome"], serde_json::json!("refused-proven"));
-        // Desire and verdict share the op but stay separate rows: the
-        // desired row is pending intent, the event is the terminal verdict.
-        assert_ne!(desired[1]["kind"], settled[0]["outcome"]);
+        // The desire row is pending intent and the settled row is the
+        // terminal verdict; the v4 wire publishes no clear-operation desire,
+        // so the published frame op is the only desired-operation row while
+        // the clear verdict stays solely in `operation_settled`.
+        assert_eq!(desired[0]["op"], serde_json::json!("op-20"));
+        assert_eq!(settled[0]["op"], serde_json::json!("op-21"));
     }
 
     #[test]
@@ -5690,8 +5716,11 @@ mod apply_diag_tests {
         assert_eq!(geometry[0]["output"], serde_json::json!("o1"));
         assert_eq!(geometry[0]["work"]["w"], serde_json::json!(800));
         assert_eq!(geometry[0]["full"]["h"], serde_json::json!(600));
-        assert_eq!(geometry[0]["gap"], serde_json::json!(8));
-        assert_eq!(geometry[0]["outer_gap"], serde_json::json!(12));
+        // v4 screen reports carry no gap/outer-gap keys: the core derives
+        // physical gaps from logical settings, so the report basis cannot
+        // publish adapter-side spacing values.
+        assert!(geometry[0]["gap"].is_null());
+        assert!(geometry[0]["outer_gap"].is_null());
         assert_eq!(value["desired_geometry_omitted"], serde_json::json!(0));
         assert_eq!(
             value["geometry_report"]["request"],

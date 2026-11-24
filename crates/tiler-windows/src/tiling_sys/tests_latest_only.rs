@@ -138,6 +138,7 @@ fn area() -> MonitorArea {
             w: 800,
             h: 600,
         },
+        dpi: 96,
     }
 }
 
@@ -1207,6 +1208,7 @@ fn area2() -> MonitorArea {
             w: 800,
             h: 600,
         },
+        dpi: 96,
     }
 }
 

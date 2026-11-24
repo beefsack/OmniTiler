@@ -72,7 +72,7 @@ pub(super) fn workspace_do_select(
         fulls,
         WorldCommand::SelectWorkspace {
             output: tiler_core::directional::OutputId(wire),
-            workspace: target.to_owned(),
+            workspace: tiler_core::directional::WorkspaceId(target.to_owned()),
         },
         super::observation::sample_cursor(),
     );

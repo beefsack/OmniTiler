@@ -201,10 +201,10 @@ pub(super) fn dispatch_resize_intent(
     );
     state.resize_repeat = Some(repeat);
     let resize_mode = match intent.mode {
-        tiler_core::contract::ResizeMode::Inwards => {
+        crate::snapkey::ResizeMode::Inwards => {
             tiler_core::directional::ResizeSelector::Inwards
         }
-        tiler_core::contract::ResizeMode::Outwards => {
+        crate::snapkey::ResizeMode::Outwards => {
             tiler_core::directional::ResizeSelector::Outwards
         }
     };
@@ -224,7 +224,9 @@ pub(super) fn dispatch_resize_intent(
         foreground,
         fulls,
         tiler_core::world_report::WorldCommand::Operation(CoreCommand::Resize {
-            window: from.clone(),
+            window: tiler_core::directional::WindowSubject::Window(
+                tiler_core::directional::WindowId(from.clone()),
+            ),
             direction: intent.direction,
             mode: resize_mode,
             press_index,

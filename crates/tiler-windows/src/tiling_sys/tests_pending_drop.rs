@@ -174,6 +174,7 @@ fn pd_areas() -> Vec<MonitorArea> {
                 w: 800,
                 h: 600,
             },
+            dpi: 96,
         },
         MonitorArea {
             device: DEV_B.to_owned(),
@@ -189,6 +190,7 @@ fn pd_areas() -> Vec<MonitorArea> {
                 w: 800,
                 h: 600,
             },
+            dpi: 96,
         },
     ]
 }
@@ -344,7 +346,7 @@ struct Fx {
     fulls: Vec<Rect>,
     ws_a: String,
     seed_req: String,
-    seed: tiler_core::world_report::WorldReply,
+    seed: tiler_core::world_report::WorldReplyV4,
 }
 
 fn pd_fixture(with_occupant: bool) -> Fx {
@@ -1326,9 +1328,9 @@ fn drop_diag_sample_prunes_member() {
 fn arrival_reply(
     out: &str,
     rows: Vec<tiler_core::world_report::WindowDesire>,
-) -> tiler_core::world_report::WorldReply {
-    use tiler_core::world_report::{ScopeAuthority as Auth, ScopeStatus};
-    tiler_core::world_report::WorldReply {
+) -> tiler_core::world_report::WorldReplyV4 {
+    use tiler_core::world_report::{BorderHideReasonV4, BorderPresentationV4, ScopeAuthority as Auth, ScopeStatus, WorldPresentationV4};
+    tiler_core::world_report::WorldReplyV4 {
         contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
@@ -1345,13 +1347,31 @@ fn arrival_reply(
         outputs: Vec::new(),
         windows: rows,
         transfers: Vec::new(),
-        effects: Vec::new(),
-        command_result: None,
+        focus_request: None,
+        drag_preview: None,
         gesture_settled: None,
         operation_settled: Vec::new(),
         native_creations: Vec::new(),
         cursor_warp: None,
-        presentation: tiler_core::world_presentation::WorldPresentation::default(),
+        presentation: WorldPresentationV4 {
+            foreground: String::new(),
+            rev: 0,
+            suspended_output: None,
+            border: BorderPresentationV4 {
+                visible: false,
+                reason: Some(BorderHideReasonV4::NoTarget),
+                subject: None,
+                outsets: None,
+                width: None,
+                radius: None,
+                witness: None,
+            },
+            underlay: tiler_core::world_presentation::PresentationUnderlay::default(),
+            pager: Vec::new(),
+        },
+        intent_desired: Vec::new(),
+        switch_settled: Vec::new(),
+        diagnostics: Vec::new(),
     }
 }
 
@@ -1372,7 +1392,10 @@ fn arrival_row(
         floating: true,
         float_origin: origin,
         frame_operation: None,
-        clear_operation: None,
+        command_seq: None,
+        visibility: None,
+        visibility_authority: Auth::Untouched,
+        state: Vec::new(),
     }
 }
 
@@ -1447,7 +1470,7 @@ fn pd_dispatch(
     observed: &[ObservedWindow],
     cursor: Option<(i32, i32)>,
     ms: u64,
-) -> Option<tiler_core::world_report::WorldReply> {
+) -> Option<tiler_core::world_report::WorldReplyV4> {
     pd_dispatch_fg(fx, observed, cursor, ms, MOVER_HWND)
 }
 
@@ -1459,7 +1482,7 @@ fn pd_dispatch_fg(
     cursor: Option<(i32, i32)>,
     ms: u64,
     foreground: u64,
-) -> Option<tiler_core::world_report::WorldReply> {
+) -> Option<tiler_core::world_report::WorldReplyV4> {
     let areas = fx.areas.clone();
     super::world_tick::dispatch_test_observation(
         &mut fx.state,
@@ -1709,7 +1732,7 @@ fn observation_tick_publishes_drop_overlay_from_ingress() {
         1,
     )
     .expect("bind tick runs");
-    assert!(bound.command_result.is_none(), "bind carries no overlay");
+    assert!(bound.drag_preview.is_none(), "bind carries no overlay");
     let reply = super::world_tick::dispatch_test_observation(
         &mut fx.state,
         &restaged,
@@ -1720,19 +1743,16 @@ fn observation_tick_publishes_drop_overlay_from_ingress() {
         2,
     )
     .expect("observation tick runs");
-    let Some(tiler_core::world_report::CommandResult::DragPreview {
+    let tiler_core::world_report::DragPreviewV4 {
         rect,
         domain,
         source,
         target,
         ..
-    }) = reply.command_result.clone()
-    else {
-        panic!(
-            "expected drop-overlay result, got {:?}",
-            reply.command_result
-        );
-    };
+    } = reply
+        .drag_preview
+        .clone()
+        .expect("expected a core drop-overlay preview");
     assert!(rect.w > 0 && rect.h > 0, "core-derived overlay rect");
     assert_ne!(target.0, MOVER_TOKEN, "neighbor target, never the mover");
     assert_eq!(source, domain, "same-output capture");
@@ -1813,7 +1833,7 @@ fn observation_tick_publishes_drop_overlay_from_ingress() {
         "the reply honestly reports the commit"
     );
     assert!(
-        released.command_result.is_none(),
+        released.drag_preview.is_none(),
         "release rides the snapshot"
     );
     let after = released
@@ -1839,7 +1859,7 @@ fn esc_end_delivers_terminal_then_next_window_binds() {
     let restaged = pd_seed_observed(&mut fx);
     // Bind the session through one Started tick.
     let bound = pd_dispatch(&mut fx, &restaged, None, 1).expect("bind tick runs");
-    assert!(bound.command_result.is_none(), "bind carries no overlay");
+    assert!(bound.drag_preview.is_none(), "bind carries no overlay");
     // END arrives with Esc latched (native END drain already removed the
     // HWND from `active`, exactly like production).
     fx.state.esc_latched.insert(MOVER_HWND);
@@ -1880,17 +1900,16 @@ fn esc_end_delivers_terminal_then_next_window_binds() {
     // the resolver plans instead of refusing.
     pd_stage_sib_gesture(&mut fx, MoveSizeKind::Move);
     let bound = pd_dispatch_fg(&mut fx, &restaged, None, 3, SIB_HWND).expect("sibling bind runs");
-    assert!(bound.command_result.is_none(), "bind carries no overlay");
+    assert!(bound.drag_preview.is_none(), "bind carries no overlay");
     let (sx, sy) = pd_sib_drop_for_win_a(&fx);
     let preview = pd_dispatch_fg(&mut fx, &restaged, Some((sx, sy)), 4, SIB_HWND)
         .expect("sibling update runs");
     assert!(
-        matches!(
-            preview.command_result,
-            Some(tiler_core::world_report::CommandResult::DragPreview { .. })
-        ),
-        "next window previews after the terminal cleared, got {:?}",
-        preview.command_result
+        preview.drag_preview.is_some(),
+        "next window previews after the terminal cleared, got {:?} diag={:?} settled={:?}",
+        preview.drag_preview,
+        preview.diagnostics,
+        preview.gesture_settled
     );
     pd_finish_fx(&mut fx);
 }
@@ -1906,7 +1925,7 @@ fn nochange_end_delivers_terminal_then_next_window_binds() {
     pd_stage_open_gesture(&mut fx, MoveSizeKind::Move);
     let restaged = pd_seed_observed(&mut fx);
     let bound = pd_dispatch(&mut fx, &restaged, None, 1).expect("bind tick runs");
-    assert!(bound.command_result.is_none(), "bind carries no overlay");
+    assert!(bound.drag_preview.is_none(), "bind carries no overlay");
     fx.state.active.remove(&MOVER_HWND);
     super::gesture_tick::gesture_tick(
         &mut fx.state,
@@ -1931,17 +1950,16 @@ fn nochange_end_delivers_terminal_then_next_window_binds() {
     );
     pd_stage_sib_gesture(&mut fx, MoveSizeKind::Move);
     let bound = pd_dispatch_fg(&mut fx, &restaged, None, 3, SIB_HWND).expect("sibling bind runs");
-    assert!(bound.command_result.is_none(), "bind carries no overlay");
+    assert!(bound.drag_preview.is_none(), "bind carries no overlay");
     let (sx, sy) = pd_sib_drop_for_win_a(&fx);
     let preview = pd_dispatch_fg(&mut fx, &restaged, Some((sx, sy)), 4, SIB_HWND)
         .expect("sibling update runs");
     assert!(
-        matches!(
-            preview.command_result,
-            Some(tiler_core::world_report::CommandResult::DragPreview { .. })
-        ),
-        "next window previews after the terminal cleared, got {:?}",
-        preview.command_result
+        preview.drag_preview.is_some(),
+        "next window previews after the terminal cleared, got {:?} diag={:?} settled={:?}",
+        preview.drag_preview,
+        preview.diagnostics,
+        preview.gesture_settled
     );
     pd_finish_fx(&mut fx);
 }

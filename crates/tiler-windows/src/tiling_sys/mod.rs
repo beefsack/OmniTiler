@@ -966,10 +966,6 @@ mod world_diff;
 // Production native actuator over the diff: the real NativeOps
 // plus truthful applied-receipt capture, wired through the tick.
 mod world_native;
-// Truthful applied-receipt capture for the world route: the
-// capture-facing `observed_workspace`/`observed_views` projections over
-// fresh visibility plus the owner tables (actuator stays in `world_native`).
-mod world_native_receipts;
 // Single runtime WorldEngine owner (stage 2b cutover): the in-process
 // holder over the sequencer above. All lifecycle/history/tiling/scope/
 // select/send/migration routes dispatch through it.

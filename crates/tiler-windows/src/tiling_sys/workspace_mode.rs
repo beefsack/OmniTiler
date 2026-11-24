@@ -166,7 +166,7 @@ pub(super) fn toggle_workspace_tiling(
         fulls,
         tiler_core::world_report::WorldCommand::ToggleWorkspaceTiling {
             output: tiler_core::directional::OutputId(wire),
-            workspace: current.clone(),
+            workspace: tiler_core::directional::WorkspaceId(current.clone()),
         },
         super::observation::sample_cursor(),
     );

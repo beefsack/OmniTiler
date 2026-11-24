@@ -754,7 +754,7 @@ pub(super) fn poll_workspace_cli_request(
     // unchanged source otherwise): still core state, never native proof;
     // arrival proves separately.
     let (resolved_output, source_view, target_view) = match reply.as_ref() {
-        Some(applied) => match super::history::resolved_select_view(state, &before, applied) {
+        Some(applied) => match super::history::resolved_select_view(state, &before, &applied.reply) {
             Some((device, view)) => {
                 let source = before
                     .iter()

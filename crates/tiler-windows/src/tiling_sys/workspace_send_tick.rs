@@ -92,9 +92,9 @@ pub(super) fn workspace_relative_send_tick(
         }
         // Mechanical topology-existence fence (no policy): with no live
         // area the core has no registry to resolve from. The command
-        // below omits the source output; the core resolves the mover's
-        // retained home, else the cached-live fallback (cached output
-        // when live, else first live screen), never the action context.
+        // below carries the implicit source; the core resolves the
+        // mover's retained home, then its action context, never the
+        // adapter.
         if areas.is_empty() {
             log_json_at(
                 &log_path,
@@ -117,15 +117,15 @@ pub(super) fn workspace_relative_send_tick(
         let tick = state.tick;
         match origin.filter(|o| o.hwnd == foreground_hwnd) {
             Some(o) if !o.token.is_empty() => {
-                // The command carries a home-then-cached-live source:
-                // the core resolves the mover's retained home, else the
-                // cached output when live, else the first live screen.
-                // The cursor never steers a homed mover; only a homed
-                // miss falls through to the cached-live fallback, never
-                // an adapter decision.
+                // The command carries the implicit home-then-action
+                // source: the core resolves the mover's retained home
+                // first, then its action-context fallback chain. The
+                // adapter never chooses an output here.
                 let command = WorldCommand::SendRelative {
-                    window: tiler_core::directional::WindowId(o.token.clone()),
-                    source: tiler_core::world_report::SendSource::HomeThenCachedLive,
+                    window: tiler_core::directional::WindowSubject::Window(
+                        tiler_core::directional::WindowId(o.token.clone()),
+                    ),
+                    source: tiler_core::world_report::SendSource::HomeThenAction,
                     delta: intent.delta,
                     follow: intent.follow,
                 };
@@ -278,7 +278,9 @@ pub(super) fn workspace_output_send_tick(
             continue;
         }
         let command = WorldCommand::SendDirectional {
-            window: tiler_core::directional::WindowId(o.token.clone()),
+            window: tiler_core::directional::WindowSubject::Window(
+                tiler_core::directional::WindowId(o.token.clone()),
+            ),
             direction: intent.direction,
             follow: intent.follow,
         };
@@ -369,7 +371,9 @@ pub(super) fn workspace_output_send_one(
         foreground,
         fulls,
         WorldCommand::SendDirectional {
-            window: tiler_core::directional::WindowId(origin.token.clone()),
+            window: tiler_core::directional::WindowSubject::Window(
+                tiler_core::directional::WindowId(origin.token.clone()),
+            ),
             direction: intent.direction,
             follow: intent.follow,
         },

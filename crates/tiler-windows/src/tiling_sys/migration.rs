@@ -9,7 +9,7 @@
 //! commit-last native transfer in this module.
 
 use super::*;
-use tiler_core::world_report::WorldCommand;
+use tiler_core::world_report::{CommandResult, WorldCommand};
 
 /// Drain one bounded batch of whole-active-workspace migration intents.
 /// Each intent migrates the ACTIVE workspace of the core-resolved action
@@ -161,7 +161,14 @@ pub(super) fn workspace_migrate_one(
     let reply = super::world_tick::observe_and_command_at(
         state, me, store, dir, fulls, areas, command, cursor,
     );
-    let outcome: &'static str = if reply.is_some() {
+    // A reply alone is not proof: a core-refused migration still
+    // incorporates an observation and returns a reply. Applied requires
+    // the correlated migration result, never reply presence.
+    let outcome: &'static str = if reply
+        .as_ref()
+        .and_then(|outcome| outcome.result.as_ref())
+        .is_some_and(|result| matches!(result, CommandResult::Migration { .. }))
+    {
         "migrate-applied"
     } else {
         "migrate-unverified"

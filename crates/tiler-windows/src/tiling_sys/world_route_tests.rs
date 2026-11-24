@@ -37,6 +37,7 @@ fn area() -> MonitorArea {
             w: 800,
             h: 600,
         },
+        dpi: 96,
     }
 }
 
@@ -836,14 +837,14 @@ fn production_send_route_reports_honest_outcome_without_proof() {
         101,
         &fulls,
         tiler_core::world_report::WorldCommand::Send {
-            window: tiler_core::directional::WindowId("w1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(tiler_core::directional::WindowId("w1".to_owned())),
             target_output: tiler_core::directional::OutputId(out.clone()),
-            target_workspace: target.clone(),
+            target_workspace: tiler_core::directional::WorkspaceId(target.clone()),
             follow: false,
         },
         None,
     );
-    let reply = reply.expect("send converges");
+    let reply = reply.expect("send converges").reply;
     assert!(reply.ready);
     assert!(
         state.applied_homing.is_empty(),
@@ -864,9 +865,12 @@ fn production_send_route_reports_honest_outcome_without_proof() {
 fn arrival_reply(
     out: &str,
     rows: Vec<tiler_core::world_report::WindowDesire>,
-) -> tiler_core::world_report::WorldReply {
-    use tiler_core::world_report::{ScopeAuthority as Auth, ScopeStatus};
-    tiler_core::world_report::WorldReply {
+) -> tiler_core::world_report::WorldReplyV4 {
+    use tiler_core::world_report::{
+        BorderHideReasonV4, BorderPresentationV4, ScopeAuthority as Auth, ScopeStatus,
+        WorldPresentationV4,
+    };
+    tiler_core::world_report::WorldReplyV4 {
         contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
         adapter_incarnation: "adapter-1".to_owned(),
         core_generation: "gen-1".to_owned(),
@@ -883,13 +887,31 @@ fn arrival_reply(
         outputs: Vec::new(),
         windows: rows,
         transfers: Vec::new(),
-        effects: Vec::new(),
-        command_result: None,
+        focus_request: None,
+        drag_preview: None,
         gesture_settled: None,
         operation_settled: Vec::new(),
         native_creations: Vec::new(),
         cursor_warp: None,
-        presentation: tiler_core::world_presentation::WorldPresentation::default(),
+        presentation: WorldPresentationV4 {
+            foreground: String::new(),
+            rev: 0,
+            suspended_output: None,
+            border: BorderPresentationV4 {
+                visible: false,
+                reason: Some(BorderHideReasonV4::NoTarget),
+                subject: None,
+                outsets: None,
+                width: None,
+                radius: None,
+                witness: None,
+            },
+            underlay: tiler_core::world_presentation::PresentationUnderlay::default(),
+            pager: Vec::new(),
+        },
+        intent_desired: Vec::new(),
+        switch_settled: Vec::new(),
+        diagnostics: Vec::new(),
     }
 }
 
@@ -913,7 +935,10 @@ fn arrival_row(
         floating,
         float_origin: None,
         frame_operation: None,
-        clear_operation: None,
+        command_seq: None,
+        visibility: None,
+        visibility_authority: tiler_core::world_report::ScopeAuthority::Untouched,
+        state: Vec::new(),
     }
 }
 
@@ -1200,7 +1225,7 @@ fn busy_command_reports_unverified_not_cached_reply() {
 #[test]
 fn rejected_command_catchup_never_strands_the_next_command() {
     use tiler_core::directional::WindowId;
-    use tiler_core::world_report::{EffectKind, WorldCommand, WorldReply};
+    use tiler_core::world_report::{WorldCommand, WorldReplyV4};
     // Production-shaped catchup-starvation probe through the real
     // owner/command/scheduling path: three tiled windows bootstrap, valid
     // Left and Up from the bottom-right origin dispatch, an edge Right
@@ -1243,24 +1268,17 @@ fn rejected_command_catchup_never_strands_the_next_command() {
             member_tag: Some(format!("tag-{token}")),
         }
     }
-    /// Exactly one fresh `fx-` focus effect with the expected target;
-    /// returns its id for the uniqueness proof below.
-    fn fresh_focus(reply: &WorldReply, want: &str) -> String {
-        let mut hits = reply
-            .effects
-            .iter()
-            .filter(|effect| effect.kind == EffectKind::Focus && effect.id.starts_with("fx-"));
-        let hit = hits.next().expect("one fresh focus effect");
+    fn fresh_focus(reply: &WorldReplyV4, want: &str) -> String {
+        let hit = reply
+            .focus_request
+            .as_ref()
+            .expect("one fresh focus request");
         assert!(
-            hits.next().is_none(),
-            "exactly one fx- focus effect, got {:?}",
-            reply.effects
+            hit.id.starts_with("fx-"),
+            "fresh command focus id, got {:?}",
+            hit.id
         );
-        assert_eq!(
-            hit.target,
-            WindowId(want.to_owned()),
-            "correct focus target"
-        );
+        assert_eq!(hit.target, WindowId(want.to_owned()), "correct focus target");
         hit.id.clone()
     }
     let mut state = test_state();
@@ -1336,11 +1354,11 @@ fn rejected_command_catchup_never_strands_the_next_command() {
     // Valid Left and Up from the bottom-right origin: w1 reaches w2 to the
     // left and w3 above (core layout tiles w2 full-height left, w3 top-right).
     let left_id = fresh_focus(
-        &command(&mut state, "w1", "left").expect("left dispatches"),
+        &command(&mut state, "w1", "left").expect("left dispatches").reply,
         "w2",
     );
     let up_id = fresh_focus(
-        &command(&mut state, "w1", "up").expect("up dispatches"),
+        &command(&mut state, "w1", "up").expect("up dispatches").reply,
         "w3",
     );
     // No neighbor: w1 focuses right off the edge. The core rejects
@@ -1352,11 +1370,11 @@ fn rejected_command_catchup_never_strands_the_next_command() {
     // Same origin, no unrelated WinEvent between: the owed catch-up must
     // have run, so both dispatch again with their own fresh effects.
     let left_again_id = fresh_focus(
-        &command(&mut state, "w1", "left").expect("owed catch-up serves left"),
+        &command(&mut state, "w1", "left").expect("owed catch-up serves left").reply,
         "w2",
     );
     let up_again_id = fresh_focus(
-        &command(&mut state, "w1", "up").expect("owed catch-up serves up"),
+        &command(&mut state, "w1", "up").expect("owed catch-up serves up").reply,
         "w3",
     );
     let mut ids = vec![left_id, up_id, left_again_id, up_again_id];

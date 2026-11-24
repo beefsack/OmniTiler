@@ -53,7 +53,7 @@ fn source_refill_migration_arrival_and_views_settle() {
         Some(WorldCommand::MigrateWorkspace {
             source_output: OutputId(o1.clone()),
             target_output: OutputId(o2.clone()),
-            workspace: ws_m.clone(),
+            workspace: tiler_core::directional::WorkspaceId(ws_m.clone()),
         }),
     );
     let migration_op = moved
@@ -87,7 +87,10 @@ fn source_refill_migration_arrival_and_views_settle() {
     assert!(
         arrivals
             .iter()
-            .all(|a| a.post.as_ref() == Some(&(OutputId(o2.clone()), ws_m.clone()))),
+            .all(|a| a.post.as_ref() == Some(&tiler_core::world_report::WorkspaceRef::Logical {
+                output: OutputId(o2.clone()),
+                workspace: tiler_core::directional::WorkspaceId(ws_m.clone()),
+            })),
         "arrival proves: {:?}",
         moved.members
     );
@@ -264,7 +267,10 @@ fn occupied_target_migration_arrival_proves_without_deferred_view() {
     assert!(
         arrivals
             .iter()
-            .all(|a| a.post.as_ref() == Some(&(OutputId(o2.clone()), ws_m.clone()))),
+            .all(|a| a.post.as_ref() == Some(&tiler_core::world_report::WorkspaceRef::Logical {
+                output: OutputId(o2.clone()),
+                workspace: tiler_core::directional::WorkspaceId(ws_m.clone()),
+            })),
         "arrival proves: {:?}",
         moved.members
     );
@@ -361,11 +367,13 @@ fn asymmetric_migration_areas() -> (Vec<super::super::MonitorArea>, Vec<Rect>) {
             device: DEV1.to_owned(),
             work: rect(-2560, 0, 2560, 1380),
             full: rect(-2560, 0, 2560, 1440),
+            dpi: 96,
         },
         super::super::MonitorArea {
             device: DEV2.to_owned(),
             work: rect(0, 100, 640, 320),
             full: rect(0, 100, 640, 360),
+            dpi: 96,
         },
     ];
     let fulls = vec![rect(-2560, 0, 2560, 1440), rect(0, 100, 640, 360)];
@@ -374,7 +382,7 @@ fn asymmetric_migration_areas() -> (Vec<super::super::MonitorArea>, Vec<Rect>) {
 
 /// The published migration slot must sit fully inside the target work
 /// area: the live defect class stranded translated members beyond it.
-fn assert_migration_slot(reply: &WorldReply, window: &str, work: Rect) -> Rect {
+fn assert_migration_slot(reply: &tiler_core::world_report::WorldReplyV4, window: &str, work: Rect) -> Rect {
     let row = reply
         .windows
         .iter()
@@ -507,7 +515,10 @@ fn asymmetric_migration_members_land_on_published_slots_both_prove() {
     assert!(
         arrivals
             .iter()
-            .all(|a| a.post.as_ref() == Some(&(OutputId(o2.clone()), ws_m.clone()))),
+            .all(|a| a.post.as_ref() == Some(&tiler_core::world_report::WorkspaceRef::Logical {
+                output: OutputId(o2.clone()),
+                workspace: tiler_core::directional::WorkspaceId(ws_m.clone()),
+            })),
         "arrival proves: {:?}",
         moved.members
     );
@@ -737,7 +748,7 @@ fn roundtrip_migration_select_occupied_then_close_reflows_and_settles() {
         moving_prims(),
         r1.hwnd,
         Some(WorldCommand::SendNumbered {
-            window: WindowId("w4".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w4".to_owned())),
             source: tiler_core::world_report::SendSource::Explicit(OutputId(o1.clone())),
             index: 0,
             follow: false,
@@ -1087,7 +1098,7 @@ fn floating_source_migration_writes_core_slot_and_preserves_float() {
         0,
         Some(WorldCommand::SetWorkspaceTiling {
             output: OutputId(o1.clone()),
-            workspace: ws.clone(),
+            workspace: tiler_core::directional::WorkspaceId(ws.clone()),
             tiled: false,
         }),
     );
@@ -1111,7 +1122,7 @@ fn floating_source_migration_writes_core_slot_and_preserves_float() {
         Some(WorldCommand::MigrateWorkspace {
             source_output: OutputId(o1.clone()),
             target_output: OutputId(o2.clone()),
-            workspace: ws.clone(),
+            workspace: tiler_core::directional::WorkspaceId(ws.clone()),
         }),
     );
     let migration_op = moved
@@ -1229,7 +1240,10 @@ fn floating_source_migration_writes_core_slot_and_preserves_float() {
     );
     assert_eq!(
         arrivals[0].post.as_ref(),
-        Some(&(OutputId(o2.clone()), ws.clone())),
+        Some(&tiler_core::world_report::WorkspaceRef::Logical {
+            output: OutputId(o2.clone()),
+            workspace: tiler_core::directional::WorkspaceId(ws.clone()),
+        }),
         "arrival proves: {:?}",
         moved.members
     );
@@ -1495,7 +1509,7 @@ fn floating_select_actuates_hide_reveal_and_settles() {
         0,
         Some(WorldCommand::SetWorkspaceTiling {
             output: OutputId(o1.clone()),
-            workspace: head.clone(),
+            workspace: tiler_core::directional::WorkspaceId(head.clone()),
             tiled: false,
         }),
     );
@@ -1513,7 +1527,7 @@ fn floating_select_actuates_hide_reveal_and_settles() {
         0,
         Some(WorldCommand::SelectWorkspace {
             output: OutputId(o1.clone()),
-            workspace: other.clone(),
+            workspace: tiler_core::directional::WorkspaceId(other.clone()),
         }),
     );
     assert!(
@@ -1559,7 +1573,7 @@ fn floating_select_actuates_hide_reveal_and_settles() {
         0,
         Some(WorldCommand::SelectWorkspace {
             output: OutputId(o1.clone()),
-            workspace: head.clone(),
+            workspace: tiler_core::directional::WorkspaceId(head.clone()),
         }),
     );
     let flight = back
@@ -1576,7 +1590,13 @@ fn floating_select_actuates_hide_reveal_and_settles() {
         .reply
         .scopes
         .iter()
-        .find(|status| status.scope == format!("{o1}/{head}"))
+        .find(|status| {
+            status.scope
+                == tiler_core::world_report::AuthorityScope::Workspace {
+                    output: OutputId(o1.clone()),
+                    workspace: tiler_core::directional::WorkspaceId(head.clone()),
+                }
+        })
         .expect("floating scope row");
     assert_eq!(back_scope.authority, Auth::Untouched);
     assert_eq!(
@@ -1589,8 +1609,11 @@ fn floating_select_actuates_hide_reveal_and_settles() {
     assert_eq!(attempt.operation_id, flight);
     assert_eq!(attempt.target_workspace, head);
     assert_eq!(
-        attempt.post.as_deref(),
-        Some(head.as_str()),
+        attempt.post,
+        Some(tiler_core::world_report::WorkspaceRef::Logical {
+            output: OutputId(o1.clone()),
+            workspace: tiler_core::directional::WorkspaceId(head.clone()),
+        }),
         "read-back proves the floating view: {attempt:?}"
     );
     assert!(
@@ -1640,14 +1663,13 @@ fn floating_select_actuates_hide_reveal_and_settles() {
 /// the production grant.
 #[test]
 fn selection_return_core_effect_binds_exact_grant() {
-    use tiler_core::world_report::EffectKind;
-
     let mut env = env_with(209_201);
     let o1 = env.state.output_token(DEV1);
     let areas = vec![super::super::super::MonitorArea {
         device: DEV1.to_owned(),
         work: rect(0, 0, 1920, 1040),
         full: rect(0, 0, 1920, 1080),
+        dpi: 96,
     }];
     let fulls = vec![rect(0, 0, 1920, 1080)];
     let w6 = win_key(209_201, 2611, "proc-611");
@@ -1702,14 +1724,13 @@ fn selection_return_core_effect_binds_exact_grant() {
         0,
         Some(WorldCommand::SelectWorkspace {
             output: OutputId(o1.clone()),
-            workspace: ws2.clone(),
+            workspace: tiler_core::directional::WorkspaceId(ws2.clone()),
         }),
     );
     assert_eq!(away.delivery, "accepted");
     assert!(
-        away.reply.effects.is_empty(),
-        "empty arrival mints no focus: {:?}",
-        away.reply.effects
+        away.reply.focus_request.is_none(),
+        "empty arrival mints no focus request"
     );
     assert!(
         away.reply
@@ -1729,7 +1750,7 @@ fn selection_return_core_effect_binds_exact_grant() {
     owner.invalidate();
     let back_command = WorldCommand::SelectWorkspace {
         output: OutputId(o1.clone()),
-        workspace: ws1.clone(),
+        workspace: tiler_core::directional::WorkspaceId(ws1.clone()),
     };
     const BACK_MS: u64 = 5_000_000;
     let inputs = env.state.inputs();
@@ -1794,7 +1815,6 @@ fn selection_return_core_effect_binds_exact_grant() {
     let mut frame_attempts = Vec::new();
     let mut member_attempts = Vec::new();
     let mut view_attempts = Vec::new();
-    let mut clear_attempts = Vec::new();
     let _stats = owner.apply_accepted(
         &back_reply,
         &fresh,
@@ -1802,7 +1822,6 @@ fn selection_return_core_effect_binds_exact_grant() {
         &mut frame_attempts,
         &mut member_attempts,
         &mut view_attempts,
-        &mut clear_attempts,
         BACK_MS,
     );
     let (mut proven_h, mut proven_v) = native.receipt_updates(&back_reply);
@@ -1842,23 +1861,18 @@ fn selection_return_core_effect_binds_exact_grant() {
         AckOutcome::Stale(_) => {}
         AckOutcome::Ignored { reason } => panic!("ack ignored: {reason}"),
     }
-    // The core mints exactly one explicit remembered-focus arrival effect,
-    // and no automatic one beside it.
+    // The core mints one explicit remembered-focus arrival request.
     let seq = back_seq;
-    assert_eq!(
-        back_reply.effects.len(),
-        1,
-        "return mints exactly the arrival effect: {:?}",
-        back_reply.effects
-    );
-    let fx = &back_reply.effects[0];
-    assert_eq!(fx.kind, EffectKind::Focus);
+    let fx = back_reply
+        .focus_request
+        .as_ref()
+        .expect("return mints the arrival request");
     assert_eq!(fx.target.0, "w6");
-    assert!(
-        fx.is_explicit_focus_for(seq),
-        "core-minted arrival outcome: {:?}",
-        fx.id
+    assert_eq!(
+        fx.cause,
+        tiler_core::world_report::FocusRequestCause::ExplicitCommand
     );
+    assert_eq!(fx.cmd_seq, Some(seq), "core-minted arrival outcome: {:?}", fx.id);
     // Only the fresh accepted select arms, bound to the exact pair.
     let grant = SelectionArrivalGrant::for_accepted(
         Some(&back_command),
@@ -1873,7 +1887,7 @@ fn selection_return_core_effect_binds_exact_grant() {
         tiler_core::world_engine::WorldOutcome::Duplicate(reply) => reply,
         other => panic!("expected duplicate, got {other:?}"),
     };
-    assert!(duplicate.effects.iter().any(|effect| effect.id == fx.id));
+    assert!(duplicate.focus_request.as_ref().is_some_and(|r| r.id == fx.id));
     assert!(
         SelectionArrivalGrant::for_accepted(
             Some(&back_command),
@@ -1899,9 +1913,8 @@ fn selection_return_core_effect_binds_exact_grant() {
     );
     assert_eq!(repeat.delivery, "accepted");
     assert!(
-        repeat.reply.effects.is_empty(),
-        "redundant select mints nothing: {:?}",
-        repeat.reply.effects
+        repeat.reply.focus_request.is_none(),
+        "redundant select mints nothing"
     );
     assert!(
         SelectionArrivalGrant::for_accepted(
@@ -1916,7 +1929,9 @@ fn selection_return_core_effect_binds_exact_grant() {
     // A one-shot focus effect is real but never a selection arrival.
     let observed = live_visible_observed();
     let dir_command = WorldCommand::Focus {
-        window: tiler_core::directional::WindowId("w7".to_owned()),
+        window: tiler_core::directional::WindowSubject::Window(
+            tiler_core::directional::WindowId("w7".to_owned()),
+        ),
         direction: Some(tiler_core::directional::Direction::Left),
     };
     let directed = live_tick(
@@ -1932,13 +1947,9 @@ fn selection_return_core_effect_binds_exact_grant() {
     );
     assert_eq!(directed.delivery, "accepted");
     assert!(
-        directed
-            .reply
-            .effects
-            .iter()
-            .any(|effect| effect.kind == EffectKind::Focus),
-        "directional focus mints its effect: {:?}",
-        directed.reply.effects
+        directed.reply.focus_request.is_some(),
+        "directional focus mints its request: {:?}",
+        directed.reply.focus_request
     );
     assert!(
         SelectionArrivalGrant::for_accepted(
@@ -1965,9 +1976,8 @@ fn selection_return_core_effect_binds_exact_grant() {
         None,
     );
     assert!(
-        idle.reply.effects.is_empty(),
-        "observation mints no focus: {:?}",
-        idle.reply.effects
+        idle.reply.focus_request.is_none(),
+        "observation mints no focus request"
     );
     assert!(
         SelectionArrivalGrant::for_accepted(
@@ -2003,7 +2013,6 @@ fn selection_return_core_effect_binds_exact_grant() {
         &back_reply,
         &fresh,
         &mut native,
-        &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),
         &mut Vec::new(),

@@ -844,11 +844,13 @@ fn shared_settlement_partial_holds_then_completes_through_sequencing() {
                 device: DEV1.to_owned(),
                 work: rect(0, 0, 1920, 1040),
                 full: rect(0, 0, 1920, 1080),
+                dpi: 96,
             },
             MonitorArea {
                 device: DEV2_NAME.to_owned(),
                 work: rect(1920, 0, 1920, 1040),
                 full: rect(1920, 0, 1920, 1080),
+                dpi: 96,
             },
         ];
         let dispatch = |seq: &mut WorldSequencer,

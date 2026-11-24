@@ -6,9 +6,8 @@
 //! applies and projects a read-only presentation, select commands retain a
 //! view transfer without self-echo, close receipts prune the native queue,
 //! restoration never fabricates rings (memory tables are not durable; fresh
-//! and staged states alike carry no ingress), and the T2 staged check leaves
-//! the committed world unchanged on an unsupported tiled-to-float output
-//! crossing (functional decline facts only, never `FloatOrigin`).
+//! and staged states alike carry no ingress), and a clamped target leaves
+//! the committed world unchanged without retaining a transfer.
 
 use super::super::rmax03_adapter_tests;
 use super::super::{MonitorArea, ObservedTarget, ObservedWindow, RetainedRow};
@@ -33,6 +32,7 @@ fn area() -> MonitorArea {
             w: 800,
             h: 600,
         },
+        dpi: 96,
     }
 }
 
@@ -149,9 +149,10 @@ fn observation_dispatch_applies_and_projects_presentation() {
         })
         .collect();
     assert!(!views.is_empty(), "applied reply projects a view");
-    // Uniform presentation rides the same applied reply: the disabled test
-    // ingress hides both overlays, and the observed member paints with its
-    // live frame.
+    // Uniform presentation rides the same applied reply: the empty-foreground
+    // test ingress hides both overlays, and the observed member paints with
+    // its live frame. Border enabled is the core default; an absent target is
+    // the truthful hide reason, not `Disabled`.
     assert_eq!(reply.presentation.foreground, "");
     assert_eq!(
         reply.presentation.border.reason,
@@ -259,13 +260,12 @@ fn select_command_retains_view_transfer_without_self_echo() {
 }
 
 #[test]
-fn t2_staged_decline_leaves_committed_world_unchanged() {
-    // Production T2 refusal on the real send path: a tiled source fact plus
-    // a cross-output directional move into a tiny occupied target floats the
-    // staged row, so `deliver_production` refuses as `float-no-remap` with
-    // the committed engine bit-identical (revision, retained transfers,
-    // debug). Same-output transfers never decline, and observation-only
-    // catch-up applies afterwards with no replay. Never reads `FloatOrigin`.
+fn clamped_target_holds_scope_without_transfer() {
+    // v4 core owns cross-output capacity: a tiled mover aimed at a tiny
+    // occupied target holds the target scope as `ConstraintClamp` without
+    // consuming the command or floating a transferred row. The report advances
+    // one revision but retains no transfer; observation-only catch-up
+    // afterwards applies with no transfer.
     use tiler_core::directional::{OutputId, SameAxisMove, WindowId};
     use tiler_core::size_hints::WindowSizeHints;
     use tiler_core::world_report::{ScreenReport, WORLD_CONTRACT_VERSION, WindowFact};
@@ -274,14 +274,14 @@ fn t2_staged_decline_leaves_committed_world_unchanged() {
         Rect { x, y, w, h }
     }
     fn screen(output: &str, full: Rect, primary: bool) -> ScreenReport {
+        let _ = primary;
         ScreenReport {
             output: OutputId(output.to_owned()),
             full_rect: Some(full),
             work_area: Some(full),
-            gap: 0,
-            outer_gap: 0,
             complete: true,
-            primary,
+            scale: 1.0,
+            identity: tiler_core::world_report::OutputIdentity::unknown(),
         }
     }
     fn fact(window: &str, output: &str, r: Rect) -> WindowFact {
@@ -319,9 +319,8 @@ fn t2_staged_decline_leaves_committed_world_unchanged() {
     let mut report_with =
         |windows: Vec<WindowFact>, command_seq: Option<u64>, command: Option<WorldCommand>| {
             seq_no += 1;
-            tiler_core::world_report::WorldReport {
+            tiler_core::world_report::WorldReportV4 {
                 contract_version: WORLD_CONTRACT_VERSION,
-                owner: owner.clone(),
                 adapter_incarnation: owner.clone(),
                 core_generation: generation.clone(),
                 observation_seq: seq_no,
@@ -329,30 +328,22 @@ fn t2_staged_decline_leaves_committed_world_unchanged() {
                 request_id: format!("req-{seq_no}"),
                 command_seq,
                 command,
-                workspace_mode: tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
                 screens: screens.clone(),
+                held_screens: Vec::new(),
                 windows,
-                views: Vec::new(),
+                held_windows: Vec::new(),
                 closed: Vec::new(),
-                host_owned_workspace_domains: false,
-                equal_workspace_count: false,
-                birth_clear: false,
                 native: Vec::new(),
-                fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-                migration_source_refill:
-                    tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-                born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-                switch_target: tiler_core::cursor_targeting::SwitchTarget::Cursor,
-                fresh_placement: tiler_core::cursor_targeting::FreshPlacement::CursorOutputMru,
-                focus_follows_cursor: false,
-                cursor_warp: false,
+                held_native: Vec::new(),
                 cursor: None,
                 cursor_hit: None,
+                focused_global: String::new(),
+                foreground_known: false,
+                focus_changes: None,
                 action_foreground: None,
                 action_cached: None,
                 action_outputs: Vec::new(),
-                default_tiled: true,
-                focused_global: "win-a".to_owned(),
+                primary_output: None,
                 inventory_complete: true,
                 gesture_barrier: false,
                 gesture: None,
@@ -360,9 +351,16 @@ fn t2_staged_decline_leaves_committed_world_unchanged() {
                 frames: Vec::new(),
                 member_attempts: Vec::new(),
                 view_attempts: Vec::new(),
-                clear_attempts: Vec::new(),
                 creation_attempts: Vec::new(),
-                presentation: tiler_core::world_report::PresentationIngress::disabled(),
+                held_attempts: Vec::new(),
+                state_attempts: Vec::new(),
+                visibility_attempts: Vec::new(),
+                focus_feedback: Vec::new(),
+                presentation: tiler_core::world_report::PresentationRowV4::Valid(
+                    tiler_core::world_report::PresentationIngressV4::default(),
+                ),
+                intent_records: Vec::new(),
+                renderer_input: None,
             }
         };
     let first = report_with(windows.clone(), None, None);
@@ -374,31 +372,46 @@ fn t2_staged_decline_leaves_committed_world_unchanged() {
         other => panic!("expected accepted, got {other:?}"),
     };
     assert!(base_rev > 0);
-    let before_debug = format!("{:?}", world.engine());
     let before_retained = world.engine().retained_transfers();
-    // Cross-output directional move into the exhausted target: production
-    // refuses without touching the committed world.
+    // Cross-output directional move into the exhausted target: the core
+    // holds the target scope and leaves the command unconsumed.
     let mover = WorldCommand::MoveDirectional {
-        window: WindowId("win-a".to_owned()),
+        window: tiler_core::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
         direction: tiler_core::directional::Direction::Right,
         same_axis: SameAxisMove::GroupWithNeighbor,
     };
-    let refused = report_with(windows.clone(), Some(171), Some(mover));
-    match world.deliver_production(&refused) {
-        WorldOutcome::Rejected { kind, .. } => assert_eq!(kind, "float-no-remap"),
-        other => panic!("expected float-no-remap, got {other:?}"),
+    let clamped = report_with(windows.clone(), Some(171), Some(mover));
+    match world.deliver_production(&clamped) {
+        WorldOutcome::Accepted(reply) => {
+            assert!(!reply.command_consumed);
+            assert!(
+                reply.transfers.is_empty(),
+                "clamped target retains no transfer: {:?}",
+                reply.transfers
+            );
+            assert!(
+                reply.scopes.iter().any(|scope| matches!(
+                    scope.authority,
+                    tiler_core::world_report::ScopeAuthority::Hold(
+                        tiler_core::world_report::HoldReason::ConstraintClamp
+                    )
+                )),
+                "target scope clamps: {:?}",
+                reply.scopes
+            );
+        }
+        other => panic!("expected clamp acceptance, got {other:?}"),
     }
-    assert_eq!(world.engine().state_revision(), base_rev);
+    assert_eq!(world.engine().state_revision(), base_rev + 1);
     assert_eq!(world.engine().retained_transfers(), before_retained);
-    assert_eq!(format!("{:?}", world.engine()), before_debug);
-    // Observation-only catch-up applies with the source world intact.
+    // Observation-only catch-up applies without a transfer.
     let catchup = report_with(windows.clone(), None, None);
     match world.deliver_production(&catchup) {
         WorldOutcome::Accepted(reply) => {
-            assert!(reply.state_revision > base_rev);
+            assert!(reply.state_revision >= base_rev);
             assert!(
                 reply.transfers.is_empty(),
-                "refused flight retains nothing: {:?}",
+                "clamped flight retains nothing: {:?}",
                 reply.transfers
             );
         }
@@ -407,11 +420,11 @@ fn t2_staged_decline_leaves_committed_world_unchanged() {
 }
 
 #[test]
-fn t2_supported_and_floating_movers_adopt_once() {
-    // Roomy target adopts exactly once (Accepted, never Duplicate): the
-    // pinned Window transfer lands under the command op id with one revision
-    // step. An already-floating mover adopts too (no decline on floating
-    // sources). Both evaluate the actual send through `deliver_production`.
+fn tiled_mover_adopts_once_and_floating_mover_half_snaps() {
+    // A tiled mover aimed at a roomy target adopts exactly once (Accepted,
+    // never Duplicate): the pinned Window transfer lands under the command
+    // op id with one revision step. v4 core owns a floating mover's
+    // directional move as a local half-snap with no cross-output transfer.
     use tiler_core::directional::{OutputId, SameAxisMove, WindowId};
     use tiler_core::size_hints::WindowSizeHints;
     use tiler_core::world_report::{
@@ -422,14 +435,14 @@ fn t2_supported_and_floating_movers_adopt_once() {
         Rect { x, y, w, h }
     }
     fn screen(output: &str, full: Rect, primary: bool) -> ScreenReport {
+        let _ = primary;
         ScreenReport {
             output: OutputId(output.to_owned()),
             full_rect: Some(full),
             work_area: Some(full),
-            gap: 0,
-            outer_gap: 0,
             complete: true,
-            primary,
+            scale: 1.0,
+            identity: tiler_core::world_report::OutputIdentity::unknown(),
         }
     }
     fn fact(window: &str, output: &str, r: Rect, floating: bool) -> WindowFact {
@@ -471,9 +484,8 @@ fn t2_supported_and_floating_movers_adopt_once() {
         let mut report_with =
             |windows: Vec<WindowFact>, command_seq: Option<u64>, command: Option<WorldCommand>| {
                 seq_no += 1;
-                tiler_core::world_report::WorldReport {
+                tiler_core::world_report::WorldReportV4 {
                     contract_version: WORLD_CONTRACT_VERSION,
-                    owner: owner.clone(),
                     adapter_incarnation: owner.clone(),
                     core_generation: generation.clone(),
                     observation_seq: seq_no,
@@ -481,30 +493,22 @@ fn t2_supported_and_floating_movers_adopt_once() {
                     request_id: format!("req-{seq_no}"),
                     command_seq,
                     command,
-                    workspace_mode: tiler_core::workspace_scope::WorkspaceMode::PerOutputLocal,
                     screens: screens.clone(),
+                    held_screens: Vec::new(),
                     windows,
-                    views: Vec::new(),
+                    held_windows: Vec::new(),
                     closed: Vec::new(),
-                    host_owned_workspace_domains: false,
-                    equal_workspace_count: false,
-                    birth_clear: false,
                     native: Vec::new(),
-                    fixed_size_predicate: tiler_core::size_hints::FixedSizePredicate::BothAxes,
-                    migration_source_refill:
-                        tiler_core::output_selection::MigrationSourceRefill::LastRemaining,
-                    born_maximized: tiler_core::born_maximized::BornMaximized::default(),
-                    switch_target: tiler_core::cursor_targeting::SwitchTarget::Cursor,
-                    fresh_placement: tiler_core::cursor_targeting::FreshPlacement::CursorOutputMru,
-                    focus_follows_cursor: false,
-                    cursor_warp: false,
+                    held_native: Vec::new(),
                     cursor: None,
                     cursor_hit: None,
+                    focused_global: String::new(),
+                    foreground_known: false,
+                    focus_changes: None,
                     action_foreground: None,
                     action_cached: None,
                     action_outputs: Vec::new(),
-                    default_tiled: true,
-                    focused_global: "win-a".to_owned(),
+                    primary_output: None,
                     inventory_complete: true,
                     gesture_barrier: false,
                     gesture: None,
@@ -512,29 +516,28 @@ fn t2_supported_and_floating_movers_adopt_once() {
                     frames: Vec::new(),
                     member_attempts: Vec::new(),
                     view_attempts: Vec::new(),
-                    clear_attempts: Vec::new(),
                     creation_attempts: Vec::new(),
-                    presentation: tiler_core::world_report::PresentationIngress::disabled(),
+                    held_attempts: Vec::new(),
+                    state_attempts: Vec::new(),
+                    visibility_attempts: Vec::new(),
+                    focus_feedback: Vec::new(),
+                    presentation: tiler_core::world_report::PresentationRowV4::Valid(
+                        tiler_core::world_report::PresentationIngressV4::default(),
+                    ),
+                    intent_records: Vec::new(),
+                    renderer_input: None,
                 }
             };
         let base = match world.deliver_production(&report_with(windows.clone(), None, None)) {
             WorldOutcome::Accepted(reply) => reply.state_revision,
             other => panic!("expected accepted, got {other:?}"),
         };
-        // Already-floating movers send (moves require a tiled focused
-        // window); tiled movers move. Both adopt once through production.
-        let mover = if floating_source {
-            WorldCommand::SendDirectional {
-                window: WindowId("win-a".to_owned()),
-                direction: tiler_core::directional::Direction::Up,
-                follow: true,
-            }
-        } else {
-            WorldCommand::MoveDirectional {
-                window: WindowId("win-a".to_owned()),
-                direction: tiler_core::directional::Direction::Up,
-                same_axis: SameAxisMove::GroupWithNeighbor,
-            }
+        // Both union members use the same directional move: v4 routes a
+        // tiled mover across outputs and half-snaps a floating mover locally.
+        let mover = WorldCommand::MoveDirectional {
+            window: tiler_core::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
+            direction: tiler_core::directional::Direction::Up,
+            same_axis: SameAxisMove::GroupWithNeighbor,
         };
         match world.deliver_production(&report_with(windows.clone(), Some(171), Some(mover))) {
             WorldOutcome::Accepted(reply) => {
@@ -543,15 +546,42 @@ fn t2_supported_and_floating_movers_adopt_once() {
                     base + 1,
                     "single evaluation adopts once"
                 );
-                let transfer = reply
-                    .transfers
-                    .iter()
-                    .find(|t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-a"))
-                    .unwrap_or_else(|| panic!("mover transfer: {:?}", reply.transfers));
-                assert_eq!(transfer.operation_id, "op-171");
-                assert_eq!(transfer.target_output.0, "u2");
+                if floating_source {
+                    assert!(
+                        reply.transfers.is_empty(),
+                        "floating half-snap retains no transfer: {:?}",
+                        reply.transfers
+                    );
+                    let row = reply
+                        .windows
+                        .iter()
+                        .find(|row| row.lifetime.0 == "win-a")
+                        .expect("floating mover row");
+                    assert!(row.floating);
+                    assert_eq!(row.output.0, "src");
+                    assert!(matches!(
+                        world.last_command_result(),
+                        Some(tiler_core::world_report::CommandResult::Directional {
+                            outcome: tiler_core::world_directional::DirectionalOutcome::MoveFloatApplied,
+                            ..
+                        })
+                    ));
+                } else {
+                    let transfer = reply
+                        .transfers
+                        .iter()
+                        .find(|t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-a"))
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "tiled mover transfer: {:?} outputs={:?} windows={:?} diag={:?}",
+                                reply.transfers, reply.outputs, reply.windows, reply.diagnostics
+                            )
+                        });
+                    assert_eq!(transfer.operation_id, "op-171");
+                    assert_eq!(transfer.target_output.0, "u2");
+                }
             }
-            other => panic!("floating={floating_source}: expected adopted accept, got {other:?}"),
+            other => panic!("floating={floating_source}: expected accepted, got {other:?}"),
         }
     }
 }

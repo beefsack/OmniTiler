@@ -26,6 +26,7 @@ fn area(device: &str, x: i32) -> MonitorArea {
             w: 800,
             h: 600,
         },
+        dpi: 96,
     }
 }
 
@@ -155,7 +156,7 @@ fn route_dirs(name: &str) -> (std::path::PathBuf, crate::storage::LedgerStore) {
     (dir, store)
 }
 
-fn view_of(reply: &tiler_core::world_report::WorldReply, output: &str) -> Option<String> {
+fn view_of(reply: &tiler_core::world_report::WorldReplyV4, output: &str) -> Option<String> {
     reply
         .outputs
         .iter()
@@ -181,6 +182,22 @@ fn seeded_disagreement(
     state.ensure_device("DEV-A");
     state.ensure_device("DEV-B");
     state.settings_live = Some(live_settings(switch_target, fresh_placement, false, false));
+    // v4 carries settings out of band (never in the report): push the
+    // fixture's policy through the genuine revisioned exchange so core
+    // selection resolves with the configured switch target.
+    assert!(
+        state.world.apply_test_settings(&[
+            (
+                "switchTarget",
+                tiler_core::connection::RawSettingValue::String(switch_target.to_owned())
+            ),
+            (
+                "freshPlacement",
+                tiler_core::connection::RawSettingValue::String(fresh_placement.to_owned())
+            ),
+        ]),
+        "fixture settings revision is accepted"
+    );
     seed_member(&mut state, 101, "win-a", 201, "proc-a");
     seed_member(&mut state, 102, "win-b1", 202, "proc-b1");
     seed_member(&mut state, 103, "win-b2", 203, "proc-b2");
@@ -290,13 +307,16 @@ fn sequencer_envelopes_cursor_targeting_fields() {
     let captured = capture_world(&inputs, Some(&observed), &[], &areas(), 101);
     let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
     let report = seq.assemble(&captured, 7, None, None, 0);
-    assert_eq!(report.switch_target, SwitchTarget::Focused);
+    // v4 carries switch targeting and cursor policy as handshake settings,
+    // never report fields: the capture projects them for the settings
+    // sync, and the assembled report carries only the sampled cursor.
+    assert_eq!(captured.switch_target, SwitchTarget::Focused);
     assert_eq!(
-        report.fresh_placement,
+        captured.fresh_placement,
         FreshPlacement::CursorOutputCursorClosest
     );
-    assert!(report.focus_follows_cursor);
-    assert!(!report.cursor_warp);
+    assert!(captured.focus_follows_cursor);
+    assert!(!captured.cursor_warp);
     assert_eq!(report.cursor, Some((900, 100)));
 }
 
@@ -329,7 +349,8 @@ fn production_select_resolves_cursor_output_under_disagreement() {
         WorldCommand::SelectTrailing { output: None },
         Some((1000, 300)),
     )
-    .expect("select converges");
+    .expect("select converges")
+    .reply;
     assert_eq!(view_of(&reply, &wire_a).as_deref(), Some(before_a.as_str()));
     let after_b = view_of(&reply, &wire_b).expect("view b");
     assert_ne!(after_b, before_b, "trailing lands on the cursor output");
@@ -373,8 +394,16 @@ fn production_select_resolves_focused_output_when_configured() {
         WorldCommand::SelectTrailing { output: None },
         Some((1000, 300)),
     )
-    .expect("select converges");
-    assert_eq!(view_of(&reply, &wire_b).as_deref(), Some(before_b.as_str()));
+    .expect("select converges")
+    .reply;
+    assert_eq!(
+        view_of(&reply, &wire_b).as_deref(),
+        Some(before_b.as_str()),
+        "switch={:?} cursor={:?} outputs={:?}",
+        state.world.engine().switch_target(),
+        state.world.engine().last_cursor(),
+        reply.outputs
+    );
     let after_a = view_of(&reply, &wire_a).expect("view a");
     assert_ne!(after_a, before_a, "trailing lands on the focused output");
     let _ = std::fs::remove_dir_all(&dir);
@@ -405,14 +434,15 @@ fn production_sends_use_focused_source_output_despite_cursor() {
         101,
         &fulls(),
         WorldCommand::SendNumbered {
-            window: WindowId("win-a".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("win-a".to_owned())),
             source: tiler_core::world_report::SendSource::Explicit(OutputId(wire_a.clone())),
             index: 0,
             follow: false,
         },
         Some((1000, 300)),
     )
-    .expect("send converges");
+    .expect("send converges")
+    .reply;
     assert!(
         reply.transfers.iter().any(
             |t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "win-a")
@@ -450,14 +480,14 @@ fn production_sends_use_focused_source_output_despite_cursor() {
         102,
         &fulls(),
         WorldCommand::SendRelative {
-            window: WindowId("win-b1".to_owned()),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("win-b1".to_owned())),
             source: tiler_core::world_report::SendSource::Explicit(OutputId(wire_b.clone())),
             delta: 1,
             follow: false,
         },
         Some((100, 300)),
     );
-    let reply = reply.expect("relative send converges");
+    let reply = reply.expect("relative send converges").reply;
     assert!(
         reply
             .transfers
@@ -502,7 +532,8 @@ fn explicit_output_select_stays_screen_specific() {
         },
         Some((100, 300)),
     )
-    .expect("explicit select converges");
+    .expect("explicit select converges")
+    .reply;
     assert_eq!(view_of(&reply, &wire_a).as_deref(), Some(before_a.as_str()));
     assert_ne!(
         view_of(&reply, &wire_b).as_deref(),
@@ -540,12 +571,14 @@ fn gaming_lane_reports_no_cursor() {
     )
     .expect("limited tick converges");
     assert_eq!(state.world.engine().last_cursor(), None);
-    // The paused game lane skips presentation work: hidden shapes and an
-    // empty pager, never a projection under the game.
-    assert!(reply.presentation.pager.is_empty());
+    // The paused game lane publishes an empty presentation ingress (v4 has
+    // no pause lane): the border has no target and the underlay hides,
+    // never a projection under the game. Pager retention is core-owned
+    // workspace paint state; v4 keeps its last live frames until departure,
+    // so this lane proves the suppressed ingress, not pager erasure.
     assert_eq!(
         reply.presentation.border.reason,
-        Some(tiler_core::visual::BorderHideReason::Suspended)
+        Some(tiler_core::world_report::BorderHideReasonV4::NoTarget)
     );
     assert!(matches!(
         reply.presentation.underlay,
