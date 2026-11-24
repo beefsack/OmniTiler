@@ -1211,7 +1211,7 @@ fn busy_command_reports_unverified_not_cached_reply() {
 
 #[test]
 fn rejected_command_catchup_never_strands_the_next_command() {
-    use tiler_core::directional::{WindowId, WindowSubject};
+    use tiler_core::directional::WindowId;
     use tiler_core::world_report::{WorldCommand, WorldReplyV4};
     // Production-shaped catchup-starvation probe through the real
     // owner/command/scheduling path: three tiled windows bootstrap, valid

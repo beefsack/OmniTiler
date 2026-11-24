@@ -828,6 +828,17 @@ fn shared_settlement_partial_holds_then_completes_through_sequencing() {
         let k2 = win_key(1002, 2002, "proc-2");
         admit(&mut state, &k1, DEV1, &ws, &members[0], false);
         admit(&mut state, &k2, DEV1, &ws, &members[1], false);
+        state
+            .member_rects
+            .insert(members[0].clone(), rect(0, 0, 800, 600));
+        state
+            .member_rects
+            .insert(members[1].clone(), rect(0, 610, 800, 400));
+        for token in &members {
+            state
+                .hint_logged
+                .insert(token.clone(), tiler_core::size_hints::WindowSizeHints::none());
+        }
         for token in &members {
             state
                 .applied_homing
@@ -868,6 +879,17 @@ fn shared_settlement_partial_holds_then_completes_through_sequencing() {
             .expect("dispatch")
         };
         let mut seq = WorldSequencer::bootstrap(ADAPTER, GENERATION).expect("bootstrap");
+        // Whole-workspace migration is refused in shared mode; this case
+        // exercises per-output migration settlement.
+        assert!(
+            seq.apply_test_settings(&[(
+                "workspace.mode",
+                tiler_core::connection::RawSettingValue::String(
+                    tiler_core::workspace_scope::WORKSPACE_MODE_TOKENS[0].to_owned(),
+                ),
+            )]),
+            "{name}: scoped mode applies"
+        );
         let report = dispatch(&mut seq, &state, &live, 1000, None);
         let reply = seq_deliver(&mut seq, &report);
         seq_ack(&mut seq, &reply);
@@ -884,6 +906,7 @@ fn shared_settlement_partial_holds_then_completes_through_sequencing() {
                 .applied_homing
                 .insert(token.clone(), (out_a.clone(), view_a.clone()));
         }
+        state.applied_views.insert(out_a.clone(), view_a.clone());
         // Real migration command through the production sequencer.
         seq.invalidate();
         let report = dispatch(
@@ -1047,39 +1070,26 @@ fn shared_settlement_partial_holds_then_completes_through_sequencing() {
         );
         let reply3 = seq_deliver(&mut seq, &report3);
         assert!(
-            reply3
-                .transfers
-                .iter()
-                .any(|t| t.operation_id == op && matches!(t.kind, TransferKind::Migration)),
-            "{name}: full arrival keeps the migration only for the refill: {:?}",
+            reply3.transfers.is_empty(),
+            "{name}: full arrival settles the migration: {:?}",
             reply3.transfers
         );
-        // The tabled settlement selects which completion shape to verify
-        // against the real runtime operation ids.
-        match case["expect_settled"].as_str().expect("expect_settled") {
-            "refill-only" => {
-                assert!(
-                    reply3
-                        .transfers
-                        .iter()
-                        .any(|t| t.operation_id == format!("{op}-refill")),
-                    "{name}: the remaining work is the source refill: {:?}",
-                    reply3.transfers
-                );
-                for member in &members {
-                    let row = reply3
-                        .windows
-                        .iter()
-                        .find(|row| row.lifetime.0 == *member)
-                        .expect("settled row");
-                    assert_eq!(
-                        row.output.0.as_str(),
-                        out_b.as_str(),
-                        "{name}: {member} homed"
-                    );
-                }
-            }
-            other => panic!("{name}: unknown expect_settled {other}"),
+        assert_eq!(
+            case["expect_settled"].as_str().expect("expect_settled"),
+            "refill-only",
+            "{name}: fixture shape"
+        );
+        for member in &members {
+            let row = reply3
+                .windows
+                .iter()
+                .find(|row| row.lifetime.0 == *member)
+                .expect("settled row");
+            assert_eq!(
+                row.output.0.as_str(),
+                out_b.as_str(),
+                "{name}: {member} homed"
+            );
         }
         seq_ack(&mut seq, &reply3);
     }

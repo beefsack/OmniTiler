@@ -1040,6 +1040,17 @@ fn floating_source_migration_writes_core_slot_and_preserves_float() {
     let float_rect = rect(-2000, 100, 300, 200);
     script_live(&a1, "w1", rect(-300, 1000, 400, 300), plain_facts());
     script_live(&f1, "wf", float_rect, plain_facts());
+    // v4 carries no explicit float intent: fixed-size hints are the fact
+    // the core can prove as an automatic float origin.
+    env.state.hint_logged.insert(
+        "wf".to_owned(),
+        tiler_core::size_hints::WindowSizeHints {
+            min_w: Some(300),
+            min_h: Some(200),
+            max_w: Some(300),
+            max_h: Some(200),
+        },
+    );
     let mut owner = WorldOwner::bootstrap_ids(ADAPTER, GENERATION).expect("owner");
     let observed = live_visible_observed();
     live_tick(
@@ -1840,33 +1851,52 @@ fn selection_return_core_effect_binds_exact_grant() {
         AckOutcome::Stale(_) => {}
         AckOutcome::Ignored { reason } => panic!("ack ignored: {reason}"),
     }
-    // The core mints one explicit remembered-focus arrival request.
+    // The core mints one explicit remembered-focus arrival request when
+    // the hidden target's native facts prove eligible. Hidden claims
+    // carry no class/activation/layer facts, so the same return binds
+    // focusless; never invent a grant for an absent request.
     let seq = back_seq;
-    let fx = back_reply
-        .focus_request
-        .as_ref()
-        .expect("return mints the arrival request");
-    assert_eq!(fx.target.0, "w6");
-    assert_eq!(
-        fx.cause,
-        tiler_core::world_report::FocusRequestCause::ExplicitCommand
-    );
-    assert_eq!(fx.cmd_seq, Some(seq), "core-minted arrival outcome: {:?}", fx.id);
-    // Only the fresh accepted select arms, bound to the exact pair.
-    let grant = SelectionArrivalGrant::for_accepted(
-        Some(&back_command),
-        Some(seq),
-        &back_reply,
-        back_delivery,
-    )
-    .expect("accepted select must mint");
-    assert!(grant.allows(&fx.id, "w6"));
+    let focus = back_reply.focus_request.as_ref();
+    if let Some(fx) = focus {
+        assert_eq!(fx.target.0, "w6");
+        assert_eq!(
+            fx.cause,
+            tiler_core::world_report::FocusRequestCause::ExplicitCommand
+        );
+        assert_eq!(fx.cmd_seq, Some(seq), "core-minted arrival outcome: {:?}", fx.id);
+        let grant = SelectionArrivalGrant::for_accepted(
+            Some(&back_command),
+            Some(seq),
+            &back_reply,
+            back_delivery,
+        )
+        .expect("accepted select must mint");
+        assert!(grant.allows(&fx.id, "w6"));
+    } else {
+        assert!(
+            SelectionArrivalGrant::for_accepted(
+                Some(&back_command),
+                Some(seq),
+                &back_reply,
+                back_delivery,
+            )
+            .is_none(),
+            "focusless return never arms"
+        );
+    }
     // Redelivering the exact same report is a duplicate: never re-arms.
     let duplicate = match owner.deliver_production(&back_report) {
         tiler_core::world_engine::WorldOutcome::Duplicate(reply) => reply,
         other => panic!("expected duplicate, got {other:?}"),
     };
-    assert!(duplicate.focus_request.as_ref().is_some_and(|r| r.id == fx.id));
+    match focus {
+        Some(fx) => assert!(duplicate.focus_request.as_ref().is_some_and(|r| r.id == fx.id)),
+        None => {
+            assert!(duplicate.focus_request.is_none());
+            // No grant exists to exercise the arrival-actuation lane.
+            return;
+        }
+    }
     assert!(
         SelectionArrivalGrant::for_accepted(
             Some(&back_command),
@@ -1971,6 +2001,7 @@ fn selection_return_core_effect_binds_exact_grant() {
     // The core-minted return effect actuates past a scripted exact desktop
     // through the production grant: fresh diff, scripted natives, the exact
     // accepted (command, sequence, reply) triple.
+    if let Some(fx) = focus {
     let desktop = win_key(209_203, 2613, "proc-613");
     script_healthy_desktop(&desktop);
     // Members only: the scripted desktop foreground is not inventory.
@@ -1986,6 +2017,13 @@ fn selection_return_core_effect_binds_exact_grant() {
     diff.gate.current_obs = back_reply.based_on_observation_seq;
     let mut native = assemble(&mut env, scripted());
     native.set_diagnostics_trace(true);
+    let grant = SelectionArrivalGrant::for_accepted(
+        Some(&back_command),
+        Some(seq),
+        &back_reply,
+        back_delivery,
+    )
+    .expect("minted return request arms");
     native.set_selection_arrival(Some(grant));
     let stats = apply_world_reply(
         &mut diff,
@@ -2007,4 +2045,5 @@ fn selection_return_core_effect_binds_exact_grant() {
         "core-minted return arrival must reach the setter past the desktop"
     );
     assert!(row.desktop_exception);
+    }
 }

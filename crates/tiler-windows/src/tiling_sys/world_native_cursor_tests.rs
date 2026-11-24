@@ -155,6 +155,34 @@ fn apply_targeting(env: &mut Env, case: &serde_json::Value) {
     env.state.settings_live = Some(crate::settings::LiveSettings::fresh(settings, None));
 }
 
+fn apply_core_targeting(owner: &mut WorldOwner, case: &serde_json::Value) {
+    // v4 carries settings out of band (never in the report): push the
+    // fixture's policy through the genuine revisioned exchange.
+    assert!(
+        owner.apply_test_settings(&[
+            (
+                "switchTarget",
+                tiler_core::connection::RawSettingValue::String(
+                    case["settings"]["switch_target"]
+                        .as_str()
+                        .expect("switch_target")
+                        .to_owned(),
+                ),
+            ),
+            (
+                "freshPlacement",
+                tiler_core::connection::RawSettingValue::String(
+                    case["settings"]["fresh_placement"]
+                        .as_str()
+                        .expect("fresh_placement")
+                        .to_owned(),
+                ),
+            ),
+        ]),
+        "fixture settings revision is accepted"
+    );
+}
+
 fn seed_ticks(
     env: &mut Env,
     owner: &mut WorldOwner,
@@ -228,6 +256,7 @@ fn shared_fresh_cases_route_against_affinity_and_settle() {
         let by_id: std::collections::HashMap<String, WindowKey> = keys.iter().cloned().collect();
         admit_scene(&mut env, &scene, &keys);
         let mut owner = WorldOwner::bootstrap_ids(ADAPTER, GENERATION).expect("owner");
+        apply_core_targeting(&mut owner, case);
         seed_ticks(&mut env, &mut owner, &areas, &fulls, &by_id, case);
         let cursor = cursor_of(case);
         let focus_hwnd = by_id[case["focus"].as_str().expect("focus")].hwnd;
@@ -437,6 +466,7 @@ fn shared_fresh_cases_cover_foreground_steal_and_loss() {
                 keys.iter().cloned().collect();
             admit_scene(&mut env, &scene, &keys);
             let mut owner = WorldOwner::bootstrap_ids(ADAPTER, GENERATION).expect("owner");
+            apply_core_targeting(&mut owner, case);
             seed_ticks(&mut env, &mut owner, &areas, &fulls, &by_id, case);
             let baseline_frames = live_frames();
             let baseline_views = env.state.applied_views.clone();
@@ -609,6 +639,7 @@ fn shared_switch_and_send_cases_resolve_per_fixture() {
         let by_id: std::collections::HashMap<String, WindowKey> = keys.iter().cloned().collect();
         admit_scene(&mut env, &scene, &keys);
         let mut owner = WorldOwner::bootstrap_ids(ADAPTER, GENERATION).expect("owner");
+        apply_core_targeting(&mut owner, case);
         seed_ticks(&mut env, &mut owner, &areas, &fulls, &by_id, case);
         let cursor = cursor_of(case);
         let focus_hwnd = by_id[case["focus"].as_str().expect("focus")].hwnd;
