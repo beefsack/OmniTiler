@@ -5,7 +5,7 @@
 
 use crate::boundary::CoreCommand;
 use crate::connection::{ApplicationIdentity, HandshakeRequest, HostCapabilities, RawSettingValue};
-use crate::directional::{OutputId, WindowId};
+use crate::directional::{OutputId, WindowId, WorkspaceId};
 use crate::geometry::Rect;
 use crate::ids::{CorrelationId, OwnerId};
 use crate::intent_data::{IntentData, encode_intent_data};
@@ -21,8 +21,9 @@ use crate::world_report::{
     CommandRejectKind, CommandResult, FocusRequest, FocusRequestCause, HeldAttemptRow,
     HeldWindowRow, IntentDesire, MAX_FOCUS_DEPARTING, MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED,
     MAX_FOCUS_VIEWS, PresentationIngressV4, PresentationRowV4, RowDiagnostic, RowDiagnosticKind,
-    RowDiagnosticLane, ScreenReport, SendSource, WORLD_CONTRACT_VERSION_V4, WindowFact,
-    WorldCommand, WorldReportV4, validate_after_shown_reason, validate_focus_request_reason,
+    RowDiagnosticLane, ScreenReport, SendSource, WORLD_CONTRACT_VERSION_V4, WarpRequest,
+    WindowFact, WorldCommand, WorldReportV4, validate_after_shown_reason,
+    validate_focus_request_reason,
 };
 use crate::world_report_v4_checks::{graded_effective_v4, report_digest_v4};
 use crate::world_run_v4::V4RunOutcome;
@@ -158,6 +159,8 @@ fn report_full(
             })
             .collect(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 
@@ -3156,7 +3159,15 @@ fn unit_p_intrinsic_reply_validation_enforces_semantics_and_host_capabilities() 
     );
 
     let mut warp_reply = valid_reply.clone();
-    warp_reply.cursor_warp = Some((10, 20));
+    warp_reply.warp_request = Some(WarpRequest {
+        id: "warp-0".to_owned(),
+        target: WindowId("win-b".to_owned()),
+        revision: 1,
+        output: OutputId("out-b".to_owned()),
+        workspace: WorkspaceId("ws-2".to_owned()),
+        point: (10, 20),
+        pointer_baseline: Some(0),
+    });
     assert_eq!(
         validate_reply_v4(&warp_reply, engine.capabilities())
             .expect_err("warp capability false")
@@ -3186,6 +3197,97 @@ fn unit_p_intrinsic_reply_validation_enforces_semantics_and_host_capabilities() 
     let boot_reply = accepted_reply(1, admit(&mut pre_ready, &bootstrap));
     assert!(!boot_reply.ready);
     assert!(validate_reply_v4(&boot_reply, pre_ready.capabilities()).is_ok());
+}
+
+#[test]
+fn warp_request_validation_bounds_and_capability() {
+    use crate::world_reply_validation::validate_reply_v4;
+
+    let mut template = self::engine();
+    let r1 = observe(1, facts_pair(), "win-a");
+    let valid_reply = accepted_reply(1, admit(&mut template, &r1));
+
+    let request = || WarpRequest {
+        id: "warp-0".to_owned(),
+        target: WindowId("win-b".to_owned()),
+        revision: 1,
+        output: OutputId("out-b".to_owned()),
+        workspace: WorkspaceId("ws-2".to_owned()),
+        point: (10, 20),
+        pointer_baseline: Some(0),
+    };
+    let with_request = |warp: WarpRequest| {
+        let mut reply = valid_reply.clone();
+        reply.warp_request = Some(warp);
+        reply
+    };
+    assert!(validate_reply_v4(&with_request(request()), None).is_ok());
+
+    let overlong_id = "w".repeat(crate::bounds::MAX_OPAQUE_ID_LEN + 1);
+    let mut cases: Vec<(&str, WarpRequest)> = vec![
+        (
+            "point",
+            WarpRequest {
+                point: (32769, 0),
+                ..request()
+            },
+        ),
+        (
+            "empty-id",
+            WarpRequest {
+                id: String::new(),
+                ..request()
+            },
+        ),
+        (
+            "overlong-id",
+            WarpRequest {
+                id: overlong_id,
+                ..request()
+            },
+        ),
+        (
+            "target",
+            WarpRequest {
+                target: WindowId(String::new()),
+                ..request()
+            },
+        ),
+        (
+            "output",
+            WarpRequest {
+                output: OutputId("bad output".to_owned()),
+                ..request()
+            },
+        ),
+        (
+            "workspace",
+            WarpRequest {
+                workspace: WorkspaceId(String::new()),
+                ..request()
+            },
+        ),
+    ];
+    for (label, warp) in cases.drain(..) {
+        let error = validate_reply_v4(&with_request(warp), None)
+            .expect_err("malformed warp request must refuse");
+        assert_eq!(error.kind, "unknown-value", "case {label}");
+    }
+
+    // `warp:false` rejects even a well-formed request; `warp:true` accepts.
+    let host_off = HostCapabilities {
+        warp: false,
+        ..HostCapabilities::default()
+    };
+    let error = validate_reply_v4(&with_request(request()), Some(&host_off))
+        .expect_err("capability false refuses");
+    assert_eq!(error.kind, KIND_SNAPSHOT);
+    assert_eq!(error.message, "warp-capability-false");
+    let host_on = HostCapabilities {
+        warp: true,
+        ..HostCapabilities::default()
+    };
+    assert!(validate_reply_v4(&with_request(request()), Some(&host_on)).is_ok());
 }
 
 #[test]
@@ -3251,7 +3353,15 @@ fn unit_p_c5_size_and_wake_fences_beat_invalid_candidate() {
     let r1 = observe(1, facts_pair(), "win-a");
     let valid_reply = accepted_reply(1, admit(&mut engine, &r1));
     let mut invalid_reply = valid_reply;
-    invalid_reply.cursor_warp = Some((32769, 0));
+    invalid_reply.warp_request = Some(WarpRequest {
+        id: "warp-0".to_owned(),
+        target: WindowId("win-b".to_owned()),
+        revision: 1,
+        output: OutputId("out-b".to_owned()),
+        workspace: WorkspaceId("ws-2".to_owned()),
+        point: (32769, 0),
+        pointer_baseline: Some(0),
+    });
 
     let r2 = observe(2, facts_pair(), "win-a");
     let digest = report_digest_v4(&r2);

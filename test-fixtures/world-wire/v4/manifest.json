@@ -5831,7 +5831,7 @@
         "handshake": "handshake-emulated"
       },
       "invalid": {
-        "pointer": "/warpCursor",
+        "pointer": "/warpRequest",
         "rule": "warp-capability-false",
         "source": "reply-observe"
       }

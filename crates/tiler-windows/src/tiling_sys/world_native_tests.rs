@@ -689,7 +689,7 @@ fn reply_shell(
         gesture_settled: None,
         operation_settled: Vec::new(),
         native_creations: Vec::new(),
-        cursor_warp: None,
+        warp_request: None,
         presentation: tiler_core::world_report::WorldPresentationV4 {
             foreground: String::new(),
             rev: 0,

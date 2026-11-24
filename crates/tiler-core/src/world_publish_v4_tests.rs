@@ -15,11 +15,11 @@ use crate::gesture::GestureSettled;
 use crate::world_engine::{RetainedNativeCreation, RetainedTransfer, WorldEngine};
 use crate::world_publish_v4::PublishEnvelopeV4;
 use crate::world_report::{
-    AuthorityScope, HoldReason, NativeObservation, NativeOccupancy, OperationEvent, OperationKind,
-    OperationOutcome, PresentationIngressV4, PresentationPagerFrameV4, PresentationRowV4,
-    RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority, ScreenReport, SwitchEvent,
-    SwitchFocus, SwitchOutcome, TransferKind, TransferTarget, WORLD_CONTRACT_VERSION_V4,
-    WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
+    AuthorityScope, HoldReason, NativeObservation, NativeOccupancy, OneShotEffect, OperationEvent,
+    OperationKind, OperationOutcome, PresentationIngressV4, PresentationPagerFrameV4,
+    PresentationRowV4, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScopeAuthority,
+    ScreenReport, SwitchEvent, SwitchFocus, SwitchOutcome, TransferKind, TransferTarget,
+    WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 use crate::world_run_v4::V4RunOutcome;
 use crate::world_v4_support_tests::{
@@ -151,6 +151,8 @@ fn report_v4(
         presentation: PresentationRowV4::Valid(ingress),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 
@@ -335,7 +337,7 @@ fn clean_publish_authorizes_without_holds() {
     assert!(reply.operation_settled.is_empty());
     assert!(reply.switch_settled.is_empty());
     assert!(reply.intent_desired.is_empty());
-    assert_eq!(reply.cursor_warp, None);
+    assert_eq!(reply.warp_request, None);
     assert_eq!(reply.presentation.foreground, "win-a");
     assert_eq!(reply.presentation.rev, 7);
     assert_eq!(engine.world.presentation.latest_published_rev_v4, 7);
@@ -4148,5 +4150,70 @@ fn projected_tiled_windows_preserve_nonlexical_workspace_ring_order_ws2_before_w
             ("ws-10", "win-a10"),
             ("ws-10", "win-b10"),
         ]
+    );
+}
+
+#[test]
+fn publish_v4_projects_retained_warp_request() {
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        HostCapabilities {
+            warp: true,
+            maximize: true,
+            native_sticky: true,
+            ..Default::default()
+        },
+        vec![("cursorWarp".to_owned(), RawSettingValue::Bool(true))],
+    )
+    .expect("generation");
+    seeded(
+        &mut engine,
+        1,
+        screens_pair(),
+        facts_pair(),
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    // The staged capture carries a readable cursor on out-a and a known
+    // hardware-origin pointer generation.
+    let mut report = report_v4(
+        3,
+        screens_pair(),
+        facts_pair(),
+        "win-a",
+        ingress_v4("win-a"),
+    );
+    report.cursor = Some((10, 10));
+    report.pointer_activity = Some(3);
+    engine.tx(|tx| tx.stage_facts_v4(&report));
+    engine.tx(|tx| tx.build_staged_domains());
+    let effects = vec![OneShotEffect::explicit_focus(
+        4,
+        WindowId("win-c".to_owned()),
+        3,
+    )];
+    let reply = engine.tx(|tx| tx.publish_v4(envelope(3), None, effects, &BTreeSet::new()));
+    let warp = reply
+        .warp_request
+        .as_ref()
+        .expect("publish projects the retained warp request");
+    assert_eq!(warp.id, "warp-0");
+    assert_eq!(warp.target.0, "win-c");
+    assert_eq!(warp.revision, 3);
+    assert_eq!(warp.output.0, "out-b");
+    assert_eq!(warp.pointer_baseline, Some(3));
+    let row = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-c")
+        .expect("win-c row");
+    assert_eq!(warp.workspace.0, row.workspace);
+    // A following observation-only publication keeps the identical tuple.
+    let again = engine.tx(|tx| tx.publish_v4(envelope(4), None, Vec::new(), &BTreeSet::new()));
+    assert_eq!(
+        again.warp_request.as_ref(),
+        Some(warp),
+        "observation-only publish re-emits the identical request"
     );
 }

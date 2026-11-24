@@ -235,6 +235,8 @@ fn build_report_v4(
 
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     })
 }
 
@@ -403,7 +405,7 @@ fn note_effects_v4(sim: &mut SimV4, reply: &WorldReplyV4, at: &str) -> Result<()
     if reply.drag_preview.is_some()
         || reply.gesture_settled.is_some()
         || !reply.operation_settled.is_empty()
-        || reply.cursor_warp.is_some()
+        || reply.warp_request.is_some()
     {
         return Err(fail(at, "unsupported reply class"));
     }

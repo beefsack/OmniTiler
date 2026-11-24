@@ -63,6 +63,11 @@ pub(crate) struct StagedObservation {
     pub(crate) closed: Vec<WindowId>,
     pub(crate) native: Vec<crate::world_report::NativeObservation>,
     pub(crate) cursor: Option<(i32, i32)>,
+    /// Cumulative hardware-origin pointer-activity generation, `None` when
+    /// the host cannot witness raw pointer input.
+    pub(crate) pointer_activity: Option<u64>,
+    /// Exact retained warp id the adapter spent this report, `None` none.
+    pub(crate) warp_spent: Option<String>,
     pub(crate) cursor_hit: Option<WindowId>,
     pub(crate) focused_global: String,
     pub(crate) action_foreground: Option<OutputId>,

@@ -252,7 +252,8 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
   unreadable option does not prove a global switch. The 6.6 shared setter
   remains available without the option.
 - `above:false` forbids persistent project stacking targets; `warp:false`
-  forbids non-null `warpCursor`, even when cursorWarp is requested. Read-only
+  forbids any non-null `warpRequest`, even when cursorWarp is requested, and
+  such hosts emit and accept only `null`. Read-only
   stacking observations are independent of actuation support. K1-K4 are
   [technical resolutions approved 2026-11-02](../changes/v4-migration.md#k1-k5-technical-resolution-pending-0c-approval).
 - `tiledFloatTransfer` is exactly the existing `float-no-remap` limitation: a
@@ -423,6 +424,8 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 | `complete` | bool | no | Inventory completeness, not a hard capability. |
 | `gesture` | bool | no | Existing gesture write barrier. |
 | `cursor` | Point | yes | Native cursor in common coordinate space. |
+| `pointerActivity` | Counter | yes | Quoted-decimal `u64` cumulative hardware-origin pointer-activity generation; null when unknown. |
+| `warpSpent` | Id | yes | Bounded opaque id of the warp the adapter spent (accepted or no-call); null when none spent. |
 | `actionForeground,actionCached` | OutputId | yes | Observed frozen action context, not chosen source. |
 | `actionOutputs` | OutputId[] | no | Ordered known-output registry (<=16; refused as `snapshot-invalid` / `section-over-cap` above cap). |
 | `presentation` | PresentationIngress | no | Native foreground/render facts. |
@@ -442,6 +445,11 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
   view echo cannot prove native-free completion; visibility/focus facts do.
   [Visibility removal](../decisions/windows.md#state-centric-v4-visibility),
   [G1 reconciliation](../changes/v4-migration.md#b-reconciliations-and-open-points).
+- `pointerActivity` and `warpSpent` are observations, never core commands: a
+  cumulative hardware-origin generation (null means unknown, never zero) and
+  the bounded opaque id of a spent warp (accepted or no-call, null for none).
+  Neither authorizes a core action; core retirement requires exact `warpSpent`
+  id equality with the retained request.
 
 - The pre-release v4 attempt cutover has no dual spelling: the old five
   attempt arrays and `WindowFact.lastWrite` are not accepted.
@@ -1171,7 +1179,7 @@ that step's ordered proof and requiring the exact planned ID for removal.
 | `gestureSettled` | GestureSettled | yes | Retained latest core mutation outcome, not native completion. |
 | `operationSettled` | OperationEvent[] | no | Complete retained latest clear/float outcomes keyed by `(win,kind)`. |
 | `nativeCreations` | NativeCreationDesire[] | no | Explicit native creation authority on the existing route; the approved slot route authorizes appends through its retained plan. |
-| `warpCursor` | Point | yes | Core-decided cursor target. |
+| `warpRequest` | WarpRequest | yes | Required nullable retained cursor-warp request, frozen at mint; at most one per reply. |
 | `presentation` | WorldPresentation | no | Full accepted rendering publication. |
 | `intentDesired` | IntentDesire[] | no | Complete retained per-window storage targets, including explicit clears. |
 | `switchSettled` | SwitchEvent[] | no | Complete retained latest transfer/view parent outcomes keyed by `out`. |
@@ -1587,6 +1595,40 @@ v2 presentation relay are unchanged.
   participates in report digest/replay equality. Bootstrap/not-ready replies
   carry `focusRequest:null`. Bounds remain 4 MiB independently per
   report/reply and at most one focus row.
+
+### One retained cursor-warp request
+
+| Record | Key | Type | Null/absence | Meaning |
+| --- | --- | --- | --- | --- |
+| `WarpRequest` | `id` | Id | no | Bounded opaque warp identity, nonempty, frozen at mint. |
+| | `target` | WindowId | no | Frozen destination window lifetime. |
+| | `rev` | Counter | no | Quoted-decimal `u64` focus-decision revision that minted the request. |
+| | `out,ws` | OutputId, WorkspaceId | no | Frozen destination output and workspace. |
+| | `point` | Point | no | Frozen carried `[x,y]` destination point; never fabricated. |
+| | `pointerBaseline` | Counter | yes | Quoted-decimal `u64` pointer-activity generation frozen at mint; null when unknown. |
+
+- At most one request per reply; `warpRequest` is required nullable and
+  replaces the old point-only `warpCursor` field. All keys are required and the
+  object is closed. Mint from the winning cross-output focus decision, freezing
+  every tuple at its issuing revision: the same `id` never retargets or
+  recenters on relayout, and an unchanged request re-emits with identical
+  bytes. Never mint a same-output target or a fabricated point.
+- Core retains the request across observation-only replies, unresolved focus,
+  applied-but-unverified focus feedback and delayed foreground verification.
+  Exact `warpSpent` id equality retires it. A newer focus decision targeting
+  another lifetime cancels it; a newer decision for the same target keeps it
+  (Q1). A report `pointerActivity` newer than the frozen `pointerBaseline`, or
+  an unknown activity or baseline, cancels it (Q2); an own adapter warp must
+  not advance the hardware-origin generation. Target departure or recycle, an
+  unreadable frame, incomplete inventory, a disabled `cursorWarp` setting,
+  `warp:false`, a gesture or a paused game also clear it.
+- Spending is adapter-local and reported as `warpSpent`; it never removes a
+  core request by itself. Neither report observation grants write authority.
+- `warp:false` rejects any non-null `warpRequest` with `warp-capability-false`.
+  KDE, macOS and Windows currently declare `warp:false` and therefore emit and
+  accept only `null`. Windows actuation (raw-input witness, `SetCursorPos`,
+  spend-before-move) is intentionally not implemented in this stage.
+  [Decision record](../changes/retained-cursor-warp.md).
 
 ### Persistent stacking
 

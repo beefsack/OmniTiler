@@ -224,6 +224,8 @@ impl WorldEngine {
             closed: report.closed.clone(),
             native: report.native.clone(),
             cursor: report.cursor,
+            pointer_activity: report.pointer_activity,
+            warp_spent: report.warp_spent.clone(),
             cursor_hit: report.cursor_hit.clone(),
             focused_global: report.focused_global.clone(),
             action_foreground: report.action_foreground.clone(),

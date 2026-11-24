@@ -175,6 +175,8 @@ fn command_report(
         presentation: PresentationRowV4::Valid(empty_ingress()),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 
@@ -246,7 +248,7 @@ fn focus_follows_off_by_default_mints_no_effect() {
             false,
         ),
     );
-    assert_eq!(reply.cursor_warp, None);
+    assert_eq!(reply.warp_request, None);
 }
 
 #[test]
@@ -278,7 +280,7 @@ fn focus_follows_on_mints_hover_effect() {
     assert_eq!(request.cmd_seq, None);
     assert_eq!(request.after_shown, None);
     // Hover coupling is same-output here: no warp.
-    assert_eq!(reply.cursor_warp, None);
+    assert_eq!(reply.warp_request, None);
 }
 
 #[test]
@@ -434,6 +436,74 @@ fn cross_rig_with_warp(enabled: bool) -> WorldEngine {
     engine
 }
 
+/// Same-output rig with the warp lane enabled: both windows on out-a, so
+/// a cross-window focus never crosses an output.
+fn rig_with_warp() -> WorldEngine {
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities {
+            warp: true,
+            native_sticky: true,
+            maximize: true,
+            ..Default::default()
+        },
+        vec![(
+            "cursorWarp".to_owned(),
+            crate::connection::RawSettingValue::Bool(true),
+        )],
+    )
+    .expect("valid generation");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+            "win-a",
+            Some((10, 10)),
+            None,
+            false,
+            false,
+            true,
+            false,
+        ),
+    );
+    engine
+}
+
+/// One cross-output report for the two-output warp rig: `command` names an
+/// explicit focus target plus its command sequence (focus stays on win-a
+/// otherwise), and the pointer/spend witnesses are stamped explicitly.
+fn cross_warp_report(
+    seq: u64,
+    cursor: (i32, i32),
+    pointer: Option<u64>,
+    spent: Option<&str>,
+    command: Option<(&str, u64)>,
+) -> WorldReportV4 {
+    let mut report = command_report(
+        seq,
+        seq,
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+        "win-a",
+        Some(cursor),
+        None,
+        false,
+        true,
+        true,
+        false,
+        command.map(|(_, seq)| seq),
+        command.map(|(target, _)| WorldCommand::Focus {
+            window: crate::directional::WindowSubject::Window(WindowId(target.to_owned())),
+            direction: None,
+        }),
+    );
+    report.pointer_activity = pointer;
+    report.warp_spent = spent.map(str::to_owned);
+    report
+}
+
 #[test]
 fn warp_off_by_default_publishes_no_point() {
     let mut engine = cross_rig();
@@ -470,32 +540,31 @@ fn warp_off_by_default_publishes_no_point() {
         crate::world_report::FocusRequestCause::ExplicitCommand
     );
     assert_eq!(request.cmd_seq, Some(11));
-    assert_eq!(reply.cursor_warp, None);
+    assert_eq!(reply.warp_request, None);
 }
 
 #[test]
 fn warp_publishes_cross_output_centre() {
     let mut engine = cross_rig_with_warp(true);
-    let reply = accepted(
-        &mut engine,
-        &command_report(
-            2,
-            2,
-            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
-            "win-a",
-            Some((10, 10)),
-            None,
-            false,
-            true,
-            true,
-            false,
-            Some(11),
-            Some(WorldCommand::Focus {
-                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
-                direction: None,
-            }),
-        ),
+    let mut report = command_report(
+        2,
+        2,
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+        "win-a",
+        Some((10, 10)),
+        None,
+        false,
+        true,
+        true,
+        false,
+        Some(11),
+        Some(WorldCommand::Focus {
+            window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
+            direction: None,
+        }),
     );
+    report.pointer_activity = Some(4);
+    let reply = accepted(&mut engine, &report);
     let request = reply
         .focus_request
         .as_ref()
@@ -520,7 +589,14 @@ fn warp_publishes_cross_output_centre() {
         frame.x.saturating_add(frame.w / 2),
         frame.y.saturating_add(frame.h / 2),
     );
-    assert_eq!(reply.cursor_warp, Some(want));
+    let warp = reply.warp_request.as_ref().expect("retained warp request");
+    assert_eq!(warp.id, "warp-0");
+    assert_eq!(warp.target.0, "win-b");
+    assert_eq!(warp.revision, reply.state_revision);
+    assert_eq!(warp.output, row.output);
+    assert_eq!(warp.workspace.0, row.workspace);
+    assert_eq!(warp.pointer_baseline, Some(4));
+    assert_eq!(warp.point, want);
     let area = rect(800, 0, 800, 560);
     let (x, y) = want;
     assert!(x >= area.x && x < area.x + area.w);
@@ -529,27 +605,26 @@ fn warp_publishes_cross_output_centre() {
 
 #[test]
 fn warp_skips_same_output_focus() {
-    let mut engine = rig();
-    let reply = accepted(
-        &mut engine,
-        &command_report(
-            2,
-            2,
-            vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
-            "win-a",
-            Some((10, 10)),
-            None,
-            false,
-            true,
-            true,
-            false,
-            Some(11),
-            Some(WorldCommand::Focus {
-                window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
-                direction: None,
-            }),
-        ),
+    let mut engine = rig_with_warp();
+    let mut report = command_report(
+        2,
+        2,
+        vec![fact("win-a", "out-a", 0), fact("win-b", "out-a", 100)],
+        "win-a",
+        Some((10, 10)),
+        None,
+        false,
+        true,
+        true,
+        false,
+        Some(11),
+        Some(WorldCommand::Focus {
+            window: crate::directional::WindowSubject::Window(WindowId("win-b".to_owned())),
+            direction: None,
+        }),
     );
+    report.pointer_activity = Some(0);
+    let reply = accepted(&mut engine, &report);
     let request = reply
         .focus_request
         .as_ref()
@@ -562,7 +637,7 @@ fn warp_skips_same_output_focus() {
         crate::world_report::FocusRequestCause::ExplicitCommand
     );
     assert_eq!(request.cmd_seq, Some(11));
-    assert_eq!(reply.cursor_warp, None);
+    assert_eq!(reply.warp_request, None);
 }
 
 #[test]
@@ -593,7 +668,7 @@ fn warp_paused_under_focused_fullscreen_game() {
             }),
         ),
     );
-    assert_eq!(reply.cursor_warp, None);
+    assert_eq!(reply.warp_request, None);
 }
 
 #[test]
@@ -620,7 +695,7 @@ fn warp_needs_a_known_cursor_output() {
                 }),
             ),
         );
-        assert_eq!(reply.cursor_warp, None, "cursor {cursor:?}");
+        assert_eq!(reply.warp_request, None, "cursor {cursor:?}");
     }
 }
 
@@ -1117,7 +1192,7 @@ fn warp_follows_single_explicit_grant_not_superseded_admission() {
         crate::world_report::FocusRequestCause::ExplicitCommand
     );
     assert_eq!(request.cmd_seq, Some(11));
-    assert_eq!(reply.cursor_warp, None);
+    assert_eq!(reply.warp_request, None);
 }
 
 #[test]
@@ -1349,4 +1424,268 @@ fn retained_hover_retires_when_foreground_turns_floating() {
         fourth.focus_request.is_none(),
         "retired hover never reissues for a static pointer: {fourth:?}"
     );
+}
+
+#[test]
+fn warp_retains_across_observation_only_reply() {
+    let mut engine = cross_rig_with_warp(true);
+    let minted = accepted(
+        &mut engine,
+        &cross_warp_report(2, (10, 10), Some(0), None, Some(("win-b", 11))),
+    );
+    let first = minted
+        .warp_request
+        .clone()
+        .expect("cross-output warp mints");
+    assert_eq!(first.id, "warp-0");
+    assert_eq!(first.target.0, "win-b");
+    assert_eq!(first.pointer_baseline, Some(0));
+    // Observation-only reply: no focus effects, same report facts.
+    let retained = accepted(
+        &mut engine,
+        &cross_warp_report(3, (10, 10), Some(0), None, None),
+    );
+    assert_eq!(
+        retained.warp_request.as_ref(),
+        Some(&first),
+        "observation-only reply re-emits the identical request"
+    );
+}
+
+#[test]
+fn warp_same_target_decision_keeps_identity() {
+    let mut engine = cross_rig_with_warp(true);
+    let first = accepted(
+        &mut engine,
+        &cross_warp_report(2, (10, 10), Some(0), None, Some(("win-b", 11))),
+    )
+    .warp_request
+    .clone()
+    .expect("cross-output warp mints");
+    // A newer focus decision for the SAME lifetime keeps the request
+    // even though the focus row itself is superseded.
+    let same = accepted(
+        &mut engine,
+        &cross_warp_report(3, (10, 10), Some(0), None, Some(("win-b", 12))),
+    );
+    assert_eq!(
+        same.warp_request.as_ref(),
+        Some(&first),
+        "same-target decision keeps id/revision/point"
+    );
+}
+
+#[test]
+fn warp_newer_other_target_decision_clears_and_remints() {
+    let mut engine = cross_rig_with_warp(true);
+    let first = accepted(
+        &mut engine,
+        &cross_warp_report(2, (10, 10), Some(0), None, Some(("win-b", 11))),
+    )
+    .warp_request
+    .clone()
+    .expect("cross-output warp mints");
+    assert_eq!(first.id, "warp-0");
+    // A focus decision for another lifetime (win-a, the cursor output)
+    // cancels the pending warp; it cannot re-mint same-output.
+    let cleared = accepted(
+        &mut engine,
+        &cross_warp_report(3, (10, 10), Some(0), None, Some(("win-a", 12))),
+    );
+    assert_eq!(cleared.warp_request, None);
+    // The next cross-output decision mints a fresh id, never reusing.
+    let reminted = accepted(
+        &mut engine,
+        &cross_warp_report(4, (10, 10), Some(0), None, Some(("win-b", 13))),
+    );
+    let second = reminted.warp_request.expect("re-minted warp");
+    assert_ne!(second.id, first.id);
+    assert_eq!(second.id, "warp-1");
+    assert_eq!(second.target.0, "win-b");
+}
+
+#[test]
+fn warp_pointer_activity_equal_keeps_newer_and_unknown_clear() {
+    let mut engine = cross_rig_with_warp(true);
+    let first = accepted(
+        &mut engine,
+        &cross_warp_report(2, (10, 10), Some(5), None, Some(("win-b", 11))),
+    )
+    .warp_request
+    .clone()
+    .expect("cross-output warp mints");
+    let equal = accepted(
+        &mut engine,
+        &cross_warp_report(3, (10, 10), Some(5), None, None),
+    );
+    assert_eq!(
+        equal.warp_request.as_ref(),
+        Some(&first),
+        "equal baseline retains"
+    );
+    // Newer genuine pointer activity cancels before publication, and the
+    // same report's cross-output command must not mint after that motion.
+    let moved = accepted(
+        &mut engine,
+        &cross_warp_report(4, (10, 10), Some(6), None, Some(("win-b", 12))),
+    );
+    assert_eq!(moved.warp_request, None, "newer activity clears");
+    // A fresh decision at the new generation mints again.
+    let rebuilt = accepted(
+        &mut engine,
+        &cross_warp_report(5, (10, 10), Some(6), None, Some(("win-b", 13))),
+    );
+    assert!(
+        rebuilt.warp_request.is_some(),
+        "fresh mint after the report"
+    );
+    // Unknown activity clears a known baseline.
+    let unknown = accepted(
+        &mut engine,
+        &cross_warp_report(6, (10, 10), None, None, None),
+    );
+    assert_eq!(unknown.warp_request, None, "unknown witness clears");
+}
+
+#[test]
+fn warp_target_departure_and_incomplete_inventory_clear() {
+    let mut engine = cross_rig_with_warp(true);
+    assert!(
+        accepted(
+            &mut engine,
+            &cross_warp_report(2, (10, 10), Some(0), None, Some(("win-b", 11))),
+        )
+        .warp_request
+        .is_some()
+    );
+    // Incomplete inventory clears the retained request.
+    let mut incomplete = cross_warp_report(3, (10, 10), Some(0), None, None);
+    incomplete.inventory_complete = false;
+    assert_eq!(accepted(&mut engine, &incomplete).warp_request, None);
+    // A later complete cross-output decision mints again.
+    assert!(
+        accepted(
+            &mut engine,
+            &cross_warp_report(4, (10, 10), Some(0), None, Some(("win-b", 12))),
+        )
+        .warp_request
+        .is_some()
+    );
+    // Target departure: the destination row is gone from the reply.
+    let gone = report(
+        5,
+        5,
+        vec![fact("win-a", "out-a", 0)],
+        "win-a",
+        Some((10, 10)),
+        None,
+        false,
+        true,
+        true,
+        false,
+    );
+    assert_eq!(
+        accepted(&mut engine, &gone).warp_request,
+        None,
+        "departed target clears"
+    );
+}
+
+#[test]
+fn warp_cursor_on_pending_output_clears_and_one_request_shape() {
+    fn one_request(reply: &WorldReplyV4) -> Option<&crate::world_report::WarpRequest> {
+        reply.warp_request.as_ref()
+    }
+    let mut engine = cross_rig_with_warp(true);
+    let minted = accepted(
+        &mut engine,
+        &cross_warp_report(2, (10, 10), Some(0), None, Some(("win-b", 11))),
+    );
+    assert!(one_request(&minted).is_some(), "at most one request row");
+    // The cursor now reads on the pending destination output: never
+    // publish a same-output warp.
+    let moved = accepted(
+        &mut engine,
+        &cross_warp_report(3, (900, 10), Some(0), None, None),
+    );
+    assert!(
+        one_request(&moved).is_none(),
+        "cursor on pending output clears"
+    );
+}
+
+#[test]
+fn warp_capability_false_publishes_none() {
+    // The raw cursorWarp setting is on, but the host caps warp false: the
+    // setting gate stays closed and no request ever publishes.
+    let capabilities = crate::connection::HostCapabilities {
+        warp: false,
+        native_sticky: true,
+        maximize: true,
+        ..Default::default()
+    };
+    let mut engine = WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        capabilities,
+        vec![(
+            "cursorWarp".to_owned(),
+            crate::connection::RawSettingValue::Bool(true),
+        )],
+    )
+    .expect("valid generation");
+    assert!(!engine.cursor_warp(), "capability off closes the lane");
+    accepted(
+        &mut engine,
+        &report(
+            1,
+            1,
+            vec![fact("win-a", "out-a", 0), fact("win-b", "out-b", 800)],
+            "win-a",
+            Some((10, 10)),
+            None,
+            false,
+            true,
+            true,
+            false,
+        ),
+    );
+    let reply = accepted(
+        &mut engine,
+        &cross_warp_report(2, (10, 10), Some(0), None, Some(("win-b", 11))),
+    );
+    assert_eq!(reply.warp_request, None, "caps false publishes none");
+}
+
+#[test]
+fn warp_spend_retires_exact_id_only() {
+    let mut engine = cross_rig_with_warp(true);
+    let first = accepted(
+        &mut engine,
+        &cross_warp_report(2, (10, 10), Some(0), None, Some(("win-b", 11))),
+    )
+    .warp_request
+    .clone()
+    .expect("cross-output warp mints");
+    // A different spent id does nothing.
+    let other = accepted(
+        &mut engine,
+        &cross_warp_report(3, (10, 10), Some(0), Some("warp-999"), None),
+    );
+    assert_eq!(
+        other.warp_request.as_ref(),
+        Some(&first),
+        "a different spent id never retires"
+    );
+    // The exact id retires; the next reply carries none.
+    let spent = accepted(
+        &mut engine,
+        &cross_warp_report(4, (10, 10), Some(0), Some(first.id.as_str()), None),
+    );
+    assert_eq!(spent.warp_request, None, "exact spend retires");
+    let after = accepted(
+        &mut engine,
+        &cross_warp_report(5, (10, 10), Some(0), None, None),
+    );
+    assert_eq!(after.warp_request, None, "retired id never republishes");
 }

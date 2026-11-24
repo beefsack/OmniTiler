@@ -424,7 +424,7 @@ impl WorldSequencer {
             gesture_settled: None,
             operation_settled: Vec::new(),
             native_creations: Vec::new(),
-            cursor_warp: None,
+            warp_request: None,
             presentation: tiler_core::world_report::WorldPresentationV4 {
                 foreground: String::new(),
                 rev: 0,
@@ -613,8 +613,7 @@ impl WorldSequencer {
         view_attempts.sort_by(|a, b| a.operation_id.cmp(&b.operation_id));
         let visibility_attempts: Vec<VisibilityAttempt> =
             self.pending_visibility.values().cloned().collect();
-        let mut state_attempts: Vec<StateAttempt> =
-            self.pending_state.values().cloned().collect();
+        let mut state_attempts: Vec<StateAttempt> = self.pending_state.values().cloned().collect();
         state_attempts.sort_by(|a, b| {
             a.window
                 .0
@@ -662,6 +661,8 @@ impl WorldSequencer {
             presentation: PresentationRowV4::Valid(presentation),
             intent_records: captured.intent_records.clone(),
             renderer_input,
+            pointer_activity: None,
+            warp_spent: None,
         }
     }
 
@@ -1310,4 +1311,3 @@ impl WorldSequencer {
         &self.last_accepted_req
     }
 }
-

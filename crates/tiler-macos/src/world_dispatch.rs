@@ -4585,11 +4585,23 @@ mod tests {
             gesture_settled: None,
             operation_settled: Vec::new(),
             native_creations: Vec::new(),
-            cursor_warp: None,
+            warp_request: None,
             presentation: crate::runtime::empty_world_presentation_v4(),
             intent_desired: Vec::new(),
             switch_settled: Vec::new(),
             diagnostics: Vec::new(),
+        }
+    }
+
+    fn test_warp_request() -> tiler_core::world_report::WarpRequest {
+        tiler_core::world_report::WarpRequest {
+            id: "warp-macos-test".to_owned(),
+            target: tiler_core::directional::WindowId("4242_7".to_owned()),
+            revision: 0,
+            output: output(),
+            workspace: tiler_core::directional::WorkspaceId("ws-a".to_owned()),
+            point: (4, 4),
+            pointer_baseline: Some(1),
         }
     }
 
@@ -5038,7 +5050,7 @@ mod tests {
                     automatic_clear: false,
                 }],
             });
-        tainted.cursor_warp = Some((4, 4));
+        tainted.warp_request = Some(test_warp_request());
         let wire = encode_reply_v4(&DecodedReplyV4 {
             roster_plan: None,
             reply: tainted,
@@ -5054,7 +5066,7 @@ mod tests {
         // Each gate fires independently: warp-only and sticky-only rows
         // refuse with their own fixed tokens.
         let mut warp_only = empty_reply();
-        warp_only.cursor_warp = Some((4, 4));
+        warp_only.warp_request = Some(test_warp_request());
         let warp_wire = encode_reply_v4(&DecodedReplyV4 {
             roster_plan: None,
             reply: warp_only,
@@ -8846,6 +8858,8 @@ mod tests {
                 presentation: PresentationRowV4::Valid(presentation),
                 intent_records: Vec::new(),
                 renderer_input: None,
+                pointer_activity: None,
+                warp_spent: None,
             }
         }
 
@@ -10429,6 +10443,8 @@ mod tests {
                 presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
                 intent_records: Vec::new(),
                 renderer_input: None,
+                pointer_activity: None,
+                warp_spent: None,
             }
         }
         let mut engine = WorldEngine::new_test_bound("gen-1", "adapter-1").expect("generation");
@@ -10721,6 +10737,8 @@ mod tests {
                 presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
                 intent_records: Vec::new(),
                 renderer_input: None,
+                pointer_activity: None,
+                warp_spent: None,
             }
         }
         let mut session = focus_session();
@@ -11585,6 +11603,8 @@ mod tests {
                 presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
                 intent_records: Vec::new(),
                 renderer_input: None,
+                pointer_activity: None,
+                warp_spent: None,
             }
         }
         let mut session = focus_session();
@@ -11949,6 +11969,8 @@ mod tests {
                 presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
                 intent_records: Vec::new(),
                 renderer_input: None,
+                pointer_activity: None,
+                warp_spent: None,
             }
         }
         let mut session = focus_session();
@@ -12285,6 +12307,8 @@ mod tests {
                 presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
                 intent_records: Vec::new(),
                 renderer_input: None,
+                pointer_activity: None,
+                warp_spent: None,
             }
         }
         let mut session = focus_session();

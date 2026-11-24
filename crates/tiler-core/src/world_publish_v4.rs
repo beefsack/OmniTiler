@@ -188,7 +188,7 @@ impl WorldTransaction<'_> {
                 row.visibility_authority = hold;
             }
         }
-        let cursor_warp = self.warp_for_publish(&effects, &windows, &local_held);
+        let warp_request = self.warp_for_publish(&effects, &windows, &local_held);
         self.prune_settled_outcomes();
         self.prune_drag_preview(&local_held);
         let drag_preview = self.world.gesture.drag_preview.clone();
@@ -269,7 +269,10 @@ impl WorldTransaction<'_> {
                     .and_then(|plan| plan.focus.as_ref())
                     == Some(focus)
         });
-        let cursor_warp = if focus_held { None } else { cursor_warp };
+        // A focus held by the shared roster suppresses this reply's request
+        // without clearing retention: the pending warp may still await
+        // spend or a final retry once the epoch clears.
+        let warp_request = if focus_held { None } else { warp_request };
         WorldReplyV4 {
             contract_version: WORLD_CONTRACT_VERSION_V4,
             adapter_incarnation: envelope.adapter_incarnation,
@@ -290,7 +293,7 @@ impl WorldTransaction<'_> {
             gesture_settled,
             operation_settled,
             native_creations,
-            cursor_warp,
+            warp_request,
             presentation: WorldPresentationV4 {
                 foreground: String::new(),
                 rev: 0,

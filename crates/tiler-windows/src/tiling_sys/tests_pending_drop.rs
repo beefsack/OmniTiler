@@ -1358,7 +1358,7 @@ fn arrival_reply(
         gesture_settled: None,
         operation_settled: Vec::new(),
         native_creations: Vec::new(),
-        cursor_warp: None,
+        warp_request: None,
         presentation: WorldPresentationV4 {
             foreground: String::new(),
             rev: 0,

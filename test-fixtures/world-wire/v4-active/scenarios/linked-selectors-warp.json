@@ -320,7 +320,7 @@
       "expect": {
         "status": "settled",
         "assertions": [
-          ".output.message.ready == true and .output.message.warpCursor == null"
+          ".output.message.ready == true and .output.message.warpRequest == null"
         ]
       },
       "rules": [
@@ -551,7 +551,7 @@
       "expect": {
         "status": "settled",
         "assertions": [
-          ".output.message.warpCursor == null",
+          ".output.message.warpRequest == null",
           "([.output.message.outputs[] | select(.out == \"out-a\" or .out == \"out-b\") | .view] | length == 2 and .[0] == .[1])",
           ".output.actions == []"
         ]
@@ -784,7 +784,7 @@
       "expect": {
         "status": "settled",
         "assertions": [
-          ".output.message.warpCursor == null"
+          ".output.message.warpRequest == null"
         ]
       },
       "rules": [

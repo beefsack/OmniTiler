@@ -3183,7 +3183,8 @@ fn stage_state_targets(
                 stats.stopped_mid_apply = true;
                 return;
             }
-            let disposition = match ops.write_state(&row.lifetime.0, target.property, target.value) {
+            let disposition = match ops.write_state(&row.lifetime.0, target.property, target.value)
+            {
                 StateWrite::NotAttempted => {
                     stats.held += 1;
                     continue;
@@ -3216,9 +3217,8 @@ fn stage_state_targets(
             } else {
                 // An honest explicit write re-arms the one-shot automatic
                 // clear for this property.
-                auto_clear_spent.retain(|(token, property, _)| {
-                    token != &key.0 || *property != key.1
-                });
+                auto_clear_spent
+                    .retain(|(token, property, _)| token != &key.0 || *property != key.1);
             }
             pending_state.insert(key, attempt);
         }
@@ -5000,7 +5000,8 @@ fn apply_world_reply_inner(
     // focus re-warms); a throw stops the pass like every other setter.
     // Duplicate deliveries of the same observation never move the cursor
     // twice.
-    if let Some((x, y)) = reply.cursor_warp {
+    if let Some(warp) = reply.warp_request.as_ref() {
+        let (x, y) = warp.point;
         if gate.current_obs != entry_obs || !gate.fresh_reply(reply) {
             stats.stopped_mid_apply = true;
         } else if effects.last_warp_obs == Some(reply.based_on_observation_seq) {

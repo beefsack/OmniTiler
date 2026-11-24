@@ -414,6 +414,8 @@ fn build_report_v4(
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     })
 }
 
@@ -1008,7 +1010,7 @@ fn check(case: &CaseFile, pairs: &[(WorldReportV4, WorldReplyV4)]) -> Result<Vec
             if reply.drag_preview.is_some()
                 || reply.gesture_settled.is_some()
                 || !reply.operation_settled.is_empty()
-                || reply.cursor_warp.is_some()
+                || reply.warp_request.is_some()
             {
                 return Err(fail(at, "unsupported reply class"));
             }

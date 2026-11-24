@@ -344,7 +344,7 @@ mod tests {
             gesture_settled: None,
             operation_settled: Vec::new(),
             native_creations: Vec::new(),
-            cursor_warp: None,
+            warp_request: None,
             presentation: WorldPresentationV4 {
                 foreground: String::new(),
                 rev: 1,
@@ -488,7 +488,7 @@ mod tests {
             Some(100)
         );
         // Exact serialized size after retiring `"effects":[],` and per-row `"clear_op":null,`.
-        assert_eq!(exact, 4_191_822);
+        assert_eq!(exact, 4_191_823);
         assert!(
             exact.saturating_add(future_reserve) <= WORLD_MAX_REPLY_BYTES,
             "exact + future reserve must fit under 4 MiB"
@@ -718,6 +718,8 @@ mod tests {
             presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
             intent_records: Vec::new(),
             renderer_input: None,
+            pointer_activity: None,
+            warp_spent: None,
         }
     }
 

@@ -15,12 +15,20 @@ use crate::directional::WindowId;
 use crate::fresh_focus::FreshFocusMemory;
 use crate::session::DomainKey;
 use crate::world_close_focus::PendingFocus;
+use crate::world_cursor::PendingWarp;
 
 #[derive(Debug, Clone)]
 pub(crate) struct FocusState {
     pub(crate) admission_focus_spent: BTreeSet<String>,
     pub(crate) automatic_focus_tokens: BTreeMap<WindowId, u64>,
     pub(crate) pending_focus: Option<PendingFocus>,
+    /// One retained cursor-warp request, independent of `pending_focus`: the
+    /// focus row may settle while the warp still awaits adapter spend or a
+    /// final retry. Never more than one; `None` publishes no request.
+    pub(crate) pending_warp: Option<PendingWarp>,
+    /// Mint counter for warp ids: incremented on every mint, so a cleared
+    /// request id is never reused.
+    pub(crate) warp_mint_seq: u64,
     pub(crate) last_cursor: Option<(i32, i32)>,
     pub(crate) prev_cursor: Option<(i32, i32)>,
     pub(crate) ffc_last_hover: Option<WindowId>,
@@ -45,6 +53,8 @@ impl FocusState {
             admission_focus_spent: BTreeSet::new(),
             automatic_focus_tokens: BTreeMap::new(),
             pending_focus: None,
+            pending_warp: None,
+            warp_mint_seq: 0,
             last_cursor: None,
             prev_cursor: None,
             ffc_last_hover: None,

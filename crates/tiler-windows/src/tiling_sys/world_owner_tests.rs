@@ -343,6 +343,8 @@ fn clamped_target_holds_scope_without_transfer() {
                 native: Vec::new(),
                 held_native: Vec::new(),
                 cursor: None,
+                pointer_activity: None,
+                warp_spent: None,
                 cursor_hit: None,
                 focused_global: String::new(),
                 foreground_known: false,
@@ -541,6 +543,8 @@ fn tiled_mover_adopts_once_and_floating_mover_half_snaps() {
                     native: Vec::new(),
                     held_native: Vec::new(),
                     cursor: None,
+                    pointer_activity: None,
+                    warp_spent: None,
                     cursor_hit: None,
                     focused_global: String::new(),
                     foreground_known: false,
@@ -889,7 +893,11 @@ fn command_report_carries_the_exact_renderer_input() {
     assert_eq!(report.command_seq, Some(1));
     let outcome = world.deliver_production(&report);
     assert!(matches!(outcome, WorldOutcome::Accepted(_)));
-    assert_eq!(world.last_command_result(), None, "accepted select has no refusal result");
+    assert_eq!(
+        world.last_command_result(),
+        None,
+        "accepted select has no refusal result"
+    );
 }
 
 #[test]

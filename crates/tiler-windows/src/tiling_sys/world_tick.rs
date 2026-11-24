@@ -3354,7 +3354,7 @@ mod apply_diag_tests {
             gesture_settled: None,
             operation_settled: Vec::new(),
             native_creations: Vec::new(),
-            cursor_warp: None,
+            warp_request: None,
             presentation: tiler_core::world_report::WorldPresentationV4 {
                 foreground: String::new(),
                 rev: 0,
@@ -3416,6 +3416,8 @@ mod apply_diag_tests {
             native: Vec::new(),
             held_native: Vec::new(),
             cursor: None,
+            pointer_activity: None,
+            warp_spent: None,
             cursor_hit: None,
             focused_global: String::new(),
             foreground_known: false,

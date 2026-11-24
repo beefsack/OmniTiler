@@ -2413,6 +2413,8 @@ fn v4_writer_primary_key_order_follows_contract() {
         "complete",
         "gesture",
         "cursor",
+        "pointerActivity",
+        "warpSpent",
         "actionForeground",
         "actionCached",
         "actionOutputs",

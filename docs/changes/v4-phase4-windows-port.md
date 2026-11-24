@@ -109,10 +109,12 @@
 - **`dragPreview.id` & `RendererInput`:** `drag_preview.rs` checks
   `preview.source` rather than `preview.id` against the active gesture ID;
   `world_sequencer.rs` hardcodes `renderer_input: None`.
-- **R11 Output identity, R10 core scaling, and C3 retained cursor warp:**
+- **R11 Output identity, R10 core scaling, and C3 warp adapter:**
   `OutputIdentity::unknown()` is hardcoded; core `scale_once` does not yet
-  scale resize minima, keyboard steps, or group-edge zones; C3 retained cursor
-  warp remains deferred until Tasks 1–4 complete.
+  scale resize minima, keyboard steps, or group-edge zones. Stage-1
+  core/protocol retained `warpRequest` has landed; Windows still declares
+  `warp:false` and emits/accepts only `null`, with raw-input witness,
+  `SetCursorPos` and spend-before-move deferred until Tasks 1–4 are green.
 
 ## Tentative decisions (2026-11-25)
 
@@ -135,16 +137,22 @@ and flagged tentative for later review:
   cloaked, style/owner/class) with fail-closed hold if unreadable, reporting
   `host_hidden: Some(cloaked)` and `visibility: { visible: Some(vis), suppression_owned: Some(true) }`.
 - **T5 (Truthful incremental capabilities):** Advertise `above: false` and
-  `warp: false` in `windows_capabilities()` until their actuators, R12
-  preimages, and C3 retained warp exist; flip each on when its task lands.
+  `warp: false` in `windows_capabilities()` until their actuators and R12
+  preimages exist; the stage-1 core/protocol retained request does not change
+  the declaration, and `warp: true` waits for the Windows actuator/witness.
 - **T6 (Direct typed connection calls):** Replace the in-process JSON
   encode/decode round-trip in `tiling_sys/settings.rs` with direct typed
   `WorldEngine` handshake/settings calls while keeping `handle_report_checked`
   for reports.
-- **T7 (Defer C3 cursor warp until Tasks 1–4 are green):** Keep `warp: false`
-  through Tasks 1–4, then convert C3 cleanly across core + Windows (tentative
-  defaults: Q1 = any newer focus decision cancels pending warp; Q2 = user
-  pointer motion cancels pending warp, excluding own warps).
+- **T7 (Windows warp adapter deferred after stage-1 core/protocol):** Stage 1
+  landed the retained `warpRequest` in core/protocol with Q1 resolved as
+  "newer focus decision to another lifetime cancels; same target keeps" and Q2
+  as "newer or unknown `pointerActivity` cancels against the frozen
+  `pointerBaseline`; own warps do not advance the generation", plus report
+  `pointerActivity`/`warpSpent` observations. Windows keeps `warp:false` and
+  emits/accepts only `null` through Tasks 1–4; raw-input witness,
+  `SetCursorPos` and spend-before-move are intentionally not implemented in
+  this stage and flip `warp: true` only when that adapter work lands.
 
 ## Ordered task plan
 
@@ -212,14 +220,15 @@ and flagged tentative for later review:
   `intent_desired` reconciliation before dependent apply (holding on failure,
   zero redundant writes when equal), retiring duplicate adapter intent tables.
 
-### Task 5 — Core scaling prerequisite (R10), R11 output identity, C3 warp, and live matrix
+### Task 5 — Core scaling prerequisite (R10), R11 output identity, deferred C3 warp adapter, and live matrix
 
 - Implement the shared `tiler-core` R10 prerequisite: scale resize minima,
   keyboard steps, and group-edge zones once per output via `screen.scale`.
 - Populate Windows `OutputIdentity` (EDID/QDC manufacturer/model/serial with
   connector fallback) for R11.
-- Implement C3 retained cursor warp across core + Windows per **T7** (confirming
-  Q1/Q2 before flipping `warp: true`).
+- Leave C3 warp adapter work deferred per **T7**: Q1/Q2 and the core/protocol
+  retained request are landed stage 1, so this is Windows witness/actuator work
+  only; keep `warp:false` and the null-only path until it lands.
 - Run the fixture-scoped Windows live acceptance matrix: hidden-target sends
   and restores, iconic mover sends, view switches under native hide lag,
   multi-monitor and mixed-DPI transitions, restart and forced-crash recovery

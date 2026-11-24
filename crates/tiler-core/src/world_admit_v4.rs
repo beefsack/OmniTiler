@@ -1137,7 +1137,7 @@ impl WorldEngine {
             gesture_settled: None,
             operation_settled: Vec::new(),
             native_creations: Vec::new(),
-            cursor_warp: None,
+            warp_request: None,
             presentation,
             intent_desired: Vec::new(),
             switch_settled: Vec::new(),

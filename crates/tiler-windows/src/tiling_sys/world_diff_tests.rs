@@ -231,7 +231,7 @@ fn reply_shell(obs: u64, rev: u64, scopes: &[(&str, &str)]) -> WorldReplyV4 {
         gesture_settled: None,
         operation_settled: Vec::new(),
         native_creations: Vec::new(),
-        cursor_warp: None,
+        warp_request: None,
         presentation: WorldPresentationV4 {
             foreground: String::new(),
             rev: 0,
@@ -578,7 +578,9 @@ fn hidden_claim_without_live_read_holds() {
             iconic: false,
         },
     );
-    state.member_rects.insert("w1".to_owned(), rect(5, 5, 400, 300));
+    state
+        .member_rects
+        .insert("w1".to_owned(), rect(5, 5, 400, 300));
     let inputs = state.inputs();
     assert!(inputs.hidden_reads.is_none(), "fixtures supply reads");
     let captured = capture_world(&inputs, Some(&[]), &[], &one_area(DEV1), 0);
@@ -620,7 +622,9 @@ fn hidden_claim_live_read_carries_cloak_ownership_and_kind() {
                 iconic: false,
             },
         );
-        state.member_rects.insert(token.to_owned(), rect(5, 5, 400, 300));
+        state
+            .member_rects
+            .insert(token.to_owned(), rect(5, 5, 400, 300));
     }
     let reads = BTreeMap::from([
         (
@@ -654,7 +658,11 @@ fn hidden_claim_live_read_carries_cloak_ownership_and_kind() {
         .expect("w1 fact");
     assert_eq!(cloaked.host_hidden, Some(true), "{cloaked:?}");
     assert_eq!(cloaked.visibility.visible, Some(false), "{cloaked:?}");
-    assert_eq!(cloaked.visibility.suppression_owned, Some(true), "{cloaked:?}");
+    assert_eq!(
+        cloaked.visibility.suppression_owned,
+        Some(true),
+        "{cloaked:?}"
+    );
     assert_eq!(cloaked.owned, Some(true), "{cloaked:?}");
     assert_eq!(cloaked.tool_window, Some(true), "{cloaked:?}");
     assert_eq!(
@@ -667,7 +675,10 @@ fn hidden_claim_live_read_carries_cloak_ownership_and_kind() {
         .iter()
         .find(|f| f.window.0 == "w2")
         .expect("w2 fact");
-    assert_eq!(dialog.window_type, Some(tiler_core::world_report::WindowType::Dialog));
+    assert_eq!(
+        dialog.window_type,
+        Some(tiler_core::world_report::WindowType::Dialog)
+    );
     assert_eq!(dialog.owned, Some(false), "{dialog:?}");
     assert_eq!(dialog.host_hidden, Some(false), "{dialog:?}");
 }
@@ -2855,8 +2866,14 @@ fn held_pre_proven_transfer_never_emits_already_at_target() {
     assert!(stats.held >= 1);
     assert_eq!(stats.membership_writes, 0);
     assert_eq!(stats.view_writes, 0);
-    assert!(members.is_empty(), "held evidence emits no receipt: {members:?}");
-    assert!(views.is_empty(), "held evidence dispatches no follow: {views:?}");
+    assert!(
+        members.is_empty(),
+        "held evidence emits no receipt: {members:?}"
+    );
+    assert!(
+        views.is_empty(),
+        "held evidence dispatches no follow: {views:?}"
+    );
 }
 
 #[test]
@@ -2883,8 +2900,14 @@ fn stale_reply_never_emits_already_at_target() {
     ));
     let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert!(stats.stopped_mid_apply);
-    assert!(members.is_empty(), "stale reply emits no receipt: {members:?}");
-    assert!(views.is_empty(), "stale reply dispatches no follow: {views:?}");
+    assert!(
+        members.is_empty(),
+        "stale reply emits no receipt: {members:?}"
+    );
+    assert!(
+        views.is_empty(),
+        "stale reply dispatches no follow: {views:?}"
+    );
 }
 
 #[test]
@@ -3033,10 +3056,29 @@ fn warp_rig(rig: &Rig) -> (HostDiff, FreshHost, FakeNative) {
     (diff, fresh, native)
 }
 
+/// Coherent v4 warp request for the cursor-warp lane. The Windows consumer
+/// reads only the point; the rest of the wire shape mirrors the reply so the
+/// request is well formed. `output`/`workspace` are the `rig()` wire tokens.
+fn warp_request(reply: &WorldReplyV4, point: (i32, i32)) -> tiler_core::world_report::WarpRequest {
+    tiler_core::world_report::WarpRequest {
+        id: "warp-windows-test".to_owned(),
+        target: reply
+            .focus_request
+            .as_ref()
+            .map(|request| request.target.clone())
+            .unwrap_or_else(|| WindowId("w1".to_owned())),
+        revision: reply.state_revision,
+        output: OutputId("o1".to_owned()),
+        workspace: WorkspaceId("ws1".to_owned()),
+        point,
+        pointer_baseline: Some(1),
+    }
+}
+
 fn warp_reply(rig: &Rig, focus: Option<FocusRequest>, point: (i32, i32)) -> WorldReplyV4 {
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
     reply.focus_request = focus;
-    reply.cursor_warp = Some(point);
+    reply.warp_request = Some(warp_request(&reply, point));
     reply
 }
 
@@ -3078,7 +3120,7 @@ fn warp_needs_its_focus_request() {
     let rig = rig();
     let (mut diff, fresh, mut native) = warp_rig(&rig);
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
-    reply.cursor_warp = Some((900, 300));
+    reply.warp_request = Some(warp_request(&reply, (900, 300)));
     let (stats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.effects, 0);
     assert_eq!(stats.cursor_warps, 0);
@@ -4714,7 +4756,14 @@ fn consumed_command_reconciles_without_replay() {
         &rig.areas,
         1001,
     );
-    let resent = seq.assemble(&captured, seq.next_request_seq(), Some(1), Some(switch), 0, None);
+    let resent = seq.assemble(
+        &captured,
+        seq.next_request_seq(),
+        Some(1),
+        Some(switch),
+        0,
+        None,
+    );
     match seq.deliver(&resent) {
         WorldOutcome::CommandConsumed(_) => {}
         other => panic!("expected consumed, got {other:?}"),

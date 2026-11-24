@@ -105,8 +105,10 @@ not v4 acceptance evidence.
 - `visibility`: executor retains spent lifetime/`visibility.rev`/
   target; fallback hides only on core `visibility.fallback:true`.
 - `state`: core booleans with `StateAttempt` pre/post; sticky emits no
-  native target/attempt/fact (W3). `warpCursor`: `SetCursorPos` wired
-  with gates; `warp:true` is support, not guaranteed success.
+  native target/attempt/fact (W3). `warpRequest`: core retains one
+  bounded request; `SetCursorPos`, raw-input pointer-activity witness,
+  and `warpSpent` reporting remain adapter work, with `warp:false` today
+  so a non-null request must never reach Windows.
 - No `SwitchView`/`Operation` wrappers or nested drag/pointer routes.
   `RendererInput` carries the exact drawn row; core judges staleness.
 

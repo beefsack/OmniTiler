@@ -197,6 +197,11 @@ pub fn validate_report_v4_reason(report: &WorldReportV4) -> Option<&'static str>
     {
         return Some("cursor-invalid");
     }
+    if let Some(spent) = report.warp_spent.as_deref()
+        && !is_opaque_id(spent)
+    {
+        return Some("warp-spent-invalid");
+    }
     if let Some(hit) = report.cursor_hit.as_ref() {
         if report.cursor.is_none() {
             return Some("cursor-hit-without-cursor");
@@ -1233,6 +1238,8 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         native,
         held_native,
         cursor,
+        pointer_activity,
+        warp_spent,
         cursor_hit,
         focused_global,
         foreground_known,
@@ -1343,6 +1350,17 @@ pub fn report_digest_v4(report: &WorldReportV4) -> u64 {
         &cursor.map(|(x, y)| format!("{x},{y}")).unwrap_or_default(),
     );
     sep(&mut hash);
+    feed(
+        &mut hash,
+        &pointer_activity
+            .map(|generation| generation.to_string())
+            .unwrap_or_default(),
+    );
+    sep(&mut hash);
+    flag(&mut hash, pointer_activity.is_some());
+    feed(&mut hash, warp_spent.as_deref().unwrap_or_default());
+    sep(&mut hash);
+    flag(&mut hash, warp_spent.is_some());
     feed(
         &mut hash,
         &cursor_hit

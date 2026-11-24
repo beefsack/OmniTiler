@@ -22,7 +22,7 @@ use tiler_core::world_report::{
     FocusRequest, FocusRequestCause, FrameWitness, HoldReason, IntentDesire, MAX_FOCUS_DEPARTING,
     MAX_FOCUS_MEMBERS, MAX_FOCUS_SELECTED, MAX_FOCUS_VIEWS, NativeCreationDesire, OperationEvent,
     OutputDesire, RowDiagnostic, ScopeStatus, SwitchEvent, TransferKind, TransferTargetV4,
-    WindowDesire, WorkspaceDesire, WorldPresentationV4, WorldReplyV4,
+    WarpRequest, WindowDesire, WorkspaceDesire, WorldPresentationV4, WorldReplyV4,
 };
 use tiler_core::world_roster::SharedRosterPlan;
 
@@ -367,6 +367,28 @@ pub(crate) fn validate_focus_request_v4(request: &FocusRequest) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// One retained cursor-warp request. Every tuple is frozen at mint; the
+/// writer emits it verbatim (the same id never retargets or recenters) so
+/// a re-emitted request is byte-identical while nothing changes.
+fn write_warp_request_v4<S: ReplySink>(request: &WarpRequest, sink: &mut S) -> Result<()> {
+    sink.write_object(|obj| {
+        obj.field_str("id", &request.id)?;
+        obj.field_str("target", &request.target.0)?;
+        obj.field_u64_str("rev", request.revision)?;
+        obj.field_str("out", &request.output.0)?;
+        obj.field_str("ws", &request.workspace.0)?;
+        obj.field("point", |s| {
+            s.push_char('[');
+            s.push_i32(request.point.0);
+            s.push_char(',');
+            s.push_i32(request.point.1);
+            s.push_char(']');
+            Ok(())
+        })?;
+        obj.field_opt_u64_str("pointerBaseline", request.pointer_baseline)
+    })
 }
 
 pub(crate) fn write_focus_request_v4<S: ReplySink>(
@@ -781,18 +803,12 @@ fn write_reply_v4_to_sink<S: ReplySink, const VALIDATE: bool>(
             &reply.native_creations,
             write_native_creation_v4,
         )?;
-        obj.field("warpCursor", |s| {
-            match reply.cursor_warp {
-                Some((x, y)) => {
-                    s.push_char('[');
-                    s.push_i32(x);
-                    s.push_char(',');
-                    s.push_i32(y);
-                    s.push_char(']');
-                }
-                None => s.push_str("null"),
+        obj.field("warpRequest", |s| match &reply.warp_request {
+            None => {
+                s.push_str("null");
+                Ok(())
             }
-            Ok(())
+            Some(request) => write_warp_request_v4(request, s),
         })?;
         obj.field("presentation", |s| {
             write_reply_presentation_v4(&reply.presentation, s)

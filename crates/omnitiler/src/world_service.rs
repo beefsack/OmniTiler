@@ -2225,7 +2225,15 @@ mod tests {
             .expect("lock")
             .broker
             .set_reply_fault_for_test(|reply| {
-                reply.cursor_warp = Some((32769, 0));
+                reply.warp_request = Some(tiler_core::world_report::WarpRequest {
+                    id: "warp-overbound".to_owned(),
+                    target: tiler_core::directional::WindowId("win-a".to_owned()),
+                    revision: reply.state_revision,
+                    output: tiler_core::directional::OutputId("out-a".to_owned()),
+                    workspace: tiler_core::directional::WorkspaceId("ws-a".to_owned()),
+                    point: (32769, 0),
+                    pointer_baseline: Some(1),
+                });
             });
         let cap2 = make_cap("src-2", 2, &plain_inner);
         let err = service

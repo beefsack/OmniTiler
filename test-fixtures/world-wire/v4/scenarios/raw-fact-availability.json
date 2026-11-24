@@ -312,7 +312,7 @@
         "assertions": [
           ".output.message.windows | any(.win == \"win-b\" and .member_auth == \"controlled\")",
           "all(.output.message.windows[] | select(.win == \"win-a\"); .member_auth != \"controlled\" and .frame_auth != \"controlled\")",
-          ".output.message.warpCursor == null"
+          ".output.message.warpRequest == null"
         ]
       },
       "rules": [

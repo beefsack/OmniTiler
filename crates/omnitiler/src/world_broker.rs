@@ -5073,7 +5073,15 @@ mod tests {
 
         // 1. Standalone bound writer: small invalid warp -> InvalidReply("unknown-value"), never Oversized.
         let mut bad_rect = valid_reply.clone();
-        bad_rect.cursor_warp = Some((32769, 0));
+        bad_rect.warp_request = Some(tiler_core::world_report::WarpRequest {
+            id: "warp-overbound".to_owned(),
+            target: tiler_core::directional::WindowId("win-a".to_owned()),
+            revision: bad_rect.state_revision,
+            output: tiler_core::directional::OutputId("out-a".to_owned()),
+            workspace: tiler_core::directional::WorkspaceId("ws-a".to_owned()),
+            point: (32769, 0),
+            pointer_baseline: Some(1),
+        });
         let bind = BrokerReplyBind {
             source: &parsed.source,
             native_invalid: parsed.native_invalid,
