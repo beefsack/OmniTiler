@@ -107,6 +107,14 @@
 - Status: active, 2026-10-20
 - Evidence: [dual-output follow-up](../changes/windows-dual-output-live.md#cross-dpi-placement-follow-up-2026-10-20), [taskbar anchor](../changes/windows-dual-output-live.md#secondary-pager-restart-correction), [T2 proof](../changes/archive/windows-full-world-state-replies.md#t2-offline-staged-transaction-2026-10-20).
 
+### Tentative v4 port direction
+- Decision: (1) Revert `9a98994d`'s `tiler-core` `has_minimized_resident`/`lone_root` changes and fix Windows `SW_HIDE` capture instead via lightweight live reads (`host_hidden: Some(cloaked)`, `visibility: { visible: Some(vis), suppression_owned: Some(true) }`, real `owned`/`tool_window`/`window_type`, fail-closed hold if unreadable). (2) Keep `MemberDisposition::AlreadyAtTarget` for pre-proven transfers, guarded by `!t.held` and freshness. (3) Make `row_on_current_view` fail closed when the output row or `logical_view` is missing. (4) Advertise `above: false` and `warp: false` until their actuators/R12 preimages and C3 retained warp exist; defer C3 until Tasks 1–4 pass (tentative C3 defaults: newer focus decision or user pointer motion cancels pending warp). (5) Call typed `WorldEngine` connection methods directly in `tiling_sys/settings.rs` instead of an in-process JSON round-trip.
+- Why: eliminates symptom-patching across core and Windows, keeps capability claims truthful, and avoids wasted churn while finishing the Windows v4 port.
+- Rejected: keeping unapproved core minimize-restore ordering to mask a Windows `host_hidden` bug; inventing a second pre-proven receipt type; failing open on unknown logical view; advertising unactuated capabilities.
+- Assumes / revisit if: all items are tentative and reopen for review once the Windows v4 port reaches live acceptance or if genuine minimized-target restore ordering needs a `reference-outcomes.md` row.
+- Status: tentative, 2026-11-25
+- Evidence: [Windows v4 port plan and review](../changes/v4-phase4-windows-port.md).
+
 ### Windows multi-output sequencing
 - Decision: Unpark multi-output after single-output handoff items 1-4, 6, 7, 9-11, 13, 15, 17, 18, with item 18 before 10/11; then proceed to the foundation and dependent items 5, 12, 14, 16, 19.
 - Why: not recorded.

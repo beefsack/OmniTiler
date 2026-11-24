@@ -63,6 +63,7 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 
 - macOS event-first AX recovery with deduplicated 1 s reread remains provisional/tunable, not renderer/paint proof; configuration and scoped defaults are active ([macOS](decisions/macos.md#fixture-and-scoped-input-defaults)).
 - macOS preview presets and remaining native shortcut ownership remain tentative; explicit Apply only is active ([shortcuts](decisions/reference-and-shortcuts.md#macos-preview-presets-and-native-shortcut-ownership)).
+- Windows v4 port direction (T1–T7: revert `9a98994d` core hidden-target hack and fix `SW_HIDE` live capture, keep `AlreadyAtTarget`, fail-closed `row_on_current_view`, truthful incremental `above`/`warp` capabilities, direct typed connection calls, and C3 warp deferral) remains tentative for later review ([Windows](decisions/windows.md#tentative-v4-port-direction)).
 
 ## Topics
 
