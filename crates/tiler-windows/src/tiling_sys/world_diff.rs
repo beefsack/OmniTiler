@@ -529,6 +529,18 @@ pub(super) trait NativeOps {
     /// throwing/ambiguous call. Game, lifetime, and focus vetoes live in
     /// the core pause plus the owner game lane, never here.
     fn move_cursor(&mut self, x: i32, y: i32) -> Result<bool, ()>;
+    /// Host capability gate for the retained-warp lane. Production reads
+    /// the declared host capabilities; the offline default refuses.
+    fn warp_capable(&mut self) -> bool {
+        false
+    }
+    /// Loop-thread cumulative raw-input pointer generation (`None`
+    /// when the raw-input witness is not installed). Read-only;
+    /// [`apply_world_reply`] re-reads it immediately before a warp setter
+    /// to reject user motion since the request's baseline.
+    fn pointer_activity(&mut self) -> Option<u64> {
+        None
+    }
     /// One external invalidation consumed per call: racing native input that
     /// arrived mid-apply. The facade polls this before every setter.
     fn poll_external_invalidation(&mut self) -> bool {
@@ -622,6 +634,11 @@ pub(super) struct FakeNative {
     /// Warp setter dispositions for the offline lane.
     pub(super) fail_warp: bool,
     pub(super) throw_warp: bool,
+    /// Scripted raw-input pointer generation (`None` = witness not
+    /// installed). The warp lane re-reads this immediately before a move.
+    pub(super) pointer_activity: Option<u64>,
+    /// Scripted declared warp capability (fail-closed default: false).
+    pub(super) warp_capable: bool,
     pub(super) pending_invalidation: bool,
     pub(super) frame_writes: usize,
     pub(super) membership_writes: usize,
@@ -670,6 +687,10 @@ impl FakeNative {
             native.windows.insert(token.clone(), window.clone());
         }
         native.views.clone_from(&host.views);
+        // Offline witness/capability stay fail-closed exactly like an
+        // unregistered production witness: unavailable generation and no
+        // declared warp actuator. Warp-specific rigs opt in explicitly; no
+        // test ever touches real raw-input state.
         native
     }
 
@@ -1031,6 +1052,12 @@ impl NativeOps for FakeNative {
         self.note_write();
         Ok(true)
     }
+    fn warp_capable(&mut self) -> bool {
+        self.warp_capable
+    }
+    fn pointer_activity(&mut self) -> Option<u64> {
+        self.pointer_activity
+    }
     fn poll_external_invalidation(&mut self) -> bool {
         std::mem::take(&mut self.pending_invalidation)
     }
@@ -1102,12 +1129,16 @@ pub(super) struct DispatchFences {
     /// immediately before its setter; exact target proof may settle without
     /// a dispatch.
     pub(super) spent_views: HashSet<String>,
-    /// Cursor-warp watermark (stage 4b): the observation sequence whose
-    /// warp already ran. One mechanical warp per observation at most, so a
-    /// duplicate delivery of the same accepted reply never moves the
-    /// cursor twice. Cleared only by generation reset, never by prune:
-    /// later warps ride newer observations with newer focus requests.
-    pub(super) last_warp_obs: Option<u64>,
+    /// Cursor-warp spend fence (C3 exact-once): request ids for which this
+    /// adapter already made its one real setter attempt. Duplicate
+    /// deliveries and later passes never re-attempt the same id. Cleared
+    /// only by generation reset (warp ids are generation-scoped).
+    pub(super) spent_warps: HashSet<String>,
+    /// Last exact warp request id this generation attempted: the report's
+    /// `warpSpent`, which tells the core to retire that retained request.
+    /// Set immediately before the setter (a refusal or throw still spends
+    /// the id) and cleared on generation reset.
+    pub(super) warp_spent: Option<String>,
     /// Trace-only hover emission cursor (stage 4b FFC oracle): the
     /// `(cursor-hit, focused, ffc-enabled)` triple of the last emitted
     /// `world-apply` row. Lets a changed hover observation log even when
@@ -1163,6 +1194,22 @@ impl DispatchFences {
     pub(super) fn mark_view_spent(&mut self, owning: &str) -> bool {
         self.spent_views.insert(owning.to_owned())
     }
+    /// Spend one exact cursor-warp request id. Marked before the setter
+    /// call (or before an already-there satisfaction with no call) and
+    /// recorded as the generation's `warpSpent` acknowledgement. Returns
+    /// false when this generation already spent that id: never re-attempt.
+    pub(super) fn mark_warp_spent(&mut self, id: &str) -> bool {
+        if !self.spent_warps.insert(id.to_owned()) {
+            return false;
+        }
+        self.warp_spent = Some(id.to_owned());
+        true
+    }
+    /// The last exact warp id spent in this generation, if any.
+    #[must_use]
+    pub(super) fn warp_spent(&self) -> Option<&str> {
+        self.warp_spent.as_deref()
+    }
     /// Trace-only hover-change oracle: true when `(cursor-hit, focused,
     /// ffc-enabled)` differs from the last emitted row (or no row has been
     /// emitted yet). Pure comparison over already-captured values: no
@@ -1188,7 +1235,8 @@ impl DispatchFences {
         self.spent_floats.clear();
         self.spent_views.clear();
         self.next_attempt_id = 0;
-        self.last_warp_obs = None;
+        self.spent_warps.clear();
+        self.warp_spent = None;
     }
 }
 
@@ -1339,6 +1387,13 @@ impl HostDiff {
             pending_state: BTreeMap::new(),
             pending_intent_mirror: Vec::new(),
         }
+    }
+
+    /// Last exact warp id spent in the current core generation, if any:
+    /// the next report's `warpSpent`. `None` before any attempt and after
+    /// a generation reset.
+    pub(super) fn warp_spent(&self) -> Option<String> {
+        self.effects.warp_spent().map(str::to_owned)
     }
 
     /// Drain this pass's state attempts for the next report, ordered by
@@ -2059,6 +2114,14 @@ fn scope_actuatable(
         }
         ScopeAuthority::Hold(_) => false,
     }
+}
+
+/// Whether one retained warp point is within the adapter's settable
+/// geometry bound (the same bound the live setter refuses); an overbound
+/// carry is never passed to the OS.
+fn warp_point_settable(x: i32, y: i32) -> bool {
+    let bound = tiler_core::bounds::GEOMETRY_BOUND;
+    (-bound..=bound).contains(&x) && (-bound..=bound).contains(&y)
 }
 
 /// Freshness plus racing-input poll before a setter. Consumes at most one
@@ -4987,42 +5050,37 @@ fn apply_world_reply_inner(
         return stats;
     }
 
-    // 5. Cursor warp (stage 4b): one mechanical position setter per
-    // observation at most, and only correlated with the focus that
-    // actually results. The core publishes the point only alongside its
-    // focus effects; the adapter warps only when the last focus effect in
-    // order still targets the window holding the observed foreground. A
-    // stale point with no focus effect, a held or failed focus, focus
-    // that drifted elsewhere, racing input, or a new fullscreen game all
-    // fail that proof and never move the cursor. An already-there read
-    // consumes the observation with no write; an explicit refusal holds
-    // without retry (the focus already happened, the next cross-output
-    // focus re-warms); a throw stops the pass like every other setter.
-    // Duplicate deliveries of the same observation never move the cursor
-    // twice.
+    // 5. Cursor warp (C3): exact-once application of the one retained
+    // request. Only `reply.warp_request` is acted on; there is no
+    // point-only lane. The adapter requires the declared host capability,
+    // the exact request target holding the live managed foreground, fresh
+    // scope/frame/lifetime proof, a known and unchanged pointer generation
+    // re-read immediately before the move, and a settable point. A failed
+    // gate holds without spending so the core may re-publish the retained
+    // request; a spent id never re-attempts, even after refusal or throw.
+    // An already-there cursor satisfies the request with no setter call but
+    // still spends the exact id (core retires only on `warpSpent`).
     if let Some(warp) = reply.warp_request.as_ref() {
+        let id = warp.id.as_str();
         let (x, y) = warp.point;
-        if gate.current_obs != entry_obs || !gate.fresh_reply(reply) {
-            stats.stopped_mid_apply = true;
-        } else if effects.last_warp_obs == Some(reply.based_on_observation_seq) {
-            // Duplicate delivery of an already-warped observation.
-        } else if !ensure_fresh(reply, gate, entry_obs, ops) {
+        if effects.spent_warps.contains(id) {
+            // Duplicate delivery/pass of an already-spent request id.
+        } else if !ops.warp_capable() {
+            // Capability refused: no call, no spend, request retained.
+            stats.held += 1;
+        } else if gate.current_obs != entry_obs
+            || !gate.fresh_reply(reply)
+            || !ensure_fresh(reply, gate, entry_obs, ops)
+        {
             stats.stopped_mid_apply = true;
         } else {
-            // The retained focus request dictates the resulting focus
-            // (section 4 dispatches it): warp only for that exact target
-            // while it holds the observed foreground.
-            let target = reply
-                .focus_request
-                .as_ref()
-                .map(|request| request.target.clone());
-            let mut correlated = false;
-            match target {
-                None => {
-                    // Stale point with no focus request: consume below
-                    // without motion.
-                }
-                Some(target) => match fresh.baseline.get(&target.0) {
+            let settable = warp_point_settable(x, y);
+            let foreground_exact =
+                ops.foreground_managed().as_deref() == Some(warp.target.0.as_str());
+            if !settable || !foreground_exact {
+                stats.held += 1;
+            } else {
+                match fresh.baseline.get(&warp.target.0) {
                     None => {
                         stats.held += 1;
                     }
@@ -5043,42 +5101,50 @@ fn apply_world_reply_inner(
                             }
                             Gate::Pass => {
                                 // Switch-before-focus liveness on the live
-                                // homing (never the observation preimage),
-                                // plus the actual observed foreground: the
-                                // focus must have landed, not merely been
-                                // dispatched.
-                                let shown = ops.read_homing(&target.0).is_some_and(|(out, ws)| {
-                                    scope_controlled(reply, &out, &ws)
-                                        && ops.read_view(&out).as_deref() == Some(ws.as_str())
-                                });
-                                if shown && ops.is_foreground(&target.0) {
-                                    correlated = true;
-                                } else {
+                                // homing, which must still name the exact
+                                // retained destination, plus the actual
+                                // observed foreground: the focus must have
+                                // landed, not merely been dispatched.
+                                let shown = ops.read_homing(&warp.target.0).is_some_and(
+                                    |(out, ws)| {
+                                        out == warp.output.0
+                                            && ws == warp.workspace.0
+                                            && scope_controlled(reply, &out, &ws)
+                                            && ops.read_view(&out).as_deref()
+                                                == Some(ws.as_str())
+                                    },
+                                );
+                                if !shown || !ops.is_foreground(&warp.target.0) {
                                     stats.held += 1;
+                                } else if ops.read_cursor() == Some((x, y)) {
+                                    // Already there: no setter call, but the
+                                    // exact id is spent so core retires it.
+                                    effects.mark_warp_spent(id);
+                                } else if warp.pointer_baseline.is_none()
+                                    || ops.pointer_activity() != warp.pointer_baseline
+                                {
+                                    // Unknown or newer raw-input pointer
+                                    // activity: user motion wins, no call and
+                                    // no spend so a later reply may still act.
+                                    stats.held += 1;
+                                } else {
+                                    // Mark BEFORE the one setter attempt: a
+                                    // refusal or throw still spends the id,
+                                    // and a duplicate never retries.
+                                    effects.mark_warp_spent(id);
+                                    match ops.move_cursor(x, y) {
+                                        Err(()) => {
+                                            stats.stopped_mid_apply = true;
+                                        }
+                                        Ok(false) => {
+                                            stats.held += 1;
+                                        }
+                                        Ok(true) => {
+                                            stats.cursor_warps += 1;
+                                        }
+                                    }
                                 }
                             }
-                        }
-                    }
-                },
-            }
-            effects.last_warp_obs = Some(reply.based_on_observation_seq);
-            if correlated {
-                if ops.read_cursor() == Some((x, y)) {
-                    // Already there: consume without a write.
-                } else {
-                    match ops.move_cursor(x, y) {
-                        Err(()) => {
-                            // Throwing call: the pass stops, and the
-                            // observation is still consumed so a duplicate
-                            // delivery never re-yanks a cursor the user may
-                            // have moved since.
-                            stats.stopped_mid_apply = true;
-                        }
-                        Ok(false) => {
-                            stats.held += 1;
-                        }
-                        Ok(true) => {
-                            stats.cursor_warps += 1;
                         }
                     }
                 }

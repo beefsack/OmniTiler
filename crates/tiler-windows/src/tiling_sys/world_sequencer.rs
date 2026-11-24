@@ -199,6 +199,15 @@ pub(super) struct WorldSequencer {
     /// Latest-wins focus feedback per request id, drained into the next
     /// report (same ack semantics as frames).
     pending_focus: BTreeMap<String, FocusFeedback>,
+    /// Raw-input pointer generation (device or injected) reported in the
+    /// next envelope.
+    /// Set from the owner's live witness at dispatch (or an offline seam);
+    /// `None` means the witness is not installed, never a synthesized zero.
+    pointer_activity: Option<u64>,
+    /// Last exact warp request id the adapter spent this generation, carried
+    /// to the next report so the core retires exactly that request. Cleared
+    /// with the generation.
+    warp_spent: Option<String>,
     last_desired: Option<WorldReplyV4>,
     /// Last delivery's per-command settlement rows, index-aligned with the
     /// commands the core executed (inline command first, then any queued
@@ -307,6 +316,8 @@ impl WorldSequencer {
             pending_visibility: BTreeMap::new(),
             pending_state: BTreeMap::new(),
             pending_focus: BTreeMap::new(),
+            pointer_activity: None,
+            warp_spent: None,
             last_desired: None,
             last_settlements: Vec::new(),
             last_command_seq: None,
@@ -482,6 +493,20 @@ impl WorldSequencer {
         self.engine
             .capabilities()
             .is_some_and(|caps| caps.host_owned)
+    }
+
+    /// Set the witness fields the next report carries: the live
+    /// raw-input pointer generation (`None` when uninstalled) and the
+    /// last exact warp id spent this generation. The owner calls this from
+    /// its witness sources before dispatch; offline tests use the same seam
+    /// to script both without touching the OS.
+    pub(super) fn note_report_witness(
+        &mut self,
+        pointer_activity: Option<u64>,
+        warp_spent: Option<String>,
+    ) {
+        self.pointer_activity = pointer_activity;
+        self.warp_spent = warp_spent;
     }
 
     /// Stage one raw view attempt for the next report, replacing any entry
@@ -661,8 +686,8 @@ impl WorldSequencer {
             presentation: PresentationRowV4::Valid(presentation),
             intent_records: captured.intent_records.clone(),
             renderer_input,
-            pointer_activity: None,
-            warp_spent: None,
+            pointer_activity: self.pointer_activity,
+            warp_spent: self.warp_spent.clone(),
         }
     }
 
@@ -1022,6 +1047,8 @@ impl WorldSequencer {
         self.pending_visibility.clear();
         self.pending_state.clear();
         self.pending_focus.clear();
+        self.pointer_activity = None;
+        self.warp_spent = None;
         self.last_desired = None;
         self.last_settlements.clear();
         self.last_command_seq = None;
