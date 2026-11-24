@@ -1083,10 +1083,7 @@ mod tiling_sync_tests {
             .expect("settings bootstrap")
     }
 
-    fn value<'a>(
-        values: &'a [(String, RawSettingValue)],
-        key: &str,
-    ) -> &'a RawSettingValue {
+    fn value<'a>(values: &'a [(String, RawSettingValue)], key: &str) -> &'a RawSettingValue {
         &values
             .iter()
             .find(|(candidate, _)| candidate == key)
@@ -1094,7 +1091,10 @@ mod tiling_sync_tests {
             .1
     }
 
-    fn snapshot(settings: &crate::settings::Settings, cli: &CliOverrides) -> Vec<(String, RawSettingValue)> {
+    fn snapshot(
+        settings: &crate::settings::Settings,
+        cli: &CliOverrides,
+    ) -> Vec<(String, RawSettingValue)> {
         crate::settings::core_setting_values(settings, cli)
     }
 
@@ -1138,10 +1138,7 @@ mod tiling_sync_tests {
         let values = snapshot(&file, &cli);
         assert_eq!(value(&values, "gap"), &RawSettingValue::Number(4.0));
         assert_eq!(value(&values, "outer"), &RawSettingValue::Number(20.0));
-        assert_eq!(
-            value(&values, "borderWidth"),
-            &RawSettingValue::Number(7.5)
-        );
+        assert_eq!(value(&values, "borderWidth"), &RawSettingValue::Number(7.5));
         assert_eq!(
             value(&values, "underlayExtension"),
             &RawSettingValue::Number(3.5)

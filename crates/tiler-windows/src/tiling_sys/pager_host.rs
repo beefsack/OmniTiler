@@ -1454,10 +1454,7 @@ mod pager_host_tests {
         // Attach the genuinely drawn revision like a native click does, so
         // the gate tests below reach their own fence instead of tripping the
         // no-drawn-revision refusal first.
-        let drawn = state
-            .world
-            .last_reply()
-            .map(|reply| reply.presentation.rev);
+        let drawn = state.world.last_reply().map(|reply| reply.presentation.rev);
         *state
             .pager_clicks
             .lock()
@@ -1544,10 +1541,7 @@ mod pager_host_tests {
         push_click(&mut state, &output, "ws-stale");
         push_click(&mut state, &output, &target);
         assert_eq!(pending_clicks(&state), 1);
-        let drawn = state
-            .world
-            .last_reply()
-            .map(|reply| reply.presentation.rev);
+        let drawn = state.world.last_reply().map(|reply| reply.presentation.rev);
         let staged = state
             .pager_clicks
             .lock()
@@ -2184,10 +2178,7 @@ mod pager_host_tests {
                 &state.pager_highlight,
                 state.accent_shared.get(),
             ),
-            state
-                .world
-                .last_reply()
-                .map(|reply| reply.presentation.rev),
+            state.world.last_reply().map(|reply| reply.presentation.rev),
         )
         .expect("pager anchors on the bottom-docked bar")
     }
@@ -4725,15 +4716,8 @@ mod pager_host_tests {
         );
         // The revision actually painted (the exact applied reply's) passes
         // the core gate and the select reports success.
-        let applied = pager_select_with_rev(
-            &mut state,
-            &me,
-            &store,
-            &dir,
-            &output,
-            &target,
-            Some(rev),
-        );
+        let applied =
+            pager_select_with_rev(&mut state, &me, &store, &dir, &output, &target, Some(rev));
         assert_eq!(applied.outcome, "ok");
     }
 }

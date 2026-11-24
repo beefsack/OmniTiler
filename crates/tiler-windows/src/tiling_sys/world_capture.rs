@@ -224,15 +224,13 @@ pub(super) struct OwnerInputs<'a> {
     /// capture, or `None` for offline fixtures). A fullscreen fact whose key
     /// has no entry is app-owned: absence of metadata never proves the
     /// project owns the entry, so it is never exitable here.
-    pub(super) fullscreen_meta:
-        Option<&'a BTreeMap<WindowKey, super::fullscreen::FullscreenMeta>>,
+    pub(super) fullscreen_meta: Option<&'a BTreeMap<WindowKey, super::fullscreen::FullscreenMeta>>,
     /// Canonical marker-storage observations for this tick's bound
     /// lifetimes, keyed by the exact lifetime (built by the tick before
     /// capture, or `None` for offline fixtures). A key with no entry
     /// publishes no intent record: an unprovided read is unknown, never an
     /// inferred desire.
-    pub(super) intent_storage:
-        Option<&'a BTreeMap<WindowKey, super::world_diff::IntentStorage>>,
+    pub(super) intent_storage: Option<&'a BTreeMap<WindowKey, super::world_diff::IntentStorage>>,
     pub minimized_omitted: &'a HashSet<WindowKey>,
     pub pending_closed: &'a BTreeMap<String, PendingClosed>,
     pub scope: &'a [String],
@@ -533,11 +531,7 @@ impl TileLoop {
         fulls: &[Rect],
         foreground_hwnd: u64,
         observed: &[ObservedWindow],
-    ) -> (
-        Option<PresentationForeground>,
-        bool,
-        String,
-    ) {
+    ) -> (Option<PresentationForeground>, bool, String) {
         use crate::group_underlay::MoveSizeKind;
         // Prefer the tick's own observation: it is the same enumeration the
         // command/observation carries, so presentation focus never diverges
@@ -2441,10 +2435,7 @@ mod tests {
         /// Identity carried on the screen row for one live device (the
         /// capture keys screens by wire output id, so the wire id must be
         /// read before the seam borrows the state).
-        fn screen_identity(
-            state: &super::super::super::TileLoop,
-            device: &str,
-        ) -> OutputIdentity {
+        fn screen_identity(state: &super::super::super::TileLoop, device: &str) -> OutputIdentity {
             let wire = state.wire_of(device).expect("device carries a wire id");
             let captured = capture_world(&state.inputs(), Some(&[]), &[], &areas(), 0);
             let screen = captured

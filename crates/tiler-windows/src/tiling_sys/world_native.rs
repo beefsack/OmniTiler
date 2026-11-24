@@ -1621,7 +1621,12 @@ pub(super) fn apply_hidden_seeds(
 /// when persistence fails; a release restores only this lifetime's exact
 /// stored row and then clears it. No retries, no guessed lifetimes.
 fn write_above(native: &mut LiveNative<'_>, key: &WindowKey, value: bool) -> StateWrite {
-    let Some(tag) = native.member_tags.get(key).cloned().filter(|tag| !tag.is_empty()) else {
+    let Some(tag) = native
+        .member_tags
+        .get(key)
+        .cloned()
+        .filter(|tag| !tag.is_empty())
+    else {
         return StateWrite::NotAttempted;
     };
     if value {
@@ -2472,9 +2477,7 @@ impl NativeOps for LiveNative<'_> {
         let key = self.key_of(token)?;
         match property {
             StateProperty::Maximized => Some(super::probes::is_zoomed_now(key.hwnd)),
-            StateProperty::Fullscreen => {
-                super::probes::live_overlay_flags(key.hwnd, self.fulls).1
-            }
+            StateProperty::Fullscreen => super::probes::live_overlay_flags(key.hwnd, self.fulls).1,
             StateProperty::Above => Some(super::workspace_mode::read_topmost_now(key.hwnd)),
             // Windows has no native sticky property: the composition caps
             // keep sticky out of the state lane, so this read is honestly
@@ -2559,8 +2562,9 @@ impl NativeOps for LiveNative<'_> {
         // requires the exact live prior value so a foreign value is never
         // destroyed.
         match desired.sticky_prior {
-            Some(prior) => crate::product_hide::sys::install_sticky_marker(hwnd, prior)
-                .map_err(|_| ())?,
+            Some(prior) => {
+                crate::product_hide::sys::install_sticky_marker(hwnd, prior).map_err(|_| ())?
+            }
             None => {
                 if let Some(prior) = current.sticky_prior {
                     let removed = crate::product_hide::sys::remove_sticky_marker(hwnd, prior)

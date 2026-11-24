@@ -307,8 +307,18 @@ mod preview_binding_tests {
     use super::preview_binding_matches;
     use tiler_core::directional::{OutputId, WorkspaceId};
     use tiler_core::session::DomainKey;
-    fn domain() -> DomainKey { DomainKey { output: OutputId("o1".to_owned()), workspace: WorkspaceId("ws-1".to_owned()) } }
-    fn other() -> DomainKey { DomainKey { output: OutputId("o1".to_owned()), workspace: WorkspaceId("ws-2".to_owned()) } }
+    fn domain() -> DomainKey {
+        DomainKey {
+            output: OutputId("o1".to_owned()),
+            workspace: WorkspaceId("ws-1".to_owned()),
+        }
+    }
+    fn other() -> DomainKey {
+        DomainKey {
+            output: OutputId("o1".to_owned()),
+            workspace: WorkspaceId("ws-2".to_owned()),
+        }
+    }
 
     #[test]
     fn exact_id_and_source_passes() {

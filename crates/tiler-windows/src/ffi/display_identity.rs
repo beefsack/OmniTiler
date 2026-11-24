@@ -384,9 +384,11 @@ mod tests {
             );
         }
         assert!(
-            identities.values().any(|identity| identity.manufacturer.is_some()
-                || identity.model.is_some()
-                || identity.serial.is_some()),
+            identities
+                .values()
+                .any(|identity| identity.manufacturer.is_some()
+                    || identity.model.is_some()
+                    || identity.serial.is_some()),
             "at least one identity field is known"
         );
     }

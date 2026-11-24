@@ -1706,8 +1706,9 @@ fn composed_sticky_hidden_lane_migration_excludes_sticky_and_carries_plain() {
         (WorldOutcome::Accepted(_), settlements) => settlements,
         (other, _) => panic!("expected accepted migration, got {other:?}"),
     };
-    let Some(CommandResult::Migration { members, .. }) =
-        settlements.first().and_then(|settlement| settlement.result.clone())
+    let Some(CommandResult::Migration { members, .. }) = settlements
+        .first()
+        .and_then(|settlement| settlement.result.clone())
     else {
         panic!("expected migration provenance, got {settlements:?}");
     };

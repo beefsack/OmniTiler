@@ -198,13 +198,7 @@ pub(super) fn load(
 /// that cannot be published reports `Err(())`; the native state is already
 /// restored, so the caller only logs the degraded slot (never re-writes the
 /// window).
-pub(super) fn clear(
-    dir: &Path,
-    hwnd: u64,
-    pid: u32,
-    creation: &str,
-    tag: &str,
-) -> Result<(), ()> {
+pub(super) fn clear(dir: &Path, hwnd: u64, pid: u32, creation: &str, tag: &str) -> Result<(), ()> {
     let mut rows = read_store(dir)?;
     let before = rows.len();
     rows.retain(|row| !row.same_lifetime(hwnd, pid, creation, tag));
@@ -254,11 +248,7 @@ pub(super) fn restore_plan(
 /// still cleared once its lifetime is verified. Persistence failures after a
 /// successful native restore keep the row for the next startup and never
 /// re-write the window here. Returns how many rows were restored.
-pub(super) fn restore_leftovers(
-    dir: &Path,
-    session: &str,
-    live: &[LiveLifetime<'_>],
-) -> usize {
+pub(super) fn restore_leftovers(dir: &Path, session: &str, live: &[LiveLifetime<'_>]) -> usize {
     let Ok(mut rows) = read_store(dir) else {
         return 0;
     };
@@ -377,12 +367,15 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("temp dir");
         let prior = row(10, "session-a", false);
         persist(&dir, &prior).expect("persist");
-        assert_eq!(load(&dir, 10, 7, "creation-a", "tag-a"), Some(prior.clone()));
+        assert_eq!(
+            load(&dir, 10, 7, "creation-a", "tag-a"),
+            Some(prior.clone())
+        );
         // A recycled HWND (same handle, other creation) never loads it.
         assert!(load(&dir, 10, 7, "creation-b", "tag-a").is_none());
         // Persisting a second lifetime keeps both rows.
-        let second = AbovePreimage::new(11, 7, "creation-a", "tag-a", true, "session-a")
-            .expect("second");
+        let second =
+            AbovePreimage::new(11, 7, "creation-a", "tag-a", true, "session-a").expect("second");
         persist(&dir, &second).expect("persist second");
         assert!(load(&dir, 10, 7, "creation-a", "tag-a").is_some());
         assert!(load(&dir, 11, 7, "creation-a", "tag-a").is_some());

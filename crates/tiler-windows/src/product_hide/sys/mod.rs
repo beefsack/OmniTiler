@@ -574,7 +574,9 @@ pub fn install_tile_override_marker(hwnd_u64: u64) -> Result<()> {
             return Err(err("error: SetProp failed"));
         }
         return match peek_tile_override_raw(hwnd_u64) {
-            MarkerSlot::Value(back) if crate::tiling::parse_tile_override_marker(back).is_some() => {
+            MarkerSlot::Value(back)
+                if crate::tiling::parse_tile_override_marker(back).is_some() =>
+            {
                 Ok(())
             }
             MarkerSlot::Unreadable => Err(err("error: tile override marker read error")),

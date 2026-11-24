@@ -199,7 +199,10 @@ fn anchored_outer_rect(
     // border subject, the witness subject (`win`), and the observed
     // foreground token. A cross-window or malformed row never paints at
     // the current foreground frame.
-    if border.subject.as_ref().is_none_or(|subject| subject.0 != target)
+    if border
+        .subject
+        .as_ref()
+        .is_none_or(|subject| subject.0 != target)
         || witness.win.0 != target
         || witness.foreground.0 != target
     {
