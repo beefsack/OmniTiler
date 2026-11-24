@@ -10,7 +10,7 @@
 //! `Applied` outcome, while proven batches still settle.
 
 use super::super::rmax03_adapter_tests::test_state;
-use super::super::world_capture::capture_world;
+use super::super::world_capture::{HiddenClaimRead, capture_world};
 use super::super::world_diff::{
     FakeNative, FocusCallDiag, FreshHost, HostDiff, NativeOps, SelectionArrivalGrant,
     apply_world_reply,
@@ -24,7 +24,7 @@ use crate::native_guards::WindowKey;
 use crate::storage::LedgerStore;
 use crate::tiling::{FrameInsets, ObservedTarget, WindowFacts};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
@@ -174,6 +174,13 @@ thread_local! {
     /// fail closed). Reset per test.
     static S_SYSTEM_SHELL: RefCell<Option<String>> = const { RefCell::new(None) };
     static S_VISIBLE: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
+    /// Scripted lightweight claim reads (`IsWindowVisible`'s dynamic shown
+    /// state is taken from `S_VISIBLE`; the remaining fields are the
+    /// window's real style/owner/class read, scripted by `script_live`).
+    /// Independent of `S_OBSERVE`: a frame read can fail while the claim
+    /// read still succeeds, exactly like the production lane.
+    static S_HIDDEN_READ: RefCell<HashMap<u64, HiddenClaimRead>> =
+        RefCell::new(HashMap::new());
     static S_ICONIC: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
     static S_SET_OK: RefCell<HashMap<u64, bool>> = RefCell::new(HashMap::new());
     static S_SET_CALLS: RefCell<Vec<(u64, Rect)>> = const { RefCell::new(Vec::new()) };
@@ -236,6 +243,7 @@ thread_local! {
 
 fn reset_script() {
     S_OBSERVE.with(|m| m.borrow_mut().clear());
+    S_HIDDEN_READ.with(|m| m.borrow_mut().clear());
     S_PID.with(|m| m.borrow_mut().clear());
     S_SHELL.with(|m| *m.borrow_mut() = 0);
     S_SHELL_SEQ.with(|m| m.borrow_mut().clear());
@@ -613,6 +621,20 @@ fn script_live(key: &WindowKey, token: &str, vis: Rect, facts: WindowFacts) {
         m.borrow_mut()
             .insert(key.hwnd, observed_for(key, token, vis, facts))
     });
+    // The claim lane's lightweight read is its own native read: it survives a
+    // later frame-read failure (`S_OBSERVE` removal), so script it here.
+    S_HIDDEN_READ.with(|m| {
+        m.borrow_mut().insert(
+            key.hwnd,
+            HiddenClaimRead {
+                visible: false,
+                cloaked: facts.cloaked,
+                owned: facts.owned,
+                tool_window: facts.tool_window,
+                dialog: facts.dialog,
+            },
+        )
+    });
     S_PID.with(|m| m.borrow_mut().insert(key.hwnd, key.pid));
     S_VISIBLE.with(|m| m.borrow_mut().insert(key.hwnd));
     S_TAG.with(|m| m.borrow_mut().insert(key.hwnd, "member-tag-1".to_owned()));
@@ -696,7 +718,9 @@ fn float_row(out: &str, ws: &str, token: &str, target: Rect, op: &str) -> Window
 }
 
 fn convert(env: &Env, observed: &[super::super::ObservedWindow]) -> (HostDiff, FreshHost) {
-    let inputs = env.state.inputs();
+    let hidden_reads = scripted_hidden_reads(&env.state, observed);
+    let mut inputs = env.state.inputs();
+    inputs.hidden_reads = Some(&hidden_reads);
     let captured = capture_world(&inputs, Some(observed), &[], &one_area(), 1001);
     assert!(captured.inventory_complete);
     let fresh = FreshHost::from_sources(&inputs, observed, &[], &captured);
@@ -2497,6 +2521,52 @@ fn live_visible_observed() -> Vec<super::super::ObservedWindow> {
     out
 }
 
+/// Fresh lightweight live reads for every project-suppressed claim without a
+/// live observed row, derived from the same scripted native maps the
+/// production tick reads natively: shown state from `S_VISIBLE`, cloak and
+/// style/owner/class facts from the scripted observation. A claim with no
+/// scripted observation yields no read, so capture holds it exactly like a
+/// failed production read.
+fn scripted_hidden_reads(
+    state: &super::super::TileLoop,
+    observed: &[super::super::ObservedWindow],
+) -> BTreeMap<WindowKey, HiddenClaimRead> {
+    let observed_keys: HashSet<WindowKey> = observed
+        .iter()
+        .map(|w| WindowKey {
+            hwnd: w.hwnd,
+            pid: w.identity.pid,
+            creation: w.identity.process_creation.clone(),
+        })
+        .collect();
+    let visible: HashSet<u64> = S_VISIBLE.with(|m| m.borrow().clone());
+    state
+        .hidden_claims
+        .keys()
+        .filter(|key| !observed_keys.contains(*key))
+        .filter_map(|key| {
+            // The observed row, when present, already carries the same
+            // native facts; otherwise the claim read scripted by
+            // `script_live` survives an observation-only failure.
+            let read = match S_OBSERVE.with(|m| m.borrow().get(&key.hwnd).map(|w| w.facts)) {
+                Some(facts) => HiddenClaimRead {
+                    visible: visible.contains(&key.hwnd),
+                    cloaked: facts.cloaked,
+                    owned: facts.owned,
+                    tool_window: facts.tool_window,
+                    dialog: facts.dialog,
+                },
+                None => {
+                    let mut read = S_HIDDEN_READ.with(|m| m.borrow().get(&key.hwnd).copied())?;
+                    read.visible = visible.contains(&key.hwnd);
+                    read
+                }
+            };
+            Some((key.clone(), read))
+        })
+        .collect()
+}
+
 /// Mechanical admission only: stable token, identity, and lifetime tag.
 /// Plants no applied receipts (the first tick must prove them).
 fn admit_bare(env: &mut Env, key: &WindowKey, token: &str) {
@@ -2606,8 +2676,10 @@ fn live_tick_cursor(
     // One deterministic monotonic sample for this tick: the report
     // observation time and the stamp for any frame attempt below.
     let tick_ms = live_tick_ms();
+    let hidden_reads = scripted_hidden_reads(&env.state, observed);
     let mut inputs = env.state.inputs();
     inputs.cursor = cursor;
+    inputs.hidden_reads = Some(&hidden_reads);
     // Production fidelity: the command tick normalizes its foreground read
     // before capture. The scripted observation already carries the same
     // facts, so bind the token directly instead of re-reading native state.
@@ -2657,6 +2729,7 @@ fn live_tick_cursor(
     };
     let mut inputs = env.state.inputs();
     inputs.cursor = cursor;
+    inputs.hidden_reads = Some(&hidden_reads);
     let captured = capture_world(&inputs, Some(observed), retained, areas, foreground);
     let fresh = FreshHost::from_sources(&inputs, observed, retained, &captured);
     let (homing, rings, views) = owner.core_projections();
@@ -2907,7 +2980,10 @@ fn drain_seeds(state: &mut super::super::TileLoop, seeds: Vec<(WindowKey, Rect)>
 }
 
 fn hidden_fact_rect(env: &Env, areas: &[super::super::MonitorArea]) -> Rect {
-    let staged = capture_world(&env.state.inputs(), Some(&[]), &[], areas, 0);
+    let hidden_reads = scripted_hidden_reads(&env.state, &[]);
+    let mut inputs = env.state.inputs();
+    inputs.hidden_reads = Some(&hidden_reads);
+    let staged = capture_world(&inputs, Some(&[]), &[], areas, 0);
     staged
         .windows
         .iter()

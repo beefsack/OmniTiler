@@ -120,26 +120,6 @@ fn seed_member(state: &mut super::TileLoop, hwnd: u64, token: &str) {
     state.floated.insert(member);
 }
 
-/// Seed one managed member as a plain tile: identical identity tables to
-/// [`seed_member`] but never floated, so capture homes it tiled.
-fn seed_tiled_member(state: &mut super::TileLoop, hwnd: u64, token: &str) {
-    let member = key(hwnd);
-    state.member_tokens.insert(member.clone(), token.to_owned());
-    state
-        .member_tags
-        .insert(member.clone(), format!("tag-{hwnd}"));
-    state.member_identity.insert(
-        member,
-        crate::model::ProcessIdentity {
-            pid: 200 + hwnd as u32,
-            process_creation: format!("proc-{hwnd}"),
-            user_sid: "S-1-5-21-1000".to_owned(),
-            session_id: 1,
-            exe_path: "C:\\Apps\\app.exe".to_owned(),
-        },
-    );
-}
-
 /// Bootstrap one output with two intentional floats and deliver both
 /// observations, so the core homes them before any command.
 fn bootstrap_floats(state: &mut super::TileLoop, seq: &mut WorldSequencer) -> Vec<ObservedWindow> {
@@ -280,66 +260,6 @@ fn automatic_floats_refuse_from_core_without_adapter_branches() {
         reply.focus_request.is_none() && reply.transfers.is_empty(),
         "refusals stay atomic: no effects, no transfers"
     );
-}
-
-fn observed_rect(hwnd: u64, token: &str, visible: Rect) -> ObservedWindow {
-    let outer = Rect {
-        x: visible.x - 8,
-        y: visible.y - 8,
-        w: visible.w + 16,
-        h: visible.h + 16,
-    };
-    ObservedWindow {
-        hwnd,
-        token: token.to_owned(),
-        outer,
-        visible,
-        insets: crate::tiling::FrameInsets::measure(outer, visible),
-        identity: ObservedTarget {
-            hwnd,
-            pid: 200 + hwnd as u32,
-            process_creation: format!("proc-{hwnd}"),
-            exe_path: "C:\\Apps\\app.exe".to_owned(),
-            user_sid: "S-1-5-21-1000".to_owned(),
-            session_id: 1,
-            tag: format!("tag-{hwnd}"),
-        },
-        facts: plain_facts(),
-        member_tag: Some(format!("tag-{hwnd}")),
-    }
-}
-
-/// Observation-only dispatch through the same sequencer path: the core
-/// settles retained placements from normalized facts without a command.
-fn observe_only(
-    state: &mut super::TileLoop,
-    seq: &mut WorldSequencer,
-    observed: &[ObservedWindow],
-) -> tiler_core::world_report::WorldReplyV4 {
-    let areas = vec![area()];
-    let retained: Vec<RetainedRow> = Vec::new();
-    seq.invalidate();
-    let report = seq
-        .try_dispatch(
-            &state.inputs(),
-            Some(observed),
-            &retained,
-            &areas,
-            0,
-            0,
-            None,
-        )
-        .expect("observation dispatches");
-    match seq.deliver(&report) {
-        WorldOutcome::Accepted(reply) => {
-            match seq.ack(&reply) {
-                super::world_sequencer::AckOutcome::Applied(_) => {}
-                other => panic!("expected applied, got {other:?}"),
-            }
-            reply
-        }
-        other => panic!("expected accepted, got {other:?}"),
-    }
 }
 
 #[test]

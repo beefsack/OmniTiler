@@ -1744,7 +1744,34 @@ fn selection_return_core_effect_binds_exact_grant() {
         workspace: tiler_core::directional::WorkspaceId(ws1.clone()),
     };
     const BACK_MS: u64 = 5_000_000;
-    let inputs = env.state.inputs();
+    // Fresh lightweight live reads for the two project-suppressed members:
+    // hidden by the project (`SW_HIDE`), uncloaked, unowned, ordinary. The
+    // hidden target's own read is what makes its fact eligible for the
+    // core's remembered-focus arrival.
+    let reads = std::collections::BTreeMap::from([
+        (
+            w6.clone(),
+            super::super::super::world_capture::HiddenClaimRead {
+                visible: false,
+                cloaked: false,
+                owned: false,
+                tool_window: false,
+                dialog: false,
+            },
+        ),
+        (
+            w7.clone(),
+            super::super::super::world_capture::HiddenClaimRead {
+                visible: false,
+                cloaked: false,
+                owned: false,
+                tool_window: false,
+                dialog: false,
+            },
+        ),
+    ]);
+    let mut inputs = env.state.inputs();
+    inputs.hidden_reads = Some(&reads);
     let back_report = owner
         .try_dispatch_command(
             &inputs,
@@ -1764,7 +1791,8 @@ fn selection_return_core_effect_binds_exact_grant() {
         WorldOutcome::Rejected { kind, message } => panic!("back rejected {kind}: {message}"),
     };
     assert_eq!(back_delivery, "accepted");
-    let inputs = env.state.inputs();
+    let mut inputs = env.state.inputs();
+    inputs.hidden_reads = Some(&reads);
     let captured = capture_world(&inputs, Some(&observed), &[], &areas, 0);
     let fresh = FreshHost::from_sources(&inputs, &observed, &[], &captured);
     let (homing, rings, views) = owner.core_projections();
@@ -1852,62 +1880,40 @@ fn selection_return_core_effect_binds_exact_grant() {
         AckOutcome::Stale(_) => {}
         AckOutcome::Ignored { reason } => panic!("ack ignored: {reason}"),
     }
-    // The core mints one explicit remembered-focus arrival request when
-    // the hidden target's native facts prove eligible. Hidden claims
-    // carry no class/activation/layer facts, so the same return binds
-    // focusless; never invent a grant for an absent request.
+    // The core mints one explicit remembered-focus arrival request when the
+    // hidden target's native facts prove eligible, and truthful hidden-claim
+    // capture supplies exactly those facts: the return must mint it.
     let seq = back_seq;
-    let focus = back_reply.focus_request.as_ref();
-    if let Some(fx) = focus {
-        assert_eq!(fx.target.0, "w6");
-        assert_eq!(
-            fx.cause,
-            tiler_core::world_report::FocusRequestCause::ExplicitCommand
-        );
-        assert_eq!(
-            fx.cmd_seq,
-            Some(seq),
-            "core-minted arrival outcome: {:?}",
-            fx.id
-        );
-        let grant = SelectionArrivalGrant::for_accepted(
-            Some(&back_command),
-            Some(seq),
-            &back_reply,
-            back_delivery,
-        )
-        .expect("accepted select must mint");
-        assert!(grant.allows(&fx.id, "w6"));
-    } else {
-        assert!(
-            SelectionArrivalGrant::for_accepted(
-                Some(&back_command),
-                Some(seq),
-                &back_reply,
-                back_delivery,
-            )
-            .is_none(),
-            "focusless return never arms"
-        );
-    }
+    let fx = back_reply
+        .focus_request
+        .as_ref()
+        .unwrap_or_else(|| panic!("return must mint the remembered-focus request"));
+    assert_eq!(fx.target.0, "w6");
+    assert_eq!(
+        fx.cause,
+        tiler_core::world_report::FocusRequestCause::ExplicitCommand
+    );
+    assert_eq!(
+        fx.cmd_seq,
+        Some(seq),
+        "core-minted arrival outcome: {:?}",
+        fx.id
+    );
+    let grant =
+        SelectionArrivalGrant::for_accepted(Some(&back_command), Some(seq), &back_reply, back_delivery)
+            .expect("accepted select must mint");
+    assert!(grant.allows(&fx.id, "w6"));
     // Redelivering the exact same report is a duplicate: never re-arms.
     let duplicate = match owner.deliver_production(&back_report) {
         tiler_core::world_engine::WorldOutcome::Duplicate(reply) => reply,
         other => panic!("expected duplicate, got {other:?}"),
     };
-    match focus {
-        Some(fx) => assert!(
-            duplicate
-                .focus_request
-                .as_ref()
-                .is_some_and(|r| r.id == fx.id)
-        ),
-        None => {
-            assert!(duplicate.focus_request.is_none());
-            // No grant exists to exercise the arrival-actuation lane.
-            return;
-        }
-    }
+    assert!(
+        duplicate
+            .focus_request
+            .as_ref()
+            .is_some_and(|r| r.id == fx.id)
+    );
     assert!(
         SelectionArrivalGrant::for_accepted(
             Some(&back_command),
@@ -1932,9 +1938,22 @@ fn selection_return_core_effect_binds_exact_grant() {
         Some(back_command.clone()),
     );
     assert_eq!(repeat.delivery, "accepted");
-    assert!(
-        repeat.reply.focus_request.is_none(),
-        "redundant select mints nothing"
+    // The retained explicit request re-publishes until focus feedback
+    // proves it (Task 2), so a redundant select carries the same request
+    // identity and mints no new decision.
+    let repeat_focus = repeat
+        .reply
+        .focus_request
+        .as_ref()
+        .expect("the retained explicit request survives publication");
+    assert_eq!(
+        repeat_focus.id, fx.id,
+        "redundant select mints no new request"
+    );
+    assert_eq!(
+        repeat_focus.cmd_seq,
+        Some(seq),
+        "still the original return's request, never the redundant command"
     );
     assert!(
         SelectionArrivalGrant::for_accepted(
@@ -1946,13 +1965,16 @@ fn selection_return_core_effect_binds_exact_grant() {
         .is_none(),
         "effect-free select never arms"
     );
-    // A one-shot focus effect is real but never a selection arrival.
+    // An explicit-window focus effect is real but never a selection
+    // arrival. v4 rejects a non-empty `Focus` direction (directional focus
+    // is `FocusDirectional`), and an explicit-window `Focus` executes as a
+    // one-shot effect, never a selection arrival.
     let observed = live_visible_observed();
-    let dir_command = WorldCommand::Focus {
+    let focus_command = WorldCommand::Focus {
         window: tiler_core::directional::WindowSubject::Window(tiler_core::directional::WindowId(
             "w7".to_owned(),
         )),
-        direction: Some(tiler_core::directional::Direction::Left),
+        direction: None,
     };
     let directed = live_tick(
         &mut env,
@@ -1963,17 +1985,17 @@ fn selection_return_core_effect_binds_exact_grant() {
         &fulls,
         moving_prims(),
         w6.hwnd,
-        Some(dir_command.clone()),
+        Some(focus_command.clone()),
     );
     assert_eq!(directed.delivery, "accepted");
     assert!(
         directed.reply.focus_request.is_some(),
-        "directional focus mints its request: {:?}",
+        "one-shot focus mints its request: {:?}",
         directed.reply.focus_request
     );
     assert!(
         SelectionArrivalGrant::for_accepted(
-            Some(&dir_command),
+            Some(&focus_command),
             directed.command_seq,
             &directed.reply,
             directed.delivery,
@@ -2012,49 +2034,48 @@ fn selection_return_core_effect_binds_exact_grant() {
     // The core-minted return effect actuates past a scripted exact desktop
     // through the production grant: fresh diff, scripted natives, the exact
     // accepted (command, sequence, reply) triple.
-    if let Some(fx) = focus {
-        let desktop = win_key(209_203, 2613, "proc-613");
-        script_healthy_desktop(&desktop);
-        // Members only: the scripted desktop foreground is not inventory.
-        let observed: Vec<_> = live_visible_observed()
-            .into_iter()
-            .filter(|w| w.token != "fg")
-            .collect();
-        let inputs = env.state.inputs();
-        let captured = capture_world(&inputs, Some(&observed), &[], &areas, desktop.hwnd);
-        assert!(captured.inventory_complete);
-        let fresh = FreshHost::from_sources(&inputs, &observed, &[], &captured);
-        let mut diff = HostDiff::new(ADAPTER, GENERATION);
-        diff.gate.current_obs = back_reply.based_on_observation_seq;
-        let mut native = assemble(&mut env, scripted());
-        native.set_diagnostics_trace(true);
-        let grant = SelectionArrivalGrant::for_accepted(
-            Some(&back_command),
-            Some(seq),
-            &back_reply,
-            back_delivery,
-        )
-        .expect("minted return request arms");
-        native.set_selection_arrival(Some(grant));
-        let stats = apply_world_reply(
-            &mut diff,
-            &back_reply,
-            &fresh,
-            &mut native,
-            &mut Vec::new(),
-            &mut Vec::new(),
-            &mut Vec::new(),
-            0,
-        );
-        assert_eq!(stats.focus_dispatch.len(), 1);
-        let row = &stats.focus_dispatch[0];
-        assert_eq!(row.id, fx.id);
-        assert_eq!(row.target, "w6");
-        assert!(row.dispatched);
-        assert!(
-            row.primitive_called,
-            "core-minted return arrival must reach the setter past the desktop"
-        );
-        assert!(row.desktop_exception);
-    }
+    let desktop = win_key(209_203, 2613, "proc-613");
+    script_healthy_desktop(&desktop);
+    // Members only: the scripted desktop foreground is not inventory.
+    let observed: Vec<_> = live_visible_observed()
+        .into_iter()
+        .filter(|w| w.token != "fg")
+        .collect();
+    let mut inputs = env.state.inputs();
+    inputs.hidden_reads = Some(&reads);
+    let captured = capture_world(&inputs, Some(&observed), &[], &areas, desktop.hwnd);
+    assert!(captured.inventory_complete);
+    let fresh = FreshHost::from_sources(&inputs, &observed, &[], &captured);
+    let mut diff = HostDiff::new(ADAPTER, GENERATION);
+    diff.gate.current_obs = back_reply.based_on_observation_seq;
+    let mut native = assemble(&mut env, scripted());
+    native.set_diagnostics_trace(true);
+    let grant = SelectionArrivalGrant::for_accepted(
+        Some(&back_command),
+        Some(seq),
+        &back_reply,
+        back_delivery,
+    )
+    .expect("minted return request arms");
+    native.set_selection_arrival(Some(grant));
+    let stats = apply_world_reply(
+        &mut diff,
+        &back_reply,
+        &fresh,
+        &mut native,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        0,
+    );
+    assert_eq!(stats.focus_dispatch.len(), 1);
+    let row = &stats.focus_dispatch[0];
+    assert_eq!(row.id, fx.id);
+    assert_eq!(row.target, "w6");
+    assert!(row.dispatched);
+    assert!(
+        row.primitive_called,
+        "core-minted return arrival must reach the setter past the desktop"
+    );
+    assert!(row.desktop_exception);
 }

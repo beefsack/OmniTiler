@@ -154,9 +154,23 @@ pub(super) fn run_tile_loop(
     // Item 12 stage B: the saved scope mode adopts only on owner restart.
     // Computed before the owner moves the live settings in.
     let startup_scope = crate::settings::startup_mode(settings_live.as_ref());
+    // Startup settings authority: one validated snapshot with explicit CLI
+    // switches applied, accepted at revision 1 by the genuine connection.
+    // Restart-only `mode` therefore adopts at startup instead of latching
+    // handshake defaults until a later revision core would refuse as
+    // restart-required. Proof owners (no settings document) keep core
+    // defaults through the empty snapshot.
+    let startup_core_values = settings_live
+        .as_ref()
+        .map(|live| crate::settings::core_setting_values(&live.settings, &cli_overrides))
+        .unwrap_or_default();
     let mut state = TileLoop {
-        world: world_owner::WorldOwner::bootstrap_ids(owner.as_str(), generation.as_str())
-            .expect("world owner bootstrap"),
+        world: world_owner::WorldOwner::bootstrap_ids_with_settings(
+            owner.as_str(),
+            generation.as_str(),
+            &startup_core_values,
+        )
+        .expect("world owner bootstrap"),
         tokens: TokenMap::default(),
         stable: HashMap::new(),
         managed: HashSet::new(),
@@ -292,18 +306,22 @@ pub(super) fn run_tile_loop(
         render_frames: RenderFrameHealth::default(),
     };
     state.workspace_proof = workspace_proof;
-    // Core policy follows the validated settings document through the bound
-    // connection: one full snapshot at startup and one per accepted live
-    // change. Proof owners keep core defaults (no settings document).
-    if let Some(live) = state.settings_live.as_ref() {
-        let settings = live.settings.clone();
-        let accepted = state.world.apply_core_settings(&settings);
+    // Startup settings were applied at bootstrap revision 1 (settings
+    // document plus explicit CLI switches), so this is the single startup
+    // authority: no duplicate push that could drop CLI lanes. Surface the
+    // retained reply's status and every diagnostic (key + kind) instead of
+    // discarding them.
+    if let Some(reply) = state.world.take_initial_settings_reply() {
+        let accepted = reply.status == tiler_core::connection::SettingsStatus::Accepted;
         log_json_at(
             &log_path,
             serde_json::json!({
                 "event": "settings-core",
                 "outcome": if accepted { "accepted" } else { "refused" },
                 "scope": "startup",
+                "revision": reply.revision,
+                "status": settings::settings_status_token(reply.status),
+                "diagnostics": settings::settings_diagnostics_json(&reply.diagnostics),
             }),
         );
     }

@@ -364,13 +364,17 @@ impl WorldTransaction<'_> {
                                 message: MSG_MIGRATION,
                             };
                         };
+                        // Composed sticky authority, not the raw native
+                        // fact: on hosts without native sticky support the
+                        // fact is null and only core's retained intent
+                        // proves the all-desktop lifetime.
                         let sticky_windows: BTreeSet<WindowId> = self
                             .world
                             .staged
                             .facts
-                            .iter()
-                            .filter(|(_, fact)| fact.sticky != Some(false))
-                            .map(|(window, _)| window.clone())
+                            .keys()
+                            .filter(|window| self.derived_for(window).sticky)
+                            .cloned()
                             .collect();
                         let side_a = WorkspaceSwapSide {
                             source: src_a.clone(),
@@ -1049,9 +1053,10 @@ impl WorldTransaction<'_> {
         })
     }
 
-    /// Sticky facts stay out: they are adapter-owned all-desktop lifetimes,
-    /// never swapped member state. Sorted and deduplicated for deterministic
-    /// settlement.
+    /// Composed sticky windows stay out: they are all-desktop lifetimes,
+    /// whether the host reports the native fact or core retains the intent
+    /// (`derived_for(...).sticky`), never swapped member state. Sorted and
+    /// deduplicated for deterministic settlement.
     pub(crate) fn swap_source_members(
         engine: &WorldTransaction<'_>,
         source: &DomainKey,
@@ -1071,22 +1076,7 @@ impl WorldTransaction<'_> {
             }
             members.extend(domain.minimized.iter().cloned());
         }
-        let native_sticky = engine.native_sticky_supported();
-        members.retain(|window| {
-            let sticky = engine
-                .world
-                .staged
-                .facts
-                .get(window)
-                .and_then(|fact| fact.sticky);
-            if native_sticky {
-                sticky == Some(false)
-            } else {
-                // No native sticky fact exists: null is the ordinary
-                // non-sticky value, so only a proven sticky excludes.
-                sticky != Some(true)
-            }
-        });
+        members.retain(|window| !engine.derived_for(window).sticky);
         members.sort();
         members.dedup();
         members
@@ -1356,7 +1346,7 @@ impl WorldTransaction<'_> {
                 // adapter actuates each member exactly once under the
                 // stable transfer identity below, with truthful partial
                 // attempt reporting. Raw facts stay distinct; the derived
-                // lane decides hidden.
+                // lane decides hidden and composed sticky.
                 let mut members = outcome.members;
                 let native_sticky = self.native_sticky_supported();
                 for (window, homed) in &self.world.staged.homing {
@@ -1379,16 +1369,11 @@ impl WorldTransaction<'_> {
                     }
                 }
                 for (window, homed) in &self.world.staged.homing {
+                    let derived = self.derived_for(window);
                     if homed == &source_key
                         && !members.iter().any(|member| member == window)
-                        && self.derived_for(window).hidden
-                        && self.world.staged.facts.get(window).is_some_and(|fact| {
-                            if native_sticky {
-                                fact.sticky == Some(false)
-                            } else {
-                                fact.sticky != Some(true)
-                            }
-                        })
+                        && derived.hidden
+                        && !derived.sticky
                     {
                         members.push(window.clone());
                     }

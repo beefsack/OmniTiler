@@ -1137,8 +1137,6 @@ fn busy_command_reports_unverified_not_cached_reply() {
             ref active_output,
             ref applied_homing,
             ref applied_views,
-            ref inner_gap,
-            ref outer_gap,
             ref active,
             ..
         } = state;
@@ -1167,8 +1165,6 @@ fn busy_command_reports_unverified_not_cached_reply() {
             active_output.as_str(),
             applied_homing,
             applied_views,
-            *inner_gap,
-            *outer_gap,
             active,
             None,
             None,
@@ -1176,9 +1172,6 @@ fn busy_command_reports_unverified_not_cached_reply() {
             None,
             false,
             String::new(),
-            false,
-            false,
-            (0, 0, 0),
             false,
             Vec::new(),
         );

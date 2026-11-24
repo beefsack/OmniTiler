@@ -1652,7 +1652,6 @@ impl NativeOps for LiveNative<'_> {
                     key: live_key.clone(),
                     token: token.to_owned(),
                     frame: Some(w.visible),
-                    observed_frame: Some(w.visible),
                     facts: Some(w.facts),
                     output,
                     workspace,
@@ -1696,7 +1695,6 @@ impl NativeOps for LiveNative<'_> {
                     key,
                     token: token.to_owned(),
                     frame: None,
-                    observed_frame: None,
                     facts: None,
                     output,
                     workspace,
@@ -1876,21 +1874,6 @@ impl NativeOps for LiveNative<'_> {
         }
         let expected = self.member_identity.get(&key).cloned().ok_or(())?;
         self.frame_write_inner(&key, &expected, rect)
-    }
-
-    fn clear_maximized(&mut self, token: &str) -> Result<bool, ()> {
-        let key = self.key_of(token).ok_or(())?;
-        if (self.prims.hook_pending)() {
-            return Err(());
-        }
-        let expected = self.member_identity.get(&key).cloned().ok_or(())?;
-        if !self.identity_ok(&key, &expected) || !self.lifetime_ok(&key) {
-            return Err(());
-        }
-        match super::probes::restore_zoom_placement(key.hwnd) {
-            "restored" | "dispatched" => Ok(true),
-            _ => Err(()),
-        }
     }
 
     fn move_membership(

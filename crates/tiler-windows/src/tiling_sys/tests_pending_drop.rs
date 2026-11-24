@@ -2364,8 +2364,6 @@ fn stale_delivery_claims_nothing_but_clears_on_incorporation() {
         ref active_output,
         ref mut applied_homing,
         ref mut applied_views,
-        inner_gap,
-        outer_gap,
         ref active,
         ..
     } = fx.state;
@@ -2394,8 +2392,6 @@ fn stale_delivery_claims_nothing_but_clears_on_incorporation() {
         active_output.as_str(),
         applied_homing,
         applied_views,
-        inner_gap,
-        outer_gap,
         active,
         Some((150, 50)),
         None,
@@ -2403,9 +2399,6 @@ fn stale_delivery_claims_nothing_but_clears_on_incorporation() {
         None,
         false,
         String::new(),
-        false,
-        false,
-        (0, 0, 0),
         false,
         Vec::new(),
     );

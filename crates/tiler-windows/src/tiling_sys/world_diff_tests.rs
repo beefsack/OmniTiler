@@ -9,7 +9,7 @@
 //! core owns workspaces outright, so there is nothing to actuate there.
 
 use super::rmax03_adapter_tests::test_state;
-use super::world_capture::{capture_world, resolve_cursor_hit};
+use super::world_capture::{HiddenClaimRead, capture_world, resolve_cursor_hit};
 use super::world_diff::{
     ApplyStats, FakeNative, ForegroundState, FreshHost, FreshWindow, GuiFocusState, HostDiff,
     NativeOps, SelectionArrivalGrant, apply_world_reply,
@@ -513,7 +513,21 @@ fn hidden_snapshot_rides_slot_with_verified_fullscreen() {
     let slot = rect(5, 5, 400, 300);
     state.member_rects.insert("w1".to_owned(), slot);
     state.born_fullscreen.insert(key.clone());
-    let captured = capture_world(&state.inputs(), Some(&[]), &[], &one_area(DEV1), 0);
+    // Fresh lightweight live read for the project-suppressed member (T4):
+    // hidden by the project (`SW_HIDE`), not cloaked, unowned, ordinary.
+    let reads = BTreeMap::from([(
+        key.clone(),
+        HiddenClaimRead {
+            visible: false,
+            cloaked: false,
+            owned: false,
+            tool_window: false,
+            dialog: false,
+        },
+    )]);
+    let mut inputs = state.inputs();
+    inputs.hidden_reads = Some(&reads);
+    let captured = capture_world(&inputs, Some(&[]), &[], &one_area(DEV1), 0);
     let fact = captured
         .windows
         .iter()
@@ -521,6 +535,140 @@ fn hidden_snapshot_rides_slot_with_verified_fullscreen() {
         .expect("w1 fact");
     assert_eq!(fact.rect, Some(slot));
     assert!(fact.fullscreen == Some(true) && fact.minimized == Some(false));
+    // Project suppression is never host hiding: the uncloaked live read
+    // reports host_hidden=false, the shown state false, and the durable
+    // claim's ownership. Owned/tool/type carry their real reads.
+    assert_eq!(fact.host_hidden, Some(false), "{fact:?}");
+    assert_eq!(fact.visibility.visible, Some(false), "{fact:?}");
+    assert_eq!(fact.visibility.suppression_owned, Some(true), "{fact:?}");
+    assert_eq!(fact.suppression_available, Some(true), "{fact:?}");
+    assert_eq!(fact.owned, Some(false), "{fact:?}");
+    assert_eq!(fact.tool_window, Some(false), "{fact:?}");
+    assert_eq!(
+        fact.window_type,
+        Some(tiler_core::world_report::WindowType::Normal),
+        "{fact:?}"
+    );
+}
+
+/// A hidden claim without a fresh live read holds its scope: no snapshot
+/// rectangle, no invented visibility/cloak/ownership verdict, and an
+/// incomplete inventory.
+#[test]
+fn hidden_claim_without_live_read_holds() {
+    let mut state = test_state();
+    state.ensure_device(DEV1);
+    let ws = "ws1".to_owned();
+    let key = win_key(1001, 2001, "proc-1");
+    admit(&mut state, &key, DEV1, &ws, "w1", true);
+    state.hidden_claims.insert(
+        key.clone(),
+        HiddenRecord {
+            claim: WindowIdentity {
+                hwnd: 1001,
+                process: process_identity(&key),
+                tag: "0123456789abcdef".to_owned(),
+                kind: WindowClaimKind::Product,
+                show: WindowShowState {
+                    minimized: false,
+                    maximized: false,
+                },
+            },
+            iconic: false,
+        },
+    );
+    state.member_rects.insert("w1".to_owned(), rect(5, 5, 400, 300));
+    let inputs = state.inputs();
+    assert!(inputs.hidden_reads.is_none(), "fixtures supply reads");
+    let captured = capture_world(&inputs, Some(&[]), &[], &one_area(DEV1), 0);
+    let fact = &captured.windows[0];
+    assert!(fact.rect.is_none(), "{fact:?}");
+    assert!(fact.minimized.is_none(), "{fact:?}");
+    assert!(fact.host_hidden.is_none(), "{fact:?}");
+    assert!(fact.visibility.visible.is_none(), "{fact:?}");
+    assert!(!captured.inventory_complete);
+    assert_eq!(captured.held_members, vec!["w1".to_owned()]);
+}
+
+/// A cloaked, owned tool-window claim reports the native truth: the DWM
+/// cloak is host hiding, and ownership/tool/dialog kind are the real reads,
+/// never derived from the suppression claim.
+#[test]
+fn hidden_claim_live_read_carries_cloak_ownership_and_kind() {
+    let mut state = test_state();
+    state.ensure_device(DEV1);
+    let ws = "ws1".to_owned();
+    let cloaked_key = win_key(1001, 2001, "proc-1");
+    let dialog_key = win_key(1002, 2002, "proc-2");
+    admit(&mut state, &cloaked_key, DEV1, &ws, "w1", true);
+    admit(&mut state, &dialog_key, DEV1, &ws, "w2", true);
+    for (key, token) in [(&cloaked_key, "w1"), (&dialog_key, "w2")] {
+        state.hidden_claims.insert(
+            key.clone(),
+            HiddenRecord {
+                claim: WindowIdentity {
+                    hwnd: key.hwnd,
+                    process: process_identity(key),
+                    tag: "0123456789abcdef".to_owned(),
+                    kind: WindowClaimKind::Product,
+                    show: WindowShowState {
+                        minimized: false,
+                        maximized: false,
+                    },
+                },
+                iconic: false,
+            },
+        );
+        state.member_rects.insert(token.to_owned(), rect(5, 5, 400, 300));
+    }
+    let reads = BTreeMap::from([
+        (
+            cloaked_key.clone(),
+            HiddenClaimRead {
+                visible: false,
+                cloaked: true,
+                owned: true,
+                tool_window: true,
+                dialog: false,
+            },
+        ),
+        (
+            dialog_key.clone(),
+            HiddenClaimRead {
+                visible: false,
+                cloaked: false,
+                owned: false,
+                tool_window: false,
+                dialog: true,
+            },
+        ),
+    ]);
+    let mut inputs = state.inputs();
+    inputs.hidden_reads = Some(&reads);
+    let captured = capture_world(&inputs, Some(&[]), &[], &one_area(DEV1), 0);
+    let cloaked = captured
+        .windows
+        .iter()
+        .find(|f| f.window.0 == "w1")
+        .expect("w1 fact");
+    assert_eq!(cloaked.host_hidden, Some(true), "{cloaked:?}");
+    assert_eq!(cloaked.visibility.visible, Some(false), "{cloaked:?}");
+    assert_eq!(cloaked.visibility.suppression_owned, Some(true), "{cloaked:?}");
+    assert_eq!(cloaked.owned, Some(true), "{cloaked:?}");
+    assert_eq!(cloaked.tool_window, Some(true), "{cloaked:?}");
+    assert_eq!(
+        cloaked.window_type,
+        Some(tiler_core::world_report::WindowType::Normal),
+        "{cloaked:?}"
+    );
+    let dialog = captured
+        .windows
+        .iter()
+        .find(|f| f.window.0 == "w2")
+        .expect("w2 fact");
+    assert_eq!(dialog.window_type, Some(tiler_core::world_report::WindowType::Dialog));
+    assert_eq!(dialog.owned, Some(false), "{dialog:?}");
+    assert_eq!(dialog.host_hidden, Some(false), "{dialog:?}");
 }
 
 #[test]
@@ -688,6 +836,7 @@ fn retained_overlay_rides_slot_and_holds_tiled_write() {
     let mut native = FakeNative::seeded(&fresh);
     let mut diff = diff_at(7);
     let mut reply = reply_shell(7, 1, &[(out.as_str(), ws.as_str())]);
+    reply.outputs.push(output_row(&out, &ws, None));
     reply
         .windows
         .push(tiled_row(&out, &ws, "w1", rect(10, 10, 400, 300)));
@@ -726,6 +875,7 @@ fn effective_frame_writes_allocation_never_does() {
     let rig = rig();
     let (mut diff, fresh, mut native) = converted(&rig);
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.outputs.push(output_row(&rig.out, &rig.ws, None));
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
@@ -737,6 +887,7 @@ fn effective_frame_writes_allocation_never_does() {
 
     let (mut diff, fresh, mut native) = converted(&rig);
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.outputs.push(output_row(&rig.out, &rig.ws, None));
     let mut row = tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300));
     row.effective_frame = None;
     reply.windows.push(row);
@@ -755,6 +906,45 @@ fn inactive_view_workspace_never_takes_frame_write() {
     let (mut diff, fresh, mut native) = converted(&rig);
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
     reply.outputs.push(output_row(&rig.out, "ws-away", None));
+    reply
+        .windows
+        .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.geometry_writes, 0);
+    assert_eq!(stats.held, 0);
+    assert!(members.is_empty() && views.is_empty());
+    assert!(!stats.partial);
+}
+
+#[test]
+fn missing_output_row_withholds_frame_write_without_hold() {
+    // A missing output row is not proof this workspace is current, so the
+    // otherwise-authorized frame write withholds. Nothing is hold-counted:
+    // the reveal republishes once the row proves the view.
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply
+        .windows
+        .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.geometry_writes, 0);
+    assert_eq!(stats.held, 0);
+    assert!(members.is_empty() && views.is_empty());
+    assert!(!stats.partial);
+}
+
+#[test]
+fn none_logical_view_withholds_frame_write_without_hold() {
+    // An output row with no logical view proves nothing about the current
+    // workspace: the frame write withholds with no hold count, exactly like
+    // a missing row.
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    let mut output = output_row(&rig.out, &rig.ws, None);
+    output.logical_view = None;
+    reply.outputs.push(output);
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
@@ -795,6 +985,7 @@ fn clamped_write_reports_raw_attempt_and_obeys_core_hold() {
     let (mut diff, fresh, mut native) = converted(&rig);
     native.clamp_frame.insert("w1".to_owned());
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.outputs.push(output_row(&rig.out, &rig.ws, None));
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
@@ -815,6 +1006,7 @@ fn clamped_write_reports_raw_attempt_and_obeys_core_hold() {
     );
     let writes = native.frame_writes;
     let mut held = reply_shell(7, 2, &[(rig.out.as_str(), rig.ws.as_str())]);
+    held.outputs.push(output_row(&rig.out, &rig.ws, None));
     let mut row = tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300));
     row.frame_authority = Auth::Hold(CoreHold::ConstraintClamp);
     held.windows.push(row);
@@ -824,6 +1016,7 @@ fn clamped_write_reports_raw_attempt_and_obeys_core_hold() {
     assert_eq!(stats.held, 1);
     assert!(held_frames.is_empty());
     let mut moved = reply_shell(7, 3, &[(rig.out.as_str(), rig.ws.as_str())]);
+    moved.outputs.push(output_row(&rig.out, &rig.ws, None));
     moved
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(20, 20, 400, 300)));
@@ -840,6 +1033,7 @@ fn explicit_refusal_reports_transient_facts_without_verdict() {
     let (mut diff, fresh, mut native) = converted(&rig);
     native.fail_frame.insert("w1".to_owned());
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.outputs.push(output_row(&rig.out, &rig.ws, None));
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
@@ -922,6 +1116,7 @@ fn per_flag_live_divergence_holds_without_writes() {
         let (mut diff, fresh, mut native) = converted(&rig);
         diverge(native.windows.get_mut("w1").expect("w1 live"));
         let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+        reply.outputs.push(output_row(&rig.out, &rig.ws, None));
         reply
             .windows
             .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
@@ -944,6 +1139,7 @@ fn lifetime_tag_drift_stops_before_setters() {
     let (mut diff, fresh, mut native) = converted(&rig);
     native.windows.get_mut("w1").unwrap().live_tag = Some("recycled-tag".to_owned());
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.outputs.push(output_row(&rig.out, &rig.ws, None));
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
@@ -958,6 +1154,7 @@ fn gesture_watermark_generation_revision_fences() {
     let (mut diff, fresh, mut native) = converted(&rig);
     native.gesture = true;
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.outputs.push(output_row(&rig.out, &rig.ws, None));
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
@@ -994,6 +1191,7 @@ fn racing_invalidation_stops_before_any_write() {
     let (mut diff, fresh, mut native) = converted(&rig);
     native.pending_invalidation = true;
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.outputs.push(output_row(&rig.out, &rig.ws, None));
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
@@ -1079,6 +1277,7 @@ fn invalidation_stops_after_first_write() {
         remaining: 1,
     };
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.outputs.push(output_row(&rig.out, &rig.ws, None));
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
@@ -1188,13 +1387,11 @@ fn view_return_base() -> (Rig, HostDiff, FreshHost, FakeNative) {
     if let Some(base) = fresh.baseline.get_mut("w1") {
         base.hidden = true;
         base.frame = None;
-        base.observed_frame = None;
     }
     if let Some(live) = native.windows.get_mut("w1") {
         live.hidden = false;
         live.iconic = false;
         live.frame = Some(rect(0, 0, 800, 600));
-        live.observed_frame = Some(rect(0, 0, 800, 600));
     }
     native.views.insert(rig.out.clone(), "ws-other".to_owned());
     (rig, diff, fresh, native)
@@ -2372,6 +2569,7 @@ fn write_plus_hold_reports_partial_truthfully() {
     let (mut diff, fresh, mut native) = converted(&rig);
     native.windows.get_mut("w2").unwrap().hidden = true;
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.outputs.push(output_row(&rig.out, &rig.ws, None));
     reply
         .windows
         .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
@@ -2576,7 +2774,7 @@ fn follow_success_applies_follow_failure_holds_without_view_claim() {
     );
     reply.windows.push(member_row(&rig.out, &rig.ws, "w1"));
     reply.transfers.push(window_transfer(
-        "op-4", "w1", &rig.out, &ws_target, true, true,
+        "op-4", "w1", &rig.out, &ws_target, false, true,
     ));
     let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.membership_writes, 0);
@@ -2609,7 +2807,7 @@ fn follow_success_applies_follow_failure_holds_without_view_claim() {
     );
     reply.windows.push(member_row(&rig.out, &rig.ws, "w1"));
     reply.transfers.push(window_transfer(
-        "op-5", "w1", &rig.out, &ws_target, true, true,
+        "op-5", "w1", &rig.out, &ws_target, false, true,
     ));
     let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.membership_writes, 0);
@@ -2627,6 +2825,65 @@ fn follow_success_applies_follow_failure_holds_without_view_claim() {
     assert_eq!(stats.membership_writes, 0);
     // The spent follow-view phase never repeats.
     assert!(members.is_empty() && views.is_empty());
+}
+
+#[test]
+fn held_pre_proven_transfer_never_emits_already_at_target() {
+    // Possibly-executed evidence must not be settled by a no-call row: a
+    // held transfer whose homing already proves emits no AlreadyAtTarget
+    // receipt and actuates no follow view.
+    let rig = rig();
+    let ws_target = "ws2".to_owned();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    native.windows.get_mut("w1").unwrap().workspace = ws_target.clone();
+    // The target view is not shown, so a follow dispatch would be visible.
+    native.views.insert(rig.out.clone(), rig.ws.clone());
+    let mut reply = reply_shell(
+        7,
+        1,
+        &[
+            (rig.out.as_str(), rig.ws.as_str()),
+            (rig.out.as_str(), ws_target.as_str()),
+        ],
+    );
+    reply.windows.push(member_row(&rig.out, &rig.ws, "w1"));
+    reply.transfers.push(window_transfer(
+        "op-6", "w1", &rig.out, &ws_target, true, true,
+    ));
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert!(stats.held >= 1);
+    assert_eq!(stats.membership_writes, 0);
+    assert_eq!(stats.view_writes, 0);
+    assert!(members.is_empty(), "held evidence emits no receipt: {members:?}");
+    assert!(views.is_empty(), "held evidence dispatches no follow: {views:?}");
+}
+
+#[test]
+fn stale_reply_never_emits_already_at_target() {
+    // A reply based on a stale observation stops the pass before the
+    // pre-proven no-call receipt is emitted: the receipt is proof of this
+    // tick's facts, never of an older observation.
+    let rig = rig();
+    let ws_target = "ws2".to_owned();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    native.windows.get_mut("w1").unwrap().workspace = ws_target.clone();
+    native.views.insert(rig.out.clone(), ws_target.clone());
+    let mut reply = reply_shell(
+        6,
+        1,
+        &[
+            (rig.out.as_str(), rig.ws.as_str()),
+            (rig.out.as_str(), ws_target.as_str()),
+        ],
+    );
+    reply.windows.push(member_row(&rig.out, &rig.ws, "w1"));
+    reply.transfers.push(window_transfer(
+        "op-7", "w1", &rig.out, &ws_target, false, true,
+    ));
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert!(stats.stopped_mid_apply);
+    assert!(members.is_empty(), "stale reply emits no receipt: {members:?}");
+    assert!(views.is_empty(), "stale reply dispatches no follow: {views:?}");
 }
 
 #[test]
@@ -2670,13 +2927,11 @@ fn focus_dispatches_after_same_pass_view_reveal() {
     if let Some(base) = fresh.baseline.get_mut("w1") {
         base.hidden = true;
         base.frame = None;
-        base.observed_frame = None;
     }
     if let Some(live) = native.windows.get_mut("w1") {
         live.hidden = false;
         live.iconic = false;
         live.frame = Some(rect(0, 0, 800, 600));
-        live.observed_frame = Some(rect(0, 0, 800, 600));
     }
     native.views.insert(rig.out.clone(), rig.ws.clone());
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
@@ -2691,12 +2946,10 @@ fn focus_dispatches_after_same_pass_view_reveal() {
     if let Some(base) = fresh.baseline.get_mut("w1") {
         base.hidden = true;
         base.frame = None;
-        base.observed_frame = None;
     }
     if let Some(live) = native.windows.get_mut("w1") {
         live.hidden = true;
         live.frame = None;
-        live.observed_frame = None;
     }
     native.views.insert(rig.out.clone(), rig.ws.clone());
     let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
@@ -2721,13 +2974,11 @@ fn same_pass_reveal_recycled_key_stops_focus_without_trusting_new_baseline() {
     if let Some(base) = fresh.baseline.get_mut("w1") {
         base.hidden = true;
         base.frame = None;
-        base.observed_frame = None;
     }
     if let Some(live) = native.windows.get_mut("w1") {
         live.hidden = false;
         live.iconic = false;
         live.frame = Some(rect(0, 0, 800, 600));
-        live.observed_frame = Some(rect(0, 0, 800, 600));
         // Recycled HWND: same handle, new lifetime, spoofed old tag.
         live.key = win_key(1001, 9999, "proc-recycled");
         live.live_tag = Some("member-tag-1".to_owned());
@@ -3098,7 +3349,7 @@ fn migration_partial_holds_then_completes_with_refill() {
         follow: false,
         held: false,
         command_seq: None,
-        parent: None,
+        parent: Some(mig.to_owned()),
     });
     let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.membership_writes, 1);
@@ -3204,12 +3455,74 @@ fn migration_held_refill_never_actuates() {
         follow: false,
         held: true,
         command_seq: None,
-        parent: None,
+        parent: Some(mig.to_owned()),
     });
     let (_, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(
         native.views.get(&rig.out).map(String::as_str),
         Some(ws_target.as_str())
+    );
+}
+
+#[test]
+fn view_with_refill_suffix_but_no_parent_is_not_deferred() {
+    // Refill pairing is the parent link, never the id suffix. A View named
+    // like a refill with no Migration transfer dispatches in the generic
+    // view pass instead of waiting on a migration that does not exist.
+    let rig = rig();
+    let ws_other = "ws-other".to_owned();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    native.views.insert(rig.out.clone(), rig.ws.clone());
+    let mut reply = reply_shell(
+        7,
+        1,
+        &[
+            (rig.out.as_str(), rig.ws.as_str()),
+            (rig.out.as_str(), ws_other.as_str()),
+        ],
+    );
+    reply
+        .transfers
+        .push(view_transfer("op-orphan-refill", &rig.out, &ws_other));
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.view_writes, 1);
+    assert!(members.is_empty());
+    assert_eq!(views.len(), 1, "generic view pass dispatches: {views:?}");
+    assert_eq!(views[0].operation_id, "op-orphan-refill");
+    assert_eq!(
+        native.views.get(&rig.out).map(String::as_str),
+        Some(ws_other.as_str())
+    );
+}
+
+#[test]
+fn refill_with_parent_of_absent_migration_dispatches_normally() {
+    // A parent that names no Migration transfer is not a deferral: the
+    // View dispatches in the generic view pass exactly like a standalone
+    // switch.
+    let rig = rig();
+    let ws_other = "ws-other".to_owned();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    native.views.insert(rig.out.clone(), rig.ws.clone());
+    let mut reply = reply_shell(
+        7,
+        1,
+        &[
+            (rig.out.as_str(), rig.ws.as_str()),
+            (rig.out.as_str(), ws_other.as_str()),
+        ],
+    );
+    let mut refill = view_transfer("op-refill-orphan", &rig.out, &ws_other);
+    refill.parent = Some("op-missing".to_owned());
+    reply.transfers.push(refill);
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.view_writes, 1);
+    assert!(members.is_empty());
+    assert_eq!(views.len(), 1, "generic view pass dispatches: {views:?}");
+    assert_eq!(views[0].operation_id, "op-refill-orphan");
+    assert_eq!(
+        native.views.get(&rig.out).map(String::as_str),
+        Some(ws_other.as_str())
     );
 }
 
@@ -5008,7 +5321,7 @@ fn migration_reply(out: &str, ws: &str, refill_ws: &str, mig: &str) -> WorldRepl
         follow: false,
         held: false,
         command_seq: None,
-        parent: None,
+        parent: Some(mig.to_owned()),
     });
     reply
 }
@@ -6694,7 +7007,6 @@ fn staged_shapes_two_arrivals() -> (FreshHost, FakeNative, StagedRig) {
             key: key3,
             token: "w3".to_owned(),
             frame: Some(frame),
-            observed_frame: Some(frame),
             facts: Some(plain_facts()),
             output: staged.out.clone(),
             workspace: staged.ws2.clone(),

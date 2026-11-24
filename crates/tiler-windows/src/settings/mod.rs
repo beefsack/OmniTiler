@@ -152,15 +152,31 @@ pub fn tile_options_from_settings(settings: &schema::Settings) -> crate::tiling:
 /// document instead of silently keeping handshake defaults. Core accepts the
 /// stable short wire names, not the catalog field ids; visual colors/theme
 /// stay adapter-owned and are not part of the core wire.
+///
+/// Explicit startup CLI switches stay authoritative here exactly as they do
+/// in [`crate::tiling::apply_cli_overrides`]: `--inner-gap`/`--outer-gap`
+/// and the border/underlay geometry flags override the saved base on every
+/// snapshot (startup and every live revision), so an unrelated file edit
+/// never drops a CLI lane. Colors/theme, keyboard, and mouse have no core
+/// wire key and remain adapter-owned.
 #[must_use]
 pub fn core_setting_values(
     settings: &schema::Settings,
+    cli: &crate::tiling::CliOverrides,
 ) -> Vec<(String, tiler_core::connection::RawSettingValue)> {
     use tiler_core::connection::RawSettingValue::{Bool, Number, String as Text};
     let core = &settings.core;
+    let inner_gap = cli.inner_gap.unwrap_or(core.inner_gap);
+    let outer_gap = cli.outer_gap.unwrap_or(core.outer_gap);
+    let border_enabled = cli.border_enabled.unwrap_or(core.border.enabled);
+    let border_width = cli.border_width.unwrap_or(core.border.width);
+    let border_gap = cli.border_gap.unwrap_or(core.border.gap);
+    let border_radius = cli.border_radius.unwrap_or(core.border.radius);
+    let underlay_enabled = cli.underlay_enabled.unwrap_or(core.underlay.enabled);
+    let underlay_extension = cli.underlay_extension.unwrap_or(core.underlay.extension);
     vec![
-        ("gap".to_owned(), Number(f64::from(core.inner_gap))),
-        ("outer".to_owned(), Number(f64::from(core.outer_gap))),
+        ("gap".to_owned(), Number(f64::from(inner_gap))),
+        ("outer".to_owned(), Number(f64::from(outer_gap))),
         ("sameAxis".to_owned(), Text(core.same_axis_move.clone())),
         (
             "bornMaximized".to_owned(),
@@ -174,15 +190,12 @@ pub fn core_setting_values(
             "refill".to_owned(),
             Text(core.migration_source_refill.clone()),
         ),
-        ("borderEnabled".to_owned(), Bool(core.border.enabled)),
-        ("borderWidth".to_owned(), Number(core.border.width)),
-        ("borderGap".to_owned(), Number(core.border.gap)),
-        ("borderRadius".to_owned(), Number(core.border.radius)),
-        ("underlayEnabled".to_owned(), Bool(core.underlay.enabled)),
-        (
-            "underlayExtension".to_owned(),
-            Number(core.underlay.extension),
-        ),
+        ("borderEnabled".to_owned(), Bool(border_enabled)),
+        ("borderWidth".to_owned(), Number(border_width)),
+        ("borderGap".to_owned(), Number(border_gap)),
+        ("borderRadius".to_owned(), Number(border_radius)),
+        ("underlayEnabled".to_owned(), Bool(underlay_enabled)),
+        ("underlayExtension".to_owned(), Number(underlay_extension)),
         (
             "defaultTiled".to_owned(),
             Bool(core.workspace.default_tiled),

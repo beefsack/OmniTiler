@@ -70,11 +70,25 @@ pub(super) type CoreProjections = (
 );
 
 impl WorldOwner {
-    /// Authenticated bootstrap from explicit id strings (for struct-literal
-    /// construction sites where the owner state does not exist yet).
+    /// Test/offline bootstrap from explicit id strings (for struct-literal
+    /// construction sites where the owner state does not exist yet). Keeps
+    /// the historical empty initial settings snapshot; production startup
+    /// uses [`WorldOwner::bootstrap_ids_with_settings`].
+    #[cfg(test)]
     pub(super) fn bootstrap_ids(owner: &str, generation: &str) -> Option<Self> {
+        Self::bootstrap_ids_with_settings(owner, generation, &[])
+    }
+
+    /// Production bootstrap with the validated initial raw settings snapshot
+    /// (explicit CLI switches already applied) so restart-only `mode` and
+    /// every other core key adopt at revision 1.
+    pub(super) fn bootstrap_ids_with_settings(
+        owner: &str,
+        generation: &str,
+        values: &[(String, tiler_core::connection::RawSettingValue)],
+    ) -> Option<Self> {
         Some(Self::from_sequencer(
-            WorldSequencer::bootstrap(owner, generation)?,
+            WorldSequencer::bootstrap_with_settings(owner, generation, values)?,
             owner,
             generation,
         ))
@@ -118,11 +132,27 @@ impl WorldOwner {
     }
 
     /// Push the validated settings document into core policy through the
-    /// bound connection. One full snapshot per revision; refusal leaves the
-    /// last accepted core state untouched.
-    pub(super) fn apply_core_settings(&mut self, settings: &crate::settings::Settings) -> bool {
-        let values = crate::settings::core_setting_values(settings);
+    /// bound connection. One full snapshot per revision; explicit startup
+    /// CLI switches override the saved base. Returns the core reply
+    /// (status + every diagnostic) so the caller can log acceptance,
+    /// refusal, stale/reused revisions, and `restart-required`; `None` when
+    /// the connection is unbound. Refusal leaves the last accepted core
+    /// state untouched.
+    pub(super) fn apply_core_settings(
+        &mut self,
+        settings: &crate::settings::Settings,
+        cli: &crate::tiling::CliOverrides,
+    ) -> Option<tiler_core::connection::SettingsReply> {
+        let values = crate::settings::core_setting_values(settings, cli);
         self.seq.apply_settings_values(&values)
+    }
+
+    /// Take the retained initial (revision 1) settings reply for startup
+    /// logging. `None` once already taken.
+    pub(super) fn take_initial_settings_reply(
+        &mut self,
+    ) -> Option<tiler_core::connection::SettingsReply> {
+        self.seq.take_initial_settings_reply()
     }
 
     /// Test-only live-settings revision through the bound connection.

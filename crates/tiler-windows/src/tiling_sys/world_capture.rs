@@ -8,9 +8,13 @@
 //! No parallel
 //! DTOs: fixtures instantiate these exact production structures through the
 //! same [`capture_world`] constructor the runtime will use. No Engine
-//! mutation, no FFI, no sequencing: observation/request/command counters and
-//! acknowledgement belong to the dependent sequencer unit, which is
-//! deliberately not built here.
+//! mutation, no native writes, no sequencing: observation/request/command
+//! counters and acknowledgement belong to the dependent sequencer unit,
+//! which is deliberately not built here. The only native reads are the
+//! lightweight per-claim reads for project-suppressed windows
+//! ([`read_hidden_claim`], through the safe `ffi` wrappers), which the tick
+//! builds into [`OwnerInputs::hidden_reads`] before capture so this body
+//! stays pure over its seam.
 //!
 //! Source map:
 //! - `observe.rs` `ObservedWindow`: identity-first observation with
@@ -69,12 +73,16 @@
 //!   capture consumes, and the remaining lanes because Windows has no
 //!   producer. Never a fabricated `false`. `hints` is the recorded
 //!   constraint (`hint_logged`) or `None`, never an empty-hint stand-in.
-//!   `host_hidden` is the fresh native cloak read, `visibility.visible` the
-//!   fresh native shown state, `visibility.suppression_owned` the durable
-//!   hide-claim presence, and `suppression_available` is claimed only
-//!   where that claim proves suppression worked. The core derives floating,
-//!   fit-exclusion, and fixed-size intent from its own settings and these
-//!   facts; the adapter publishes none of them.
+//!   Two fresh-read lanes supply these facts: the ordinary visible
+//!   observation (`WindowFacts`) and the lightweight per-claim read for a
+//!   project-suppressed member with no live observed row ([`HiddenClaimRead`]).
+//!   `host_hidden` is the fresh native cloak read (never project
+//!   suppression), `visibility.visible` the fresh native shown state,
+//!   `visibility.suppression_owned` the durable hide-claim presence, and
+//!   `suppression_available` is claimed only where that claim proves
+//!   suppression worked. The core derives floating, fit-exclusion, and
+//!   fixed-size intent from its own settings and these facts; the adapter
+//!   publishes none of them.
 //! - Unknown output affinity is `output: None`, never the first screen or a
 //!   placeholder id: a frame whose device has no live wire id reports no
 //!   affinity rather than a guess.
@@ -106,7 +114,11 @@
 //!   `born_fullscreen` hold lane); a hidden member with no verifiable
 //!   fullscreen holds its domain. The snapshot source (float or tile slot)
 //!   is adapter-local placement memory, never a published float intent.
-//!   Nothing hidden defaults flags to `false` to authorize writes.
+//!   Their native facts come only from that claim's lightweight live read:
+//!   `host_hidden` is the DWM cloak, `visibility.visible` the shown state,
+//!   and `owned`/`tool_window`/`window_type` their real reads. A claim with
+//!   no read holds as unreadable; nothing hidden defaults flags to `false`
+//!   to authorize writes.
 //! - Frameless retained rows (`facts: None`) and scope-excluded members are
 //!   never minimized: frameless iconic omission yields an explicit
 //!   minimized entry, anything else frameless holds its domain as
@@ -128,7 +140,9 @@
 //!   cannot resolve to a verified row rides an unreadable fact (rect
 //!   `None`) and clears the global completeness flag.
 //!
-//! Production prerequisites consumed read-only (no FFI here):
+//! Production prerequisites consumed read-only (rest of the module is pure;
+//! only [`read_hidden_claim`] touches native reads, for claims without a
+//! live observed row):
 //! - `assignments::audit_hidden_claims` retires dead claims through the
 //!   identity-safe reveal path; `queue_verified_close` gates close queueing
 //!   on the stored lifetime tag no longer reading live; admission stamps and
@@ -148,6 +162,7 @@ use tiler_core::world_report::{
     PresentationPagerFrameV4, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport,
     VisibilityFact, WindowFact,
 };
+use windows_sys::Win32::UI::WindowsAndMessaging::WS_EX_TOOLWINDOW;
 
 /// Normalized foreground facts for one tick's uniform presentation ingress
 /// (stage 5): the genuinely observed foreground lifetime (proof-verified
@@ -196,6 +211,13 @@ pub(super) struct OwnerInputs<'a> {
     pub fixed_tile_overrides: &'a BTreeSet<WindowKey>,
     pub fixed_origin_overrides: &'a BTreeSet<WindowKey>,
     pub hidden_claims: &'a BTreeMap<WindowKey, HiddenRecord>,
+    /// Fresh lightweight live reads for project-suppressed claim lifetimes
+    /// with no live observed row (T4), keyed by the exact lifetime. Built by
+    /// the tick from the safe native wrappers before capture (capture stays
+    /// pure over this seam) and `None` for offline fixtures that supply
+    /// their own reads. A claim with no entry holds as unreadable rather
+    /// than inventing suppression or host hiding.
+    pub hidden_reads: Option<&'a BTreeMap<WindowKey, HiddenClaimRead>>,
     pub minimized_omitted: &'a HashSet<WindowKey>,
     pub pending_closed: &'a BTreeMap<String, PendingClosed>,
     pub scope: &'a [String],
@@ -233,8 +255,6 @@ pub(super) struct OwnerInputs<'a> {
     /// Adapter-retained last applied logical views per output (from the last
     /// applied reply outputs). View receipts prove this commitment.
     pub applied_views: &'a HashMap<String, String>,
-    pub inner_gap: i32,
-    pub outer_gap: i32,
     pub active: &'a HashSet<u64>,
     /// Normalized foreground facts for the uniform presentation ingress
     /// (stage 5): `None` when there is no foreground window. The tick
@@ -246,14 +266,6 @@ pub(super) struct OwnerInputs<'a> {
     /// Classified focused Move subject token (`""` when none): the move arm
     /// of the underlay trigger.
     pub presentation_move: String,
-    /// Overlay enable flags for the presentation ingress.
-    pub presentation_border_enabled: bool,
-    pub presentation_underlay_enabled: bool,
-    /// Host-scaled presentation style (gap, border width, resolved underlay
-    /// extension) in physical pixels. DPI conversion runs tick-side before
-    /// this seam; zeros on unreadable DPI (the adapter keeps its own
-    /// scale veto render-side).
-    pub presentation_style: (i32, i32, i32),
     /// Focused-fullscreen-game lane: the core skips presentation work
     /// (hidden shapes, empty pager) instead of projecting under the game.
     pub presentation_paused: bool,
@@ -294,8 +306,6 @@ impl TileLoop {
         active_output: &'a str,
         applied_homing: &'a HashMap<String, (String, String)>,
         applied_views: &'a HashMap<String, String>,
-        inner_gap: i32,
-        outer_gap: i32,
         active: &'a HashSet<u64>,
         cursor: Option<(i32, i32)>,
         hit_hwnd: Option<u64>,
@@ -303,9 +313,6 @@ impl TileLoop {
         presentation_foreground: Option<PresentationForeground>,
         presentation_chord: bool,
         presentation_move: String,
-        presentation_border_enabled: bool,
-        presentation_underlay_enabled: bool,
-        presentation_style: (i32, i32, i32),
         presentation_paused: bool,
         presentation_native_order: Vec<crate::native_guards::WindowKey>,
     ) -> OwnerInputs<'a> {
@@ -325,6 +332,7 @@ impl TileLoop {
             fixed_tile_overrides,
             fixed_origin_overrides,
             hidden_claims,
+            hidden_reads: None,
             minimized_omitted,
             pending_closed,
             scope,
@@ -333,8 +341,6 @@ impl TileLoop {
             active_output,
             applied_homing,
             applied_views,
-            inner_gap,
-            outer_gap,
             active,
             cursor,
             hit_hwnd,
@@ -342,9 +348,6 @@ impl TileLoop {
             presentation_foreground,
             presentation_chord,
             presentation_move,
-            presentation_border_enabled,
-            presentation_underlay_enabled,
-            presentation_style,
             presentation_paused,
             presentation_native_order,
         }
@@ -372,6 +375,7 @@ impl TileLoop {
             fixed_tile_overrides: &self.fixed_tile_overrides,
             fixed_origin_overrides: &self.fixed_origin_overrides,
             hidden_claims: &self.hidden_claims,
+            hidden_reads: None,
             minimized_omitted: &self.minimized_omitted,
             pending_closed: &self.pending_closed,
             scope: &self.scope,
@@ -380,8 +384,6 @@ impl TileLoop {
             active_output: self.active_output.as_str(),
             applied_homing: &self.applied_homing,
             applied_views: &self.applied_views,
-            inner_gap: self.inner_gap,
-            outer_gap: self.outer_gap,
             active: &self.active,
             cursor: None,
             hit_hwnd: None,
@@ -389,9 +391,6 @@ impl TileLoop {
             presentation_foreground: None,
             presentation_chord: false,
             presentation_move: String::new(),
-            presentation_border_enabled: false,
-            presentation_underlay_enabled: false,
-            presentation_style: (0, 0, 0),
             presentation_paused: false,
             presentation_native_order: Vec::new(),
         }
@@ -478,11 +477,10 @@ impl TileLoop {
 
     /// Normalized presentation facts for one tick's uniform presentation
     /// ingress (stage 5): the foreground observation (proof-verified token,
-    /// fresh flags, live frame), the movement-only chord level, the
-    /// classified focused Move subject token, and the host-scaled style the
-    /// tick seam still carries. Fact collection only: the core owns every
-    /// verdict from here. The foreground mirrors the fast overlay path's
-    /// native facts (iconic/zoom/fullscreen/cloak plus hide-claim
+    /// fresh flags, live frame), the movement-only chord level, and the
+    /// classified focused Move subject token. Fact collection only: the
+    /// core owns every verdict from here. The foreground mirrors the fast
+    /// overlay path's native facts (iconic/zoom/fullscreen/cloak plus hide-claim
     /// membership for the logical hidden-workspace leg); the adapter-side
     /// shell projection has no v4 ingress lane and is not produced. A
     /// known-but-frameless foreground (minimized, maximized, fullscreen,
@@ -499,7 +497,6 @@ impl TileLoop {
         Option<PresentationForeground>,
         bool,
         String,
-        (i32, i32, i32),
     ) {
         use crate::group_underlay::MoveSizeKind;
         // Prefer the tick's own observation: it is the same enumeration the
@@ -616,21 +613,7 @@ impl TileLoop {
         } else {
             String::new()
         };
-        let dpi = crate::ffi::dpi_for_window(foreground_hwnd);
-        let (width_px, gap_px, _) =
-            crate::active_border::scale_style(&self.border.style, dpi).unwrap_or((0, 0, 0));
-        let extension_logical = tiler_core::visual::group_underlay_effective_extension(
-            self.underlay.style.extension,
-            self.border.style.width,
-        );
-        let extension_px =
-            crate::active_border::scale_to_physical(extension_logical, dpi).unwrap_or(0);
-        (
-            foreground,
-            chord,
-            move_token,
-            (gap_px, width_px, extension_px),
-        )
+        (foreground, chord, move_token)
     }
 }
 
@@ -663,7 +646,9 @@ pub(super) struct CapturedWorld {
     /// [`crate::world_cursor`]).
     pub(super) focus_follows_cursor: bool,
     /// Retained cursor-warp setting (stage 4b actuates it in
-    /// [`crate::world_cursor`]).
+    /// [`crate::world_cursor`] once C3 lands; tests read the captured
+    /// projection today). Kept as adapter truth, never a policy input.
+    #[allow(dead_code)]
     pub(super) cursor_warp: bool,
     /// Normalized cursor position in adapter units (`None` when unreadable
     /// or deliberately unsampled). Never continuous polling: one sample per
@@ -776,6 +761,80 @@ fn capture_fixed(state: &OwnerInputs<'_>, key: &crate::native_guards::WindowKey)
     (automatic, durable)
 }
 
+/// One project-suppressed (`SW_HIDE`) claim lifetime's lightweight live read
+/// (T4). Such a member is absent from the ordinary visible observation, so
+/// capture cannot reuse `WindowFacts`; these are the only native inputs that
+/// classify it truthfully: the shown state (`visibility.visible`), the DWM
+/// cloak (`host_hidden`, not project suppression), the tool-window style
+/// bit, native ownership, and the generic dialog kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct HiddenClaimRead {
+    /// Fresh `IsWindowVisible` read. Project-suppressed windows normally read
+    /// `false`; the native truth rides, never the claim's target.
+    pub visible: bool,
+    /// Fresh DWM cloak read: the only `host_hidden` source for these rows.
+    pub cloaked: bool,
+    /// `GW_OWNER` non-null: native ownership, independent of dialog kind.
+    pub owned: bool,
+    /// `WS_EX_TOOLWINDOW` set.
+    pub tool_window: bool,
+    /// Unowned generic Win32 dialog class (`#32770`), mirroring the observed
+    /// `facts.dialog` kind gate. The class text itself stays unpublished:
+    /// `class` is declared unavailable on this route.
+    pub dialog: bool,
+}
+
+/// Real lightweight live read for one project-suppressed claim HWND, through
+/// the safe `ffi` wrappers. Fail closed: an invalid handle or any unreadable
+/// required input (cloak, style word, class name) returns `None`, so capture
+/// holds that scope instead of inventing a native verdict.
+pub(super) fn read_hidden_claim(hwnd: u64) -> Option<HiddenClaimRead> {
+    if !crate::ffi::is_window(hwnd) {
+        return None;
+    }
+    let visible = crate::ffi::is_visible(hwnd);
+    let cloaked = crate::ffi::cloaked(hwnd)?;
+    crate::ffi::window_style_checked(hwnd)?;
+    let exstyle = crate::ffi::window_exstyle(hwnd);
+    let owned = crate::ffi::owner_of(hwnd) != 0;
+    let class = crate::ffi::try_class_name(hwnd)?;
+    Some(HiddenClaimRead {
+        visible,
+        cloaked,
+        owned,
+        tool_window: exstyle & WS_EX_TOOLWINDOW != 0,
+        dialog: !owned && class == crate::tiling::GENERIC_DIALOG_CLASS,
+    })
+}
+
+/// Live reads for every hidden claim without a live observed row: the
+/// production tick builds this before capture and threads it through
+/// [`OwnerInputs::hidden_reads`]. Keys already observed ride the ordinary
+/// visible lane, and a failed read stays absent so capture holds exactly
+/// that claim's scope. A failed enumeration already holds every scope, so
+/// no reads are attempted then.
+pub(super) fn hidden_claim_reads(
+    hidden_claims: &BTreeMap<WindowKey, HiddenRecord>,
+    observed: Option<&[ObservedWindow]>,
+) -> BTreeMap<WindowKey, HiddenClaimRead> {
+    let Some(observed) = observed else {
+        return BTreeMap::new();
+    };
+    let observed_keys: HashSet<WindowKey> = observed
+        .iter()
+        .map(|window| WindowKey {
+            hwnd: window.hwnd,
+            pid: window.identity.pid,
+            creation: window.identity.process_creation.clone(),
+        })
+        .collect();
+    hidden_claims
+        .keys()
+        .filter(|key| !observed_keys.contains(*key))
+        .filter_map(|key| read_hidden_claim(key.hwnd).map(|read| (key.clone(), read)))
+        .collect()
+}
+
 /// One captured fact row's inputs. Grouped so every call site states the
 /// exact truth it carries, and no field can silently pick up a default.
 struct FactSeed<'a> {
@@ -796,6 +855,11 @@ struct FactSeed<'a> {
     /// rows): the sole source of shown state, the native cloak fact, and the
     /// neutral style facts below.
     flags: Option<&'a WindowFacts>,
+    /// Lightweight live read for a project-suppressed claim with no live
+    /// observed row: the only source of shown state, cloak, `owned`,
+    /// `tool_window`, and the generic dialog kind for that lane. Mutually
+    /// exclusive with `flags` by construction; `None` keeps the flags lane.
+    live: Option<&'a HiddenClaimRead>,
     /// Explicit host-hidden override for rows with no fresh native read
     /// (hidden-workspace claims); `None` keeps the flags-derived value.
     host_hidden: Option<bool>,
@@ -810,12 +874,12 @@ struct FactSeed<'a> {
 /// no producer on this route stay `None`, never a fabricated default.
 /// `privileged` stays `None`: the current observation never reads integrity
 /// (the legacy `elevated` bit is a hardcoded false, not a read). `class`
-/// stays `None`: the class name is not carried into the observation this
-/// capture consumes, and capture performs no FFI. `hints` is the recorded
-/// constraint or `None`. The durable hide claim is the only suppression
-/// ownership proof: presence proves this lifetime is suppressed (and that
-/// suppression worked), absence proves the adapter owns no suppression for
-/// it.
+/// stays `None`: it is declared unavailable on this route, and the hidden
+/// claim lane publishes only its generic-dialog kind, never the class text.
+/// `hints` is the recorded constraint or `None`. The durable hide claim is
+/// the only suppression ownership proof: presence proves this lifetime is
+/// suppressed (and that suppression worked), absence proves the adapter owns
+/// no suppression for it.
 fn window_fact(seed: FactSeed<'_>) -> WindowFact {
     let FactSeed {
         token,
@@ -826,6 +890,7 @@ fn window_fact(seed: FactSeed<'_>) -> WindowFact {
         output,
         rect,
         flags,
+        live,
         host_hidden,
         fullscreen,
         maximized,
@@ -843,15 +908,22 @@ fn window_fact(seed: FactSeed<'_>) -> WindowFact {
         minimized,
         hints,
         native_workspace: NativeWorkspaceFact::Omitted,
-        host_hidden: host_hidden.or_else(|| flags.map(|facts| facts.cloaked)),
+        host_hidden: host_hidden
+            .or_else(|| flags.map(|facts| facts.cloaked))
+            .or_else(|| live.map(|read| read.cloaked)),
         privileged: None,
         managed: None,
         accepts_input: None,
         activation_inhibited: None,
-        // `WS_EX_TOOLWINDOW` and `GW_OWNER` are read with the same
-        // observation as the frame; a held row carries neither.
-        tool_window: flags.map(|facts| facts.tool_window),
-        owned: flags.map(|facts| facts.owned),
+        // `WS_EX_TOOLWINDOW` and `GW_OWNER` come from the same fresh read as
+        // the frame (or the claim lane's lightweight live read); a held row
+        // carries neither.
+        tool_window: flags
+            .map(|facts| facts.tool_window)
+            .or_else(|| live.map(|read| read.tool_window)),
+        owned: flags
+            .map(|facts| facts.owned)
+            .or_else(|| live.map(|read| read.owned)),
         transient: None,
         modal: None,
         resizable: None,
@@ -868,13 +940,16 @@ fn window_fact(seed: FactSeed<'_>) -> WindowFact {
         // Normal for an eligible ordinary window; `#32770` dialog rows keep
         // their dialog kind. Shell/tool/owned/dialog rows never reach this
         // direct-fact constructor (capture holds them as unreadable).
-        window_type: flags.map(|facts| {
-            if facts.dialog {
-                tiler_core::world_report::WindowType::Dialog
-            } else {
-                tiler_core::world_report::WindowType::Normal
-            }
-        }),
+        window_type: flags
+            .map(|facts| facts.dialog)
+            .or_else(|| live.map(|read| read.dialog))
+            .map(|dialog| {
+                if dialog {
+                    tiler_core::world_report::WindowType::Dialog
+                } else {
+                    tiler_core::world_report::WindowType::Normal
+                }
+            }),
         activation_policy: None,
         layer: None,
         fullscreen_owner: None,
@@ -884,13 +959,15 @@ fn window_fact(seed: FactSeed<'_>) -> WindowFact {
         // suppressible on demand, hidden rows proved it, and unreadable rows
         // stay unknown. `visibility.suppression_owned` carries the current
         // durable claim separately.
-        suppression_available: if suppression_owned || flags.is_some() {
+        suppression_available: if suppression_owned || flags.is_some() || live.is_some() {
             Some(true)
         } else {
             None
         },
         visibility: VisibilityFact {
-            visible: flags.map(|facts| facts.visible),
+            visible: flags
+                .map(|facts| facts.visible)
+                .or_else(|| live.map(|read| read.visible)),
             suppression_owned: Some(suppression_owned),
         },
     }
@@ -1178,6 +1255,7 @@ pub(super) fn capture_world(
                 output: None,
                 rect: None,
                 flags: None,
+                live: None,
                 host_hidden: None,
                 fullscreen: None,
                 maximized: None,
@@ -1198,6 +1276,7 @@ pub(super) fn capture_world(
                 output: $output,
                 rect: None,
                 flags: None,
+                live: None,
                 host_hidden: None,
                 fullscreen: None,
                 maximized: None,
@@ -1455,6 +1534,7 @@ pub(super) fn capture_world(
                     output: affinity_of(&rect),
                     rect: Some(rect),
                     flags: Some(&window.facts),
+                    live: None,
                     host_hidden: None,
                     fullscreen: Some(fullscreen),
                     maximized: Some(maximized),
@@ -1483,6 +1563,7 @@ pub(super) fn capture_world(
                 output: affinity_of(&window.visible),
                 rect: Some(window.visible),
                 flags: Some(&window.facts),
+                live: None,
                 host_hidden: None,
                 fullscreen: Some(window.facts.captionless_fullscreen),
                 maximized: Some(window.facts.maximized),
@@ -1607,6 +1688,7 @@ pub(super) fn capture_world(
                 output: affinity_of(&rect),
                 rect: Some(rect),
                 flags: None,
+                live: None,
                 host_hidden: None,
                 fullscreen: Some(row.fullscreen),
                 maximized: Some(row.maximized),
@@ -1665,6 +1747,23 @@ pub(super) fn capture_world(
                 );
                 continue;
             }
+            // T4: the durable claim proves project suppression, never host
+            // hiding. The lightweight live read is the only source of this
+            // row's shown state, DWM cloak, ownership, tool-window bit, and
+            // dialog kind; with no read the scope holds instead of
+            // fabricating a native verdict.
+            let Some(read) = state.hidden_reads.and_then(|reads| reads.get(key)) else {
+                unreadable_fact!(
+                    facts,
+                    held_members,
+                    inventory_complete,
+                    live_token,
+                    key,
+                    executable,
+                    true
+                );
+                continue;
+            };
             let floating = capture_floating(state, key, true);
             let snapshot = crate::native_guards::hidden_snapshot_rect(
                 floating,
@@ -1700,8 +1799,10 @@ pub(super) fn capture_world(
                 .get(live_token)
                 .copied()
                 .unwrap_or_else(WindowSizeHints::none);
-            // No live row this tick: the native flags lane is unknown,
-            // while the claim/preimage-proven overlays still ride.
+            // No live observed row this tick: the claim lane's lightweight
+            // live read carries the native shown state, cloak, ownership,
+            // tool-window bit, and dialog kind, while the preimage-proven
+            // overlays still ride.
             facts.push(window_fact(FactSeed {
                 token: live_token.as_str(),
                 key,
@@ -1711,7 +1812,8 @@ pub(super) fn capture_world(
                 output: affinity_of(&rect),
                 rect: Some(rect),
                 flags: None,
-                host_hidden: Some(true),
+                live: Some(read),
+                host_hidden: None,
                 fullscreen: Some(fullscreen),
                 maximized: Some(maximized),
                 minimized: Some(false),

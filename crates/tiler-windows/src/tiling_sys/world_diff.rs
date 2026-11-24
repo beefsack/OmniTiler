@@ -100,14 +100,6 @@ use tiler_core::world_report::{
 /// - `frame`: last proven frame (`None` = unreadable, never fabricated).
 ///   Retained maximized/fullscreen overlay rows ride their tile slot here
 ///   (allocation reasoning and home affinity), not the live maximized frame.
-/// - `observed_frame`: observation-time live frame before that slot
-///   substitution (the retained row's fresh frame for overlay rows with
-///   observed evidence, the observed visible frame for live-lane rows).
-///   `None` means no observed live frame this tick and never falls back to
-///   the slot: a coincidental slot/live equality must not fabricate proof.
-///   Captured for fidelity only: the v4 reply carries no maximize-clear
-///   request lane, so no consumer currently reads this field (the old
-///   clear race guard is gone with that lane).
 /// - `facts`: the raw native read (`None` = unproven; holds). Distinct from
 ///   `iconic`/`hidden`: `facts.minimized` is the native minimized bit while
 ///   `iconic` is the adapter minimized-omission classification; `facts.visible`
@@ -127,7 +119,6 @@ pub(super) struct FreshWindow {
     pub(super) key: WindowKey,
     pub(super) token: String,
     pub(super) frame: Option<Rect>,
-    pub(super) observed_frame: Option<Rect>,
     pub(super) facts: Option<WindowFacts>,
     pub(super) output: String,
     pub(super) workspace: String,
@@ -181,14 +172,6 @@ impl FreshHost {
             }
         }
         let mut baseline: HashMap<String, FreshWindow> = HashMap::new();
-        // Which capture lane each fact rode: the live lane over the current
-        // enumeration, or the retained lane for members with no live row.
-        // The retained overlay lane substitutes the tile slot for `rect`;
-        // the race baseline below keeps the pre-substitution live frame.
-        let observed_tokens: HashSet<&str> = observed
-            .iter()
-            .map(|window| window.token.as_str())
-            .collect();
         // Logical homing is reply-side: the capture carries screen
         // affinity plus truthful observed receipts. Baselines home to
         // the last proven receipt where capture freshly proved it
@@ -210,21 +193,6 @@ impl FreshHost {
             };
             let hidden = state.hidden_claims.contains_key(key);
             let iconic = fact.minimized == Some(true) || state.minimized_omitted.contains(key);
-            // Observation-time live frame before retained-slot substitution:
-            // retained overlay rows carry their fresh live frame in the
-            // retained row while `rect` rides the tile slot. Live-lane rows
-            // observe no substitution, so the fact rect is already the live
-            // frame. A retained row with no observed frame yields `None`:
-            // unavailable evidence is never backfilled from the slot, so a
-            // coincidental slot/live equality cannot fabricate proof.
-            let observed_frame = if observed_tokens.contains(token) {
-                fact.rect
-            } else {
-                retained
-                    .iter()
-                    .find(|row| row.token == token)
-                    .and_then(|row| row.rect)
-            };
             // Observation-time homing: the adapter's last applied receipt,
             // never a fresh desire (the core owns observed membership in
             // v4). A lifetime with no proven receipt keeps an empty
@@ -246,7 +214,6 @@ impl FreshHost {
                     key: key.clone(),
                     token: token.to_owned(),
                     frame: fact.rect,
-                    observed_frame,
                     facts: facts_of.get(token).copied(),
                     output,
                     workspace,
@@ -421,15 +388,6 @@ pub(super) trait NativeOps {
     /// app-held size.
     fn read_dpi(&mut self, token: &str) -> Option<u32>;
     fn write_frame(&mut self, token: &str, rect: Rect) -> Result<bool, ()>;
-    /// Mechanical nonactivating maximize-clear seam with no v4 producer:
-    /// the core mints no `clear_operation`, so nothing calls it. Kept on
-    /// the trait only because the production seam still implements it
-    /// (adapter-owned dead signature pending removal, not fakeable as a
-    /// real clear). The default throws (no actuation).
-    fn clear_maximized(&mut self, token: &str) -> Result<bool, ()> {
-        let _ = token;
-        Err(())
-    }
     /// Membership actuation toward `(out, ws)` with the desired visible
     /// frame as an actuation TARGET only (`None` for membership-only
     /// rows such as floats/sticky/overlays, which carry no published
@@ -1852,18 +1810,19 @@ fn scope_controlled(reply: &WorldReplyV4, output: &str, workspace: &str) -> bool
     })
 }
 
-/// Whether the output row currently shows this workspace. `None` view or a
-/// missing output row carries no logical-visibility proof, so it never
-/// withholds an otherwise-authorized frame write. A named different view is
-/// core-owned hidden state: native hide may still lag the view switch, but
-/// the departing window must not be reflowed before it hides.
+/// Whether the output row proves this workspace is the current view. A
+/// missing output row or a `None` logical view is not proof that the
+/// workspace is current, so it withholds an otherwise-authorized frame
+/// write. A named different view is core-owned hidden state: native hide
+/// may still lag the view switch, but the departing window must not be
+/// reflowed before it hides.
 fn row_on_current_view(reply: &WorldReplyV4, output: &str, workspace: &str) -> bool {
     reply
         .outputs
         .iter()
         .find(|row| row.output.0 == output)
         .and_then(|row| row.logical_view.as_deref())
-        .is_none_or(|view| view == workspace)
+        .is_some_and(|view| view == workspace)
 }
 
 /// Mechanical actuation authority for one `(output, workspace)` domain:
@@ -2747,11 +2706,14 @@ fn apply_world_reply_inner(
             && row.effective_frame.is_some()
             && !row_on_current_view(reply, &row.output.0, &row.workspace)
         {
-            // The output row already names a different view: this lifetime is
-            // logically hidden even if its native hide has not landed yet.
-            // A departing workspace reflow must never write the hidden frame;
-            // the reveal republishes it once the view returns. Never
-            // hold-count a correctly hidden frame (same as a deferred move).
+            // The output row is missing, names no logical view, or names a
+            // different view: none of these proves this workspace is
+            // current, so the frame write withholds. A named different view
+            // is logically hidden even if its native hide has not landed
+            // yet; a departing workspace reflow must never write the hidden
+            // frame, and the reveal republishes it once the view returns.
+            // Never hold-count a correctly withheld frame (same as a
+            // deferred move).
         } else if frame_controlled && let Some(target) = row.effective_frame {
             if overlay_guarded(base) {
                 // Reserved lanes (overlay, sticky, float, fit-excluded)
@@ -2864,10 +2826,21 @@ fn apply_world_reply_inner(
             continue;
         }
         if homing_proven(ops, base, &fresh.stored_tags, &target_out, &target_ws) {
-            // Pre-proven arrival: no setter runs, but the core still needs a
-            // consumed no-call receipt. Host-owned workspaces carry no native
-            // workspace property, so same-output sends would otherwise hold
-            // forever waiting for a raw post that never comes.
+            // Pre-proven arrival: no setter runs, so the core still needs a
+            // consumed no-call receipt. Windows has no native workspace
+            // property, so a same-output send would otherwise hold forever
+            // waiting for a raw post that never comes. Held targets skip
+            // it: possibly-executed evidence must not be settled by a
+            // no-call row. A stale reply or racing invalidation stops the
+            // pass before any receipt is emitted.
+            if t.held {
+                stats.held += 1;
+                continue;
+            }
+            if !ensure_fresh(reply, gate, entry_obs, ops) {
+                stats.stopped_mid_apply = true;
+                break;
+            }
             if !effects.is_member_attempted(&op, &row.lifetime.0) {
                 effects.mark_member_attempted(&op, &row.lifetime.0);
                 let at_target = homing_pair(Some((target_out.clone(), target_ws.clone())));
@@ -3166,19 +3139,25 @@ fn apply_world_reply_inner(
     // 1c. (removed) Native state targets ride the v4 desire rows; this
     // facade has no state-attempt sink, so no clear is dispatched here.
 
-    // Paired migration source-refill views (`{migration-op}-refill`) defer
-    // to the migration path below: switching the source view before member
-    // arrival proof would hide unmoved members.
+    // Paired migration source-refill views defer to the migration path
+    // below: a refill is the View whose `parent` names this migration, and
+    // switching the source view before member arrival proof would hide
+    // unmoved members. A View whose parent names no Migration transfer is
+    // not deferred and dispatches in the normal view pass.
+    let migration_ops: HashSet<&str> = reply
+        .transfers
+        .iter()
+        .filter(|t| matches!(t.kind, TransferKind::Migration))
+        .map(|t| t.operation_id.as_str())
+        .collect();
     let mut deferred_refills: HashSet<&str> = HashSet::new();
     for t in &reply.transfers {
         if !matches!(t.kind, TransferKind::View) {
             continue;
         }
-        if let Some(prefix) = t.operation_id.strip_suffix("-refill")
-            && reply
-                .transfers
-                .iter()
-                .any(|m| matches!(m.kind, TransferKind::Migration) && m.operation_id == prefix)
+        if t.parent
+            .as_deref()
+            .is_some_and(|parent| migration_ops.contains(parent))
         {
             deferred_refills.insert(t.operation_id.as_str());
         }
@@ -3553,16 +3532,14 @@ fn apply_world_reply_inner(
             }
         }
         // Paired source refill only after the target view proves: never
-        // ahead of arrival. The refill owns its own view phase under the
-        // actual refill id, with its own held/actuation/spent gates: a
-        // floating (Untouched) refill actuates exactly like a standalone
-        // floating view once the target proof is in.
-        let refill_op = format!("{op}-refill");
-        if let Some(refill) = reply
-            .transfers
-            .iter()
-            .find(|v| matches!(v.kind, TransferKind::View) && v.operation_id == refill_op)
-        {
+        // ahead of arrival. The refill is the View whose `parent` names
+        // this migration. It owns its own view phase under the actual
+        // refill id, with its own held/actuation/spent gates: a floating
+        // (Untouched) refill actuates exactly like a standalone floating
+        // view once the target proof is in.
+        if let Some(refill) = reply.transfers.iter().find(|v| {
+            matches!(v.kind, TransferKind::View) && v.parent.as_deref() == Some(op.as_str())
+        }) {
             let refill_out = refill.target_output.0.clone();
             let refill_ws = refill.target_workspace.clone();
             if ops.read_view(&refill_out).as_deref() == Some(refill_ws.as_str()) {

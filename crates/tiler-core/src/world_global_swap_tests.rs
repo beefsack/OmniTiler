@@ -8,8 +8,8 @@ use crate::geometry::Rect;
 use crate::size_hints::WindowSizeHints;
 use crate::world_engine::{WorldEngine, WorldOutcome};
 use crate::world_report::{
-    PresentationIngressV4, PresentationRowV4, ScopeAuthority, ScreenReport, TransferKind,
-    WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReportV4,
+    CommandResult, PresentationIngressV4, PresentationRowV4, ScopeAuthority, ScreenReport,
+    TransferKind, WORLD_CONTRACT_VERSION_V4, WindowFact, WorldCommand, WorldReportV4,
 };
 
 fn rect(x: i32, y: i32, w: i32, h: i32) -> Rect {
@@ -1539,4 +1539,186 @@ fn global_unique_swap_minimized_incoming_and_outgoing_rows_stay_unique() {
         assert_eq!(row.workspace, ov_b, "{name}: {row:?}");
         assert!(row.allocation.is_some(), "{name}: {row:?}");
     }
+}
+
+fn composed_sticky_fact(window: &str, output: &str, x: i32) -> WindowFact {
+    // Composed-sticky hosts carry no native sticky fact: the raw row stays
+    // null and only core's retained intent proves the lifetime.
+    let mut row = fact(window, output, x);
+    row.sticky = None;
+    row
+}
+
+fn composed_engine() -> WorldEngine {
+    WorldEngine::new_test_bound_with_capabilities(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities {
+            native_sticky: false,
+            maximize: true,
+            fullscreen: true,
+            ..Default::default()
+        },
+    )
+    .expect("generation")
+}
+
+fn composed_global_engine() -> WorldEngine {
+    WorldEngine::new_test_bound_with_initial_settings(
+        "gen-1",
+        "adapter-1",
+        crate::connection::HostCapabilities {
+            native_sticky: false,
+            maximize: true,
+            fullscreen: true,
+            ..Default::default()
+        },
+        vec![(
+            "mode".to_owned(),
+            crate::connection::RawSettingValue::String("global-unique".to_owned()),
+        )],
+    )
+    .expect("generation")
+}
+
+#[test]
+fn composed_sticky_global_unique_swap_keeps_only_intent_sticky_windows() {
+    let mut engine = composed_global_engine();
+    let first = accepted(
+        &mut engine,
+        &report(1, 1, two_screens(), vec![], vec![], "", None, None),
+    );
+    let view_a = view_of(&first, "out-a").expect("view a");
+    let view_b = view_of(&first, "out-b").expect("view b");
+    assert_ne!(view_a, view_b);
+
+    let sticky = WindowId("win-sticky".to_owned());
+    let plain = WindowId("win-plain".to_owned());
+    let windows = vec![
+        composed_sticky_fact("win-sticky", "out-b", 800),
+        composed_sticky_fact("win-plain", "out-b", 900),
+    ];
+    // Retained intent before staging proves the composed sticky lifetime;
+    // the raw rows stay null, so a raw-fact filter would mark every window
+    // sticky here.
+    engine
+        .world
+        .intent
+        .restored_sticky
+        .insert(sticky.clone(), false);
+    accepted(
+        &mut engine,
+        &report(2, 2, two_screens(), windows.clone(), vec![], "", None, None),
+    );
+    assert_eq!(
+        engine
+            .world
+            .staged
+            .facts
+            .get(&sticky)
+            .and_then(|fact| fact.sticky),
+        None,
+        "composed route carries no native sticky fact",
+    );
+    assert!(engine.tx_ro(|tx| tx.derived_for(&sticky).sticky));
+    assert!(!engine.tx_ro(|tx| tx.derived_for(&plain).sticky));
+
+    // Swap the two views by selecting B on out-a. The composed sticky
+    // window stays physical on out-b under the workspace arriving there;
+    // the plain window moves to out-a. A raw-fact sticky set would treat
+    // the plain window as sticky too and keep it on out-b.
+    let swapped = accepted(
+        &mut engine,
+        &report(
+            3,
+            3,
+            two_screens(),
+            windows,
+            vec![],
+            "",
+            Some(11),
+            Some(WorldCommand::SelectWorkspace {
+                output: OutputId("out-a".to_owned()),
+                workspace: crate::directional::WorkspaceId(view_b.clone()),
+            }),
+        ),
+    );
+    assert_eq!(view_of(&swapped, "out-a").as_deref(), Some(view_b.as_str()));
+    assert_eq!(view_of(&swapped, "out-b").as_deref(), Some(view_a.as_str()));
+    let plain_row = window_row(&swapped, "win-plain");
+    assert_eq!(
+        (plain_row.output.0.as_str(), plain_row.workspace.as_str()),
+        ("out-a", view_b.as_str()),
+        "composed non-sticky member swaps: {plain_row:?}",
+    );
+    let sticky_row = window_row(&swapped, "win-sticky");
+    assert_eq!(
+        (sticky_row.output.0.as_str(), sticky_row.workspace.as_str()),
+        ("out-b", view_a.as_str()),
+        "composed sticky window stays physical: {sticky_row:?}",
+    );
+}
+
+#[test]
+fn composed_sticky_hidden_lane_migration_excludes_sticky_and_carries_plain() {
+    let mut engine = composed_engine();
+    let sticky = WindowId("win-sticky".to_owned());
+    let plain = WindowId("win-plain".to_owned());
+    engine
+        .world
+        .intent
+        .restored_sticky
+        .insert(sticky.clone(), false);
+    let mut tiled = fact("win-tiled", "out-a", 0);
+    tiled.sticky = None;
+    let mut sticky_hidden = minimized_fact("win-sticky", "out-a");
+    sticky_hidden.sticky = None;
+    let mut plain_hidden = minimized_fact("win-plain", "out-a");
+    plain_hidden.sticky = None;
+    let windows = vec![tiled, sticky_hidden, plain_hidden];
+    let first = accepted(
+        &mut engine,
+        &report(1, 1, two_screens(), windows.clone(), vec![], "", None, None),
+    );
+    let view_a = view_of(&first, "out-a").expect("view a");
+    assert!(engine.tx_ro(|tx| tx.derived_for(&sticky).sticky));
+    assert!(!engine.tx_ro(|tx| tx.derived_for(&plain).sticky));
+    assert!(engine.tx_ro(|tx| tx.derived_for(&sticky).hidden));
+    assert!(engine.tx_ro(|tx| tx.derived_for(&plain).hidden));
+
+    let migration = report(
+        2,
+        2,
+        two_screens(),
+        windows,
+        vec![],
+        "",
+        Some(11),
+        Some(WorldCommand::MigrateWorkspace {
+            source_output: OutputId("out-a".to_owned()),
+            target_output: OutputId("out-b".to_owned()),
+            workspace: crate::directional::WorkspaceId(view_a.clone()),
+        }),
+    );
+    let settlements = match engine.handle_report(&migration, &[]) {
+        (WorldOutcome::Accepted(_), settlements) => settlements,
+        (other, _) => panic!("expected accepted migration, got {other:?}"),
+    };
+    let Some(CommandResult::Migration { members, .. }) =
+        settlements.first().and_then(|settlement| settlement.result.clone())
+    else {
+        panic!("expected migration provenance, got {settlements:?}");
+    };
+    assert!(
+        members.contains(&WindowId("win-tiled".to_owned())),
+        "tiled member carried: {members:?}",
+    );
+    assert!(
+        members.contains(&plain),
+        "composed non-sticky hidden-lane lifetime is carried: {members:?}",
+    );
+    assert!(
+        !members.contains(&sticky),
+        "composed sticky hidden-lane lifetime stays physical: {members:?}",
+    );
 }

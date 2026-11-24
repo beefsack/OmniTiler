@@ -239,14 +239,6 @@ fn has_view_row(tick: &LiveTick, op: &str) -> bool {
     tick.views.iter().any(|a| a.operation_id == op)
 }
 
-/// Proven view evidence: a raw view attempt for the owning phase id with
-/// post proof at the target.
-fn has_proven_view(tick: &LiveTick, op: &str, ws: &str) -> bool {
-    tick.views
-        .iter()
-        .any(|a| a.operation_id == op && ref_workspace(a.post.as_ref()) == Some(ws))
-}
-
 fn has_any_attempt(tick: &LiveTick, op: &str) -> bool {
     has_member_row(tick, op) || has_view_row(tick, op)
 }
@@ -2062,7 +2054,6 @@ fn unknown_baseline_holds_transfer_without_supersession() {
                 key: key.clone(),
                 token: "w1".to_owned(),
                 frame: Some(frame),
-                observed_frame: Some(frame),
                 facts: Some(plain_facts()),
                 output: out.to_owned(),
                 workspace: workspace.to_owned(),
@@ -2746,7 +2737,30 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
             },
         );
     }
-    let inputs = env.state.inputs();
+    let reads = std::collections::BTreeMap::from([
+        (
+            entering1.clone(),
+            super::super::super::world_capture::HiddenClaimRead {
+                visible: false,
+                cloaked: false,
+                owned: false,
+                tool_window: false,
+                dialog: false,
+            },
+        ),
+        (
+            entering2.clone(),
+            super::super::super::world_capture::HiddenClaimRead {
+                visible: false,
+                cloaked: false,
+                owned: false,
+                tool_window: false,
+                dialog: false,
+            },
+        ),
+    ]);
+    let mut inputs = env.state.inputs();
+    inputs.hidden_reads = Some(&reads);
     let captured = capture_world(&inputs, Some(&observed), &[], &one_area(), 207_001);
     let fresh = FreshHost::from_sources(&inputs, &observed, &[], &captured);
     let mut diff = HostDiff::new(ADAPTER, GENERATION);
@@ -2849,7 +2863,30 @@ fn switch_view_two_entering_two_leaving_proves_only_when_complete() {
             },
         );
     }
-    let inputs = env2.state.inputs();
+    let reads = std::collections::BTreeMap::from([
+        (
+            entering1.clone(),
+            super::super::super::world_capture::HiddenClaimRead {
+                visible: false,
+                cloaked: false,
+                owned: false,
+                tool_window: false,
+                dialog: false,
+            },
+        ),
+        (
+            entering2.clone(),
+            super::super::super::world_capture::HiddenClaimRead {
+                visible: false,
+                cloaked: false,
+                owned: false,
+                tool_window: false,
+                dialog: false,
+            },
+        ),
+    ]);
+    let mut inputs = env2.state.inputs();
+    inputs.hidden_reads = Some(&reads);
     let captured = capture_world(&inputs, Some(&observed), &[], &one_area(), 207_001);
     let fresh = FreshHost::from_sources(&inputs, &observed, &[], &captured);
     let mut diff = HostDiff::new(ADAPTER, GENERATION);
@@ -3156,7 +3193,19 @@ fn world_minimized_omission_never_closes_hidden_keeps_fullscreen() {
         facts: Some(plain_facts()),
     }];
     let areas = one_area();
-    let captured = capture_world(&state.inputs(), Some(&[]), &retained, &areas, 0);
+    let reads = std::collections::BTreeMap::from([(
+        hid_key.clone(),
+        super::super::super::world_capture::HiddenClaimRead {
+            visible: false,
+            cloaked: false,
+            owned: false,
+            tool_window: false,
+            dialog: false,
+        },
+    )]);
+    let mut inputs = state.inputs();
+    inputs.hidden_reads = Some(&reads);
+    let captured = capture_world(&inputs, Some(&[]), &retained, &areas, 0);
     let min_fact = captured
         .windows
         .iter()
@@ -3180,6 +3229,27 @@ fn world_minimized_omission_never_closes_hidden_keeps_fullscreen() {
         hid_fact.minimized,
         Some(true),
         "hidden snapshot is not minimized"
+    );
+    // Project suppression, not host hiding: the uncloaked live read reports
+    // host_hidden=false with the durable claim's ownership and real style/
+    // owner/kind reads.
+    assert_eq!(hid_fact.host_hidden, Some(false), "{hid_fact:?}");
+    assert_eq!(hid_fact.visibility.visible, Some(false), "{hid_fact:?}");
+    assert_eq!(
+        hid_fact.visibility.suppression_owned,
+        Some(true),
+        "{hid_fact:?}"
+    );
+    assert_eq!(hid_fact.owned, Some(false), "{hid_fact:?}");
+    assert_eq!(hid_fact.tool_window, Some(false), "{hid_fact:?}");
+    assert_eq!(
+        hid_fact.window_type,
+        Some(tiler_core::world_report::WindowType::Normal),
+        "{hid_fact:?}"
+    );
+    assert!(
+        captured.inventory_complete,
+        "hidden snapshot keeps inventory readable"
     );
     assert!(
         captured.closed.is_empty(),

@@ -1509,10 +1509,14 @@ pub(super) fn run_observation_tick(
     // the foreground observation, chord/move facts, and host-scaled style,
     // computed before the disjoint split borrows the loop. The game lane
     // sets `presentation_paused` so the core skips presentation work.
-    let (presentation_foreground, presentation_chord, presentation_move, presentation_style) =
+    let (presentation_foreground, presentation_chord, presentation_move) =
         state.presentation_tick_inputs(me, fulls, foreground_hwnd, observed);
-    let presentation_border_enabled = state.border.enabled;
-    let presentation_underlay_enabled = state.underlay.enabled;
+    // Project-suppressed claim rows carry their own lightweight live reads
+    // (T4): built here, before the disjoint split, so capture stays pure
+    // over the seam. A failed read leaves its key absent and that claim's
+    // scope holds.
+    let hidden_reads =
+        super::world_capture::hidden_claim_reads(&state.hidden_claims, Some(observed));
     // Disjoint borrows: `world` mutably alongside every read-only input
     // field, never the whole loop (see `TileLoop::owner_inputs`).
     let TileLoop {
@@ -1541,8 +1545,6 @@ pub(super) fn run_observation_tick(
         ref active_output,
         ref mut applied_homing,
         ref mut applied_views,
-        inner_gap,
-        outer_gap,
         ref active,
         ref allowlist,
         workspace_proof,
@@ -1555,7 +1557,7 @@ pub(super) fn run_observation_tick(
     // the report observation time and the stamp for any frame attempt the
     // apply pass below produces. Never wall-clock, never polled.
     let tick_ms = super::trace::log_mono_ms();
-    let inputs = TileLoop::owner_inputs(
+    let mut inputs = TileLoop::owner_inputs(
         member_tokens,
         member_identity,
         member_tags,
@@ -1579,8 +1581,6 @@ pub(super) fn run_observation_tick(
         active_output.as_str(),
         applied_homing,
         applied_views,
-        inner_gap,
-        outer_gap,
         active,
         cursor,
         hit_hwnd,
@@ -1588,12 +1588,10 @@ pub(super) fn run_observation_tick(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_border_enabled,
-        presentation_underlay_enabled,
-        presentation_style,
         presentation_paused,
         presentation_native_order.clone(),
     );
+    inputs.hidden_reads = Some(&hidden_reads);
     let report = match world.try_dispatch_observation(
         &inputs,
         Some(observed),
@@ -1623,7 +1621,7 @@ pub(super) fn run_observation_tick(
     if reply.command_consumed {
         // Observation reconciled without re-execution; still acknowledge.
     }
-    let inputs = TileLoop::owner_inputs(
+    let mut inputs = TileLoop::owner_inputs(
         member_tokens,
         member_identity,
         member_tags,
@@ -1647,8 +1645,6 @@ pub(super) fn run_observation_tick(
         active_output.as_str(),
         applied_homing,
         applied_views,
-        inner_gap,
-        outer_gap,
         active,
         cursor,
         hit_hwnd,
@@ -1656,14 +1652,12 @@ pub(super) fn run_observation_tick(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_border_enabled,
-        presentation_underlay_enabled,
-        presentation_style,
         presentation_paused,
         presentation_native_order.clone(),
     );
+    inputs.hidden_reads = Some(&hidden_reads);
     let captured = capture_world(&inputs, Some(observed), retained, areas, foreground_hwnd);
-    let inputs = TileLoop::owner_inputs(
+    let mut inputs = TileLoop::owner_inputs(
         member_tokens,
         member_identity,
         member_tags,
@@ -1687,8 +1681,6 @@ pub(super) fn run_observation_tick(
         active_output.as_str(),
         applied_homing,
         applied_views,
-        inner_gap,
-        outer_gap,
         active,
         cursor,
         hit_hwnd,
@@ -1696,12 +1688,10 @@ pub(super) fn run_observation_tick(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_border_enabled,
-        presentation_underlay_enabled,
-        presentation_style,
         presentation_paused,
         presentation_native_order.clone(),
     );
+    inputs.hidden_reads = Some(&hidden_reads);
     let fresh = FreshHost::from_sources(&inputs, observed, retained, &captured);
     let (homing, rings, views) = world.core_projections();
     let proven_homing = applied_homing.clone();
@@ -2020,10 +2010,13 @@ fn run_observation_core_only(
     // Commands never run on the game lane, so the pause flag stays clear
     // here like the command dispatch below.
     let presentation_paused = false;
-    let (presentation_foreground, presentation_chord, presentation_move, presentation_style) =
+    let (presentation_foreground, presentation_chord, presentation_move) =
         state.presentation_tick_inputs(me, fulls, foreground_hwnd, observed);
-    let presentation_border_enabled = state.border.enabled;
-    let presentation_underlay_enabled = state.underlay.enabled;
+    // Project-suppressed claim rows carry their own lightweight live reads
+    // (T4), exactly like the full observation tick: built before the
+    // disjoint split so capture stays pure over the seam.
+    let hidden_reads =
+        super::world_capture::hidden_claim_reads(&state.hidden_claims, Some(observed));
     let TileLoop {
         ref mut world,
         ref member_tokens,
@@ -2049,14 +2042,12 @@ fn run_observation_core_only(
         ref active_output,
         ref mut applied_homing,
         ref mut applied_views,
-        inner_gap,
-        outer_gap,
         ref active,
         ..
     } = *state;
     world.invalidate();
     let tick_ms = super::trace::log_mono_ms();
-    let inputs = TileLoop::owner_inputs(
+    let mut inputs = TileLoop::owner_inputs(
         member_tokens,
         member_identity,
         member_tags,
@@ -2080,8 +2071,6 @@ fn run_observation_core_only(
         active_output.as_str(),
         applied_homing,
         applied_views,
-        inner_gap,
-        outer_gap,
         active,
         cursor,
         hit_hwnd,
@@ -2089,12 +2078,10 @@ fn run_observation_core_only(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_border_enabled,
-        presentation_underlay_enabled,
-        presentation_style,
         presentation_paused,
         presentation_native_order.clone(),
     );
+    inputs.hidden_reads = Some(&hidden_reads);
     let report = match world.try_dispatch_observation(
         &inputs,
         Some(observed),
@@ -2216,11 +2203,15 @@ fn run_world_command_impl(
     // Normalized presentation ingress rides this tick's capture (stage 5),
     // like the observation path. Commands never run on the game lane, so
     // the pause flag stays clear here.
-    let (presentation_foreground, presentation_chord, presentation_move, presentation_style) =
+    let (presentation_foreground, presentation_chord, presentation_move) =
         state.presentation_tick_inputs(me, fulls, foreground_hwnd, observed);
-    let presentation_border_enabled = state.border.enabled;
-    let presentation_underlay_enabled = state.underlay.enabled;
     let presentation_paused = false;
+    // Project-suppressed claim rows carry their own lightweight live reads
+    // (T4): built here, before the disjoint split, so capture stays pure
+    // over the seam. A failed read leaves its key absent and that claim's
+    // scope holds.
+    let hidden_reads =
+        super::world_capture::hidden_claim_reads(&state.hidden_claims, Some(observed));
     // Disjoint borrows: `world` mutably alongside every read-only input
     // field, never the whole loop (see `TileLoop::owner_inputs`).
     let TileLoop {
@@ -2249,8 +2240,6 @@ fn run_world_command_impl(
         ref active_output,
         ref mut applied_homing,
         ref mut applied_views,
-        inner_gap,
-        outer_gap,
         ref active,
         ref allowlist,
         workspace_proof,
@@ -2262,7 +2251,7 @@ fn run_world_command_impl(
     // observation path above).
     let tick_ms = super::trace::log_mono_ms();
     let report = {
-        let inputs = TileLoop::owner_inputs(
+        let mut inputs = TileLoop::owner_inputs(
             member_tokens,
             member_identity,
             member_tags,
@@ -2286,8 +2275,6 @@ fn run_world_command_impl(
             active_output.as_str(),
             applied_homing,
             applied_views,
-            inner_gap,
-            outer_gap,
             active,
             cursor,
             hit_hwnd,
@@ -2295,12 +2282,10 @@ fn run_world_command_impl(
             presentation_foreground.clone(),
             presentation_chord,
             presentation_move.clone(),
-            presentation_border_enabled,
-            presentation_underlay_enabled,
-            presentation_style,
             presentation_paused,
             presentation_native_order.clone(),
         );
+        inputs.hidden_reads = Some(&hidden_reads);
         match world.try_dispatch_command(
             &inputs,
             Some(observed),
@@ -2480,7 +2465,7 @@ fn run_world_command_impl(
             super::world_sequencer::AckOutcome::Ignored { .. } => return None,
         }
     }
-    let inputs = TileLoop::owner_inputs(
+    let mut inputs = TileLoop::owner_inputs(
         member_tokens,
         member_identity,
         member_tags,
@@ -2504,8 +2489,6 @@ fn run_world_command_impl(
         active_output.as_str(),
         applied_homing,
         applied_views,
-        inner_gap,
-        outer_gap,
         active,
         cursor,
         hit_hwnd,
@@ -2513,14 +2496,12 @@ fn run_world_command_impl(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_border_enabled,
-        presentation_underlay_enabled,
-        presentation_style,
         presentation_paused,
         presentation_native_order.clone(),
     );
+    inputs.hidden_reads = Some(&hidden_reads);
     let captured = capture_world(&inputs, Some(observed), retained, areas, foreground_hwnd);
-    let inputs = TileLoop::owner_inputs(
+    let mut inputs = TileLoop::owner_inputs(
         member_tokens,
         member_identity,
         member_tags,
@@ -2544,8 +2525,6 @@ fn run_world_command_impl(
         active_output.as_str(),
         applied_homing,
         applied_views,
-        inner_gap,
-        outer_gap,
         active,
         cursor,
         hit_hwnd,
@@ -2553,12 +2532,10 @@ fn run_world_command_impl(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_border_enabled,
-        presentation_underlay_enabled,
-        presentation_style,
         presentation_paused,
         presentation_native_order.clone(),
     );
+    inputs.hidden_reads = Some(&hidden_reads);
     let fresh = FreshHost::from_sources(&inputs, observed, retained, &captured);
     let (homing, rings, views) = world.core_projections();
     let proven_homing = applied_homing.clone();
@@ -3046,14 +3023,17 @@ pub(super) fn dispatch_test_observation(
     let presentation_foreground: Option<super::world_capture::PresentationForeground> = None;
     let presentation_chord = false;
     let presentation_move = String::new();
-    let presentation_border_enabled = false;
-    let presentation_underlay_enabled = false;
-    let presentation_style = (0, 0, 0);
     let presentation_paused = false;
     // The stashed native order from the latest `observe` (empty when the
     // test seeds without one): capture maps it to opaque lifetimes, else
     // falls back to observed-then-retained order.
     let presentation_native_order = state.last_native_order.clone();
+    // Production mirror for project-suppressed claim rows: real lightweight
+    // reads for claims without a live observed row. Offline fixtures with
+    // synthetic HWNDs read nothing, so those rows hold exactly like
+    // production's fail-closed lane.
+    let hidden_reads =
+        super::world_capture::hidden_claim_reads(&state.hidden_claims, Some(observed));
     let TileLoop {
         ref mut world,
         ref member_tokens,
@@ -3079,15 +3059,13 @@ pub(super) fn dispatch_test_observation(
         ref active_output,
         ref mut applied_homing,
         ref mut applied_views,
-        inner_gap,
-        outer_gap,
         ref active,
         ..
     } = *state;
     world.invalidate();
     // Offline seeding carries no native hit read: tests set
     // `inputs.hit_hwnd` explicitly when they need a hit.
-    let inputs = TileLoop::owner_inputs(
+    let mut inputs = TileLoop::owner_inputs(
         member_tokens,
         member_identity,
         member_tags,
@@ -3111,8 +3089,6 @@ pub(super) fn dispatch_test_observation(
         active_output.as_str(),
         applied_homing,
         applied_views,
-        inner_gap,
-        outer_gap,
         active,
         cursor,
         None,
@@ -3120,12 +3096,10 @@ pub(super) fn dispatch_test_observation(
         presentation_foreground.clone(),
         presentation_chord,
         presentation_move.clone(),
-        presentation_border_enabled,
-        presentation_underlay_enabled,
-        presentation_style,
         presentation_paused,
         presentation_native_order.clone(),
     );
+    inputs.hidden_reads = Some(&hidden_reads);
     let report = match world.try_dispatch_observation(
         &inputs,
         Some(observed),

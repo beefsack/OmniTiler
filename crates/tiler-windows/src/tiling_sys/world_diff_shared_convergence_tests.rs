@@ -887,7 +887,7 @@ fn shared_settlement_partial_holds_then_completes_through_sequencing() {
         // exercises per-output migration settlement.
         assert!(
             seq.apply_test_settings(&[(
-                "workspace.mode",
+                "mode",
                 tiler_core::connection::RawSettingValue::String(
                     tiler_core::workspace_scope::WORKSPACE_MODE_TOKENS[0].to_owned(),
                 ),

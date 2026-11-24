@@ -70,6 +70,7 @@ use super::{MonitorArea, ObservedWindow, PendingClosed, RetainedRow};
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::collections::BTreeSet;
+use tiler_core::connection::{RawSettingValue, SettingsReply, SettingsStatus};
 use tiler_core::ids::{GenerationId, OwnerId};
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
@@ -159,6 +160,13 @@ pub(super) struct WorldSequencer {
     engine: WorldEngine,
     /// Last settings revision accepted by the core (connect applies 1).
     settings_revision: u64,
+    /// Last accepted raw settings snapshot. Replayed at revision 1 on a
+    /// generation reset so restart-only values (mode) adopt under the fresh
+    /// generation instead of reverting to handshake defaults.
+    last_settings_values: Vec<(String, RawSettingValue)>,
+    /// Initial (revision 1) settings reply from bootstrap, retained until the
+    /// runtime logs its status and diagnostics. `None` once taken.
+    initial_settings_reply: Option<SettingsReply>,
     current_obs: u64,
     obs_dirty: bool,
     next_request_seq: u64,
@@ -196,13 +204,34 @@ pub(super) struct WorldSequencer {
 }
 
 impl WorldSequencer {
-    /// Authenticated bootstrap: binds the explicit adapter/core identities
+    /// Test/offline bootstrap: binds the explicit adapter/core identities
     /// and constructs the shared engine. `None` on any malformed
     /// identity. The first full observation is immediately dirty; readiness
     /// arrives with the first applied acknowledgement.
+    ///
+    /// This entry keeps the historical empty initial snapshot (core
+    /// defaults plus `Missing` diagnostics) for offline fixtures. Production
+    /// startup uses [`WorldSequencer::bootstrap_with_settings`] so
+    /// restart-only `mode` and every other core key adopt at revision 1.
+    #[cfg(test)]
     #[must_use]
     pub(super) fn bootstrap(adapter_incarnation: &str, core_generation: &str) -> Option<Self> {
-        Self::bootstrap_inner(adapter_incarnation, core_generation, None)
+        Self::bootstrap_inner(adapter_incarnation, core_generation, &[], None)
+    }
+
+    /// Production bootstrap with the validated initial raw settings snapshot
+    /// (explicit CLI switches already applied): the genuine handshake binds
+    /// the generation and revision 1 accepts the full snapshot, so
+    /// restart-only keys adopt at startup rather than latching handshake
+    /// defaults until a later revision core would refuse. The accepted reply
+    /// (status + diagnostics) is retained for the caller to log.
+    #[must_use]
+    pub(super) fn bootstrap_with_settings(
+        adapter_incarnation: &str,
+        core_generation: &str,
+        values: &[(String, RawSettingValue)],
+    ) -> Option<Self> {
+        Self::bootstrap_inner(adapter_incarnation, core_generation, values, None)
     }
 
     /// Test-only bootstrap with an explicit owner identity, so fixtures owned
@@ -214,12 +243,13 @@ impl WorldSequencer {
         core_generation: &str,
         identity: tiler_core::connection::ApplicationIdentity,
     ) -> Option<Self> {
-        Self::bootstrap_inner(adapter_incarnation, core_generation, Some(identity))
+        Self::bootstrap_inner(adapter_incarnation, core_generation, &[], Some(identity))
     }
 
     fn bootstrap_inner(
         adapter_incarnation: &str,
         core_generation: &str,
+        values: &[(String, RawSettingValue)],
         #[allow(unused_variables)] identity: Option<tiler_core::connection::ApplicationIdentity>,
     ) -> Option<Self> {
         OwnerId::parse(adapter_incarnation)?;
@@ -235,13 +265,13 @@ impl WorldSequencer {
             Some(identity) => super::settings::connect_with_identity(
                 &mut engine,
                 adapter_incarnation,
-                &[],
+                values,
                 identity,
             )?,
-            None => super::settings::connect(&mut engine, adapter_incarnation, &[])?,
+            None => super::settings::connect(&mut engine, adapter_incarnation, values)?,
         };
         #[cfg(not(test))]
-        let outcome = super::settings::connect(&mut engine, adapter_incarnation, &[])?;
+        let outcome = super::settings::connect(&mut engine, adapter_incarnation, values)?;
         if outcome.generation != core_generation {
             return None;
         }
@@ -250,6 +280,8 @@ impl WorldSequencer {
             core_generation: core_generation.to_owned(),
             engine,
             settings_revision: 2,
+            last_settings_values: values.to_vec(),
+            initial_settings_reply: Some(outcome.settings),
             current_obs: 0,
             obs_dirty: true,
             next_request_seq: 1,
@@ -271,26 +303,64 @@ impl WorldSequencer {
     }
 
     /// Apply one full raw catalog snapshot at the next revision through the
-    /// genuine connection route. Accepted revisions advance; refusals keep
-    /// the last good state for a later snapshot.
+    /// genuine typed connection route. Accepted revisions advance and become
+    /// the reset replay snapshot; stale/reused refusals keep both the last
+    /// good state and revision. Returns the core reply (including every
+    /// diagnostic), or `None` when the request was unbound.
     pub(super) fn apply_settings_values(
         &mut self,
-        values: &[(String, tiler_core::connection::RawSettingValue)],
-    ) -> bool {
+        values: &[(String, RawSettingValue)],
+    ) -> Option<SettingsReply> {
         let revision = self.settings_revision;
-        let reply = super::settings::apply_settings_revision(
+        let reply = self.apply_settings_at(revision, values)?;
+        if reply.status == SettingsStatus::Accepted {
+            self.settings_revision += 1;
+            self.last_settings_values = values.to_vec();
+        }
+        Some(reply)
+    }
+
+    /// One typed settings exchange at an explicit revision. Shared by the
+    /// monotonic live path and the stale/reused proof seam; only an
+    /// `Accepted` reply advances owner state (see `apply_settings_values`).
+    fn apply_settings_at(
+        &mut self,
+        revision: u64,
+        values: &[(String, RawSettingValue)],
+    ) -> Option<SettingsReply> {
+        super::settings::apply_settings_revision(
             &mut self.engine,
             &self.adapter_incarnation,
             &self.core_generation,
             revision,
             values,
-        );
-        let accepted = reply
-            .is_some_and(|reply| reply.status == tiler_core::connection::SettingsStatus::Accepted);
-        if accepted {
-            self.settings_revision += 1;
-        }
-        accepted
+        )
+    }
+
+    /// Test-only explicit-revision exchange for refused-revision proof
+    /// (older revision -> `Stale`, equal revision with different content ->
+    /// `RevisionReused`). Never advances the live revision: callers observe
+    /// `settings_revision` unchanged.
+    #[cfg(test)]
+    pub(super) fn apply_settings_at_for_test(
+        &mut self,
+        revision: u64,
+        values: &[(String, RawSettingValue)],
+    ) -> Option<SettingsReply> {
+        self.apply_settings_at(revision, values)
+    }
+
+    /// Take the retained initial (revision 1) settings reply for logging.
+    /// `None` until bootstrap succeeds and once already taken.
+    pub(super) fn take_initial_settings_reply(&mut self) -> Option<SettingsReply> {
+        self.initial_settings_reply.take()
+    }
+
+    /// Last revision accepted by the core (2 immediately after bootstrap).
+    #[must_use]
+    #[cfg(test)]
+    pub(super) fn settings_revision(&self) -> u64 {
+        self.settings_revision
     }
 
     /// Test-only live-settings revision: apply the supplied raw catalog
@@ -307,6 +377,7 @@ impl WorldSequencer {
             .map(|(key, value)| ((*key).to_owned(), value.clone()))
             .collect::<Vec<_>>();
         self.apply_settings_values(&values)
+            .is_some_and(|reply| reply.status == SettingsStatus::Accepted)
     }
 
     /// Discovery reply for offline tests: the bound generation with
@@ -617,13 +688,6 @@ impl WorldSequencer {
         transition.outcome
     }
 
-    /// The last delivery's per-command settlement rows (empty for
-    /// observation-only reports and for commands the core did not execute).
-    #[must_use]
-    pub(super) fn last_settlements(&self) -> &[BatchSettlement] {
-        &self.last_settlements
-    }
-
     /// Correlated result for the inline report command: v4 executes the
     /// inline command first, so its settlement is the first executed row.
     /// `None` when the command was not executed (observation-only,
@@ -768,6 +832,10 @@ impl WorldSequencer {
     /// side-effect-free no-ops (`false`). Native lifetime/close facts are
     /// untouched: the owner is not mutably reachable here. Old arbitrary
     /// replies cannot reset: only this call changes the bound generation.
+    /// The last accepted raw settings snapshot is replayed at revision 1
+    /// under the fresh generation (restart-only `mode` re-adopts instead of
+    /// reverting to handshake defaults), and its reply is retained for
+    /// logging.
     /// (No caller yet: the 2b owner cutover drives resets on identity
     /// rotation. Retained as the sole reset path, never a second one.)
     #[allow(dead_code)]
@@ -781,7 +849,9 @@ impl WorldSequencer {
         // A rebuilt engine is unbound: it must repeat the genuine v4
         // handshake/settings connection before accepting any report. A
         // refused connection leaves the old generation fully intact.
-        let Some(connected) = super::settings::connect(&mut engine, &self.adapter_incarnation, &[])
+        let values = self.last_settings_values.clone();
+        let Some(connected) =
+            super::settings::connect(&mut engine, &self.adapter_incarnation, &values)
         else {
             return false;
         };
@@ -790,6 +860,8 @@ impl WorldSequencer {
         }
         self.engine = engine;
         self.core_generation = core_generation.to_owned();
+        self.settings_revision = 2;
+        self.initial_settings_reply = Some(connected.settings);
         self.flight = None;
         self.pending_frames.clear();
         self.pending_members.clear();
@@ -1063,19 +1135,3 @@ impl WorldSequencer {
     }
 }
 
-#[cfg(test)]
-impl WorldSequencer {
-    /// Test-only read proof: retained-engine revision, transfers, and full
-    /// engine debug (session snapshots included) for before/after compare.
-    pub(super) fn test_revision(&self) -> u64 {
-        self.engine.state_revision()
-    }
-
-    pub(super) fn test_retained(&self) -> Vec<tiler_core::world_report::TransferTarget> {
-        self.engine.retained_transfers()
-    }
-
-    pub(super) fn test_engine_debug(&self) -> String {
-        format!("{:?}", self.engine)
-    }
-}

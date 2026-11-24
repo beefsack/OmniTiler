@@ -956,15 +956,11 @@ function Test-StressApplyPending($Event) {
   foreach ($row in @($Event.desired_windows)) {
     if ($null -eq $row) { continue }
     if ("$($row.frame_op)" -ne "" -or "$($row.clear_op)" -ne "") { return $true }
-    # A hidden/minimized member is a settled hold, not transient pending
-    # intent: its retained homing and native outer are the checkpoint proof.
-    $minimized = "$($row.frame_hold)" -eq "minimized"
-    if (-not $minimized -and $null -ne $row.frame_hold -and "$($row.frame_hold)" -ne "") { return $true }
+    if ($null -ne $row.frame_hold -and "$($row.frame_hold)" -ne "") { return $true }
     if ($null -ne $row.membership_hold -and "$($row.membership_hold)" -ne "") { return $true }
     if ($row.floating -eq $true) { return $true }
     if ($null -ne $row.float_origin -and "$($row.float_origin)" -ne "") { return $true }
-    if (-not $minimized -and "$($row.frame_authority)" -ne "controlled") { return $true }
-    if ("$($row.membership_authority)" -ne "controlled") { return $true }
+    if ("$($row.frame_authority)" -ne "controlled" -or "$($row.membership_authority)" -ne "controlled") { return $true }
   }
   return $false
 }
