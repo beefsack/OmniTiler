@@ -65,6 +65,8 @@ fn reply_token(op: &'static str, outcome: &'static str) -> &'static str {
         ("toggle-float", "consumed") => "toggle-float-consumed",
         ("toggle-orientation", "accepted") => "toggle-orientation-accepted",
         ("toggle-orientation", "consumed") => "toggle-orientation-consumed",
+        ("toggle-maximize", "accepted") => "toggle-maximize-accepted",
+        ("toggle-maximize", "consumed") => "toggle-maximize-consumed",
         ("drag-drop", "accepted") => "drag-drop-accepted",
         ("drag-drop", "consumed") => "drag-drop-consumed",
         ("select", "accepted") => "select-accepted",

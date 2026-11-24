@@ -7,8 +7,9 @@
 //! the move arm, Alt selecting the resize arm) with the Ctrl role filled by
 //! the configured [`ProbeModifier`] (default Ctrl; pass `--ctrl meta` for
 //! the Cmd chord space), the float toggle on `G` (Windows `Win+G` / KDE
-//! `Meta+G` parity), and the parent orientation toggle on `O` (Windows
-//! `Win+O` / KDE `Meta+O` parity):
+//! `Meta+G` parity), the parent orientation toggle on `O` (Windows
+//! `Win+O` / KDE `Meta+O` parity), and maximize on `M` (Windows `Win+M`
+//! / KDE `Meta+M` parity):
 //!
 //! - focus: `<Mod>+H/J/K/L` and `<Mod>+arrows` (8 chords);
 //! - move: `<Mod>+Shift+H/J/K/L` and `<Mod>+Shift+arrows` (8 chords);
@@ -16,7 +17,8 @@
 //! - grow: `<Mod>+Alt+H/J/K/L` and `<Mod>+Alt+arrows` (8 chords, outwards);
 //! - shrink: `<Mod>+Alt+Shift+H/J/K/L` and `<Mod>+Alt+Shift+arrows`
 //!   (8 chords, inwards);
-//! - orientation: `<Mod>+O` (1 chord).
+//! - orientation: `<Mod>+O` (1 chord);
+//! - maximize: `<Mod>+M` (1 chord).
 //!
 //! Matching is exact everywhere (extra modifiers fail; Caps/Fn bits sit
 //! outside the mask per the existing matcher contract). Key codes are Mac
@@ -26,14 +28,14 @@
 //! mirrors the Windows/KDE defaults chord-for-chord but lives here because
 //! no shared pure catalogue exists in `tiler-core` — the Windows
 //! `binding_catalog` and the KDE `planShortcutCatalog` are each local too).
-//! Digits and workspace selects/sends/maximize, fullscreen, sticky, and
+//! Digits and workspace selects/sends, fullscreen, sticky, and
 //! workspace-tiling toggles stay out of THIS catalogue: numbered and
 //! auxiliary workspace rows live in [`crate::workspace_input`] (defined and
 //! exactly matchable, but with no product execution yet, so never armed
-//! here), and maximize/fullscreen/sticky need native
-//! state writes with no core command behind them (left for a native-state
-//! unit; fullscreen windows stay untouched by ordinary tiling per the
-//! selected product rule).
+//! here), maximize maps to the core-owned composed route (no adapter
+//! policy), and fullscreen/sticky need native state writes with no core
+//! command behind them (fullscreen windows stay untouched by ordinary
+//! tiling per the selected product rule).
 //!
 //! Sources are continuous and owned: the input owner creates, drives, and
 //! destroys its guard on its own thread; callbacks stay minimal
@@ -78,7 +80,7 @@ use crate::input_policy::{
 /// product input-policy slice); re-exported here so the catalogue, matcher
 /// tables and existing tests keep resolving through this module.
 pub use crate::input_policy::{
-    KEY_DOWN, KEY_G, KEY_H, KEY_J, KEY_K, KEY_L, KEY_LEFT, KEY_O, KEY_RIGHT, KEY_UP,
+    KEY_DOWN, KEY_G, KEY_H, KEY_J, KEY_K, KEY_L, KEY_LEFT, KEY_M, KEY_O, KEY_RIGHT, KEY_UP,
 };
 use crate::runtime::{InputDirection, InputSemanticAction};
 use crate::runtime_backend::{InputSource, InputSourceFactory, RawKeyEvent};
@@ -91,14 +93,15 @@ pub const CG_ALT_BIT: u64 = 0x0008_0000;
 
 /// The scoped-tile chord catalogue: 8 focus chords, 8 move
 /// chords (Shift arm), 8 grow chords (Alt arm, outwards), 8 shrink chords
-/// (Alt+Shift arm, inwards), the float toggle, and the orientation toggle.
-/// The Ctrl-role modifier applies at tuning time ([`tap_specs_for`]), so the table itself is modifier-free.
+/// (Alt+Shift arm, inwards), the float toggle, the orientation toggle, and
+/// the maximize toggle. The Ctrl-role modifier applies at tuning time
+/// ([`tap_specs_for`]), so the table itself is modifier-free.
 /// Duplicate-free by construction; validated by
 /// [`RuntimeConfig::validate`]. No row carries the auxiliary workspace arm
 /// (workspace rows live in [`crate::workspace_input`]).
 #[must_use]
 pub fn tile_catalogue() -> Vec<TileBinding> {
-    let mut out = Vec::with_capacity(34);
+    let mut out = Vec::with_capacity(35);
     let focus = [
         (KEY_H, InputDirection::Left),
         (KEY_J, InputDirection::Down),
@@ -164,6 +167,13 @@ pub fn tile_catalogue() -> Vec<TileBinding> {
         alt: false,
         aux: false,
         action: InputSemanticAction::ToggleOrientation,
+    });
+    out.push(TileBinding {
+        key_code: KEY_M,
+        shift: false,
+        alt: false,
+        aux: false,
+        action: InputSemanticAction::ToggleMaximize,
     });
     out
 }

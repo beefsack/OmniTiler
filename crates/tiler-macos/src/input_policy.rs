@@ -4,8 +4,8 @@
 //!
 //! The tap is the sole product interception route over the
 //! shared basic tiling catalogue ([`crate::native_input::tile_catalogue`]:
-//! 8 focus + 8 move + float, 8 grow + 8 shrink resize steps, and the parent
-//! orientation toggle; Ctrl-role modifier defaulting to Ctrl).
+//! 35 chords: focus 8, move 8, float 1, grow 8, shrink 8,
+//! orientation 1, maximize 1; Ctrl-role modifier defaulting to Ctrl).
 //!
 //! Presets mirror the Windows `Preset::Authentic` / `Preset::Compatible`
 //! contract ([`apply semantics`]: Authentic keeps every supported chord,
@@ -60,18 +60,19 @@ pub const KEY_K: u32 = 0x28;
 pub const KEY_L: u32 = 0x25;
 pub const KEY_G: u32 = 0x05;
 pub const KEY_O: u32 = 0x1F;
+pub const KEY_M: u32 = 0x2E;
 pub const KEY_LEFT: u32 = 0x7B;
 pub const KEY_RIGHT: u32 = 0x7C;
 pub const KEY_DOWN: u32 = 0x7D;
 pub const KEY_UP: u32 = 0x7E;
 
-/// The exact basic key set: HJKL letters, four arrows, G, and O. No digits:
-/// the basic catalogue can never swallow native Ctrl+digits on its own —
-/// numbered chords live only in the workspace catalogue
+/// The exact basic key set: HJKL letters, four arrows, G, O, and M. No
+/// digits: the basic catalogue can never swallow native Ctrl+digits on its
+/// own — numbered chords live only in the workspace catalogue
 /// ([`crate::workspace_input`]), where Compatible drops the conflicting
 /// unshifted Ctrl+digit selects via [`conflict_reason_for`].
-const BASIC_KEYCODES: [u32; 10] = [
-    KEY_H, KEY_J, KEY_K, KEY_L, KEY_G, KEY_O, KEY_LEFT, KEY_RIGHT, KEY_DOWN, KEY_UP,
+const BASIC_KEYCODES: [u32; 11] = [
+    KEY_H, KEY_J, KEY_K, KEY_L, KEY_G, KEY_O, KEY_M, KEY_LEFT, KEY_RIGHT, KEY_DOWN, KEY_UP,
 ];
 
 /// Arrow keycodes: the Mission Control Ctrl+arrow conflict surface.
@@ -344,15 +345,15 @@ mod tests {
     fn compatible_under_ctrl_leaves_only_unshifted_arrows_to_macos() {
         let effective =
             effective_bindings(InputPreset::Compatible, ProbeModifier::Ctrl, &bindings());
-        // 8 focus + 8 move chords on letters, float, orientation, all 16
-        // Alt-arm resize chords (`Ctrl+Alt+arrows` are distinct effective
-        // chords with no established holder), plus the 4 shifted no-Alt
-        // arrow move chords (no established holder for the shifted moves
-        // either); only the 4 unshifted no-Alt arrow chords pass through.
-        // Authentic 34, Compatible 30.
-        assert_eq!(bindings().len(), 34);
-        assert_eq!(effective.len(), 30);
-        for key in [KEY_H, KEY_J, KEY_K, KEY_L, KEY_G, KEY_O] {
+        // 8 focus + 8 move chords on letters, float, orientation, maximize,
+        // all 16 Alt-arm resize chords (`Ctrl+Alt+arrows` are distinct
+        // effective chords with no established holder), plus the 4 shifted
+        // no-Alt arrow move chords (no established holder for the shifted
+        // moves either); only the 4 unshifted no-Alt arrow chords pass
+        // through. Authentic 35, Compatible 31.
+        assert_eq!(bindings().len(), 35);
+        assert_eq!(effective.len(), 31);
+        for key in [KEY_H, KEY_J, KEY_K, KEY_L, KEY_G, KEY_O, KEY_M] {
             assert!(
                 effective
                     .iter()
@@ -437,7 +438,7 @@ mod tests {
 
     #[test]
     fn effective_sets_hold_no_workspace_or_effect_bindings() {
-        // Supported actions only: focus/move steps plus float. No digits
+        // Supported actions only: focus/move steps and the three toggles. No digits
         // (native Ctrl+digits never swallowed), no foreign keycodes.
         for preset in [InputPreset::Authentic, InputPreset::Compatible] {
             for modifier in [
@@ -461,6 +462,7 @@ mod tests {
                             | InputSemanticAction::ResizeStep { .. }
                             | InputSemanticAction::ToggleFloat
                             | InputSemanticAction::ToggleOrientation
+                            | InputSemanticAction::ToggleMaximize
                     ));
                 }
             }
@@ -564,7 +566,7 @@ mod tests {
     }
 
     #[test]
-    fn basic_keycodes_cover_letters_arrows_float_and_orientation() {
+    fn basic_keycodes_cover_letters_arrows_float_orientation_and_maximize() {
         for key in [KEY_H, KEY_J, KEY_K, KEY_L] {
             assert!(is_basic_keycode(key));
         }
@@ -573,6 +575,7 @@ mod tests {
         }
         assert!(is_basic_keycode(KEY_G));
         assert!(is_basic_keycode(KEY_O));
+        assert!(is_basic_keycode(KEY_M));
         assert!(!is_basic_keycode(0x00));
         assert!(!is_basic_keycode(0x12));
     }

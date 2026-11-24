@@ -32,6 +32,7 @@ pub(crate) const OP_MOVE: &str = "move";
 pub(crate) const OP_RESIZE: &str = "resize";
 pub(crate) const OP_TOGGLE_FLOAT: &str = "toggle-float";
 pub(crate) const OP_TOGGLE_ORIENTATION: &str = "toggle-orientation";
+pub(crate) const OP_TOGGLE_MAXIMIZE: &str = "toggle-maximize";
 pub(crate) const OP_SELECT: &str = "select";
 pub(crate) const OP_SEND: &str = "send";
 pub(crate) const OP_TERMINATE: &str = "terminate";
@@ -229,7 +230,7 @@ pub(crate) fn send_command_with_capability(
 
 /// Map one supported tiling input to its world command plus its
 /// diagnostic op token. Directional focus/move and keyboard
-/// resize/toggle-float/toggle-orientation ride execution-time implicit
+/// resize/toggle-float/toggle-orientation/toggle-maximize ride execution-time implicit
 /// subjects: `CurrentFocus` resolves from retained canonical focus at
 /// execution after preceding actions, so no placeholder window id is
 /// carried and observed foreground is never substituted. The resize repeat
@@ -317,6 +318,12 @@ pub(crate) fn operation_command(
                 window: WindowSubject::CurrentFocus,
             }),
             OP_TOGGLE_ORIENTATION,
+        )),
+        InputSemanticAction::ToggleMaximize => Some((
+            WorldCommand::ToggleMaximize {
+                window: WindowSubject::CurrentFocus,
+            },
+            OP_TOGGLE_MAXIMIZE,
         )),
         _ => None,
     }

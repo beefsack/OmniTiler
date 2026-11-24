@@ -79,17 +79,18 @@ pub(crate) fn input_main_bound(
             )
         })
         .collect();
-    // Orientation toggle hold: one toggle per discrete press (Windows
+    // Orientation/maximize toggle hold: one toggle per discrete press (Windows
     // R-LAY-01 parity — held auto-repeat downs consume without dispatch,
-    // release/repress toggles again). The hold tracks the physical `O` key:
-    // any key-up on the orientation key code releases it, so a chord broken
-    // by an early modifier release can never wedge the next press. Focus,
-    // move, float, and resize chords repeat while held (existing behavior;
-    // resize advances its press-index schedule per down). Product tile arms
-    // tap/off sources, which deliver both edges; a downs-only source would
-    // hold after its first orientation press (documented, never a product
+    // release/repress toggles again). Each hold tracks its physical key code:
+    // any key-up on that code releases it, so a chord broken by an early
+    // modifier release can never wedge the next press. Focus, move, float,
+    // and resize chords repeat while held (existing behavior; resize advances
+    // its press-index schedule per down). Product tile arms tap/off sources,
+    // which deliver both edges; a downs-only source would hold after the
+    // first orientation or maximize press (documented, never a product
     // path — the tile offers tap/off only).
     let mut orientation_held = false;
+    let mut maximize_held = false;
     // The source is destroyed here on thread exit.
     loop {
         if stop.load(Ordering::SeqCst) {
@@ -110,6 +111,9 @@ pub(crate) fn input_main_bound(
         if event.kind != TapKeyKind::KeyDown {
             if event.key_code == crate::input_policy::KEY_O {
                 orientation_held = false;
+            }
+            if event.key_code == crate::input_policy::KEY_M {
+                maximize_held = false;
             }
             {
                 let mut guard = lock_shared(&shared);
@@ -157,8 +161,13 @@ pub(crate) fn input_main_bound(
             }
             continue;
         };
-        if matches!(action, InputSemanticAction::ToggleOrientation) {
-            if orientation_held {
+        let edge_held = match action {
+            InputSemanticAction::ToggleOrientation => Some(&mut orientation_held),
+            InputSemanticAction::ToggleMaximize => Some(&mut maximize_held),
+            _ => None,
+        };
+        if let Some(held) = edge_held {
+            if *held {
                 {
                     let mut guard = lock_shared(&shared);
                     guard.diagnostics.input_ignored += 1;
@@ -166,7 +175,7 @@ pub(crate) fn input_main_bound(
                 }
                 continue;
             }
-            orientation_held = true;
+            *held = true;
         }
         // Bump before enqueue (see `invalidate_clock` in runtime): the
         // engine may dequeue the instant the job lands. User intent rides

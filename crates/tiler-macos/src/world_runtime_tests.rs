@@ -194,6 +194,7 @@ fn operation_commands_cover_every_supported_tiling_action() {
             InputSemanticAction::ToggleOrientation,
             OP_TOGGLE_ORIENTATION,
         ),
+        (InputSemanticAction::ToggleMaximize, OP_TOGGLE_MAXIMIZE),
     ] {
         let (command, token) = operation_command(&action, &mut retained)
             .unwrap_or_else(|| panic!("{action:?} has an operation route"));
@@ -226,6 +227,9 @@ fn operation_commands_cover_every_supported_tiling_action() {
                     window: tiler_core::directional::WindowSubject::CurrentFocus,
                 },
             ) => {}
+            tiler_core::world_report::WorldCommand::ToggleMaximize {
+                window: tiler_core::directional::WindowSubject::CurrentFocus,
+            } => {}
             other => panic!("{action:?} must carry the current-focus subject, got {other:?}"),
         }
     }

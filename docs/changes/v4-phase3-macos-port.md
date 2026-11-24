@@ -1099,6 +1099,45 @@ run after the port:
   core-lifetime/publication and no-write evidence; do not infer it from physical
   switching, callbacks or `scope-inspect`'s launch-date presence bit.
 
+## Slice 5 M4 composed-maximize offline implementation (2026-11-24)
+
+- Scope: close the macOS adapter gap for the approved composed-maximize route
+  (`maximize:false`, native `maximized:null`, core-owned work-area overlay).
+  This is offline implementation plus regression evidence, not slice-5 native
+  acceptance; final acceptance remains gated on KDE ST/RC and core absorption
+  under tentative TD3.
+- Input: the scoped-tile catalogue adds the Ctrl-role `M` chord mapped to
+  `InputSemanticAction::ToggleMaximize`, dispatched as
+  `WorldCommand::ToggleMaximize { window: CurrentFocus }`. The catalogue grows
+  34 to 35 chords (Compatible 30 to 31; product 63 to 64). Like orientation,
+  it is edge-triggered: a held repeat consumes without dispatch until the
+  physical `M` key-up, so a broken chord cannot wedge the next press. No
+  adapter-owned maximize policy or native state write is introduced.
+- Frame application: the existing typed reply/desire lane already applies
+  core-authorized frames through the native backend; no adapter maximize path
+  was added. The offline integration test records frames the fake backend
+  actually applied, proving the reply reached the effect lane rather than only
+  the desired-geometry cache.
+- Offline evidence:
+  - [`tile_entry.rs`](../../crates/tiler-macos/tests/integration/tile_entry.rs)
+    drives Ctrl+M through the real runtime/fakes: the overlay applies as the
+    1440x900 work area, a held repeat is ignored, the second discrete press
+    applies the retained base, and a top-anchored 1280x800 work-area change
+    re-derives and applies the new overlay before clear publishes the
+    recomputed base.
+  - [`world_builder.rs`](../../crates/tiler-macos/src/world_builder.rs) proves
+    the producer carries no compose bit: a fresh engine restarts to the base
+    slot; a fullscreen subject is refused with no work-area write; a
+    cross-output send preserves the bit and recomputes the destination work
+    area, clearing to the destination base; a committed gesture move clears
+    the bit before reflow and the next quiet report publishes the base.
+  - Core per-case coverage remains in
+    [`world_composed_maximize_tests.rs`](../../crates/tiler-core/src/world_composed_maximize_tests.rs).
+- Unproved here (native legs): physical Ctrl+M delivery, real AX frame
+  application and paint, native Zoom/drift interaction, native restart,
+  fullscreen replacement, and a live display work-area change. Do not infer
+  those from the offline fakes.
+
 ## Transferable KDE lessons
 
 - Fail closed: unknown never matches; setter acceptance is not native settlement ([runner oracles](v4-phase2-kde-scenario-runner.md#selected-design)).

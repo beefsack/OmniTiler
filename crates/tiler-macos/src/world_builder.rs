@@ -4094,4 +4094,430 @@ mod tests {
         assert!(!report.foreground_known);
         assert_eq!(report.focus_changes, None);
     }
+
+    // -- Composed maximize producer/core regressions ---------------------
+
+    fn command_report(
+        ctx: &NativeContext,
+        members: &BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>>,
+        focused: &str,
+        obs: u64,
+        req: u64,
+        command_seq: u64,
+        command: WorldCommand,
+    ) -> WorldReportV4 {
+        let memory = empty_memory();
+        let closed: Vec<WindowId> = Vec::new();
+        let unreadable: BTreeMap<DomainKey, HoldReason> = BTreeMap::new();
+        let mut report = assemble(
+            ctx,
+            members,
+            &memory,
+            &closed,
+            &unreadable,
+            &[],
+            focused,
+            obs,
+            req,
+        );
+        report.command_seq = Some(command_seq);
+        report.command = Some(command);
+        assert_eq!(validate_report_v4_reason(&report), None);
+        report
+    }
+
+    fn desire<'a>(
+        reply: &'a tiler_core::world_report::WorldReplyV4,
+        window: &str,
+    ) -> Option<&'a tiler_core::world_report::WindowDesire> {
+        reply.windows.iter().find(|row| row.lifetime.0 == window)
+    }
+
+    fn maximize_command(window: &str) -> WorldCommand {
+        WorldCommand::ToggleMaximize {
+            window: tiler_core::directional::WindowSubject::Window(WindowId(window.to_owned())),
+        }
+    }
+
+    #[test]
+    fn producer_maximize_work_area_restart_and_fullscreen_refusal() {
+        // The macOS producer carries no maximize policy: the core composes
+        // the work-area overlay from its own topology, a fresh engine (the
+        // adapter restart shape) starts at the base slot with no inbound
+        // flag, and fullscreen subjects are refused without any overlay
+        // write (native maximize support is false on this adapter).
+        let ctx = two_display_ctx();
+        let d1 = key("macos-display-1", "space-11");
+        let members: BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> = BTreeMap::from([(
+            d1.clone(),
+            vec![
+                (1001u32, observed(1, 0, 0, 100, 100)),
+                (1001u32, observed(2, 100, 0, 100, 100)),
+            ],
+        )]);
+        let work = rect(0, 25, 1440, 875);
+        assert_eq!(ctx.domains[0].visible, work);
+
+        let mut engine = production_engine();
+        let bootstrap = assemble(
+            &ctx,
+            &members,
+            &empty_memory(),
+            &[],
+            &BTreeMap::new(),
+            &[],
+            "1001_1",
+            1,
+            1,
+        );
+        let base_reply = accepted(&bootstrap, &mut engine);
+        let base = desire(&base_reply, "1001_1")
+            .and_then(|row| row.effective_frame)
+            .expect("base slot for 1001_1");
+        assert_ne!(base, work);
+
+        let toggled = command_report(
+            &ctx,
+            &members,
+            "1001_1",
+            2,
+            2,
+            1,
+            maximize_command("1001_1"),
+        );
+        let reply = accepted(&toggled, &mut engine);
+        let row = desire(&reply, "1001_1").expect("maximized desire row");
+        assert_eq!(row.effective_frame, Some(work));
+        assert_eq!(row.allocation, Some(base), "base slot retained");
+        assert!(row.state.is_empty(), "no native maximize target");
+
+        // Adapter restart: a brand-new engine receives the same ordinary
+        // producer report and must start at the base allocation, never the
+        // overlay (the producer never ships the composed bit).
+        let mut restarted = production_engine();
+        let restarted_reply = accepted(&bootstrap, &mut restarted);
+        let row = desire(&restarted_reply, "1001_1").expect("restarted desire row");
+        assert_eq!(
+            row.effective_frame,
+            Some(base),
+            "restart publishes the base slot"
+        );
+        assert_ne!(row.effective_frame, Some(work));
+
+        // Fullscreen is outside the composed maximize route: the command is
+        // refused with no work-area write, and the fullscreen subject stays
+        // untouched by ordinary tiling.
+        let mut full = observed(1, 0, 0, 100, 100);
+        full.fullscreen = true;
+        let full_members: BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> = BTreeMap::from([(
+            d1.clone(),
+            vec![(1001u32, full), (1001u32, observed(2, 100, 0, 100, 100))],
+        )]);
+        let mut fullscreen_engine = production_engine();
+        let fullscreen = command_report(
+            &ctx,
+            &full_members,
+            "1001_1",
+            1,
+            1,
+            1,
+            maximize_command("1001_1"),
+        );
+        let transition = tiler_protocol::world_admission::handle_report_checked(
+            &mut fullscreen_engine,
+            &fullscreen,
+            &[],
+        );
+        assert!(
+            matches!(
+                transition.dispositions.first().map(|row| &row.disposition),
+                Some(tiler_core::world_report::CommandDisposition::Executed(
+                    Some(tiler_core::world_report::CommandResult::Rejected {
+                        kind: tiler_core::world_report::CommandRejectKind::StateUnsupported
+                    })
+                ))
+            ),
+            "fullscreen toggle refuses unsupported, got {:?}",
+            transition.dispositions
+        );
+        let reply = match transition.outcome {
+            WorldOutcome::Accepted(reply) => reply,
+            other => panic!("expected accepted refusal reply, got {other:?}"),
+        };
+        assert!(
+            desire(&reply, "1001_1").is_none_or(|row| row.effective_frame != Some(work)),
+            "fullscreen toggle writes no work-area overlay"
+        );
+    }
+
+    #[test]
+    fn producer_send_preserves_composed_maximize_to_destination_work_area() {
+        // A cross-output send retains the core-owned bit: arrival publishes
+        // the destination work area, and clear restores the destination
+        // base slot (never the source slot or the overlay).
+        let ctx = two_display_ctx();
+        let d1 = key("macos-display-1", "space-11");
+        let d2 = key("macos-display-2", "space-21");
+        let members: BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> = BTreeMap::from([
+            (
+                d1.clone(),
+                vec![
+                    (1001u32, observed(1, 0, 0, 100, 100)),
+                    (1001u32, observed(2, 100, 0, 100, 100)),
+                ],
+            ),
+            (d2.clone(), vec![(1001u32, observed(3, 1500, 25, 100, 100))]),
+        ]);
+        let work_a = rect(0, 25, 1440, 875);
+        let work_b = rect(1440, 25, 1440, 875);
+
+        let mut engine = production_engine();
+        let bootstrap = assemble(
+            &ctx,
+            &members,
+            &empty_memory(),
+            &[],
+            &BTreeMap::new(),
+            &[],
+            "1001_1",
+            1,
+            1,
+        );
+        accepted(&bootstrap, &mut engine);
+
+        let toggled = command_report(
+            &ctx,
+            &members,
+            "1001_1",
+            2,
+            2,
+            1,
+            maximize_command("1001_1"),
+        );
+        let reply = accepted(&toggled, &mut engine);
+        assert_eq!(
+            desire(&reply, "1001_1").and_then(|row| row.effective_frame),
+            Some(work_a)
+        );
+
+        let sent = command_report(
+            &ctx,
+            &members,
+            "1001_1",
+            3,
+            3,
+            2,
+            WorldCommand::SendDirectional {
+                window: tiler_core::directional::WindowSubject::Window(WindowId(
+                    "1001_1".to_owned(),
+                )),
+                direction: tiler_core::directional::Direction::Right,
+                follow: false,
+            },
+        );
+        let reply = accepted(&sent, &mut engine);
+        assert!(
+            !reply.transfers.is_empty(),
+            "send retains a flight under the composed bit"
+        );
+
+        // Arrival: win 1 now homes to display 2, space 21.
+        let arrived_members: BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> = BTreeMap::from([
+            (d1.clone(), vec![(1001u32, observed(2, 100, 0, 100, 100))]),
+            (
+                d2.clone(),
+                vec![
+                    (1001u32, observed(1, 1440, 25, 100, 100)),
+                    (1001u32, observed(3, 1540, 25, 100, 100)),
+                ],
+            ),
+        ]);
+        let arrived = assemble(
+            &ctx,
+            &arrived_members,
+            &empty_memory(),
+            &[],
+            &BTreeMap::new(),
+            &[],
+            "1001_1",
+            4,
+            4,
+        );
+        let reply = accepted(&arrived, &mut engine);
+        assert!(reply.transfers.is_empty(), "arrival settles the flight");
+        let row = desire(&reply, "1001_1").expect("destination desire row");
+        assert_eq!(
+            row.effective_frame,
+            Some(work_b),
+            "destination work area published under the retained bit"
+        );
+        let dest_base = row.allocation.expect("destination slot retained");
+
+        let cleared = command_report(
+            &ctx,
+            &arrived_members,
+            "1001_1",
+            5,
+            5,
+            3,
+            maximize_command("1001_1"),
+        );
+        let reply = accepted(&cleared, &mut engine);
+        let row = desire(&reply, "1001_1").expect("cleared desire row");
+        assert_eq!(
+            row.effective_frame,
+            Some(dest_base),
+            "clear restores the destination base slot"
+        );
+    }
+
+    #[test]
+    fn producer_committed_move_clears_composed_maximize_before_reflow() {
+        // A committed user move (gesture release with a new origin) clears
+        // the core-owned bit before reflow: the reply publishes the
+        // committed base, never the overlay, and the gesture barrier holds
+        // the frame write until the next quiet report.
+        let ctx = two_display_ctx();
+        let d1 = key("macos-display-1", "space-11");
+        let members: BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> = BTreeMap::from([(
+            d1.clone(),
+            vec![
+                (1001u32, observed(1, 0, 0, 100, 100)),
+                (1001u32, observed(2, 100, 0, 100, 100)),
+            ],
+        )]);
+        let work = rect(0, 25, 1440, 875);
+        let mut engine = production_engine();
+        let bootstrap = assemble(
+            &ctx,
+            &members,
+            &empty_memory(),
+            &[],
+            &BTreeMap::new(),
+            &[],
+            "1001_1",
+            1,
+            1,
+        );
+        accepted(&bootstrap, &mut engine);
+
+        let toggled = command_report(
+            &ctx,
+            &members,
+            "1001_1",
+            2,
+            2,
+            1,
+            maximize_command("1001_1"),
+        );
+        let reply = accepted(&toggled, &mut engine);
+        assert_eq!(
+            desire(&reply, "1001_1").and_then(|row| row.effective_frame),
+            Some(work)
+        );
+
+        // START binds while the overlay shows the work area.
+        let start_members: BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> = BTreeMap::from([(
+            d1.clone(),
+            vec![
+                (1001u32, observed(1, 0, 25, 1440, 875)),
+                (1001u32, observed(2, 100, 0, 100, 100)),
+            ],
+        )]);
+        let mut start = assemble(
+            &ctx,
+            &start_members,
+            &empty_memory(),
+            &[],
+            &BTreeMap::new(),
+            &[],
+            "1001_1",
+            3,
+            3,
+        );
+        start.gesture = Some(GestureIngress {
+            id: 7,
+            window: WindowId("1001_1".to_owned()),
+            kind: tiler_core::gesture::GestureKind::Move,
+            cursor: Some((150, 50)),
+            start_cursor: Some((150, 50)),
+            phase: tiler_core::gesture::GesturePhase::Started,
+            esc: false,
+            modal_move: true,
+            start_frame: work,
+        });
+        start.gesture_barrier = true;
+        assert_eq!(validate_report_v4_reason(&start), None);
+        let reply = accepted(&start, &mut engine);
+        assert_eq!(
+            desire(&reply, "1001_1").and_then(|row| row.effective_frame),
+            Some(work),
+            "START binds without clearing"
+        );
+
+        // RELEASE moves: same size, new origin, drop point inside the inset.
+        let moved = rect(10, 25, 1440, 875);
+        let moved_members: BTreeMap<DomainKey, Vec<(u32, ObservedWindow)>> = BTreeMap::from([(
+            d1.clone(),
+            vec![
+                (1001u32, observed(1, moved.x, moved.y, moved.w, moved.h)),
+                (1001u32, observed(2, 100, 0, 100, 100)),
+            ],
+        )]);
+        let mut released = assemble(
+            &ctx,
+            &moved_members,
+            &empty_memory(),
+            &[],
+            &BTreeMap::new(),
+            &[],
+            "1001_1",
+            4,
+            4,
+        );
+        released.gesture = Some(GestureIngress {
+            id: 7,
+            window: WindowId("1001_1".to_owned()),
+            kind: tiler_core::gesture::GestureKind::Move,
+            cursor: Some((150, 50)),
+            start_cursor: Some((150, 50)),
+            phase: tiler_core::gesture::GesturePhase::Released,
+            esc: false,
+            modal_move: true,
+            start_frame: work,
+        });
+        released.gesture_barrier = true;
+        assert_eq!(validate_report_v4_reason(&released), None);
+        let reply = accepted(&released, &mut engine);
+        assert!(
+            reply
+                .gesture_settled
+                .is_some_and(|settled| settled.committed),
+            "commit attribution rides GestureSettled"
+        );
+        let row = desire(&reply, "1001_1").expect("committed desire row");
+        assert_ne!(
+            row.effective_frame,
+            Some(work),
+            "reflow publishes the committed base, not the overlay"
+        );
+        assert!(row.allocation.is_some(), "tile slot retained");
+        assert!(row.state.is_empty(), "no native maximize target");
+
+        // Quiet follow-up after the barrier still publishes the base.
+        let quiet = assemble(
+            &ctx,
+            &moved_members,
+            &empty_memory(),
+            &[],
+            &BTreeMap::new(),
+            &[],
+            "1001_1",
+            5,
+            5,
+        );
+        let reply = accepted(&quiet, &mut engine);
+        let row = desire(&reply, "1001_1").expect("quiet desire row");
+        assert_ne!(row.effective_frame, Some(work));
+    }
 }

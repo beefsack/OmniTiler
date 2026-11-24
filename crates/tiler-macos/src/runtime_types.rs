@@ -830,6 +830,11 @@ pub enum InputSemanticAction {
     /// engine-side to the existing [`tiler_core::boundary::CoreCommand::ToggleFloat`]
     /// with no explicit rect. No additive core API.
     ToggleFloat,
+    /// Maximize toggle for the observed-focus window, resolved engine-side
+    /// to the existing [`tiler_core::world_report::WorldCommand::ToggleMaximize`]
+    /// with the execution-time current-focus subject. The core owns the
+    /// composed route; there is no adapter maximize policy.
+    ToggleMaximize,
     /// Keyboard resize step for the observed-focus window, resolved
     /// engine-side to the existing
     /// [`tiler_core::boundary::CoreCommand::Resize`] with the shared

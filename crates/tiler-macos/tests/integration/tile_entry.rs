@@ -42,10 +42,23 @@ const WAIT: Duration = Duration::from_secs(5);
 
 // -- Fakes -------------------------------------------------------------------
 
+#[derive(Clone, Copy)]
+struct AppliedFrame {
+    wid: u32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
 struct FakeInner {
     /// Scripted scoped snapshots per pid (absent = read fails closed, so
     /// the worker-driven startup below owns its own sequence space).
     scoped: Mutex<BTreeMap<u32, ScopedBackendSnapshot>>,
+    /// Every frame actually applied through the backend, in application
+    /// order. Offline evidence that a composed maximize reply reached the
+    /// native effect lane, not just the desired geometry cache.
+    applied: Arc<Mutex<Vec<AppliedFrame>>>,
 }
 
 struct FakeBackend {
@@ -55,7 +68,18 @@ struct FakeBackend {
 }
 
 impl AxBackend for FakeBackend {
-    fn apply_frame(&mut self, _cmd: &tiler_macos::runtime::FrameCommand) -> AxCompletion {
+    fn apply_frame(&mut self, cmd: &tiler_macos::runtime::FrameCommand) -> AxCompletion {
+        self.inner
+            .applied
+            .lock()
+            .expect("mutex")
+            .push(AppliedFrame {
+                wid: cmd.wid,
+                x: cmd.x,
+                y: cmd.y,
+                w: cmd.w,
+                h: cmd.h,
+            });
         AxCompletion::Applied { elapsed_ms: 0 }
     }
 
@@ -160,6 +184,7 @@ struct Fixture {
     handle: RuntimeHandle,
     input_tx: mpsc::Sender<RawKeyEvent>,
     revision: u64,
+    applied: Arc<Mutex<Vec<AppliedFrame>>>,
 }
 
 /// Default native topology: one display, Spaces 11+12 with 11 current.
@@ -168,6 +193,25 @@ struct Fixture {
 fn single_display_snapshot() -> topology::TopologySnapshot {
     topology::build_snapshot(
         &[ns(1, "uuid-1", 0.0, 0.0, 1440.0, 900.0)],
+        &[row(Some("uuid-1"), &[11, 12], Some(11))],
+        Some(true),
+    )
+}
+
+/// Same display, shrunk menu-inset work area: composed maximize must
+/// re-derive its overlay from the new work area, never a captured rect.
+fn snapshot_with_visible_work_area(w: f64, h: f64) -> topology::TopologySnapshot {
+    let mut display = ns(1, "uuid-1", 0.0, 0.0, 1440.0, 900.0);
+    // AppKit visible is bottom-left: pin its top edge to the screen top so
+    // the converted CG work area starts at y=0.
+    display.visible = DisplayRect {
+        x: 0.0,
+        y: 900.0 - h,
+        w,
+        h,
+    };
+    topology::build_snapshot(
+        &[display],
         &[row(Some("uuid-1"), &[11, 12], Some(11))],
         Some(true),
     )
@@ -272,8 +316,10 @@ fn start_catalogue() -> Fixture {
         tile_bindings: Some(tile_catalogue()),
         ..RuntimeConfig::default()
     };
+    let applied = Arc::new(Mutex::new(Vec::new()));
     let inner = Arc::new(FakeInner {
         scoped: Mutex::new(BTreeMap::new()),
+        applied: Arc::clone(&applied),
     });
     let handle = Runtime::start(
         config,
@@ -291,6 +337,7 @@ fn start_catalogue() -> Fixture {
         handle,
         input_tx,
         revision,
+        applied,
     }
 }
 
@@ -760,7 +807,7 @@ fn catalogue_config_validates() {
         ..RuntimeConfig::default()
     };
     assert!(good.validate().is_ok());
-    assert_eq!(good.tile_bindings.as_ref().map(|b| b.len()), Some(34));
+    assert_eq!(good.tile_bindings.as_ref().map(|b| b.len()), Some(35));
 
     // Shift-as-Meta collapses the focus/move arms to the same native chord.
     // Refuse it before registering rather than silently choosing focus.
@@ -830,6 +877,8 @@ const ALT: u64 = 0x0008_0000;
 const CMD: u64 = 0x0010_0000;
 /// `O` keycode: the parent orientation toggle.
 const KEY_O: u32 = 0x1F;
+/// `M` keycode: the composed maximize toggle.
+const KEY_M: u32 = 0x2E;
 
 fn desired_width(handle: &RuntimeHandle, window: &str) -> Option<i32> {
     handle
@@ -837,6 +886,25 @@ fn desired_width(handle: &RuntimeHandle, window: &str) -> Option<i32> {
         .iter()
         .find(|frame| frame.window == window)
         .map(|frame| frame.w)
+}
+
+fn desired_frame(handle: &RuntimeHandle, window: &str) -> Option<(i32, i32, i32, i32)> {
+    handle
+        .last_desired_geometry()
+        .iter()
+        .find(|frame| frame.window == window)
+        .map(|frame| (frame.x, frame.y, frame.w, frame.h))
+}
+
+fn applied_for(fixture: &Fixture, wid: u32) -> Vec<(i32, i32, i32, i32)> {
+    fixture
+        .applied
+        .lock()
+        .expect("mutex")
+        .iter()
+        .filter(|record| record.wid == wid)
+        .map(|record| (record.x, record.y, record.w, record.h))
+        .collect()
 }
 
 fn desired_snapshot(handle: &RuntimeHandle) -> Vec<(String, i32, i32, i32, i32)> {
@@ -991,6 +1059,137 @@ fn catalogue_orientation_toggles_once_per_press_with_frame_change() {
     wait_forwarded(&fixture.handle, baseline);
     assert!(fixture.handle.flush(FLUSH));
     assert!(reply_count(&fixture.handle, "toggle-orientation-") > toggles);
+
+    let report = fixture.handle.shutdown(Duration::from_secs(5));
+    assert_eq!(report.outcome, ShutdownOutcome::Clean, "{report:?}");
+}
+
+#[test]
+fn catalogue_maximize_composes_work_area_and_restores_base_on_repress() {
+    // Ctrl+M rides the core-owned composed route: the reply frame is the
+    // work-area overlay actually applied through the backend, a second
+    // discrete press restores the retained base, and a work-area change
+    // re-derives the overlay rather than replaying the first rect. The held
+    // repeat consumes without dispatch until M comes back up.
+    const CTRL: u64 = 0x0004_0000;
+    let fixture = start_catalogue();
+    let generation = fixture.handle.launch_app(APP).expect("launch");
+    observe_focused(&fixture, generation, 1);
+    let deadline = std::time::Instant::now() + WAIT;
+    settle_known(&fixture.handle, deadline);
+
+    let base = desired_frame(&fixture.handle, "1001_1").expect("base frame for 1001_1");
+    assert_ne!(base, (0, 0, 1440, 900), "base is an ordinary tile slot");
+
+    let baseline = fixture.handle.diagnostics().input_forwarded;
+    send_key(&fixture, CTRL, KEY_M);
+    wait_forwarded(&fixture.handle, baseline);
+    settle_known(&fixture.handle, deadline);
+    assert!(
+        reply_count(&fixture.handle, "toggle-maximize-") >= 1,
+        "core accepted the composed maximize command"
+    );
+    assert_eq!(
+        desired_frame(&fixture.handle, "1001_1"),
+        Some((0, 0, 1440, 900)),
+        "desired frame is the work-area overlay"
+    );
+    assert_eq!(
+        applied_for(&fixture, 1).last(),
+        Some(&(0, 0, 1440, 900)),
+        "the overlay frame reached the native apply lane"
+    );
+
+    // Held repeat (no key-up): consumed, never dispatched.
+    let forwarded = fixture.handle.diagnostics().input_forwarded;
+    let toggles = reply_count(&fixture.handle, "toggle-maximize-");
+    let ignored_baseline = fixture.handle.diagnostics().input_ignored;
+    send_key(&fixture, CTRL, KEY_M);
+    wait_ignored(
+        &fixture.handle,
+        ignored_baseline + 1,
+        "held maximize repeat",
+    );
+    settle_known(&fixture.handle, deadline);
+    assert_eq!(
+        fixture.handle.diagnostics().input_forwarded,
+        forwarded,
+        "held repeat must not forward"
+    );
+    assert_eq!(
+        reply_count(&fixture.handle, "toggle-maximize-"),
+        toggles,
+        "held repeat must not dispatch"
+    );
+
+    // Release then repress: clear restores the retained base exactly.
+    send_key_up(&fixture, CTRL, KEY_M);
+    settle_known(&fixture.handle, deadline);
+    let baseline = fixture.handle.diagnostics().input_forwarded;
+    send_key(&fixture, CTRL, KEY_M);
+    wait_forwarded(&fixture.handle, baseline);
+    settle_known(&fixture.handle, deadline);
+    assert!(
+        reply_count(&fixture.handle, "toggle-maximize-") > toggles,
+        "second discrete press dispatches"
+    );
+    assert_eq!(
+        desired_frame(&fixture.handle, "1001_1"),
+        Some(base),
+        "clear restores the base slot"
+    );
+    assert_eq!(
+        applied_for(&fixture, 1).last(),
+        Some(&base),
+        "the restored base frame reached the native apply lane"
+    );
+
+    // Maximize again, then shrink the display's visible work area. The
+    // overlay must recompute from the fresh topology, not the previous rect.
+    send_key_up(&fixture, CTRL, KEY_M);
+    settle_known(&fixture.handle, deadline);
+    let baseline = fixture.handle.diagnostics().input_forwarded;
+    send_key(&fixture, CTRL, KEY_M);
+    wait_forwarded(&fixture.handle, baseline);
+    settle_known(&fixture.handle, deadline);
+    assert_eq!(applied_for(&fixture, 1).last(), Some(&(0, 0, 1440, 900)));
+
+    let revision = fixture
+        .handle
+        .update_topology_with(snapshot_with_visible_work_area(1280.0, 800.0), &user_space);
+    assert_eq!(
+        fixture
+            .handle
+            .submit_scoped_observation(scoped_obs(generation, 3, 1, revision)),
+        SubmitOutcome::Accepted
+    );
+    settle_known(&fixture.handle, deadline);
+    assert_eq!(
+        desired_frame(&fixture.handle, "1001_1"),
+        Some((0, 0, 1280, 800)),
+        "work-area change recomputes the overlay"
+    );
+    assert_eq!(
+        applied_for(&fixture, 1).last(),
+        Some(&(0, 0, 1280, 800)),
+        "the recomputed overlay reached the native apply lane"
+    );
+
+    // Clear under the new topology publishes the recomputed base, never
+    // the stale or new work-area rect.
+    send_key_up(&fixture, CTRL, KEY_M);
+    settle_known(&fixture.handle, deadline);
+    let baseline = fixture.handle.diagnostics().input_forwarded;
+    send_key(&fixture, CTRL, KEY_M);
+    wait_forwarded(&fixture.handle, baseline);
+    settle_known(&fixture.handle, deadline);
+    let cleared = desired_frame(&fixture.handle, "1001_1").expect("cleared frame");
+    assert_ne!(cleared, (0, 0, 1280, 800), "clear leaves the overlay");
+    assert_eq!(
+        applied_for(&fixture, 1).last(),
+        Some(&cleared),
+        "the cleared base reached the native apply lane"
+    );
 
     let report = fixture.handle.shutdown(Duration::from_secs(5));
     assert_eq!(report.outcome, ShutdownOutcome::Clean, "{report:?}");

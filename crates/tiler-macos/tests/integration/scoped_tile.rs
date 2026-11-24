@@ -3039,7 +3039,7 @@ fn select_enqueues_without_focus_and_serializes_concurrent_presses() {
     // (never refuses busy, never replaces, never replays).
     use tiler_macos::runtime::InputSemanticAction as Action;
     let bindings = select_product_bindings();
-    assert_eq!(bindings.len(), 53, "34 basic + 19 armed selects");
+    assert_eq!(bindings.len(), 54, "35 basic + 19 armed selects");
     let fixture = start(select_config(bindings.clone()));
     fixture
         .handle
@@ -3186,7 +3186,7 @@ fn numbered_send_hotkey_claim_settles_transfer_end_to_end() {
     use tiler_macos::runtime::InputSemanticAction as Action;
     let mut bindings = select_product_bindings();
     bindings.extend(tiler_macos::workspace_send::bindings());
-    assert_eq!(bindings.len(), 63, "34 basic + 19 selects + 10 sends");
+    assert_eq!(bindings.len(), 64, "35 basic + 19 selects + 10 sends");
     let fixture = start(select_config(bindings.clone()));
     let revision = fixture
         .handle

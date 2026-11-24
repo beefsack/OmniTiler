@@ -60,7 +60,7 @@
 //!   timeout claim without the actual timeout counter. Labeled DISABLE-ONCE
 //!   throughout with the actual kind named (never an explicit re-arm claim).
 //! - `--watchdog-only` (tap only, 2..=5s): no helper, no posts, no completed
-//!   JSON. The probe arms the REAL tap owner over the exact 34-chord
+//!   JSON. The probe arms the REAL tap owner over the exact 35-chord
 //!   catalogue, emits a `watchdog_ready` binding (PID plus run ID), parks
 //!   the main past the shared hard watchdog, and the watchdog forces the
 //!   dirty process exit. The parent harness holds the owned helper
@@ -663,7 +663,7 @@ struct InputSessionReport {
 
 /// Watchdog-only hard-exit probe (tap only, 2..=5s, fixture-only): no helper,
 /// no posts, no completed JSON. Arms the REAL tap owner over the exact
-/// 34-chord catalogue, emits a `watchdog_ready` binding (PID plus run ID plus
+/// 35-chord catalogue, emits a `watchdog_ready` binding (PID plus run ID plus
 /// executable) on stdout, parks the main past the shared hard watchdog, and
 /// the watchdog forces the dirty process exit (`Process::exit(1)` with the
 /// `hard lifetime exceeded` stderr line). The parent harness holds the owned
@@ -713,10 +713,10 @@ fn run_watchdog_only_session(request: InputSessionRequest) -> Result<String, (i3
     // only on the early-error returns below.
     let mut watchdog =
         Watchdog::arm(Duration::from_secs(request.seconds)).map_err(|reason| (1, reason))?;
-    // Exact 34-chord catalogue over the REAL tap source on a dedicated owner
+    // Exact 35-chord catalogue over the REAL tap source on a dedicated owner
     // thread (same owner body as the full session; no posts flow here).
     let catalogue = tile_catalogue();
-    debug_assert_eq!(catalogue.len(), 34);
+    debug_assert_eq!(catalogue.len(), 35);
     let factory = Arc::new(
         TapTileFactory::new(request.modifier, catalogue)
             .map_err(|e| err_json("input-factory", e))?,
@@ -790,7 +790,7 @@ fn run_watchdog_only_session(request: InputSessionRequest) -> Result<String, (i3
             "runid": runid,
             "exe": exe,
             "route": "tap",
-            "catalogue_chords": 34,
+            "catalogue_chords": 35,
             "watchdog_secs": request.seconds,
         })
     );
