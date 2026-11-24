@@ -1032,7 +1032,8 @@ impl WorldTransaction<'_> {
                                     self.connection.outer_gap_setting(),
                                     screen.scale,
                                 )?;
-                                Some((bounds, gap, outer_gap))
+                                let resize = crate::policy::ScaledResize::from_scale(screen.scale)?;
+                                Some((bounds, gap, outer_gap, resize))
                             })
                         })
                         .or_else(|| {
@@ -1043,11 +1044,11 @@ impl WorldTransaction<'_> {
                                         .domains
                                         .iter()
                                         .find(|d| d.key == source_key)
-                                        .map(|d| (d.bounds, d.gap, d.outer_gap))
+                                        .map(|d| (d.bounds, d.gap, d.outer_gap, d.resize))
                                 })
                                 .flatten()
                         });
-                    let Some((bounds, gap, outer_gap)) = staged_geometry else {
+                    let Some((bounds, gap, outer_gap, resize)) = staged_geometry else {
                         return CommandApplied::Rejected {
                             kind: KIND_SEND_TARGET,
                             message: MSG_SEND_TARGET,
@@ -1058,6 +1059,7 @@ impl WorldTransaction<'_> {
                         bounds,
                         gap,
                         outer_gap,
+                        resize,
                         windows: Vec::new(),
                         focused: WindowId(String::new()),
                         minimized: Vec::new(),

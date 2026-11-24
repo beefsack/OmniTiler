@@ -107,7 +107,17 @@ fn local_preview_does_not_install_topology_and_burns_group_serials_on_split() {
     // Pointer near top edge of w2 (600, 5) creates a new vertical split group
     // around b and a, burning a group serial without installing topology.
     let preview = layout
-        .run_local_drag_preview(&desc, 0, &win("w1"), &win("w1"), &obs, 600, 5, None)
+        .run_local_drag_preview(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            600,
+            5,
+            None,
+        )
         .expect("local drag preview succeeds");
 
     assert_eq!(preview.base_revision, 3);
@@ -133,6 +143,7 @@ fn local_preview_does_not_install_topology_and_burns_group_serials_on_split() {
         .run_local_drag_preview(
             &desc,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("w1"),
             &win("w1"),
             &obs,
@@ -158,7 +169,17 @@ fn local_preview_on_fresh_domain_leaves_layout_absent() {
     let obs = vec![eng("w1", &key, 0, 400), eng("w2", &key, 400, 400)];
 
     let preview = layout
-        .run_local_drag_preview(&desc, 0, &win("w1"), &win("w1"), &obs, 750, 200, None)
+        .run_local_drag_preview(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            750,
+            200,
+            None,
+        )
         .expect("fresh local drag preview succeeds");
 
     assert_eq!(preview.domain, key);
@@ -183,7 +204,17 @@ fn local_drop_commits_topology_bumps_revision_and_settles_focus() {
 
     let obs = vec![eng("w1", &key, 0, 400), eng("w2", &key, 400, 400)];
     let outcome = layout
-        .run_local_drag_drop(&desc, 0, &win("w1"), &win("w1"), &obs, 780, 200, None)
+        .run_local_drag_drop(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            780,
+            200,
+            None,
+        )
         .expect("local drag drop commits");
 
     assert_eq!(outcome.base_revision, 4);
@@ -240,7 +271,14 @@ fn pair_preview_converges_without_installing_preview_topology_and_burns_serials(
 
     let before_mint = layout.group_alloc.mint(&std::collections::BTreeSet::new());
     let preview = layout
-        .run_pair_drag_preview(&ctx, &win("w1"), 1000, 5, None)
+        .run_pair_drag_preview(
+            &ctx,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            1000,
+            5,
+            None,
+        )
         .expect("pair drag preview succeeds");
 
     assert_eq!(preview.source_domain, key_a);
@@ -322,7 +360,14 @@ fn pair_drop_moves_leaf_across_domains_and_installs_atomically() {
     };
 
     let outcome = layout
-        .run_pair_drag_drop(&ctx, &win("w1"), 820, 200, None)
+        .run_pair_drag_drop(
+            &ctx,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            820,
+            200,
+            None,
+        )
         .expect("pair drag drop commits");
 
     assert_eq!(outcome.base_revision, 5);
@@ -435,7 +480,17 @@ fn local_drop_refuses_unknown_window_without_mutation() {
     let obs = vec![eng("w1", &key, 0, 400), eng("w2", &key, 400, 400)];
 
     let err = layout
-        .run_local_drag_drop(&desc, 0, &win("missing"), &win("w1"), &obs, 600, 200, None)
+        .run_local_drag_drop(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("missing"),
+            &win("w1"),
+            &obs,
+            600,
+            200,
+            None,
+        )
         .unwrap_err();
     assert_eq!(err, LayoutFailure::Semantics(RefusalKind::UnknownWindow));
     assert_eq!(layout.domains.get(&key).unwrap().accepted_revision, 1);
@@ -472,13 +527,33 @@ fn fresh_drag_uses_legacy_defaults_over_nondefault_world_config() {
     // keeps fixed_size_admission=false, BothAxes, default placement, cursor=None,
     // so both windows tile and drag preview/drop succeed.
     let preview = layout
-        .run_local_drag_preview(&desc, 0, &win("w1"), &win("w1"), &obs, 750, 200, None)
+        .run_local_drag_preview(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            750,
+            200,
+            None,
+        )
         .expect("fresh preview uses legacy defaults");
     assert_eq!(preview.target_window, win("w2"));
     assert!(!layout.contains_domain(&key));
 
     let dropped = layout
-        .run_local_drag_drop(&desc, 0, &win("w1"), &win("w1"), &obs, 750, 200, None)
+        .run_local_drag_drop(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            750,
+            200,
+            None,
+        )
         .expect("fresh drop uses legacy defaults");
     assert_eq!(dropped.revision, dropped.base_revision + 1);
     let installed = layout.domains.get(&key).expect("fresh domain installed");
@@ -524,7 +599,14 @@ fn pair_drag_refuses_missing_target_and_preserves_unusable_vs_absent_priority() 
     };
 
     let err = layout
-        .run_pair_drag_preview(&ctx, &win("w1"), 900, 200, None)
+        .run_pair_drag_preview(
+            &ctx,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            900,
+            200,
+            None,
+        )
         .unwrap_err();
     assert_eq!(
         err,
@@ -541,7 +623,14 @@ fn pair_drag_refuses_missing_target_and_preserves_unusable_vs_absent_priority() 
     );
 
     let drop_err = layout
-        .run_pair_drag_drop(&ctx, &win("w1"), 900, 200, None)
+        .run_pair_drag_drop(
+            &ctx,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            900,
+            200,
+            None,
+        )
         .unwrap_err();
     assert_eq!(
         drop_err,
@@ -552,7 +641,14 @@ fn pair_drag_refuses_missing_target_and_preserves_unusable_vs_absent_priority() 
     // 2. Absent source returns SourceUnavailable even when target is absent.
     let mut absent_source_layout = WorldLayout::new();
     let err_absent = absent_source_layout
-        .run_pair_drag_preview(&ctx, &win("w1"), 900, 200, None)
+        .run_pair_drag_preview(
+            &ctx,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            900,
+            200,
+            None,
+        )
         .unwrap_err();
     assert_eq!(
         err_absent,
@@ -566,7 +662,14 @@ fn pair_drag_refuses_missing_target_and_preserves_unusable_vs_absent_priority() 
         .domains
         .insert(key_a.clone(), DomainLayout::new(bounds_a, 0, 0));
     let err_unusable = unusable_source_layout
-        .run_pair_drag_preview(&ctx, &win("w1"), 900, 200, None)
+        .run_pair_drag_preview(
+            &ctx,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            900,
+            200,
+            None,
+        )
         .unwrap_err();
     assert_eq!(
         err_unusable,
@@ -592,6 +695,7 @@ fn fresh_empty_cross_source_singleton_preview_and_drop_preserve_ordinary_project
         .run_local_drag_preview_with_source(
             &desc_b,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("w1"),
             &win("w1"),
             &obs,
@@ -611,6 +715,7 @@ fn fresh_empty_cross_source_singleton_preview_and_drop_preserve_ordinary_project
         .run_local_drag_drop_with_source(
             &desc_b,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("w1"),
             &win("w1"),
             &obs,
@@ -644,6 +749,7 @@ fn same_output_singleton_drag_with_source_refuses_unchanged() {
         .run_local_drag_preview_with_source(
             &desc_b,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("w1"),
             &win("w1"),
             &obs,
@@ -662,6 +768,7 @@ fn same_output_singleton_drag_with_source_refuses_unchanged() {
         .run_local_drag_drop_with_source(
             &desc_b,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("w1"),
             &win("w1"),
             &obs,
@@ -695,6 +802,7 @@ fn fresh_mixed_one_tile_plus_float_exception_cross_source_singleton_preview_and_
         .run_local_drag_preview_with_source(
             &desc_b,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("w1"),
             &win("w1"),
             &obs,
@@ -713,6 +821,7 @@ fn fresh_mixed_one_tile_plus_float_exception_cross_source_singleton_preview_and_
         .run_local_drag_drop_with_source(
             &desc_b,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("w1"),
             &win("w1"),
             &obs,
@@ -792,6 +901,7 @@ fn fresh_empty_singleton_producer_shape_projects() {
         .run_local_drag_preview_with_source(
             &dest_desc,
             8,
+            crate::policy::ScaledResize::unscaled(),
             &win("w29"),
             &win("w29"),
             &obs,
@@ -807,6 +917,7 @@ fn fresh_empty_singleton_producer_shape_projects() {
         .run_local_drag_drop_with_source(
             &dest_desc,
             8,
+            crate::policy::ScaledResize::unscaled(),
             &win("w29"),
             &win("w29"),
             &obs,
@@ -879,7 +990,14 @@ fn pair_drop_top_edge_wraps_root_and_retires_sole_source() {
     };
 
     let outcome = layout
-        .run_pair_drag_drop(&ctx, &win("win-b"), -960, -190, None)
+        .run_pair_drag_drop(
+            &ctx,
+            crate::policy::ScaledResize::unscaled(),
+            &win("win-b"),
+            -960,
+            -190,
+            None,
+        )
         .expect("cross-output wrap drop commits");
     assert_eq!(outcome.revision, outcome.base_revision + 1);
     let geom = layout
@@ -950,7 +1068,14 @@ fn pair_drop_refuses_absent_mover_without_mutating_domains() {
     };
 
     let err = layout
-        .run_pair_drag_drop(&ctx, &win("w2"), 820, 200, None)
+        .run_pair_drag_drop(
+            &ctx,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w2"),
+            820,
+            200,
+            None,
+        )
         .unwrap_err();
     assert_eq!(
         err,
@@ -991,6 +1116,7 @@ fn retained_empty_arrival_preview_matches_drop() {
         .run_local_drag_preview_with_source(
             &desc_b,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("win-a"),
             &win("win-a"),
             &obs,
@@ -1010,6 +1136,7 @@ fn retained_empty_arrival_preview_matches_drop() {
         .run_local_drag_drop_with_source(
             &desc_b,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("win-a"),
             &win("win-a"),
             &obs,
@@ -1062,6 +1189,7 @@ fn drag_preview_drop_parity_with_hints_and_prior() {
         .run_local_drag_preview_with_source(
             &desc_b,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("win-m"),
             &win("win-m"),
             &obs,
@@ -1083,6 +1211,7 @@ fn drag_preview_drop_parity_with_hints_and_prior() {
         .run_local_drag_preview_with_source(
             &desc_b,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("win-m"),
             &win("win-m"),
             &obs,
@@ -1102,6 +1231,7 @@ fn drag_preview_drop_parity_with_hints_and_prior() {
         .run_local_drag_drop_with_source(
             &desc_b,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("win-m"),
             &win("win-m"),
             &obs,
@@ -1201,7 +1331,17 @@ fn local_drag_insertion_index_sixty_five_succeeds_without_count_cap() {
     // Drag w0 (index 0) onto the right edge of w65 (index 65 after w0 is
     // removed -> insertion_index == 65) and verify no count cap blocks it.
     let outcome = layout
-        .run_local_drag_drop(&desc, 0, &win("w0"), &win("w0"), &obs, 6595, 200, None)
+        .run_local_drag_drop(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w0"),
+            &win("w0"),
+            &obs,
+            6595,
+            200,
+            None,
+        )
         .expect("65+ insertion index drop commits");
     assert_eq!(outcome.base_revision, 1);
     assert_eq!(outcome.revision, 2);
@@ -1244,7 +1384,17 @@ fn local_drop_perpendicular_edge_wraps_root_and_self_drop_refuses() {
     // Self-drop onto w1 refuses without mutating topology or revision.
     assert!(
         layout
-            .run_local_drag_drop(&desc, 0, &win("w1"), &win("w1"), &obs, 200, 200, None)
+            .run_local_drag_drop(
+                &desc,
+                0,
+                crate::policy::ScaledResize::unscaled(),
+                &win("w1"),
+                &win("w1"),
+                &obs,
+                200,
+                200,
+                None
+            )
             .is_err()
     );
     assert_eq!(
@@ -1260,7 +1410,17 @@ fn local_drop_perpendicular_edge_wraps_root_and_self_drop_refuses() {
     // leaving w2 as sole root, and wraps the root into a vertical group at
     // insertion_index 0.
     let outcome = layout
-        .run_local_drag_drop(&desc, 0, &win("w1"), &win("w1"), &obs, 600, 5, None)
+        .run_local_drag_drop(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            600,
+            5,
+            None,
+        )
         .expect("root wrap drop commits");
     assert_eq!(outcome.base_revision, 4);
     assert_eq!(outcome.revision, 5);
@@ -1307,7 +1467,17 @@ fn drag_sides_map_to_axis_and_order_across_horizontal_and_vertical_parents() {
     layout.domains.insert(key.clone(), d2);
     let obs2 = vec![eng("w1", &key, 0, 300), eng("w2", &key, 300, 300)];
     let left = layout
-        .run_local_drag_preview(&desc, 0, &win("w2"), &win("w2"), &obs2, 10, 200, None)
+        .run_local_drag_preview(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w2"),
+            &win("w2"),
+            &obs2,
+            10,
+            200,
+            None,
+        )
         .expect("left preview");
     assert_eq!(left.target_window, win("w1"));
     assert_eq!(
@@ -1342,7 +1512,17 @@ fn drag_sides_map_to_axis_and_order_across_horizontal_and_vertical_parents() {
         eng("w3", &key, 400, 200),
     ];
     let right_drop = layout3
-        .run_local_drag_drop(&desc, 0, &win("w3"), &win("w3"), &obs3, 190, 200, None)
+        .run_local_drag_drop(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w3"),
+            &win("w3"),
+            &obs3,
+            190,
+            200,
+            None,
+        )
         .expect("right drop");
     assert_eq!(right_drop.revision, 2);
     match layout3.domain(&key).unwrap().tree.as_ref().unwrap() {
@@ -1388,7 +1568,17 @@ fn drag_sides_map_to_axis_and_order_across_horizontal_and_vertical_parents() {
         eng("w4", &key, 300, 300),
     ];
     let top = layout4
-        .run_local_drag_preview(&desc, 0, &win("w4"), &win("w4"), &obs4, 450, 10, None)
+        .run_local_drag_preview(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w4"),
+            &win("w4"),
+            &obs4,
+            450,
+            10,
+            None,
+        )
         .expect("top preview");
     assert_eq!(top.target_window, win("w2"));
     assert_eq!(
@@ -1401,7 +1591,17 @@ fn drag_sides_map_to_axis_and_order_across_horizontal_and_vertical_parents() {
         }
     );
     let bottom_drop = layout4
-        .run_local_drag_drop(&desc, 0, &win("w4"), &win("w4"), &obs4, 450, 120, None)
+        .run_local_drag_drop(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w4"),
+            &win("w4"),
+            &obs4,
+            450,
+            120,
+            None,
+        )
         .expect("bottom drop");
     assert_eq!(bottom_drop.revision, 2);
     match layout4.domain(&key).unwrap().tree.as_ref().unwrap() {
@@ -1454,7 +1654,17 @@ fn drag_same_axis_nary_reorder_and_focus_preserved() {
     ];
 
     layout
-        .run_local_drag_drop(&desc, 0, &win("w3"), &win("w3"), &obs, 10, 200, None)
+        .run_local_drag_drop(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w3"),
+            &win("w3"),
+            &obs,
+            10,
+            200,
+            None,
+        )
         .expect("reorder drop");
     let dom = layout.domain(&key).unwrap();
     assert_eq!(dom.focused_leaf, Some(nid("l3")));
@@ -1505,7 +1715,17 @@ fn drag_perpendicular_wraps_only_target_subtree() {
     ];
 
     layout
-        .run_local_drag_drop(&desc, 0, &win("w3"), &win("w3"), &obs, 100, 10, None)
+        .run_local_drag_drop(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w3"),
+            &win("w3"),
+            &obs,
+            100,
+            10,
+            None,
+        )
         .expect("perpendicular wrap drop");
     let dom = layout.domain(&key).unwrap();
     assert_eq!(dom.focused_leaf, Some(nid("l3")));
@@ -1581,7 +1801,17 @@ fn drag_deep_nesting_collapse_and_wrap() {
     ];
 
     layout
-        .run_local_drag_drop(&desc, 0, &win("w4"), &win("w4"), &obs, 310, 60, None)
+        .run_local_drag_drop(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w4"),
+            &win("w4"),
+            &obs,
+            310,
+            60,
+            None,
+        )
         .expect("deep collapse and wrap drop");
     match layout.domain(&key).unwrap().tree.as_ref().unwrap() {
         Node::Group { children, .. } => {
@@ -1634,33 +1864,83 @@ fn drag_preview_and_drop_refuse_center_and_bounds_without_mutation() {
     // Self drop refuses Unchanged.
     assert_eq!(
         layout
-            .run_local_drag_preview(&desc, 0, &win("w2"), &win("w2"), &obs, 450, 200, None)
+            .run_local_drag_preview(
+                &desc,
+                0,
+                crate::policy::ScaledResize::unscaled(),
+                &win("w2"),
+                &win("w2"),
+                &obs,
+                450,
+                200,
+                None
+            )
             .unwrap_err(),
         LayoutFailure::Semantics(RefusalKind::Unchanged)
     );
     // Target center refuses UnsupportedCapability.
     assert_eq!(
         layout
-            .run_local_drag_preview(&desc, 0, &win("w2"), &win("w2"), &obs, 150, 200, None)
+            .run_local_drag_preview(
+                &desc,
+                0,
+                crate::policy::ScaledResize::unscaled(),
+                &win("w2"),
+                &win("w2"),
+                &obs,
+                150,
+                200,
+                None
+            )
             .unwrap_err(),
         LayoutFailure::Semantics(RefusalKind::UnsupportedCapability)
     );
     assert_eq!(
         layout
-            .run_local_drag_drop(&desc, 0, &win("w2"), &win("w2"), &obs, 150, 200, None)
+            .run_local_drag_drop(
+                &desc,
+                0,
+                crate::policy::ScaledResize::unscaled(),
+                &win("w2"),
+                &win("w2"),
+                &obs,
+                150,
+                200,
+                None
+            )
             .unwrap_err(),
         LayoutFailure::Semantics(RefusalKind::UnsupportedCapability)
     );
     // Outside work area refuses CrossDomainMismatch.
     assert_eq!(
         layout
-            .run_local_drag_preview(&desc, 0, &win("w2"), &win("w2"), &obs, 700, 200, None)
+            .run_local_drag_preview(
+                &desc,
+                0,
+                crate::policy::ScaledResize::unscaled(),
+                &win("w2"),
+                &win("w2"),
+                &obs,
+                700,
+                200,
+                None
+            )
             .unwrap_err(),
         LayoutFailure::Semantics(RefusalKind::CrossDomainMismatch)
     );
     assert_eq!(
         layout
-            .run_local_drag_preview(&desc, 0, &win("w2"), &win("w2"), &obs, -1, 200, None)
+            .run_local_drag_preview(
+                &desc,
+                0,
+                crate::policy::ScaledResize::unscaled(),
+                &win("w2"),
+                &win("w2"),
+                &obs,
+                -1,
+                200,
+                None
+            )
             .unwrap_err(),
         LayoutFailure::Semantics(RefusalKind::CrossDomainMismatch)
     );
@@ -1714,6 +1994,7 @@ fn drag_bounded_invariant_loop_preserves_domain_isolation() {
             match layout.run_local_drag_preview(
                 &desc_a,
                 0,
+                crate::policy::ScaledResize::unscaled(),
                 &win("w3"),
                 &win("w3"),
                 &obs,
@@ -1826,7 +2107,17 @@ fn drag_prior_carry_validates_source_and_restores_sticky_edge() {
     assert!(!leaf_rects.iter().any(|r| rect_contains(r, sticky_x, gy)));
 
     let edge = layout
-        .run_local_drag_preview(&desc, 0, &win("w1"), &win("w1"), &obs, gx, gy, None)
+        .run_local_drag_preview(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            gx,
+            gy,
+            None,
+        )
         .expect("edge preview");
     let prior = edge
         .hover
@@ -1838,7 +2129,17 @@ fn drag_prior_carry_validates_source_and_restores_sticky_edge() {
 
     // Without prior, sticky_x (50px inside) misses the Left edge (32px default depth).
     let missed = layout
-        .run_local_drag_preview(&desc, 0, &win("w1"), &win("w1"), &obs, sticky_x, gy, None)
+        .run_local_drag_preview(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            sticky_x,
+            gy,
+            None,
+        )
         .expect("uncarried probe");
     assert_ne!(
         missed.hover.prior.map(|p| (p.group, p.edge)),
@@ -1853,6 +2154,7 @@ fn drag_prior_carry_validates_source_and_restores_sticky_edge() {
         .run_local_drag_preview(
             &desc,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("w1"),
             &win("w1"),
             &obs,
@@ -1869,6 +2171,7 @@ fn drag_prior_carry_validates_source_and_restores_sticky_edge() {
         .run_local_drag_preview(
             &desc,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("w1"),
             &win("w1"),
             &obs,
@@ -1885,6 +2188,7 @@ fn drag_prior_carry_validates_source_and_restores_sticky_edge() {
         .run_local_drag_preview(
             &desc,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("w1"),
             &win("w1"),
             &obs,
@@ -1900,6 +2204,7 @@ fn drag_prior_carry_validates_source_and_restores_sticky_edge() {
         .run_local_drag_preview(
             &desc,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("w1"),
             &win("w1"),
             &obs,
@@ -1916,6 +2221,7 @@ fn drag_prior_carry_validates_source_and_restores_sticky_edge() {
         .run_local_drag_drop(
             &desc,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("w1"),
             &win("w1"),
             &obs,
@@ -1945,13 +2251,33 @@ fn drag_group_interior_predecessor_agreement_and_invariants() {
         .expect("inner interior gap row");
 
     let preview = layout
-        .run_local_drag_preview(&desc, 0, &win("w1"), &win("w1"), &obs, cx, gy, None)
+        .run_local_drag_preview(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            cx,
+            gy,
+            None,
+        )
         .expect("group interior preview");
     let pred = crate::cosmic_v1::insertion_index_for_offset(&child_starts, i64::from(gy));
     assert_eq!(pred, 0);
 
     layout
-        .run_local_drag_drop(&desc, 0, &win("w1"), &win("w1"), &obs, cx, gy, None)
+        .run_local_drag_drop(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            cx,
+            gy,
+            None,
+        )
         .expect("group interior drop");
     let dom = layout.domain(&key).unwrap();
     assert_eq!(dom.focused_leaf, Some(nid("l1")));
@@ -1989,7 +2315,17 @@ fn drag_group_edge_perpendicular_wraps_and_sticky_prior() {
     assert!(!leaf_rects.iter().any(|r| rect_contains(r, gx, gy)));
 
     let preview = layout
-        .run_local_drag_preview(&desc, 0, &win("w1"), &win("w1"), &obs, gx, gy, None)
+        .run_local_drag_preview(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            gx,
+            gy,
+            None,
+        )
         .expect("group edge preview");
     assert_eq!(
         preview
@@ -2004,6 +2340,7 @@ fn drag_group_edge_perpendicular_wraps_and_sticky_prior() {
         .run_local_drag_preview(
             &desc,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("w1"),
             &win("w1"),
             &obs,
@@ -2018,6 +2355,7 @@ fn drag_group_edge_perpendicular_wraps_and_sticky_prior() {
         .run_local_drag_drop(
             &desc,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("w1"),
             &win("w1"),
             &obs,
@@ -2112,6 +2450,7 @@ fn drag_group_edge_same_axis_nary_first_last_and_interior_placement() {
         .run_local_drag_drop(
             &desc,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("wm"),
             &win("wm"),
             &obs,
@@ -2138,6 +2477,7 @@ fn drag_group_edge_same_axis_nary_first_last_and_interior_placement() {
         .run_local_drag_drop(
             &desc,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("wm"),
             &win("wm"),
             &obs,
@@ -2229,7 +2569,17 @@ fn alloc_drag_wrap_mints_next_serial() {
     ];
     // Top-edge drop on win-1 wraps perpendicularly, minting grp-2.
     layout
-        .run_local_drag_drop(&desc, 0, &win("win-3"), &win("win-3"), &obs, 200, 5, None)
+        .run_local_drag_drop(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("win-3"),
+            &win("win-3"),
+            &obs,
+            200,
+            5,
+            None,
+        )
         .expect("drag wrap drop");
     assert!(domain_drag_group_ids(&layout, &key).contains(&nid("grp-2")));
     assert_eq!(layout.group_alloc.next_value(), 3);
@@ -2248,13 +2598,24 @@ fn alloc_drag_wrap_mints_next_serial() {
 
     let obs2 = vec![eng("win-1", &key, 0, 400), eng("win-2", &key, 400, 400)];
     let preview = layout
-        .run_local_drag_preview(&desc, 0, &win("win-2"), &win("win-2"), &obs2, 200, 5, None)
+        .run_local_drag_preview(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("win-2"),
+            &win("win-2"),
+            &obs2,
+            200,
+            5,
+            None,
+        )
         .expect("repeat preview");
     assert!(preview.proposed_rect.w > 0);
     layout
         .run_local_drag_drop(
             &desc,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("win-2"),
             &win("win-2"),
             &obs2,
@@ -2311,7 +2672,17 @@ fn alloc_discarded_session_trial_burns_serial() {
 
     let mut trial = layout.clone();
     trial
-        .run_local_drag_drop(&desc, 0, &win("win-3"), &win("win-3"), &obs, 200, 5, None)
+        .run_local_drag_drop(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("win-3"),
+            &win("win-3"),
+            &obs,
+            200,
+            5,
+            None,
+        )
         .expect("trial drop");
     assert!(domain_drag_group_ids(&trial, &key).contains(&nid("grp-2")));
     drop(trial);
@@ -2321,8 +2692,18 @@ fn alloc_discarded_session_trial_burns_serial() {
     assert!(!domain_drag_group_ids(&layout, &key).contains(&nid("grp-2")));
 
     let mut live = layout.clone();
-    live.run_local_drag_drop(&desc, 0, &win("win-3"), &win("win-3"), &obs, 200, 5, None)
-        .expect("live drop");
+    live.run_local_drag_drop(
+        &desc,
+        0,
+        crate::policy::ScaledResize::unscaled(),
+        &win("win-3"),
+        &win("win-3"),
+        &obs,
+        200,
+        5,
+        None,
+    )
+    .expect("live drop");
     let groups = domain_drag_group_ids(&live, &key);
     assert!(groups.contains(&nid("grp-3")));
     assert!(!groups.contains(&nid("grp-2")));
@@ -2342,19 +2723,40 @@ fn alloc_drag_group_edge_wrap_burns_trial_and_live() {
 
     let mut trial = layout.clone();
     trial
-        .run_local_drag_drop(&desc, 0, &win("w1"), &win("w1"), &obs, gx, gy + 2, None)
+        .run_local_drag_drop(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            gx,
+            gy + 2,
+            None,
+        )
         .expect("trial edge wrap");
     assert!(domain_drag_group_ids(&trial, &key).contains(&nid("grp-2")));
     drop(trial);
     assert_eq!(layout.group_alloc.next_value(), 3);
 
     let preview = layout
-        .run_local_drag_preview(&desc, 0, &win("w1"), &win("w1"), &obs, gx, gy + 2, None)
+        .run_local_drag_preview(
+            &desc,
+            0,
+            crate::policy::ScaledResize::unscaled(),
+            &win("w1"),
+            &win("w1"),
+            &obs,
+            gx,
+            gy + 2,
+            None,
+        )
         .expect("live preview");
     layout
         .run_local_drag_drop(
             &desc,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("w1"),
             &win("w1"),
             &obs,
@@ -2426,6 +2828,7 @@ fn alloc_drag_group_edge_wrap_burns_trial_and_live() {
         .run_local_drag_drop(
             &desc,
             0,
+            crate::policy::ScaledResize::unscaled(),
             &win("w1"),
             &win("w1"),
             &repeat_obs,

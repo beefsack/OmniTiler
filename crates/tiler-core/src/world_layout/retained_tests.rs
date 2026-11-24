@@ -649,6 +649,7 @@ fn converged_move_with_changed_bounds_retains_members_revision_and_gap() {
     let ctx = LocalOperationContext {
         domain: &changed_domain,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &window("win-1"),
         observed: &observed,
         preconverged: true,

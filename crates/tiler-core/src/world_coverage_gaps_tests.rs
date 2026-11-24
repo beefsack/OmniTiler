@@ -3953,6 +3953,11 @@ fn per_output_scale_derives_physical_gaps() {
             .expect("staged domain");
         assert_eq!(domain.gap, physical, "scale {scale}");
         assert_eq!(domain.outer_gap, physical, "scale {scale}");
+        assert_eq!(
+            domain.resize,
+            crate::policy::ScaledResize::from_scale(scale).expect("scale"),
+            "scale {scale}"
+        );
         assert!(domain.readable, "scale {scale}");
         assert_eq!(domain.hold, None, "scale {scale}");
     }
@@ -3984,6 +3989,9 @@ fn scale_overflow_holds_scope_unreadable_with_diagnostic() {
         .find(|domain| domain.key.output.0 == "out-a")
         .expect("staged domain");
     assert!(!domain.readable);
+    // The overflowed output carries no resize authority: zeroed metrics,
+    // never clamped or unscaled physics.
+    assert_eq!(domain.resize, crate::policy::ScaledResize::zeroed());
     assert_eq!(
         domain.hold,
         Some(crate::world_report::HoldReason::Unreadable)

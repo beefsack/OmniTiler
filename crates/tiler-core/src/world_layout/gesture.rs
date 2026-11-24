@@ -13,7 +13,7 @@ use crate::contract::MAX_REVISION;
 use crate::cursor_targeting::FreshPlacement;
 use crate::directional::{Node, NodeId, WindowId};
 use crate::geometry::Rect;
-use crate::policy::PriorGroupEdge;
+use crate::policy::{PriorGroupEdge, ScaledResize};
 use crate::seed::{EngineWindow, observed_window_from_engine};
 use crate::session::{DomainKey, DragHoverPrior, ObservedWindow, OutputDomain, RefusalKind};
 use crate::size_hints::{FixedSizePredicate, WindowSizeHints};
@@ -45,6 +45,7 @@ impl WorldLayout {
         &self,
         domain: &OutputDomain,
         outer_gap: i32,
+        resize: ScaledResize,
         mover: &WindowId,
         observed_focus: &WindowId,
         observed: &[EngineWindow],
@@ -55,6 +56,7 @@ impl WorldLayout {
         self.run_local_drag_preview_with_source(
             domain,
             outer_gap,
+            resize,
             mover,
             observed_focus,
             observed,
@@ -72,6 +74,7 @@ impl WorldLayout {
         &self,
         domain: &OutputDomain,
         outer_gap: i32,
+        resize: ScaledResize,
         mover: &WindowId,
         observed_focus: &WindowId,
         observed: &[EngineWindow],
@@ -124,6 +127,7 @@ impl WorldLayout {
         let resolved = match resolve_drag_shared(
             &DragResolveInput {
                 policy: self.policy.as_ref(),
+                resize,
                 alloc: &self.group_alloc,
                 tree: current,
                 domain,
@@ -204,6 +208,7 @@ impl WorldLayout {
         &mut self,
         domain: &OutputDomain,
         outer_gap: i32,
+        resize: ScaledResize,
         mover: &WindowId,
         observed_focus: &WindowId,
         observed: &[EngineWindow],
@@ -214,6 +219,7 @@ impl WorldLayout {
         self.run_local_drag_drop_with_source(
             domain,
             outer_gap,
+            resize,
             mover,
             observed_focus,
             observed,
@@ -231,6 +237,7 @@ impl WorldLayout {
         &mut self,
         domain: &OutputDomain,
         outer_gap: i32,
+        resize: ScaledResize,
         mover: &WindowId,
         observed_focus: &WindowId,
         observed: &[EngineWindow],
@@ -283,6 +290,7 @@ impl WorldLayout {
         let resolved = match resolve_drag_shared(
             &DragResolveInput {
                 policy: self.policy.as_ref(),
+                resize,
                 alloc: &self.group_alloc,
                 tree: current,
                 domain,
@@ -371,6 +379,7 @@ impl WorldLayout {
     pub(crate) fn run_pair_drag_preview(
         &mut self,
         ctx: &PairOperationContext<'_>,
+        target_resize: ScaledResize,
         mover: &WindowId,
         x: i32,
         y: i32,
@@ -406,6 +415,7 @@ impl WorldLayout {
         let resolved = resolve_drag_shared(
             &DragResolveInput {
                 policy: self.policy.as_ref(),
+                resize: target_resize,
                 alloc: &self.group_alloc,
                 tree: target_tree,
                 domain: ctx.target_domain,
@@ -461,6 +471,7 @@ impl WorldLayout {
     pub(crate) fn run_pair_drag_drop(
         &mut self,
         ctx: &PairOperationContext<'_>,
+        target_resize: ScaledResize,
         mover: &WindowId,
         x: i32,
         y: i32,
@@ -496,6 +507,7 @@ impl WorldLayout {
         let resolved = resolve_drag_shared(
             &DragResolveInput {
                 policy: self.policy.as_ref(),
+                resize: target_resize,
                 alloc: &self.group_alloc,
                 tree: target_tree,
                 domain: ctx.target_domain,

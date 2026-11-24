@@ -1739,11 +1739,14 @@ impl WorldTransaction<'_> {
             closed: &domain_report.closed,
         };
         if is_drop {
-            match self
-                .world
-                .layout
-                .run_pair_drag_drop(&ctx, &mover, x, y, hover_prior)
-            {
+            match self.world.layout.run_pair_drag_drop(
+                &ctx,
+                domain_report.resize,
+                &mover,
+                x,
+                y,
+                hover_prior,
+            ) {
                 Ok(_) => {
                     self.world.command_result = None;
                     self.note_command(command_seq);
@@ -1779,11 +1782,14 @@ impl WorldTransaction<'_> {
                 Err(err) => reject_pair_operation_failure(err),
             }
         } else {
-            match self
-                .world
-                .layout
-                .run_pair_drag_preview(&ctx, &mover, x, y, hover_prior)
-            {
+            match self.world.layout.run_pair_drag_preview(
+                &ctx,
+                domain_report.resize,
+                &mover,
+                x,
+                y,
+                hover_prior,
+            ) {
                 Ok(_) => {
                     self.world.command_result = None;
                     self.note_command(command_seq);
@@ -2021,6 +2027,7 @@ impl WorldTransaction<'_> {
                     match self.world.layout.run_local_drag_preview_with_source(
                         &inset,
                         domain_report.outer_gap,
+                        domain_report.resize,
                         window,
                         &focused_window,
                         &windows,
@@ -2055,6 +2062,7 @@ impl WorldTransaction<'_> {
                         match self.world.layout.run_local_drag_drop_with_source(
                             &inset,
                             domain_report.outer_gap,
+                            domain_report.resize,
                             window,
                             &focused_window,
                             &windows,
@@ -2143,6 +2151,7 @@ impl WorldTransaction<'_> {
                         let ctx = LocalOperationContext {
                             domain: &inset,
                             outer_gap: domain_report.outer_gap,
+                            resize: domain_report.resize,
                             observed_focus: &focused_window,
                             observed: &windows,
                             preconverged,
@@ -2525,6 +2534,7 @@ impl WorldTransaction<'_> {
         let ctx = LocalOperationContext {
             domain: inset,
             outer_gap: domain_report.outer_gap,
+            resize: domain_report.resize,
             observed_focus: &focused_window,
             observed: &windows,
             preconverged,
@@ -2607,6 +2617,7 @@ impl WorldTransaction<'_> {
         let ctx = LocalOperationContext {
             domain: &inset,
             outer_gap: domain_report.outer_gap,
+            resize: domain_report.resize,
             observed_focus: &focused_window,
             observed: &windows,
             preconverged,
@@ -2635,6 +2646,7 @@ impl WorldTransaction<'_> {
         let ctx = LocalOperationContext {
             domain: &inset,
             outer_gap: domain_report.outer_gap,
+            resize: domain_report.resize,
             observed_focus: &focused_window,
             observed: &windows,
             preconverged,

@@ -357,6 +357,7 @@ fn float_cross_edge_conditions_refuse_without_mutation() {
         bounds: lone_dom.bounds,
         gap: lone_dom.gap,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         windows: vec![win_a.clone(), win_f.clone()],
         focused: win("win-f"),
         minimized: Vec::new(),

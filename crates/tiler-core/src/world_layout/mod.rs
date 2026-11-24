@@ -89,6 +89,8 @@ mod query_focus_tests;
 #[cfg(test)]
 mod resize_tests;
 #[cfg(test)]
+mod scaled_resize_tests;
+#[cfg(test)]
 mod unchanged_tests;
 #[cfg(test)]
 mod workspace_migration_tests;

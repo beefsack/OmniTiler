@@ -200,6 +200,7 @@ fn seed_command_domain(engine: &mut WorldEngine) {
         bounds: rect(0, 0, 800, 560),
         gap: 0,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         windows: vec![win("win-a", 0), win("win-b", 200)],
         focused: WindowId("win-a".to_owned()),
         minimized: Vec::new(),
@@ -939,6 +940,7 @@ fn seed_float_domain(engine: &mut WorldEngine) {
         bounds: rect(100, 0, 600, 600),
         gap: 0,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         windows: vec![EngineWindow {
             window: WindowId("win-a".to_owned()),
             output: OutputId("out-a".to_owned()),
@@ -2111,9 +2113,8 @@ fn composed_sticky_swap_source_members_excludes_intent_only_sticky() {
             },
         );
     }
-    let members = engine.tx(|tx| {
-        crate::world_transaction::WorldTransaction::swap_source_members(tx, &source)
-    });
+    let members = engine
+        .tx(|tx| crate::world_transaction::WorldTransaction::swap_source_members(tx, &source));
     assert_eq!(
         members,
         vec![plain],

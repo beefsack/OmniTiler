@@ -95,6 +95,7 @@ fn retained_geometry_mismatch_converged_no_reseed_vs_unconverged_reseed() {
     let ctx_conv = LocalOperationContext {
         domain: &dom,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &win("w1"),
         observed: &obs,
         preconverged: true,
@@ -121,6 +122,7 @@ fn retained_geometry_mismatch_converged_no_reseed_vs_unconverged_reseed() {
     let ctx_ambig = LocalOperationContext {
         domain: &dom,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &win("w1"),
         observed: &ambig_obs,
         preconverged: true,
@@ -142,6 +144,7 @@ fn retained_geometry_mismatch_converged_no_reseed_vs_unconverged_reseed() {
     let ctx_unconv = LocalOperationContext {
         domain: &dom,
         outer_gap: 4,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &win("w1"),
         observed: &obs,
         preconverged: false,
@@ -173,6 +176,7 @@ fn retained_refusal_preserves_state_and_outer_gap_is_not_usability_fence() {
     let ctx = LocalOperationContext {
         domain: &dom,
         outer_gap: 10,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &win("w1"),
         observed: &obs,
         preconverged: true,
@@ -201,6 +205,7 @@ fn retained_refusal_preserves_state_and_outer_gap_is_not_usability_fence() {
     // Scaled outer_gap > 64 is retained unconditionally on successful install.
     let ctx_scaled = LocalOperationContext {
         outer_gap: 80,
+        resize: crate::policy::ScaledResize::unscaled(),
         ..ctx
     };
     let ok_scaled = layout
@@ -244,6 +249,7 @@ fn absent_relocation_success_and_refusal_source_preservation() {
     let ctx = LocalOperationContext {
         domain: &target_dom,
         outer_gap: 6,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &win("w1"),
         observed: &obs,
         preconverged: false,
@@ -306,6 +312,7 @@ fn absent_relocation_success_and_refusal_source_preservation() {
     let ctx_fallback = LocalOperationContext {
         domain: &target_dom,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &win("w1"),
         observed: &obs_extra,
         preconverged: false,
@@ -336,6 +343,7 @@ fn absent_relocation_success_and_refusal_source_preservation() {
     let ctx_conv = LocalOperationContext {
         domain: &target_dom,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &win("w1"),
         observed: &obs,
         preconverged: true,
@@ -373,6 +381,7 @@ fn legacy_seed_uses_default_fixed_policy_and_discards_rejected_candidate_with_al
     let ctx_overlay = LocalOperationContext {
         domain: &dom,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &win("w1"),
         observed: &overlay_obs,
         preconverged: false,
@@ -409,6 +418,7 @@ fn legacy_seed_uses_default_fixed_policy_and_discards_rejected_candidate_with_al
     let ctx_ordinary = LocalOperationContext {
         domain: &dom,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &win("w1"),
         observed: &ordinary_obs,
         preconverged: false,
@@ -447,6 +457,7 @@ fn float_special_branch_convergence_persistence_and_invalid_descriptor() {
     let ctx = LocalOperationContext {
         domain: &dom,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &win("w2"),
         observed: &obs,
         preconverged: false,
@@ -471,6 +482,7 @@ fn float_special_branch_convergence_persistence_and_invalid_descriptor() {
     let ctx_invalid = LocalOperationContext {
         domain: &invalid_dom,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &win("w2"),
         observed: &obs,
         preconverged: false,
@@ -492,6 +504,7 @@ fn all_seven_typed_entry_points_smoke() {
     let ctx_2 = LocalOperationContext {
         domain: &dom,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &win("w1"),
         observed: &obs_2,
         preconverged: true,
@@ -573,6 +586,7 @@ fn all_seven_typed_entry_points_smoke() {
     let ctx_3 = LocalOperationContext {
         domain: &dom,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &win("w1"),
         observed: &obs_3,
         preconverged: true,

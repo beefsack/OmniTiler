@@ -154,6 +154,7 @@ impl ResizeRig {
         let ctx = LocalOperationContext {
             domain: &self.domain.0,
             outer_gap: 8,
+            resize: crate::policy::ScaledResize::unscaled(),
             observed_focus: &focused,
             observed: &observed,
             preconverged: false,
@@ -181,6 +182,7 @@ impl ResizeRig {
         let ctx = LocalOperationContext {
             domain: &self.domain.0,
             outer_gap: 8,
+            resize: crate::policy::ScaledResize::unscaled(),
             observed_focus: &focused,
             observed: &observed,
             preconverged: false,

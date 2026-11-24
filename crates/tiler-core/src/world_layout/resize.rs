@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::contract::{MAX_REVISION, ResizeMode, ResizeOperation};
 use crate::directional::{Axis, Direction, Node, NodeId, WindowId, apply_resize_shares};
-use crate::policy::LayoutPolicy;
+use crate::policy::ScaledResize;
 use crate::session::{DesiredGeometry, DomainKey, ObservedWindow, RefusalKind};
 use crate::size_hints::WindowSizeHints;
 
@@ -41,6 +41,7 @@ impl WorldLayout {
         press_index: u32,
         observed_focus: &WindowId,
         observed: &[ObservedWindow],
+        resize: ScaledResize,
     ) -> Result<ResizeOutcome, LayoutFailure> {
         let Some(original) = self.domain(key) else {
             return Err(LayoutFailure::Semantics(RefusalKind::UnknownDomain));
@@ -55,6 +56,7 @@ impl WorldLayout {
             observed_focus,
             observed,
             self.config.fixed_size_admission,
+            resize,
         )?;
         *self.domains.get_mut(key).expect("validated domain") = candidate;
         Ok(outcome)
@@ -74,6 +76,7 @@ impl WorldLayout {
         observed_focus: &WindowId,
         observed: &[ObservedWindow],
         fixed_admission: bool,
+        resize: ScaledResize,
     ) -> Result<(DomainLayout, ResizeOutcome), LayoutFailure> {
         let refuse = LayoutFailure::Semantics;
 
@@ -142,9 +145,9 @@ impl WorldLayout {
         let accepted_geometry = project_resize_geometry(key, &tree, &candidate, &hints)
             .ok_or_else(|| refuse(RefusalKind::MalformedTopology))?;
 
-        let step_px = self.policy.keyboard_step_px(press_index);
+        let step_px = resize.keyboard_step_px(press_index);
         let Some(derived) = derive_keyboard_pixel_shares(
-            self.policy.as_ref(),
+            &resize,
             &tree,
             &focus_leaf,
             direction,
@@ -178,7 +181,7 @@ impl WorldLayout {
         )
         .ok_or_else(|| refuse(RefusalKind::MalformedTopology))?;
         if !keyboard_minimum_holds(
-            self.policy.as_ref(),
+            &resize,
             &desired_geometry,
             &target,
             key,
@@ -231,6 +234,7 @@ impl WorldLayout {
     /// unflagged and exceptions must match exact homing and flags. Active focus
     /// is preserved across the resize.
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn pointer_resize(
         &mut self,
         key: &DomainKey,
@@ -239,6 +243,7 @@ impl WorldLayout {
         proposed_boundary: i32,
         observed_focus: &WindowId,
         observed: &[ObservedWindow],
+        resize: ScaledResize,
     ) -> Result<ResizeOutcome, LayoutFailure> {
         let Some(original) = self.domain(key) else {
             return Err(LayoutFailure::Semantics(RefusalKind::UnknownDomain));
@@ -251,6 +256,7 @@ impl WorldLayout {
             proposed_boundary,
             observed_focus,
             observed,
+            resize,
         )?;
         *self.domains.get_mut(key).expect("validated domain") = candidate;
         Ok(outcome)
@@ -268,6 +274,7 @@ impl WorldLayout {
         proposed_boundary: i32,
         observed_focus: &WindowId,
         observed: &[ObservedWindow],
+        resize: ScaledResize,
     ) -> Result<(DomainLayout, ResizeOutcome), LayoutFailure> {
         let refuse = LayoutFailure::Semantics;
 
@@ -363,7 +370,7 @@ impl WorldLayout {
             .ok_or_else(|| refuse(RefusalKind::MalformedTopology))?;
 
         let Some(pointer) = derive_pointer_shares(
-            self.policy.as_ref(),
+            &resize,
             &tree,
             &target_leaf,
             direction,
@@ -396,13 +403,7 @@ impl WorldLayout {
         let desired_tree = candidate.tree.as_ref().expect("tree set above");
         let desired_geometry = project_resize_geometry(key, desired_tree, &candidate, &hints)
             .ok_or_else(|| refuse(RefusalKind::MalformedTopology))?;
-        if !pointer_minimum_holds(
-            self.policy.as_ref(),
-            &desired_geometry,
-            &target,
-            key,
-            wanted,
-        ) {
+        if !pointer_minimum_holds(&resize, &desired_geometry, &target, key, wanted) {
             return Err(refuse(RefusalKind::MalformedTopology));
         }
         let Some(projected_boundary) =
@@ -471,6 +472,7 @@ impl WorldLayout {
         boundary_2: i32,
         observed_focus: &WindowId,
         observed: &[ObservedWindow],
+        resize: ScaledResize,
     ) -> Result<PointerCornerResizeOutcome, LayoutFailure> {
         if Axis::for_direction(direction_1) == Axis::for_direction(direction_2) {
             return Err(LayoutFailure::Semantics(RefusalKind::MalformedInput));
@@ -488,6 +490,7 @@ impl WorldLayout {
             boundary_2,
             observed_focus,
             observed,
+            resize,
         )?;
         *self.domains.get_mut(key).expect("validated domain") = candidate;
         Ok(outcome)
@@ -507,6 +510,7 @@ impl WorldLayout {
         boundary_2: i32,
         observed_focus: &WindowId,
         observed: &[ObservedWindow],
+        resize: ScaledResize,
     ) -> Result<(DomainLayout, PointerCornerResizeOutcome), LayoutFailure> {
         let refuse = LayoutFailure::Semantics;
 
@@ -605,7 +609,7 @@ impl WorldLayout {
             .ok_or_else(|| refuse(RefusalKind::MalformedTopology))?;
 
         let Some(pointer_h) = derive_pointer_shares(
-            self.policy.as_ref(),
+            &resize,
             &tree,
             &target_leaf,
             direction_h,
@@ -634,7 +638,7 @@ impl WorldLayout {
                 .ok_or_else(|| refuse(RefusalKind::MalformedTopology))?;
 
         let Some(pointer_v) = derive_pointer_shares(
-            self.policy.as_ref(),
+            &resize,
             &intermediate_tree,
             &target_leaf,
             direction_v,
@@ -669,19 +673,9 @@ impl WorldLayout {
         let desired_tree = candidate.tree.as_ref().expect("tree set above");
         let desired_geometry = project_resize_geometry(key, desired_tree, &candidate, &hints)
             .ok_or_else(|| refuse(RefusalKind::MalformedTopology))?;
-        if !pointer_minimum_holds(
-            self.policy.as_ref(),
-            &desired_geometry,
-            &target_h,
-            key,
-            Axis::Horizontal,
-        ) || !pointer_minimum_holds(
-            self.policy.as_ref(),
-            &desired_geometry,
-            &target_v,
-            key,
-            Axis::Vertical,
-        ) {
+        if !pointer_minimum_holds(&resize, &desired_geometry, &target_h, key, Axis::Horizontal)
+            || !pointer_minimum_holds(&resize, &desired_geometry, &target_v, key, Axis::Vertical)
+        {
             return Err(refuse(RefusalKind::MalformedTopology));
         }
         let (Some(projected_h), Some(projected_v)) = (
@@ -1094,7 +1088,7 @@ fn pixel_shares_for_clamped(
 }
 
 fn derive_keyboard_pixel_shares(
-    policy: &dyn LayoutPolicy,
+    resize: &ScaledResize,
     tree: &Node,
     focused_leaf: &NodeId,
     edge: Direction,
@@ -1145,7 +1139,7 @@ fn derive_keyboard_pixel_shares(
             }
         }
         let pair_sum = sizes[focused_index].checked_add(sizes[neighbor_index])?;
-        if !policy.pair_admits_resize(pair_sum, pair_sum, wanted) {
+        if !resize.pair_admits_resize(pair_sum, pair_sum, wanted) {
             threshold_exhausted = true;
             continue;
         }
@@ -1157,9 +1151,9 @@ fn derive_keyboard_pixel_shares(
             (neighbor_size, focused_size)
         };
         let Some((new_shrink, new_grow)) =
-            policy.clamp_keyboard_shrink_pair(shrink, grow, i64::from(step_px), wanted)
+            resize.clamp_keyboard_shrink_pair(shrink, grow, i64::from(step_px), wanted)
         else {
-            if pair_sum < policy.pair_min_for_axis(wanted) {
+            if pair_sum < resize.pair_min_for_axis(wanted) {
                 threshold_exhausted = true;
             } else {
                 feasible_exhausted = true;
@@ -1230,7 +1224,7 @@ fn derive_keyboard_pixel_shares(
 }
 
 fn derive_pointer_shares(
-    policy: &dyn LayoutPolicy,
+    resize: &ScaledResize,
     tree: &Node,
     focused_leaf: &NodeId,
     direction: Direction,
@@ -1280,7 +1274,7 @@ fn derive_pointer_shares(
             }
         }
         let pair_avail = sizes[focused_index].checked_add(sizes[neighbor_index])?;
-        if !policy.pair_admits_resize(pair_avail, pair_avail, wanted) {
+        if !resize.pair_admits_resize(pair_avail, pair_avail, wanted) {
             feasible_exhausted = true;
             continue;
         }
@@ -1292,7 +1286,7 @@ fn derive_pointer_shares(
         }
         let pair_start = group_origin.checked_add(prefix)?;
         let left_desired = i64::from(proposed_boundary).checked_sub(pair_start)?;
-        let clamped_left = match policy.clamp_pair_split(pair_avail, left_desired, wanted) {
+        let clamped_left = match resize.clamp_pair_split(pair_avail, left_desired, wanted) {
             Some((first, _)) => first,
             None => {
                 feasible_exhausted = true;
@@ -1358,7 +1352,7 @@ fn derive_pointer_shares(
 }
 
 fn pointer_minimum_holds(
-    policy: &dyn LayoutPolicy,
+    resize: &ScaledResize,
     geometry: &[DesiredGeometry],
     target: &PointerTarget,
     domain: &DomainKey,
@@ -1374,7 +1368,7 @@ fn pointer_minimum_holds(
         }
         by_leaf.insert(&entry.leaf, entry);
     }
-    let min = policy.child_min_for_axis(axis);
+    let min = resize.child_min_for_axis(axis);
     for child in [&target.focused_child, &target.neighbor_child] {
         if let Some(entry) = by_leaf.get(child) {
             let span = match axis {
@@ -1390,7 +1384,7 @@ fn pointer_minimum_holds(
 }
 
 fn keyboard_minimum_holds(
-    policy: &dyn LayoutPolicy,
+    resize: &ScaledResize,
     geometry: &[DesiredGeometry],
     target: &PointerTarget,
     domain: &DomainKey,
@@ -1407,7 +1401,7 @@ fn keyboard_minimum_holds(
         }
         by_leaf.insert(&entry.leaf, entry);
     }
-    let min = policy.child_min_for_axis(axis);
+    let min = resize.child_min_for_axis(axis);
     let shrink_child = if mode == ResizeMode::Inwards {
         &target.focused_child
     } else {

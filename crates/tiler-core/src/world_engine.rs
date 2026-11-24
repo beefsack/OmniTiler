@@ -720,6 +720,18 @@ impl WorldEngine {
         Some(scaled as i32)
     }
 
+    /// Same nearest, halves-upward checked scaling as [`Self::scale_once`]
+    /// for the `i64` resize minima (pair/child extents). `None` on non-finite
+    /// inputs or a value outside the exact `i64` range; never a clamp.
+    pub(crate) fn scale_once_i64(logical: i64, scale: f64) -> Option<i64> {
+        let scaled = (logical as f64 * scale + 0.5).floor();
+        // `i64::MAX as f64` rounds up to 2^63, so the upper bound is exclusive.
+        if !(-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&scaled) {
+            return None;
+        }
+        Some(scaled as i64)
+    }
+
     /// Scale one logical float style setting into physical adapter units
     /// for one output: `floor(logical * scale + 0.5)`, checked. Same
     /// nearest, halves-upward rule as [`Self::scale_once`], for the v4

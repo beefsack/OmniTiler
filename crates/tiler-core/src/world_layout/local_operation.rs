@@ -12,6 +12,7 @@
 use crate::contract::ResizeMode;
 use crate::directional::{Direction, SameAxisMove, WindowId};
 use crate::geometry::Rect;
+use crate::policy::ScaledResize;
 use crate::seed::{EngineWindow, observed_window_from_engine, order_spatial_with_focus_last};
 use crate::session::{ObservedWindow, OutputDomain, RefusalKind};
 use crate::size_hints::FixedSizePredicate;
@@ -30,6 +31,9 @@ pub(crate) struct LocalOperationContext<'a> {
     /// Already-inset canonical component descriptor for the target domain.
     pub(crate) domain: &'a OutputDomain,
     pub(crate) outer_gap: i32,
+    /// Physical resize metrics of the source (subject) output: local resize
+    /// scales minima and keyboard steps with the output the window lives on.
+    pub(crate) resize: ScaledResize,
     pub(crate) observed_focus: &'a WindowId,
     pub(crate) observed: &'a [EngineWindow],
     pub(crate) preconverged: bool,
@@ -186,6 +190,7 @@ impl WorldLayout {
                     ctx.observed_focus,
                     &semantic,
                     fixed_admission,
+                    ctx.resize,
                 )
                 .map(|(candidate, outcome)| (candidate, counter, outcome))
             },
@@ -211,6 +216,7 @@ impl WorldLayout {
                 proposed_boundary,
                 ctx.observed_focus,
                 &semantic,
+                ctx.resize,
             )
             .map(|(candidate, outcome)| (candidate, counter, outcome))
         })
@@ -240,6 +246,7 @@ impl WorldLayout {
                 boundary_2,
                 ctx.observed_focus,
                 &semantic,
+                ctx.resize,
             )
             .map(|(candidate, outcome)| (candidate, counter, outcome))
         })

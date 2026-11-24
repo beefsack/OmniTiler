@@ -443,6 +443,7 @@ fn resize_committed(layout: &mut WorldLayout, window: &str, direction: Direction
     let ctx = LocalOperationContext {
         domain: &d,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &subject,
         observed: &obs,
         preconverged: true,
@@ -466,6 +467,7 @@ fn move_committed(layout: &mut WorldLayout, window: &str, direction: Direction) 
     let ctx = LocalOperationContext {
         domain: &d,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &subject,
         observed: &obs,
         preconverged: true,
@@ -490,6 +492,7 @@ fn pointer_resize_committed(
     let ctx = LocalOperationContext {
         domain: &d,
         outer_gap: 0,
+        resize: crate::policy::ScaledResize::unscaled(),
         observed_focus: &subject,
         observed: &obs,
         preconverged: true,
