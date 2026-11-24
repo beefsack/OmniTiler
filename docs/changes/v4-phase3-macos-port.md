@@ -1195,9 +1195,25 @@ run after the port:
   not late hydration: two tiles split the work area while floats keep native
   frames. A future rerun should compare the tile-rect multiset, keep float
   size+position exact, and record expected overlap rather than failing it.
-- Unproved here: store failure/recovery, re-login namespace rejection,
+- Unproved here: store write-failure recovery, re-login namespace rejection,
   numeric launch-date stability beyond the observed in-session rows, and
   native visual z-order after restart.
+
+## M3 native malformed-store startup (2026-11-25)
+
+- Scope: one bounded signed-fixture leg at `5bc6ccfbae` with the
+  diagnostic-only `fixture-leg --corrupt-intent-store` flag. Before launch,
+  the harness creates the isolated `intent-store` at mode `0700` and a
+  matching-namespace row `intent-v1-<uid>-<asid>.json` at mode `0600` with
+  malformed `{}` content; it never touches the per-user store.
+- Evidence: the product logged `intent-store: store file is malformed`,
+  launched, forwarded the focus chord, and reported `shutdown_clean:true`.
+  The completed envelope carried `corrupt_store:degraded`; exact teardown
+  restored the starting Space with `current_restored:true`, no residue and no
+  retained receipt.
+- Assertion limit: this proves native startup decode failure fails closed to
+  an empty store without blocking operation. It does not prove write-failure
+  recovery after a later accepted reply, which remains a native M3 gap.
 
 ## Transferable KDE lessons
 
