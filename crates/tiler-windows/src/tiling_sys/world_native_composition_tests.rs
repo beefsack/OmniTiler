@@ -596,20 +596,23 @@ fn same_output_follow_lying_frame_setter_holds_without_applied() {
     assert!(!applied_of_members(&tick.members, &tick.views, &op));
     assert_eq!(
         set_calls(),
-        calls_before + 1,
-        "source collapse re-tiles the sibling"
+        calls_before + 2,
+        "source collapse re-tiles the sibling plus the direct mover placement: calls={:?}",
+        S_SET_CALLS.with(|m| m.borrow().clone())
     );
     assert!(S_VISIBLE.with(|m| m.borrow().contains(&mover.hwnd)));
     assert!(
-        !S_VISIBLE.with(|m| m.borrow().contains(&sibling.hwnd)),
-        "sibling hides under the proven view"
+        S_VISIBLE.with(|m| m.borrow().contains(&sibling.hwnd)),
+        "ambiguous membership holds the view switch: {:?} {:?}",
+        tick.members,
+        tick.views
     );
-    // Visibility plus the proven view merges homing even though no frame
-    // ever moved: the mover is genuinely showing on the target.
-    assert_eq!(env.state.applied_views.get(&out), Some(&target));
+    // The unproven direct move never switches the view or merges homing:
+    // the mover remains on its source home until the lie resolves.
+    assert_eq!(env.state.applied_views.get(&out), Some(&_current));
     assert_eq!(
         env.state.applied_homing.get("w1"),
-        Some(&(out.clone(), target.clone()))
+        Some(&(out.clone(), _current.clone()))
     );
     // Next observation settles both flights on their independent proofs,
     // but the sweep now publishes the mover's frame and the lie surfaces
@@ -627,8 +630,12 @@ fn same_output_follow_lying_frame_setter_holds_without_applied() {
         None,
     );
     assert!(
-        held.reply.transfers.is_empty(),
-        "visibility proofs settle: {:?}",
+        held
+            .reply
+            .transfers
+            .iter()
+            .any(|t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "w1") && t.held),
+        "the lying frame keeps the direct flight held: {:?}",
         held.reply.transfers
     );
     assert!(
@@ -667,7 +674,15 @@ fn same_output_follow_lying_frame_setter_holds_without_applied() {
         0,
         None,
     );
-    assert!(quiet.reply.transfers.is_empty());
+    assert!(
+        quiet
+            .reply
+            .transfers
+            .iter()
+            .any(|t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "w1") && t.held),
+        "the unproven flight stays retained: {:?}",
+        quiet.reply.transfers
+    );
     assert!(
         quiet.members.is_empty() && quiet.views.is_empty(),
         "clamp recorded once: {:?} {:?}",
@@ -737,29 +752,46 @@ fn same_output_follow_partial_sibling_hide_holds_view_unproven() {
         tick.reply.transfers
     );
     assert!(
-        has_ambiguous_member(&tick, &op, &out, &target),
-        "partial holds ambiguous: {:?} {:?}",
+        tick.members.iter().any(|a| a.operation_id == op
+            && matches!(
+                a.disposition,
+                tiler_core::world_report::MemberDisposition::Called(_)
+            )
+            && ref_workspace(a.post.as_ref()) == Some(target.as_str())),
+        "the direct member move proves target while the hide refuses: {:?} {:?}",
         tick.members,
         tick.views
     );
-    assert!(!applied_of_members(&tick.members, &tick.views, &op));
+    assert!(
+        tick.views
+            .iter()
+            .any(|a| a.operation_id == op && a.disposition == FrameSetter::Refused),
+        "the refused hide leaves the view unproven: {:?}",
+        tick.views
+    );
+    assert!(
+        applied_of_members(&tick.members, &tick.views, &op),
+        "the direct member move reports its target proof: {:?}",
+        tick.members
+    );
     assert!(S_VISIBLE.with(|m| m.borrow().contains(&mover.hwnd)));
     assert!(
         S_VISIBLE.with(|m| m.borrow().contains(&sibling.hwnd)),
         "refused hide leaves the sibling visible"
     );
-    // Truthful split: the refused hide leaves everything unproven, so both
-    // applied maps stay at their bootstrap values and nothing moves: the
-    // frameless mover row takes no writes and the sibling still matches.
+    // Truthful split: the direct member move proves its target homing, while
+    // the refused sibling hide leaves the view unproven and the sibling
+    // visible on the source screen.
     assert_eq!(
         env.state.applied_homing.get("w1"),
-        Some(&(out.clone(), current.clone()))
+        Some(&(out.clone(), target.clone()))
     );
     assert_eq!(env.state.applied_views.get(&out), Some(&current));
     assert_eq!(
         set_calls(),
-        calls_before + 1,
-        "source collapse re-tiles the sibling"
+        calls_before + 2,
+        "source collapse re-tiles the sibling plus the direct mover placement: calls={:?}",
+        S_SET_CALLS.with(|m| m.borrow().clone())
     );
     // The carried ambiguity marks both flights held, so later ticks
     // hold silently: no re-attempt, no replay, no proof. The spent phases
@@ -789,20 +821,20 @@ fn same_output_follow_partial_sibling_hide_holds_view_unproven() {
                 .iter()
                 .filter(|t| t.operation_id == op)
                 .count(),
-            1,
-            "window flight retained: {:?}",
+            0,
+            "the direct member proof settles; the refused view leaves no flight: {:?}",
             held.reply.transfers
         );
         assert_eq!(
             env.state.applied_homing.get("w1"),
-            Some(&(out.clone(), current.clone()))
+            Some(&(out.clone(), target.clone()))
         );
         assert_eq!(env.state.applied_views.get(&out), Some(&current));
         assert!(S_VISIBLE.with(|m| m.borrow().contains(&mover.hwnd)));
         assert!(S_VISIBLE.with(|m| m.borrow().contains(&sibling.hwnd)));
         assert_eq!(
             set_calls(),
-            calls_before + 1,
+            calls_before + 2,
             "deferred frames take no writes"
         );
     }
@@ -875,9 +907,9 @@ fn same_output_follow_hook_busy_stops_then_recovers_without_replay() {
         env.state.applied_homing.get("w1"),
         Some(&(out.clone(), current.clone()))
     );
-    // Gap cleared: nothing was spent, so the next tick runs the full
-    // two-phase proof cleanly (window ambiguous pre-switch, view proves),
-    // then the following observation settles with no replay.
+    // Gap cleared: nothing was spent, so the next tick runs the direct
+    // delivery cleanly (member move plus view switch both prove), then the
+    // following observation settles with no replay.
     S_HOOK.with(|m| *m.borrow_mut() = false);
     let observed = live_visible_observed();
     let recovered = live_tick(
@@ -892,8 +924,20 @@ fn same_output_follow_hook_busy_stops_then_recovers_without_replay() {
         None,
     );
     assert!(
-        has_ambiguous_member(&recovered, &op, &out, &target),
-        "clean two-phase proof: {:?} {:?}",
+        applied_of_members(&recovered.members, &recovered.views, &op),
+        "clean direct proof: {:?} {:?}",
+        recovered.members,
+        recovered.views
+    );
+    assert!(
+        recovered.members.iter().any(|a| a.operation_id == op
+            && ref_workspace(a.post.as_ref()) == Some(target.as_str()))
+            && recovered
+                .views
+                .iter()
+                .any(|a| a.operation_id == op
+                    && ref_workspace(a.post.as_ref()) == Some(target.as_str())),
+        "member and view both prove the target: {:?} {:?}",
         recovered.members,
         recovered.views
     );
@@ -3362,8 +3406,8 @@ fn hook_drain_owed_observation_settles_send_follow_geometry() {
         back.reply.transfers
     );
     assert!(
-        has_member_row(&back, &back_op),
-        "send-back reports its member attempt: {:?} {:?}",
+        has_any_attempt(&back, &back_op),
+        "send-back reports its direct proof: {:?} {:?}",
         back.members,
         back.views
     );
@@ -3386,8 +3430,12 @@ fn hook_drain_owed_observation_settles_send_follow_geometry() {
         None,
     );
     assert!(
-        resettled.reply.transfers.is_empty(),
-        "send-back settles: {:?}",
+        resettled
+            .reply
+            .transfers
+            .iter()
+            .all(|t| matches!(&t.kind, TransferKind::Window(w) if w.0 == "w1")),
+        "send-back settles geometry: {:?}",
         resettled.reply.transfers
     );
     assert!(

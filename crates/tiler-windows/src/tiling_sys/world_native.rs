@@ -1656,7 +1656,7 @@ impl NativeOps for LiveNative<'_> {
                     facts: Some(w.facts),
                     output,
                     workspace,
-                    iconic: w.facts.minimized,
+                    iconic: w.facts.minimized || (self.prims.is_iconic)(key.hwnd),
                     hidden: self.committed_hidden(&live_key),
                     sticky,
                     floating,
