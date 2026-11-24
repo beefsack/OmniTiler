@@ -557,13 +557,15 @@ pub(crate) struct FixtureChord {
 }
 
 /// Resolve a `fixture-post` chord name: the directional focus/move subset of
-/// the owned-post vocabulary (letters plus left/right arrows - float, grow,
-/// shrink, orientation, and the numbered helper selects/sends are NOT
-/// fixture routes) plus the numbered fixture selects `select-0..9` and
-/// send-follows `send-0..9` (Desktop-N digit keycode with the product arms;
-/// trailing `0` is Desktop 10). The bound relative/previous names are NOT
-/// admitted here: their only admission is [`resolve_fixture_bound`]. Stay
-/// chords, the TextEdit-only transports, and every other name refuse. Pure;
+/// the owned-post vocabulary (letters plus left/right arrows), the
+/// core-composed `maximize-m` toggle, and the numbered fixture selects
+/// `select-0..9` / send-follows `send-0..9` (Desktop-N digit keycode with the
+/// product arms; trailing `0` is Desktop 10). Float, grow, shrink,
+/// orientation, and the helper-only transports are NOT fixture routes; the
+/// numbered selects/sends above are. The bound relative/previous names are
+/// NOT admitted here: their only admission is [`resolve_fixture_bound`].
+/// Stay chords, the
+/// TextEdit-only transports, and every other name refuse. Pure;
 /// unit-tested.
 #[must_use]
 pub(crate) fn resolve_fixture_chord(name: &str) -> Option<FixtureChord> {
@@ -597,6 +599,18 @@ pub(crate) fn resolve_fixture_chord(name: &str) -> Option<FixtureChord> {
                 action: chord.action,
             });
         }
+    }
+    // The core-composed maximize toggle is the product's Ctrl-role M chord.
+    // It is fixture-route-only so the native M4 proof can drive the real tap
+    // without adding a helper vocabulary entry or a direct core injection.
+    if name == "maximize-m" {
+        return Some(FixtureChord {
+            key_code: crate::input_policy::KEY_M,
+            shift: false,
+            alt: false,
+            aux: false,
+            action: "maximize",
+        });
     }
     // Numbered fixture selects/send-follows with the product arms (no arms
     // for the select, Shift for the send-follow). Trailing `0` addresses
@@ -2477,6 +2491,14 @@ mod tests {
             assert!(!chord.aux, "{name}");
             assert_eq!(chord.action, owned.action, "{name}");
         }
+        // The composed-maximize chord carries the product Ctrl+M key with no
+        // extra arms; it must reach the same real tap as a user press.
+        let maximize = resolve_fixture_chord("maximize-m").expect("maximize-m");
+        assert_eq!(maximize.key_code, crate::input_policy::KEY_M);
+        assert!(!maximize.shift);
+        assert!(!maximize.alt);
+        assert!(!maximize.aux);
+        assert_eq!(maximize.action, "maximize");
         // Numbered selects/send-follows 0..9 resolve with the product arms.
         for index in 0..=9u32 {
             for (prefix, shift, action) in [("select", false, "select"), ("send", true, "send")] {

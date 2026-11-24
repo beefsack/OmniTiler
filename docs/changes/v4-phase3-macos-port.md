@@ -1136,10 +1136,36 @@ run after the port:
     the bit before reflow and the next quiet report publishes the base.
   - Core per-case coverage remains in
     [`world_composed_maximize_tests.rs`](../../crates/tiler-core/src/world_composed_maximize_tests.rs).
-- Unproved here (native legs): physical Ctrl+M delivery, real AX frame
-  application and paint, native Zoom/drift interaction, native restart,
-  fullscreen replacement, and a live display work-area change. Do not infer
-  those from the offline fakes.
+
+### M4 native apply/restore proof (2026-11-24)
+
+- One bounded signed-fixture leg with the M4 diagnostic harness used two
+  fixture windows on an owned post-only Space and the real product tap. The
+  leg-only `maximize-toggle` diagnostic focused the first window, posted
+  `Ctrl+M` twice through the real tap, and read native AX frame plus CG
+  onscreen state before, between and after the presses.
+- Readback: the base right-half frame was `1108x1123` at `(1124,38)`; the
+  first press applied `2240x1138` at `(0,30)`; the second press restored the
+  exact base. `AXZoomed` was absent (`null`) at all three reads, while CG
+  reported onscreen `true` throughout. The product tap forwarded all three
+  chord actions (5 matches and 5 suppressions), and the product stopped
+  cleanly with `shutdown_clean:true`; the leg retained no receipt. Teardown
+  mismatches were benign same-PID offscreen host churn only. A prior attempt
+  refused teardown on unrelated protected-window host churn; the clean rerun
+  is the recorded evidence.
+- This proves native frame application and exact restore through the real
+  product path on the signed fixture. It does **not** prove physical Ctrl+M
+  delivery, paint, native Zoom/drift interaction, external move/resize clear,
+  fullscreen replacement, send/output/work-area changes, restart-to-base, or
+  slice-5 acceptance. Exact work-area geometry remains the offline core claim.
+- Harness boundary: `maximize-m` is a fixture-route-only chord and
+  `maximize-toggle` is a leg-only diagnostic alias; neither adds product
+  policy, a native state lane, or an M3 dependency.
+
+- Remaining native legs: physical Ctrl+M delivery, paint, native Zoom/drift
+  interaction, external move/resize clear, fullscreen replacement,
+  send/output/work-area changes and restart-to-base. Do not infer those from
+  the offline fakes or from this apply/restore proof.
 
 ## D4 native intent-store restart proof (2026-11-24)
 

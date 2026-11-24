@@ -657,6 +657,91 @@ fn read_sample_frame(window: &crate::ffi::AxElement) -> (Option<FramePoint>, Str
     }
 }
 
+/// One-shot native frame evidence for the composed-maximize diagnostic:
+/// AX frame plus the native zoom flag and CG onscreen state. All optional
+/// facts are recorded truthfully; no value is defaulted.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub(crate) struct FrameSnapshot {
+    pub frame: FramePoint,
+    pub zoomed: Option<bool>,
+    pub cg_onscreen: Option<bool>,
+}
+
+/// Read one joined fixture window's frame, zoom flag and CG onscreen state.
+/// Joins the exact `(pid, wid)` AX window with bounded messaging timeouts and
+/// rechecks the CG owner; read-only. Used only by the bounded fixture-leg
+/// maximize diagnostic, never by product code.
+#[cfg(target_os = "macos")]
+pub(crate) fn read_joined_frame(pid: u32, wid: u32) -> Result<FrameSnapshot, String> {
+    let window = join_sample_window(pid, wid)?;
+    let (frame, status) = read_sample_frame(&window);
+    let frame =
+        frame.ok_or_else(|| format!("maximize evidence: AX frame unreadable ({status})"))?;
+    let zoomed = crate::ffi::ax_bool_attribute(&window, "AXZoomed").ok();
+    let cg_onscreen = crate::cg::verify_wid_owned_by_pid(pid, wid)
+        .ok()
+        .map(|window| window.onscreen);
+    Ok(FrameSnapshot {
+        frame,
+        zoomed,
+        cg_onscreen,
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn read_joined_frame(_pid: u32, _wid: u32) -> Result<FrameSnapshot, String> {
+    Err("maximize evidence is macOS-only".to_owned())
+}
+
+/// Pure apply-then-restore verdict for the composed-maximize toggle: the
+/// first press must move the native frame, the second must return it to the
+/// pre-press base. No exact work-area rect is inferred here; the offline
+/// core test owns that geometry claim.
+pub(crate) fn toggle_frame_verdict(
+    base: &FramePoint,
+    maximized: &FramePoint,
+    restored: &FramePoint,
+) -> Result<(), String> {
+    if frames_agree(base, maximized, SETTLE_EPSILON_PTS) {
+        return Err("first maximize press left the native frame unchanged".to_owned());
+    }
+    if !frames_agree(base, restored, SETTLE_EPSILON_PTS) {
+        return Err(format!(
+            "second maximize press did not restore the base frame (base {base:?}, restored {restored:?})"
+        ));
+    }
+    Ok(())
+}
+
+/// Strict evidence verdict for the native maximize diagnostic: every snapshot
+/// must be CG-onscreen and must not show native zoom. Unknown CG or an
+/// available `AXZoomed:true` refuses rather than passing on frame geometry
+/// alone. Then the apply/restore frame verdict must hold.
+pub(crate) fn toggle_snapshot_verdict(
+    base: &FrameSnapshot,
+    maximized: &FrameSnapshot,
+    restored: &FrameSnapshot,
+) -> Result<(), String> {
+    for (label, snapshot) in [
+        ("base", base),
+        ("maximized", maximized),
+        ("restored", restored),
+    ] {
+        if snapshot.cg_onscreen != Some(true) {
+            return Err(format!(
+                "{label} snapshot is not CG-onscreen (observed {:?})",
+                snapshot.cg_onscreen
+            ));
+        }
+        if snapshot.zoomed == Some(true) {
+            return Err(format!(
+                "{label} snapshot reports native AXZoomed:true; composed maximize must not use native zoom"
+            ));
+        }
+    }
+    toggle_frame_verdict(&base.frame, &maximized.frame, &restored.frame)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -809,6 +894,71 @@ mod tests {
         assert!(frames_agree(&base, &near, 0.5));
         assert!(!frames_agree(&base, &far, 0.5));
         assert!(!frames_agree(&base, &base, f64::NAN));
+    }
+
+    #[test]
+    fn maximize_toggle_verdict_requires_move_and_exact_restore() {
+        let base = FramePoint {
+            x: 100.0,
+            y: 100.0,
+            w: 800.0,
+            h: 600.0,
+        };
+        let maximized = FramePoint {
+            x: 0.0,
+            y: 25.0,
+            w: 1440.0,
+            h: 900.0,
+        };
+        assert!(toggle_frame_verdict(&base, &maximized, &base).is_ok());
+        // No native move is not a toggle.
+        assert!(toggle_frame_verdict(&base, &base, &base).is_err());
+        // A second press must return the exact base, not another overlay.
+        assert!(toggle_frame_verdict(&base, &maximized, &maximized).is_err());
+        // Sub-half-point noise is tolerated only within the same geometry.
+        let restored_noise = FramePoint {
+            x: 100.4,
+            y: 100.4,
+            w: 800.4,
+            h: 600.4,
+        };
+        assert!(toggle_frame_verdict(&base, &maximized, &restored_noise).is_ok());
+    }
+
+    #[test]
+    fn maximize_snapshot_verdict_refuses_unknown_cg_and_native_zoom() {
+        let base = FrameSnapshot {
+            frame: FramePoint {
+                x: 100.0,
+                y: 100.0,
+                w: 800.0,
+                h: 600.0,
+            },
+            zoomed: Some(false),
+            cg_onscreen: Some(true),
+        };
+        let maximized = FrameSnapshot {
+            frame: FramePoint {
+                x: 0.0,
+                y: 25.0,
+                w: 1440.0,
+                h: 900.0,
+            },
+            ..base
+        };
+        assert!(toggle_snapshot_verdict(&base, &maximized, &base).is_ok());
+        // Unknown CG state must not pass on frame geometry alone.
+        let unknown_cg = FrameSnapshot {
+            cg_onscreen: None,
+            ..base
+        };
+        assert!(toggle_snapshot_verdict(&base, &maximized, &unknown_cg).is_err());
+        // A native zoom flag means the composed route was bypassed.
+        let native_zoom = FrameSnapshot {
+            zoomed: Some(true),
+            ..maximized
+        };
+        assert!(toggle_snapshot_verdict(&base, &native_zoom, &base).is_err());
     }
 
     #[test]

@@ -76,6 +76,18 @@ pub const LEG_MAX_SECONDS: u64 = crate::tile::MAX_TILE_SECONDS;
 /// Maximum chords per leg invocation (bounded automation, never open-ended).
 pub const LEG_MAX_CHORDS: usize = 32;
 
+/// Diagnostic-only chord: one owned window receives two real `maximize-m`
+/// posts through the product tap, with native AX/CG frames captured before,
+/// between and after. The first press must move the frame; the second must
+/// restore the exact base. This is native behaviour evidence, not slice-5
+/// acceptance and not a product command.
+pub const MAXIMIZE_TOGGLE_CHORD: &str = "maximize-toggle";
+
+/// Settle after each maximize press before the native frame is read
+/// (milliseconds): the core reply and AX frame application are asynchronous,
+/// so one bounded hold replaces an unbounded poll.
+const MAXIMIZE_SETTLE_MS: u64 = 1_500;
+
 /// Operator settle window (harness only): milliseconds the leg holds before
 /// its first chord and again after its last chord, so an operator can drive
 /// extra owned fixture windows over the announced control socket and read
@@ -1520,9 +1532,43 @@ fn run_leg_body_macos(
         // consumed-refused-basic and never reaches the core, so keep one
         // bounded margin here; the settle polls the interrupt latch.
         settle_hold(FOCUS_SETTLE_MS)?;
-        let report: serde_json::Value =
+        let report: serde_json::Value = if chord == MAXIMIZE_TOGGLE_CHORD {
+            // Let the initial tile/reflow settle before taking the base; the
+            // first press must be compared with the applied tiled frame, not
+            // the fixture's spawn geometry.
+            settle_hold(MAXIMIZE_SETTLE_MS)?;
+            let base =
+                crate::fixture_sample::read_joined_frame(parsed.pid, *wid).map_err(|e| (1, e))?;
+            let first: serde_json::Value =
+                serde_json::from_str(&driver.post(caller, *wid, "maximize-m", opts.modifier)?)
+                    .map_err(|e| (1, e.to_string()))?;
+            settle_hold(MAXIMIZE_SETTLE_MS)?;
+            let maximized =
+                crate::fixture_sample::read_joined_frame(parsed.pid, *wid).map_err(|e| (1, e))?;
+            let second: serde_json::Value =
+                serde_json::from_str(&driver.post(caller, *wid, "maximize-m", opts.modifier)?)
+                    .map_err(|e| (1, e.to_string()))?;
+            settle_hold(MAXIMIZE_SETTLE_MS)?;
+            let restored =
+                crate::fixture_sample::read_joined_frame(parsed.pid, *wid).map_err(|e| (1, e))?;
+            crate::fixture_sample::toggle_snapshot_verdict(&base, &maximized, &restored)
+                .map_err(|e| (1, e))?;
+            serde_json::json!({
+                "outcome": "maximize-toggle",
+                "chord": chord,
+                "caller": caller,
+                "wid": wid,
+                "base": base,
+                "maximized": maximized,
+                "restored": restored,
+                "first_press": first,
+                "second_press": second,
+                "note": "native apply-then-restore evidence through the real product tap; exact work-area geometry is covered offline"
+            })
+        } else {
             serde_json::from_str(&driver.post(caller, *wid, chord, opts.modifier)?)
-                .map_err(|e| (1, e.to_string()))?;
+                .map_err(|e| (1, e.to_string()))?
+        };
         reports.push(report);
     }
     if settle > 0 {

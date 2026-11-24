@@ -911,6 +911,16 @@ fn fixture_commands_parse_with_announcement_identity_and_fixture_chords() {
         }
         _ => panic!("fixture-leg must parse"),
     }
+    // The diagnostic maximize toggle is a leg-only chord, not a fixture-post
+    // vocabulary entry; the parser must still admit it.
+    parse_args(&argv(&[
+        "fixture-leg",
+        "--chord",
+        crate::fixture_leg::MAXIMIZE_TOGGLE_CHORD,
+        "--signer",
+        "designated => test",
+    ]))
+    .unwrap();
     // Defaults: 90 seconds, Compatible preset (no holder writes).
     let r = parse_args(&argv(&[
         "fixture-leg",

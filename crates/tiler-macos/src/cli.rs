@@ -2362,7 +2362,8 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 ));
             }
             for chord in &chords {
-                if crate::fixture_post::resolve_fixture_chord(chord).is_none()
+                if chord != crate::fixture_leg::MAXIMIZE_TOGGLE_CHORD
+                    && crate::fixture_post::resolve_fixture_chord(chord).is_none()
                     && crate::fixture_post::resolve_fixture_bound(chord).is_none()
                 {
                     return Err(format!("fixture-leg: unknown --chord '{chord}'"));
