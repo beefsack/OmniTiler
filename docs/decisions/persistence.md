@@ -20,3 +20,10 @@
 - Assumes / revisit if: fixed-anchor rejection remains unchanged; failed hydration protects only exact lifetimes from tiled writes for current observation, then revalidates next observation. Shared-core duplicate-window rejection remains unchanged unless KDE demonstrates the same harm. Post-restart un-stick remains TBD.
 - Status: active, 2026-10-14
 - Evidence: [Windows restart](../changes/archive/windows-restart-intent.md), [hydration rejection](../changes/archive/windows-restart-hydration-rejection.md).
+
+### macOS restart intent store
+- Decision: macOS stores core-owned opaque classification intent in an adapter-owned atomic store under `$HOME/Library/Application Support/OmniTiler/`, filename `intent-v1-<uid>-<asid>.json`; 0700 directory, 0600 file, UID match, no symlink following, bounded rows/bytes, atomic replace. Each entry binds `(win, wid, pid, numeric launch date, bundle ID, data)` and is imported only after live lifetime verification, before the first successful admission; late imports are ignored. Reconcile retained `intentDesired` against the last successfully persisted snapshot without interpreting data; unchanged desire makes no disk writes, changes persist before dependent native apply, and failures retain a recoverable whole-reply hold that retries on later accepted replies. Explicit null clears the slot but stays in durable-equality knowledge. No permanent session latch.
+- Why: implement [contract intent ownership](contract.md#intent-ownership-and-persistence) and M3 without adding core/protocol storage; the previous session latch permanently froze tiling after the first `ToggleFloat`.
+- Assumes / revisit if: numeric launch-date stability and the store slot/format still need native fixture proof before claiming 0.1 acceptance. Cross-login memory remains out of scope; a mismatched `/login` namespace must be rejected.
+- Status: active, 2026-11-24
+- Evidence: [approved review](../changes/macos-v4-open-decisions-review.md#decision-4-m3-intentdesired-storage-owner), [M3 design](../changes/retained-intent-desire.md), [decision record](macos.md#macos-v4-open-decisions-2026-11-24).

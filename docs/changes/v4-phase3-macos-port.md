@@ -30,6 +30,13 @@
   [host-settled geometry design](../decisions/layout-and-admission.md#host-settled-geometry-design-timing)
   is deferred until after slice 1 and brought for user approval before slice 3;
   approval remains required before any core change.
+- The [2026-11-24 open-decision review](macos-v4-open-decisions-review.md) is
+  user-approved: D0–D6 are decided, R1–R5 rectifications are tracked there, and
+  the bounded D5 fixture diagnostic ran: close identity matched exactly, but
+  one window hide emitted a false destroyed event for a still-alive window.
+  Direct notification pruning is therefore unsafe; the CG-alive oracle stays
+  authoritative and transport remains unimplemented.
+  Decisions are canonical in [macOS v4 open decisions](../decisions/macos.md#macos-v4-open-decisions-2026-11-24).
 - Port/build/live work runs on a macOS host through the [development environment](../macos-dev-environment.md)
   and [live-testing guide](../live-macos-testing.md). Use the signed
   [fixture bundle and exact scope](../live-macos-testing.md#fixture-first-live-tests),
@@ -291,9 +298,10 @@ owned residue — but the failed open stranded Mission Control on screen, which
 the harness's own public route recovered (`open -b com.apple.exposelauncher`
 plus `mc-inspect`/`cg-inspect` verification; reproduced twice).
 
-Root cause, observed rather than inferred: on macOS 27.2.1 the Dock exposes
-**no `mc` AX child at all** (checked at 0.58 s … 13.9 s while Mission Control
-was displayed and the WindowManager overlay windows were on screen). The
+Root cause, observed rather than inferred: on a newer macOS release family the
+Dock exposes **no `mc` AX child at all** (checked at 0.58 s … 13.9 s while
+Mission Control was displayed and the WindowManager overlay windows were on
+screen). The
 Mission Control tree has moved to **`com.apple.WindowManager`**: the
 application element's direct child `AXGroup` `mc.display` is the presence
 marker, `mc.display` → `mc.spaces` → `mc.spaces.list` holds the "Desktop N"
@@ -363,11 +371,11 @@ native acceptance.
 | Pending-focus command subjects | Fixed (`a6451e41`): the four window-shape commands send core's current-focus subject, the observed-foreground substitution and its pre-dispatch refusals are gone, and the homing/domain gates run at apply time on the window core resolved. |
 | Retained settlement outcomes | Switch half consumed (`d67b1733`): the retained projection delivers the verdict once per settlement identity, survives a skipped reply, is inert on replay and is authoritative over an earlier reply. The operation half still has no consumer because macOS has no clear lane. |
 | Retained `intentDesired` | Partial and fail-closed: a nonempty desire latches the session; no persistence, so this waits on the M3 host-storage decision. |
-| Switch and fallback removals | No adapter-local policy remains; only live legs are outstanding. |
-| No-space removal | Inherited from core; the adapter writes core rects and produces no no-space rows. A live constrained-work-area leg is the remaining proof. |
+| Switch and fallback removals | No adapter-local policy remains. The no-neighbour directional stay is natively proven on a controller-owned Space 2026-11-24: one tiled fixture window stayed across the work area, `move-left` produced `planner-noop` + `move-accepted` with no frame/focus setter or retry, native AX/CG frame and owned-SID membership were stable pre/post, and teardown was clean. The earlier on-current-Space observation (925/925 identical samples) remains behaviour evidence only. Fixed-float send remains unproven: AppKit exposes no AX size-bound attributes on fixture windows (measured), the shared hints-only predicate requires all four bounds, and a post-admission `set` is repair rather than admission; a product/core admission decision is required ([detail](#fixed-size-admission-exposure-2026-11-24)). [Evidence](#optional-live-legs-2026-11-24). |
+| No-space removal | Inherited from core; the adapter writes core rects and produces no no-space rows. Native proof remains blocked: no fixture-scoped way to constrain `NSScreen.visibleFrame`, and 32 default-hint windows cannot geometrically exhaust a 2240×1123 work area. Oversized minimum hints are declared-minimum infeasibility, not the no-space discriminator. [Evidence](#optional-live-legs-2026-11-24). |
 | Perpendicular focus recency | Both arms natively proven: explicit-command history and accepted-hover recency (hover leg). |
-| Batch 3 admission | Partial: floating AX kinds are withheld from `utility`, so palettes never float until that mapping is settled with a native check. |
-| Best-effort admission | Inherited; live proof only. |
+| Batch 3 admission | Implemented for the measured `AXFloatingWindow`: it maps to `utility` and floats as a palette. `AXSystemFloatingWindow` remains withheld pending a truthful sample ([evidence](macos-batch3-utility-mapping.md)). |
+| Best-effort admission | Inherited; live proof blocked by the same missing constrained-work-area route (no-space admission and repair). |
 | Settings-key parity | Implemented by construction (raw pass-through, no adapter caps). |
 | 16-output `actionOutputs` cap | Inert: the field is always empty because no action context is produced. |
 
@@ -484,6 +492,229 @@ pointer-restore FFC fall outside the recorded snapshot (honest miss / cleanup),
 and `--preset authentic` still logs transient frame-set retry failures that
 converge to exact readbacks.
 
+### Batch-3 utility mapping: `AXFloatingWindow` floats (2026-11-24)
+
+The opt-in transient utility panel was measured natively on the signed probe
+bundle (`ax_trusted:true`). The helper's `NSPanel`
+(`Titled|Closable|UtilityWindow`, `setFloatingPanel(true)`) reports
+`AXWindow`/`AXFloatingWindow` at CG layer 3, onscreen, with matching AX/CG
+frame, in two independent runs; the main window reports `AXStandardWindow` at
+layer 0. `AXFloatingWindow` therefore maps to `WindowType::Utility`, which core
+treats as a float kind; the previous `None` held it. `AXSystemFloatingWindow`
+stays withheld: no owned fixture emits it and no truthful local sample exists.
+The old fixture comment predicting a dialog subrole was stale and is corrected.
+Detail and evidence: [batch-3 utility mapping](macos-batch3-utility-mapping.md).
+
+### Optional live legs (2026-11-24)
+
+Artifacts: the signed probe and fixture bundles were rebuilt under the
+persistent dev identity; `preflight-app` reported `ax_trusted:true`, unlocked,
+secure input inactive. Inventory: one display, Spaces `[1,7]`, current 1.
+
+- **No-neighbour stay: natively proven on a controller-owned Space.** The
+  guarded `fixture-leg` controller now runs an all-post-only leg on one owned
+  Space: it executes `prove_return`, snapshots the display row, reads a fresh
+  occupancy inventory (fixture-scope windows excluded; unreadable membership
+  degrades to the explicit row upper bound), appends exactly one owned Space,
+  switches to it, verifies current/ordinal/one-append, spawns and joins the
+  fixture window, proves its membership on the owned SID, launches the gated
+  product with `--fixture-owned-space`/`--fixture-starting-space`, and
+  re-checks current plus membership immediately before posting; any drift
+  refuses before a post. A `move-left --preset authentic --seconds 90` run
+  with the operator settle (15 s holds) on 2026-11-24 produced:
+  - Envelope `outcome:"completed"`; `owned_space` `n:2`, `n_kind:"occupied"`,
+    `n_unreadable_windows:0` from the fresh row `[1,7]`, owned SID 57 at
+    ordinal 3, `spaces_before:[1,7]` → `spaces_after:[1,7,57]` (exactly one
+    append), `starting_sid:1`.
+  - Native: one fixture window (wid 2570, `AXStandardWindow`, AX and CG frame
+    `(8,38,2224,1123)`, layer 0, onscreen, classified `Tile`, memberships
+    `[57]`); five pre-chord and three post-chord samples identical, current
+    Space the owned SID throughout.
+  - Chord: `kind=input outcome=move count=0`, a `command-refused` with
+    `internal=planner-noop`, and a `core-reply outcome=move-accepted`; no tile
+    frame-set, focus setter or retry; tap report deliveries 2 / matched 2 /
+    suppressed 2 with zero consumed refusals.
+  - Teardown: `residue: []`, `current_restored:true`, product stopped
+    (`shutdown_clean:true`), owned Space removed, run directory absent, no
+    fixture window or leg process left, canonical receipts removed; the only
+    mismatches were four benign same-pid offscreen host-churn window-id
+    replacements.
+  Two harness defects surfaced and were fixed in the controller: the
+  separate-Spaces baseline read ran before AppKit's shared application existed
+  (`screensHaveSeparateSpaces` answers a stale `false` first, so an unchanged
+  setting compared unequal at teardown), and a post issued immediately after
+  focus was consumed-refused-basic until the product's input-eligibility
+  attestation caught the fresh focus (the runner now keeps one bounded 500 ms
+  pacing window). The earlier on-current-Space observation (925/925 sampled
+  readings) remains behaviour evidence only. The receipts from the two
+  diagnostic attempts (signer-prefix refusal, then the pre-fix mode-read
+  mismatch) were inspected and archived as baseline drift with both receipts;
+  no canonical receipt remains.
+- **Fixed-float send: not run, AX exposure gap.** The controller spawns
+  caller windows by id only (`fixture_leg.rs:1563`,
+  `fixture_post.rs:181-183`), so it cannot request fixed hints at admission;
+  the fixture protocol itself already supports creation-time
+  `min_size_px`/`max_size_px`. A bounded read-only exposure check on
+  2026-11-24 (below) found that AppKit advertises no size-bound attributes on
+  fixture windows at all, so the shared hints-only fixed predicate cannot
+  fire and a max-hint reader alone would not help. A `set` after admission is
+  repair, not admission, and the controller has no chord route to an
+  operator-spawned window. The probe helper's transient panel is a different
+  bundle and scope.
+
+- **Constrained work area: not run, harness gap.** The only work-area source
+  is `NSScreen.visibleFrame()` with no fixture or CLI override; changing it
+  requires forbidden system settings. The 32-chord cap of default-hint
+  windows cannot geometrically exhaust a 2240×1123 work area, and oversized
+  minimum hints are declared-minimum infeasibility, explicitly not the
+  no-space discriminator.
+
+#### Constrained-work-area route audit (2026-11-24)
+
+Route audit only: no fixture or product was launched, no chord was posted, and
+no Space, display, or window was written. No capacity float, eviction, or
+`float_origin`/`noSpace` row was produced. The native no-space proof remains
+**not proven**.
+
+- **Route A (existing seam): none.** Work area is host-global
+  (`ffi.rs:9908-9950` reads `NSScreen.visibleFrame()`), flows through the
+  topology snapshot to `NativeDomain.visible`
+  (`runtime_types.rs:283,440-443`) and `ScreenReport.work_area`
+  (`world_builder.rs:457-465`). The product hardcodes
+  `TopologyMode::Native` (`tile.rs:2186-2200`); the synthetic default is a
+  test-only constructor seam (`runtime_types.rs:1311`). The `tile` CLI has no
+  topology or work-area flag (`cli.rs:2690-2990`), `DevSettings` accepts no
+  layout/gap section (`dev_selection.rs:137-154`), and raw core settings
+  produce only the border keys plus `focusFollowsCursor`
+  (`main.rs:1026-1035`, `dev_selection.rs:388-430`). The fixture gate
+  (`fixture_gate.rs`) has no geometry seam, and controller spawns carry
+  caller ids only (`fixture_post.rs:181-183`, `fixture_leg.rs:1563-1566`).
+- **Route B (many-window exhaustion): rejected at ~20k windows.** An exact
+  integer model of `geometry::layout_into` plus the serial admission split
+  (equal `[1,1]` shares on the plain long edge; focused leaf first, then the
+  largest-splittable fallback) was validated against two core fixtures:
+  10x10/gap 8 exhausts after four tiles and floats the last two
+  (`capacity_admission_tests/engine_admission.rs:80-120`), and 22x9/gap 10
+  tiles two then floats `win-c` (`world_connection_tests.rs:552-617`).
+  Exhaustion counts: bounds 2224x1123/gap 8 **19,688**; 2240x1123 **21,400**;
+  2224x1107 **16,744**; the count is identical when every leg splits the
+  largest leaf, so admission order is not the lever. Even the catalog maximum
+  gap 64 (`settings_catalog.rs:258,418-440`) needs **512** windows (gap 32:
+  2,048; gap 16: 8,192). The controller's 32-chord bound (`fixture_leg.rs:77`,
+  one caller per chord `:1214-1217`) is short by 16x-600x, and spawning ~20k
+  owned AppKit windows (each needing a native join, membership proof, and
+  product observation) has no bounded safe estimate. Rejected.
+- **Route C (virtual display): unverified; not attempted.** The
+  `CGVirtualDisplay`/`Descriptor`/`Mode`/`Settings` ObjC classes are private
+  but exported by CoreGraphics (SDK `CoreGraphics.tbd`; no public headers).
+  DeskPad and Chromium's display tests use them from ordinary, non-sandboxed
+  processes with no documented entitlement, but that is not verified for the
+  signed fixture identity. Chromium's test util documents flaky first-display
+  removal and adds a temporary second display to work around it, and display
+  add/remove reconfigures displays/Spaces. Exact ownership, product Space
+  homing on a virtual output, and a bounded restore path are therefore
+  unproven; no display was created.
+- **Route D (product/core work-area override): decision only, not
+  implemented.** The minimal hook is a fixture-gated work-area rect carried
+  in `TileRequest`/`RuntimeConfig` and substituted for the hosted display's
+  `visible` in `NativeContext::derive` (`runtime_types.rs:355-445`). It
+  cannot be per-Space: one `ScreenReport` per output carries the work area
+  (`world_builder.rs:457-465`), and `NativeDomain.visible` is display-wide.
+  Impact: the adapter would place real fixture windows inside a sub-rectangle
+  while `NSScreen.visibleFrame()` stays unchanged, changing work-area-based
+  maximize/zoom inference and border/pager geometry inputs for the whole
+  display; it needs a product decision entry, a CLI/gate surface, and tests.
+  A modified work area is classed as faked capacity here, so this is recorded
+  as an option, not a route to implement.
+- **Provenance observability is also missing.** The adapter emits only
+  `toggle-float-accepted|consumed` reply tokens (`world_dispatch.rs:63-64`);
+  it decodes row `float_origin` (`world_protocol.rs:4589-4591`) but does not
+  emit it, and has no `noSpace` token. Core carries `FloatOrigin::Capacity`
+  on rows (`world_publish.rs:1049-1053`) and `noSpace` only on an explicit
+  ToggleFloat result (`world_command_result.rs:38`). A native no-space proof
+  would need a fixture-only provenance/observability addition even after a
+  capacity route existed.
+- **Decision options.** (1) Defer the native leg; keep the core geometric
+  capacity coverage and adapter mapping tests (recommended; no product
+  change). (2) Product decision for the fixture-gated work-area override
+  above, accepting that the OS work area is not smaller. (3) A separate
+  fixture helper that creates a scoped virtual display, only after a
+  read-only proof and an exact bounded restore (adds a display and Spaces;
+  Chromium's flaky-removal workaround applies). (4) A fixture-only adapter
+  diagnostic for `float_origin`/`noSpace` provenance, required by any native
+  proof above.
+- **Not proven.** The no-space and best-effort admission native acceptance
+  remain unproven: no product launch, no chord, no capacity float, no
+  eviction/repair, no `float_origin`/`noSpace` row, and no existing
+  allocation or Space/display residue was touched or created.
+
+#### Fixed-size admission exposure (2026-11-24)
+
+- **Code path.** The portable predicate needs all four bounds: any missing
+  bound returns `not-fixed-missing` before the equality test
+  (`size_hints.rs:254,261-263`), and both axes need nonzero equal pins
+  (`:286-290`). macOS builds hints from minimums only: `size_hints()` maps
+  `min_size` to `min_w`/`min_h` and hard-sets `max_w`/`max_h: None`
+  (`native_facts.rs:115-128`); `min_size` comes from `ax_min_size`
+  (`native_facts.rs:536`), which probes only
+  `AXMinSize`/`AXMinimumSize` (`ffi.rs:9654-9666`), and `max_size` is
+  documented and constructed as always `None`
+  (`native_facts.rs:62-63,552`). Admission is predicate-only
+  (`window_classify.rs:488-496`); `size_settable` is carried, never an
+  admission input (`classifier.rs:98-100`). The spawn wire shape is
+  caller-id-only (`fixture_post.rs:181-183`), while the fixture protocol
+  accepts creation-time `min_size_px`/`max_size_px` (`win.rs:303-314`,
+  `protocol.rs:107-109,289-298`).
+- **Live evidence.** Signed fixture and probe bundles were rebuilt under the
+  persistent dev identity; `preflight-app` reported `ax_trusted:true`,
+  unlocked, secure input inactive. The fixture was launched through
+  LaunchServices in a private `0700` run dir and bound by its announced
+  pid/socket/nonce (the socket inode was owned by that pid). Four owned
+  windows were spawned without a Space switch and inspected with the
+  read-only `scope-inspect --scope io.github.omnitiler.live-fixture`: fixed
+  (640x480, `min_size_px=max_size_px=[640,480]`, `resizable:false`), plain
+  (900x520, no hints), bounds (700x500, `min_size_px=[560,420]`,
+  `max_size_px=[820,600]`, `resizable:true`), and fixres (640x480,
+  `min_size_px=max_size_px=[640,480]`, `resizable:true`). Every size,
+  min/max and resizable field was accepted; AX frames matched the requested
+  sizes; the fixed window reported `size_settable:false` and the others
+  `true`.
+- **Result.** All four windows returned `attr_names_status:"ok"` with the
+  same 28-name inventory. The only size-related names were `AXFrame`,
+  `AXGrowArea`, `AXSize`, and `AXZoomButton`; there was no `AXMinSize`,
+  `AXMinimumSize` or `AXMaxSize` on any window, including the resizable
+  windows with explicit bounds. The only Min/Max matches anywhere in the
+  lists were `AXMinimized` and `AXMinimizeButton`. Every window also reported
+  `min_size:null` and `hints_min_w/h:null`, so the value read through
+  `ax_min_size` failed too, not just the names inventory. The fixed window
+  was an `AXStandardWindow` classified `Tile`, not a dialog/utility float.
+- **Why it cannot fire.** The fixed window's facts carve no minimum either,
+  so the predicate returns `not-fixed-missing` (the absent max is not the
+  only blocker). Because the minimum is absent too, adding an AX max-hint
+  reader alone would still return `not-fixed-missing`; adding both readers
+  would find no advertised attribute on these windows. Passing
+  `min_size_px`/`max_size_px` through the controller's spawn payload is also
+  insufficient: the fixture accepted both hints at creation and AppKit still
+  exposed neither. The gap is therefore AX exposure on this host, not just
+  the controller's id-only payload.
+- **Minimal options.** (1) Defer the native send leg and keep the offline
+  predicate coverage; native fixed-float send stays unproven with no product
+  change. (2) A product/core decision to admit fixed from a different native
+  fact (for example `AXSize` not settable, or min equal to the current size):
+  this contradicts the recorded admission-only predicate and the explicit
+  "resizable is never an admission input" rule, would auto-float
+  non-resizable/dialog-like windows, and needs a contract/decision entry plus
+  core policy and adapter plumbing. (3) A fixture-only synthetic fact
+  injection to exercise classification end to end: explicitly not truthful
+  admission, so it cannot count as a native send proof. A max-hint reader
+  plus controller spawn payload is not an option by itself; the evidence
+  shows the minimum is absent too.
+- **Not proven.** The fixed-float send leg remains unproven: no product was
+  launched, no chord was posted, no window was sent or moved. Teardown was
+  clean (shutdown reply, server exited, socket and owned windows gone, no
+  fixture or caffeinate process, private run dir removed, Spaces
+  unchanged).
+
 ### Integration triage (2026-11-23)
 
 Corrected classification of the red `tests/integration` target (the earlier
@@ -500,6 +731,12 @@ core-policy stop, not a stale mock.
 | `scoped_gates` ×3 | Stale expectations plus one fixture gap. | Legs expect `["size","position"]` with a redundant final-size skip; the fix-up refusal arms the readback call so the final size leg is still attempted; own-bundle unscoped admission now compares own-process refusal plus a scoped listed-probe refusal. Green. |
 | `scoped_tile` ×3, `focus_gaps_trace` ×1 | Owner-slot dispatch retires the outbox row at its terminal completion; stale-select admission has no busy gate; arrival needs its own attested selected oracle. | All three ported with those source contracts cited. `deleted_space_retires_domain_and_reseeds` is green: the fake host now runs a genuine create leg (tree's read-only `RuntimeHandle::native_creation_requests`, mint-baseline `order_before`, a real append, an `Accepted` uncorrelated attempt with `created_native: None`, then the appended readback), so the core binds the trailing spare by its unique-delta rule before the deletion. No assertion was weakened and no core file changed. Two limits recorded: creating *after* the delete cannot bind (the launch spare's mint baseline no longer matches the live order and a second pending row per output latches `AmbiguousCreation`), and the stale-mint-baseline conflict noted in `docs/porting/world-contract.md` remains an open core question rather than something this change resolves. |
 | `runtime_freshness` ×2 | Both were settle-order races in the tests, not product flakes: the retained admission focus is controller-visible only until its terminal result. | Tests wait for the `focus-result`/`not-called` terminal before draining and assert one armed dispatch with an empty outbox; `input_eos_is_observed_not_spun` settles on the input owner's join edge (the EOS counter bumps from inside the exiting thread, before the join edge). Green (8/8 and 5/5 repeated runs). |
+
+**Resolved 2026-11-24.** The stop above was a test-shape limit, not a core
+allowance. The test now drives a distinct `PositiveClose` cause from a second
+live app and reaches the same depth-1 outbox fence (`focus_dispatched=1`,
+`focus_dropped_full=1`); the integration target is 150 passed / 0 failed. See
+the [focus-saturation resolution](archive/macos-focus-saturation-close-cause.md).
 
 ### Offline gates (2026-11-23)
 
@@ -868,9 +1105,11 @@ run after the port:
 - The pre-port choices above are approved; implementation/evidence remains.
   Shared host-settled geometry design still needs user approval after slice 1
   and before slice 3, and before any core change.
-- M3: select/prove atomic storage and within-session reacquisition, numeric
-  launch-date/process/session fences and re-login namespace changes; no store
-  adoption is established by finite CG ID churn experiments.
+- M3: D4 (2026-11-24) selects an adapter-owned atomic store with live-lifetime
+  verification, pre-admission import, desired-versus-durable reconciliation and
+  recoverable hold; numeric launch-date stability, store adoption and re-login
+  namespace rejection still need native proof. No store adoption is established
+  by finite CG ID churn experiments.
 - M4's product route is decided, not reopened here; shared implementation and
   native restore/clear/send/restart outcomes remain unproved. M5 causal creation,
   M6 retirement consumer and M2 lifetime continuity still need native proof.

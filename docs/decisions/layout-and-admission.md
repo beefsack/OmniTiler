@@ -41,6 +41,7 @@
 - Assumes / revisit if: KWin sentinel is host adaptation; COSMIC partial-zero raw equality is deliberately not followed. See canonical same-axis setting in [commands](commands.md) only if needed.
 - Status: active, 2026-10-10
 - Evidence: [predicate implementation](../changes/archive/reference-comparison-implementation.md), [admission](../changes/archive/windows-fixed-size-admission.md).
+- macOS host limit (D1, 2026-11-24): AppKit exposes no `AXMinSize`/`AXMinimumSize`/`AXMaxSize` on standard windows, including explicit min=max fixtures, so the hints-only predicate cannot mark them fixed. macOS tiles such fixed `AXStandardWindow`s unless the user floats them; dialogs/sheets/modals/`AXFloatingWindow` still float. Do not infer fixed admission from `AXSize` settability or inject synthetic bounds; revisit only after real-app dogfooding and a core capability amendment. [review](../changes/macos-v4-open-decisions-review.md#decision-1-fixed-float-admission-policy)
 
 ### Fixed-size admission state transitions
 - Decision: Hint changes are admission-only; retain self-resize reaction to avoid gaps/overlaps. Explicit tile/sticky-off-to-tile wins for same live client; new client classifies anew. Born-maximized fixed uses floating base under native maximize; born-fullscreen first exit freshly classifies, fixed floats without writes; fixed-floating restores float. Workspace enable examines every candidate including floating-workspace arrivals; fixed remains untouched float, others tile; explicit tile override wins. Fixed user tile overrides persist across owner restart with recompute fallback.
@@ -202,6 +203,7 @@
 - Assumes / revisit if: minimum-only infeasibility remains B6, not geometric capacity exhaustion.
 - Status: active, User 2026-11-13 supersedes D3's configurable default and overlap alternative; D3 float placement/provenance and all D4 focus rules remain.
 - Evidence: [best-effort admission](../changes/archive/best-effort-admission.md).
+- macOS native evidence limit (D2, 2026-11-24): core geometric capacity and adapter frame-mapping tests stand. Native exhaustion/shrink-repair proof is deferred because no fixture/CLI work-area seam exists and ~19,688–21,400 default-hint windows are needed at gap 8 (512 at gap 64), beyond safe fixture scale. No product work-area override or `CGVirtualDisplay` helper; keep the native proof recorded as unproven. [review](../changes/macos-v4-open-decisions-review.md#decision-2-constrained-work-area-route-for-no-space-and-best-effort-admission)
 
 ### Best-effort D5: persistence and retry
 - Decision: Never automatically re-tile after close, growth, smaller gaps, visits, replies or disable/enable. Explicit tile retries once; if still no space retain float with no false successful-tile override. Persist float membership across restart exactly like user floats. Diagnostic origin and tiled-admission history need not survive core restart; neither affects ordinary float behavior. Close/identity replacement clears live origin/order.
