@@ -5248,6 +5248,8 @@ mod tests {
                 presentation: PresentationRowV4::Valid(presentation),
                 intent_records: Vec::new(),
                 renderer_input: None,
+                pointer_activity: None,
+                warp_spent: None,
             }
         }
         let mut engine =
@@ -5513,6 +5515,8 @@ mod tests {
             presentation: PresentationRowV4::Valid(v4_ingress()),
             intent_records: Vec::new(),
             renderer_input: None,
+            pointer_activity: None,
+            warp_spent: None,
         };
         let reply =
             match tiler_protocol::world_admission::handle_report_checked(&mut engine, &report, &[])

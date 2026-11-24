@@ -158,6 +158,8 @@ pub(crate) fn report_full(
         presentation: PresentationRowV4::Valid(empty_ingress()),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 

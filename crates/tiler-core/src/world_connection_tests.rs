@@ -73,6 +73,8 @@ fn report(seq: u64, complete: bool) -> WorldReportV4 {
         renderer_input: None,
 
         intent_records: Vec::new(),
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 

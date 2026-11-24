@@ -105,6 +105,8 @@ fn report(
         presentation: PresentationRowV4::Valid(ingress(focused)),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 

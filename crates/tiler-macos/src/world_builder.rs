@@ -717,6 +717,8 @@ pub(crate) fn build_report(input: &mut ReportInput<'_>) -> WorldReportV4 {
         presentation: PresentationRowV4::Valid(input.presentation.clone()),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 

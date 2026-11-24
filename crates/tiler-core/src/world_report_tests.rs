@@ -118,6 +118,8 @@ fn test_report() -> WorldReportV4 {
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         renderer_input: None,
         intent_records: Vec::new(),
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 

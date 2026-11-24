@@ -223,6 +223,8 @@ fn report_attempts(
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 
@@ -2222,6 +2224,8 @@ fn implicit_send_source_freezes_pre_observation_home() {
                 .into_iter()
                 .map(|out| OutputId(out.to_owned()))
                 .collect(),
+            pointer_activity: None,
+            warp_spent: None,
             ..report(
                 seq,
                 seq,

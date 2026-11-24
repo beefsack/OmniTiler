@@ -134,6 +134,8 @@ fn report_v4(
         presentation: PresentationRowV4::Valid(ingress),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 
@@ -1228,6 +1230,8 @@ fn held_presentation_publishes_neutral_shapes() {
             kind: crate::world_report::RowDiagnosticKind::InvalidFact,
             diagnostic: None,
         }),
+        pointer_activity: None,
+        warp_spent: None,
         ..report_v4(
             4,
             screens_pair(),

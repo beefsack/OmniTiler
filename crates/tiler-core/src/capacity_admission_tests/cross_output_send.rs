@@ -116,6 +116,8 @@ fn send_refused_when_target_unrepresentable_source_preserved() {
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     };
 
     // Source ws-1 roomy with a, b (b focused); the named target domain

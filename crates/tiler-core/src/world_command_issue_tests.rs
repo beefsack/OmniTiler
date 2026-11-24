@@ -117,6 +117,8 @@ fn report_v4_simple(seq: u64, screens: Vec<crate::world_report::ScreenReport>) -
         presentation: PresentationRowV4::Valid(PresentationIngressV4::default()),
         intent_records: Vec::new(),
         renderer_input: None,
+        pointer_activity: None,
+        warp_spent: None,
     }
 }
 
