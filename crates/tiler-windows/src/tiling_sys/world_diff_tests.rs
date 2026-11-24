@@ -3267,7 +3267,7 @@ fn capture_carries_cursor_hit_with_its_cursor() {
         Some("w1")
     );
     let mut seq = WorldSequencer::bootstrap(ADAPTER, GENERATION).expect("bootstrap");
-    let report = seq.assemble(&captured, 7, None, None, 0);
+    let report = seq.assemble(&captured, 7, None, None, 0, None);
     assert_eq!(
         report.cursor_hit.as_ref().map(|id| id.0.as_str()),
         Some("w1")
@@ -3950,6 +3950,7 @@ pub(super) fn dispatch_obs(
         foreground,
         ms,
         None,
+        None,
     )
     .expect("dispatch")
 }
@@ -4320,6 +4321,7 @@ fn send_roundtrip_actuates_attempts_and_converges_without_remove() {
             1001,
             0,
             None,
+            None,
         )
         .expect("dispatch");
     let reply = match seq.deliver(&report) {
@@ -4361,6 +4363,7 @@ fn send_roundtrip_actuates_attempts_and_converges_without_remove() {
             1001,
             0,
             Some(send),
+            None,
         )
         .expect("send dispatch");
     let reply = match seq.deliver(&report) {
@@ -4444,6 +4447,7 @@ fn send_roundtrip_actuates_attempts_and_converges_without_remove() {
             1001,
             0,
             None,
+            None,
         )
         .expect("attempt dispatch");
     assert!(report.member_attempts.iter().any(|f| f.operation_id == op));
@@ -4517,6 +4521,7 @@ fn rejection_correlates_to_exact_flight_and_fences_catchup() {
             1001,
             0,
             None,
+            None,
         )
         .expect("flight");
     let req = report.request_id.clone();
@@ -4541,7 +4546,8 @@ fn rejection_correlates_to_exact_flight_and_fences_catchup() {
             &rig.areas,
             1001,
             0,
-            Some(send)
+            Some(send),
+            None,
         ),
         Err(DispatchError::CatchupRequired)
     ));
@@ -4587,6 +4593,7 @@ fn close_receipt_prunes_exact_pairs_only() {
             &rig.areas,
             1001,
             0,
+            None,
             None,
         )
         .expect("dispatch");
@@ -4638,6 +4645,7 @@ fn consumed_command_reconciles_without_replay() {
             1001,
             0,
             None,
+            None,
         )
         .expect("dispatch");
     let reply = match seq.deliver(&report) {
@@ -4677,6 +4685,7 @@ fn consumed_command_reconciles_without_replay() {
             1001,
             0,
             Some(switch.clone()),
+            None,
         )
         .expect("view dispatch");
     assert_eq!(report.command_seq, Some(1));
@@ -4705,7 +4714,7 @@ fn consumed_command_reconciles_without_replay() {
         &rig.areas,
         1001,
     );
-    let resent = seq.assemble(&captured, seq.next_request_seq(), Some(1), Some(switch), 0);
+    let resent = seq.assemble(&captured, seq.next_request_seq(), Some(1), Some(switch), 0, None);
     match seq.deliver(&resent) {
         WorldOutcome::CommandConsumed(_) => {}
         other => panic!("expected consumed, got {other:?}"),
@@ -4746,6 +4755,7 @@ fn float_production_seam_reports_raw_attempt_and_core_holds_token() {
             1001,
             2000,
             command,
+            None,
         )
         .expect("float dispatch");
     assert_eq!(report.command_seq, Some(1));

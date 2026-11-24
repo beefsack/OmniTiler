@@ -178,6 +178,45 @@ pub(super) fn hide_border(state: &mut TileLoop, reason: &str) {
     );
 }
 
+/// Anchored outer rectangle from the applied anchored-border row (v4 carries
+/// the ring as the witness frame plus per-side outsets, never a precomputed
+/// outer rect). The reply's foreground token must name this live target and
+/// the row must be visible; the witness frame is expanded by the uniform
+/// core-provided outsets. Missing/non-uniform outsets, a missing witness, or
+/// frame arithmetic overflow is the geometry veto (`None`), never a stale or
+/// guessed rectangle. Pure over the row so the anchored path unit-tests
+/// without a desktop; the local style values remain the paint widths.
+fn anchored_outer_rect(
+    presentation_foreground: &str,
+    border: &tiler_core::world_report::BorderPresentationV4,
+    target: &str,
+) -> Option<Rect> {
+    if presentation_foreground != target || !border.visible {
+        return None;
+    }
+    let witness = border.witness.as_ref()?;
+    // The row must be about this exact live target at every leg: the
+    // border subject, the witness subject (`win`), and the observed
+    // foreground token. A cross-window or malformed row never paints at
+    // the current foreground frame.
+    if border.subject.as_ref().is_none_or(|subject| subject.0 != target)
+        || witness.win.0 != target
+        || witness.foreground.0 != target
+    {
+        return None;
+    }
+    let [left, top, right, bottom] = border.outsets?;
+    if left != top || top != right || right != bottom {
+        return None;
+    }
+    Some(Rect {
+        x: witness.frame.x.checked_sub(left)?,
+        y: witness.frame.y.checked_sub(top)?,
+        w: witness.frame.w.checked_add(left)?.checked_add(right)?,
+        h: witness.frame.h.checked_add(top)?.checked_add(bottom)?,
+    })
+}
+
 /// Fast active-border refresh for one loop wake: reads only the foreground
 /// window (fresh identity plus fresh visibility facts), without full window
 /// observation, so gesture following never waits on reconciliation. Shapes
@@ -306,25 +345,15 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
     // outsets, never a precomputed outer rect. Expand the witness frame by
     // the core-provided outsets; the local style values remain the paint
     // widths (the reply width/gap/radius describe the same host-scaled
-    // style). Missing or non-uniform outsets are a geometry veto.
-    let outer = (|| {
-        let reply = state.world.last_reply()?;
-        if reply.presentation.foreground != window.token || !reply.presentation.border.visible {
-            return None;
-        }
-        let border = &reply.presentation.border;
-        let witness = border.witness.as_ref()?;
-        let [left, top, right, bottom] = border.outsets?;
-        if left != top || top != right || right != bottom {
-            return None;
-        }
-        Some(Rect {
-            x: witness.frame.x.checked_sub(left)?,
-            y: witness.frame.y.checked_sub(top)?,
-            w: witness.frame.w.checked_add(left)?.checked_add(right)?,
-            h: witness.frame.h.checked_add(top)?.checked_add(bottom)?,
-        })
-    })();
+    // style). Missing, non-uniform, or unjoined witness/outsets are the
+    // geometry veto, never a stale paint.
+    let outer = state.world.last_reply().and_then(|reply| {
+        anchored_outer_rect(
+            &reply.presentation.foreground,
+            &reply.presentation.border,
+            &window.token,
+        )
+    });
     let Some(outer) = outer else {
         hide_border(state, "geometry");
         return;
@@ -577,5 +606,112 @@ pub(super) fn refresh_active_border(state: &mut TileLoop, me: &ProcessIdentity, 
                 }),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod anchored_outer_tests {
+    use super::anchored_outer_rect;
+    use tiler_core::directional::WindowId;
+    use tiler_core::geometry::Rect;
+    use tiler_core::world_report::{BorderPresentationV4, FrameWitness};
+
+    fn witness() -> FrameWitness {
+        FrameWitness {
+            win: WindowId("win-a".to_owned()),
+            obs: 7,
+            frame: Rect {
+                x: 100,
+                y: 50,
+                w: 40,
+                h: 90,
+            },
+            foreground: WindowId("win-a".to_owned()),
+        }
+    }
+
+    fn visible_border() -> BorderPresentationV4 {
+        BorderPresentationV4 {
+            visible: true,
+            reason: None,
+            subject: Some(WindowId("win-a".to_owned())),
+            outsets: Some([5, 5, 5, 5]),
+            width: Some(2),
+            radius: Some(4),
+            witness: Some(witness()),
+        }
+    }
+
+    #[test]
+    fn visible_witness_frame_expands_by_uniform_outsets() {
+        let out = anchored_outer_rect("win-a", &visible_border(), "win-a")
+            .expect("joined visible row yields the anchored outer rect");
+        assert_eq!(
+            out,
+            Rect {
+                x: 95,
+                y: 45,
+                w: 50,
+                h: 100,
+            }
+        );
+    }
+
+    #[test]
+    fn non_uniform_outsets_veto_geometry() {
+        let mut border = visible_border();
+        border.outsets = Some([5, 6, 5, 5]);
+        assert!(anchored_outer_rect("win-a", &border, "win-a").is_none());
+    }
+
+    #[test]
+    fn missing_witness_or_outsets_veto_geometry() {
+        let mut no_witness = visible_border();
+        no_witness.witness = None;
+        assert!(anchored_outer_rect("win-a", &no_witness, "win-a").is_none());
+        let mut no_outsets = visible_border();
+        no_outsets.outsets = None;
+        assert!(anchored_outer_rect("win-a", &no_outsets, "win-a").is_none());
+    }
+
+    #[test]
+    fn hidden_row_or_other_foreground_vetoes_geometry() {
+        let mut hidden = visible_border();
+        hidden.visible = false;
+        assert!(anchored_outer_rect("win-a", &hidden, "win-a").is_none());
+        assert!(anchored_outer_rect("win-b", &visible_border(), "win-a").is_none());
+    }
+
+    #[test]
+    fn row_legs_must_all_join_the_live_target() {
+        // Border subject missing or naming another window: the row is not
+        // about this target, even with a plausible witness frame.
+        let mut no_subject = visible_border();
+        no_subject.subject = None;
+        assert!(anchored_outer_rect("win-a", &no_subject, "win-a").is_none());
+        let mut other_subject = visible_border();
+        other_subject.subject = Some(WindowId("win-b".to_owned()));
+        assert!(anchored_outer_rect("win-a", &other_subject, "win-a").is_none());
+        // Witness subject leg (`win`) and observed-foreground leg must join
+        // the same live target as the presentation foreground token.
+        let mut cross_win = visible_border();
+        cross_win.witness = Some(FrameWitness {
+            win: WindowId("win-b".to_owned()),
+            ..witness()
+        });
+        assert!(anchored_outer_rect("win-a", &cross_win, "win-a").is_none());
+        let mut cross_foreground = visible_border();
+        cross_foreground.witness = Some(FrameWitness {
+            foreground: WindowId("win-b".to_owned()),
+            ..witness()
+        });
+        assert!(anchored_outer_rect("win-a", &cross_foreground, "win-a").is_none());
+    }
+
+    #[test]
+    fn overflow_vetoes_geometry_instead_of_wrapping() {
+        let mut border = visible_border();
+        border.outsets = Some([i32::MAX, i32::MAX, i32::MAX, i32::MAX]);
+        assert!(anchored_outer_rect("win-a", &border, "win-a").is_none());
     }
 }

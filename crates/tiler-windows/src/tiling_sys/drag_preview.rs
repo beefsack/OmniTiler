@@ -1,6 +1,19 @@
 #![forbid(unsafe_code)]
 use super::*;
 
+/// Exact preview attribution: the reply's bound gesture id must be this
+/// gesture's id and its source must still be the START-frozen source domain.
+/// A stale/replacement id or a drifted source hides exactly like a refused
+/// preview; a missing gesture id never matches.
+fn preview_binding_matches(
+    preview_id: u64,
+    preview_source: &tiler_core::session::DomainKey,
+    gesture_id: Option<u64>,
+    expected_source: &tiler_core::session::DomainKey,
+) -> bool {
+    gesture_id == Some(preview_id) && preview_source == expected_source
+}
+
 /// Drop-preview refresh for one loop wake while an accepted move gesture
 /// holds the loop: a separate owned click-through nonactivating filled
 /// target-slot surface ABOVE windows (KWin overlay-item analogue).
@@ -179,9 +192,11 @@ pub(super) fn refresh_drag_preview(
     );
     // Source fence on the correlated result (START bound): a stale result
     // after Finish, drift, or a mover swap never renders.
+    let gesture_id = state.gesture_seq.get(&hwnd).copied();
     let Some((rect, next_prior)) = reply.as_ref().and_then(|reply| {
         let preview = reply.drag_preview.as_ref()?;
-        (preview.source == source_key).then(|| (preview.rect, preview.hover.clone()))
+        preview_binding_matches(preview.id, &preview.source, gesture_id, &source_key)
+            .then(|| (preview.rect, preview.hover.clone()))
     }) else {
         if let Some(bound) = state.preview_bound.get_mut(&hwnd) {
             bound.hover_prior = None;
@@ -284,5 +299,34 @@ pub(super) fn refresh_drag_preview(
                 "hover_prior": prior_desc,
             }),
         );
+    }
+}
+
+#[cfg(test)]
+mod preview_binding_tests {
+    use super::preview_binding_matches;
+    use tiler_core::directional::{OutputId, WorkspaceId};
+    use tiler_core::session::DomainKey;
+    fn domain() -> DomainKey { DomainKey { output: OutputId("o1".to_owned()), workspace: WorkspaceId("ws-1".to_owned()) } }
+    fn other() -> DomainKey { DomainKey { output: OutputId("o1".to_owned()), workspace: WorkspaceId("ws-2".to_owned()) } }
+
+    #[test]
+    fn exact_id_and_source_passes() {
+        assert!(preview_binding_matches(7, &domain(), Some(7), &domain()));
+    }
+
+    #[test]
+    fn wrong_id_fails() {
+        assert!(!preview_binding_matches(8, &domain(), Some(7), &domain()));
+    }
+
+    #[test]
+    fn wrong_source_fails() {
+        assert!(!preview_binding_matches(7, &other(), Some(7), &domain()));
+    }
+
+    #[test]
+    fn missing_gesture_id_fails() {
+        assert!(!preview_binding_matches(7, &domain(), None, &domain()));
     }
 }

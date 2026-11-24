@@ -141,6 +141,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             0,
             0,
             None,
+            None,
         )
         .expect("dispatch");
     assert_eq!(report.windows.len(), 1);
@@ -173,6 +174,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             &areas,
             0,
             0,
+            None,
             None,
         )
         .expect("dispatch");
@@ -215,6 +217,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
                 output: tiler_core::directional::OutputId(state.output_token("DEV1")),
                 workspace: tiler_core::directional::WorkspaceId(target.clone()),
             }),
+            None,
         )
         .expect("command dispatch");
     // The command report still proves the actual (old) view, never the
@@ -245,6 +248,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             0,
             0,
             None,
+            None,
         )
         .expect("dispatch");
     let reply = match seq.deliver(&pending) {
@@ -273,6 +277,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             &areas,
             0,
             0,
+            None,
             None,
         )
         .expect("dispatch");
@@ -353,6 +358,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             &areas,
             0,
             0,
+            None,
             None,
         )
         .expect("dispatch");
@@ -435,6 +441,7 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
             &areas,
             0,
             0,
+            None,
             None,
         )
         .expect("dispatch");
@@ -718,6 +725,7 @@ fn production_select_route_reports_honest_outcome_without_proof() {
         &mut observed,
         "DEV1",
         &target,
+        None,
         &ctx,
         None,
         false,

@@ -18,7 +18,9 @@ use super::world_diff::{FreshHost, NativeOps};
 use super::world_native::{LiveNative, NativePrimitives};
 use super::{MonitorArea, ObservedWindow, RetainedRow, TileLoop, live_foreground_window};
 use std::collections::HashMap;
-use tiler_core::world_report::{CommandResult, TransferKind, WorldCommand, WorldReplyV4};
+use tiler_core::world_report::{
+    CommandResult, RendererInput, TransferKind, WorldCommand, WorldReplyV4,
+};
 
 /// One ordered world command's outcome: the incorporated v4 reply plus the
 /// correlated settlement result (`None` when the command did not execute:
@@ -2158,6 +2160,7 @@ fn run_world_command_impl(
     command: WorldCommand,
     cursor: Option<(i32, i32)>,
     mode: CommandApplyMode,
+    renderer_input: Option<RendererInput>,
 ) -> Option<WorldCommandOutcome> {
     let trace = state.trace;
     let tick = state.tick;
@@ -2294,6 +2297,7 @@ fn run_world_command_impl(
             foreground_hwnd,
             tick_ms,
             command,
+            renderer_input,
         ) {
             Ok(report) => report,
             // Observation-only catch-up is pending or the owner is busy:
@@ -2843,6 +2847,45 @@ pub(super) fn run_world_command(
         command,
         cursor,
         CommandApplyMode::Apply,
+        None,
+    )
+}
+
+/// Route one explicit [`WorldCommand`] that carries renderer input: the
+/// revision actually drawn plus the exact core row the native hit selected.
+/// Same dispatch/deliver/apply/acknowledge tail as [`run_world_command`]; the
+/// optional input rides the report exactly as the adapter observed it, so the
+/// core alone decides identity/home or `stale-render-target` refusal. `None`
+/// is an ordinary command with no renderer row (tray/CLI/keyboard paths).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_world_command_with_renderer(
+    state: &mut TileLoop,
+    me: &crate::model::ProcessIdentity,
+    store: &crate::storage::LedgerStore,
+    dir: &std::path::Path,
+    observed: &[ObservedWindow],
+    retained: &[RetainedRow],
+    areas: &[MonitorArea],
+    foreground_hwnd: u64,
+    fulls: &[tiler_core::geometry::Rect],
+    command: WorldCommand,
+    cursor: Option<(i32, i32)>,
+    renderer_input: Option<RendererInput>,
+) -> Option<WorldCommandOutcome> {
+    run_world_command_impl(
+        state,
+        me,
+        store,
+        dir,
+        observed,
+        retained,
+        areas,
+        foreground_hwnd,
+        fulls,
+        command,
+        cursor,
+        CommandApplyMode::Apply,
+        renderer_input,
     )
 }
 
@@ -2907,6 +2950,7 @@ pub(super) fn run_world_command_core_only(
         command,
         cursor,
         CommandApplyMode::Superseded,
+        None,
     )
 }
 

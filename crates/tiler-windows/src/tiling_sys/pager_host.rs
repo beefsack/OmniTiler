@@ -861,12 +861,13 @@ pub(super) fn sync_taskbar_pager(
     // the pagers below are built from; the trace gate and the paired-proof
     // guard below key on that same triple, so a newer snapshot can never
     // pair with an older proof.
-    let (screens, foreground, observation, revision, request): (
+    let (screens, foreground, observation, revision, request, drawn_rev): (
         Vec<tiler_core::world_presentation::PagerScreen>,
         String,
         u64,
         u64,
         String,
+        Option<u64>,
     ) = state
         .world
         .last_reply()
@@ -877,6 +878,10 @@ pub(super) fn sync_taskbar_pager(
                 reply.based_on_observation_seq,
                 reply.state_revision,
                 reply.request_id.clone(),
+                // The revision actually drawn for these cells: the exact
+                // reply's presentation revision, never the latest cached
+                // state revision and never a guess when no reply exists.
+                Some(reply.presentation.rev),
             )
         })
         .unwrap_or_default();
@@ -910,6 +915,7 @@ pub(super) fn sync_taskbar_pager(
             area.full,
             &bar,
             focused_highlight,
+            drawn_rev,
         ) {
             Ok(pager) => {
                 state.pager_refusals.remove(&area.device);
@@ -1176,6 +1182,24 @@ pub(super) fn poll_pager_select(
     state.tick += 1;
     let tick = state.tick;
     let start = Instant::now();
+    // Renderer input requires the revision actually drawn on the clicked
+    // cell. A click whose painted frame predates any applied reply (or that
+    // was staged without a drawn revision) has no truthful revision to
+    // report, so it refuses locally and is consumed once: the core must
+    // never receive a guessed or defaulted revision.
+    let Some(render_rev) = request.render_rev else {
+        let mut line = workspace_log(
+            state,
+            tick,
+            "select",
+            index,
+            "pager",
+            "refused-no-drawn-revision",
+        );
+        line["output"] = serde_json::Value::from(state.output_token(&request.output));
+        log_json_at(&state.log_path, line);
+        return;
+    };
     let facts = pager_suppress_facts(state, me, fulls, state.taskbar_pager, areas.is_empty());
     if let Some(reason) = facts.reason {
         let mut line = workspace_log(state, tick, "select", index, "pager", reason);
@@ -1211,6 +1235,7 @@ pub(super) fn poll_pager_select(
         areas,
         &request.output,
         &request.workspace,
+        Some(render_rev),
         index,
         tick,
         start,
@@ -1232,6 +1257,7 @@ pub(super) fn dispatch_verified_select(
     areas: &[MonitorArea],
     output: &str,
     target: &str,
+    render_rev: Option<u64>,
     index: u8,
     tick: u64,
     start: Instant,
@@ -1269,6 +1295,7 @@ pub(super) fn dispatch_verified_select(
         &mut observed,
         output,
         target,
+        render_rev,
         &ctx,
         None,
         false,
@@ -1424,11 +1451,18 @@ mod pager_host_tests {
     }
 
     fn push_click(state: &mut super::TileLoop, output: &str, workspace: &str) {
+        // Attach the genuinely drawn revision like a native click does, so
+        // the gate tests below reach their own fence instead of tripping the
+        // no-drawn-revision refusal first.
+        let drawn = state
+            .world
+            .last_reply()
+            .map(|reply| reply.presentation.rev);
         *state
             .pager_clicks
             .lock()
             .unwrap_or_else(|poison| poison.into_inner()) =
-            Some(SelectScope::new(output, workspace, 1));
+            Some(SelectScope::new(output, workspace, 1).with_render_rev(drawn));
     }
 
     fn pending_clicks(state: &super::TileLoop) -> usize {
@@ -1510,6 +1544,10 @@ mod pager_host_tests {
         push_click(&mut state, &output, "ws-stale");
         push_click(&mut state, &output, &target);
         assert_eq!(pending_clicks(&state), 1);
+        let drawn = state
+            .world
+            .last_reply()
+            .map(|reply| reply.presentation.rev);
         let staged = state
             .pager_clicks
             .lock()
@@ -1517,9 +1555,30 @@ mod pager_host_tests {
             .unwrap_or_default();
         assert_eq!(
             staged,
-            Some(SelectScope::new(&output, &target, 1)),
+            Some(SelectScope::new(&output, &target, 1).with_render_rev(drawn)),
             "only the latest click survives"
         );
+        clear_pending_seams();
+    }
+
+    #[test]
+    fn click_without_drawn_revision_refuses_locally() {
+        let (mut state, me, store, dir, output, active, target) = pager_rig();
+        let (areas, fulls) = pager_areas(&output);
+        // Every other gate is open and a strip is served: only the missing
+        // drawn revision can explain the refusal.
+        state.pager_served.push(output.clone());
+        *state
+            .pager_clicks
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner()) =
+            Some(SelectScope::new(&output, &target, 1));
+        open_gate();
+        poll_pager_select(&mut state, &me, &store, &dir, &fulls, &areas);
+        // Consumed once with no dispatch: a guessed/defaulted revision is
+        // never sent to the core.
+        assert_eq!(pending_clicks(&state), 0);
+        assert_eq!(state.active_view(&output).as_deref(), Some(active.as_str()));
         clear_pending_seams();
     }
 
@@ -2125,6 +2184,10 @@ mod pager_host_tests {
                 &state.pager_highlight,
                 state.accent_shared.get(),
             ),
+            state
+                .world
+                .last_reply()
+                .map(|reply| reply.presentation.rev),
         )
         .expect("pager anchors on the bottom-docked bar")
     }
@@ -2718,6 +2781,7 @@ mod pager_host_tests {
             &mut observed,
             output,
             target,
+            None,
             &ctx,
             None,
             false,
@@ -2972,6 +3036,7 @@ mod pager_host_tests {
             pager_full(),
             &pager_bar(),
             (0xbd, 0x93, 0xf9),
+            None,
         )
         .expect("crowded strip fits");
         assert_eq!(pager.cells.len(), 9);
@@ -3179,6 +3244,7 @@ mod pager_host_tests {
                     mini_icons: Vec::new(),
                 }],
                 active_index: 0,
+                drawn_rev: None,
                 dpi: 96,
                 focused_highlight: (0xbd, 0x93, 0xf9),
             }
@@ -3240,6 +3306,7 @@ mod pager_host_tests {
                     mini_icons: Vec::new(),
                 }],
                 active_index: 0,
+                drawn_rev: None,
                 dpi: 96,
                 focused_highlight: (0xbd, 0x93, 0xf9),
             }
@@ -3576,6 +3643,7 @@ mod pager_host_tests {
                 monitor,
                 &pager_bar(),
                 (0xbd, 0x93, 0xf9),
+                None,
             )
             .expect("fits")
         };
@@ -4569,5 +4637,103 @@ mod pager_host_tests {
             pager_suppress_signature(&second)
         );
         clear_pending_seams();
+    }
+
+    /// Pager-cell select through the production adapter lane with an explicit
+    /// drawn presentation revision (the exact one the strip painted).
+    fn pager_select_with_rev(
+        state: &mut super::TileLoop,
+        me: &crate::model::ProcessIdentity,
+        store: &crate::storage::LedgerStore,
+        dir: &std::path::Path,
+        output: &str,
+        target: &str,
+        render_rev: Option<u64>,
+    ) -> super::super::SelectEffect {
+        let areas = vec![super::MonitorArea {
+            device: output.to_owned(),
+            work: pager_full(),
+            full: pager_full(),
+            dpi: 96,
+        }];
+        let fulls = vec![pager_full()];
+        let setup = frame_of_focus();
+        let mut observed = vec![
+            live_observed_hwnd(911, 7, "creation-fa", setup),
+            live_observed_hwnd(912, 7, "creation-fb", setup),
+        ];
+        let ctx = super::ActionCtx {
+            correlation: "pager-render-rev-test".to_owned(),
+            tick: state.tick,
+            queued_at: std::time::Instant::now(),
+            start: std::time::Instant::now(),
+        };
+        let effect = super::super::workspace_do_select(
+            state,
+            me,
+            store,
+            dir,
+            &fulls,
+            &areas,
+            &mut observed,
+            output,
+            target,
+            render_rev,
+            &ctx,
+            None,
+            false,
+            false,
+        );
+        inject_pending_observe(Vec::new(), Vec::new(), false);
+        effect
+    }
+
+    #[test]
+    fn stale_drawn_revision_reports_core_refusal_and_exact_revision_applies() {
+        let (mut state, me, store, dir, output, _key_a, _key_b) = focus_rig();
+        let seed_reply = state.world.last_reply().expect("seed reply").clone();
+        let out_token = state.output_token(&output);
+        let current = state
+            .world
+            .engine()
+            .logical_view(&out_token)
+            .expect("seeded view");
+        let target = state
+            .world
+            .engine()
+            .logical_ring(&out_token)
+            .into_iter()
+            .find(|id| id != &current)
+            .expect("second logical workspace");
+        let rev = seed_reply.presentation.rev;
+        // A drawn revision newer than the latest published presentation is
+        // stale: the core refuses, the adapter reports the fixed token, and
+        // the view does not move.
+        let refused = pager_select_with_rev(
+            &mut state,
+            &me,
+            &store,
+            &dir,
+            &output,
+            &target,
+            Some(u64::MAX),
+        );
+        assert_eq!(refused.outcome, "stale-render-target");
+        assert_eq!(
+            state.world.engine().logical_view(&out_token).as_deref(),
+            Some(current.as_str())
+        );
+        // The revision actually painted (the exact applied reply's) passes
+        // the core gate and the select reports success.
+        let applied = pager_select_with_rev(
+            &mut state,
+            &me,
+            &store,
+            &dir,
+            &output,
+            &target,
+            Some(rev),
+        );
+        assert_eq!(applied.outcome, "ok");
     }
 }

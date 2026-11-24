@@ -93,6 +93,8 @@ pub struct SelectScope {
     pub output: String,
     pub workspace: String,
     pub index: u32,
+    /// Presentation revision the clicked cell was drawn from; `None` for tray/focused-menu picks (no pager draw) and for clicks from frames painted before any reply.
+    pub render_rev: Option<u64>,
 }
 
 impl SelectScope {
@@ -102,7 +104,16 @@ impl SelectScope {
             output: output.to_owned(),
             workspace: workspace.to_owned(),
             index,
+            render_rev: None,
         }
+    }
+
+    /// Pager-click attribution: the exact presentation revision the clicked
+    /// cell was painted from. Tray/focused-menu picks keep `None`.
+    #[must_use]
+    pub fn with_render_rev(mut self, render_rev: Option<u64>) -> Self {
+        self.render_rev = render_rev;
+        self
     }
 }
 
@@ -221,6 +232,14 @@ mod tests {
         assert!(!verify_select_scope(&rendered, None, true));
         assert!(!verify_select_scope(&rendered, Some("mon-a"), false));
         assert!(!verify_select_scope(&rendered, None, false));
+    }
+
+    #[test]
+    fn select_scope_carries_pager_click_revision() {
+        let tray_pick = SelectScope::new("mon-a", "ws-1", 1);
+        assert!(tray_pick.render_rev.is_none());
+        let pager_pick = SelectScope::new("mon-a", "ws-1", 1).with_render_rev(Some(9));
+        assert_eq!(pager_pick.render_rev, Some(9));
     }
 
     #[test]

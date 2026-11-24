@@ -140,6 +140,7 @@ fn bootstrap_floats(state: &mut super::TileLoop, seq: &mut WorldSequencer) -> Ve
                 0,
                 0,
                 None,
+                None,
             )
             .expect("observation dispatches");
         match seq.deliver(&report) {
@@ -171,6 +172,7 @@ fn dispatch(
             0,
             0,
             Some(command),
+            None,
         )
         .expect("command dispatches");
     // Truthful capture: both managed windows ride with membership evidence

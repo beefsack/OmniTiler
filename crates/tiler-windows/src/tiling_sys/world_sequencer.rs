@@ -75,8 +75,8 @@ use tiler_core::ids::{GenerationId, OwnerId};
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
     BatchDisposition, BatchSettlement, CommandDisposition, CommandResult, FocusFeedback,
-    FrameAttempt, MemberAttempt, PresentationRowV4, ViewAttempt, VisibilityAttempt,
-    WORLD_CONTRACT_VERSION_V4, WorldCommand, WorldReplyV4, WorldReportV4,
+    FrameAttempt, FrameWitness, MemberAttempt, PresentationRowV4, RendererInput, ViewAttempt,
+    VisibilityAttempt, WORLD_CONTRACT_VERSION_V4, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 
 /// One outstanding sequenced report: the exact facts the core incorporation
@@ -552,7 +552,36 @@ impl WorldSequencer {
         command_seq: Option<u64>,
         command: Option<WorldCommand>,
         monotonic_ms: u64,
+        renderer_input: Option<RendererInput>,
     ) -> WorldReportV4 {
+        // Anchored-border witness (R20): the capture's own foreground sample
+        // (token + live frame) joined at this report's capture watermark. A
+        // foreground WindowFact whose frame disagrees with the fresh frame
+        // means the two legs observed different frames, so the witness stays
+        // unknown (border hides) instead of guessing which frame is current.
+        // No foreground token or no readable frame likewise disables it.
+        let mut presentation = captured.presentation.clone();
+        if !presentation.foreground.is_empty()
+            && let Some(frame) = presentation.foreground_frame
+        {
+            let fact_rect = captured
+                .windows
+                .iter()
+                .find(|fact| fact.window.0 == presentation.foreground)
+                .and_then(|fact| fact.rect);
+            if fact_rect.is_none_or(|rect| rect == frame) {
+                presentation.witness = Some(FrameWitness {
+                    win: tiler_core::directional::WindowId(presentation.foreground.clone()),
+                    obs: self.current_obs,
+                    frame,
+                    foreground: tiler_core::directional::WindowId(presentation.foreground.clone()),
+                });
+            }
+        }
+        // Observed output even for an unmanaged fullscreen foreground: the
+        // capture resolved it from the same frame rectangle, fail-closing to
+        // `None` when it disagrees with the foreground WindowFact.
+        presentation.foreground_out = captured.foreground_output.clone();
         let frames: Vec<FrameAttempt> = self.pending_frames.values().cloned().collect();
         let mut member_attempts: Vec<MemberAttempt> =
             self.pending_members.values().cloned().collect();
@@ -607,9 +636,9 @@ impl WorldSequencer {
             state_attempts: Vec::new(),
             visibility_attempts,
             focus_feedback,
-            presentation: PresentationRowV4::Valid(captured.presentation.clone()),
+            presentation: PresentationRowV4::Valid(presentation),
             intent_records: Vec::new(),
-            renderer_input: None,
+            renderer_input,
         }
     }
 
@@ -635,6 +664,7 @@ impl WorldSequencer {
         foreground_hwnd: u64,
         monotonic_ms: u64,
         command: Option<WorldCommand>,
+        renderer_input: Option<RendererInput>,
     ) -> Result<WorldReportV4, DispatchError> {
         if self.flight.is_some() {
             return Err(DispatchError::Busy);
@@ -664,7 +694,14 @@ impl WorldSequencer {
                 .retain(|(_, window), _| window != &id.0);
         }
         let request_seq = self.next_request_seq;
-        let report = self.assemble(&captured, request_seq, command_seq, command, monotonic_ms);
+        let report = self.assemble(
+            &captured,
+            request_seq,
+            command_seq,
+            command,
+            monotonic_ms,
+            renderer_input,
+        );
         // Snapshot the exact native homing for every carried close, read
         // from the same owner inputs as the capture. Entries without a
         // source record ride the report but settle no receipt pair.
@@ -1149,6 +1186,7 @@ impl WorldSequencer {
         foreground_hwnd: u64,
         monotonic_ms: u64,
         command: WorldCommand,
+        renderer_input: Option<RendererInput>,
     ) -> Result<WorldReportV4, DispatchError> {
         self.try_dispatch(
             inputs,
@@ -1158,6 +1196,7 @@ impl WorldSequencer {
             foreground_hwnd,
             monotonic_ms,
             Some(command),
+            renderer_input,
         )
     }
 

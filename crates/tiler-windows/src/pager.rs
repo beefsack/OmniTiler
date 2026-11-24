@@ -390,6 +390,11 @@ pub struct OutputPager {
     pub ids: Vec<String>,
     pub cells: Vec<PagerCell>,
     pub active_index: usize,
+    /// Presentation revision the painted frame was laid out from (the exact
+    /// applied reply's `presentation.rev`); `None` when no reply has been drawn
+    /// yet. Click attribution carries this revision so the core can refuse a
+    /// stale draw without any local freshness policy.
+    pub drawn_rev: Option<u64>,
     /// Taskbar DPI the frame was laid out for (font + geometry).
     pub dpi: u32,
     /// Independent highlight colour the focused miniatures paint
@@ -598,6 +603,8 @@ pub struct PagerContentMiniature {
 /// pager-highlight style plus the shared accent snapshot); it rides the
 /// frame so a highlight-colour change repaints even when every cell is
 /// identical.
+/// `drawn_rev` is the exact applied presentation revision this frame was
+/// laid out from; it rides along for click attribution only, never repaint.
 /// Presentation only; the core remains the sole authority.
 pub fn build_output_pager_from_content(
     content: &[PagerContentWorkspace],
@@ -606,6 +613,7 @@ pub fn build_output_pager_from_content(
     monitor_full: Rect,
     taskbar: &TaskbarFacts,
     focused_highlight: (u8, u8, u8),
+    drawn_rev: Option<u64>,
 ) -> Result<OutputPager, PagerRefusal> {
     let ids: Vec<String> = content.iter().map(|row| row.id.clone()).collect();
     let strip = strip_for_taskbar(monitor_full, taskbar, ids.len())?;
@@ -647,6 +655,7 @@ pub fn build_output_pager_from_content(
         active_index,
         dpi: taskbar.dpi,
         focused_highlight,
+        drawn_rev,
     })
 }
 
@@ -996,6 +1005,7 @@ mod tests {
             new_full,
             &bar,
             focused_highlight(),
+            None,
         )
         .expect("frames fresh");
         assert_eq!(frame.dpi, 144);
@@ -1017,6 +1027,7 @@ mod tests {
                 full(),
                 &bar,
                 focused_highlight(),
+                None,
             )
             .expect_err("autohide never frames"),
             PagerRefusal::TaskbarAutohide
@@ -1149,6 +1160,7 @@ mod tests {
                 secondary_full(),
                 bar,
                 focused_highlight(),
+                None,
             )
         };
         let pager = frame_for(&secondary_bar_right_anchored()).expect("secondary frames");
@@ -1876,6 +1888,7 @@ mod tests {
                 full(),
                 &bottom_bar(),
                 focused_highlight(),
+                None,
             )
             .expect("fits")
         };
@@ -1912,6 +1925,7 @@ mod tests {
                 full(),
                 &bar,
                 focused_highlight(),
+                None,
             )
             .expect("fits")
         };
@@ -1980,6 +1994,7 @@ mod tests {
             full(),
             &bottom_bar(),
             focused_highlight(),
+            None,
         )
         .expect("fits");
         // All 24 members render miniatures: ordinary crowding only adds
@@ -2023,6 +2038,7 @@ mod tests {
                 full(),
                 &bottom_bar(),
                 focused_highlight(),
+                None,
             )
             .expect("fits")
         };
@@ -2110,6 +2126,7 @@ mod tests {
             full(),
             &bottom_bar(),
             focused_highlight(),
+            None,
         )
         .expect("fits");
         assert_eq!(
@@ -2160,6 +2177,7 @@ mod tests {
             full(),
             &bottom_bar(),
             focused_highlight(),
+            None,
         )
         .expect("fits");
         assert_eq!(pager.cells[0].mini_keys, vec![plain, tiled, overlay]);
@@ -2192,6 +2210,7 @@ mod tests {
             full(),
             &bottom_bar(),
             focused_highlight(),
+            None,
         )
         .expect("fits");
         assert_eq!(pager.ids, vec!["ws-a".to_owned(), "ws-b".to_owned()]);
@@ -2277,6 +2296,7 @@ mod tests {
                 full(),
                 &bottom_bar(),
                 highlight,
+                None,
             )
             .expect("fits")
         };
@@ -2313,6 +2333,7 @@ mod tests {
                 full(),
                 &bottom_bar(),
                 focused_highlight(),
+                None,
             )
             .expect("fits")
         };

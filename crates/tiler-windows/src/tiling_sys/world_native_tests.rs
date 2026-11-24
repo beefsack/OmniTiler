@@ -2724,6 +2724,7 @@ fn live_tick_cursor(
                 foreground,
                 tick_ms,
                 cmd,
+                None,
             )
             .expect("dispatch command"),
     };

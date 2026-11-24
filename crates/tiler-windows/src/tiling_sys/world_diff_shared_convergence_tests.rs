@@ -711,6 +711,7 @@ fn shared_observations_record_no_bounds_without_proof_through_sequencing() {
                 1001,
                 2000,
                 None,
+                None,
             )
             .expect("incomplete dispatch")
         } else {
@@ -879,6 +880,7 @@ fn shared_settlement_partial_holds_then_completes_through_sequencing() {
                 1001,
                 ms,
                 command,
+                None,
             )
             .expect("dispatch")
         };

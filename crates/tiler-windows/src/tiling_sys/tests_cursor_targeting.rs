@@ -306,7 +306,7 @@ fn sequencer_envelopes_cursor_targeting_fields() {
     inputs.cursor = Some((900, 100));
     let captured = capture_world(&inputs, Some(&observed), &[], &areas(), 101);
     let mut seq = WorldSequencer::bootstrap("adapter-1", "gen-1").expect("bootstrap");
-    let report = seq.assemble(&captured, 7, None, None, 0);
+    let report = seq.assemble(&captured, 7, None, None, 0, None);
     // v4 carries switch targeting and cursor policy as handshake settings,
     // never report fields: the capture projects them for the settings
     // sync, and the assembled report carries only the sampled cursor.

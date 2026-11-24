@@ -199,6 +199,7 @@ fn pager_frame(pager: &OutputPager, active_fill: (u8, u8, u8)) -> PagerFrame {
         active: pager.active_index,
         active_fill,
         focused_highlight: pager.focused_highlight,
+        rev: pager.drawn_rev,
         minis: pager
             .cells
             .iter()
@@ -491,11 +492,10 @@ impl PagerOverlays {
         let clicks = Arc::clone(queue);
         let sink: PagerClickSink = Arc::new(move |click: PagerClick| {
             if let Ok(mut slot) = clicks.lock() {
-                *slot = Some(SelectScope::new(
-                    &click.output,
-                    &click.workspace,
-                    click.ordinal,
-                ));
+                *slot = Some(
+                    SelectScope::new(&click.output, &click.workspace, click.ordinal)
+                        .with_render_rev(click.render_rev),
+                );
             }
         });
         // Calibration hook at broadcast time (the exact monitor-dirty
@@ -912,6 +912,7 @@ mod tests {
                 })
                 .collect(),
             active_index: active,
+            drawn_rev: None,
             focused_highlight: (0xbd, 0x93, 0xf9),
             dpi: 96,
         }

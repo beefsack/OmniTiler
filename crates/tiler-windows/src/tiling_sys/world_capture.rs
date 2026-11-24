@@ -701,6 +701,15 @@ pub(super) struct CapturedWorld {
     /// device mapped to wire. `None` when the host designates none or the
     /// primary device has no live wire id (unknown, never a replacement).
     pub(super) primary_output: Option<OutputId>,
+    /// Foreground output resolved from the same capture: the observed foreground
+    /// frame's exact native rectangle mapped through `output_for_rect` over the
+    /// carried monitor areas and then through the mechanical `output_tokens` map
+    /// (`None` when the foreground is unknown/empty, the frame is absent, the
+    /// rectangle maps to no carried area, the device has no live wire id, or the
+    /// resolved output disagrees with the foreground WindowFact's output). The
+    /// sequencer publishes it as `PresentationIngressV4.foreground_out`; a
+    /// disagreement fail-closes to `None` (the core then falls back to the fact).
+    pub(super) foreground_output: Option<OutputId>,
     /// Uniform presentation ingress (stage 5): normalized foreground,
     /// movement, chord, stacking order and live pager frames. The sequencer
     /// envelopes it as `PresentationRowV4::Valid`; the core publishes the
@@ -999,6 +1008,43 @@ pub(super) fn capture_facts_rideable(facts: &WindowFacts) -> bool {
     }
 }
 
+/// Resolve one live frame rectangle to its exact carried-output wire token.
+/// Uses the core rectangle rule over the carried monitor areas and the
+/// mechanical device->wire map only: a rectangle that names no carried area,
+/// or a device with no live wire id, is `None` (never the `display-?`
+/// fallback used by the direction-only resolver).
+fn foreground_output_for_rect(
+    areas: &[MonitorArea],
+    rect: &Rect,
+    output_tokens: &HashMap<String, String>,
+) -> Option<OutputId> {
+    // `output_for_rect` breaks an all-zero overlap tie by returning the
+    // first entry, so prove the frame actually lands on a carried area
+    // before delegating: an off-inventory rectangle (a transient or
+    // moved-away frame) reports no output rather than the first screen.
+    let names_area = areas.iter().any(|area| {
+        let left = i64::from(rect.x).max(i64::from(area.full.x));
+        let top = i64::from(rect.y).max(i64::from(area.full.y));
+        let right = (i64::from(rect.x) + i64::from(rect.w))
+            .min(i64::from(area.full.x) + i64::from(area.full.w));
+        let bottom = (i64::from(rect.y) + i64::from(rect.h))
+            .min(i64::from(area.full.y) + i64::from(area.full.h));
+        right > left && bottom > top
+    });
+    if !names_area {
+        return None;
+    }
+    let entries: Vec<tiler_core::output_selection::OutputEntry> = areas
+        .iter()
+        .map(|area| tiler_core::output_selection::OutputEntry {
+            id: OutputId(area.device.clone()),
+            rect: area.full,
+        })
+        .collect();
+    let device = tiler_core::output_selection::output_for_rect(&entries, rect)?;
+    output_tokens.get(&device.0).cloned().map(OutputId)
+}
+
 /// Uniform presentation ingress (stage 5): normalized foreground facts
 /// plus movement/chord facts from the seam, with the native top-to-bottom
 /// stacking snapshot derived from the same observed/retained products as
@@ -1009,9 +1055,11 @@ pub(super) fn capture_facts_rideable(facts: &WindowFacts) -> bool {
 /// frames ride, never the adapter's retained float/tile slots, and no
 /// adapter border/underlay style is an ingress key (the core derives it
 /// from its settings and per-output scale). The frame witness join is not
-/// implemented on Windows, so `witness` stays unknown (`None`), and no
-/// foreground-output sample exists here, so `foreground_out` is unknown
-/// (`None`) rather than a guess.
+/// implemented on Windows, so `witness` stays unknown (`None`). Capture
+/// resolves the observed foreground output separately in
+/// [`CapturedWorld::foreground_output`] from the same observed frame and the
+/// carried areas; the sequencer injects it as `foreground_out`, so this
+/// builder never guesses one (`foreground_out` stays `None` here).
 fn presentation_ingress(
     state: &OwnerInputs<'_>,
     observed: Option<&[ObservedWindow]>,
@@ -1966,6 +2014,25 @@ pub(super) fn capture_world(
         .map(OutputId)
         .collect();
     let presentation = presentation_ingress(state, Some(observed), retained, foreground_hwnd);
+    // The observed foreground frame's exact output, joined to the
+    // foreground WindowFact: a resolved frame that disagrees with the fact
+    // proves nothing (the frame and the fact are not the same observation),
+    // so it fails closed and the core falls back to the fact alone.
+    let foreground_output = if presentation.foreground.is_empty() {
+        None
+    } else {
+        let fact_output = windows
+            .iter()
+            .find(|fact| fact.window.0 == presentation.foreground)
+            .and_then(|fact| fact.output.clone());
+        let raw = presentation
+            .foreground_frame
+            .and_then(|rect| foreground_output_for_rect(areas, &rect, state.output_tokens));
+        match (raw, fact_output) {
+            (Some(raw), Some(fact)) if raw != fact => None,
+            (raw, _) => raw,
+        }
+    };
     CapturedWorld {
         screens,
         held_screens,
@@ -2026,6 +2093,168 @@ pub(super) fn capture_world(
             .settings_live
             .as_ref()
             .is_some_and(|live| live.settings.core.cursor_warp),
+        foreground_output,
         presentation,
+    }
+}
+
+#[cfg(test)]
+mod foreground_output_tests {
+    use super::super::rmax03_adapter_tests::test_state;
+    use super::super::{MonitorArea, ObservedWindow};
+    use super::capture_world;
+    use tiler_core::directional::OutputId;
+    use tiler_core::geometry::Rect;
+
+    fn area(device: &str, x: i32) -> MonitorArea {
+        MonitorArea {
+            device: device.to_owned(),
+            work: Rect {
+                x,
+                y: 0,
+                w: 800,
+                h: 560,
+            },
+            full: Rect {
+                x,
+                y: 0,
+                w: 800,
+                h: 600,
+            },
+            dpi: 96,
+        }
+    }
+
+    fn areas() -> Vec<MonitorArea> {
+        vec![area("DEV-A", 0), area("DEV-B", 800)]
+    }
+
+    fn facts() -> crate::tiling::WindowFacts {
+        crate::tiling::WindowFacts {
+            visible: true,
+            minimized: false,
+            maximized: false,
+            cloaked: false,
+            elevated: false,
+            shell: false,
+            tool_window: false,
+            owned: false,
+            captionless_fullscreen: false,
+            no_activate: false,
+            dialog: false,
+        }
+    }
+
+    fn observed_window(hwnd: u64, token: &str, pid: u32, creation: &str, x: i32) -> ObservedWindow {
+        let visible = Rect {
+            x,
+            y: 0,
+            w: 40,
+            h: 90,
+        };
+        let outer = Rect {
+            x: x - 8,
+            y: -8,
+            w: 56,
+            h: 106,
+        };
+        ObservedWindow {
+            hwnd,
+            token: token.to_owned(),
+            outer,
+            visible,
+            insets: crate::tiling::FrameInsets::measure(outer, visible),
+            identity: super::super::ObservedTarget {
+                hwnd,
+                pid,
+                process_creation: creation.to_owned(),
+                exe_path: "C:\\Apps\\app.exe".to_owned(),
+                user_sid: "S-1-5-21-1000".to_owned(),
+                session_id: 1,
+                tag: format!("tag-{token}"),
+            },
+            facts: facts(),
+            member_tag: Some(format!("tag-{token}")),
+        }
+    }
+
+    fn foreground(token: &str, frame: Option<Rect>) -> super::PresentationForeground {
+        super::PresentationForeground {
+            token: token.to_owned(),
+            minimized: false,
+            maximized: false,
+            fullscreen: false,
+            host_hidden: false,
+            hidden_workspace: false,
+            frame,
+        }
+    }
+
+    #[test]
+    fn resolved_foreground_frame_names_the_wire_output() {
+        let mut state = test_state();
+        state.ensure_device("DEV-A");
+        state.ensure_device("DEV-B");
+        let areas = areas();
+        let observed = vec![observed_window(101, "win-fg", 201, "proc-fg", 900)];
+        let mut inputs = state.inputs();
+        inputs.presentation_foreground = Some(foreground(
+            "win-fg",
+            Some(Rect {
+                x: 900,
+                y: 0,
+                w: 40,
+                h: 90,
+            }),
+        ));
+        let captured = capture_world(&inputs, Some(&observed), &[], &areas, 101);
+        let expected = OutputId(state.wire_of("DEV-B").expect("DEV-B carries a wire id"));
+        assert_eq!(captured.foreground_output, Some(expected));
+    }
+
+    #[test]
+    fn unresolvable_foreground_rect_stays_unknown() {
+        let mut state = test_state();
+        state.ensure_device("DEV-A");
+        state.ensure_device("DEV-B");
+        let areas = areas();
+        let observed = vec![observed_window(101, "win-fg", 201, "proc-fg", 0)];
+        let mut inputs = state.inputs();
+        // Outside every carried area: the frame proves no output. The
+        // foreground WindowFact still rides its own affinity separately.
+        inputs.presentation_foreground = Some(foreground(
+            "win-fg",
+            Some(Rect {
+                x: 5000,
+                y: 0,
+                w: 40,
+                h: 90,
+            }),
+        ));
+        let captured = capture_world(&inputs, Some(&observed), &[], &areas, 101);
+        assert!(captured.foreground_output.is_none());
+    }
+
+    #[test]
+    fn fact_and_raw_disagreement_fails_closed() {
+        let mut state = test_state();
+        state.ensure_device("DEV-A");
+        state.ensure_device("DEV-B");
+        let areas = areas();
+        // The observed row (and so its WindowFact) sits on DEV-B while the
+        // presentation frame names DEV-A: neither proves the same output.
+        let observed = vec![observed_window(101, "win-fg", 201, "proc-fg", 900)];
+        let mut inputs = state.inputs();
+        inputs.presentation_foreground = Some(foreground(
+            "win-fg",
+            Some(Rect {
+                x: 0,
+                y: 0,
+                w: 40,
+                h: 90,
+            }),
+        ));
+        let captured = capture_world(&inputs, Some(&observed), &[], &areas, 101);
+        assert!(captured.foreground_output.is_none());
     }
 }

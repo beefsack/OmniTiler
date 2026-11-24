@@ -124,6 +124,6 @@ pub(super) fn poll_tray_select(
     let output = request.output.clone();
     let target = request.workspace.clone();
     dispatch_verified_select(
-        state, me, store, dir, fulls, areas, &output, &target, index, tick, start, "tray",
+        state, me, store, dir, fulls, areas, &output, &target, None, index, tick, start, "tray",
     );
 }

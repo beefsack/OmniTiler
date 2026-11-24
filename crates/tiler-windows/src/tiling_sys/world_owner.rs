@@ -38,7 +38,7 @@ use super::world_sequencer::{AckOutcome, AckReceipt, DispatchError, WorldSequenc
 use super::{MonitorArea, ObservedWindow, RetainedRow};
 use std::collections::{BTreeMap, HashMap};
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
-use tiler_core::world_report::{WorldCommand, WorldReplyV4, WorldReportV4};
+use tiler_core::world_report::{RendererInput, WorldCommand, WorldReplyV4, WorldReportV4};
 
 /// Single runtime world policy owner: bootstraps and sequences online.
 /// All production lifecycle/history/tiling/scope/select/send/migration
@@ -366,6 +366,7 @@ impl WorldOwner {
             foreground_hwnd,
             monotonic_ms,
             None,
+            None,
         )
     }
 
@@ -381,6 +382,7 @@ impl WorldOwner {
         foreground_hwnd: u64,
         monotonic_ms: u64,
         command: WorldCommand,
+        renderer_input: Option<RendererInput>,
     ) -> Result<WorldReportV4, DispatchError> {
         self.seq.try_dispatch_with_command(
             inputs,
@@ -390,6 +392,7 @@ impl WorldOwner {
             foreground_hwnd,
             monotonic_ms,
             command,
+            renderer_input,
         )
     }
 
