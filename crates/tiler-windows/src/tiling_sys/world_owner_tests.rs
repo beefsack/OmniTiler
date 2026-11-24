@@ -601,7 +601,8 @@ fn tiled_mover_adopts_once_and_floating_mover_half_snaps() {
                     assert!(matches!(
                         world.last_command_result(),
                         Some(tiler_core::world_report::CommandResult::Directional {
-                            outcome: tiler_core::world_directional::DirectionalOutcome::MoveFloatApplied,
+                            outcome:
+                                tiler_core::world_directional::DirectionalOutcome::MoveFloatApplied,
                             ..
                         })
                     ));

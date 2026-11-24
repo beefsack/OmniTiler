@@ -74,14 +74,21 @@ impl WorldLayout {
         }
 
         let target_key = ctx.target_domain.key();
+        // A visible target observation is not the only admission anchor: a
+        // target whose residents are all hidden keeps their restore slots,
+        // and the send must split that retained layout instead of seeding an
+        // empty target that later strands the hidden resident behind the
+        // arrival.
         let target_observed_nonempty = ctx
             .observed
             .iter()
             .any(|w| w.output == target_key.output && w.workspace == target_key.workspace);
+        let include_retained_target =
+            target_observed_nonempty || self.has_minimized_resident(&target_key);
         let mut pair = self.assemble_send_pair_with_target(
             ctx.source_domain,
             ctx.target_domain,
-            target_observed_nonempty,
+            include_retained_target,
         )?;
         let observed: Vec<ObservedWindow> = ctx
             .observed

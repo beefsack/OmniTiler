@@ -145,8 +145,8 @@ use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_report::{
     AuthorityScope, HeldScreenRow, NativeWorkspaceFact, OutputIdentity, PresentationIngressV4,
-    PresentationPagerFrameV4, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane,
-    ScreenReport, VisibilityFact, WindowFact,
+    PresentationPagerFrameV4, RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport,
+    VisibilityFact, WindowFact,
 };
 
 /// Normalized foreground facts for one tick's uniform presentation ingress
@@ -506,9 +506,7 @@ impl TileLoop {
         // command/observation carries, so presentation focus never diverges
         // from the staged rows and needs no extra native read. Only an
         // ineligible/missing foreground falls through to the native probe.
-        let observed_foreground = observed
-            .iter()
-            .find(|row| row.hwnd == foreground_hwnd);
+        let observed_foreground = observed.iter().find(|row| row.hwnd == foreground_hwnd);
         #[allow(unused_mut)]
         let mut foreground = if let Some(window) = observed_foreground {
             let key = crate::native_guards::WindowKey {
@@ -1535,7 +1533,10 @@ pub(super) fn capture_world(
                     facts,
                     live_token,
                     key,
-                    state.member_rects.get(live_token).and_then(|rect| affinity_of(rect)),
+                    state
+                        .member_rects
+                        .get(live_token)
+                        .and_then(|rect| affinity_of(rect)),
                     executable,
                     state.hint_logged.get(live_token).copied(),
                     owned
@@ -1654,7 +1655,10 @@ pub(super) fn capture_world(
                     facts,
                     live_token,
                     key,
-                    state.member_rects.get(live_token).and_then(|rect| affinity_of(rect)),
+                    state
+                        .member_rects
+                        .get(live_token)
+                        .and_then(|rect| affinity_of(rect)),
                     executable,
                     state.hint_logged.get(live_token).copied(),
                     true
@@ -1732,7 +1736,10 @@ pub(super) fn capture_world(
                 facts,
                 live_token,
                 key,
-                state.member_rects.get(live_token).and_then(|rect| affinity_of(rect)),
+                state
+                    .member_rects
+                    .get(live_token)
+                    .and_then(|rect| affinity_of(rect)),
                 bound_executable(state, key),
                 state.hint_logged.get(live_token).copied(),
                 state.hidden_claims.contains_key(key)

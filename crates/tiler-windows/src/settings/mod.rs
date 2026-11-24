@@ -146,6 +146,61 @@ pub fn tile_options_from_settings(settings: &schema::Settings) -> crate::tiling:
     }
 }
 
+/// Portable core settings as one revisioned raw snapshot. The live owner
+/// pushes this through the bound connection so core policy (gaps, targeting,
+/// admission, scope defaults, border/underlay state) follows the settings
+/// document instead of silently keeping handshake defaults. Core accepts the
+/// stable short wire names, not the catalog field ids; visual colors/theme
+/// stay adapter-owned and are not part of the core wire.
+#[must_use]
+pub fn core_setting_values(
+    settings: &schema::Settings,
+) -> Vec<(String, tiler_core::connection::RawSettingValue)> {
+    use tiler_core::connection::RawSettingValue::{Bool, Number, String as Text};
+    let core = &settings.core;
+    vec![
+        ("gap".to_owned(), Number(f64::from(core.inner_gap))),
+        ("outer".to_owned(), Number(f64::from(core.outer_gap))),
+        ("sameAxis".to_owned(), Text(core.same_axis_move.clone())),
+        (
+            "bornMaximized".to_owned(),
+            Text(core.born_maximized.clone()),
+        ),
+        (
+            "predicate".to_owned(),
+            Text(core.fixed_size_predicate.clone()),
+        ),
+        (
+            "refill".to_owned(),
+            Text(core.migration_source_refill.clone()),
+        ),
+        ("borderEnabled".to_owned(), Bool(core.border.enabled)),
+        ("borderWidth".to_owned(), Number(core.border.width)),
+        ("borderGap".to_owned(), Number(core.border.gap)),
+        ("borderRadius".to_owned(), Number(core.border.radius)),
+        ("underlayEnabled".to_owned(), Bool(core.underlay.enabled)),
+        (
+            "underlayExtension".to_owned(),
+            Number(core.underlay.extension),
+        ),
+        (
+            "defaultTiled".to_owned(),
+            Bool(core.workspace.default_tiled),
+        ),
+        ("mode".to_owned(), Text(core.workspace.mode.clone())),
+        ("switchTarget".to_owned(), Text(core.switch_target.clone())),
+        (
+            "freshPlacement".to_owned(),
+            Text(core.fresh_placement.clone()),
+        ),
+        (
+            "focusFollowsCursor".to_owned(),
+            Bool(core.focus_follows_cursor),
+        ),
+        ("cursorWarp".to_owned(), Bool(core.cursor_warp)),
+    ]
+}
+
 /// Startup mode for one owner run: the validated saved mode, or the default
 /// local mode when there are no live settings (proof owners) or the document
 /// carries the backfilled default.

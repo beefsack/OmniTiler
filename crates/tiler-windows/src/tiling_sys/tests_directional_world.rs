@@ -221,7 +221,9 @@ fn automatic_float_focus_refuses_from_core_without_adapter_branches() {
         &mut seq,
         &observed,
         WorldCommand::FocusDirectional {
-            window: tiler_core::world_report::FocusDirectionalSubject::Window(WindowId("w1".to_owned())),
+            window: tiler_core::world_report::FocusDirectionalSubject::Window(WindowId(
+                "w1".to_owned(),
+            )),
             direction: tiler_core::directional::Direction::Right,
         },
     );
@@ -352,7 +354,9 @@ fn unknown_windows_refuse_stale_with_preserved_cause() {
     for (command, token) in [
         (
             WorldCommand::FocusDirectional {
-                window: tiler_core::world_report::FocusDirectionalSubject::Window(WindowId("w9".to_owned())),
+                window: tiler_core::world_report::FocusDirectionalSubject::Window(WindowId(
+                    "w9".to_owned(),
+                )),
                 direction: tiler_core::directional::Direction::Right,
             },
             "focus-float-refused-stale",
@@ -637,12 +641,13 @@ fn no_focus_dispatch_crosses_occupied_source_to_existing_selection() {
     let outcome = nofocus_dispatch(&mut fx, Some((10, 10)), "right").expect("accepted");
     let reply = &outcome.reply;
     assert!(outcome.result.is_none(), "success rides the focus request");
-    let focus = reply
-        .focus_request
-        .as_ref()
-        .expect("one focus request");
+    let focus = reply.focus_request.as_ref().expect("one focus request");
     assert_eq!(focus.target.0, "w-n1", "existing destination selection");
-    assert!(focus.id.starts_with("focus-"), "one-shot focus id: {}", focus.id);
+    assert!(
+        focus.id.starts_with("focus-"),
+        "one-shot focus id: {}",
+        focus.id
+    );
     let _ = (fx.wire1, fx.wire2);
     super::clear_pending_seams();
     let _ = std::fs::remove_dir_all(&fx.dir);

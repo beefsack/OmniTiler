@@ -146,7 +146,10 @@ fn shared_frame_convergence_learns_through_production_sequencing() {
             emitted.target, baseline,
             "{name}: attempt targets the desire"
         );
-        assert_eq!(emitted.disposition, setter, "{name}: mechanical setter rides");
+        assert_eq!(
+            emitted.disposition, setter,
+            "{name}: mechanical setter rides"
+        );
         assert_eq!(
             emitted.readback,
             Some(grown),
@@ -835,9 +838,10 @@ fn shared_settlement_partial_holds_then_completes_through_sequencing() {
             .member_rects
             .insert(members[1].clone(), rect(0, 610, 800, 400));
         for token in &members {
-            state
-                .hint_logged
-                .insert(token.clone(), tiler_core::size_hints::WindowSizeHints::none());
+            state.hint_logged.insert(
+                token.clone(),
+                tiler_core::size_hints::WindowSizeHints::none(),
+            );
         }
         for token in &members {
             state

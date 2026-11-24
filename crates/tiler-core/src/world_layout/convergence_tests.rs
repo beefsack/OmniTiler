@@ -901,3 +901,45 @@ fn victims_break_sequence_ties_by_identity_descending() {
     assert!(layout.is_capacity_float(&k, &WindowId("b".to_owned())));
     assert!(layout.is_tiled_window(&k, &WindowId("a".to_owned())));
 }
+
+#[test]
+fn lone_hidden_resident_restores_ahead_of_later_arrival() {
+    use crate::directional::Axis;
+    let layout = WorldLayout::new();
+    let mut domain = DomainLayout::new(
+        Rect {
+            x: 0,
+            y: 0,
+            w: 200,
+            h: 100,
+        },
+        0,
+        0,
+    );
+    let late = WindowId("late".to_owned());
+    domain.tree = Some(leaf_node("b"));
+    domain.leaves.insert(late, NodeId("b".to_owned()));
+    let hidden = WindowId("hidden".to_owned());
+    let slot = DomainRestoreSlot {
+        leaf: NodeId("a".to_owned()),
+        tree: leaf_node("a"),
+    };
+    let mut existing = BTreeSet::from([NodeId("b".to_owned())]);
+    assert!(restore_slot_into_domain(
+        &mut domain,
+        &hidden,
+        &slot,
+        layout.policy.as_ref(),
+        &layout.group_alloc,
+        &mut existing,
+    ));
+    assert_eq!(domain.leaves.get(&hidden), Some(&NodeId("a".to_owned())));
+    match domain.tree.as_ref().expect("restored tree") {
+        Node::Group { axis, children, .. } => {
+            assert_eq!(*axis, Axis::Horizontal);
+            assert!(matches!(&children[0], Node::Leaf { id } if id.0 == "a"));
+            assert!(matches!(&children[1], Node::Leaf { id } if id.0 == "b"));
+        }
+        other => panic!("expected hidden-first group, got {other:?}"),
+    }
+}

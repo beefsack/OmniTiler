@@ -323,20 +323,18 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         .map(|t| t.operation_id.clone())
         .expect("view flight");
     assert!(
-        vviews
-            .iter()
-            .any(|a| {
-                a.operation_id == view_op
-                    && a.post.as_ref().is_some_and(|reference| {
-                        matches!(
-                            reference,
-                            tiler_core::world_report::WorkspaceRef::Logical {
-                                output,
-                                workspace,
-                            } if output.0 == out_token && workspace.0 == target
-                        )
-                    })
-            }),
+        vviews.iter().any(|a| {
+            a.operation_id == view_op
+                && a.post.as_ref().is_some_and(|reference| {
+                    matches!(
+                        reference,
+                        tiler_core::world_report::WorkspaceRef::Logical {
+                            output,
+                            workspace,
+                        } if output.0 == out_token && workspace.0 == target
+                    )
+                })
+        }),
         "view actuation proves: {vviews:?}"
     );
     vdiff.gate.note_applied(&reply);
@@ -821,7 +819,9 @@ fn production_send_route_reports_honest_outcome_without_proof() {
         101,
         &fulls,
         tiler_core::world_report::WorldCommand::Send {
-            window: tiler_core::directional::WindowSubject::Window(tiler_core::directional::WindowId("w1".to_owned())),
+            window: tiler_core::directional::WindowSubject::Window(
+                tiler_core::directional::WindowId("w1".to_owned()),
+            ),
             target_output: tiler_core::directional::OutputId(out.clone()),
             target_workspace: tiler_core::directional::WorkspaceId(target.clone()),
             follow: false,
@@ -1265,7 +1265,11 @@ fn rejected_command_catchup_never_strands_the_next_command() {
             "fresh command focus id, got {:?}",
             hit.id
         );
-        assert_eq!(hit.target, WindowId(want.to_owned()), "correct focus target");
+        assert_eq!(
+            hit.target,
+            WindowId(want.to_owned()),
+            "correct focus target"
+        );
         hit.id.clone()
     }
     let mut state = test_state();
@@ -1343,11 +1347,15 @@ fn rejected_command_catchup_never_strands_the_next_command() {
     // Valid Left and Up from the bottom-right origin: w1 reaches w2 to the
     // left and w3 above (core layout tiles w2 full-height left, w3 top-right).
     let left_id = fresh_focus(
-        &command(&mut state, "w1", "left").expect("left dispatches").reply,
+        &command(&mut state, "w1", "left")
+            .expect("left dispatches")
+            .reply,
         "w2",
     );
     let up_id = fresh_focus(
-        &command(&mut state, "w1", "up").expect("up dispatches").reply,
+        &command(&mut state, "w1", "up")
+            .expect("up dispatches")
+            .reply,
         "w3",
     );
     // A relative selection past the ring rejects unchanged, arming
@@ -1376,11 +1384,15 @@ fn rejected_command_catchup_never_strands_the_next_command() {
     // Same origin, no unrelated WinEvent between: the owed catch-up must
     // have run, so both dispatch again with their own fresh effects.
     let left_again_id = fresh_focus(
-        &command(&mut state, "w1", "left").expect("owed catch-up serves left").reply,
+        &command(&mut state, "w1", "left")
+            .expect("owed catch-up serves left")
+            .reply,
         "w2",
     );
     let up_again_id = fresh_focus(
-        &command(&mut state, "w1", "up").expect("owed catch-up serves up").reply,
+        &command(&mut state, "w1", "up")
+            .expect("owed catch-up serves up")
+            .reply,
         "w3",
     );
     let mut ids = vec![left_id, up_id, left_again_id, up_again_id];

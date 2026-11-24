@@ -640,7 +640,7 @@ function New-LoopApply([int]$Tick, [int]$Rev) {
   })
   $base.desired_outputs = @(@{ output = "o1"; logical_view = "ws-home" })
   $base.desired_workspaces = @(@{ id = "ws-home"; output = "o1"; order = 0 }, @{ id = "ws-away"; output = "o1"; order = 1 })
-  $base.desired_geometry = @(@{ output = "o1"; work = @{ x = 0; y = 0; w = 800; h = 560 }; full = @{ x = 0; y = 0; w = 800; h = 560 }; complete = $true; primary = $true; gap = 0; outer_gap = 0 })
+  $base.desired_geometry = @(@{ output = "o1"; work = @{ x = 0; y = 0; w = 800; h = 560 }; full = @{ x = 0; y = 0; w = 800; h = 560 }; complete = $true; primary = $true })
   return $base
 }
 function New-LoopPager([int]$Rev) {
@@ -1547,7 +1547,7 @@ function New-HiddenLoopApply([int]$Tick, [int]$Rev) {
   )
   $base.desired_outputs = @(@{ output = "o1"; logical_view = "ws-home" })
   $base.desired_workspaces = @(@{ id = "ws-home"; output = "o1"; order = 0 }, @{ id = "ws-away"; output = "o1"; order = 1 })
-  $base.desired_geometry = @(@{ output = "o1"; work = @{ x = 0; y = 0; w = 800; h = 560 }; full = @{ x = 0; y = 0; w = 800; h = 560 }; complete = $true; primary = $true; gap = 0; outer_gap = 0 })
+  $base.desired_geometry = @(@{ output = "o1"; work = @{ x = 0; y = 0; w = 800; h = 560 }; full = @{ x = 0; y = 0; w = 800; h = 560 }; complete = $true; primary = $true })
   return $base
 }
 function New-HiddenLoopPager([int]$Rev, [int]$RawW) {
@@ -2000,7 +2000,7 @@ function New-BsApply([int]$Tick, [int]$Rev, [int]$Ax, [int]$Bx) {
   $base.desired_windows = @((New-BsRow "tok-a" $Ax), (New-BsRow "tok-b" $Bx))
   $base.desired_outputs = @(@{ output = "o1"; logical_view = "ws-home" })
   $base.desired_workspaces = @(@{ id = "ws-home"; output = "o1"; order = 0 }, @{ id = "ws-away"; output = "o1"; order = 1 })
-  $base.desired_geometry = @(@{ output = "o1"; work = @{ x = 0; y = 0; w = 800; h = 560 }; full = @{ x = 0; y = 0; w = 800; h = 560 }; complete = $true; primary = $true; gap = 0; outer_gap = 0 })
+  $base.desired_geometry = @(@{ output = "o1"; work = @{ x = 0; y = 0; w = 800; h = 560 }; full = @{ x = 0; y = 0; w = 800; h = 560 }; complete = $true; primary = $true })
   return $base
 }
 function New-BsPager([int]$Rev, [int]$Ax, [int]$Bx, [string]$FocusTok) {

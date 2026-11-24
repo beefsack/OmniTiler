@@ -1329,7 +1329,10 @@ fn arrival_reply(
     out: &str,
     rows: Vec<tiler_core::world_report::WindowDesire>,
 ) -> tiler_core::world_report::WorldReplyV4 {
-    use tiler_core::world_report::{BorderHideReasonV4, BorderPresentationV4, ScopeAuthority as Auth, ScopeStatus, WorldPresentationV4};
+    use tiler_core::world_report::{
+        BorderHideReasonV4, BorderPresentationV4, ScopeAuthority as Auth, ScopeStatus,
+        WorldPresentationV4,
+    };
     tiler_core::world_report::WorldReplyV4 {
         contract_version: tiler_core::world_report::WORLD_CONTRACT_VERSION,
         adapter_incarnation: "adapter-1".to_owned(),

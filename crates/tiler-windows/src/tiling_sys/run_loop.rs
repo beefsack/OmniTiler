@@ -292,10 +292,23 @@ pub(super) fn run_tile_loop(
         render_frames: RenderFrameHealth::default(),
     };
     state.workspace_proof = workspace_proof;
+    // Core policy follows the validated settings document through the bound
+    // connection: one full snapshot at startup and one per accepted live
+    // change. Proof owners keep core defaults (no settings document).
+    if let Some(live) = state.settings_live.as_ref() {
+        let settings = live.settings.clone();
+        let accepted = state.world.apply_core_settings(&settings);
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "settings-core",
+                "outcome": if accepted { "accepted" } else { "refused" },
+                "scope": "startup",
+            }),
+        );
+    }
     // Fixed-size admission, capacity anchor/no-space, default tiling, and the
-    // workspace scope mode are core ingress now: every world report carries
-    // them from the last-good live settings (proof owners keep defaults), so
-    // no adapter Engine configuration exists to set. The core adopts them for
+    // workspace scope mode are core ingress now; the core adopts them for
     // subsequent admissions only, never reclassifying retained state.
     let startup_default = state
         .settings_live

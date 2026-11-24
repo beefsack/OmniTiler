@@ -158,8 +158,7 @@ pub(super) struct WorldSequencer {
     core_generation: String,
     engine: WorldEngine,
     /// Last settings revision accepted by the core (connect applies 1).
-    #[cfg(test)]
-    test_settings_revision: u64,
+    settings_revision: u64,
     current_obs: u64,
     obs_dirty: bool,
     next_request_seq: u64,
@@ -250,8 +249,7 @@ impl WorldSequencer {
             adapter_incarnation: adapter_incarnation.to_owned(),
             core_generation: core_generation.to_owned(),
             engine,
-            #[cfg(test)]
-            test_settings_revision: 2,
+            settings_revision: 2,
             current_obs: 0,
             obs_dirty: true,
             next_request_seq: 1,
@@ -272,6 +270,29 @@ impl WorldSequencer {
         })
     }
 
+    /// Apply one full raw catalog snapshot at the next revision through the
+    /// genuine connection route. Accepted revisions advance; refusals keep
+    /// the last good state for a later snapshot.
+    pub(super) fn apply_settings_values(
+        &mut self,
+        values: &[(String, tiler_core::connection::RawSettingValue)],
+    ) -> bool {
+        let revision = self.settings_revision;
+        let reply = super::settings::apply_settings_revision(
+            &mut self.engine,
+            &self.adapter_incarnation,
+            &self.core_generation,
+            revision,
+            values,
+        );
+        let accepted = reply
+            .is_some_and(|reply| reply.status == tiler_core::connection::SettingsStatus::Accepted);
+        if accepted {
+            self.settings_revision += 1;
+        }
+        accepted
+    }
+
     /// Test-only live-settings revision: apply the supplied raw catalog
     /// values through the genuine connection route so offline fixtures drive
     /// core policy (switch target, fresh placement) that v4 carries out of
@@ -281,24 +302,11 @@ impl WorldSequencer {
         &mut self,
         values: &[(&str, tiler_core::connection::RawSettingValue)],
     ) -> bool {
-        let revision = self.test_settings_revision;
         let values = values
             .iter()
             .map(|(key, value)| ((*key).to_owned(), value.clone()))
             .collect::<Vec<_>>();
-        let reply = super::settings::apply_settings_revision(
-            &mut self.engine,
-            &self.adapter_incarnation,
-            &self.core_generation,
-            revision,
-            &values,
-        );
-        let accepted = reply
-            .is_some_and(|reply| reply.status == tiler_core::connection::SettingsStatus::Accepted);
-        if accepted {
-            self.test_settings_revision += 1;
-        }
-        accepted
+        self.apply_settings_values(&values)
     }
 
     /// Discovery reply for offline tests: the bound generation with
@@ -773,8 +781,7 @@ impl WorldSequencer {
         // A rebuilt engine is unbound: it must repeat the genuine v4
         // handshake/settings connection before accepting any report. A
         // refused connection leaves the old generation fully intact.
-        let Some(connected) =
-            super::settings::connect(&mut engine, &self.adapter_incarnation, &[])
+        let Some(connected) = super::settings::connect(&mut engine, &self.adapter_incarnation, &[])
         else {
             return false;
         };

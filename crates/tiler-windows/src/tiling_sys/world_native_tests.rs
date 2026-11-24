@@ -620,7 +620,11 @@ fn script_live(key: &WindowKey, token: &str, vis: Rect, facts: WindowFacts) {
     S_REVEAL.with(|m| m.borrow_mut().insert(key.hwnd, Ok(Revealed::Shown)));
 }
 
-fn reply_shell(obs: u64, rev: u64, scopes: &[(&str, &str)]) -> tiler_core::world_report::WorldReplyV4 {
+fn reply_shell(
+    obs: u64,
+    rev: u64,
+    scopes: &[(&str, &str)],
+) -> tiler_core::world_report::WorldReplyV4 {
     tiler_core::world_report::WorldReplyV4 {
         contract_version: WORLD_CONTRACT_VERSION,
         adapter_incarnation: ADAPTER.to_owned(),
@@ -897,16 +901,18 @@ fn production_ambiguous_view_arms_at_most_once() {
         1,
         &[(out.as_str(), ws.as_str()), (out.as_str(), ws2.as_str())],
     );
-    reply.transfers.push(tiler_core::world_report::TransferTargetV4 {
-        operation_id: "op-view-1".to_owned(),
-        kind: TransferKind::View,
-        target_output: OutputId(out.clone()),
-        target_workspace: ws2.clone(),
-        follow: false,
-        held: false,
-        command_seq: None,
-        parent: None,
-    });
+    reply
+        .transfers
+        .push(tiler_core::world_report::TransferTargetV4 {
+            operation_id: "op-view-1".to_owned(),
+            kind: TransferKind::View,
+            target_output: OutputId(out.clone()),
+            target_workspace: ws2.clone(),
+            follow: false,
+            held: false,
+            command_seq: None,
+            parent: None,
+        });
     // Uncertain hide leg: the first attempt is ambiguous ...
     S_ADMIT.with(|m| {
         m.borrow_mut()
@@ -1076,16 +1082,18 @@ fn memberless_migration_actuates_views_without_members() {
     let mut diff = HostDiff::new(ADAPTER, GENERATION);
     diff.gate.current_obs = 7;
     let mut reply = reply_shell(7, 1, &[(out.as_str(), ws2.as_str())]);
-    reply.transfers.push(tiler_core::world_report::TransferTargetV4 {
-        operation_id: "op-m1".to_owned(),
-        kind: TransferKind::Migration,
-        target_output: OutputId(out.clone()),
-        target_workspace: ws2.clone(),
-        follow: false,
-        held: false,
-        command_seq: None,
-        parent: None,
-    });
+    reply
+        .transfers
+        .push(tiler_core::world_report::TransferTargetV4 {
+            operation_id: "op-m1".to_owned(),
+            kind: TransferKind::Migration,
+            target_output: OutputId(out.clone()),
+            target_workspace: ws2.clone(),
+            follow: false,
+            held: false,
+            command_seq: None,
+            parent: None,
+        });
     let mut members = Vec::new();
     let mut views = Vec::new();
     let stats = apply_world_reply(
@@ -2504,9 +2512,10 @@ fn admit_bare(env: &mut Env, key: &WindowKey, token: &str) {
     // The production hint pass records known-empty for a successful
     // no-hint read. Fixtures seed that same truth instead of leaving the
     // window unreadable.
-    env.state
-        .hint_logged
-        .insert(token.to_owned(), tiler_core::size_hints::WindowSizeHints::none());
+    env.state.hint_logged.insert(
+        token.to_owned(),
+        tiler_core::size_hints::WindowSizeHints::none(),
+    );
 }
 
 struct LiveTick {
@@ -2602,18 +2611,21 @@ fn live_tick_cursor(
     // Production fidelity: the command tick normalizes its foreground read
     // before capture. The scripted observation already carries the same
     // facts, so bind the token directly instead of re-reading native state.
-    inputs.presentation_foreground = observed
-        .iter()
-        .find(|row| row.hwnd == foreground)
-        .map(|row| crate::tiling_sys::world_capture::PresentationForeground {
-            token: row.token.clone(),
-            minimized: row.facts.minimized,
-            maximized: row.facts.maximized,
-            fullscreen: row.facts.captionless_fullscreen,
-            host_hidden: row.facts.cloaked,
-            hidden_workspace: false,
-            frame: Some(row.visible),
-        });
+    inputs.presentation_foreground =
+        observed
+            .iter()
+            .find(|row| row.hwnd == foreground)
+            .map(
+                |row| crate::tiling_sys::world_capture::PresentationForeground {
+                    token: row.token.clone(),
+                    minimized: row.facts.minimized,
+                    maximized: row.facts.maximized,
+                    fullscreen: row.facts.captionless_fullscreen,
+                    host_hidden: row.facts.cloaked,
+                    hidden_workspace: false,
+                    frame: Some(row.visible),
+                },
+            );
     let report = match command {
         None => owner
             .try_dispatch_observation(
@@ -2751,9 +2763,9 @@ fn applied_of_members(
     members.iter().any(|a| {
         a.operation_id == op
             && ref_workspace(a.post.as_ref()).is_some_and(|ws| ws == a.target_workspace)
-    }) || views
-        .iter()
-        .any(|a| a.operation_id == op && ref_workspace(a.post.as_ref()) == Some(a.target_workspace.as_str()))
+    }) || views.iter().any(|a| {
+        a.operation_id == op && ref_workspace(a.post.as_ref()) == Some(a.target_workspace.as_str())
+    })
 }
 
 fn window_op(reply: &tiler_core::world_report::WorldReplyV4, window: &str) -> String {
@@ -4077,7 +4089,11 @@ fn fx_reply(out: &str, ws: &str, id: &str, target: &str) -> tiler_core::world_re
 }
 
 /// Production grant mint for one accepted select reply.
-fn select_grant(out: &str, ws: &str, reply: &tiler_core::world_report::WorldReplyV4) -> Option<SelectionArrivalGrant> {
+fn select_grant(
+    out: &str,
+    ws: &str,
+    reply: &tiler_core::world_report::WorldReplyV4,
+) -> Option<SelectionArrivalGrant> {
     let command = WorldCommand::SelectWorkspace {
         output: OutputId(out.to_owned()),
         workspace: tiler_core::directional::WorkspaceId(ws.to_owned()),
@@ -5124,7 +5140,9 @@ fn selection_grant_binds_exact_accepted_select_focus_effects() {
             direction: Some(tiler_core::directional::Direction::Left),
         },
         WorldCommand::FocusDirectional {
-            window: tiler_core::world_report::FocusDirectionalSubject::Window(CoreWindowId("w6".to_owned())),
+            window: tiler_core::world_report::FocusDirectionalSubject::Window(CoreWindowId(
+                "w6".to_owned(),
+            )),
             direction: tiler_core::directional::Direction::Left,
         },
         WorldCommand::Send {
@@ -5188,8 +5206,14 @@ fn selection_grant_binds_exact_accepted_select_focus_effects() {
     // Automatic admission and cursor-follow requests sharing a select reply
     // never mint: only the command's explicit outcome binds.
     for (id, cause) in [
-        ("af-w6", tiler_core::world_report::FocusRequestCause::AutomaticAdmission),
-        ("ffc-w6", tiler_core::world_report::FocusRequestCause::FocusFollowsCursor),
+        (
+            "af-w6",
+            tiler_core::world_report::FocusRequestCause::AutomaticAdmission,
+        ),
+        (
+            "ffc-w6",
+            tiler_core::world_report::FocusRequestCause::FocusFollowsCursor,
+        ),
     ] {
         let mut mixed = reply.clone();
         mixed.focus_request = Some(tiler_core::world_report::FocusRequest {
@@ -5203,7 +5227,8 @@ fn selection_grant_binds_exact_accepted_select_focus_effects() {
             after_shown: None,
         });
         assert!(
-            SelectionArrivalGrant::for_accepted(Some(select), Some(7), &mixed, "accepted").is_none(),
+            SelectionArrivalGrant::for_accepted(Some(select), Some(7), &mixed, "accepted")
+                .is_none(),
             "non-explicit focus never binds: {id}"
         );
     }
@@ -5219,4 +5244,3 @@ mod cursor_cases;
 
 #[path = "world_native_roundtrip_tests.rs"]
 mod roundtrip;
-

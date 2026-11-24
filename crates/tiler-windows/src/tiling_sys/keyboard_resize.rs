@@ -201,12 +201,8 @@ pub(super) fn dispatch_resize_intent(
     );
     state.resize_repeat = Some(repeat);
     let resize_mode = match intent.mode {
-        crate::snapkey::ResizeMode::Inwards => {
-            tiler_core::directional::ResizeSelector::Inwards
-        }
-        crate::snapkey::ResizeMode::Outwards => {
-            tiler_core::directional::ResizeSelector::Outwards
-        }
+        crate::snapkey::ResizeMode::Inwards => tiler_core::directional::ResizeSelector::Inwards,
+        crate::snapkey::ResizeMode::Outwards => tiler_core::directional::ResizeSelector::Outwards,
     };
     // Single-domain resizes run the world operation route: the core owns
     // direction semantics and the host diff applies the accepted reply

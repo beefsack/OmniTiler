@@ -175,15 +175,18 @@ pub(super) fn merge_applied_transfers(
                     && attempt.target_output == transfer.target_output
                     && attempt.target_workspace == transfer.target_workspace
                     && (attempt.post.as_ref().is_some_and(|reference| {
-                        workspace_ref_covers(reference, &transfer.target_output, &transfer.target_workspace)
+                        workspace_ref_covers(
+                            reference,
+                            &transfer.target_output,
+                            &transfer.target_workspace,
+                        )
                     }) || (matches!(
                         attempt.disposition,
                         MemberDisposition::Called(FrameSetter::Accepted)
-                    )
-                        && reply
-                            .windows
-                            .iter()
-                            .any(|row| row.lifetime == *window && row.floating)
+                    ) && reply
+                        .windows
+                        .iter()
+                        .any(|row| row.lifetime == *window && row.floating)
                         && fresh.baseline.get(&window.0).is_some_and(|base| {
                             super::world_diff::float_no_effect_proven(
                                 native,
@@ -197,7 +200,11 @@ pub(super) fn merge_applied_transfers(
                     && attempt.target_output == transfer.target_output
                     && attempt.target_workspace == transfer.target_workspace
                     && attempt.post.as_ref().is_some_and(|reference| {
-                        workspace_ref_covers(reference, &transfer.target_output, &transfer.target_workspace)
+                        workspace_ref_covers(
+                            reference,
+                            &transfer.target_output,
+                            &transfer.target_workspace,
+                        )
                     })
             }),
         };
@@ -422,10 +429,7 @@ fn should_log_apply(
     if command_kind != "observation" {
         return true;
     }
-    if !member_attempts.is_empty()
-        || !view_attempts.is_empty()
-        || !frame_attempts.is_empty()
-    {
+    if !member_attempts.is_empty() || !view_attempts.is_empty() || !frame_attempts.is_empty() {
         return true;
     }
     if !reply.operation_settled.is_empty() {
@@ -829,6 +833,7 @@ fn apply_diag_value(
             .map(|screen| {
                 serde_json::json!({
                     "output": screen.output.0.clone(),
+                    "primary": report.primary_output.as_ref() == Some(&screen.output),
                     "full": screen.full_rect.map(rect_value),
                     "work": screen.work_area.map(rect_value),
                     "complete": screen.complete,
@@ -2458,7 +2463,9 @@ fn run_world_command_impl(
             // advanced core-side, but NO native planning, NO applied
             // watermark, NO trace proof, NO gesture clearing. The latest
             // full pass owns all of those.
-            super::world_sequencer::AckOutcome::Applied(_) => return Some(WorldCommandOutcome { reply, result }),
+            super::world_sequencer::AckOutcome::Applied(_) => {
+                return Some(WorldCommandOutcome { reply, result });
+            }
             // Stale but correlated: incorporation acked where it happened,
             // catch-up scheduled. Return the cached reply like the full
             // path so the caller can still count the command as ordered;
@@ -3344,9 +3351,7 @@ mod apply_diag_tests {
         // op/window/outcome/cause: clear continuations (intent resumed,
         // never frame proof), clear refusals, and float frame-proven
         // completions share the one carrier. Bounds stay honest.
-        use tiler_core::world_report::{
-            OperationEvent, OperationKind, OperationOutcome,
-        };
+        use tiler_core::world_report::{OperationEvent, OperationKind, OperationOutcome};
         let mut reply = reply_shell();
         reply.operation_settled = vec![
             OperationEvent {
@@ -3378,7 +3383,8 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             fresh_route_value(
                 "w1",
@@ -3433,7 +3439,8 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             fresh_route_value(
                 "w1",
@@ -3461,7 +3468,8 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             fresh_route_value(
                 "w1",
@@ -3527,7 +3535,8 @@ mod apply_diag_tests {
             "send",
             &stats,
             &members,
-            &views, None,
+            &views,
+            None,
             &[],
             fresh_route_value(
                 "w1",
@@ -3965,7 +3974,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &empty_members,
-            &empty_views, None,
+            &empty_views,
+            None,
             &empty_frames,
             route.clone(),
             None,
@@ -3990,7 +4000,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &empty_members,
-            &empty_views, None,
+            &empty_views,
+            None,
             &empty_frames,
             route,
             None,
@@ -4015,7 +4026,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &empty_members,
-            &empty_views, None,
+            &empty_views,
+            None,
             &empty_frames,
             fresh_route_value(
                 "",
@@ -4107,7 +4119,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &empty_members,
-            &empty_views, None,
+            &empty_views,
+            None,
             &empty_frames,
             route(),
             None,
@@ -4123,7 +4136,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &empty_members,
-            &empty_views, None,
+            &empty_views,
+            None,
             &empty_frames,
             route(),
             None,
@@ -4192,7 +4206,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[], None,
+            &[],
+            None,
             &empty_frames,
             serde_json::json!({}),
             None,
@@ -4296,7 +4311,8 @@ mod apply_diag_tests {
             "observation",
             &posted,
             &empty_members,
-            &empty_views, None,
+            &empty_views,
+            None,
             &empty_frames,
             serde_json::json!({}),
             None,
@@ -4351,7 +4367,8 @@ mod apply_diag_tests {
             "observation",
             &capped,
             &empty_members,
-            &empty_views, None,
+            &empty_views,
+            None,
             &empty_frames,
             serde_json::json!({}),
             None,
@@ -4388,9 +4405,7 @@ mod apply_diag_tests {
             window: WindowId("w3".to_owned()),
             target_output: OutputId("o1".to_owned()),
             target_workspace: "ws2".to_owned(),
-            disposition: tiler_core::world_report::MemberDisposition::Called(
-                FrameSetter::Threw,
-            ),
+            disposition: tiler_core::world_report::MemberDisposition::Called(FrameSetter::Threw),
             pre: None,
             post: Some(WorkspaceRef::Logical {
                 output: OutputId("o1".to_owned()),
@@ -4428,7 +4443,8 @@ mod apply_diag_tests {
             "select-workspace",
             &stats,
             &members,
-            &views, None,
+            &views,
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -4469,7 +4485,8 @@ mod apply_diag_tests {
             "select-workspace",
             &stats,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -4504,7 +4521,8 @@ mod apply_diag_tests {
             "select-workspace",
             &stats_shell(),
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -4544,7 +4562,8 @@ mod apply_diag_tests {
             "select-workspace",
             &stats_shell(),
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -4627,7 +4646,8 @@ mod apply_diag_tests {
             "observation",
             &stats,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             Some("w1".to_owned()),
@@ -4777,7 +4797,8 @@ mod apply_diag_tests {
             "observation",
             &stats,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             Some("w1".to_owned()),
@@ -4917,7 +4938,8 @@ mod apply_diag_tests {
             "observation",
             &stats,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             Some("w1".to_owned()),
@@ -5018,7 +5040,8 @@ mod apply_diag_tests {
             "select-workspace",
             &stats,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             Some("w0".to_owned()),
@@ -5099,7 +5122,8 @@ mod apply_diag_tests {
             "observation",
             &stats,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             Some("w0".to_owned()),
@@ -5114,10 +5138,7 @@ mod apply_diag_tests {
         assert_eq!(minted.len(), 1);
         assert_eq!(minted[0]["id"], serde_json::json!("ffc-w0"));
         assert_eq!(minted[0]["target"], serde_json::json!("w0"));
-        assert_eq!(
-            minted[0]["kind"],
-            serde_json::json!("explicit-command")
-        );
+        assert_eq!(minted[0]["kind"], serde_json::json!("explicit-command"));
         assert_eq!(value["focus_effects_omitted"], serde_json::json!(0));
         let dispatch = value["focus_dispatch"].as_array().expect("dispatch");
         assert_eq!(dispatch.len(), MAX_APPLY_DIAG_FOCUS);
@@ -5152,7 +5173,8 @@ mod apply_diag_tests {
             "send",
             &stats,
             &empty_members,
-            &empty_views, None,
+            &empty_views,
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -5170,9 +5192,7 @@ mod apply_diag_tests {
     #[test]
     fn diag_command_kind_is_redacted_vocab() {
         let send = WorldCommand::Send {
-            window: tiler_core::directional::WindowSubject::Window(WindowId(
-                "w1".to_owned(),
-            )),
+            window: tiler_core::directional::WindowSubject::Window(WindowId("w1".to_owned())),
             target_output: OutputId("o1".to_owned()),
             target_workspace: WorkspaceId("w2".to_owned()),
             follow: true,
@@ -5187,7 +5207,8 @@ mod apply_diag_tests {
             world_command_kind(&send),
             &stats,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -5305,7 +5326,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &empty_members,
-            &empty_views, None,
+            &empty_views,
+            None,
             &frames,
             serde_json::json!({}),
             None,
@@ -5420,7 +5442,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &empty_members,
-            &empty_views, None,
+            &empty_views,
+            None,
             &frames,
             serde_json::json!({}),
             None,
@@ -5534,9 +5557,7 @@ mod apply_diag_tests {
             window: WindowId("w-tiled".to_owned()),
             target_output: OutputId("o1".to_owned()),
             target_workspace: "ws-a".to_owned(),
-            disposition: tiler_core::world_report::MemberDisposition::Called(
-                FrameSetter::Accepted,
-            ),
+            disposition: tiler_core::world_report::MemberDisposition::Called(FrameSetter::Accepted),
             pre: Some(WorkspaceRef::Logical {
                 output: OutputId("o1".to_owned()),
                 workspace: WorkspaceId("ws-a".to_owned()),
@@ -5573,7 +5594,8 @@ mod apply_diag_tests {
             "send",
             &stats_shell(),
             &member_attempts,
-            &view_attempts, None,
+            &view_attempts,
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -5733,7 +5755,8 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -5795,7 +5818,8 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -5833,7 +5857,8 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -5849,7 +5874,8 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -5881,7 +5907,8 @@ mod apply_diag_tests {
             "send",
             &stats_shell(),
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -5930,7 +5957,8 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -6042,7 +6070,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &empty_vecs,
-            &empty_views, None,
+            &empty_views,
+            None,
             &empty_frames,
             serde_json::json!({}),
             None,
@@ -6076,7 +6105,8 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -6141,7 +6171,8 @@ mod apply_diag_tests {
             "observation",
             &stats,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -6169,7 +6200,8 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -6196,7 +6228,8 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -6213,7 +6246,8 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -6237,7 +6271,8 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -6318,7 +6353,8 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -6340,7 +6376,8 @@ mod apply_diag_tests {
             "observation",
             &stats,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -6372,7 +6409,8 @@ mod apply_diag_tests {
             "observation",
             &big_stats,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -6408,7 +6446,8 @@ mod apply_diag_tests {
             "observation",
             &big_stats,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -6441,7 +6480,8 @@ mod apply_diag_tests {
             "observation",
             &big_stats,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -6474,7 +6514,8 @@ mod apply_diag_tests {
             "observation",
             &big_stats,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -6511,7 +6552,8 @@ mod apply_diag_tests {
             "observation",
             &big_stats,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -6570,7 +6612,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             route(),
             None,
@@ -6589,7 +6632,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             route(),
             None,
@@ -6612,7 +6656,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             route(),
             None,
@@ -6635,7 +6680,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             route(),
             None,
@@ -6655,7 +6701,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             route(),
             None,
@@ -6674,7 +6721,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             route(),
             None,
@@ -6697,7 +6745,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             route(),
             None,
@@ -6737,7 +6786,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             fresh_route_value(
                 "",
@@ -6763,7 +6813,8 @@ mod apply_diag_tests {
             "observation",
             &quiet,
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,
@@ -6786,7 +6837,8 @@ mod apply_diag_tests {
             "observation",
             &stats_shell(),
             &[],
-            &[], None,
+            &[],
+            None,
             &[],
             serde_json::json!({}),
             None,

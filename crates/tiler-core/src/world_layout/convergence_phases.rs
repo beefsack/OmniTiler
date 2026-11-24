@@ -16,7 +16,7 @@ use super::focus::domain_focus_resolves;
 use super::outcome::LayoutFailure;
 use super::restore::best_effort_rejoin;
 use super::state::{DomainException, DomainLayout, DomainRestoreSlot, LayoutConfig};
-use super::tree_edit::{admission_placement_for, remove_leaf_from_tree};
+use super::tree_edit::{admission_placement_for, generate_group_id, remove_leaf_from_tree};
 
 /// Target domain selector for shared classification without duplicating logic
 /// between single-domain and pair convergence.
@@ -287,8 +287,31 @@ pub(super) fn restore_slot_into_domain(
     }
     let current = domain.tree.clone();
     let expected = remove_leaf_from_tree(policy, Some(slot.tree.clone()), &slot.leaf);
+    let lone_root = matches!(&slot.tree, Node::Leaf { id } if id == &slot.leaf);
     let rejoined = if current == expected {
         Some(slot.tree.clone())
+    } else if lone_root {
+        // The stored window was the sole resident before it hid. A later
+        // arrival cannot be its old sibling anchor, but the hidden resident
+        // still owns first place: restore it ahead of the current tree on
+        // the workspace's long axis, keeping the newcomer second.
+        let Some(current_tree) = current else {
+            return false;
+        };
+        let Some(group_id) = generate_group_id(group_alloc, existing_ids) else {
+            return false;
+        };
+        Some(Node::Group {
+            id: group_id,
+            axis: policy.admission_axis_for_rect(&domain.bounds),
+            children: vec![
+                Node::Leaf {
+                    id: slot.leaf.clone(),
+                },
+                current_tree,
+            ],
+            shares: policy.new_group_shares().to_vec(),
+        })
     } else {
         best_effort_rejoin(group_alloc, slot, &current, &domain.leaves, existing_ids)
     };

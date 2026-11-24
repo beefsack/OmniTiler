@@ -1163,9 +1163,7 @@ impl WorldEngine {
             V4RunOutcome::Accepted(reply)
             | V4RunOutcome::Duplicate(reply)
             | V4RunOutcome::CommandConsumed(reply) => Ok(reply),
-            V4RunOutcome::Rejected { kind, message } => {
-                Err((kind, message))
-            }
+            V4RunOutcome::Rejected { kind, message } => Err((kind, message)),
         }
     }
 }

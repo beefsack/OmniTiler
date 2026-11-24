@@ -433,10 +433,7 @@ pub(super) fn refresh_world_hints(
 ) {
     let hint_cx = HintCx::new();
     let now = hint_now();
-    let sync = |state: &mut TileLoop,
-                token: &str,
-                hints: WindowSizeHints,
-                outcome: HintOutcome| {
+    let sync = |state: &mut TileLoop, token: &str, hints: WindowSizeHints, outcome: HintOutcome| {
         if !hints.is_empty() {
             state.hint_logged.insert(token.to_owned(), hints);
         } else if outcome == HintOutcome::NoHint {

@@ -726,7 +726,9 @@ fn shared_switch_and_send_cases_resolve_per_fixture() {
                     moving_prims(),
                     by_id[mover].hwnd,
                     Some(WorldCommand::SendNumbered {
-                        window: tiler_core::directional::WindowSubject::Window(WindowId(mover.to_owned())),
+                        window: tiler_core::directional::WindowSubject::Window(WindowId(
+                            mover.to_owned(),
+                        )),
                         source: tiler_core::world_report::SendSource::Explicit(OutputId(
                             wire.clone(),
                         )),

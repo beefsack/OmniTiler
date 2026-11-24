@@ -190,12 +190,7 @@ pub(super) fn connect(
     adapter: &str,
     values: &[(String, RawSettingValue)],
 ) -> Option<ConnectOutcome> {
-    connect_with_handshake(
-        engine,
-        adapter,
-        values,
-        build_handshake_request(adapter)?,
-    )
+    connect_with_handshake(engine, adapter, values, build_handshake_request(adapter)?)
 }
 
 /// Test-only connection with an explicit owner identity. Live windows are
@@ -893,6 +888,25 @@ pub(super) fn apply_live_settings(
                 "cursor_warp": settings.core.cursor_warp,
                 "outcome": "adopted",
                 "scope": "retained-until-stage-4",
+            }),
+        );
+    }
+    // Core policy follows the document through the bound connection. One
+    // full snapshot per accepted revision; a refusal keeps the last good
+    // core state and is surfaced rather than silently ignored.
+    let core_accepted = state.world.apply_core_settings(&settings);
+    if core_accepted {
+        lanes.push("core");
+        changed = true;
+    } else {
+        lanes.push("core-refused");
+        log_json_at(
+            &log_path,
+            serde_json::json!({
+                "event": "settings-core",
+                "outcome": "refused",
+                "scope": "live",
+                "revision": revision,
             }),
         );
     }

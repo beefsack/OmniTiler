@@ -631,7 +631,10 @@ fn migrate_workspace_refusal_logs_bounded_core_reason() {
         Some((10, 10)),
         7,
     );
-    assert_eq!(outcome, "migrate-unverified", "no neighbor must not migrate");
+    assert_eq!(
+        outcome, "migrate-unverified",
+        "no neighbor must not migrate"
+    );
     let lines = log_lines(&dir);
     // A consumed no-effect command has no rejection row; the CLI outcome
     // is the only record.

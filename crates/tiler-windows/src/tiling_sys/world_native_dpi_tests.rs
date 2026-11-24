@@ -338,16 +338,18 @@ fn cross_reply(rig: &CrossRig, target: Rect) -> tiler_core::world_report::WorldR
         visibility_authority: Auth::Untouched,
         state: Vec::new(),
     });
-    reply.transfers.push(tiler_core::world_report::TransferTargetV4 {
-        operation_id: "op-x".to_owned(),
-        kind: TransferKind::Window(WindowId("w1".to_owned())),
-        target_output: OutputId(rig.tgt_out.clone()),
-        target_workspace: rig.tgt_ws.clone(),
-        follow: false,
-        held: false,
-        command_seq: None,
-        parent: None,
-    });
+    reply
+        .transfers
+        .push(tiler_core::world_report::TransferTargetV4 {
+            operation_id: "op-x".to_owned(),
+            kind: TransferKind::Window(WindowId("w1".to_owned())),
+            target_output: OutputId(rig.tgt_out.clone()),
+            target_workspace: rig.tgt_ws.clone(),
+            follow: false,
+            held: false,
+            command_seq: None,
+            parent: None,
+        });
     reply.outputs.push(tiler_core::world_report::OutputDesire {
         output: OutputId(rig.tgt_out.clone()),
         logical_view: Some(rig.tgt_ws.clone()),

@@ -555,6 +555,73 @@ fn target_empty_ignores_retained_residue_and_max_revision_and_source_error_prior
 }
 
 #[test]
+fn send_to_observed_empty_target_preserves_hidden_anchor_and_restores_it_first() {
+    let source = ws_key("out-1", "ws-1");
+    let target = ws_key("out-1", "ws-2");
+    let source_desc = domain_desc(&source, std_bounds(), 0);
+    let target_desc = domain_desc(&target, std_bounds(), 0);
+    let hidden = win("hidden");
+
+    let mut layout = WorldLayout::new();
+    layout.domains.insert(
+        source.clone(),
+        two_leaf_domain(std_bounds(), 0, "w1", "w2", "l1", "l2"),
+    );
+    // The target has no visible resident, only the restore slot of a
+    // workspace-hidden tiled resident. A send must still split that slot.
+    let mut tgt_dom = DomainLayout::new(std_bounds(), 0, 0);
+    tgt_dom.minimized_slots.insert(
+        hidden.clone(),
+        DomainRestoreSlot {
+            leaf: nid("h1"),
+            tree: leaf("h1"),
+        },
+    );
+    tgt_dom.accepted_revision = 4;
+    layout.domains.insert(target.clone(), tgt_dom);
+
+    let observed = vec![eng("w1", &source), eng("w2", &source)];
+    let focus = win("w1");
+    let ctx = PairOperationContext {
+        source_domain: &source_desc,
+        target_domain: &target_desc,
+        source_outer_gap: 0,
+        target_outer_gap: None,
+        observed_focus: &focus,
+        observed: &observed,
+        closed: &[],
+    };
+    layout
+        .run_pair_send(&ctx, &focus, true, false)
+        .expect("send onto hidden-only target");
+    assert!(layout.is_tiled_window(&target, &win("w1")));
+    assert!(
+        layout.has_minimized_slot(&target, &hidden),
+        "hidden target anchor must survive the send"
+    );
+
+    // Reveal: the hidden resident restores ahead of the arrival, keeping
+    // its old first place on the long axis.
+    let revealed = vec![eng("hidden", &target), eng("w1", &target)];
+    layout
+        .converge_retained_observation(&target, &revealed, &win("w1"), &[])
+        .expect("reveal converges");
+    let Node::Group { children, .. } = layout.tree(&target).expect("target tree") else {
+        panic!("expected split target tree");
+    };
+    assert_eq!(
+        layout.window_for_leaf(&target, children[0].id()).as_ref(),
+        Some(&hidden),
+        "hidden resident keeps first place"
+    );
+    assert_eq!(
+        layout.window_for_leaf(&target, children[1].id()).as_ref(),
+        Some(&win("w1")),
+        "arrival keeps second place"
+    );
+}
+
+#[test]
 fn legacy_seed_default_config_and_seed_failed_mapping() {
     let source = ws_key("out-1", "ws-1");
     let target = ws_key("out-1", "ws-2");

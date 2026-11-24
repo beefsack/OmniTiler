@@ -209,8 +209,7 @@ impl FreshHost {
                 continue;
             };
             let hidden = state.hidden_claims.contains_key(key);
-            let iconic =
-                fact.minimized == Some(true) || state.minimized_omitted.contains(key);
+            let iconic = fact.minimized == Some(true) || state.minimized_omitted.contains(key);
             // Observation-time live frame before retained-slot substitution:
             // retained overlay rows carry their fresh live frame in the
             // retained row while `rect` rides the tile slot. Live-lane rows
@@ -231,13 +230,13 @@ impl FreshHost {
             // v4). A lifetime with no proven receipt keeps an empty
             // workspace claim so third-location checks never mistake an
             // unknown preimage for an external move.
-            let (output, workspace) = state
-                .applied_homing
-                .get(token)
-                .cloned()
-                .unwrap_or_else(|| {
+            let (output, workspace) =
+                state.applied_homing.get(token).cloned().unwrap_or_else(|| {
                     (
-                        fact.output.as_ref().map(|o| o.0.clone()).unwrap_or_default(),
+                        fact.output
+                            .as_ref()
+                            .map(|o| o.0.clone())
+                            .unwrap_or_default(),
                         String::new(),
                     )
                 });
@@ -1006,7 +1005,7 @@ impl NativeOps for FakeNative {
     fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
         self.focus_window_traced(token).0
     }
-    
+
     fn read_cursor(&mut self) -> Option<(i32, i32)> {
         self.cursor
     }
@@ -1853,6 +1852,20 @@ fn scope_controlled(reply: &WorldReplyV4, output: &str, workspace: &str) -> bool
     })
 }
 
+/// Whether the output row currently shows this workspace. `None` view or a
+/// missing output row carries no logical-visibility proof, so it never
+/// withholds an otherwise-authorized frame write. A named different view is
+/// core-owned hidden state: native hide may still lag the view switch, but
+/// the departing window must not be reflowed before it hides.
+fn row_on_current_view(reply: &WorldReplyV4, output: &str, workspace: &str) -> bool {
+    reply
+        .outputs
+        .iter()
+        .find(|row| row.output.0 == output)
+        .and_then(|row| row.logical_view.as_deref())
+        .is_none_or(|view| view == workspace)
+}
+
 /// Mechanical actuation authority for one `(output, workspace)` domain:
 /// standalone view switches plus transfer-coupled membership moves and
 /// their views. Controlled scopes actuate exactly as before, and floating
@@ -2198,10 +2211,7 @@ fn migration_member_proven(
     ops.migration_arrival_proven(id, out, ws, frame, floating, baseline)
 }
 
-fn window_transfer_for<'a>(
-    reply: &'a WorldReplyV4,
-    window: &str,
-) -> Option<&'a TransferTargetV4> {
+fn window_transfer_for<'a>(reply: &'a WorldReplyV4, window: &str) -> Option<&'a TransferTargetV4> {
     reply.transfers.iter().find(|t| {
         matches!(t.kind, TransferKind::Window(_)) && {
             match &t.kind {
@@ -2458,14 +2468,7 @@ pub(super) fn apply_world_reply(
     attempt_ms: u64,
 ) -> ApplyStats {
     let stats = apply_world_reply_inner(
-        state,
-        reply,
-        fresh,
-        ops,
-        frame_out,
-        member_out,
-        view_out,
-        attempt_ms,
+        state, reply, fresh, ops, frame_out, member_out, view_out, attempt_ms,
     );
     let attempts = collect_visibility_attempts(reply, ops, state.gate.current_obs);
     for attempt in attempts {
@@ -2740,6 +2743,15 @@ fn apply_world_reply_inner(
             // the destination output, so writing it pre-move would place
             // foreign geometry on the source. Never hold-count a correctly
             // deferred frame.
+        } else if frame_controlled
+            && row.effective_frame.is_some()
+            && !row_on_current_view(reply, &row.output.0, &row.workspace)
+        {
+            // The output row already names a different view: this lifetime is
+            // logically hidden even if its native hide has not landed yet.
+            // A departing workspace reflow must never write the hidden frame;
+            // the reveal republishes it once the view returns. Never
+            // hold-count a correctly hidden frame (same as a deferred move).
         } else if frame_controlled && let Some(target) = row.effective_frame {
             if overlay_guarded(base) {
                 // Reserved lanes (overlay, sticky, float, fit-excluded)
@@ -2852,9 +2864,25 @@ fn apply_world_reply_inner(
             continue;
         }
         if homing_proven(ops, base, &fresh.stored_tags, &target_out, &target_ws) {
-            // Pre-proven arrival (no setter ran): the core settles from
-            // staged observation alone. Only the follow phase may still
-            // need actuation.
+            // Pre-proven arrival: no setter runs, but the core still needs a
+            // consumed no-call receipt. Host-owned workspaces carry no native
+            // workspace property, so same-output sends would otherwise hold
+            // forever waiting for a raw post that never comes.
+            if !effects.is_member_attempted(&op, &row.lifetime.0) {
+                effects.mark_member_attempted(&op, &row.lifetime.0);
+                let at_target = homing_pair(Some((target_out.clone(), target_ws.clone())));
+                member_out.push(MemberAttempt {
+                    operation_id: op.clone(),
+                    window: row.lifetime.clone(),
+                    target_output: t.target_output.clone(),
+                    target_workspace: target_ws.clone(),
+                    disposition: MemberDisposition::AlreadyAtTarget,
+                    pre: at_target.clone(),
+                    post: at_target,
+                    attempt_ms,
+                });
+            }
+            // Only the follow phase may still need actuation.
             settle_transfer_proven(
                 reply, gate, entry_obs, ops, &mut stats, t, effects, fresh, view_out, attempt_ms,
                 false,
@@ -4227,7 +4255,10 @@ fn apply_world_reply_inner(
             // The retained focus request dictates the resulting focus
             // (section 4 dispatches it): warp only for that exact target
             // while it holds the observed foreground.
-            let target = reply.focus_request.as_ref().map(|request| request.target.clone());
+            let target = reply
+                .focus_request
+                .as_ref()
+                .map(|request| request.target.clone());
             let mut correlated = false;
             match target {
                 None => {

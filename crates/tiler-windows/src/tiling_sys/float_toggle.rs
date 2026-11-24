@@ -238,7 +238,9 @@ pub(super) fn apply_float_from_tiled(
         foreground,
         fulls,
         tiler_core::world_report::WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: tiler_core::directional::WindowSubject::Window(tiler_core::directional::WindowId(from.to_owned())),
+            window: tiler_core::directional::WindowSubject::Window(
+                tiler_core::directional::WindowId(from.to_owned()),
+            ),
             float_rect: Some(effective),
         }),
         super::observation::sample_cursor(),
@@ -602,7 +604,9 @@ pub(super) fn apply_unfloat_to_tiled(
         foreground,
         fulls,
         tiler_core::world_report::WorldCommand::Operation(CoreCommand::ToggleFloat {
-            window: tiler_core::directional::WindowSubject::Window(tiler_core::directional::WindowId(from.to_owned())),
+            window: tiler_core::directional::WindowSubject::Window(
+                tiler_core::directional::WindowId(from.to_owned()),
+            ),
             float_rect,
         }),
         super::observation::sample_cursor(),

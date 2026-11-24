@@ -102,13 +102,12 @@ unsafe extern "system" fn monitor_enum_proc(
     // 0 on refusal (unknown scale, never a guessed 96).
     let mut dpi_x: u32 = 0;
     let mut dpi_y: u32 = 0;
-    let dpi = if unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) }
-        == 0
-    {
-        dpi_x
-    } else {
-        0
-    };
+    let dpi =
+        if unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) } == 0 {
+            dpi_x
+        } else {
+            0
+        };
     let area = MonitorInfo {
         device,
         work,

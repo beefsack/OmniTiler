@@ -25,9 +25,9 @@ use tiler_core::geometry::Rect;
 use tiler_core::world_engine::WorldOutcome;
 use tiler_core::world_report::{
     AuthorityScope, BorderHideReasonV4, BorderPresentationV4, FocusRequest, FocusRequestCause,
-    FrameSetter, HoldReason as CoreHold, MemberDisposition, ScopeAuthority as Auth,
-    ScopeStatus, TransferKind, TransferTargetV4, WORLD_CONTRACT_VERSION, WindowDesire, WorldCommand,
-    WorldPresentationV4, WorldReplyV4, WorldReportV4, WorkspaceRef,
+    FrameSetter, HoldReason as CoreHold, MemberDisposition, ScopeAuthority as Auth, ScopeStatus,
+    TransferKind, TransferTargetV4, WORLD_CONTRACT_VERSION, WindowDesire, WorkspaceRef,
+    WorldCommand, WorldPresentationV4, WorldReplyV4, WorldReportV4,
 };
 
 pub(super) const ADAPTER: &str = "adapter-1";
@@ -161,9 +161,10 @@ pub(super) fn rig() -> Rig {
         // Offline fixtures never run the native hint query; state the
         // successful empty result these fake HWNDs model so v4 capture
         // carries known-empty hints instead of an unperformed unknown.
-        state
-            .hint_logged
-            .insert(token.to_owned(), tiler_core::size_hints::WindowSizeHints::none());
+        state.hint_logged.insert(
+            token.to_owned(),
+            tiler_core::size_hints::WindowSizeHints::none(),
+        );
     }
     let observed = vec![
         observed_window(&k1, "w1", rect(0, 0, 800, 600), plain_facts()),
@@ -743,6 +744,25 @@ fn effective_frame_writes_allocation_never_does() {
     assert_eq!(stats.geometry_writes, 0);
     assert_eq!(stats.held, 1);
     assert!(members.is_empty() && views.is_empty());
+}
+
+#[test]
+fn inactive_view_workspace_never_takes_frame_write() {
+    // The core publishes the departing row while the native hide still lags
+    // a view switch. The output row already names the new view, so the row
+    // is logically hidden: no frame write, and the later reveal republishes.
+    let rig = rig();
+    let (mut diff, fresh, mut native) = converted(&rig);
+    let mut reply = reply_shell(7, 1, &[(rig.out.as_str(), rig.ws.as_str())]);
+    reply.outputs.push(output_row(&rig.out, "ws-away", None));
+    reply
+        .windows
+        .push(tiled_row(&rig.out, &rig.ws, "w1", rect(10, 10, 400, 300)));
+    let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
+    assert_eq!(stats.geometry_writes, 0);
+    assert_eq!(stats.held, 0);
+    assert!(members.is_empty() && views.is_empty());
+    assert!(!stats.partial);
 }
 
 #[test]
@@ -2471,7 +2491,10 @@ fn transfer_throw_holds_ambiguous_without_repeat() {
     assert_eq!(attempt.operation_id, "op-1");
     assert_eq!(attempt.window.0, "w1");
     assert_eq!(attempt.target_output.0, rig.out);
-    assert_eq!(attempt.disposition, MemberDisposition::Called(FrameSetter::Threw));
+    assert_eq!(
+        attempt.disposition,
+        MemberDisposition::Called(FrameSetter::Threw)
+    );
     assert!(views.is_empty());
     assert!(diff.effects.is_member_attempted("op-1", "w1"));
     let before = native.membership_writes;
@@ -2505,11 +2528,11 @@ fn transfer_refused_proven_and_third_location_supersedes() {
     assert_eq!(members.len(), 1);
     let attempt = &members[0];
     assert_eq!(attempt.operation_id, "op-2");
-    assert_eq!(attempt.disposition, MemberDisposition::Called(FrameSetter::Refused));
     assert_eq!(
-        attempt.pre,
-        Some(workspace_ref(&rig.out, &rig.ws))
+        attempt.disposition,
+        MemberDisposition::Called(FrameSetter::Refused)
     );
+    assert_eq!(attempt.pre, Some(workspace_ref(&rig.out, &rig.ws)));
     assert_eq!(attempt.pre, attempt.post);
     assert!(views.is_empty());
 
@@ -2557,9 +2580,13 @@ fn follow_success_applies_follow_failure_holds_without_view_claim() {
     ));
     let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.membership_writes, 0);
-    // Pre-proven arrival reports nothing: the core settles from staged
-    // observation, and the already-shown follow view needs no dispatch.
-    assert!(members.is_empty() && views.is_empty());
+    // Pre-proven arrival still reports one no-call receipt (host-owned
+    // workspaces have no native workspace property to prove the same-output
+    // send), and the already-shown follow view needs no dispatch.
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].disposition, MemberDisposition::AlreadyAtTarget);
+    assert_eq!(members[0].pre, members[0].post);
+    assert!(views.is_empty());
     assert_eq!(
         native.views.get(&rig.out).map(String::as_str),
         Some(ws_target.as_str())
@@ -2586,10 +2613,11 @@ fn follow_success_applies_follow_failure_holds_without_view_claim() {
     ));
     let (stats, members, views) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(stats.membership_writes, 0);
-    // Membership is pre-proven so no member row rides; the missed follow
-    // view reports one raw attempt under the parent id (never a view
+    // Membership is pre-proven: one no-call receipt rides, and the missed
+    // follow view reports one raw attempt under the parent id (never a view
     // outcome on the window id, never a refused window).
-    assert!(members.is_empty());
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].disposition, MemberDisposition::AlreadyAtTarget);
     assert_eq!(views.len(), 1);
     let follow = &views[0];
     assert_eq!(follow.operation_id, "op-5");
@@ -3083,17 +3111,20 @@ fn migration_partial_holds_then_completes_with_refill() {
         .iter()
         .find(|a| a.window.0 == "w1")
         .expect("w1 attempt");
-    assert_eq!(w1.disposition, MemberDisposition::Called(FrameSetter::Accepted));
     assert_eq!(
-        w1.post,
-        Some(workspace_ref(&rig.out, &ws_target))
+        w1.disposition,
+        MemberDisposition::Called(FrameSetter::Accepted)
     );
+    assert_eq!(w1.post, Some(workspace_ref(&rig.out, &ws_target)));
     let w2 = members
         .iter()
         .find(|a| a.window.0 == "w2")
         .expect("w2 attempt");
     assert_eq!(w2.operation_id, mig);
-    assert_eq!(w2.disposition, MemberDisposition::Called(FrameSetter::Threw));
+    assert_eq!(
+        w2.disposition,
+        MemberDisposition::Called(FrameSetter::Threw)
+    );
     assert!(views.is_empty());
 
     native.throw_membership.clear();
@@ -4056,7 +4087,10 @@ fn send_roundtrip_actuates_attempts_and_converges_without_remove() {
     let attempt = &members[0];
     assert_eq!(attempt.operation_id, op);
     assert_eq!(attempt.window.0, "w1");
-    assert_eq!(attempt.disposition, MemberDisposition::Called(FrameSetter::Accepted));
+    assert_eq!(
+        attempt.disposition,
+        MemberDisposition::Called(FrameSetter::Accepted)
+    );
     assert_eq!(attempt.post, Some(workspace_ref(&rig.out, &ws2)));
     assert!(views.is_empty());
     diff.gate.note_applied(&reply);
@@ -4116,13 +4150,13 @@ fn send_roundtrip_actuates_attempts_and_converges_without_remove() {
     diff.gate.current_obs = seq.current_obs();
     let (stats, members, views) = apply(&mut diff, &reply2, &fresh, &mut native);
     // The arrival receipt settled the transfer: w1 rides homed at the
-    // target with no retained transfer, while w2 converges to its grown
-    // post-departure slot with one frame write. Nothing outstanding means
-    // no re-proof and no fabricated verdict.
+    // target with no retained transfer. w2 converged in the first pass, and
+    // w1 is now on the inactive target workspace, so its hidden frame is
+    // not rewritten. Nothing outstanding means no re-proof and no verdict.
     assert!(reply2.transfers.iter().all(|t| t.operation_id != op));
     assert_eq!(stats.membership_writes, 0);
     assert_eq!(stats.view_writes, 0);
-    assert_eq!(stats.geometry_writes, 1);
+    assert_eq!(stats.geometry_writes, 0);
     assert!(!stats.stopped_mid_apply);
     assert!(
         members.is_empty() && views.is_empty(),
@@ -4503,8 +4537,6 @@ fn float_production_seam_reports_raw_attempt_and_core_holds_token() {
     seq_ack(&mut seq, &reply3);
 }
 
-
-
 fn maximized_facts() -> WindowFacts {
     WindowFacts {
         maximized: true,
@@ -4757,7 +4789,10 @@ fn standalone_view_actuates_into_untouched_floating_target() {
     );
     // Core publishes the floating target scope Untouched (never Controlled).
     for status in &mut reply.scopes {
-        if status.scope.covers_workspace(&OutputId(rig.out.clone()), ws_float.as_str()) {
+        if status
+            .scope
+            .covers_workspace(&OutputId(rig.out.clone()), ws_float.as_str())
+        {
             status.authority = Auth::Untouched;
         }
     }
@@ -4802,7 +4837,10 @@ fn standalone_view_into_floating_target_keeps_hold_and_refusal_evidence() {
         ],
     );
     for status in &mut reply.scopes {
-        if status.scope.covers_workspace(&OutputId(rig.out.clone()), ws_float.as_str()) {
+        if status
+            .scope
+            .covers_workspace(&OutputId(rig.out.clone()), ws_float.as_str())
+        {
             status.authority = Auth::Hold(CoreHold::Unreadable);
         }
     }
@@ -4830,7 +4868,10 @@ fn standalone_view_into_floating_target_keeps_hold_and_refusal_evidence() {
         ],
     );
     for status in &mut reply.scopes {
-        if status.scope.covers_workspace(&OutputId(rig.out.clone()), ws_float.as_str()) {
+        if status
+            .scope
+            .covers_workspace(&OutputId(rig.out.clone()), ws_float.as_str())
+        {
             status.authority = Auth::Untouched;
         }
     }
@@ -4863,7 +4904,10 @@ fn standalone_view_into_floating_target_keeps_hold_and_refusal_evidence() {
         ],
     );
     for status in &mut reply.scopes {
-        if status.scope.covers_workspace(&OutputId(rig.out.clone()), ws_float.as_str()) {
+        if status
+            .scope
+            .covers_workspace(&OutputId(rig.out.clone()), ws_float.as_str())
+        {
             status.authority = Auth::Untouched;
         }
     }
@@ -4893,7 +4937,10 @@ fn standalone_view_into_floating_target_keeps_hold_and_refusal_evidence() {
         ],
     );
     for status in &mut reply.scopes {
-        if status.scope.covers_workspace(&OutputId(rig.out.clone()), ws_float.as_str()) {
+        if status
+            .scope
+            .covers_workspace(&OutputId(rig.out.clone()), ws_float.as_str())
+        {
             status.authority = Auth::Untouched;
         }
     }
@@ -4980,7 +5027,10 @@ fn floating_migration_target_actuates_members_and_view() {
     native.views.insert(rig.out.clone(), rig.ws.clone());
     let mut reply = migration_reply(&rig.out, &ws_target, &rig.ws, mig);
     for status in &mut reply.scopes {
-        if status.scope.covers_workspace(&OutputId(rig.out.clone()), ws_target.as_str()) {
+        if status
+            .scope
+            .covers_workspace(&OutputId(rig.out.clone()), ws_target.as_str())
+        {
             status.authority = Auth::Untouched;
         }
     }
@@ -4996,11 +5046,11 @@ fn floating_migration_target_actuates_members_and_view() {
     assert_eq!(members.len(), 2, "both members dispatch: {members:?}");
     for attempt in &members {
         assert_eq!(attempt.operation_id, mig);
-        assert_eq!(attempt.disposition, MemberDisposition::Called(FrameSetter::Accepted));
         assert_eq!(
-            attempt.post,
-            Some(workspace_ref(&rig.out, &ws_target))
+            attempt.disposition,
+            MemberDisposition::Called(FrameSetter::Accepted)
         );
+        assert_eq!(attempt.post, Some(workspace_ref(&rig.out, &ws_target)));
     }
     assert_eq!(
         views.len(),
@@ -5031,7 +5081,10 @@ fn floating_migration_target_actuates_members_and_view() {
     native.views.insert(rig.out.clone(), rig.ws.clone());
     let mut reply = migration_reply(&rig.out, &ws_target, &rig.ws, mig);
     for status in &mut reply.scopes {
-        if status.scope.covers_workspace(&OutputId(rig.out.clone()), ws_target.as_str()) {
+        if status
+            .scope
+            .covers_workspace(&OutputId(rig.out.clone()), ws_target.as_str())
+        {
             status.authority = Auth::Untouched;
         }
     }
@@ -5071,7 +5124,10 @@ fn floating_refill_actuates_after_target_view_proof() {
     native.views.insert(rig.out.clone(), ws_target.clone());
     let mut reply = migration_reply(&rig.out, &ws_target, &rig.ws, mig);
     for status in &mut reply.scopes {
-        if status.scope.covers_workspace(&OutputId(rig.out.clone()), rig.ws.as_str()) {
+        if status
+            .scope
+            .covers_workspace(&OutputId(rig.out.clone()), rig.ws.as_str())
+        {
             status.authority = Auth::Untouched;
         }
     }
@@ -5102,7 +5158,10 @@ fn floating_refill_actuates_after_target_view_proof() {
         .insert(format!("{}/{}", rig.out, ws_target));
     let mut reply = migration_reply(&rig.out, &ws_target, &rig.ws, mig);
     for status in &mut reply.scopes {
-        if status.scope.covers_workspace(&OutputId(rig.out.clone()), rig.ws.as_str()) {
+        if status
+            .scope
+            .covers_workspace(&OutputId(rig.out.clone()), rig.ws.as_str())
+        {
             status.authority = Auth::Untouched;
         }
     }
@@ -6887,10 +6946,7 @@ fn sticky_focus_return_dispatches_when_home_differs_from_shown() {
     assert_eq!(row.setter, "accepted");
     assert!(row.foreground);
     assert_eq!(row.hold, None);
-    assert!(
-        !diff.effects.mark_focus_spent("fx-9"),
-        "spent exactly once"
-    );
+    assert!(!diff.effects.mark_focus_spent("fx-9"), "spent exactly once");
     let (restats, _, _) = apply(&mut diff, &reply, &fresh, &mut native);
     assert_eq!(restats.view_writes, 0);
     assert_eq!(restats.effects, 0);
@@ -7060,4 +7116,3 @@ fn sticky_focus_return_holds_when_target_dead() {
     assert_eq!(row.hold, Some("pre-setter-hold"));
     assert!(diff.effects.mark_focus_spent("fx-9"), "stays unspent");
 }
-

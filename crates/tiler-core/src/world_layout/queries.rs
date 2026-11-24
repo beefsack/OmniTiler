@@ -22,6 +22,16 @@ impl WorldLayout {
         self.domains.contains_key(key)
     }
 
+    /// Whether a domain holds hidden tiled residents through minimize
+    /// restore slots. They are absent from visible observations but still
+    /// own their layout position, so a send must split that retained layout
+    /// instead of treating the target as empty.
+    #[must_use]
+    pub(crate) fn has_minimized_resident(&self, key: &DomainKey) -> bool {
+        self.domain(key)
+            .is_some_and(|domain| !domain.minimized_slots.is_empty())
+    }
+
     /// Whether a window has a retained tiled leaf in this domain.
     #[must_use]
     pub(crate) fn is_tiled_window(&self, key: &DomainKey, window: &WindowId) -> bool {

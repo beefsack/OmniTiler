@@ -117,6 +117,14 @@ impl WorldOwner {
         self.seq.engine_ref()
     }
 
+    /// Push the validated settings document into core policy through the
+    /// bound connection. One full snapshot per revision; refusal leaves the
+    /// last accepted core state untouched.
+    pub(super) fn apply_core_settings(&mut self, settings: &crate::settings::Settings) -> bool {
+        let values = crate::settings::core_setting_values(settings);
+        self.seq.apply_settings_values(&values)
+    }
+
     /// Test-only live-settings revision through the bound connection.
     #[cfg(test)]
     pub(super) fn apply_test_settings(

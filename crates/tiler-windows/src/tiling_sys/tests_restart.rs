@@ -143,9 +143,10 @@ fn seed_member(
     // A successful no-hint read is known-empty, not unknown. Seed the same
     // truth the production hint pass records so the first observation can
     // home the member before marker adoption.
-    state
-        .hint_logged
-        .insert(token.clone(), tiler_core::size_hints::WindowSizeHints::none());
+    state.hint_logged.insert(
+        token.clone(),
+        tiler_core::size_hints::WindowSizeHints::none(),
+    );
     (key, token, output, active)
 }
 

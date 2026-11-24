@@ -77,9 +77,8 @@ fn source_refill_migration_arrival_and_views_settle() {
         moved.members
     );
     assert!(
-        arrivals
-            .iter()
-            .all(|a| a.post.as_ref() == Some(&tiler_core::world_report::WorkspaceRef::Logical {
+        arrivals.iter().all(|a| a.post.as_ref()
+            == Some(&tiler_core::world_report::WorkspaceRef::Logical {
                 output: OutputId(o2.clone()),
                 workspace: tiler_core::directional::WorkspaceId(ws_m.clone()),
             })),
@@ -249,9 +248,8 @@ fn occupied_target_migration_arrival_proves_without_deferred_view() {
         moved.members
     );
     assert!(
-        arrivals
-            .iter()
-            .all(|a| a.post.as_ref() == Some(&tiler_core::world_report::WorkspaceRef::Logical {
+        arrivals.iter().all(|a| a.post.as_ref()
+            == Some(&tiler_core::world_report::WorkspaceRef::Logical {
                 output: OutputId(o2.clone()),
                 workspace: tiler_core::directional::WorkspaceId(ws_m.clone()),
             })),
@@ -359,7 +357,11 @@ fn asymmetric_migration_areas() -> (Vec<super::super::MonitorArea>, Vec<Rect>) {
 
 /// The published migration slot must sit fully inside the target work
 /// area: the live defect class stranded translated members beyond it.
-fn assert_migration_slot(reply: &tiler_core::world_report::WorldReplyV4, window: &str, work: Rect) -> Rect {
+fn assert_migration_slot(
+    reply: &tiler_core::world_report::WorldReplyV4,
+    window: &str,
+    work: Rect,
+) -> Rect {
     let row = reply
         .windows
         .iter()
@@ -490,9 +492,8 @@ fn asymmetric_migration_members_land_on_published_slots_both_prove() {
         moved.members
     );
     assert!(
-        arrivals
-            .iter()
-            .all(|a| a.post.as_ref() == Some(&tiler_core::world_report::WorkspaceRef::Logical {
+        arrivals.iter().all(|a| a.post.as_ref()
+            == Some(&tiler_core::world_report::WorkspaceRef::Logical {
                 output: OutputId(o2.clone()),
                 workspace: tiler_core::directional::WorkspaceId(ws_m.clone()),
             })),
@@ -1863,7 +1864,12 @@ fn selection_return_core_effect_binds_exact_grant() {
             fx.cause,
             tiler_core::world_report::FocusRequestCause::ExplicitCommand
         );
-        assert_eq!(fx.cmd_seq, Some(seq), "core-minted arrival outcome: {:?}", fx.id);
+        assert_eq!(
+            fx.cmd_seq,
+            Some(seq),
+            "core-minted arrival outcome: {:?}",
+            fx.id
+        );
         let grant = SelectionArrivalGrant::for_accepted(
             Some(&back_command),
             Some(seq),
@@ -1890,7 +1896,12 @@ fn selection_return_core_effect_binds_exact_grant() {
         other => panic!("expected duplicate, got {other:?}"),
     };
     match focus {
-        Some(fx) => assert!(duplicate.focus_request.as_ref().is_some_and(|r| r.id == fx.id)),
+        Some(fx) => assert!(
+            duplicate
+                .focus_request
+                .as_ref()
+                .is_some_and(|r| r.id == fx.id)
+        ),
         None => {
             assert!(duplicate.focus_request.is_none());
             // No grant exists to exercise the arrival-actuation lane.
@@ -1938,9 +1949,9 @@ fn selection_return_core_effect_binds_exact_grant() {
     // A one-shot focus effect is real but never a selection arrival.
     let observed = live_visible_observed();
     let dir_command = WorldCommand::Focus {
-        window: tiler_core::directional::WindowSubject::Window(
-            tiler_core::directional::WindowId("w7".to_owned()),
-        ),
+        window: tiler_core::directional::WindowSubject::Window(tiler_core::directional::WindowId(
+            "w7".to_owned(),
+        )),
         direction: Some(tiler_core::directional::Direction::Left),
     };
     let directed = live_tick(
@@ -2002,48 +2013,48 @@ fn selection_return_core_effect_binds_exact_grant() {
     // through the production grant: fresh diff, scripted natives, the exact
     // accepted (command, sequence, reply) triple.
     if let Some(fx) = focus {
-    let desktop = win_key(209_203, 2613, "proc-613");
-    script_healthy_desktop(&desktop);
-    // Members only: the scripted desktop foreground is not inventory.
-    let observed: Vec<_> = live_visible_observed()
-        .into_iter()
-        .filter(|w| w.token != "fg")
-        .collect();
-    let inputs = env.state.inputs();
-    let captured = capture_world(&inputs, Some(&observed), &[], &areas, desktop.hwnd);
-    assert!(captured.inventory_complete);
-    let fresh = FreshHost::from_sources(&inputs, &observed, &[], &captured);
-    let mut diff = HostDiff::new(ADAPTER, GENERATION);
-    diff.gate.current_obs = back_reply.based_on_observation_seq;
-    let mut native = assemble(&mut env, scripted());
-    native.set_diagnostics_trace(true);
-    let grant = SelectionArrivalGrant::for_accepted(
-        Some(&back_command),
-        Some(seq),
-        &back_reply,
-        back_delivery,
-    )
-    .expect("minted return request arms");
-    native.set_selection_arrival(Some(grant));
-    let stats = apply_world_reply(
-        &mut diff,
-        &back_reply,
-        &fresh,
-        &mut native,
-        &mut Vec::new(),
-        &mut Vec::new(),
-        &mut Vec::new(),
-        0,
-    );
-    assert_eq!(stats.focus_dispatch.len(), 1);
-    let row = &stats.focus_dispatch[0];
-    assert_eq!(row.id, fx.id);
-    assert_eq!(row.target, "w6");
-    assert!(row.dispatched);
-    assert!(
-        row.primitive_called,
-        "core-minted return arrival must reach the setter past the desktop"
-    );
-    assert!(row.desktop_exception);
+        let desktop = win_key(209_203, 2613, "proc-613");
+        script_healthy_desktop(&desktop);
+        // Members only: the scripted desktop foreground is not inventory.
+        let observed: Vec<_> = live_visible_observed()
+            .into_iter()
+            .filter(|w| w.token != "fg")
+            .collect();
+        let inputs = env.state.inputs();
+        let captured = capture_world(&inputs, Some(&observed), &[], &areas, desktop.hwnd);
+        assert!(captured.inventory_complete);
+        let fresh = FreshHost::from_sources(&inputs, &observed, &[], &captured);
+        let mut diff = HostDiff::new(ADAPTER, GENERATION);
+        diff.gate.current_obs = back_reply.based_on_observation_seq;
+        let mut native = assemble(&mut env, scripted());
+        native.set_diagnostics_trace(true);
+        let grant = SelectionArrivalGrant::for_accepted(
+            Some(&back_command),
+            Some(seq),
+            &back_reply,
+            back_delivery,
+        )
+        .expect("minted return request arms");
+        native.set_selection_arrival(Some(grant));
+        let stats = apply_world_reply(
+            &mut diff,
+            &back_reply,
+            &fresh,
+            &mut native,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut Vec::new(),
+            0,
+        );
+        assert_eq!(stats.focus_dispatch.len(), 1);
+        let row = &stats.focus_dispatch[0];
+        assert_eq!(row.id, fx.id);
+        assert_eq!(row.target, "w6");
+        assert!(row.dispatched);
+        assert!(
+            row.primitive_called,
+            "core-minted return arrival must reach the setter past the desktop"
+        );
+        assert!(row.desktop_exception);
     }
 }
