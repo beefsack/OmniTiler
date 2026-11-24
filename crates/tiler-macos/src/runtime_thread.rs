@@ -5343,8 +5343,8 @@ mod trailing_join_tests {
     /// (bind carries `Some` generation so the release matches it) with
     /// bind-time foreground evidence, then one observation bootstrap and
     /// one away select through the production producer (`handle_select_action_with`
-    /// into `dispatch_report`, whose byte codec round-trips both directions
-    /// before the sequencer accepts). Returns the bound away state.
+    /// into `dispatch_report`, whose typed report enters core admission
+    /// directly before the sequencer accepts). Returns the bound away state.
     #[allow(clippy::type_complexity)]
     fn selection_away_fixture() -> (
         WorldSession,
@@ -5489,7 +5489,7 @@ mod trailing_join_tests {
 
     /// Genuine skipped issuing plus two unchanged publications for the
     /// numbered away select: each report is built plus core-transacted
-    /// through the byte codec yet never accepted/consumed, so the adapter
+    /// through typed admission yet never accepted/consumed, so the adapter
     /// binds nothing while the core retains the identical focus request.
     /// Returns the core-issued frozen request. Shared by the latest-only
     /// and settled-parent proofs (exactly these two uses).
@@ -5499,7 +5499,7 @@ mod trailing_join_tests {
         shared: &Arc<Mutex<Shared>>,
         ctx: &Arc<NativeContext>,
     ) -> tiler_core::world_report::FocusRequest {
-        use crate::world_dispatch::codec_transact;
+        use crate::world_dispatch::typed_transact;
         let action = InputSemanticAction::WorkspaceSelect { index: 2 };
         let command = crate::world_command_map::select_command(&action, None)
             .expect("numbered select maps without an output hint");
@@ -5523,8 +5523,7 @@ mod trailing_join_tests {
                 &ticket.request_id,
             )
             .expect("skipped issuing builds");
-            let outcome =
-                codec_transact(&mut *session, &report).expect("skipped issuing transacts");
+            let outcome = typed_transact(&mut *session, &report);
             let reply = match outcome {
                 WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => reply,
                 WorldOutcome::Duplicate(reply) => reply,
@@ -5555,8 +5554,7 @@ mod trailing_join_tests {
                 &ticket.request_id,
             )
             .expect("skipped unchanged builds");
-            let outcome =
-                codec_transact(&mut *session, &report).expect("skipped unchanged transacts");
+            let outcome = typed_transact(&mut *session, &report);
             let reply = match outcome {
                 WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => reply,
                 WorldOutcome::Duplicate(reply) => reply,
@@ -6363,13 +6361,13 @@ mod trailing_join_tests {
         );
         // Publish the moved native truth exactly like the main-thread pump
         // before the settling report, then settle core-side via a skipped
-        // moved report (bytes inside the codec, never accepted/consumed, so
+        // moved report (typed core admission, never accepted/consumed, so
         // the adapter still binds nothing).
         lock_shared(&shared).native_context = Some(Arc::clone(&moved_ctx));
         lock_shared(&shared).topology_revision = moved_ctx.revision;
         crate::runtime_core::note_dispatch_context(&mut retained, &moved_ctx);
         {
-            use crate::world_dispatch::codec_transact;
+            use crate::world_dispatch::typed_transact;
             let ticket = session
                 .sequencer()
                 .try_begin_request(None)
@@ -6387,7 +6385,7 @@ mod trailing_join_tests {
                 &ticket.request_id,
             )
             .expect("skipped settle builds");
-            let outcome = codec_transact(&mut session, &report).expect("skipped settle transacts");
+            let outcome = typed_transact(&mut session, &report);
             let reply = match outcome {
                 WorldOutcome::Accepted(reply) | WorldOutcome::CommandConsumed(reply) => reply,
                 WorldOutcome::Duplicate(reply) => reply,
@@ -9397,10 +9395,10 @@ mod trailing_join_tests {
     /// injected native read (three explicit synthetic ordinary captures)
     /// -> production `build_scoped_snapshot` -> retained roster/raw ->
     /// genuine `WorldSession` handshake -> `process_job` scoped
-    /// observation (real `dispatch_report`: production `codec_transact`
-    /// report encode/decode, real core plus reply encode/decode,
-    /// sequencer, mock frame-sink apply) — then an incomplete-read hold
-    /// with complete recovery, then close-with-reflow. No live AX.
+    /// observation (real `dispatch_report`: typed report straight into core
+    /// admission, real core reply, sequencer, mock frame-sink apply) — then
+    /// an incomplete-read hold with complete recovery, then close-with-reflow.
+    /// No live AX.
     #[test]
     fn ordinary_three_window_admission_close_reflow_through_production_dispatch() {
         use crate::classifier::{ActivationPolicy, ROLE_WINDOW, SUBROLE_STANDARD};
@@ -9593,9 +9591,8 @@ mod trailing_join_tests {
         // dispatch -> apply path: each leg captures its own complete
         // `NativeReadOutcome`, snapshots via production
         // `build_scoped_snapshot`, and dispatches through `process_job`
-        // (real `dispatch_report`: production `codec_transact` report
-        // encode/decode, real core plus reply encode/decode, sequencer,
-        // mock frame-sink apply).
+        // (real `dispatch_report`: typed report straight into core
+        // admission, real core reply, sequencer, mock frame-sink apply).
         fn outcome_of(wids: &[u32]) -> NativeReadOutcome {
             let frames = three_frames();
             NativeReadOutcome {
@@ -9713,7 +9710,7 @@ mod trailing_join_tests {
 
         // Producer-bytes pin: the same retained truth rebuilds through the
         // production builder and round-trips the genuine v4 codec (wire
-        // optionals inferred canonically, exactly like `codec_transact`).
+        // optionals inferred canonically by the test envelope builder).
         let ticket = session
             .sequencer()
             .try_begin_request(None)
@@ -9978,7 +9975,7 @@ mod trailing_join_tests {
     /// Durable intent through the production dispatch: explicit synthetic
     /// ordinary captures (production caps) admit three windows, then a real
     /// `ToggleFloat` core command dispatches through genuine
-    /// `dispatch_report`/`codec_transact`. The adapter-owned atomic store
+    /// `dispatch_report` typed core admission. The adapter-owned atomic store
     /// persists the changed desire BEFORE dependent native apply; the reply
     /// then applies normally (no permanent `ToggleFloat` freeze). A later
     /// accepted reply carrying the same retained projection writes nothing.
@@ -10174,7 +10171,7 @@ mod trailing_join_tests {
         );
 
         // First production intent-write reply: real ToggleFloat command for
-        // an admitted window through genuine dispatch_report/codec_transact.
+        // an admitted window through genuine dispatch_report typed admission.
         seq += 1;
         let toggle = tiler_core::world_report::WorldCommand::Operation(
             tiler_core::boundary::CoreCommand::ToggleFloat {

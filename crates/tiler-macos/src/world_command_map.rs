@@ -329,10 +329,10 @@ mod directional_codec_tests {
 
     /// Production-map codec regression: directional focus/move map to the
     /// execution-time implicit directional commands and survive the genuine
-    /// v4 byte codec (the runtime dispatches through `codec_transact`,
-    /// whose `Operation` encoder only accepts toggle-float/orientation/
-    /// resize). The legacy `Operation(Focus/Move)` spelling failed here
-    /// with `command-invalid`.
+    /// v4 byte codec (runtime dispatch itself is typed ingress; this test
+    /// pins the wire-compatible command shapes, whose `Operation` encoder
+    /// only accepts toggle-float/orientation/resize). The legacy
+    /// `Operation(Focus/Move)` spelling failed here with `command-invalid`.
     #[test]
     fn directional_production_map_encodes_through_genuine_v4_codec() {
         use tiler_core::directional::{OutputId, WorkspaceId};

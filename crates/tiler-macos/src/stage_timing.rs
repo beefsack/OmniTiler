@@ -78,16 +78,8 @@ pub mod stage {
     pub const MAPPING: &str = "timing-mapping";
     /// World report construction (`build_dispatch_report`).
     pub const REPORT: &str = "timing-report";
-    /// Codec report encode leg.
-    pub const CODEC_REPORT_ENC: &str = "timing-codec-report-enc";
-    /// Codec report decode leg.
-    pub const CODEC_REPORT_DEC: &str = "timing-codec-report-dec";
-    /// Core engine call (`handle_report`).
+    /// Core typed admission call (`handle_report_checked`).
     pub const CORE: &str = "timing-core";
-    /// Codec reply encode leg.
-    pub const CODEC_REPLY_ENC: &str = "timing-codec-reply-enc";
-    /// Codec reply decode leg.
-    pub const CODEC_REPLY_DEC: &str = "timing-codec-reply-dec";
     /// Sequencer acceptance plus the emission-coherence gate.
     pub const ACCEPT: &str = "timing-accept";
     /// Reply consume: frame/focus publication, slot/outbox writes, claim
@@ -375,7 +367,6 @@ pub fn action_token(action: &InputSemanticAction) -> &'static str {
 
 thread_local! {
     static CURRENT: RefCell<Option<ActionSpan>> = const { RefCell::new(None) };
-    static LEG_BUFFER: RefCell<Vec<(&'static str, u64)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Shared correlation registries (see the module docs above). One bounded
@@ -454,10 +445,10 @@ pub fn ensure_span(op: &'static str) -> Option<(ActionSpan, Option<TraceGuard>)>
 /// FIFO evicting at `MAP_CAP`): the engine-thread dispatch writes, the
 /// engine-thread feedback arms and the main-thread lane/drain arms read, and
 /// the main-thread deferred-focus release writes through the completion
-/// identity. `CURRENT` and `LEG_BUFFER` stay thread-local (per-thread span
-/// only); only these registries are shared. Disabled: every helper returns
-/// after the flag load (before any lock). No behavior change: misses emit
-/// nothing, eviction only drops joins.
+/// identity. `CURRENT` stays thread-local (per-thread span only); only these
+/// registries are shared. Disabled: every helper returns after the flag load
+/// (before any lock). No behavior change: misses emit nothing, eviction only
+/// drops joins.
 /// Worker command counters are per-app, so frame/focus keys are the full app
 /// lifetime (`pid`, `generation`) plus the command id - a bare `cmd_id`
 /// would join across apps. Drain `op-<seq>` values are dispatch-issued and
@@ -710,71 +701,6 @@ pub(crate) fn finish(shared: &Arc<Mutex<Shared>>, span: Option<ActionSpan>, outc
     }
 }
 
-/// Stage one codec-leg duration for a later [`flush_legs`]. `codec_transact`
-/// owns the leg boundaries but has no sink access, so legs buffer here
-/// (bounded: the five genuine legs; overflow sheds, never grows) and the
-/// dispatch site flushes them in order under its span. Disabled (or
-/// untraced): one flag load, no clock read by the caller when it gates on
-/// [`with_current`].
-pub fn stage_leg(stage: &'static str, us: u64) {
-    if !enabled() {
-        return;
-    }
-    LEG_BUFFER.with(|buf| {
-        let mut buffered = buf.borrow_mut();
-        if buffered.len() < 8 {
-            buffered.push((stage, us));
-        }
-    });
-}
-
-/// Flush staged codec legs as records under `span_id` (in stage order).
-/// Disabled: one flag load, no emission. Always drains, even when empty.
-pub(crate) fn flush_legs(shared: &Arc<Mutex<Shared>>, span_id: u64, action: &'static str) {
-    if !enabled() {
-        LEG_BUFFER.with(|buf| buf.borrow_mut().clear());
-        return;
-    }
-    LEG_BUFFER.with(|buf| {
-        for (stage, us) in buf.borrow_mut().drain(..) {
-            record(shared, span_id, stage, action, us);
-        }
-    });
-}
-
-/// One leg stopwatch for the codec transact: inert without an installed
-/// span (no clock reads beyond the flag loads). Each [`LegClock::leg`]
-/// stages the elapsed microseconds since the previous leg (or
-/// construction) under `stage` for a later [`flush_legs`].
-pub struct LegClock {
-    active: bool,
-    clock: PhaseClock,
-}
-
-impl LegClock {
-    #[must_use]
-    pub fn new() -> Self {
-        let active = with_current(|_| ()).is_some();
-        Self {
-            active,
-            clock: PhaseClock::start(),
-        }
-    }
-
-    pub fn leg(&mut self, stage: &'static str) {
-        if !self.active {
-            return;
-        }
-        stage_leg(stage, self.clock.elapsed());
-        self.clock = PhaseClock::start();
-    }
-}
-
-impl Default for LegClock {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 /// Format one sink line for `event`: the single source of truth for the
 /// machine-parseable `tiler-log` schema (one filter, `key=value` tokens,
 /// stable prefix). `seq`/`t_ms` are the ring sequence and runtime-relative
@@ -1315,11 +1241,7 @@ mod tests {
             stage::QUEUE,
             stage::MAPPING,
             stage::REPORT,
-            stage::CODEC_REPORT_ENC,
-            stage::CODEC_REPORT_DEC,
             stage::CORE,
-            stage::CODEC_REPLY_ENC,
-            stage::CODEC_REPLY_DEC,
             stage::ACCEPT,
             stage::PUBLISH,
             stage::DISPATCH,

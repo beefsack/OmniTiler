@@ -23,13 +23,14 @@ use tiler_core::directional::WindowId;
 use tiler_core::geometry::Rect;
 use tiler_core::gesture::{GestureIngress, GestureSettled};
 use tiler_core::world_engine::WorldOutcome;
+#[cfg(test)]
+use tiler_core::world_report::AttemptLaneV4;
 use tiler_core::world_report::{
-    AttemptLaneV4, FocusNoCallReason, ScopeAuthority, WorldCommand, WorldReplyV4, WorldReportV4,
+    FocusNoCallReason, ScopeAuthority, WorldCommand, WorldReplyV4, WorldReportV4,
 };
+#[cfg(test)]
 use tiler_protocol::world_protocol::{
-    CreationReceiptWire, CursorHitWire, DecodedReplyV4, DecodedReportV4, GestureIngressWire,
-    ReportWireOptionals, decode_reply_v4_for_host, decode_report_v4, encode_reply_v4,
-    encode_report_v4,
+    CreationReceiptWire, CursorHitWire, DecodedReportV4, GestureIngressWire, ReportWireOptionals,
 };
 
 use crate::focus_route::FocusRoute;
@@ -106,6 +107,7 @@ fn is_retained_fullscreen(retained: &RetainedCore, window: &str) -> bool {
 /// `visibility`), exactly the sequence the encoder consumes. Production
 /// reports carry no held attempt rows, so the length equals the sum of the
 /// five lane vecs.
+#[cfg(test)]
 fn property_attempt_order(report: &WorldReportV4) -> Vec<AttemptLaneV4> {
     let mut order = Vec::with_capacity(
         report.frames.len()
@@ -127,14 +129,16 @@ fn property_attempt_order(report: &WorldReportV4) -> Vec<AttemptLaneV4> {
     order
 }
 
-/// Canonical decoded-report envelope for one typed report: the same
-/// metadata the production codec infers, shared with the adapter tests so
-/// they feed the envelope the codec really produces rather than a hand
-/// assembled copy. Wire metadata is inferred canonically: absent
-/// cursor-hit/gesture stay absent, `monotonic_ms` rides iff nonzero
-/// (attempt stamps preserved), attempt lanes ride iff non-empty, and
-/// creation receipts keep `created` null unless the row carries causal
+/// Test-only canonical envelope builder: the decoded-report metadata a wire
+/// encode expects, shared with adapter tests so they exercise the genuine
+/// codec on the envelope it really consumes instead of a hand-assembled
+/// copy. Never a production dispatch fallback: production dispatches the
+/// typed report straight into core admission. Wire metadata is inferred
+/// canonically: absent cursor-hit/gesture stay absent, `monotonic_ms` rides
+/// iff nonzero (attempt stamps preserved), attempt lanes ride iff non-empty,
+/// and creation receipts keep `created` null unless the row carries causal
 /// proof (`Some`).
+#[cfg(test)]
 pub(crate) fn decoded_report_for_encode(report: &WorldReportV4) -> DecodedReportV4 {
     DecodedReportV4 {
         report: report.clone(),
@@ -167,77 +171,16 @@ pub(crate) fn decoded_report_for_encode(report: &WorldReportV4) -> DecodedReport
     }
 }
 
-/// Production byte-codec transact: the typed report encodes through the
-/// genuine v4 codec ([`encode_report_v4`]), decodes back to the wire-typed
-/// report ([`decode_report_v4`]), runs the real engine, then the typed reply
-/// encodes ([`encode_reply_v4`]) and decodes ([`decode_reply_v4_for_host`]
-/// against the production [`macos_capabilities`](crate::world_connection::macos_capabilities))
-/// before the sequencer ever sees it. Any codec leg failure returns its
-/// static kind; callers refuse explicitly and never fall back to a direct
-/// typed call. A wrong-capability row (above/warp/sticky, all false on
-/// macOS) refuses here as `snapshot-invalid` with its fixed rule token,
-/// before sequencer acceptance or any actuation.
-pub(crate) fn codec_transact(
-    session: &mut WorldSession,
-    report: &WorldReportV4,
-) -> Result<WorldOutcome, &'static str> {
-    let decoded_report = decoded_report_for_encode(report);
-    let mut legs = crate::stage_timing::LegClock::new();
-    let report_wire = encode_report_v4(&decoded_report).map_err(|_| "codec-report-encode")?;
-    legs.leg(crate::stage_timing::stage::CODEC_REPORT_ENC);
-    let admitted = decode_report_v4(&report_wire).map_err(|_| "codec-report-decode")?;
-    legs.leg(crate::stage_timing::stage::CODEC_REPORT_DEC);
-    let outcome = tiler_protocol::world_admission::handle_report_checked(
-        session.engine_mut(),
-        &admitted.report,
-        &[],
-    )
-    .outcome;
-    legs.leg(crate::stage_timing::stage::CORE);
-    // Capability truth at reply decode: the production macOS host declares
-    // above/warp/native-sticky false, and the engine gates all three rows
-    // on those caps — so an honest reply never carries them and this gate
-    // only fires on a dishonest/corrupt row, before sequencer/apply.
-    let host = crate::world_connection::macos_capabilities();
-    match outcome {
-        WorldOutcome::Accepted(reply) => {
-            let decoded = DecodedReplyV4 {
-                roster_plan: None,
-                reply,
-            };
-            let reply_wire = encode_reply_v4(&decoded).map_err(|_| "codec-reply-encode")?;
-            legs.leg(crate::stage_timing::stage::CODEC_REPLY_ENC);
-            let back =
-                decode_reply_v4_for_host(&reply_wire, &host).map_err(|_| "codec-reply-decode")?;
-            legs.leg(crate::stage_timing::stage::CODEC_REPLY_DEC);
-            Ok(WorldOutcome::Accepted(back.reply))
-        }
-        WorldOutcome::CommandConsumed(reply) => {
-            let decoded = DecodedReplyV4 {
-                roster_plan: None,
-                reply,
-            };
-            let reply_wire = encode_reply_v4(&decoded).map_err(|_| "codec-reply-encode")?;
-            legs.leg(crate::stage_timing::stage::CODEC_REPLY_ENC);
-            let back =
-                decode_reply_v4_for_host(&reply_wire, &host).map_err(|_| "codec-reply-decode")?;
-            legs.leg(crate::stage_timing::stage::CODEC_REPLY_DEC);
-            Ok(WorldOutcome::CommandConsumed(back.reply))
-        }
-        WorldOutcome::Duplicate(reply) => {
-            let decoded = DecodedReplyV4 {
-                roster_plan: None,
-                reply,
-            };
-            let reply_wire = encode_reply_v4(&decoded).map_err(|_| "codec-reply-encode")?;
-            legs.leg(crate::stage_timing::stage::CODEC_REPLY_ENC);
-            let back =
-                decode_reply_v4_for_host(&reply_wire, &host).map_err(|_| "codec-reply-decode")?;
-            legs.leg(crate::stage_timing::stage::CODEC_REPLY_DEC);
-            Ok(WorldOutcome::Duplicate(back.reply))
-        }
-        WorldOutcome::Rejected { kind, message } => Ok(WorldOutcome::Rejected { kind, message }),
-    }
+/// Production typed transact: the typed report enters core admission
+/// directly ([`tiler_protocol::world_admission::handle_report_checked`]);
+/// the adapter performs no report or reply JSON encode/decode on the
+/// dispatch path. Core owns the request-size and section caps, typed shape
+/// semantics, host gates, replay/staleness classification, reply semantic
+/// and host-capability gates, and the exact canonical reply byte bound, so
+/// every gate applies before sequencer acceptance or any actuation.
+pub(crate) fn typed_transact(session: &mut WorldSession, report: &WorldReportV4) -> WorldOutcome {
+    tiler_protocol::world_admission::handle_report_checked(session.engine_mut(), report, &[])
+        .outcome
 }
 
 /// Adapter-side durable-intent gate: reconciliation persists any changed
@@ -547,22 +490,17 @@ pub(crate) fn dispatch_gesture_report(
             None,
         );
     };
-    let outcome = match codec_transact(session, &report) {
-        Ok(outcome) => outcome,
-        Err(kind) => {
-            session.sequencer().clear_flight();
-            count_token(shared, &format!("{op}-rejected-{kind}"));
-            emit(shared, pid, generation, seq, "core-reply", kind, 0);
-            return (
-                DispatchVerdict::Refused {
-                    token: format!("rejected-{kind}"),
-                    select_operation: None,
-                },
-                PreviewOutcome::HideTransient { reason: "held" },
-                None,
-            );
-        }
-    };
+    let core_clock = crate::stage_timing::PhaseClock::start();
+    let outcome = typed_transact(session, &report);
+    if let Some(span) = crate::stage_timing::with_current(|held| *held) {
+        crate::stage_timing::record(
+            shared,
+            span.id,
+            crate::stage_timing::stage::CORE,
+            span.action,
+            core_clock.elapsed(),
+        );
+    }
     match outcome {
         WorldOutcome::Accepted(reply) => match session.sequencer().accept_reply(&reply) {
             ReplyVerdict::Applied(applied) => {
@@ -982,29 +920,22 @@ fn dispatch_ticket_inner(
             report_clock.elapsed(),
         );
     }
-    // One core transaction per dispatch through the genuine v4 byte codec
-    // (bounded 4 MiB request AND reply inside the codec; staged overflow
-    // rejects without mutation; codec failure refuses explicitly, never a
-    // direct typed fallback).
-    let outcome = match codec_transact(session, &report) {
-        Ok(outcome) => outcome,
-        Err(kind) => {
-            // Flush staged legs even on refusal: the completed legs ran
-            // and later dispatches must not inherit them.
-            if let Some(span) = crate::stage_timing::with_current(|held| *held) {
-                crate::stage_timing::flush_legs(shared, span.id, span.action);
-            }
-            session.sequencer().clear_flight();
-            count_token(shared, &format!("{op}-rejected-{kind}"));
-            emit(shared, pid, generation, seq, "core-reply", kind, 0);
-            return DispatchVerdict::Refused {
-                token: format!("rejected-{kind}"),
-                select_operation: None,
-            };
-        }
-    };
+    // One core transaction per dispatch through typed ingress: the typed
+    // report enters core admission directly (no adapter-side JSON
+    // round-trip), where the core applies request/section caps, typed shape
+    // semantics, host gates, replay/staleness, reply semantics/capabilities,
+    // and the exact reply byte bound before sequencer acceptance or
+    // actuation.
+    let core_clock = crate::stage_timing::PhaseClock::start();
+    let outcome = typed_transact(session, &report);
     if let Some(span) = crate::stage_timing::with_current(|held| *held) {
-        crate::stage_timing::flush_legs(shared, span.id, span.action);
+        crate::stage_timing::record(
+            shared,
+            span.id,
+            crate::stage_timing::stage::CORE,
+            span.action,
+            core_clock.elapsed(),
+        );
     }
     match outcome {
         WorldOutcome::Accepted(reply) => {
@@ -5385,22 +5316,16 @@ mod tests {
     }
 
     #[test]
-    fn capability_truth_at_reply_decode_refuses_host_unsupported_rows() {
+    fn capability_truth_at_typed_reply_gate_refuses_host_unsupported_rows() {
         use tiler_core::world_report::{ScopeAuthority, StateProperty, StateTarget};
-        use tiler_protocol::world_protocol::{DecodedReplyV4, decode_reply_v4, encode_reply_v4};
-        // Capability truth at reply decode: production `codec_transact`
-        // decodes through `decode_reply_v4_for_host` against the actual
-        // production `macos_capabilities` (above/warp/native-sticky all
-        // false, engine-gated so honest replies never carry them). Each
-        // host-unsupported row is shape-valid wire but refuses here as
-        // `snapshot-invalid` with its fixed rule token — before any
-        // sequencer acceptance or actuation.
-        let host = crate::world_connection::macos_capabilities();
-        assert!(!host.above && !host.warp && !host.native_sticky);
-        let mut tainted = empty_reply();
-        tainted
-            .windows
-            .push(tiler_core::world_report::WindowDesire {
+        // Typed capability gate: the production `WorldSession` handshake
+        // binds exactly the `macos_capabilities` truth (above/warp/
+        // native-sticky all false) that core reply validation reads. Each
+        // host-unsupported row refuses as `snapshot-invalid` with its fixed
+        // rule token — before any sequencer acceptance or actuation, with
+        // no codec decode on the production path.
+        fn state_window(property: StateProperty) -> tiler_core::world_report::WindowDesire {
+            tiler_core::world_report::WindowDesire {
                 lifetime: tiler_core::directional::WindowId("4242_7".to_owned()),
                 output: output(),
                 workspace: "ws-a".to_owned(),
@@ -5415,84 +5340,206 @@ mod tests {
                 visibility: None,
                 visibility_authority: ScopeAuthority::Untouched,
                 state: vec![StateTarget {
-                    property: StateProperty::Above,
+                    property,
                     value: true,
                     authority: ScopeAuthority::Untouched,
                     command_seq: None,
                     automatic_clear: false,
                 }],
-            });
-        tainted.cursor_warp = Some((4, 4));
-        let wire = encode_reply_v4(&DecodedReplyV4 {
-            roster_plan: None,
-            reply: tainted,
-        })
-        .expect("tainted reply encodes");
-        // Shape decode accepts the rows; the host-gated decode refuses on
-        // the first gate (above runs before warp/sticky).
-        decode_reply_v4(&wire).expect("shape decode accepts host-unsupported rows");
-        let error = super::decode_reply_v4_for_host(&wire, &host)
-            .expect_err("macOS host must refuse above/warp rows");
+            }
+        }
+        let mut session = focus_session();
+        let host = crate::world_connection::macos_capabilities();
+        assert!(!host.above && !host.warp && !host.native_sticky);
+        assert_eq!(
+            session.engine_mut().capabilities(),
+            Some(&host),
+            "the production handshake binds macOS capability truth"
+        );
+        let mut above_only = empty_reply();
+        above_only.windows.push(state_window(StateProperty::Above));
+        let error = tiler_core::world_reply_validation::validate_reply_v4(
+            &above_only,
+            session.engine_mut().capabilities(),
+        )
+        .expect_err("macOS host must refuse above rows");
         assert_eq!(error.kind, "snapshot-invalid");
         assert_eq!(error.message, "above-capability-false");
         // Each gate fires independently: warp-only and sticky-only rows
         // refuse with their own fixed tokens.
         let mut warp_only = empty_reply();
         warp_only.cursor_warp = Some((4, 4));
-        let warp_wire = encode_reply_v4(&DecodedReplyV4 {
-            roster_plan: None,
-            reply: warp_only,
-        })
-        .expect("warp-only reply encodes");
-        let error = super::decode_reply_v4_for_host(&warp_wire, &host)
-            .expect_err("macOS host must refuse warp point");
+        let error = tiler_core::world_reply_validation::validate_reply_v4(
+            &warp_only,
+            session.engine_mut().capabilities(),
+        )
+        .expect_err("macOS host must refuse warp point");
         assert_eq!(error.kind, "snapshot-invalid");
         assert_eq!(error.message, "warp-capability-false");
         let mut sticky_only = empty_reply();
         sticky_only
             .windows
-            .push(tiler_core::world_report::WindowDesire {
-                lifetime: tiler_core::directional::WindowId("4242_7".to_owned()),
-                output: output(),
-                workspace: "ws-a".to_owned(),
-                allocation: None,
-                effective_frame: None,
-                frame_authority: ScopeAuthority::Untouched,
-                membership_authority: ScopeAuthority::Untouched,
-                floating: false,
-                float_origin: None,
-                frame_operation: None,
-                command_seq: None,
-                visibility: None,
-                visibility_authority: ScopeAuthority::Untouched,
-                state: vec![StateTarget {
-                    property: StateProperty::Sticky,
-                    value: true,
-                    authority: ScopeAuthority::Untouched,
-                    command_seq: None,
-                    automatic_clear: false,
-                }],
-            });
-        let sticky_wire = encode_reply_v4(&DecodedReplyV4 {
-            roster_plan: None,
-            reply: sticky_only,
-        })
-        .expect("sticky-only reply encodes");
-        let error = super::decode_reply_v4_for_host(&sticky_wire, &host)
-            .expect_err("macOS host must refuse sticky target");
+            .push(state_window(StateProperty::Sticky));
+        let error = tiler_core::world_reply_validation::validate_reply_v4(
+            &sticky_only,
+            session.engine_mut().capabilities(),
+        )
+        .expect_err("macOS host must refuse sticky target");
         assert_eq!(error.kind, "snapshot-invalid");
         assert_eq!(error.message, "sticky-capability-false");
         // Ordinary save-free replies stay accepted under the same gate
         // (success leg pinned end-to-end by
         // `ordinary_save_free_reply_not_held_and_dispatches` dispatching
-        // through the real `codec_transact`).
-        let clean_wire = encode_reply_v4(&DecodedReplyV4 {
-            roster_plan: None,
-            reply: empty_reply(),
-        })
-        .expect("ordinary reply encodes");
-        super::decode_reply_v4_for_host(&clean_wire, &host)
-            .expect("ordinary reply must decode under macOS caps");
+        // through the production typed ingress).
+        tiler_core::world_reply_validation::validate_reply_v4(
+            &empty_reply(),
+            session.engine_mut().capabilities(),
+        )
+        .expect("ordinary reply must validate under macOS caps");
+    }
+
+    #[test]
+    fn typed_ingress_refuses_invalid_and_over_cap_typed_reports() {
+        // The typed twins of the old decoder refusals come from core
+        // admission, not codec tokens: duplicate action-output ids fail the
+        // typed shape check, an over-cap section fails the request-size
+        // gate, and neither refusal mutates engine state.
+        let mut session = focus_session();
+        let retained = crate::runtime_core::RetainedCore::default();
+        let mut report = build_dispatch_report(
+            &mut session,
+            &retained,
+            &DispatchContext::Synthetic,
+            &[],
+            0,
+            1,
+            None,
+            None,
+            None,
+            "req-1",
+        )
+        .expect("synthetic report builds");
+        let revision = session.engine_mut().state_revision();
+        assert!(
+            matches!(
+                typed_transact(&mut session, &report),
+                WorldOutcome::Accepted(_)
+            ),
+            "a valid typed report is accepted"
+        );
+        assert!(
+            session.engine_mut().state_revision() > revision,
+            "acceptance advances engine state"
+        );
+        let accepted_revision = session.engine_mut().state_revision();
+
+        let mut duplicate = report.clone();
+        duplicate.action_outputs = vec![output(), output()];
+        match typed_transact(&mut session, &duplicate) {
+            WorldOutcome::Rejected { kind, message } => {
+                assert_eq!(kind, "snapshot-invalid");
+                assert_eq!(message, "duplicate-action-output");
+            }
+            other => panic!("duplicate action outputs must be rejected, got {other:?}"),
+        }
+        assert_eq!(
+            session.engine_mut().state_revision(),
+            accepted_revision,
+            "a typed shape refusal never mutates engine state"
+        );
+
+        report.action_outputs = (0..=tiler_core::world_report::MAX_WORLD_SCREENS)
+            .map(|index| tiler_core::directional::OutputId(format!("out-{index}")))
+            .collect();
+        match typed_transact(&mut session, &report) {
+            WorldOutcome::Rejected { kind, message } => {
+                assert_eq!(kind, "snapshot-invalid");
+                assert_eq!(message, "section-over-cap");
+            }
+            other => panic!("over-cap action outputs must be rejected, got {other:?}"),
+        }
+        assert_eq!(
+            session.engine_mut().state_revision(),
+            accepted_revision,
+            "an over-cap request refusal never mutates engine state"
+        );
+
+        // The canonical request-byte gate refuses an over-bound typed
+        // request with the same frozen size token the wire decode used,
+        // before any typed shape check and without state mutation.
+        report.request_id = "req-over".to_owned();
+        report.action_outputs = vec![tiler_core::directional::OutputId(
+            "o".repeat(tiler_protocol::world_protocol::WORLD_MAX_REQUEST_BYTES + 1),
+        )];
+        match typed_transact(&mut session, &report) {
+            WorldOutcome::Rejected { kind, message } => {
+                assert_eq!(kind, "oversized");
+                assert_eq!(message, "request exceeds size bound");
+            }
+            other => panic!("an over-bound typed request must refuse, got {other:?}"),
+        }
+        assert_eq!(
+            session.engine_mut().state_revision(),
+            accepted_revision,
+            "an over-bound request refusal never mutates engine state"
+        );
+    }
+
+    #[test]
+    fn typed_ingress_classifies_duplicate_reused_and_superseded() {
+        // Core replay classification over typed ingress: an identical
+        // resend duplicates, a reused request sequence with changed input
+        // refuses as reused, and an older sequence refuses as superseded.
+        let mut session = focus_session();
+        let retained = crate::runtime_core::RetainedCore::default();
+        let report = build_dispatch_report(
+            &mut session,
+            &retained,
+            &DispatchContext::Synthetic,
+            &[],
+            0,
+            5,
+            None,
+            None,
+            None,
+            "req-5",
+        )
+        .expect("synthetic report builds");
+        assert!(
+            matches!(
+                typed_transact(&mut session, &report),
+                WorldOutcome::Accepted(_)
+            ),
+            "the first typed report is accepted"
+        );
+        assert!(
+            matches!(
+                typed_transact(&mut session, &report),
+                WorldOutcome::Duplicate(_)
+            ),
+            "an identical resend duplicates"
+        );
+        let mut reused = report.clone();
+        reused.monotonic_ms += 1;
+        match typed_transact(&mut session, &reused) {
+            WorldOutcome::Rejected { kind, message } => {
+                assert_eq!(kind, "request-reused");
+                assert_eq!(message, "request sequence reused with different input");
+            }
+            other => panic!("changed content on the same sequence must refuse, got {other:?}"),
+        }
+        let mut superseded = report.clone();
+        superseded.request_seq = 4;
+        match typed_transact(&mut session, &superseded) {
+            WorldOutcome::Rejected { kind, message } => {
+                assert_eq!(kind, "request-superseded");
+                assert_eq!(
+                    message,
+                    "request sequence is older than the accepted request"
+                );
+            }
+            other => panic!("an older request sequence must refuse, got {other:?}"),
+        }
     }
 
     #[test]

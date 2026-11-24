@@ -1483,4 +1483,84 @@ mod tests {
         );
         assert_eq!(engine.state_revision(), rev_after_win);
     }
+
+    #[test]
+    fn typed_admission_refuses_roster_feedback_on_non_roster_host() {
+        use tiler_core::world_engine::WorldOutcome;
+
+        let feedback_json = |generation: &str| {
+            serde_json::json!({
+                "op": "op-roster-1",
+                "gen": generation,
+                "rev": "1",
+                "steps": [{
+                    "step": "step-1",
+                    "status": "appended",
+                    "before": {"kind": "order", "order": []},
+                    "after": {"kind": "order", "order": ["native-1"]},
+                }],
+            })
+        };
+        let roster_mismatch = WorldOutcome::Rejected {
+            kind: "snapshot-invalid",
+            message: "roster-host-mismatch",
+        };
+
+        let mut engine = WorldEngine::new_test_bound_with_capabilities(
+            "gen-seed",
+            "adapter-a",
+            tiler_core::connection::HostCapabilities::default(),
+        )
+        .expect("engine");
+        let generation = engine.core_generation().to_owned();
+        let mut report = base_report();
+        report.adapter_incarnation = "adapter-a".to_owned();
+        report.core_generation = generation.clone();
+        let feedback = crate::world_roster_wire::decode_feedback(&feedback_json(&generation))
+            .expect("feedback decodes");
+        let residual = Arc::new(WorldReportResidual {
+            roster_feedback: Some(feedback),
+            ..Default::default()
+        });
+        let gate = ProtocolAdmissionGate::with_residual(Some(&residual));
+        let outcome = gate
+            .dispatch_with_prepare(&mut engine, &report, &[], |_| {
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .expect("no prepare error")
+            .outcome;
+        assert_eq!(outcome, roster_mismatch);
+        assert_eq!(engine.state_revision(), 0);
+
+        let mut roster_engine = WorldEngine::new_test_bound_with_capabilities(
+            "gen-seed-roster",
+            "adapter-a",
+            tiler_core::connection::HostCapabilities {
+                host_owned: true,
+                shared_native_roster: true,
+                native_selector_scope: tiler_core::connection::NativeSelectorScope::PerOutput,
+                ..tiler_core::connection::HostCapabilities::default()
+            },
+        )
+        .expect("roster engine");
+        let roster_generation = roster_engine.core_generation().to_owned();
+        let mut roster_report = base_report();
+        roster_report.adapter_incarnation = "adapter-a".to_owned();
+        roster_report.core_generation = roster_generation.clone();
+        let roster_feedback =
+            crate::world_roster_wire::decode_feedback(&feedback_json(&roster_generation))
+                .expect("roster feedback decodes");
+        let roster_residual = Arc::new(WorldReportResidual {
+            roster_feedback: Some(roster_feedback),
+            ..Default::default()
+        });
+        let roster_gate = ProtocolAdmissionGate::with_residual(Some(&roster_residual));
+        let roster_outcome = roster_gate
+            .dispatch_with_prepare(&mut roster_engine, &roster_report, &[], |_| {
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .expect("no prepare error")
+            .outcome;
+        assert_ne!(roster_outcome, roster_mismatch);
+    }
 }
