@@ -22,10 +22,14 @@ use tiler_core::connection::{
 use tiler_core::world_engine::WorldEngine;
 
 /// Whether the retained cursor-warp actuator is proven on this adapter.
-/// Stays `false` until the exact-once lane and the live Raw Input
-/// non-increment proof both pass on the committed tree. The handshake and
-/// the apply-lane gate read this single value.
-pub(super) const WARP_SUPPORTED: bool = false;
+/// `true` on the clean-HEAD live receipt from fdead7d45e: the ignored probe
+/// `live_set_cursor_pos_does_not_advance_raw_input_generation` printed
+/// `SetCursorPos gen 0 -> 0 (unchanged); synthetic move inserted=1,
+/// gen 0 -> 1` and passed, so the adapter's own setter does not advance the
+/// raw-input witness while delivered mouse input does. The handshake and the
+/// apply-lane gate read this single value; the `cursorWarp` setting itself
+/// remains off by default.
+pub(super) const WARP_SUPPORTED: bool = true;
 
 /// Windows host capabilities: the exact port-notes values for this slice.
 ///
@@ -43,10 +47,9 @@ pub(super) const WARP_SUPPORTED: bool = false;
 ///   truth-claiming window would have no honest topmost actuation or
 ///   recovery. Flip to `true` when that task proves both.
 /// - `warp`: the retained exact-once cursor-warp lane, sourced from
-///   [`WARP_SUPPORTED`]. It stays false until the adapter lane and the live
-///   Raw Input non-increment proof are complete; while false,
-///   `cursorWarp=true` reports `unsupported-capability` instead of claiming
-///   an actuator.
+///   [`WARP_SUPPORTED`]. It is true after the adapter lane and the
+///   clean-HEAD live Raw Input non-increment receipt; the `cursorWarp`
+///   setting still defaults off, so no warp is requested until enabled.
 /// - `native_sticky: false`: no native sticky mechanism.
 /// - `tiled_float_transfer: false`: no professed cross-output float remap.
 /// - `unavailable_facts` is the precise not-yet-produced catalog set in

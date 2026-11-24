@@ -18,7 +18,7 @@ Rules link [handshake](#handshake-and-lifetime), [report fields](#worldreport), 
 | KDE / broker | V4 envelope `v,adapter,gen,source,sourceSeq,nativeInvalid,report`; outer envelope alone carries `v`, `report` holds unversioned capture facts (no nested `v` or broker-owned stamps), and broker constructs the v4 standalone report with correlation, clock and sequences | Apply only eligible bound capture; renderer projection confers no setter authority; prove visibility feedback production in rebuild | Exact remembered source bytes replay before drain; requester-only Take, Wait is wakeup; retry unremembered rejection with a fresh source | Implemented offline; earlier native state-target slice only (`../decisions/contract.md`), not proof of this interface. Shared native roster, capability-gated selector; no KDE warp |
 | Typed shared route | Same facts and bound connection using typed values; caller-owned ordered commands; no wire stamps manufactured for JSON | Prepared typed publication and explicit incorporation; same outbound semantics, independent latest-only apply fence | Typed report-only replay with no new command execution; returned per-sequence outcomes, caller owns issuer delivery | Shared implementation proved offline; not a native port |
 | macOS | Deferred; build the typed route and prove native observations/receipts on port entry | Same obligations; prove setters and recovery locally | Preserve per-issuer outcomes and in-flight evidence | Deferred; no shim or build accommodation |
-| Windows | Typed in-process route with bound handshake, revisioned settings and source-first reports; retained warp adapter landed but still declared `warp:false` pending the committed-tree live receipt | Same obligations; exact-once `SetCursorPos` lane gated on host capability, exact live managed foreground, fresh scope/frame/lifetime, and the Raw Input pointer generation | Preserve per-issuer outcomes and in-flight evidence | Adapter implemented and unit-gated; the capability flip is a separate commit after the ignored live probe passes on the clean tree |
+| Windows | Typed in-process route with bound handshake, revisioned settings and source-first reports; retained warp declared (`warp:true`) | Same obligations; exact-once `SetCursorPos` lane gated on host capability, exact live managed foreground, fresh scope/frame/lifetime, and the raw-input pointer generation (device or injected; the adapter's own setter excluded) | Preserve per-issuer outcomes and in-flight evidence | Adapter implemented, unit-gated, and declared after the clean-HEAD ignored live receipt at `fdead7d45e` (`SetCursorPos` unchanged; delivered mouse input advanced the witness). Full live acceptance matrix remains per Task 5 |
 
 <a id="approved-not-yet-implemented-v4"></a>
 
@@ -1625,10 +1625,15 @@ v2 presentation relay are unchanged.
 - Spending is adapter-local and reported as `warpSpent`; it never removes a
   core request by itself. Neither report observation grants write authority.
 - `warp:false` rejects any non-null `warpRequest` with `warp-capability-false`.
-  KDE, macOS and Windows currently declare `warp:false` and therefore emit and
-  accept only `null`. The Windows exact-once adapter (Raw Input witness,
-  `SetCursorPos`, spend-before-move) is implemented but the capability flip is
-  deferred until its ignored live probe passes on the committed tree.
+  KDE and macOS declare `warp:false` and therefore emit and accept only
+  `null`. Windows declares `warp:true` after its clean-HEAD ignored live
+  receipt at `fdead7d45e`: the exact-once adapter lane, the report
+  `pointerActivity`/`warpSpent` plumbing, the `SetCursorPos` non-increment
+  property, and witness liveness (a delivered mouse record advances the
+  generation). Windows Raw Input cannot distinguish physical from injected
+  input, so this adapter's witness is raw-input-origin, with injected motion
+  conservatively treated as user activity; the shared hardware-origin design
+  authority is implemented there as "any raw input except our own setter".
   [Decision record](../changes/retained-cursor-warp.md).
 
 ### Persistent stacking

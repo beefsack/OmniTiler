@@ -3,8 +3,12 @@
 - Status: stage 1 landed in core and protocol (2026-11-25): one retained,
   nullable `warpRequest` per reply with resolved Q1/Q2 and report
   `pointerActivity`/`warpSpent` observations. The point-only `warpCursor` field
-  is gone. No acknowledged-events lane or timer/expiry. Windows adapter
-  actuation and the raw-input witness are deferred; `warp:false` is unchanged.
+  is gone. No acknowledged-events lane or timer/expiry. Stage 2 (2026-11-25)
+  landed the Windows exact-once adapter and raw-input witness; its clean-HEAD
+  live receipt at `fdead7d45e` flipped Windows to `warp:true` in the next
+  commit. Windows Raw Input cannot distinguish physical from injected input;
+  the adapter's own `SetCursorPos` was proven not to advance the witness, and
+  injected motion is conservatively treated as user activity.
 - Decisions: Q1 = any newer focus decision targeting another lifetime cancels,
   a newer decision for the same target keeps; Q2 = newer or unknown report
   `pointerActivity` cancels against the frozen `pointerBaseline`, and an own
@@ -17,13 +21,13 @@
 - Wire: the reply carries one required nullable `warpRequest: null | WarpRequest`, replacing the point-only `warpCursor` field. The closed object has ordered keys `{id,target,rev,out,ws,point,pointerBaseline}`: `id` a bounded opaque nonempty Id, `target` a WindowId, `rev` the quoted decimal u64 focus-decision revision that minted it, `out` an OutputId, `ws` a WorkspaceId, `point` the carried `[x,y]`, and `pointerBaseline` a quoted decimal u64 or null when unknown. Reports add `pointerActivity` (quoted decimal u64 cumulative hardware-origin generation; null unknown) and `warpSpent` (bounded opaque spent id, accepted or no-call; null none). Both are observations, never core commands.
 - Mint and freeze: one request max per reply, minted from the winning cross-output focus decision at its issuing revision. Every tuple is frozen: the same `id` never retargets or recenters on relayout and an unchanged request is identical bytes. Never same-output, never a fabricated point.
 - Retention: core keeps the request across observation-only replies, unresolved focus, applied-but-unverified focus feedback and delayed foreground verification. Exact `warp_spent`/`warpSpent` id match retires it. Target departure/recycle, unreadable frame, incomplete inventory, setting off, capability off, gesture and game pause also clear it.
-- Capabilities: `HostCapabilities.warp` is fixed per connection; `warp:false` rejects any non-null `warpRequest` with `warp-capability-false`, and `cursorWarp:true` with `warp:false` keeps the raw setting while emitting `unsupported-capability`. KDE, macOS and Windows declare `warp:false` and emit/accept only `null`. Windows actuation (raw-input witness, `SetCursorPos`, spend-before-move) is intentionally not implemented in this stage. Normative tables: [world contract](../porting/world-contract.md#one-retained-cursor-warp-request).
+- Capabilities: `HostCapabilities.warp` is fixed per connection; `warp:false` rejects any non-null `warpRequest` with `warp-capability-false`, and `cursorWarp:true` with `warp:false` keeps the raw setting while emitting `unsupported-capability`. KDE and macOS declare `warp:false` and emit/accept only `null`; Windows declares `warp:true` and implements the raw-input witness, `SetCursorPos`, and spend-before-move (see the live receipt at `fdead7d45e`). Normative tables: [world contract](../porting/world-contract.md#one-retained-cursor-warp-request).
 
 ## Retained-form decisions
 
 - In-place pre-release v4 amendment, no version bump or dual shapes: strict closed codec with exact/upper-bound sizing and unchanged `warp:false` rejection. Frozen `world-wire/v4`, `stage5`, `stage5-v4` and `kde-v4` stay frozen; active producer fixtures follow the new lanes.
-- Adapter exact-once accounting `(adapter, gen, id)` before at most one move attempt (or a safety/already-at-point no-call), with no retry or guarantee of native success, is the design for a future `warp:true` host and is not implemented in this stage. `warpSpent` reports the spend truthfully; it never removes a core request by itself. An own adapter warp must not advance the hardware-origin pointer-activity generation.
-- Focus correlation uses exact opaque `(id,target,rev)` equality; readiness checks live foreground and shown `(out,ws)` immediately before any setter. These adapter-side checks stay deferred with Windows actuation.
+- Adapter exact-once accounting `(adapter, gen, id)` before at most one move attempt (or a safety/already-at-point no-call), with no retry or guarantee of native success, is implemented for Windows (`W/tiling_sys/world_diff.rs`), while KDE and macOS remain `warp:false`. `warpSpent` reports the spend truthfully; it never removes a core request by itself. An own adapter warp must not advance the hardware-origin pointer-activity generation.
+- Focus correlation uses exact opaque `(id,target,rev)` equality; readiness checks live foreground and shown `(out,ws)` immediately before any setter. Windows implements these checks around its exact-once warp lane.
 
 ## Tier 1 source evidence (in-process; no retained-transport replay analogue inferred)
 
@@ -61,6 +65,11 @@ Existing `warp:false` capability behavior is already normative and not reopened.
   generation. No coordinate-only comparison is used; a `warp:true` host must
   prove native origin before relying on the witness, since raw `SetCursorPos`
   can surface as non-injected motion. `warp:false` hosts report no witness.
+  Windows implementation: Raw Input is the witness, but Windows exposes no
+  physical-versus-injected origin bit. The adapter's own `SetCursorPos` was
+  proven not to advance it; injected input may, so it is conservatively
+  treated as user motion. This is the recorded Windows deviation from the
+  shared "hardware-origin" label.
 - Evidence: `i3` (`4.25.1:src/x.c:1379-1382`) masks `ROOT_EVENT_MASK` around
   `xcb_warp_pointer` to suppress own-warp `MotionNotify`; this does not establish
   a Windows provenance route or delayed cancellation rule, and no
@@ -72,9 +81,13 @@ Existing `warp:false` capability behavior is already normative and not reopened.
 
 ## Verification boundary
 
-- Stage 1 covers core mint/retention, the strict `warpRequest` codec, the
-  `pointerActivity`/`warpSpent` report observations and `warp:false`
-  null-only adapter paths.
-- Deferred with Windows actuation: exact-once adapter spending, live pre-setter
-  foreground and post-capture motion checks, raw-input origin proof,
-  same-generation reconnect accounting and live positive warp checks.
+- Stage 1 covers core mint/retention, the strict `warpRequest` codec, and the
+  `pointerActivity`/`warpSpent` report observations.
+- Stage 2 covers the Windows exact-once adapter: spend-before-move by request
+  id, already-there spend without a call, fail-closed gates (capability,
+  exact foreground, fresh lifetime/scope/view, bounded point, pre-setter
+  pointer generation), no retry on refusal/throw, and the ignored live probe
+  at `fdead7d45e` proving `SetCursorPos` non-increment plus witness liveness.
+- Still open: the full fixture-scoped live acceptance matrix (including a live
+  positive warp through the real engine), same-generation reconnect accounting,
+  and physical-versus-injected provenance (not exposed by Windows Raw Input).
