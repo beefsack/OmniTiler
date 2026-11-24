@@ -120,6 +120,10 @@ pub struct FixtureLegOpts {
     /// [`crate::fixture_hover::HOVER_MIN_WINDOWS`] chords and launches the
     /// product with stage-timing diagnostics; default off.
     pub hover_probe: bool,
+    /// Diagnostic-only: pre-seed the isolated intent store with malformed
+    /// JSON before the product launches. The product must fail closed to an
+    /// empty store and keep operating; never a product setting.
+    pub corrupt_intent_store: bool,
 }
 
 /// Own signed bundle root for a controller executable running from the
@@ -680,14 +684,17 @@ struct LegReports {
     chords: Vec<serde_json::Value>,
     hover_probe: Option<serde_json::Value>,
     owned_space: Option<serde_json::Value>,
+    corrupt_store: Option<serde_json::Value>,
 }
 
 /// Completed success envelope: the chord reports plus any established
-/// owned-Space evidence. Pure over its inputs; unit-tested.
+/// owned-Space or corrupt-store evidence. Pure over its inputs;
+/// unit-tested.
 fn completed_envelope(
     chords: Vec<serde_json::Value>,
     hover_probe: Option<serde_json::Value>,
     owned_space: Option<serde_json::Value>,
+    corrupt_store: Option<serde_json::Value>,
     teardown: serde_json::Value,
 ) -> serde_json::Value {
     let mut envelope = serde_json::json!({
@@ -700,6 +707,9 @@ fn completed_envelope(
     }
     if let Some(owned) = owned_space {
         envelope["owned_space"] = owned;
+    }
+    if let Some(store) = corrupt_store {
+        envelope["corrupt_store"] = store;
     }
     envelope
 }
@@ -789,6 +799,7 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
                 chords,
                 hover_probe,
                 owned_space,
+                corrupt_store,
             } = reports;
             match leg.finish() {
                 Ok(teardown) => {
@@ -796,6 +807,7 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
                         chords,
                         hover_probe,
                         owned_space,
+                        corrupt_store,
                         serde_json::json!(teardown),
                     );
                     Ok(envelope.to_string())
@@ -1607,6 +1619,7 @@ fn run_leg_body_macos(
         chords: reports,
         hover_probe,
         owned_space: owned_space.map(|evidence| evidence.evidence()),
+        corrupt_store,
     })
 }
 
@@ -1732,6 +1745,7 @@ mod tests {
             signer: "designated => test".to_owned(),
             focus_follows_cursor: false,
             hover_probe: false,
+            corrupt_intent_store: false,
         }
     }
 
@@ -2039,13 +2053,24 @@ mod tests {
             vec![serde_json::json!({"chord": "move-left"})],
             None,
             Some(evidence.clone()),
+            None,
             serde_json::json!({"clean": true}),
         );
         assert_eq!(envelope["outcome"], "completed");
         assert_eq!(envelope["owned_space"], evidence);
+        assert!(envelope.get("corrupt_store").is_none());
         // No owned Space (space-mutating/mixed legs) leaves the key absent.
         let envelope = completed_envelope(vec![], None, None, serde_json::json!({"clean": true}));
         assert!(envelope.get("owned_space").is_none());
+        let store = serde_json::json!({"outcome": "degraded", "diagnostic": "intent-store: test"});
+        let envelope = completed_envelope(
+            vec![],
+            None,
+            None,
+            Some(store.clone()),
+            serde_json::json!({"clean": true}),
+        );
+        assert_eq!(envelope["corrupt_store"], store);
     }
 
     #[test]

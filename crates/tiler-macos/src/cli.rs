@@ -229,6 +229,7 @@ pub enum Command {
         preset: crate::input_policy::InputPreset,
         focus_follows_cursor: bool,
         hover_probe: bool,
+        corrupt_intent_store: bool,
         signer: String,
     },
     TextEditGrabInspect {
@@ -2318,6 +2319,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
             let mut preset = crate::input_policy::InputPreset::Compatible;
             let mut focus_follows_cursor = false;
             let mut hover_probe = false;
+            let mut corrupt_intent_store = false;
             let mut signer: Option<String> = None;
             let mut j = 0;
             while j < args.len() {
@@ -2347,6 +2349,9 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                     "--hover-probe" => {
                         hover_probe = true;
                     }
+                    "--corrupt-intent-store" => {
+                        corrupt_intent_store = true;
+                    }
                     other => return Err(format!("fixture-leg: unknown arg '{other}'")),
                 }
                 j += 1;
@@ -2375,6 +2380,7 @@ pub fn parse_args(argv: &[String]) -> Result<CliRequest, String> {
                 preset,
                 focus_follows_cursor,
                 hover_probe,
+                corrupt_intent_store,
                 signer: signer.ok_or("fixture-leg needs --signer")?,
             }
         }

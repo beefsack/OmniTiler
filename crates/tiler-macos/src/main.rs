@@ -776,6 +776,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
             preset,
             focus_follows_cursor,
             hover_probe,
+            corrupt_intent_store,
             signer,
         } => {
             // Development-only fixture leg: the complete real entry point
@@ -788,6 +789,7 @@ fn run(request: tiler_macos::cli::CliRequest) -> Result<String, (i32, String)> {
                 signer,
                 focus_follows_cursor,
                 hover_probe,
+                corrupt_intent_store,
             })
         }
         Command::TextEditGrabInspect { record, nonce } => {

@@ -902,6 +902,7 @@ fn fixture_commands_parse_with_announcement_identity_and_fixture_chords() {
             signer,
             focus_follows_cursor: _,
             hover_probe,
+            corrupt_intent_store: _,
         } => {
             assert_eq!(seconds, 120);
             assert_eq!(chords, vec!["focus-h".to_owned(), "select-1".to_owned()]);
@@ -978,6 +979,22 @@ fn fixture_commands_parse_with_announcement_identity_and_fixture_chords() {
         with_hover.command,
         Command::FixtureLeg {
             hover_probe: true,
+            ..
+        }
+    ));
+    let corrupt_store = parse_args(&argv(&[
+        "fixture-leg",
+        "--chord",
+        "focus-h",
+        "--corrupt-intent-store",
+        "--signer",
+        "designated => test",
+    ]))
+    .unwrap();
+    assert!(matches!(
+        corrupt_store.command,
+        Command::FixtureLeg {
+            corrupt_intent_store: true,
             ..
         }
     ));
