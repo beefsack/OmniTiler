@@ -267,3 +267,47 @@ test ...live_set_cursor_pos_does_not_advance_raw_input_generation ... ok
   the same generation the warp lane re-reads) and asserts it; the flip
   requires both that liveness and the `SetCursorPos` non-increment property.
   Injected motion counts conservatively as user activity.
+
+### Task 5 live evidence (2026-11-25, clean HEAD 42558707)
+
+Run only from the clean post-Slice-A tree; fixture-only scope, cleanup reported
+by the runner in every case. No display identity values or host paths are
+recorded here.
+
+- R11 read-only probe:
+  `cargo test --locked -p tiler-windows --lib live_monitor_identities_are_readable -- --ignored --nocapture`
+  passed for two connected displays: manufacturer/model/serial presence `true`
+  on both, connector presence `false` on both (presence only; values not read).
+- Fixture matrix, `mise exec -- just world-stress -Case <case> -DelayMs <n>`:
+
+| Case | DelayMs | Publications | Added delay | Status |
+| --- | --- | --- | --- | --- |
+| home-away | 0 | 102 | 0 ms | pass |
+| home-away | 10 | 102 | 1490 ms | pass |
+| home-away | 50 | 102 | 7450 ms | pass |
+| trio-churn | 0 | 102 | 0 ms | pass |
+| trio-churn | 10 | 102 | 1560 ms | pass |
+| trio-churn | 50 | 102 | 7800 ms | pass |
+
+All six printed `world-stress final cleanup ok`, `status=pass`, and the new
+warp-witness/geometry assertions in `Test-StressApplyClean` held at every
+accepted apply row.
+
+Not run in this evidence (explicit TBD, not claimed):
+
+- Multi-monitor/mixed-DPI transitions: the stress harness is single-output by
+  contract and refuses a multi-screen report; no multi-output fixture seam.
+- Forced-crash/R12 recovery: no isolated throwaway session was used; the
+  bounded owned-resource crash lane is unrun.
+- Fullscreen/game safety: no fixture op creates fullscreen or paused-game
+  conditions; unrun.
+- Live settings revisions (refused and `RestartRequired`): no fixture op
+  drives revisions through the live owner; unrun.
+- End-to-end positive warp on multi-output choreography: the single-output
+  harness refuses multi-screen, and the C3 live receipt only proves the
+  witness/setter property, not a core-minted cross-output warp; unrun.
+- Iconic minimize/restore and mover sends: not covered. Missing seam: the
+  strict stress schema has no `minimize`/`restore` observation op, and the
+  native runner never minimizes a fixture window; adding that op plus
+  fixture spawn/runner support is a core-protocol + fixture change outside
+  this adapter slice.
