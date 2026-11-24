@@ -159,9 +159,9 @@ use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::intent_data::IntentData;
 use tiler_core::size_hints::WindowSizeHints;
 use tiler_core::world_report::{
-    AuthorityScope, FullscreenOwner, HeldScreenRow, IntentRecord, NativeWorkspaceFact,
-    OutputIdentity, PresentationIngressV4, PresentationPagerFrameV4, RowDiagnostic,
-    RowDiagnosticKind, RowDiagnosticLane, ScreenReport, VisibilityFact, WindowFact,
+    AuthorityScope, FullscreenOwner, HeldScreenRow, IntentRecord, MAX_IDENTITY_TEXT_BYTES,
+    NativeWorkspaceFact, OutputIdentity, PresentationIngressV4, PresentationPagerFrameV4,
+    RowDiagnostic, RowDiagnosticKind, RowDiagnosticLane, ScreenReport, VisibilityFact, WindowFact,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::WS_EX_TOOLWINDOW;
 
@@ -1307,6 +1307,28 @@ pub(super) fn resolve_cursor_hit(
     None
 }
 
+/// Adapter-side bound on one output identity row. Every text field must fit
+/// the core's identity grammar (`MAX_IDENTITY_TEXT_BYTES` UTF-8 bytes); an
+/// overbound row is handed to the core as fully unknown rather than
+/// truncated. The core holds a screen whose identity text breaks the
+/// grammar, so the adapter must never hand it an invalid row (and a
+/// truncated string would name a different panel).
+fn bounded_identity(identity: OutputIdentity) -> OutputIdentity {
+    let fits = |text: &Option<String>| {
+        text.as_deref()
+            .is_none_or(|value| value.len() <= MAX_IDENTITY_TEXT_BYTES)
+    };
+    if fits(&identity.manufacturer)
+        && fits(&identity.model)
+        && fits(&identity.serial)
+        && fits(&identity.connector)
+    {
+        identity
+    } else {
+        OutputIdentity::unknown()
+    }
+}
+
 /// Capture one complete world observation from the real owner plus real
 /// per-tick products. Read-only over `state`; `observed` is the current
 /// tick's enumeration output (`None` when enumeration itself failed, exactly
@@ -1435,11 +1457,16 @@ pub(super) fn capture_world(
             scale: f64::from(area.dpi) / 96.0,
             // Adapter-read physical identity for this exact device; a device
             // the map does not know is explicit unknown, never fabricated.
-            identity: state
-                .monitor_identities
-                .get(&area.device)
-                .cloned()
-                .unwrap_or_else(OutputIdentity::unknown),
+            // An overbound row is unknown too: the core holds screens whose
+            // identity text breaks its grammar, so the adapter fails closed
+            // instead of handing over an invalid or truncated row.
+            identity: bounded_identity(
+                state
+                    .monitor_identities
+                    .get(&area.device)
+                    .cloned()
+                    .unwrap_or_else(OutputIdentity::unknown),
+            ),
         });
     }
     // Every device the adapter knows a live wire id for, whether or not its
@@ -2372,7 +2399,7 @@ mod tests {
         use super::super::super::rmax03_adapter_tests::test_state;
         use super::super::capture_world;
         use tiler_core::geometry::Rect;
-        use tiler_core::world_report::OutputIdentity;
+        use tiler_core::world_report::{MAX_IDENTITY_TEXT_BYTES, OutputIdentity};
 
         fn area(device: &str, x: i32) -> MonitorArea {
             MonitorArea {
@@ -2453,20 +2480,41 @@ mod tests {
         }
 
         #[test]
-        fn identity_overbound_text_is_carried_whole() {
+        fn identity_overbound_text_fails_closed() {
             let mut state = test_state();
             state.ensure_device("DEV-A");
             state.ensure_device("DEV-B");
-            let overbound = "m".repeat(300);
+            let overbound = "m".repeat(MAX_IDENTITY_TEXT_BYTES + 1);
             state.monitor_identities.insert(
                 "DEV-A".to_owned(),
                 identity("Acme", &overbound, "SN-123", "DP-1"),
             );
 
+            // The adapter never hands the core a row its identity grammar
+            // must hold, and never truncates one into a different panel.
+            assert_eq!(screen_identity(&state, "DEV-A"), OutputIdentity::unknown());
+        }
+
+        #[test]
+        fn identity_text_boundary_is_exactly_256_bytes() {
+            let mut state = test_state();
+            state.ensure_device("DEV-A");
+            state.ensure_device("DEV-B");
+            let at_bound = "m".repeat(MAX_IDENTITY_TEXT_BYTES);
+            state.monitor_identities.insert(
+                "DEV-A".to_owned(),
+                identity("Acme", &at_bound, "SN-123", "DP-1"),
+            );
             let carried = screen_identity(&state, "DEV-A");
-            let model = carried.model.expect("model rides the identity");
-            assert_eq!(model.len(), 300);
-            assert_eq!(model, overbound);
+            assert_eq!(carried.model.as_deref(), Some(at_bound.as_str()));
+
+            // Any one field over the bound turns the whole row unknown.
+            let overbound = "m".repeat(MAX_IDENTITY_TEXT_BYTES + 1);
+            state.monitor_identities.insert(
+                "DEV-A".to_owned(),
+                identity("Acme", "Panel-9000", "SN-123", &overbound),
+            );
+            assert_eq!(screen_identity(&state, "DEV-A"), OutputIdentity::unknown());
         }
 
         #[test]
