@@ -1587,7 +1587,7 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
     // Select back to source: n1 hidden, n2 back.
     let observed = live_visible_observed();
     let back_index = index_of(&owner, &current);
-    live_tick(
+    let back = live_tick(
         &mut env,
         &mut owner,
         &observed,
@@ -1603,7 +1603,10 @@ fn composed_stay_return_select_reveals_hidden_and_settles() {
     );
     assert!(
         !S_VISIBLE.with(|m| m.borrow().contains(&n1.hwnd)),
-        "n1 hidden"
+        "n1 hidden: focus={:?} members={:?} views={:?}",
+        back.reply.focus_request,
+        back.members,
+        back.views
     );
     assert!(S_VISIBLE.with(|m| m.borrow().contains(&n2.hwnd)), "n2 back");
     let observed = live_visible_observed();

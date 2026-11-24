@@ -78,18 +78,21 @@
 //!   canonical slot, never a write target.
 //! - Partial results are reported honestly; nothing here claims atomicity.
 
+#[cfg(test)]
+use super::MonitorArea;
 use super::world_capture::{CapturedWorld, OwnerInputs, capture_facts_rideable};
 use super::{ObservedWindow, RetainedRow};
 use crate::native_guards::WindowKey;
 use crate::tiling::WindowFacts;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use tiler_core::directional::OutputId;
+use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::world_report::{
-    FocusRequestCause, FrameAttempt, FramePurpose, FrameSetter, HoldReason, LastWritePath,
-    MemberAttempt, MemberDisposition, ScopeAuthority, TransferKind, TransferTargetV4, ViewAttempt,
-    VisibilityAttempt, VisibilityDisposition, VisibilityFact, VisibilityReason, VisibilitySample,
-    WorkspaceRef, WorldCommand, WorldReplyV4,
+    AfterShownMember, ArrivalBracket, ArrivalLocation, AuthorityScope, FocusDisposition,
+    FocusFeedback, FocusNoCallReason, FrameAttempt, FramePurpose, FrameSetter, HoldReason,
+    LastWritePath, MemberAttempt, MemberDisposition, ScopeAuthority, TransferKind,
+    TransferTargetV4, ViewAttempt, VisibilityAttempt, VisibilityDisposition, VisibilityFact,
+    VisibilityReason, VisibilitySample, WorkspaceRef, WorldReplyV4,
 };
 
 /// Fresh offline window facts for one managed lifetime: the observation-time
@@ -303,81 +306,21 @@ pub(super) enum ForegroundState {
 /// visibility, and enumeration reads are always live: the facade keeps no
 /// cache of them, so removal rechecks observe racing host changes.
 ///
-/// Fresh accepted explicit-selection arrival provenance for one apply pass:
-/// the exact retained explicit-command focus request of a freshly accepted
-/// explicit-workspace-selection reply, as an `(focus request id, target)`
-/// pair. Minted only by the command path from the exact accepted report
-/// (command plus sequence) and reply; duplicates, command-consumed replays,
-/// observation replies, and every non-selection command mint nothing. The
-/// native seam admits the exact-desktop foreground exception only for a
-/// request whose id AND target both match, so a directional focus,
-/// send/migrate follow, automatic admission, focus-follows-cursor, or
-/// observation request can never ride it. Never a policy input: the core
-/// alone decides the target.
-#[derive(Debug, Clone, Default)]
-pub(super) struct SelectionArrivalGrant {
-    arrivals: Vec<(String, String)>,
-}
-
-impl SelectionArrivalGrant {
-    /// True for explicit workspace-selection commands only: the five
-    /// `Select*` variants. `SwitchView`, send/migrate (including follow),
-    /// directional focus/move, and every other command never qualify. Must
-    /// be derived from the exact dispatched command value, never a string
-    /// or a view transfer.
-    pub(super) fn selects(command: &WorldCommand) -> bool {
-        matches!(
-            command,
-            WorldCommand::SelectWorkspace { .. }
-                | WorldCommand::SelectNumbered { .. }
-                | WorldCommand::SelectRelative { .. }
-                | WorldCommand::SelectPrevious { .. }
-                | WorldCommand::SelectTrailing { .. }
-        )
-    }
-
-    /// Mint from the exact accepted report/reply pair at dispatch time:
-    /// `Some` only for a fresh `accepted` delivery of a selection command
-    /// whose reply carries that command's explicit-command focus request.
-    /// Only a request with the explicit cause and the exact originating
-    /// command sequence qualifies: automatic admission, focus-follows-cursor,
-    /// positive-close, and any request of another command never mint.
-    pub(super) fn for_accepted(
-        command: Option<&WorldCommand>,
-        command_seq: Option<u64>,
-        reply: &WorldReplyV4,
-        delivery: &str,
-    ) -> Option<Self> {
-        if delivery != "accepted" {
-            return None;
-        }
-        let command = command?;
-        if !Self::selects(command) {
-            return None;
-        }
-        let seq = command_seq?;
-        let request = reply.focus_request.as_ref()?;
-        if request.cause != FocusRequestCause::ExplicitCommand || request.cmd_seq != Some(seq) {
-            return None;
-        }
-        Some(Self {
-            arrivals: vec![(request.id.clone(), request.target.0.clone())],
-        })
-    }
-
-    pub(super) fn allows(&self, request_id: &str, target: &str) -> bool {
-        self.arrivals
-            .iter()
-            .any(|(id, bound)| id == request_id && bound == target)
-    }
-}
-
 /// Reads take `&mut self`: production reads advance a side observation map
 /// and consume one-shot invalidation state, so even proofs are mutating.
 /// Callers already hold the actuator mutably.
 pub(super) trait NativeOps {
     fn read_window(&mut self, token: &str) -> Option<FreshWindow>;
     fn read_frame(&mut self, token: &str) -> Option<Rect>;
+    /// Live output affinity of the window's fresh frame through the
+    /// adapter's wire token map. Never committed/desired homing: this is
+    /// the observed screen the frame currently sits on (`None` when the
+    /// frame or its device mapping is unreadable). Arrival brackets carry
+    /// exactly this observed output.
+    fn read_output_affinity(&mut self, token: &str) -> Option<String> {
+        let _ = token;
+        None
+    }
     fn read_homing(&mut self, token: &str) -> Option<(String, String)>;
     fn read_view(&mut self, output: &str) -> Option<String>;
     fn is_foreground(&mut self, token: &str) -> bool;
@@ -430,31 +373,27 @@ pub(super) trait NativeOps {
     fn switch_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
         self.switch_view(output, logical)
     }
-    /// Staged reveal-only half of a nonactivating pure-view switch: posts
-    /// entering-window shows as a bounded nonactivating batch without
-    /// hiding departures or touching the proven view. Only the staged
-    /// explicit-selection lane calls this, after the usual scope, freshness
-    /// and at-most-once reveal arming. Fail-closed default (`Err`): seams
-    /// that do not stage hold instead of inventing arrival proof.
-    fn reveal_view_nonactivating(&mut self, _output: &str, _logical: &str) -> Result<bool, ()> {
+    /// One nonactivating native reveal for one window lifetime through the
+    /// committed hide-claim path. `Ok(true)` means the claim operation
+    /// committed (the caller re-reads visibility; setter success never
+    /// proves), `Ok(false)` an explicit refusal/absent origin, and `Err(())`
+    /// a throwing/ambiguous call. Fail-closed default: seams that cannot
+    /// reveal must hold instead of inventing evidence.
+    fn reveal_window(&mut self, _token: &str) -> Result<bool, ()> {
         Err(())
     }
-    /// Staged hide-only half of a nonactivating pure-view switch: hides
-    /// current departures after the staged arrival focus proves foreground.
-    /// Only the staged lane calls this, revalidating latest desire, safety
-    /// and foreground first under the usual at-most-once view arming.
-    /// Fail-closed default (`Err`): seams that do not stage never hide late.
-    fn hide_view_nonactivating(&mut self, _output: &str, _logical: &str) -> Result<bool, ()> {
+    /// One nonactivating native hide for one window lifetime through the
+    /// committed hide-claim path; same disposition shape as
+    /// [`Self::reveal_window`]. Fail-closed default.
+    fn hide_window(&mut self, _token: &str) -> Result<bool, ()> {
         Err(())
     }
-    /// Whether one exact retained focus request rides the fresh accepted
-    /// explicit-selection arrival grant (request id AND dispatch target).
-    /// Pure policy lookup, never a native read: only a request the command
-    /// path armed for this pass qualifies, so directional, follow,
-    /// admission, cursor-follow and observation requests never stage.
-    /// Fail-closed default (`false`).
-    fn selection_arrival_allows(&mut self, _request_id: &str, _target: &str) -> bool {
-        false
+    /// The managed window holding the live foreground under exact identity
+    /// and lifetime proof, or `None` when the foreground is unknown,
+    /// foreign, or unreadable. Exact managed `WindowId` only; never a bare
+    /// HWND guess.
+    fn foreground_managed(&mut self) -> Option<String> {
+        None
     }
     /// Current foreground state (`Unknown` when unreadable: fail closed).
     /// Compared by HWND plus PID plus process creation, so a recycled HWND
@@ -502,17 +441,16 @@ pub(super) trait NativeOps {
     }
     /// Adapter-dispatched focus attempt for one exact retained focus
     /// request: the same record as [`Self::focus_window_traced`] plus the
-    /// request binding the production seam checks against its fresh
-    /// accepted [`SelectionArrivalGrant`] (request id AND dispatch target).
-    /// The default ignores the binding (no exception); the production seam
-    /// overrides. The diff always calls this (never the unbound form) for
-    /// the retained focus request.
+    /// core-derived selection provenance (explicit command with a frozen
+    /// `after_shown` scope) that gates the production exact-desktop
+    /// fullscreen exception. The default ignores the flag (no exception);
+    /// the production seam overrides. The diff always calls this (never
+    /// the unbound form) for the retained focus request.
     fn focus_window_traced_selected(
         &mut self,
         token: &str,
-        request_id: &str,
+        _selection_provenance: bool,
     ) -> (Result<bool, ()>, FocusCallDiag) {
-        let _ = request_id;
         self.focus_window_traced(token)
     }
     fn focus_window(&mut self, token: &str) -> Result<bool, ()>;
@@ -551,6 +489,10 @@ pub(super) trait NativeOps {
 pub(super) struct FakeNative {
     pub(super) windows: HashMap<String, FreshWindow>,
     pub(super) views: HashMap<String, String>,
+    /// Scripted live monitor areas for output-affinity reads (same wire
+    /// device->output mapping as production). Empty means affinity is
+    /// unreadable, never a guessed output.
+    pub(super) areas: Vec<MonitorArea>,
     pub(super) foreground: Option<String>,
     pub(super) gesture: bool,
     /// Tokens whose thread runs a move/size modal loop (offline stand-in
@@ -566,25 +508,19 @@ pub(super) struct FakeNative {
     pub(super) throw_membership: HashSet<String>,
     pub(super) fail_view: HashSet<String>,
     pub(super) throw_view: HashSet<String>,
-    /// Staged-lane script dispositions, keyed `"{output}/{workspace}"` like
-    /// the view sets above. Reveal refusal/throw holds the whole staged
-    /// switch unspent; hide refusal/throw holds the operation pending with
-    /// its view phase spent (a possibly-executed hide never repeats).
+    /// Per-window visibility dispositions for the offline lane. Reveal
+    /// refusal/throw and hide refusal/throw map exactly to the setter's
+    /// `Ok(false)`/`Err(())` results; a skipped reveal leaves the window
+    /// hidden after an accepted call (partial-reveal input).
     pub(super) fail_reveal: HashSet<String>,
     pub(super) throw_reveal: HashSet<String>,
     pub(super) fail_hide: HashSet<String>,
     pub(super) throw_hide: HashSet<String>,
-    /// Arrival tokens the staged reveal leaves hidden (partial-reveal
-    /// input): arrival-ready proof must fail while any is set.
     pub(super) skip_reveal: HashSet<String>,
-    /// Every staged reveal/hide setter attempted, in order (vetoes and
-    /// unproven lanes record nothing: no setter ran).
-    pub(super) reveal_calls: Vec<(String, String)>,
-    pub(super) hide_calls: Vec<(String, String)>,
-    /// Scripted fresh accepted explicit-selection arrival grant (see
-    /// [`SelectionArrivalGrant`]): `None` grants no explicit-desktop
-    /// foreground exception, so every focus keeps the ordinary proof.
-    pub(super) arrival_grant: Option<SelectionArrivalGrant>,
+    /// Every per-window reveal/hide setter attempted, in order (vetoes and
+    /// already-satisfied targets record nothing: no setter ran).
+    pub(super) reveal_calls: Vec<String>,
+    pub(super) hide_calls: Vec<String>,
     pub(super) fail_focus: HashSet<String>,
     pub(super) throw_focus: HashSet<String>,
     /// Scripted live cursor position (`None` = unreadable). Warp writes
@@ -652,6 +588,18 @@ impl NativeOps for FakeNative {
     }
     fn read_frame(&mut self, token: &str) -> Option<Rect> {
         self.windows.get(token).and_then(|w| w.frame)
+    }
+    fn read_output_affinity(&mut self, token: &str) -> Option<String> {
+        let frame = self.windows.get(token).and_then(|w| w.frame)?;
+        // No scripted areas means the live device mapping is unreadable:
+        // report unknown instead of the resolution helper's placeholder.
+        if self.areas.is_empty() {
+            return None;
+        }
+        Some(super::directional_resolution::output_for_rect(
+            &self.areas,
+            &frame,
+        ))
     }
     fn read_homing(&mut self, token: &str) -> Option<(String, String)> {
         self.windows
@@ -744,58 +692,51 @@ impl NativeOps for FakeNative {
     fn switch_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
         self.switch_view(output, logical)
     }
-    fn reveal_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
-        let key = format!("{output}/{logical}");
+    fn reveal_window(&mut self, token: &str) -> Result<bool, ()> {
         // Every setter attempt records, including refusals and throws: the
         // attempt (not this count) is the at-most-once proof the core
         // reconciles.
-        self.reveal_calls
-            .push((output.to_owned(), logical.to_owned()));
-        if self.throw_reveal.contains(&key) {
+        self.reveal_calls.push(token.to_owned());
+        if self.throw_reveal.contains(token) {
             return Err(());
         }
-        if self.fail_reveal.contains(&key) {
+        if self.fail_reveal.contains(token) {
             self.note_write();
             return Ok(false);
         }
-        for window in self.windows.values_mut() {
-            if window.output == output
-                && window.workspace == logical
-                && !self.skip_reveal.contains(&window.token)
-            {
-                window.hidden = false;
+        if let Some(window) = self.windows.get_mut(token)
+            && !self.skip_reveal.contains(token)
+        {
+            window.hidden = false;
+            if let Some(facts) = window.facts.as_mut() {
+                facts.visible = true;
             }
         }
         self.note_write();
         Ok(true)
     }
-    fn hide_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
-        let key = format!("{output}/{logical}");
-        // Every setter attempt records, including refusals and throws: the
-        // attempt (not this count) is the at-most-once proof the core
-        // reconciles.
-        self.hide_calls
-            .push((output.to_owned(), logical.to_owned()));
-        if self.throw_hide.contains(&key) {
+    fn hide_window(&mut self, token: &str) -> Result<bool, ()> {
+        self.hide_calls.push(token.to_owned());
+        if self.throw_hide.contains(token) {
             return Err(());
         }
-        if self.fail_hide.contains(&key) {
+        if self.fail_hide.contains(token) {
             self.note_write();
             return Ok(false);
         }
-        for window in self.windows.values_mut() {
-            if window.output == output && window.workspace != logical {
-                window.hidden = true;
+        if let Some(window) = self.windows.get_mut(token) {
+            window.hidden = true;
+            if let Some(facts) = window.facts.as_mut() {
+                facts.visible = false;
             }
         }
-        self.views.insert(output.to_owned(), logical.to_owned());
         self.note_write();
         Ok(true)
     }
-    fn selection_arrival_allows(&mut self, request_id: &str, target: &str) -> bool {
-        self.arrival_grant
-            .as_ref()
-            .is_some_and(|grant| grant.allows(request_id, target))
+    fn foreground_managed(&mut self) -> Option<String> {
+        self.foreground
+            .clone()
+            .filter(|token| self.windows.contains_key(token))
     }
     fn foreground_state(&mut self) -> ForegroundState {
         let token = match self.foreground.as_deref() {
@@ -1017,12 +958,6 @@ pub(super) struct DispatchFences {
     /// immediately before its setter; exact target proof may settle without
     /// a dispatch.
     pub(super) spent_views: HashSet<String>,
-    /// Distinct staged-reveal phases per owning core view id, armed
-    /// immediately before the reveal setter exactly like [`Self::spent_views`]:
-    /// a possibly-executed reveal never repeats, and a later pass re-proves
-    /// arrival-ready from live reads instead of re-actuating. Retired only by
-    /// [`HostDiff::prune`] (operation left the reply) or generation reset.
-    pub(super) spent_reveals: HashSet<String>,
     /// Cursor-warp watermark (stage 4b): the observation sequence whose
     /// warp already ran. One mechanical warp per observation at most, so a
     /// duplicate delivery of the same accepted reply never moves the
@@ -1084,16 +1019,6 @@ impl DispatchFences {
     pub(super) fn mark_view_spent(&mut self, owning: &str) -> bool {
         self.spent_views.insert(owning.to_owned())
     }
-    /// Reveal-phase fence: true once the owning core view id attempted its
-    /// staged arrival reveal. Late arrival proof never clears this.
-    pub(super) fn is_reveal_spent(&self, owning: &str) -> bool {
-        self.spent_reveals.contains(owning)
-    }
-    /// Arm one reveal phase immediately before its setter. Returns false
-    /// when already spent: duplicates never reapply.
-    pub(super) fn mark_reveal_spent(&mut self, owning: &str) -> bool {
-        self.spent_reveals.insert(owning.to_owned())
-    }
     /// Trace-only hover-change oracle: true when `(cursor-hit, focused,
     /// ffc-enabled)` differs from the last emitted row (or no row has been
     /// emitted yet). Pure comparison over already-captured values: no
@@ -1118,7 +1043,6 @@ impl DispatchFences {
         self.spent_focus.clear();
         self.spent_floats.clear();
         self.spent_views.clear();
-        self.spent_reveals.clear();
         self.next_attempt_id = 0;
         self.last_warp_obs = None;
     }
@@ -1194,6 +1118,25 @@ pub(super) struct HostDiff {
     /// Only target-matching live readbacks enter: a mismatched read is no
     /// verdict and must hold, never latch a failure.
     pending_visibility: BTreeMap<String, VisibilityAttempt>,
+    /// Durable at-most-once visibility decisions per window lifetime. An
+    /// unchanged `(target, revision)` tuple redelivers the original row and
+    /// never reaches a native setter again; only a new target/revision
+    /// authorizes a new write. Cleared on generation reset.
+    visibility_writes: BTreeMap<String, VisibilityAttempt>,
+    /// Durable at-most-once focus decisions per request id. Exact
+    /// `(id, target, revision)` tuples redeliver; a reused id with a new
+    /// tuple replaces the old record. Cleared on generation reset.
+    focus_records: BTreeMap<String, FocusFeedback>,
+    /// Focus feedback produced this apply pass, drained by the owner into
+    /// the sequencer for the next report.
+    pending_focus: BTreeMap<String, FocusFeedback>,
+    /// One-shot desktop-exception authority for exactly this apply pass:
+    /// the owner arms it only when the latest accepted command is one of
+    /// the five explicit workspace-selection variants and the reply's
+    /// retained explicit focus request is that command's exact outcome.
+    /// Consumed at apply entry; observation ticks and every other command
+    /// leave it false.
+    selection_focus_authority: bool,
 }
 
 impl HostDiff {
@@ -1214,7 +1157,18 @@ impl HostDiff {
             inflight_stash: Vec::new(),
             inflight_stash_omitted: 0,
             pending_visibility: BTreeMap::new(),
+            visibility_writes: BTreeMap::new(),
+            focus_records: BTreeMap::new(),
+            pending_focus: BTreeMap::new(),
+            selection_focus_authority: false,
         }
+    }
+
+    /// Arm the one-shot desktop exception for the next apply pass. The
+    /// owner derives the bool from the accepted command variant plus the
+    /// reply's exact explicit focus correlation; `apply` consumes it.
+    pub(super) fn arm_selection_focus(&mut self, authority: bool) {
+        self.selection_focus_authority = authority;
     }
 
     /// Drain the latest target-matching visibility evidence for the next
@@ -1222,6 +1176,14 @@ impl HostDiff {
     /// an older row for the same window.
     pub(super) fn take_visibility_attempts(&mut self) -> Vec<VisibilityAttempt> {
         std::mem::take(&mut self.pending_visibility)
+            .into_values()
+            .collect()
+    }
+
+    /// Drain the focus feedback produced by this pass for the next report.
+    /// One row per decided request id; latest pass wins.
+    pub(super) fn take_focus_feedback(&mut self) -> Vec<FocusFeedback> {
+        std::mem::take(&mut self.pending_focus)
             .into_values()
             .collect()
     }
@@ -1320,6 +1282,10 @@ impl HostDiff {
         self.pending_foreground.clear();
         self.pending_foreground_meta.clear();
         self.pending_foreground_omitted = 0;
+        self.visibility_writes.clear();
+        self.focus_records.clear();
+        self.pending_visibility.clear();
+        self.pending_focus.clear();
     }
 
     /// Bound every table against the current reply and baseline: spent and
@@ -1355,11 +1321,21 @@ impl HostDiff {
             .spent_views
             .retain(|op| live_ops.contains(op.as_str()));
         self.effects
-            .spent_reveals
-            .retain(|op| live_ops.contains(op.as_str()));
-        self.effects
             .attempted_members
             .retain(|key| live_ops.contains(key.0.as_str()));
+        let live_windows: HashSet<&str> = reply
+            .windows
+            .iter()
+            .map(|row| row.lifetime.0.as_str())
+            .collect();
+        self.visibility_writes
+            .retain(|token, _| live_windows.contains(token.as_str()));
+        let live_focus = reply
+            .focus_request
+            .as_ref()
+            .map(|request| request.id.as_str());
+        self.focus_records
+            .retain(|id, _| live_focus == Some(id.as_str()));
     }
 }
 
@@ -1810,6 +1786,22 @@ fn scope_controlled(reply: &WorldReplyV4, output: &str, workspace: &str) -> bool
     })
 }
 
+/// Exact workspace row authority: a broad output scope never overrides a
+/// more specific workspace row (a floating workspace must stay Untouched
+/// even when its output scope is Controlled).
+fn exact_workspace_controlled(reply: &WorldReplyV4, output: &str, workspace: &str) -> bool {
+    let output = OutputId(output.to_owned());
+    reply.scopes.iter().any(|status| {
+        matches!(
+            &status.scope,
+            AuthorityScope::Workspace {
+                output: scope_output,
+                workspace: scope_workspace,
+            } if scope_output == &output && scope_workspace.0 == workspace
+        ) && status.authority == ScopeAuthority::Controlled
+    })
+}
+
 /// Whether the output row proves this workspace is the current view. A
 /// missing output row or a `None` logical view is not proof that the
 /// workspace is current, so it withholds an otherwise-authorized frame
@@ -1868,82 +1860,6 @@ fn scope_actuatable(
     }
 }
 
-/// Staged arrival-ready proof for one target view: every required arrival
-/// the reply homes to `(out, ws)` reads live-visible with its desired home
-/// and, for tiled rows carrying a published frame, the exact target frame.
-/// Departing members may still be visible: this is a partial view-authority
-/// proof, never `read_view` completeness (inactive-hidden still gates the
-/// later departure hide and the final proof). Sticky arrivals prove through
-/// visibility like every other arrival; hidden, iconic, frameless,
-/// factless, cloaked, or lifetime-drifted arrivals never prove. Identity
-/// and lifetime gate each arrival against its observation-time baseline:
-/// the live full key (HWND plus PID plus creation, never HWND alone) must
-/// equal the baseline key and the live tag must match the stored tag, so a
-/// recycled HWND or rotated tag never proves. Facts fail closed: a missing
-/// read or a cloaked live read never proves. Identity/visibility re-checks
-/// bracket the homing/frame reads, so drift between the re-reads fails
-/// closed. An empty target never stages: no arrival means no arrival-ready
-/// authority. The setter boolean never decides: only these fresh re-reads
-/// do (same read kinds as before: window, homing, frame).
-fn staged_arrival_ready(
-    ops: &mut dyn NativeOps,
-    reply: &WorldReplyV4,
-    fresh: &FreshHost,
-    out: &str,
-    ws: &str,
-) -> bool {
-    fn live_arrival_ok(
-        live: &FreshWindow,
-        base: &FreshWindow,
-        stored: &HashMap<String, String>,
-    ) -> bool {
-        if live.key != base.key || !lifetime_ok(live, stored) {
-            return false;
-        }
-        if live.hidden || live.iconic || live.frame.is_none() {
-            return false;
-        }
-        live.facts.is_some_and(|facts| !facts.cloaked)
-    }
-    let mut required = 0usize;
-    for row in &reply.windows {
-        if row.output.0 != out || row.workspace != ws {
-            continue;
-        }
-        required += 1;
-        let token = row.lifetime.0.as_str();
-        let Some(base) = fresh.baseline.get(token) else {
-            return false;
-        };
-        let Some(live) = ops.read_window(token) else {
-            return false;
-        };
-        if !live_arrival_ok(&live, base, &fresh.stored_tags) {
-            return false;
-        }
-        if ops
-            .read_homing(token)
-            .is_none_or(|(home_out, home_ws)| home_out != out || home_ws != ws)
-        {
-            return false;
-        }
-        if let Some(target) = row.effective_frame
-            && ops.read_frame(token).is_none_or(|frame| frame != target)
-        {
-            return false;
-        }
-        // Close the drift window: the homing/frame reads above must sit
-        // between two consistent identity/visibility snapshots.
-        let Some(live) = ops.read_window(token) else {
-            return false;
-        };
-        if !live_arrival_ok(&live, base, &fresh.stored_tags) {
-            return false;
-        }
-    }
-    required > 0
-}
-
 /// Freshness plus racing-input poll before a setter. Consumes at most one
 /// pending external invalidation; on any staleness the caller stops before
 /// remaining unsafe writes.
@@ -1998,6 +1914,552 @@ pub(super) fn lifetime_ok(fresh: &FreshWindow, stored: &HashMap<String, String>)
         return false;
     }
     stored.get(&fresh.token).is_some_and(|tag| tag == live)
+}
+
+/// One truthful visibility read: the identity/lifetime/project-suppression
+/// sample plus the native fullscreen fact used only to classify a bounded
+/// hold reason. Missing facts stay `None` (unknown never proves).
+#[derive(Debug, Clone, Copy)]
+struct VisibilityRead {
+    sample: VisibilitySample,
+    fullscreen: bool,
+    /// Sticky windows stay visible on every workspace: the adapter never
+    /// issues a hide for them, matching the combined-switch departure rule.
+    sticky: bool,
+}
+
+fn read_visibility(
+    ops: &mut dyn NativeOps,
+    fresh: &FreshHost,
+    token: &str,
+    obs: u64,
+) -> Option<VisibilityRead> {
+    let live = ops.read_window(token)?;
+    let matched = fresh
+        .baseline
+        .get(token)
+        .is_some_and(|base| base.key == live.key && lifetime_ok(&live, &fresh.stored_tags));
+    let facts = live.facts;
+    let visible = if live.hidden {
+        Some(false)
+    } else {
+        facts.map(|facts| facts.visible)
+    };
+    // A committed hide claim is the only proof of project-owned
+    // suppression. An unhidden invisible window (cloaked, occlusion) is
+    // never claimed as ours.
+    let suppression_owned = match visible {
+        Some(_) if live.hidden => Some(true),
+        Some(_) => Some(false),
+        None => None,
+    };
+    Some(VisibilityRead {
+        sample: VisibilitySample {
+            obs,
+            lifetime_matched: Some(matched),
+            visibility: VisibilityFact {
+                visible,
+                suppression_owned,
+            },
+            minimized: Some(live.iconic || facts.is_some_and(|facts| facts.minimized)),
+            host_hidden: facts.map(|facts| facts.cloaked),
+        },
+        fullscreen: facts.is_some_and(|facts| facts.captionless_fullscreen),
+        sticky: live.sticky,
+    })
+}
+
+/// Bounded mechanical reason carried by a not-called visibility row. The
+/// core's hold/exclusion authority maps to the closed wire vocabulary; a
+/// live fullscreen fact is always the more specific `Fullscreen`.
+fn visibility_reason(authority: ScopeAuthority, read: &VisibilityRead) -> VisibilityReason {
+    if read.fullscreen {
+        return VisibilityReason::Fullscreen;
+    }
+    match authority {
+        ScopeAuthority::Controlled => {
+            if read.sample.visibility.visible.is_none() {
+                VisibilityReason::Unreadable
+            } else if read.sample.minimized == Some(true) || read.sample.host_hidden == Some(true) {
+                VisibilityReason::ShowBlocked
+            } else if read.sample.visibility.visible == Some(false)
+                && read.sample.visibility.suppression_owned != Some(true)
+            {
+                VisibilityReason::Unsupported
+            } else {
+                VisibilityReason::Empty
+            }
+        }
+        ScopeAuthority::Untouched => VisibilityReason::Unsupported,
+        ScopeAuthority::Hold(HoldReason::Unreadable | HoldReason::IncompleteInventory) => {
+            VisibilityReason::Unreadable
+        }
+        ScopeAuthority::Hold(HoldReason::Minimized) => VisibilityReason::ShowBlocked,
+        ScopeAuthority::Hold(_) => VisibilityReason::ScopeHeld,
+    }
+}
+
+fn frame_setter_for(outcome: Result<bool, ()>) -> FrameSetter {
+    match outcome {
+        Ok(true) => FrameSetter::Accepted,
+        Ok(false) => FrameSetter::Refused,
+        Err(()) => FrameSetter::Threw,
+    }
+}
+
+fn focus_reason_from_visibility(disposition: VisibilityDisposition) -> FocusNoCallReason {
+    match disposition {
+        VisibilityDisposition::Called {
+            setter: FrameSetter::Accepted,
+            ..
+        } => FocusNoCallReason::ShowBlocked,
+        VisibilityDisposition::Called {
+            setter: FrameSetter::Refused,
+            ..
+        }
+        | VisibilityDisposition::Called {
+            setter: FrameSetter::Threw,
+            ..
+        } => FocusNoCallReason::NativeRefused,
+        VisibilityDisposition::NotCalled { reason } => match reason {
+            VisibilityReason::Unreadable => FocusNoCallReason::Unreadable,
+            VisibilityReason::ScopeHeld => FocusNoCallReason::ScopeHeld,
+            VisibilityReason::Unsupported => FocusNoCallReason::Unsupported,
+            VisibilityReason::Fullscreen => FocusNoCallReason::Fullscreen,
+            VisibilityReason::Game => FocusNoCallReason::Game,
+            VisibilityReason::IdentityStale => FocusNoCallReason::IdentityStale,
+            _ => FocusNoCallReason::ShowBlocked,
+        },
+    }
+}
+
+/// One pass's frozen-arrival scan: all members ready, or the first blocked
+/// member with the bounded reason its truthful visibility row carries.
+struct ArrivalScan {
+    ready: bool,
+    blocked: Option<FocusNoCallReason>,
+    brackets: Vec<ArrivalBracket>,
+}
+
+fn scan_arrival(
+    members: &[AfterShownMember],
+    attempts: &BTreeMap<String, VisibilityAttempt>,
+    ops: &mut dyn NativeOps,
+    fresh: &FreshHost,
+    obs: u64,
+) -> ArrivalScan {
+    let mut all_ready = true;
+    let mut blocked = None;
+    let mut brackets = Vec::with_capacity(members.len());
+    for member in members {
+        let before = read_visibility(ops, fresh, &member.win.0, obs);
+        let homing = ops.read_homing(&member.win.0);
+        let affinity = ops.read_output_affinity(&member.win.0);
+        let frame = ops.read_frame(&member.win.0);
+        let after = read_visibility(ops, fresh, &member.win.0, obs);
+        let ready_state = before.is_some_and(|read| {
+            read.sample.lifetime_matched == Some(true)
+                && read.sample.visibility.visible == Some(true)
+                && read.sample.minimized == Some(false)
+                && read.sample.host_hidden == Some(false)
+        }) && after.is_some_and(|read| {
+            read.sample.lifetime_matched == Some(true)
+                && read.sample.visibility.visible == Some(true)
+                && read.sample.minimized == Some(false)
+                && read.sample.host_hidden == Some(false)
+        }) && homing
+            .as_ref()
+            .is_some_and(|(out, ws)| out == &member.out.0 && ws == &member.ws)
+            && affinity.as_deref() == Some(member.out.0.as_str())
+            && frame.is_some()
+            && member.frame.is_none_or(|target| frame == Some(target));
+        if !ready_state {
+            all_ready = false;
+        }
+        if blocked.is_none()
+            && let Some(attempt) = attempts.get(&member.win.0)
+            && attempt.target
+        {
+            match attempt.disposition {
+                VisibilityDisposition::Called {
+                    setter: FrameSetter::Accepted,
+                    ..
+                } => {}
+                // A satisfied target is a truthful no-call success, not a
+                // blocker: the member is already shown.
+                VisibilityDisposition::NotCalled {
+                    reason: VisibilityReason::Empty,
+                } => {}
+                _ => blocked = Some(focus_reason_from_visibility(attempt.disposition)),
+            }
+        }
+        let unknown = VisibilitySample {
+            obs,
+            lifetime_matched: Some(false),
+            visibility: VisibilityFact {
+                visible: None,
+                suppression_owned: None,
+            },
+            minimized: None,
+            host_hidden: None,
+        };
+        // The output arm carries only the observed live affinity of the
+        // member; an unreadable affinity yields no bracket at all (a null
+        // output could never prove readiness, so it is not reported as if
+        // it were observed evidence).
+        if let Some(out) = affinity.as_deref() {
+            brackets.push(ArrivalBracket {
+                window: member.win.clone(),
+                obs,
+                before: before.map_or(unknown, |read| read.sample),
+                location: ArrivalLocation::Output {
+                    out: Some(OutputId(out.to_owned())),
+                },
+                frame,
+                after: after.map_or(unknown, |read| read.sample),
+            });
+        }
+    }
+    ArrivalScan {
+        ready: all_ready,
+        blocked,
+        brackets,
+    }
+}
+
+/// Truthful show half of the visibility lane. Every desired shown row is
+/// decided exactly once per `(window, target, revision)` tuple: an
+/// unchanged tuple redelivers its original row without a setter, a
+/// satisfied target is a real not-called row, a non-Controlled (held or
+/// excluded) target is a not-called row carrying the mapped bounded reason,
+/// and only a Controlled, unsatisfied, identity-clean target reaches one
+/// nonactivating reveal. Setter booleans never prove: the post re-read is
+/// the row's fact.
+#[allow(clippy::too_many_arguments)]
+fn stage_visibility_shows(
+    reply: &WorldReplyV4,
+    fresh: &FreshHost,
+    ops: &mut dyn NativeOps,
+    gate: &mut DiffGate,
+    entry_obs: u64,
+    attempts: &mut BTreeMap<String, VisibilityAttempt>,
+    records: &mut BTreeMap<String, VisibilityAttempt>,
+    revealed: &mut HashSet<String>,
+    stats: &mut ApplyStats,
+) {
+    let obs = gate.current_obs;
+    for row in &reply.windows {
+        let Some(target) = row.visibility else {
+            continue;
+        };
+        if !target.shown {
+            continue;
+        }
+        if gate.current_obs != entry_obs {
+            stats.stopped_mid_apply = true;
+            break;
+        }
+        let token = row.lifetime.0.as_str();
+        if let Some(existing) = records.get(token) {
+            // A reported row is a verdict for this tuple, called or not:
+            // redeliver it without a new native decision. Only a new
+            // target or authorization revision may re-decide.
+            if existing.target == target.shown && existing.revision == target.revision {
+                attempts.insert(token.to_owned(), existing.clone());
+                continue;
+            }
+        }
+        let Some(read) = read_visibility(ops, fresh, token, obs) else {
+            let attempt = VisibilityAttempt {
+                window: row.lifetime.clone(),
+                target: true,
+                revision: target.revision,
+                path: LastWritePath::Staged,
+                disposition: VisibilityDisposition::NotCalled {
+                    reason: VisibilityReason::Unreadable,
+                },
+                pre: None,
+                post: None,
+            };
+            records.insert(token.to_owned(), attempt.clone());
+            attempts.insert(token.to_owned(), attempt);
+            stats.held += 1;
+            continue;
+        };
+        let satisfied = read.sample.lifetime_matched == Some(true)
+            && read.sample.visibility.visible == Some(true)
+            && read.sample.minimized == Some(false)
+            && read.sample.host_hidden == Some(false);
+        let (disposition, called) = if row.visibility_authority != ScopeAuthority::Controlled {
+            (
+                VisibilityDisposition::NotCalled {
+                    reason: visibility_reason(row.visibility_authority, &read),
+                },
+                false,
+            )
+        } else if satisfied {
+            (
+                VisibilityDisposition::NotCalled {
+                    reason: VisibilityReason::Empty,
+                },
+                false,
+            )
+        } else if read.sample.lifetime_matched != Some(true) {
+            (
+                VisibilityDisposition::NotCalled {
+                    reason: VisibilityReason::IdentityStale,
+                },
+                false,
+            )
+        } else if read.sample.visibility.visible == Some(false) {
+            if read.sample.visibility.suppression_owned == Some(false) {
+                (
+                    VisibilityDisposition::NotCalled {
+                        reason: VisibilityReason::Unsupported,
+                    },
+                    false,
+                )
+            } else {
+                if !ensure_fresh(reply, gate, entry_obs, ops) {
+                    stats.stopped_mid_apply = true;
+                    break;
+                }
+                let outcome = ops.reveal_window(token);
+                if outcome == Ok(true) {
+                    stats.staged_reveals += 1;
+                    revealed.insert(token.to_owned());
+                }
+                (
+                    VisibilityDisposition::Called {
+                        setter: frame_setter_for(outcome),
+                        reason: VisibilityReason::Empty,
+                    },
+                    true,
+                )
+            }
+        } else {
+            (
+                VisibilityDisposition::NotCalled {
+                    reason: visibility_reason(row.visibility_authority, &read),
+                },
+                false,
+            )
+        };
+        let post = if called {
+            read_visibility(ops, fresh, token, gate.current_obs)
+        } else {
+            Some(read)
+        };
+        let attempt = VisibilityAttempt {
+            window: row.lifetime.clone(),
+            target: true,
+            revision: target.revision,
+            path: LastWritePath::Staged,
+            disposition,
+            pre: Some(read.sample),
+            post: post.map(|read| read.sample),
+        };
+        if matches!(attempt.disposition, VisibilityDisposition::Called { .. }) {
+            stats.held += usize::from(post.is_none());
+        }
+        records.insert(token.to_owned(), attempt.clone());
+        attempts.insert(token.to_owned(), attempt);
+        if gate.current_obs != entry_obs {
+            stats.stopped_mid_apply = true;
+            break;
+        }
+    }
+}
+
+/// Truthful hide half of the visibility lane, run after the focus lane.
+/// Departing targets hide only under a proven live foreground (or the
+/// target's explicit fallback authority); a held/excluded target gets a
+/// real not-called row and is never actuated. The same at-most-once tuple
+/// rule applies: a reported row, called or not-called, is terminal for its
+/// `(window, target, revision)` and is redelivered without re-deciding,
+/// while a pending decision emits no row and may still re-decide on a
+/// later pass.
+#[allow(clippy::too_many_arguments)]
+fn stage_visibility_hides(
+    reply: &WorldReplyV4,
+    fresh: &FreshHost,
+    ops: &mut dyn NativeOps,
+    gate: &mut DiffGate,
+    entry_obs: u64,
+    attempts: &mut BTreeMap<String, VisibilityAttempt>,
+    records: &mut BTreeMap<String, VisibilityAttempt>,
+    focus_records: &BTreeMap<String, FocusFeedback>,
+    stats: &mut ApplyStats,
+) {
+    let obs = gate.current_obs;
+    for row in &reply.windows {
+        let Some(target) = row.visibility else {
+            continue;
+        };
+        if target.shown {
+            continue;
+        }
+        if gate.current_obs != entry_obs {
+            stats.stopped_mid_apply = true;
+            break;
+        }
+        let token = row.lifetime.0.as_str();
+        if let Some(existing) = records.get(token) {
+            // A reported row is a verdict for this tuple, called or not:
+            // redeliver it without a new native decision. Pending decisions
+            // emit no row above and may still re-decide on a later pass.
+            if existing.target == target.shown && existing.revision == target.revision {
+                attempts.insert(token.to_owned(), existing.clone());
+                continue;
+            }
+        }
+        let Some(read) = read_visibility(ops, fresh, token, obs) else {
+            let attempt = VisibilityAttempt {
+                window: row.lifetime.clone(),
+                target: false,
+                revision: target.revision,
+                path: LastWritePath::Staged,
+                disposition: VisibilityDisposition::NotCalled {
+                    reason: VisibilityReason::Unreadable,
+                },
+                pre: None,
+                post: None,
+            };
+            records.insert(token.to_owned(), attempt.clone());
+            attempts.insert(token.to_owned(), attempt);
+            stats.held += 1;
+            continue;
+        };
+        if read.sticky {
+            // Sticky windows are visible on every workspace; a hide would
+            // contradict the adapter's own combined-switch departure rule.
+            // Report the truthful no-call instead of actuating.
+            let attempt = VisibilityAttempt {
+                window: row.lifetime.clone(),
+                target: false,
+                revision: target.revision,
+                path: LastWritePath::Staged,
+                disposition: VisibilityDisposition::NotCalled {
+                    reason: VisibilityReason::Empty,
+                },
+                pre: Some(read.sample),
+                post: Some(read.sample),
+            };
+            records.insert(token.to_owned(), attempt.clone());
+            attempts.insert(token.to_owned(), attempt);
+            continue;
+        }
+        let hidden = read.sample.visibility.visible == Some(false)
+            && read.sample.minimized == Some(false)
+            && read.sample.host_hidden == Some(false)
+            && read.sample.visibility.suppression_owned == Some(true);
+        let mut path = LastWritePath::Staged;
+        let disposition = if row.visibility_authority != ScopeAuthority::Controlled {
+            VisibilityDisposition::NotCalled {
+                reason: visibility_reason(row.visibility_authority, &read),
+            }
+        } else if hidden {
+            VisibilityDisposition::NotCalled {
+                reason: VisibilityReason::Empty,
+            }
+        } else if read.sample.lifetime_matched != Some(true) {
+            VisibilityDisposition::NotCalled {
+                reason: VisibilityReason::IdentityStale,
+            }
+        } else if read.sample.visibility.visible == Some(false) {
+            VisibilityDisposition::NotCalled {
+                reason: visibility_reason(row.visibility_authority, &read),
+            }
+        } else if read.sample.minimized == Some(true) || read.sample.host_hidden == Some(true) {
+            VisibilityDisposition::NotCalled {
+                reason: VisibilityReason::ShowBlocked,
+            }
+        } else {
+            // The target is still visible: only a proven live foreground
+            // authorizes hiding, or the target's own fallback authority
+            // when the retained focus request cannot prove.
+            let request = reply.focus_request.as_ref();
+            let decision = match request {
+                None => Some(true),
+                Some(request) => focus_records
+                    .get(&request.id)
+                    .filter(|record| {
+                        record.target == request.target
+                            && record.revision == request.issued_revision
+                    })
+                    .map(|record| {
+                        matches!(
+                            record.disposition,
+                            FocusDisposition::Called {
+                                setter: FrameSetter::Accepted,
+                                ..
+                            }
+                        ) && record.foreground_proven
+                            && ops.is_foreground(&request.target.0)
+                    }),
+            };
+            match decision {
+                None => {
+                    // The focus decision is still pending: hold without a
+                    // row so a later pass can hide under real proof.
+                    stats.held += 1;
+                    continue;
+                }
+                Some(true) => VisibilityDisposition::Called {
+                    setter: FrameSetter::Accepted,
+                    reason: VisibilityReason::Empty,
+                },
+                Some(false) if target.fallback => {
+                    path = LastWritePath::Fallback;
+                    VisibilityDisposition::Called {
+                        setter: FrameSetter::Accepted,
+                        reason: VisibilityReason::Empty,
+                    }
+                }
+                Some(false) => VisibilityDisposition::NotCalled {
+                    reason: VisibilityReason::FocusUnproven,
+                },
+            }
+        };
+        let called = matches!(disposition, VisibilityDisposition::Called { .. });
+        let disposition = if called {
+            if !ensure_fresh(reply, gate, entry_obs, ops) {
+                stats.stopped_mid_apply = true;
+                break;
+            }
+            let outcome = ops.hide_window(token);
+            if outcome == Ok(true) {
+                stats.staged_hides += 1;
+                stats.departures_hidden_mono_ms = Some(super::trace::log_mono_ms());
+            }
+            VisibilityDisposition::Called {
+                setter: frame_setter_for(outcome),
+                reason: VisibilityReason::Empty,
+            }
+        } else {
+            disposition
+        };
+        let post = if called {
+            read_visibility(ops, fresh, token, gate.current_obs)
+        } else {
+            Some(read)
+        };
+        let attempt = VisibilityAttempt {
+            window: row.lifetime.clone(),
+            target: false,
+            revision: target.revision,
+            path,
+            disposition,
+            pre: Some(read.sample),
+            post: post.map(|read| read.sample),
+        };
+        records.insert(token.to_owned(), attempt.clone());
+        attempts.insert(token.to_owned(), attempt);
+        if gate.current_obs != entry_obs {
+            stats.stopped_mid_apply = true;
+            break;
+        }
+    }
 }
 
 /// In-flight landing proof for one remembered focus target: the live
@@ -2426,69 +2888,12 @@ pub(super) fn apply_world_reply(
     view_out: &mut Vec<ViewAttempt>,
     attempt_ms: u64,
 ) -> ApplyStats {
-    let stats = apply_world_reply_inner(
+    apply_world_reply_inner(
         state, reply, fresh, ops, frame_out, member_out, view_out, attempt_ms,
-    );
-    let attempts = collect_visibility_attempts(reply, ops, state.gate.current_obs);
-    for attempt in attempts {
-        state
-            .pending_visibility
-            .insert(attempt.window.0.clone(), attempt);
-    }
-    stats
+    )
 }
 
-/// One target-matching visibility readback per desired window: the core's
-/// native-free selection binding settles only from these rows. A read that
-/// does not match the target is no verdict (hold), never a failure; a
-/// minimized or natively hidden window also holds.
-fn collect_visibility_attempts(
-    reply: &WorldReplyV4,
-    ops: &mut dyn NativeOps,
-    obs: u64,
-) -> Vec<VisibilityAttempt> {
-    let mut out = Vec::new();
-    for row in &reply.windows {
-        let Some(target) = row.visibility else {
-            continue;
-        };
-        let Some(live) = ops.read_window(&row.lifetime.0) else {
-            continue;
-        };
-        let minimized = live.iconic || live.facts.as_ref().is_some_and(|facts| facts.minimized);
-        let host_hidden = live.facts.as_ref().is_some_and(|facts| facts.cloaked);
-        if minimized || host_hidden {
-            continue;
-        }
-        let visible = !live.hidden && live.facts.as_ref().map_or(true, |facts| facts.visible);
-        if visible != target.shown {
-            continue;
-        }
-        out.push(VisibilityAttempt {
-            window: row.lifetime.clone(),
-            target: target.shown,
-            revision: target.revision,
-            path: LastWritePath::Staged,
-            disposition: VisibilityDisposition::Called {
-                setter: FrameSetter::Accepted,
-                reason: VisibilityReason::Empty,
-            },
-            pre: None,
-            post: Some(VisibilitySample {
-                obs,
-                lifetime_matched: Some(true),
-                visibility: VisibilityFact {
-                    visible: Some(visible),
-                    suppression_owned: Some(!visible),
-                },
-                minimized: Some(false),
-                host_hidden: Some(false),
-            }),
-        });
-    }
-    out
-}
-
+#[allow(clippy::too_many_arguments)]
 fn apply_world_reply_inner(
     state: &mut HostDiff,
     reply: &WorldReplyV4,
@@ -2500,6 +2905,7 @@ fn apply_world_reply_inner(
     attempt_ms: u64,
 ) -> ApplyStats {
     let mut stats = ApplyStats::default();
+    let selection_focus_authority = std::mem::take(&mut state.selection_focus_authority);
     let entry_obs = state.gate.current_obs;
 
     if !state.gate.fresh_reply(reply) {
@@ -2639,7 +3045,11 @@ fn apply_world_reply_inner(
         pending_foreground_omitted: _,
         inflight_stash: _,
         inflight_stash_omitted: _,
-        pending_visibility: _,
+        pending_visibility,
+        visibility_writes,
+        focus_records,
+        pending_focus,
+        selection_focus_authority: _,
     } = state;
 
     // Entry foreground for the NA remembered-focus guard.
@@ -2647,12 +3057,30 @@ fn apply_world_reply_inner(
     // Outputs whose pure view took the nonactivating lane; only effects
     // homed there take the identity guard.
     let mut na_views: HashSet<(String, String)> = HashSet::new();
-    // Staged explicit-selection arrivals revealed this pass
-    // `(output, workspace, operation)`: arrival-ready focus may dispatch
-    // while departures are still visible; departures hide only after the
-    // staged focus proves foreground. Per-pass only: nothing carries across
-    // revisions, so a superseding intent starts from live reads.
-    let mut staged_views: Vec<(String, String, String)> = Vec::new();
+    // Shown targets revealed earlier in this pass: the frame row gate is
+    // a pre-pass baseline, so these may now proceed while `base.hidden`
+    // still names the observation preimage.
+    let mut revealed_this_pass: HashSet<String> = HashSet::new();
+
+    // 0. Visibility shows before frames: a hidden target cannot carry a
+    // writable frame until it is actually shown, and the focus lane needs
+    // the truthful show evidence before it may dispatch.
+    stage_visibility_shows(
+        reply,
+        fresh,
+        ops,
+        gate,
+        entry_obs,
+        pending_visibility,
+        visibility_writes,
+        &mut revealed_this_pass,
+        &mut stats,
+    );
+    if stats.stopped_mid_apply {
+        drain_visibility_posts(&mut stats, ops);
+        finalize(&mut stats);
+        return stats;
+    }
 
     // 1. Window rows: per-property authority against FRESH proof.
     for row in &reply.windows {
@@ -2671,13 +3099,20 @@ fn apply_world_reply_inner(
         // Safety facts with no authority lane hold narrowly: hidden,
         // iconic, unreadable, and game/excluded facts never take automatic
         // writes. Overlays keep membership but take no tiled frame writes.
-        if base.hidden || base.iconic || base.frame.is_none() {
+        // A window revealed by the show lane this pass may proceed from
+        // its stale observation preimage; the live pre-setter gate below
+        // still demands current visibility.
+        if (base.hidden && !revealed_this_pass.contains(&row.lifetime.0))
+            || base.iconic
+            || base.frame.is_none()
+        {
             stats.held += 1;
             continue;
         }
-        if base
-            .facts
-            .is_some_and(|facts| !capture_facts_rideable(&facts))
+        if !revealed_this_pass.contains(&row.lifetime.0)
+            && base
+                .facts
+                .is_some_and(|facts| !capture_facts_rideable(&facts))
         {
             stats.held += 1;
             continue;
@@ -3185,15 +3620,35 @@ fn apply_world_reply_inner(
         let out = t.target_output.0.clone();
         let ws = t.target_workspace.clone();
         let op = t.operation_id.clone();
+        // Selection-owned arrival views are not combined switches: the
+        // per-window visibility lane makes the real show/hide calls and the
+        // focus lane proves foreground before departing hides. Running a
+        // combined switch here would hide departures before the frozen
+        // focus has any chance to prove.
+        if reply
+            .focus_request
+            .as_ref()
+            .and_then(|request| request.after_shown.as_ref())
+            .is_some_and(|after| after.op == op)
+            && exact_workspace_controlled(reply, &out, &ws)
+            // A memberless target has no per-window reveal lane behind this
+            // skip; only the combined switch can move the view at all.
+            && reply.windows.iter().any(|row| {
+                row.output.0 == out
+                    && row.workspace == ws
+                    && row.visibility.is_some_and(|visibility| visibility.shown)
+            })
+        {
+            continue;
+        }
         if !scope_actuatable(reply, ops, &out, &ws) {
             stats.held += 1;
             continue;
         }
         if ops.read_view(&out).as_deref() == Some(ws.as_str()) {
             // Already shown: no write, no attempt. The core settles from
-            // the staged echo itself (or, native-free, from its selection
-            // binding); a redundant no-op switch would only fabricate a
-            // setter row.
+            // the staged echo itself; a redundant no-op switch would only
+            // fabricate a setter row.
             continue;
         }
         if t.held || effects.is_view_spent(&op) {
@@ -3210,93 +3665,36 @@ fn apply_world_reply_inner(
             stats.stopped_mid_apply = true;
             break;
         }
-        let pre = ops.read_view(&out);
-        let baseline = fresh.views.get(&out).cloned();
         // The nonactivating lane only for a pure view matching the retained
         // focus request's proven live homing. Everything else stays pumped.
         let na = reply.focus_request.as_ref().is_some_and(|request| {
             ops.read_homing(&request.target.0)
                 .is_some_and(|(o, w)| o == out && w == ws)
         });
-        // Staged explicit-selection lane: a pure NA view whose arrival
-        // focus request rides the fresh accepted selection grant. Only an
-        // exact grant-bound request stages; every other NA view keeps the
-        // single-shot switch below. Empty targets never stage (no arrival
-        // means no arrival-ready authority, see `staged_arrival_ready`).
-        let staged = na
-            && reply.focus_request.as_ref().is_some_and(|request| {
-                ops.read_homing(&request.target.0)
-                    .is_some_and(|(o, w)| o == out && w == ws)
-                    && ops.selection_arrival_allows(&request.id, &request.target.0)
-            });
-        if staged {
-            // Reveal arrivals first without hiding departures: the focus
-            // below dispatches on arrival-ready proof while departures are
-            // still visible, and departures hide only after proven
-            // foreground (section 4b). No ViewAttempt row here: the
-            // departure-hide attempt is the single completing row for this
-            // operation, exactly like the single-shot path below. A
-            // possibly-executed reveal never repeats: later passes re-prove
-            // from live reads instead of re-actuating.
-            if effects.is_reveal_spent(&op) {
-                if staged_arrival_ready(ops, reply, fresh, &out, &ws) {
-                    na_views.insert((out.clone(), ws.clone()));
-                    staged_views.push((out.clone(), ws.clone(), op.clone()));
-                    // Pre-focus all-arrivals-visible proof: clock-only stamp
-                    // after the existing re-reads prove every required arrival
-                    // visible. Last view wins, so multi-view switches report
-                    // when all arrivals proved. No new native query.
-                    stats.arrivals_visible_mono_ms = Some(super::trace::log_mono_ms());
-                } else {
-                    stats.held += 1;
-                }
-                continue;
-            }
-            if !effects.mark_reveal_spent(&op) {
-                stats.held += 1;
-                continue;
-            }
-            let revealed = ops.reveal_view_nonactivating(&out, &ws);
-            if revealed.is_ok() && staged_arrival_ready(ops, reply, fresh, &out, &ws) {
-                stats.staged_reveals += 1;
-                na_views.insert((out.clone(), ws.clone()));
-                staged_views.push((out, ws, op));
-                stats.arrivals_visible_mono_ms = Some(super::trace::log_mono_ms());
-            } else {
-                // Setter refusal, throw, or unproven arrivals: no focus, no
-                // hide, no re-actuation. The spent reveal re-proves on a
-                // later pass; the core holds from its retained desire.
-                stats.held += 1;
-            }
-            if gate.current_obs != entry_obs {
-                stats.stopped_mid_apply = true;
-                break;
-            }
-            continue;
-        }
         // Arm the view phase immediately before dispatch; late proofs
         // cannot rearm it, so a possibly-executed switch never repeats.
         if !effects.mark_view_spent(&op) {
             stats.held += 1;
             continue;
         }
+        let pre = ops.read_view(&out);
+        let baseline = fresh.views.get(&out).cloned();
         let result = if na {
             ops.switch_view_nonactivating(&out, &ws)
         } else {
             ops.switch_view(&out, &ws)
         };
         let proof = ops.read_view(&out);
-        // Mechanical facts only: the setter boolean is never proof, and
-        // no outcome is claimed here. The core settles from this attempt
-        // plus the next staged echo.
+        // Mechanical facts only: the raw attempt carries the observed
+        // pre/baseline/post views; the setter boolean is never proof.
         view_out.push(ViewAttempt {
-            operation_id: op,
+            operation_id: op.clone(),
             target_output: t.target_output.clone(),
             target_workspace: ws.clone(),
             disposition: frame_setter(result.as_ref().ok().copied()),
-            pre: view_ref(&t.target_output.0, pre),
-            post: view_ref(&t.target_output.0, proof.clone()),
-            baseline: view_ref(&t.target_output.0, baseline),
+            pre: view_ref(&out, pre),
+            post: view_ref(&out, proof.clone()),
+            baseline: view_ref(&out, baseline),
             attempt_ms,
         });
         if result.is_ok() && proof.as_deref() == Some(ws.as_str()) {
@@ -3306,8 +3704,8 @@ fn apply_world_reply_inner(
                 na_views.insert((out.clone(), ws.clone()));
             }
         } else {
-            // Setter refusal, throw, or unreadable proof: the reported raw
-            // attempt holds the core without re-actuation.
+            // Setter refusal, throw, or unreadable proof: the core holds
+            // from its retained desire without re-actuation.
             stats.held += 1;
         }
         if gate.current_obs != entry_obs {
@@ -3669,6 +4067,65 @@ fn apply_world_reply_inner(
             stats.stopped_mid_apply = true;
             break;
         }
+        // Durable at-most-once for the native call: an exact
+        // `(id, target, revision)` row, called or not-called, is a terminal
+        // verdict for that tuple and redelivers verbatim without another
+        // native decision. Only a new target or issuing revision re-decides.
+        if let Some(existing) = focus_records.get(&request.id) {
+            // A reported focus row is a verdict for this tuple, called or
+            // not: redeliver it without a new native decision. Only a new
+            // target or authorization revision may re-decide.
+            if existing.target == request.target && existing.revision == request.issued_revision {
+                let hold = match existing.disposition {
+                    FocusDisposition::Called { .. } => "already-spent",
+                    FocusDisposition::NotCalled { .. } => "already-decided",
+                };
+                push_focus!(false, "skipped", false, Some(hold));
+                pending_focus.insert(request.id.clone(), existing.clone());
+                continue;
+            }
+        }
+        let mut arrival_brackets: Vec<ArrivalBracket> = Vec::new();
+        // Frozen after_shown gate: every required member must be shown,
+        // readable, identity/lifetime clean, homed and framed before this
+        // request may dispatch. A member whose truthful visibility row is a
+        // no-call (or a refused/threw call) is the evidence that withholds
+        // focus; it becomes a correlated not-called focus row. Anything
+        // still pending defers with no row so a later pass can decide.
+        if let Some(after) = request.after_shown.as_ref() {
+            let scan = scan_arrival(
+                &after.members,
+                pending_visibility,
+                ops,
+                fresh,
+                gate.current_obs,
+            );
+            if let Some(reason) = scan.blocked {
+                let pre = ops.foreground_managed().map(WindowId);
+                let feedback = FocusFeedback {
+                    id: request.id.clone(),
+                    target: request.target.clone(),
+                    revision: request.issued_revision,
+                    disposition: FocusDisposition::NotCalled { reason },
+                    pre: pre.clone(),
+                    post: pre,
+                    foreground_proven: false,
+                    arrival: scan.brackets,
+                    attempt_ms,
+                };
+                focus_records.insert(request.id.clone(), feedback.clone());
+                pending_focus.insert(request.id.clone(), feedback);
+                push_focus!(false, "skipped", false, Some("show-blocked"));
+                stats.held += 1;
+                continue;
+            }
+            if !scan.ready {
+                push_focus!(false, "skipped", false, Some("arrival-pending"));
+                stats.held += 1;
+                continue;
+            }
+            arrival_brackets = scan.brackets;
+        }
         let Some(base) = fresh.baseline.get(&request.target.0) else {
             push_focus!(false, "skipped", false, Some("unknown-baseline"));
             stats.held += 1;
@@ -3741,7 +4198,7 @@ fn apply_world_reply_inner(
         // shown view of the SAME output under selected effective view
         // authority. `read_homing` stays truthful throughout (never
         // normalized): membership is untouched here.
-        let mut arrival_ready_lane = false;
+        let arrival_ready_lane = request.after_shown.is_some();
         let Some((live_out, live_ws)) = ops.read_homing(&request.target.0) else {
             push_focus!(false, "skipped", false, Some("unknown-homing"));
             stats.held += 1;
@@ -3758,59 +4215,43 @@ fn apply_world_reply_inner(
         // Narrow sticky return lane state: the shown workspace the sticky
         // focus is allowed onto. `None` on every other path.
         let mut sticky_shown: Option<String> = None;
-        if shown_view.as_deref() != Some(live_ws.as_str()) {
-            // Staged explicit-selection lane: the arrival reveal proved
-            // every required arrival visible under this exact grant-bound
-            // effect, so this one-shot focus may dispatch while departures
-            // are still visible. The full `read_view` proof (inactive
-            // hidden) still gates the departure hide and the final view:
-            // this authorizes only this focus, never the switch. Anything
-            // else holds for the view exactly as before.
-            let staged_ready = staged_views
-                .iter()
-                .any(|(o, w, _)| o == &live_out && w == &live_ws)
-                && ops.selection_arrival_allows(&request.id, &request.target.0)
-                && staged_arrival_ready(ops, reply, fresh, &live_out, &live_ws);
-            if staged_ready {
-                arrival_ready_lane = true;
-            } else {
-                // Sticky return lane: the core may return focus to a
-                // remembered sticky window whose actual home differs from
-                // the selected shown workspace. A sticky window is visible
-                // on every workspace of its output, but that visibility
-                // alone grants nothing. Require every freshness/safety
-                // proof: same output with its shown view under Controlled
-                // authority (the home scope above already is), plus a fresh
-                // live read proving the sticky lane, the exact lifetime
-                // key, the stored tag, visibility, and rideable facts.
-                // Ordinary windows, wrong outputs, unshown views, unsafe
-                // scopes, and stale/recycled identities all hold below.
-                // Never a policy input: the core already selected this
-                // exact target; this classifies freshness/safety only.
-                let sticky_ready = shown_view.as_deref().is_some_and(|shown_ws| {
-                    scope_controlled(reply, &live_out, shown_ws)
-                        && ops.read_window(&request.target.0).is_some_and(|live| {
-                            live.sticky
-                                && live.key == base.key
-                                && lifetime_ok(&live, &fresh.stored_tags)
-                                && !live.hidden
-                                && !live.iconic
-                                && live.frame.is_some()
-                                && live
-                                    .facts
-                                    .is_some_and(|facts| capture_facts_rideable(&facts))
-                        })
-                });
-                if !sticky_ready {
-                    // The live workspace is not shown on its output:
-                    // focusing now would steal focus from the wrong view.
-                    // Hold for the view.
-                    push_focus!(false, "skipped", false, Some("view-not-shown"));
-                    stats.held += 1;
-                    continue;
-                }
-                sticky_shown = shown_view.clone();
+        if shown_view.as_deref() != Some(live_ws.as_str()) && !arrival_ready_lane {
+            // Sticky return lane: the core may return focus to a
+            // remembered sticky window whose actual home differs from
+            // the selected shown workspace. A sticky window is visible
+            // on every workspace of its output, but that visibility
+            // alone grants nothing. Require every freshness/safety
+            // proof: same output with its shown view under Controlled
+            // authority (the home scope above already is), plus a fresh
+            // live read proving the sticky lane, the exact lifetime
+            // key, the stored tag, visibility, and rideable facts.
+            // Ordinary windows, wrong outputs, unshown views, unsafe
+            // scopes, and stale/recycled identities all hold below.
+            // Never a policy input: the core already selected this
+            // exact target; this classifies freshness/safety only.
+            let sticky_ready = shown_view.as_deref().is_some_and(|shown_ws| {
+                scope_controlled(reply, &live_out, shown_ws)
+                    && ops.read_window(&request.target.0).is_some_and(|live| {
+                        live.sticky
+                            && live.key == base.key
+                            && lifetime_ok(&live, &fresh.stored_tags)
+                            && !live.hidden
+                            && !live.iconic
+                            && live.frame.is_some()
+                            && live
+                                .facts
+                                .is_some_and(|facts| capture_facts_rideable(&facts))
+                    })
+            });
+            if !sticky_ready {
+                // The live workspace is not shown on its output:
+                // focusing now would steal focus from the wrong view.
+                // Hold for the view.
+                push_focus!(false, "skipped", false, Some("view-not-shown"));
+                stats.held += 1;
+                continue;
             }
+            sticky_shown = shown_view.clone();
         }
         // NA-only foreground identity guard: a changed or unreadable
         // foreground during the nonactivating switch vetoes unless the
@@ -3970,14 +4411,33 @@ fn apply_world_reply_inner(
         // target GUI-thread read immediately before the primitive rides
         // along as a dispatch-time observation only, never proof of
         // arrival; the landing GUI below is sampled at the read-back.
+        let focus_pre = ops.foreground_managed().map(WindowId);
+        let selection_provenance = selection_focus_authority;
         let (setter_outcome, call_diag) =
-            ops.focus_window_traced_selected(&request.target.0, &request.id);
+            ops.focus_window_traced_selected(&request.target.0, selection_provenance);
         let setter = match &setter_outcome {
             Ok(true) => "accepted",
             Ok(false) => "refused",
             Err(()) => "threw",
         };
         let foreground = ops.is_foreground(&request.target.0);
+        let focus_post = ops.foreground_managed().map(WindowId);
+        let feedback = FocusFeedback {
+            id: request.id.clone(),
+            target: request.target.clone(),
+            revision: request.issued_revision,
+            disposition: FocusDisposition::Called {
+                setter: frame_setter_for(setter_outcome),
+                reason: VisibilityReason::Empty,
+            },
+            pre: focus_pre,
+            post: focus_post,
+            foreground_proven: foreground,
+            arrival: arrival_brackets,
+            attempt_ms,
+        };
+        focus_records.insert(request.id.clone(), feedback.clone());
+        pending_focus.insert(request.id.clone(), feedback);
         // Owner-clock proof stamp immediately after the existing read-back:
         // result context only, never a setter-return-as-proof claim. No
         // native reread, no authority or product logic change.
@@ -4108,104 +4568,26 @@ fn apply_world_reply_inner(
         }
     }
 
-    // 4b. Staged departure hides: for every arrival revealed above, hide
-    // current departures only after the staged focus proves foreground.
-    // The spent one-shot effect is the dispatch proof (same-pass dispatch
-    // or a previously accepted setter whose landing only now proves); the
-    // live foreground read is the landing proof. Latest desire, safety and
-    // foreground revalidate at this boundary exactly like the single-shot
-    // view switch: a changed foreground invalidates the
-    // no-foreground-hide premise and holds instead of hiding an obsolete
-    // foreground. The hide attempt is the single completing ViewAttempt
-    // row for the operation; the view phase arms before dispatch so a
-    // possibly-executed hide never repeats, and refusal/throw holds the
-    // operation truthfully pending. No timers, waits, retries, replay, or
-    // recursive redispatch: later passes converge event-driven on the next
-    // reply, re-proving (never re-actuating) the spent reveal and the
-    // spent focus.
-    for (out, ws, op) in std::mem::take(&mut staged_views) {
-        if gate.current_obs != entry_obs {
-            stats.stopped_mid_apply = true;
-            break;
-        }
-        // The staged focus request for this view: the exact grant-bound
-        // retained focus request homed there whose setter already ran.
-        let staged_request = reply.focus_request.as_ref().filter(|request| {
-            ops.read_homing(&request.target.0)
-                .is_some_and(|(home_out, home_ws)| home_out == out && home_ws == ws)
-                && ops.selection_arrival_allows(&request.id, &request.target.0)
-                && effects.spent_focus.contains(&request.id)
-        });
-        let Some(staged_request) = staged_request else {
-            // Focus never dispatched (held or vetoed above): departures
-            // stay visible and the operation stays pending with no
-            // actuation and no spent view.
-            stats.held += 1;
-            continue;
-        };
-        if !ops.is_foreground(&staged_request.target.0) {
-            // Setter ran but foreground is unproven (async landing still in
-            // flight, refusal, or supersession): never hide while another
-            // window may hold foreground. A later pass hides without
-            // re-focusing once the landing proves.
-            stats.held += 1;
-            continue;
-        }
-        if !scope_actuatable(reply, ops, &out, &ws) {
-            stats.held += 1;
-            continue;
-        }
-        if !ensure_fresh(reply, gate, entry_obs, ops) {
-            stats.stopped_mid_apply = true;
-            break;
-        }
-        if reply
-            .transfers
-            .iter()
-            .any(|t| t.operation_id == op && t.held)
-            || effects.is_view_spent(&op)
-        {
-            // Held or already hidden: a possibly-executed hide never
-            // repeats. The core holds from its retained raw evidence.
-            stats.held += 1;
-            continue;
-        }
-        let pre = ops.read_view(&out);
-        let baseline = fresh.views.get(&out).cloned();
-        // Arm the view phase immediately before dispatch; late proofs
-        // cannot rearm it.
-        if !effects.mark_view_spent(&op) {
-            stats.held += 1;
-            continue;
-        }
-        let result = ops.hide_view_nonactivating(&out, &ws);
-        let proof = ops.read_view(&out);
-        // Mechanical facts only: the setter boolean is never proof, and no
-        // outcome is claimed here. The core settles from this attempt plus
-        // the next staged echo.
-        view_out.push(ViewAttempt {
-            operation_id: op,
-            target_output: OutputId(out.clone()),
-            target_workspace: ws.clone(),
-            disposition: frame_setter(result.as_ref().ok().copied()),
-            pre: view_ref(&out, pre),
-            post: view_ref(&out, proof.clone()),
-            baseline: view_ref(&out, baseline),
-            attempt_ms,
-        });
-        if result.is_ok() && proof.as_deref() == Some(ws.as_str()) {
-            stats.view_writes += 1;
-            stats.staged_hides += 1;
-            stats.departures_hidden_mono_ms = Some(super::trace::log_mono_ms());
-        } else {
-            // Setter refusal, throw, or unreadable proof: the reported raw
-            // attempt holds the core without re-actuation.
-            stats.held += 1;
-        }
-        if gate.current_obs != entry_obs {
-            stats.stopped_mid_apply = true;
-            break;
-        }
+    // 4b. Departure hides after the focus decision. The per-window lane
+    // re-reads the live foreground: without positive proof it records a
+    // truthful not-called row (or takes the target's explicit fallback
+    // path) and never hides. The durable record makes a possibly-executed
+    // hide at-most-once.
+    stage_visibility_hides(
+        reply,
+        fresh,
+        ops,
+        gate,
+        entry_obs,
+        pending_visibility,
+        visibility_writes,
+        focus_records,
+        &mut stats,
+    );
+    if stats.stopped_mid_apply {
+        drain_visibility_posts(&mut stats, ops);
+        finalize(&mut stats);
+        return stats;
     }
 
     // 5. Cursor warp (stage 4b): one mechanical position setter per

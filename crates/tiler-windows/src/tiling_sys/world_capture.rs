@@ -1614,10 +1614,7 @@ pub(super) fn capture_world(
                     facts,
                     live_token,
                     key,
-                    state
-                        .member_rects
-                        .get(live_token)
-                        .and_then(|rect| affinity_of(rect)),
+                    state.member_rects.get(live_token).and_then(affinity_of),
                     executable,
                     state.hint_logged.get(live_token).copied(),
                     owned
@@ -1737,10 +1734,7 @@ pub(super) fn capture_world(
                     facts,
                     live_token,
                     key,
-                    state
-                        .member_rects
-                        .get(live_token)
-                        .and_then(|rect| affinity_of(rect)),
+                    state.member_rects.get(live_token).and_then(affinity_of),
                     executable,
                     state.hint_logged.get(live_token).copied(),
                     true
@@ -1838,10 +1832,7 @@ pub(super) fn capture_world(
                 facts,
                 live_token,
                 key,
-                state
-                    .member_rects
-                    .get(live_token)
-                    .and_then(|rect| affinity_of(rect)),
+                state.member_rects.get(live_token).and_then(affinity_of),
                 bound_executable(state, key),
                 state.hint_logged.get(live_token).copied(),
                 state.hidden_claims.contains_key(key)

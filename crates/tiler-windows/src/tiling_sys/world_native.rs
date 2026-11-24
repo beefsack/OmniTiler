@@ -56,7 +56,7 @@
 //! fresh window and visibility facts, never from echoed desire. Unknown stays
 //! unknown so the core retains pending flights instead of settling on a guess.
 
-use super::world_diff::{FreshWindow, NativeOps, SelectionArrivalGrant};
+use super::world_diff::{FreshWindow, NativeOps};
 use crate::product_hide::sys::{VisibilityPostDiag, VisibilityPostTrace};
 
 /// Trace-only native hide-claim lane: the world actuator's post sink arms
@@ -552,17 +552,11 @@ pub(super) struct LiveNative<'a> {
     /// another gate's refusal row; consumed only for the
     /// `focus-write-veto` refusal detail.
     focus_veto_detail: Option<FocusWriteVetoDetail>,
-    /// Fresh accepted explicit-selection arrival grant for this pass (see
-    /// [`SelectionArrivalGrant`]): the exact one-shot focus effect ids the
-    /// command path armed before apply. `None` on observation ticks and
-    /// non-selection commands. Consulted only through the effect-bound
-    /// [`NativeOps::focus_window_traced_selected`] lane.
-    selection_arrival: Option<SelectionArrivalGrant>,
     /// Synchronous arm for the dispatch immediately around the current
     /// [`NativeOps::focus_window_traced_selected`] call (see that lane):
-    /// true only between the exact effect-id binding check and the veto
-    /// gate of the same call. Never set on observation ticks, unbound
-    /// calls, or non-selection effects; always cleared before return.
+    /// true only for a core-derived explicit-command selection request with
+    /// a frozen after_shown scope. Never set on observation ticks, unbound
+    /// calls, or other effects; always cleared before return.
     selection_arrival_armed: bool,
     /// Gate-time exact-desktop proof for the current
     /// [`Self::focus_window_traced`] call when the foreground-fullscreen
@@ -647,7 +641,6 @@ impl<'a> LiveNative<'a> {
             hidden_claims,
             na_hidden_departure: None,
             focus_veto_detail: None,
-            selection_arrival: None,
             selection_arrival_armed: false,
             desktop_proof: None,
             sticky,
@@ -1057,14 +1050,6 @@ impl<'a> LiveNative<'a> {
             return None;
         }
         self.prove_exact_desktop(fg, &gate_obs)
-    }
-
-    /// Arm the fresh accepted explicit-selection arrival grant for this
-    /// pass. Called only by the command path with
-    /// [`SelectionArrivalGrant::for_accepted`]; observation ticks and
-    /// non-selection commands leave the default `None`.
-    pub(super) fn set_selection_arrival(&mut self, grant: Option<SelectionArrivalGrant>) {
-        self.selection_arrival = grant;
     }
 
     /// Trace-gated veto stash: the builder runs only when trace is
@@ -1722,6 +1707,11 @@ impl NativeOps for LiveNative<'_> {
         Some(w.visible)
     }
 
+    fn read_output_affinity(&mut self, token: &str) -> Option<String> {
+        let frame = self.read_frame(token)?;
+        self.affinity_of(&frame)
+    }
+
     fn read_homing(&mut self, token: &str) -> Option<(String, String)> {
         let key = self.key_of(token)?;
         // Full identity plus lifetime proof first: a recycled HWND (same
@@ -2050,57 +2040,55 @@ impl NativeOps for LiveNative<'_> {
         self.switch_view_inner(output, logical, true)
     }
 
-    fn reveal_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
-        // Same pre-gates as the combined switch: racing input fails
-        // closed, an unknown target refuses. Arrival proof itself stays
-        // with the caller (fresh re-reads, never the setter boolean).
+    fn reveal_window(&mut self, token: &str) -> Result<bool, ()> {
+        // Same fail-closed pre-gates as the legacy combined switch: racing
+        // input refuses, unknown/identity-stale targets refuse without a
+        // post. Arrival proof stays with the caller's fresh re-reads.
         if (self.prims.hook_pending)() {
             return Err(());
         }
-        if !self
-            .core_rings
-            .get(output)
-            .is_some_and(|ring| ring.iter().any(|id| id == logical))
-        {
+        let key = self.key_of(token).ok_or(())?;
+        let expected = self.member_identity.get(&key).cloned().ok_or(())?;
+        // No committed claim means there is no native reveal to post; the
+        // caller's fresh read decides the row.
+        if !self.hidden_claims.contains_key(&key) {
             return Ok(false);
         }
-        let (ambiguous, refused) = self.reveal_entering(output, logical, true);
-        if ambiguous {
-            return Err(());
+        match self.commit_reveal_with(&key, &expected, true) {
+            Ok(()) => Ok(true),
+            Err(AdmitOutcome::Refused | AdmitOutcome::OriginVanished) => Ok(false),
+            Err(_) => Err(()),
         }
-        if refused {
-            return Ok(false);
-        }
-        Ok(true)
     }
 
-    fn hide_view_nonactivating(&mut self, output: &str, logical: &str) -> Result<bool, ()> {
-        // Same pre-gates as the combined switch. The caller revalidates
-        // latest desire and proven foreground before reaching this setter.
+    fn hide_window(&mut self, token: &str) -> Result<bool, ()> {
         if (self.prims.hook_pending)() {
             return Err(());
         }
-        if !self
-            .core_rings
-            .get(output)
-            .is_some_and(|ring| ring.iter().any(|id| id == logical))
-        {
-            return Ok(false);
+        let key = self.key_of(token).ok_or(())?;
+        let expected = self.member_identity.get(&key).cloned().ok_or(())?;
+        match self.commit_hide_with(&key, &expected, false, true) {
+            Ok(()) => Ok(true),
+            Err(AdmitOutcome::Refused | AdmitOutcome::OriginVanished) => Ok(false),
+            Err(_) => Err(()),
         }
-        let (ambiguous, refused) = self.hide_departures(output, logical, true);
-        if ambiguous {
-            return Err(());
-        }
-        if refused {
-            return Ok(false);
-        }
-        Ok(true)
     }
 
-    fn selection_arrival_allows(&mut self, request_id: &str, target: &str) -> bool {
-        self.selection_arrival
-            .as_ref()
-            .is_some_and(|grant| grant.allows(request_id, target))
+    fn foreground_managed(&mut self) -> Option<String> {
+        let fg = (self.prims.foreground)();
+        if fg == 0 {
+            return None;
+        }
+        let token = self
+            .token_key
+            .iter()
+            .find_map(|(token, key)| (key.hwnd == fg).then(|| token.clone()))?;
+        let key = self.token_key.get(&token).cloned()?;
+        let expected = self.member_identity.get(&key).cloned()?;
+        if !self.identity_ok(&key, &expected) || !self.lifetime_ok(&key) {
+            return None;
+        }
+        Some(token)
     }
 
     fn focus_window(&mut self, token: &str) -> Result<bool, ()> {
@@ -2110,19 +2098,12 @@ impl NativeOps for LiveNative<'_> {
     fn focus_window_traced_selected(
         &mut self,
         token: &str,
-        effect_id: &str,
+        selection_provenance: bool,
     ) -> (Result<bool, ()>, super::world_diff::FocusCallDiag) {
-        // Exact effect binding, checked synchronously with the exact effect
-        // id and dispatch target: only a pair in the fresh accepted
-        // selection grant arms the desktop exception for the dispatch
-        // immediately below. Any other effect (directional, send/migrate
-        // follow, automatic admission, cursor-follow, observation) or a
-        // tampered id/target pair runs the existing gates unchanged. The
-        // flag clears before return, so no later call can ride it.
-        self.selection_arrival_armed = self
-            .selection_arrival
-            .as_ref()
-            .is_some_and(|grant| grant.allows(effect_id, token));
+        // The desktop exception is armed only for a request the core
+        // derived as explicit-command selection with a frozen after_shown
+        // scope. The flag clears before return, so no later call rides it.
+        self.selection_arrival_armed = selection_provenance;
         let outcome = self.focus_window_traced(token);
         self.selection_arrival_armed = false;
         outcome

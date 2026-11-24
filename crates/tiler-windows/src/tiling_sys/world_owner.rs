@@ -261,6 +261,8 @@ impl WorldOwner {
         view_out: &mut Vec<tiler_core::world_report::ViewAttempt>,
         attempt_ms: u64,
     ) -> super::world_diff::ApplyStats {
+        let selection_focus_authority = self.seq.selection_focus_authority(reply);
+        self.diff.arm_selection_focus(selection_focus_authority);
         let stats = apply_world_reply(
             &mut self.diff,
             reply,
@@ -273,6 +275,9 @@ impl WorldOwner {
         );
         for attempt in self.diff.take_visibility_attempts() {
             self.seq.note_visibility_attempt(attempt);
+        }
+        for feedback in self.diff.take_focus_feedback() {
+            self.seq.note_focus_feedback(feedback);
         }
         stats
     }
@@ -287,6 +292,14 @@ impl WorldOwner {
     /// already-consumed, or rejected).
     pub(super) fn last_command_result(&self) -> Option<&tiler_core::world_report::CommandResult> {
         self.seq.last_command_result()
+    }
+
+    /// Test-only: the desktop-exception authority the owner derives for one
+    /// reply from the sequencer's actual latest accepted command state.
+    /// Production arms the diff through the same sequencer call.
+    #[cfg(test)]
+    pub(super) fn selection_focus_authority(&self, reply: &WorldReplyV4) -> bool {
+        self.seq.selection_focus_authority(reply)
     }
 
     /// Borrow the bounded accepted trace-proof row for the current

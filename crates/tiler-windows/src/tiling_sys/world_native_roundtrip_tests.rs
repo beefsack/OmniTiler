@@ -1439,11 +1439,10 @@ fn native_arrangement_close_focused_bottom_right_absorbs_right_column() {
 }
 
 /// Standalone selection into a nonempty floating workspace through the
-/// production seam: the switch hides/reveals natively, reports its raw
-/// view attempt, receipts the proven view, and the core settles the
-/// retained flight on the next echo with the logical view preserved.
-/// Before the view-actuatable gate the switch never dispatched, so no
-/// attempt rode and the flight persisted past every echo.
+/// production seam: the arriving member is revealed through the per-window
+/// visibility lane, v4 app-owned logical views report no native view
+/// attempts, and the core settles the retained flight on the next echo with
+/// the logical view preserved.
 #[test]
 fn floating_select_actuates_hide_reveal_and_settles() {
     let mut env = env_with(208_601);
@@ -1581,26 +1580,20 @@ fn floating_select_actuates_hide_reveal_and_settles() {
         })
         .expect("floating scope row");
     assert_eq!(back_scope.authority, Auth::Untouched);
-    assert_eq!(
-        back.views.len(),
-        1,
-        "switch reports its attempt: {:?}",
+    // v4 app-owned logical views settle from the frozen selection binding
+    // and visibility/focus facts; a native-free switch reports no raw
+    // `ViewAttempt` (the lane is unsupported evidence without host-owned
+    // domains).
+    assert!(
+        back.views.is_empty(),
+        "app-owned logical views report no native view attempts: {:?}",
         back.views
     );
-    let attempt = &back.views[0];
-    assert_eq!(attempt.operation_id, flight);
-    assert_eq!(attempt.target_workspace, head);
-    assert_eq!(
-        attempt.post,
-        Some(tiler_core::world_report::WorkspaceRef::Logical {
-            output: OutputId(o1.clone()),
-            workspace: tiler_core::directional::WorkspaceId(head.clone()),
-        }),
-        "read-back proves the floating view: {attempt:?}"
-    );
+    // The member is revealed by the per-window visibility lane, not a
+    // combined switch: w1 is really visible again in the live fixture.
     assert!(
         live_visible_observed().iter().any(|w| w.token == "w1"),
-        "back switch reveals w1"
+        "back selection reveals w1 through the visibility lane"
     );
     assert_eq!(
         env.state.applied_views.get(&o1).map(String::as_str),
@@ -1626,6 +1619,28 @@ fn floating_select_actuates_hide_reveal_and_settles() {
         "floating flight settles on echo: {:?}",
         settled.reply.transfers
     );
+    // The frozen selection binding owns the view and reports its terminal
+    // accounting once the visibility lane's reveal evidence is correlated:
+    // a focusless switch with no failed members and no fallback hides.
+    let event = settled
+        .reply
+        .switch_settled
+        .iter()
+        .find(|event| event.operation_id == flight)
+        .expect("floating view selection emits its correlated switch event");
+    assert_eq!(event.output, OutputId(o1.clone()));
+    assert_eq!(
+        event.outcome,
+        tiler_core::world_report::SwitchOutcome::Complete,
+        "full reveal: {event:?}"
+    );
+    assert!(event.failed.is_empty(), "no failed targets: {event:?}");
+    assert_eq!(
+        event.focus,
+        tiler_core::world_report::SwitchFocus::Unproven,
+        "focusless floating selection: {event:?}"
+    );
+    assert!(!event.fallback, "no fallback hides ran: {event:?}");
     assert_eq!(
         owner.engine().logical_view(&o1).as_deref(),
         Some(head.as_str())
@@ -1791,6 +1806,14 @@ fn selection_return_core_effect_binds_exact_grant() {
         WorldOutcome::Rejected { kind, message } => panic!("back rejected {kind}: {message}"),
     };
     assert_eq!(back_delivery, "accepted");
+    // The owner derives the narrow desktop-exception authority from the
+    // sequencer's actual latest accepted command: this exact explicit
+    // selection with the core's frozen after-shown scope arms it.
+    let back_authority = owner.selection_focus_authority(&back_reply);
+    assert!(
+        back_authority,
+        "accepted explicit selection must arm the desktop exception"
+    );
     let mut inputs = env.state.inputs();
     inputs.hidden_reads = Some(&reads);
     let captured = capture_world(&inputs, Some(&observed), &[], &areas, 0);
@@ -1899,10 +1922,10 @@ fn selection_return_core_effect_binds_exact_grant() {
         "core-minted arrival outcome: {:?}",
         fx.id
     );
-    let grant =
-        SelectionArrivalGrant::for_accepted(Some(&back_command), Some(seq), &back_reply, back_delivery)
-            .expect("accepted select must mint");
-    assert!(grant.allows(&fx.id, "w6"));
+    assert!(
+        fx.after_shown.is_some(),
+        "accepted select freezes the after-shown arrival scope"
+    );
     // Redelivering the exact same report is a duplicate: never re-arms.
     let duplicate = match owner.deliver_production(&back_report) {
         tiler_core::world_engine::WorldOutcome::Duplicate(reply) => reply,
@@ -1915,14 +1938,8 @@ fn selection_return_core_effect_binds_exact_grant() {
             .is_some_and(|r| r.id == fx.id)
     );
     assert!(
-        SelectionArrivalGrant::for_accepted(
-            Some(&back_command),
-            Some(seq),
-            &duplicate,
-            "duplicate"
-        )
-        .is_none(),
-        "duplicate delivery never re-arms"
+        !owner.selection_focus_authority(&duplicate),
+        "duplicate delivery never arms"
     );
     // A redundant select (already showing) mints no arrival: nothing to arm.
     let observed = live_visible_observed();
@@ -1956,13 +1973,7 @@ fn selection_return_core_effect_binds_exact_grant() {
         "still the original return's request, never the redundant command"
     );
     assert!(
-        SelectionArrivalGrant::for_accepted(
-            Some(&back_command),
-            repeat.command_seq,
-            &repeat.reply,
-            repeat.delivery,
-        )
-        .is_none(),
+        !owner.selection_focus_authority(&repeat.reply),
         "effect-free select never arms"
     );
     // An explicit-window focus effect is real but never a selection
@@ -1994,13 +2005,15 @@ fn selection_return_core_effect_binds_exact_grant() {
         directed.reply.focus_request
     );
     assert!(
-        SelectionArrivalGrant::for_accepted(
-            Some(&focus_command),
-            directed.command_seq,
-            &directed.reply,
-            directed.delivery,
-        )
-        .is_none(),
+        directed
+            .reply
+            .focus_request
+            .as_ref()
+            .is_some_and(|r| r.after_shown.is_none()),
+        "non-selection focus carries no after-shown provenance"
+    );
+    assert!(
+        !owner.selection_focus_authority(&directed.reply),
         "non-selection focus never arms"
     );
     // An observation tick mints no arrival focus: nothing to arm, even
@@ -2022,18 +2035,12 @@ fn selection_return_core_effect_binds_exact_grant() {
         "observation mints no focus request"
     );
     assert!(
-        SelectionArrivalGrant::for_accepted(
-            Some(&back_command),
-            idle.command_seq,
-            &idle.reply,
-            "accepted",
-        )
-        .is_none(),
+        !owner.selection_focus_authority(&idle.reply),
         "observation never arms"
     );
     // The core-minted return effect actuates past a scripted exact desktop
-    // through the production grant: fresh diff, scripted natives, the exact
-    // accepted (command, sequence, reply) triple.
+    // through the production after-shown provenance: fresh diff, scripted
+    // natives, the exact accepted (command, sequence, reply) triple.
     let desktop = win_key(209_203, 2613, "proc-613");
     script_healthy_desktop(&desktop);
     // Members only: the scripted desktop foreground is not inventory.
@@ -2048,16 +2055,11 @@ fn selection_return_core_effect_binds_exact_grant() {
     let fresh = FreshHost::from_sources(&inputs, &observed, &[], &captured);
     let mut diff = HostDiff::new(ADAPTER, GENERATION);
     diff.gate.current_obs = back_reply.based_on_observation_seq;
+    // Accepted explicit selection reply: arm exactly this pass with the
+    // authority the owner actually derived for the accepted delivery.
+    diff.arm_selection_focus(back_authority);
     let mut native = assemble(&mut env, scripted());
     native.set_diagnostics_trace(true);
-    let grant = SelectionArrivalGrant::for_accepted(
-        Some(&back_command),
-        Some(seq),
-        &back_reply,
-        back_delivery,
-    )
-    .expect("minted return request arms");
-    native.set_selection_arrival(Some(grant));
     let stats = apply_world_reply(
         &mut diff,
         &back_reply,
@@ -2072,7 +2074,7 @@ fn selection_return_core_effect_binds_exact_grant() {
     let row = &stats.focus_dispatch[0];
     assert_eq!(row.id, fx.id);
     assert_eq!(row.target, "w6");
-    assert!(row.dispatched);
+    assert!(row.dispatched, "arrival focus must dispatch: {row:?}");
     assert!(
         row.primitive_called,
         "core-minted return arrival must reach the setter past the desktop"

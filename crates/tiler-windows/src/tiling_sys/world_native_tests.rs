@@ -12,8 +12,7 @@
 use super::super::rmax03_adapter_tests::test_state;
 use super::super::world_capture::{HiddenClaimRead, capture_world};
 use super::super::world_diff::{
-    FakeNative, FocusCallDiag, FreshHost, HostDiff, NativeOps, SelectionArrivalGrant,
-    apply_world_reply,
+    FakeNative, FocusCallDiag, FreshHost, HostDiff, NativeOps, apply_world_reply,
 };
 use super::super::world_owner::WorldOwner;
 use super::super::world_sequencer::AckOutcome;
@@ -30,8 +29,8 @@ use tiler_core::directional::{OutputId, WindowId};
 use tiler_core::geometry::Rect;
 use tiler_core::world_engine::WorldOutcome;
 use tiler_core::world_report::{
-    ScopeAuthority as Auth, ScopeStatus, TransferKind, WORLD_CONTRACT_VERSION, WindowDesire,
-    WorldCommand,
+    AfterShown, AfterShownMember, AfterShownScope, ScopeAuthority as Auth, ScopeStatus,
+    TransferKind, WORLD_CONTRACT_VERSION, WindowDesire, WorldCommand,
 };
 fn ref_workspace(value: Option<&tiler_core::world_report::WorkspaceRef>) -> Option<&str> {
     match value {
@@ -407,7 +406,17 @@ fn scripted() -> NativePrimitives {
                 }
             })
         },
-        focus: |hwnd| S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true)),
+        focus: |hwnd| {
+            let accepted = S_FOCUS_OK.with(|m| m.borrow().get(&hwnd).copied().unwrap_or(true));
+            // A real accepted activation lands the foreground (the
+            // production setter is followed by a managed-foreground read).
+            // Tests that model the accepted-but-unlanded window override
+            // `prims.focus` explicitly instead of relying on this default.
+            if accepted {
+                S_FG.with(|m| *m.borrow_mut() = hwnd);
+            }
+            accepted
+        },
         prime: |vk| {
             S_PRIME_CALLS.with(|m| m.borrow_mut().push(vk));
             S_PRIMED.with(|m| *m.borrow_mut() = true);
@@ -2596,9 +2605,6 @@ struct LiveTick {
     /// or `command-consumed`): lets tests prove fresh-accepted-only
     /// behavior without re-implementing the dispatch path.
     delivery: &'static str,
-    /// Command sequence of the dispatched report (`None` for
-    /// observation-only ticks): binds reply effects to their command.
-    command_seq: Option<u64>,
 }
 
 /// One production tick through the real owner with scripted natives:
@@ -2822,7 +2828,6 @@ fn live_tick_cursor(
         members: member_attempts,
         views: view_attempts,
         delivery,
-        command_seq: report.command_seq,
     }
 }
 
@@ -4001,7 +4006,6 @@ fn focus_refusal_diag_foreground_probe_budget() {
 /// primitive ran (user run-01dd65cae8797264 L97/103).
 #[test]
 fn selection_return_past_desktop_foreground_dispatches_setter() {
-    use super::super::world_diff::SelectionArrivalGrant;
     use tiler_core::directional::OutputId as CoreOutputId;
 
     let mut env = env_with(120_001);
@@ -4055,6 +4059,8 @@ fn selection_return_past_desktop_foreground_dispatches_setter() {
         plain_facts(),
     )];
     let (mut diff, fresh) = convert(&env, &observed);
+    // Accepted explicit selection: the command-derived desktop authority.
+    diff.arm_selection_focus(true);
     let mut reply = reply_shell(7, 1, &[(out.as_str(), ws.as_str())]);
     reply.focus_request = Some(tiler_core::world_report::FocusRequest {
         id: "fx-7".to_owned(),
@@ -4064,19 +4070,28 @@ fn selection_return_past_desktop_foreground_dispatches_setter() {
         output: CoreOutputId(out.clone()),
         workspace: ws.clone(),
         cmd_seq: Some(7),
-        after_shown: None,
+        after_shown: Some(AfterShown {
+            op: "op-return".to_owned(),
+            obs: 1,
+            members: vec![AfterShownMember {
+                win: WindowId("w6".to_owned()),
+                out: CoreOutputId(out.clone()),
+                ws: ws.clone(),
+                frame: Some(rect(0, 0, 800, 600)),
+            }],
+            views: vec![AfterShownScope {
+                out: CoreOutputId(out.clone()),
+                ws: ws.clone(),
+            }],
+            selected: vec![AfterShownScope {
+                out: CoreOutputId(out.clone()),
+                ws: ws.clone(),
+            }],
+            departing: Vec::new(),
+        }),
     });
-    // Authority binding through the production mint: the exact accepted
-    // select command, its sequence, and this reply's own explicit effect.
-    let command = WorldCommand::SelectWorkspace {
-        output: CoreOutputId(out.clone()),
-        workspace: tiler_core::directional::WorkspaceId(ws.clone()),
-    };
-    let grant = SelectionArrivalGrant::for_accepted(Some(&command), Some(7), &reply, "accepted");
-    assert!(grant.is_some(), "select must mint the arrival grant");
     let mut native = assemble(&mut env, scripted());
     native.set_diagnostics_trace(true);
-    native.set_selection_arrival(grant);
     let stats = apply_world_reply(
         &mut diff,
         &reply,
@@ -4148,7 +4163,9 @@ fn script_healthy_desktop(desktop: &WindowKey) {
     S_FG.with(|m| *m.borrow_mut() = desktop.hwnd);
 }
 
-/// Arrival reply carrying one core-shaped explicit focus effect.
+/// Arrival reply carrying one core-shaped explicit focus effect with a
+/// frozen after-shown scope. The caller may clear the scope to model a
+/// request without selection provenance.
 fn fx_reply(out: &str, ws: &str, id: &str, target: &str) -> tiler_core::world_report::WorldReplyV4 {
     let mut reply = reply_shell(7, 1, &[(out, ws)]);
     reply.focus_request = Some(tiler_core::world_report::FocusRequest {
@@ -4159,37 +4176,44 @@ fn fx_reply(out: &str, ws: &str, id: &str, target: &str) -> tiler_core::world_re
         output: OutputId(out.to_owned()),
         workspace: ws.to_owned(),
         cmd_seq: Some(7),
-        after_shown: None,
+        after_shown: Some(AfterShown {
+            op: "op-select".to_owned(),
+            obs: 1,
+            members: vec![AfterShownMember {
+                win: WindowId(target.to_owned()),
+                out: OutputId(out.to_owned()),
+                ws: ws.to_owned(),
+                frame: None,
+            }],
+            views: vec![AfterShownScope {
+                out: OutputId(out.to_owned()),
+                ws: ws.to_owned(),
+            }],
+            selected: vec![AfterShownScope {
+                out: OutputId(out.to_owned()),
+                ws: ws.to_owned(),
+            }],
+            departing: Vec::new(),
+        }),
     });
     reply
 }
 
-/// Production grant mint for one accepted select reply.
-fn select_grant(
-    out: &str,
-    ws: &str,
-    reply: &tiler_core::world_report::WorldReplyV4,
-) -> Option<SelectionArrivalGrant> {
-    let command = WorldCommand::SelectWorkspace {
-        output: OutputId(out.to_owned()),
-        workspace: tiler_core::directional::WorkspaceId(ws.to_owned()),
-    };
-    // Handcrafted replies in this file mint `fx-7`: the sequence must name
-    // it exactly, or no explicit effect matches and nothing mints.
-    SelectionArrivalGrant::for_accepted(Some(&command), Some(7), reply, "accepted")
+/// The adapter's selection provenance is exactly the frozen after-shown
+/// scope the core put on the retained request.
+fn select_provenance(reply: &tiler_core::world_report::WorldReplyV4) -> bool {
+    reply
+        .focus_request
+        .as_ref()
+        .and_then(|request| request.after_shown.as_ref())
+        .is_some()
 }
 
-/// One effect-bound arrival dispatch through the production seam.
-fn arrival_call(
-    env: &mut Env,
-    grant: Option<SelectionArrivalGrant>,
-    token: &str,
-    effect: &str,
-) -> (Result<bool, ()>, FocusCallDiag) {
+/// One provenance-marked arrival dispatch through the production seam.
+fn arrival_call(env: &mut Env, provenance: bool, token: &str) -> (Result<bool, ()>, FocusCallDiag) {
     let mut native = assemble(env, scripted());
     native.set_diagnostics_trace(true);
-    native.set_selection_arrival(grant);
-    native.focus_window_traced_selected(token, effect)
+    native.focus_window_traced_selected(token, provenance)
 }
 
 /// The exception passes a fully proven desktop: setter runs once after one
@@ -4204,9 +4228,9 @@ fn selection_arrival_passes_proven_desktop_direct() {
     script_arrival_target(&mut env, &target, "w6", &ws);
     script_healthy_desktop(&desktop);
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    assert!(grant.is_some());
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    assert!(provenance);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(true));
     assert!(diag.primitive_called);
     assert_eq!(diag.native_return, Some(true));
@@ -4242,8 +4266,8 @@ fn selection_arrival_still_vetoes_fullscreen_game() {
     S_VISIBLE.with(|m| m.borrow_mut().insert(game.hwnd));
     S_FG.with(|m| *m.borrow_mut() = game.hwnd);
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert!(!diag.primitive_called);
     assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
@@ -4296,8 +4320,8 @@ fn selection_arrival_still_vetoes_unknown_fullscreen_app() {
     S_SYSTEM_SHELL.with(|m| *m.borrow_mut() = Some("C:\\Windows\\explorer.exe".to_owned()));
     S_FG.with(|m| *m.borrow_mut() = foreign.hwnd);
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert!(!diag.primitive_called);
     assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
@@ -4321,8 +4345,8 @@ fn selection_arrival_unreadable_shell_vetoes() {
     S_SYSTEM_SHELL.with(|m| *m.borrow_mut() = Some("C:\\Windows\\explorer.exe".to_owned()));
     S_FG.with(|m| *m.borrow_mut() = 990_040);
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert!(!diag.primitive_called);
     assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
@@ -4376,8 +4400,8 @@ fn selection_arrival_spoof_progman_vetoes() {
     S_SYSTEM_SHELL.with(|m| *m.borrow_mut() = Some("C:\\Windows\\explorer.exe".to_owned()));
     S_FG.with(|m| *m.borrow_mut() = spoof.hwnd);
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert!(!diag.primitive_called);
     assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
@@ -4431,8 +4455,8 @@ fn selection_arrival_workerw_surface_vetoes() {
     S_SYSTEM_SHELL.with(|m| *m.borrow_mut() = Some("C:\\Windows\\explorer.exe".to_owned()));
     S_FG.with(|m| *m.borrow_mut() = worker.hwnd);
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert!(!diag.primitive_called);
     assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
@@ -4466,8 +4490,8 @@ fn selection_arrival_recycled_shell_identity_vetoes() {
         )
     });
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert!(!diag.primitive_called);
     assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
@@ -4505,8 +4529,8 @@ fn selection_arrival_wrong_shell_executable_vetoes() {
         )
     });
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert!(!diag.primitive_called);
     assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
@@ -4544,8 +4568,8 @@ fn selection_arrival_shell_user_session_mismatch_vetoes() {
         )
     });
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert!(!diag.primitive_called);
     assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
@@ -4566,8 +4590,8 @@ fn selection_arrival_missing_shell_handle_vetoes() {
     script_healthy_desktop(&desktop);
     S_SHELL.with(|m| *m.borrow_mut() = 0);
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert!(!diag.primitive_called);
     assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
@@ -4605,11 +4629,11 @@ fn selection_arrival_foreground_race_to_game_refuses_after_prime() {
     S_PID.with(|m| m.borrow_mut().insert(game.hwnd, game.pid));
     S_VISIBLE.with(|m| m.borrow_mut().insert(game.hwnd));
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
+    let provenance = select_provenance(&reply);
     // Race driven by prime state, not read counts: the foreground names
     // the desktop until the prime runs, then the game.
     S_FG_AFTER_PRIME.with(|m| *m.borrow_mut() = Some(game.hwnd));
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert!(!diag.primitive_called);
     assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
@@ -4667,8 +4691,8 @@ fn selection_arrival_mismatched_observed_hwnd_vetoes() {
         }
     });
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert!(!diag.primitive_called);
     assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
@@ -4692,8 +4716,8 @@ fn selection_arrival_shell_drift_during_recheck_refuses() {
     // (The gate proof itself samples the shell handle twice.)
     S_SHELL_SEQ.with(|m| m.borrow_mut().extend([desktop.hwnd, desktop.hwnd, 0]));
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert_recheck_refusal(&diag, "focus-write-veto", Some("arrival-recheck"));
 }
@@ -4717,8 +4741,8 @@ fn selection_arrival_pid_drift_during_recheck_refuses() {
         ])
     });
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert_recheck_refusal(&diag, "focus-write-veto", Some("arrival-recheck"));
 }
@@ -4744,8 +4768,8 @@ fn selection_arrival_pid_drift_in_final_bracket_refuses() {
         ])
     });
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert_recheck_refusal(&diag, "focus-write-veto", Some("arrival-recheck"));
 }
@@ -4782,8 +4806,8 @@ fn selection_arrival_creation_drift_during_recheck_refuses() {
         ])
     });
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert_recheck_refusal(&diag, "focus-write-veto", Some("arrival-recheck"));
 }
@@ -4818,8 +4842,8 @@ fn selection_arrival_exe_drift_during_recheck_refuses() {
         ])
     });
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert_recheck_refusal(&diag, "focus-write-veto", Some("arrival-recheck"));
 }
@@ -4855,8 +4879,8 @@ fn selection_arrival_session_drift_during_recheck_refuses() {
         ])
     });
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert_recheck_refusal(&diag, "focus-write-veto", Some("arrival-recheck"));
 }
@@ -4884,8 +4908,8 @@ fn selection_arrival_unreadable_recheck_refuses() {
             .extend([(desktop.hwnd, Some(desktop_ident())), (desktop.hwnd, None)])
     });
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert_recheck_refusal(&diag, "focus-write-veto", Some("arrival-recheck"));
 }
@@ -4902,13 +4926,12 @@ fn selection_arrival_hook_after_prime_holds_ambiguous() {
     script_arrival_target(&mut env, &target, "w6", &ws);
     script_healthy_desktop(&desktop);
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
+    let provenance = select_provenance(&reply);
     let mut prims = scripted();
     prims.hook_pending = || S_PRIMED.with(|m| *m.borrow());
     let mut native = assemble(&mut env, prims);
     native.set_diagnostics_trace(true);
-    native.set_selection_arrival(grant);
-    let (outcome, diag) = native.focus_window_traced_selected("w6", "fx-7");
+    let (outcome, diag) = native.focus_window_traced_selected("w6", provenance);
     assert_recheck_ambiguous(&outcome, &diag);
 }
 
@@ -4925,8 +4948,8 @@ fn selection_arrival_modal_after_prime_refuses() {
     script_healthy_desktop(&desktop);
     S_MODAL_AFTER_PRIME.with(|m| *m.borrow_mut() = Some(target.hwnd));
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert_recheck_refusal(&diag, "move-size-veto", None);
 }
@@ -4944,8 +4967,8 @@ fn selection_arrival_target_departure_after_prime_holds_ambiguous() {
     script_healthy_desktop(&desktop);
     S_UNOBSERVE_AFTER_PRIME.with(|m| *m.borrow_mut() = Some(target.hwnd));
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_recheck_ambiguous(&outcome, &diag);
 }
 
@@ -4993,8 +5016,8 @@ fn selection_arrival_fullscreen_explorer_window_vetoes() {
     S_SYSTEM_SHELL.with(|m| *m.borrow_mut() = Some("C:\\Windows\\explorer.exe".to_owned()));
     S_FG.with(|m| *m.borrow_mut() = browser.hwnd);
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert!(!diag.primitive_called);
     assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
@@ -5045,8 +5068,8 @@ fn selection_arrival_fullscreen_shell_popup_vetoes() {
     S_SYSTEM_SHELL.with(|m| *m.borrow_mut() = Some("C:\\Windows\\explorer.exe".to_owned()));
     S_FG.with(|m| *m.borrow_mut() = popup.hwnd);
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(false));
     assert!(!diag.primitive_called);
     assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
@@ -5055,43 +5078,19 @@ fn selection_arrival_fullscreen_shell_popup_vetoes() {
     assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
 }
 
-/// Exact effect binding: a grant for (`fx-7`, `w6`) authorizes neither a
-/// tampered id nor a tampered target.
+/// Without selection provenance the same desktop foreground vetoes:
+/// directional focus, send/migrate follow, and observation effects never
+/// ride the exception.
 #[test]
-fn selection_arrival_rejects_ungranted_effect_id() {
-    let mut env = env_with(120_120);
-    let ws = "ws1".to_owned();
-    let out = env.state.output_token(DEV1);
-    let target = win_key(120_120, 2520, "proc-520");
-    let other = win_key(120_122, 2522, "proc-522");
-    let desktop = win_key(120_121, 2521, "proc-521");
-    script_arrival_target(&mut env, &target, "w6", &ws);
-    script_arrival_target(&mut env, &other, "w9", &ws);
-    script_healthy_desktop(&desktop);
-    let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    for (token, effect) in [("w6", "fx-8"), ("w9", "fx-7")] {
-        let (outcome, diag) = arrival_call(&mut env, grant.clone(), token, effect);
-        assert_eq!(outcome, Ok(false), "unbound pair must veto");
-        assert!(!diag.primitive_called);
-        assert_eq!(diag.refusal_gate, Some("focus-write-veto"));
-        assert_eq!(diag.fg_veto_kind, Some("readable-fullscreen"));
-        assert!(!diag.desktop_exception);
-        assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
-    }
-}
-
-/// Without a grant the same desktop foreground vetoes: directional focus,
-/// send/migrate follow, and observation effects never ride the exception.
-#[test]
-fn ungranted_arrival_still_vetoes_desktop() {
+fn unproven_arrival_still_vetoes_desktop() {
     let mut env = env_with(120_130);
     let ws = "ws1".to_owned();
     let target = win_key(120_130, 2530, "proc-530");
     let desktop = win_key(120_131, 2531, "proc-531");
     script_arrival_target(&mut env, &target, "w6", &ws);
     script_healthy_desktop(&desktop);
-    // Unbound lane (no effect id, no grant): existing behavior exactly.
+    // Unproven lane (no frozen after-shown provenance): existing behavior
+    // exactly.
     let mut native = assemble(&mut env, scripted());
     native.set_diagnostics_trace(true);
     let (outcome, diag) = native.focus_window_traced("w6");
@@ -5132,8 +5131,8 @@ fn selection_arrival_taskbar_foreground_needs_no_exception() {
     S_SYSTEM_SHELL.with(|m| *m.borrow_mut() = Some("C:\\Windows\\explorer.exe".to_owned()));
     S_FG.with(|m| *m.borrow_mut() = taskbar.hwnd);
     let reply = fx_reply(&out, &ws, "fx-7", "w6");
-    let grant = select_grant(&out, &ws, &reply);
-    let (outcome, diag) = arrival_call(&mut env, grant, "w6", "fx-7");
+    let provenance = select_provenance(&reply);
+    let (outcome, diag) = arrival_call(&mut env, provenance, "w6");
     assert_eq!(outcome, Ok(true));
     assert!(diag.primitive_called);
     assert!(!diag.desktop_exception);
@@ -5176,13 +5175,13 @@ fn observation_only_desktop_focus_loss_dispatches_nothing() {
     assert!(S_PRIME_CALLS.with(|m| m.borrow().is_empty()));
 }
 
-/// Grant authority binding: only the five explicit-selection commands
-/// qualify, only on a fresh `accepted` delivery, and only for the reply's
-/// own focus effects. Every other command, delivery, or effect shape mints
-/// nothing, so directional focus, send/migrate follow, view switches, and
-/// replays can never arm the desktop exception.
+/// Desktop-exception authority is the five explicit workspace-selection
+/// commands only, and only for that command's exact explicit focus effect
+/// with a frozen after-shown scope. A selection-backed follow-send carries
+/// `after_shown` too but must never arm the exception.
 #[test]
-fn selection_grant_binds_exact_accepted_select_focus_effects() {
+fn selection_focus_authority_is_explicit_selection_only() {
+    use super::super::world_sequencer::WorldSequencer;
     use tiler_core::directional::WindowId as CoreWindowId;
 
     let out = "out-1".to_owned();
@@ -5206,108 +5205,146 @@ fn selection_grant_binds_exact_accepted_select_focus_effects() {
     ];
     for command in &selects {
         assert!(
-            SelectionArrivalGrant::selects(command),
-            "selection command must qualify: {command:?}"
+            WorldSequencer::selection_focus_authority_for(Some(command), Some(7), &reply),
+            "explicit selection arms its exact explicit focus: {command:?}"
         );
     }
+    let follow_send = WorldCommand::SendNumbered {
+        window: tiler_core::directional::WindowSubject::Window(CoreWindowId("w6".to_owned())),
+        source: tiler_core::world_report::SendSource::Explicit(OutputId(out.clone())),
+        index: 0,
+        follow: true,
+    };
     let non_selects = [
         WorldCommand::Focus {
             window: tiler_core::directional::WindowSubject::Window(CoreWindowId("w6".to_owned())),
-            direction: Some(tiler_core::directional::Direction::Left),
-        },
-        WorldCommand::FocusDirectional {
-            window: tiler_core::world_report::FocusDirectionalSubject::Window(CoreWindowId(
-                "w6".to_owned(),
-            )),
-            direction: tiler_core::directional::Direction::Left,
-        },
-        WorldCommand::Send {
-            window: tiler_core::directional::WindowSubject::Window(CoreWindowId("w6".to_owned())),
-            target_output: OutputId(out.clone()),
-            target_workspace: tiler_core::directional::WorkspaceId(ws.clone()),
-            follow: true,
+            direction: None,
         },
         WorldCommand::SwitchView {
             output: OutputId(out.clone()),
             workspace: tiler_core::directional::WorkspaceId(ws.clone()),
         },
-        WorldCommand::MigrateWorkspace {
-            source_output: OutputId("out-2".to_owned()),
-            target_output: OutputId(out.clone()),
+        WorldCommand::SetWorkspaceTiling {
+            output: OutputId(out.clone()),
             workspace: tiler_core::directional::WorkspaceId(ws.clone()),
+            tiled: false,
         },
+        follow_send,
     ];
     for command in &non_selects {
         assert!(
-            !SelectionArrivalGrant::selects(command),
-            "non-selection command must not qualify: {command:?}"
+            !WorldSequencer::selection_focus_authority_for(Some(command), Some(7), &reply),
+            "non-selection command never arms the desktop exception: {command:?}"
         );
     }
-    // Exact accepted select reply: the grant carries the reply's own
-    // explicit arrival effect (id plus target), and nothing else.
-    let select = &selects[0];
-    let grant = SelectionArrivalGrant::for_accepted(Some(select), Some(7), &reply, "accepted")
-        .expect("accepted select must mint");
-    assert!(grant.allows("fx-7", "w6"));
-    assert!(!grant.allows("fx-7", "w9"), "tampered target never binds");
-    assert!(!grant.allows("fx-8", "w6"), "other ids never bind");
-    // A wrong sequence mints nothing even for a selection command: the
-    // effect is not this command's explicit outcome.
-    assert!(
-        SelectionArrivalGrant::for_accepted(Some(select), Some(8), &reply, "accepted").is_none()
-    );
-    assert!(SelectionArrivalGrant::for_accepted(Some(select), None, &reply, "accepted").is_none());
-    // Replays never re-arm.
-    assert!(
-        SelectionArrivalGrant::for_accepted(Some(select), Some(7), &reply, "duplicate").is_none()
-    );
-    assert!(
-        SelectionArrivalGrant::for_accepted(Some(select), Some(7), &reply, "command-consumed")
-            .is_none()
-    );
-    // Non-selection commands never mint, even accepted with a sequence.
-    for command in &non_selects {
-        assert!(
-            SelectionArrivalGrant::for_accepted(Some(command), Some(7), &reply, "accepted")
-                .is_none(),
-            "non-selection command must not mint: {command:?}"
-        );
-    }
-    // An accepted select with no focus effects (empty-workspace arrival)
-    // mints nothing: there is no arrival to except.
+    // The reply must be this command's own explicit outcome: no command,
+    // no sequence, wrong cause, or no frozen scope never arms.
+    assert!(!WorldSequencer::selection_focus_authority_for(
+        None,
+        Some(7),
+        &reply
+    ));
+    assert!(!WorldSequencer::selection_focus_authority_for(
+        Some(&selects[0]),
+        None,
+        &reply
+    ));
+    assert!(!WorldSequencer::selection_focus_authority_for(
+        Some(&selects[0]),
+        Some(8),
+        &reply
+    ));
+    let mut automatic = reply.clone();
+    automatic.focus_request.as_mut().expect("focus").cause =
+        tiler_core::world_report::FocusRequestCause::AutomaticAdmission;
+    assert!(!WorldSequencer::selection_focus_authority_for(
+        Some(&selects[0]),
+        Some(7),
+        &automatic
+    ));
+    let mut unscoped = reply.clone();
+    unscoped.focus_request.as_mut().expect("focus").after_shown = None;
+    assert!(!WorldSequencer::selection_focus_authority_for(
+        Some(&selects[0]),
+        Some(7),
+        &unscoped
+    ));
+    // A selection reply with no retained request has nothing to bind.
     let bare = reply_shell(7, 1, &[(out.as_str(), ws.as_str())]);
+    assert!(!WorldSequencer::selection_focus_authority_for(
+        Some(&selects[0]),
+        Some(7),
+        &bare
+    ));
+    // Focus-follows-cursor is never the command's explicit outcome.
+    let mut cursor_follow = reply.clone();
+    cursor_follow.focus_request.as_mut().expect("focus").cause =
+        tiler_core::world_report::FocusRequestCause::FocusFollowsCursor;
+    assert!(!WorldSequencer::selection_focus_authority_for(
+        Some(&selects[0]),
+        Some(7),
+        &cursor_follow
+    ));
+    // The frozen scope must actually contain the request's exact target at
+    // its exact output and workspace. A tampered target, output, or
+    // workspace, or an empty member scope, never rides the exception even
+    // with a valid accepted selection triple.
+    let mut tampered_target = reply.clone();
+    tampered_target
+        .focus_request
+        .as_mut()
+        .expect("focus")
+        .target = WindowId("w9".to_owned());
     assert!(
-        SelectionArrivalGrant::for_accepted(Some(select), Some(7), &bare, "accepted").is_none()
+        !WorldSequencer::selection_focus_authority_for(
+            Some(&selects[0]),
+            Some(7),
+            &tampered_target
+        ),
+        "a focus target absent from the frozen members never arms"
     );
-    // Automatic admission and cursor-follow requests sharing a select reply
-    // never mint: only the command's explicit outcome binds.
-    for (id, cause) in [
-        (
-            "af-w6",
-            tiler_core::world_report::FocusRequestCause::AutomaticAdmission,
+    let mut tampered_output = reply.clone();
+    tampered_output
+        .focus_request
+        .as_mut()
+        .expect("focus")
+        .output = OutputId("out-2".to_owned());
+    assert!(
+        !WorldSequencer::selection_focus_authority_for(
+            Some(&selects[0]),
+            Some(7),
+            &tampered_output
         ),
-        (
-            "ffc-w6",
-            tiler_core::world_report::FocusRequestCause::FocusFollowsCursor,
+        "a mismatched frozen output never arms"
+    );
+    let mut tampered_workspace = reply.clone();
+    tampered_workspace
+        .focus_request
+        .as_mut()
+        .expect("focus")
+        .workspace = "ws-2".to_owned();
+    assert!(
+        !WorldSequencer::selection_focus_authority_for(
+            Some(&selects[0]),
+            Some(7),
+            &tampered_workspace
         ),
-    ] {
-        let mut mixed = reply.clone();
-        mixed.focus_request = Some(tiler_core::world_report::FocusRequest {
-            id: id.to_owned(),
-            target: WindowId("w6".to_owned()),
-            issued_revision: 1,
-            cause,
-            output: OutputId(out.clone()),
-            workspace: ws.clone(),
-            cmd_seq: None,
-            after_shown: None,
-        });
-        assert!(
-            SelectionArrivalGrant::for_accepted(Some(select), Some(7), &mixed, "accepted")
-                .is_none(),
-            "non-explicit focus never binds: {id}"
-        );
-    }
+        "a mismatched frozen workspace never arms"
+    );
+    let mut memberless = reply.clone();
+    memberless
+        .focus_request
+        .as_mut()
+        .expect("focus")
+        .after_shown
+        .as_mut()
+        .expect("scope")
+        .members
+        .clear();
+    assert!(
+        !WorldSequencer::selection_focus_authority_for(Some(&selects[0]), Some(7), &memberless),
+        "an empty frozen member scope never arms"
+    );
 }
 
 #[path = "world_native_composition_tests.rs"]

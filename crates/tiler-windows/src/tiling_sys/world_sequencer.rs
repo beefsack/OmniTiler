@@ -74,9 +74,9 @@ use tiler_core::connection::{RawSettingValue, SettingsReply, SettingsStatus};
 use tiler_core::ids::{GenerationId, OwnerId};
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
-    BatchDisposition, BatchSettlement, CommandDisposition, CommandResult, FrameAttempt,
-    MemberAttempt, PresentationRowV4, ViewAttempt, VisibilityAttempt, WORLD_CONTRACT_VERSION_V4,
-    WorldCommand, WorldReplyV4, WorldReportV4,
+    BatchDisposition, BatchSettlement, CommandDisposition, CommandResult, FocusFeedback,
+    FrameAttempt, MemberAttempt, PresentationRowV4, ViewAttempt, VisibilityAttempt,
+    WORLD_CONTRACT_VERSION_V4, WorldCommand, WorldReplyV4, WorldReportV4,
 };
 
 /// One outstanding sequenced report: the exact facts the core incorporation
@@ -97,6 +97,7 @@ struct SequencerFlight {
     delivered_members: Vec<MemberAttempt>,
     delivered_views: Vec<ViewAttempt>,
     delivered_visibility: Vec<VisibilityAttempt>,
+    delivered_focus: Vec<FocusFeedback>,
 }
 
 /// Exact incorporation receipt for the native owner to prune against. Close
@@ -189,6 +190,9 @@ pub(super) struct WorldSequencer {
     /// Latest-wins visibility readbacks per window lifetime, drained into
     /// the next report (same ack semantics as frames).
     pending_visibility: BTreeMap<String, VisibilityAttempt>,
+    /// Latest-wins focus feedback per request id, drained into the next
+    /// report (same ack semantics as frames).
+    pending_focus: BTreeMap<String, FocusFeedback>,
     last_desired: Option<WorldReplyV4>,
     /// Last delivery's per-command settlement rows, index-aligned with the
     /// commands the core executed (inline command first, then any queued
@@ -196,6 +200,10 @@ pub(super) struct WorldSequencer {
     /// `command_result` in v4.
     last_settlements: Vec<BatchSettlement>,
     last_command_seq: Option<u64>,
+    /// The exact command of the latest accepted delivery. Only the five
+    /// explicit selection variants may authorize the desktop exception;
+    /// cleared on every non-accepted or observation delivery.
+    last_command: Option<WorldCommand>,
     last_accepted_obs: u64,
     last_accepted_rev: u64,
     last_accepted_req: String,
@@ -291,9 +299,11 @@ impl WorldSequencer {
             pending_members: BTreeMap::new(),
             pending_views: BTreeMap::new(),
             pending_visibility: BTreeMap::new(),
+            pending_focus: BTreeMap::new(),
             last_desired: None,
             last_settlements: Vec::new(),
             last_command_seq: None,
+            last_command: None,
             last_accepted_obs: 0,
             last_accepted_rev: 0,
             last_accepted_req: String::new(),
@@ -481,6 +491,12 @@ impl WorldSequencer {
             .insert(attempt.window.0.clone(), attempt);
     }
 
+    /// Stage one focus feedback row for the next report, replacing any
+    /// entry for the same request id (same ack semantics as frames).
+    pub(super) fn note_focus_feedback(&mut self, feedback: FocusFeedback) {
+        self.pending_focus.insert(feedback.id.clone(), feedback);
+    }
+
     /// Closes the current capture still obliges: every carried close plus
     /// every unhomed (absent-workspace, uncarried) close. The native map is
     /// the sole authority, so obligations read straight from the capture with
@@ -510,6 +526,7 @@ impl WorldSequencer {
             || !self.pending_members.is_empty()
             || !self.pending_views.is_empty()
             || !self.pending_visibility.is_empty()
+            || !self.pending_focus.is_empty()
             || !self.outstanding_closes(captured).is_empty()
     }
 
@@ -552,6 +569,7 @@ impl WorldSequencer {
         view_attempts.sort_by(|a, b| a.operation_id.cmp(&b.operation_id));
         let visibility_attempts: Vec<VisibilityAttempt> =
             self.pending_visibility.values().cloned().collect();
+        let focus_feedback: Vec<FocusFeedback> = self.pending_focus.values().cloned().collect();
         WorldReportV4 {
             contract_version: WORLD_CONTRACT_VERSION_V4,
             adapter_incarnation: self.adapter_incarnation.clone(),
@@ -588,7 +606,7 @@ impl WorldSequencer {
             held_attempts: Vec::new(),
             state_attempts: Vec::new(),
             visibility_attempts,
-            focus_feedback: Vec::new(),
+            focus_feedback,
             presentation: PresentationRowV4::Valid(captured.presentation.clone()),
             intent_records: Vec::new(),
             renderer_input: None,
@@ -666,6 +684,7 @@ impl WorldSequencer {
             delivered_members: report.member_attempts.clone(),
             delivered_views: report.view_attempts.clone(),
             delivered_visibility: report.visibility_attempts.clone(),
+            delivered_focus: report.focus_feedback.clone(),
         });
         self.next_request_seq += 1;
         if command_seq.is_some() {
@@ -684,6 +703,10 @@ impl WorldSequencer {
         let transition =
             tiler_protocol::world_admission::handle_report_checked(&mut self.engine, report, &[]);
         self.last_command_seq = report.command_seq;
+        self.last_command = match &transition.outcome {
+            WorldOutcome::Accepted(_) => report.command.clone(),
+            _ => None,
+        };
         self.last_settlements = Self::settlements(&transition.dispositions);
         transition.outcome
     }
@@ -699,6 +722,73 @@ impl WorldSequencer {
             .iter()
             .find(|row| row.seq == seq)
             .and_then(|row| row.result.as_ref())
+    }
+
+    /// The narrow desktop-exception authority: the latest delivery was an
+    /// accepted explicit workspace-selection command, and the reply's
+    /// retained focus request is that command's exact explicit outcome
+    /// (matching sequence and a frozen after-shown scope). Follow-send and
+    /// every other command never qualify, even when core attaches
+    /// `after_shown` to a selection-backed follow focus.
+    #[must_use]
+    pub(super) fn selection_focus_authority(&self, reply: &WorldReplyV4) -> bool {
+        Self::selection_focus_authority_for(
+            self.last_command.as_ref(),
+            self.last_command_seq,
+            reply,
+        )
+    }
+
+    /// Pure authority predicate shared by the delivery path and tests.
+    #[must_use]
+    pub(super) fn selection_focus_authority_for(
+        command: Option<&WorldCommand>,
+        accepted_seq: Option<u64>,
+        reply: &WorldReplyV4,
+    ) -> bool {
+        let Some(command) = command else {
+            return false;
+        };
+        if !Self::selects_workspace(command) {
+            return false;
+        }
+        let Some(seq) = accepted_seq else {
+            return false;
+        };
+        reply.focus_request.as_ref().is_some_and(|request| {
+            if request.cause != tiler_core::world_report::FocusRequestCause::ExplicitCommand
+                || request.cmd_seq != Some(seq)
+            {
+                return false;
+            }
+            // The frozen issuing scope is non-empty and must contain the
+            // request's exact target at its exact output and workspace.
+            // Without this bind a tampered target (or a mismatched scope)
+            // would ride the desktop exception on a valid command triple.
+            let Some(after) = request.after_shown.as_ref() else {
+                return false;
+            };
+            !after.members.is_empty()
+                && after.members.iter().any(|member| {
+                    member.win == request.target
+                        && member.out == request.output
+                        && member.ws == request.workspace
+                })
+        })
+    }
+
+    /// The five explicit workspace-selection commands are the only command
+    /// variants authorized to arm the exact-desktop exception.
+    #[must_use]
+    pub(super) fn selects_workspace(command: &WorldCommand) -> bool {
+        matches!(
+            command,
+            WorldCommand::SelectWorkspace { .. }
+                | WorldCommand::SelectNumbered { .. }
+                | WorldCommand::SelectRelative { .. }
+                | WorldCommand::SelectPrevious { .. }
+                | WorldCommand::SelectTrailing { .. }
+        )
     }
 
     /// Offer one core reply: acknowledge exactly the delivered facts the core
@@ -867,9 +957,11 @@ impl WorldSequencer {
         self.pending_members.clear();
         self.pending_views.clear();
         self.pending_visibility.clear();
+        self.pending_focus.clear();
         self.last_desired = None;
         self.last_settlements.clear();
         self.last_command_seq = None;
+        self.last_command = None;
         self.has_accepted = false;
         self.last_accepted_obs = 0;
         self.last_accepted_rev = 0;
@@ -934,6 +1026,15 @@ impl WorldSequencer {
                 .is_some_and(|pending| pending == delivered)
             {
                 self.pending_visibility.remove(&delivered.window.0);
+            }
+        }
+        for delivered in &flight.delivered_focus {
+            if self
+                .pending_focus
+                .get(&delivered.id)
+                .is_some_and(|pending| pending == delivered)
+            {
+                self.pending_focus.remove(&delivered.id);
             }
         }
         AckReceipt {

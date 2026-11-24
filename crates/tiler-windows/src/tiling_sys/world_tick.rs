@@ -2576,18 +2576,6 @@ fn run_world_command_impl(
     );
     native.set_diagnostics_trace(trace);
     world.sync_diff_gate();
-    // Fresh accepted selection arrivals only: the exact-desktop foreground
-    // exception binds this report's accepted explicit arrival effect (the
-    // grant carries the reply's own effect id plus target, minted from the
-    // exact report command and sequence). Any other delivery (duplicate,
-    // command-consumed) or command arms nothing; the observation path never
-    // reaches this line.
-    native.set_selection_arrival(super::world_diff::SelectionArrivalGrant::for_accepted(
-        report.command.as_ref(),
-        report.command_seq,
-        &reply,
-        delivery,
-    ));
     let mut frame_attempts = Vec::new();
     let mut member_attempts = Vec::new();
     let mut view_attempts = Vec::new();
