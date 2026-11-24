@@ -595,6 +595,19 @@ impl WorldTransaction<'_> {
                 });
             }
         }
+        // Workspace return memory follows the live focused member: the
+        // observed domain focus is the only production writer of the
+        // remembered window. Entries for vacated domains stay; return
+        // eligibility rechecks the window's current homing, so a stale key
+        // can never name a window that moved on.
+        for domain in &domains {
+            if !domain.focused.0.is_empty() {
+                self.world
+                    .focus
+                    .last_active_window
+                    .insert(domain.key.clone(), domain.focused.clone());
+            }
+        }
         self.world.staged.domains = domains;
     }
 

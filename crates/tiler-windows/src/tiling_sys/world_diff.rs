@@ -82,13 +82,14 @@ use super::world_capture::{CapturedWorld, OwnerInputs, capture_facts_rideable};
 use super::{ObservedWindow, RetainedRow};
 use crate::native_guards::WindowKey;
 use crate::tiling::WindowFacts;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use tiler_core::directional::OutputId;
 use tiler_core::geometry::Rect;
 use tiler_core::world_report::{
-    FocusRequestCause, FrameAttempt, FramePurpose, FrameSetter, HoldReason, MemberAttempt,
-    MemberDisposition, ScopeAuthority, TransferKind, TransferTargetV4, ViewAttempt, WorkspaceRef,
-    WorldCommand, WorldReplyV4,
+    FocusRequestCause, FrameAttempt, FramePurpose, FrameSetter, HoldReason, LastWritePath,
+    MemberAttempt, MemberDisposition, ScopeAuthority, TransferKind, TransferTargetV4, ViewAttempt,
+    VisibilityAttempt, VisibilityDisposition, VisibilityFact, VisibilityReason, VisibilitySample,
+    WorkspaceRef, WorldCommand, WorldReplyV4,
 };
 
 /// Fresh offline window facts for one managed lifetime: the observation-time
@@ -772,6 +773,14 @@ impl NativeOps for FakeNative {
             return Ok(false);
         }
         self.views.insert(output.to_owned(), logical.to_owned());
+        // Production view switches hide departing members and reveal
+        // entering ones. The offline stand-in mirrors that visibility so
+        // target-matching readbacks can settle the selection binding.
+        for window in self.windows.values_mut() {
+            if window.output == output {
+                window.hidden = window.workspace != logical;
+            }
+        }
         self.note_write();
         Ok(true)
     }
@@ -1223,6 +1232,11 @@ pub(super) struct HostDiff {
     /// total there.
     pub(super) inflight_stash: Vec<InFlightEventDiag>,
     pub(super) inflight_stash_omitted: u64,
+    /// Latest-wins visibility evidence per window lifetime, produced by
+    /// this apply pass and drained into the next report by the owner.
+    /// Only target-matching live readbacks enter: a mismatched read is no
+    /// verdict and must hold, never latch a failure.
+    pending_visibility: BTreeMap<String, VisibilityAttempt>,
 }
 
 impl HostDiff {
@@ -1242,7 +1256,17 @@ impl HostDiff {
             pending_foreground_omitted: 0,
             inflight_stash: Vec::new(),
             inflight_stash_omitted: 0,
+            pending_visibility: BTreeMap::new(),
         }
+    }
+
+    /// Drain the latest target-matching visibility evidence for the next
+    /// report. Entries are one per window lifetime; a newer pass replaces
+    /// an older row for the same window.
+    pub(super) fn take_visibility_attempts(&mut self) -> Vec<VisibilityAttempt> {
+        std::mem::take(&mut self.pending_visibility)
+            .into_values()
+            .collect()
     }
 
     /// Stash drained foreground HWNDs for the next apply entry, in delivery
@@ -2433,6 +2457,86 @@ pub(super) fn apply_world_reply(
     view_out: &mut Vec<ViewAttempt>,
     attempt_ms: u64,
 ) -> ApplyStats {
+    let stats = apply_world_reply_inner(
+        state,
+        reply,
+        fresh,
+        ops,
+        frame_out,
+        member_out,
+        view_out,
+        attempt_ms,
+    );
+    let attempts = collect_visibility_attempts(reply, ops, state.gate.current_obs);
+    for attempt in attempts {
+        state
+            .pending_visibility
+            .insert(attempt.window.0.clone(), attempt);
+    }
+    stats
+}
+
+/// One target-matching visibility readback per desired window: the core's
+/// native-free selection binding settles only from these rows. A read that
+/// does not match the target is no verdict (hold), never a failure; a
+/// minimized or natively hidden window also holds.
+fn collect_visibility_attempts(
+    reply: &WorldReplyV4,
+    ops: &mut dyn NativeOps,
+    obs: u64,
+) -> Vec<VisibilityAttempt> {
+    let mut out = Vec::new();
+    for row in &reply.windows {
+        let Some(target) = row.visibility else {
+            continue;
+        };
+        let Some(live) = ops.read_window(&row.lifetime.0) else {
+            continue;
+        };
+        let minimized = live.iconic || live.facts.as_ref().is_some_and(|facts| facts.minimized);
+        let host_hidden = live.facts.as_ref().is_some_and(|facts| facts.cloaked);
+        if minimized || host_hidden {
+            continue;
+        }
+        let visible = !live.hidden && live.facts.as_ref().map_or(true, |facts| facts.visible);
+        if visible != target.shown {
+            continue;
+        }
+        out.push(VisibilityAttempt {
+            window: row.lifetime.clone(),
+            target: target.shown,
+            revision: target.revision,
+            path: LastWritePath::Staged,
+            disposition: VisibilityDisposition::Called {
+                setter: FrameSetter::Accepted,
+                reason: VisibilityReason::Empty,
+            },
+            pre: None,
+            post: Some(VisibilitySample {
+                obs,
+                lifetime_matched: Some(true),
+                visibility: VisibilityFact {
+                    visible: Some(visible),
+                    suppression_owned: Some(!visible),
+                },
+                minimized: Some(false),
+                host_hidden: Some(false),
+            }),
+        });
+    }
+    out
+}
+
+fn apply_world_reply_inner(
+    state: &mut HostDiff,
+    reply: &WorldReplyV4,
+    fresh: &FreshHost,
+    ops: &mut dyn NativeOps,
+    frame_out: &mut Vec<FrameAttempt>,
+    member_out: &mut Vec<MemberAttempt>,
+    view_out: &mut Vec<ViewAttempt>,
+    attempt_ms: u64,
+) -> ApplyStats {
     let mut stats = ApplyStats::default();
     let entry_obs = state.gate.current_obs;
 
@@ -2573,6 +2677,7 @@ pub(super) fn apply_world_reply(
         pending_foreground_omitted: _,
         inflight_stash: _,
         inflight_stash_omitted: _,
+        pending_visibility: _,
     } = state;
 
     // Entry foreground for the NA remembered-focus guard.

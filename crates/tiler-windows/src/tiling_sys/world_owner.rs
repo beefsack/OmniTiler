@@ -223,7 +223,7 @@ impl WorldOwner {
         view_out: &mut Vec<tiler_core::world_report::ViewAttempt>,
         attempt_ms: u64,
     ) -> super::world_diff::ApplyStats {
-        apply_world_reply(
+        let stats = apply_world_reply(
             &mut self.diff,
             reply,
             fresh,
@@ -232,7 +232,11 @@ impl WorldOwner {
             member_out,
             view_out,
             attempt_ms,
-        )
+        );
+        for attempt in self.diff.take_visibility_attempts() {
+            self.seq.note_visibility_attempt(attempt);
+        }
+        stats
     }
 
     pub(super) fn last_reply(&self) -> Option<&WorldReplyV4> {

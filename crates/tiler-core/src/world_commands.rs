@@ -1012,6 +1012,13 @@ impl WorldTransaction<'_> {
         engine: &WorldTransaction<'_>,
         source: &DomainKey,
     ) -> bool {
+        // Without native sticky support, `None` is the ordinary composed
+        // value (the adapter has no sticky fact to read), so no member can
+        // be unknown-sticky. The unresolved-fact hold applies only where
+        // the host exposes the property and the read is genuinely missing.
+        if !engine.native_sticky_supported() {
+            return false;
+        }
         // Raw unknown sticky (missing fact or `None`) must reject actions
         // requiring proven non-sticky, never silently swap a partial
         // subset. Proven sticky stays out; proven non-sticky moves.
@@ -1064,17 +1071,34 @@ impl WorldTransaction<'_> {
             }
             members.extend(domain.minimized.iter().cloned());
         }
+        let native_sticky = engine.native_sticky_supported();
         members.retain(|window| {
-            !engine
+            let sticky = engine
                 .world
                 .staged
                 .facts
                 .get(window)
-                .is_some_and(|fact| fact.sticky != Some(false))
+                .and_then(|fact| fact.sticky);
+            if native_sticky {
+                sticky == Some(false)
+            } else {
+                // No native sticky fact exists: null is the ordinary
+                // non-sticky value, so only a proven sticky excludes.
+                sticky != Some(true)
+            }
         });
         members.sort();
         members.dedup();
         members
+    }
+
+    /// Whether the bound host exposes a native sticky fact. Without it,
+    /// `sticky: None` is the ordinary composed value rather than an
+    /// unresolved read.
+    fn native_sticky_supported(&self) -> bool {
+        self.connection
+            .capabilities()
+            .is_some_and(|capabilities| capabilities.native_sticky)
     }
 
     /// Whole-workspace migration through the logical rings plus the
@@ -1334,13 +1358,16 @@ impl WorldTransaction<'_> {
                 // attempt reporting. Raw facts stay distinct; the derived
                 // lane decides hidden.
                 let mut members = outcome.members;
+                let native_sticky = self.native_sticky_supported();
                 for (window, homed) in &self.world.staged.homing {
                     // Unknown sticky never silently includes or omits: a
                     // homed hidden-lane lifetime without proven sticky
-                    // state refuses with no partial mutation.
+                    // state refuses with no partial mutation. Without a
+                    // native sticky fact, null is the ordinary value.
                     if homed == &source_key
                         && !members.iter().any(|member| member == window)
                         && self.derived_for(window).hidden
+                        && native_sticky
                         && self.world.staged.facts.get(window).is_some_and(|fact| {
                             fact.sticky != Some(true) && fact.sticky != Some(false)
                         })
@@ -1355,12 +1382,13 @@ impl WorldTransaction<'_> {
                     if homed == &source_key
                         && !members.iter().any(|member| member == window)
                         && self.derived_for(window).hidden
-                        && self
-                            .world
-                            .staged
-                            .facts
-                            .get(window)
-                            .is_some_and(|fact| fact.sticky == Some(false))
+                        && self.world.staged.facts.get(window).is_some_and(|fact| {
+                            if native_sticky {
+                                fact.sticky == Some(false)
+                            } else {
+                                fact.sticky != Some(true)
+                            }
+                        })
                     {
                         members.push(window.clone());
                     }

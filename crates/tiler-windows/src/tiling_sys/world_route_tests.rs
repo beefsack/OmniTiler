@@ -340,6 +340,9 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         "view actuation proves: {vviews:?}"
     );
     vdiff.gate.note_applied(&reply);
+    for attempt in vdiff.take_visibility_attempts() {
+        seq.note_visibility_attempt(attempt);
+    }
     state
         .applied_views
         .insert(out_token.clone(), target.clone());
@@ -372,10 +375,8 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
     let captured = capture_world(&state.inputs(), Some(&observed), &retained, &areas, 0);
     assert!(seq.outstanding_closes(&captured).is_empty());
     assert!(!seq.is_dirty(&captured));
-    // The offline facade actuates desired geometry against fresh proof.
-    // View flights are not facade-actuated here: the geometry reply below
-    // predates the selection command, so the selection flight stays
-    // outstanding through the facade pass (no readback, no replay).
+    // The offline facade applies the pure-observation reply against fresh
+    // proof; the selection above already landed.
     let fresh = FreshHost::from_sources(&state.inputs(), &observed, &retained, &captured);
     let mut native = FakeNative::seeded(&fresh);
     let mut diff = HostDiff::new("adapter-1", "gen-1");
@@ -390,8 +391,10 @@ fn native_free_route_captures_sequences_actuates_and_echoes_views() {
         &mut Vec::new(),
         0,
     );
-    assert_eq!(stats.held, 0, "stats: {stats:?}");
-    assert!(stats.geometry_writes > 0, "stats: {stats:?}");
+    // The pure-observation reply carries no placement, so the facade
+    // holds its lone row without writing.
+    assert_eq!(stats.held, 1, "stats: {stats:?}");
+    assert_eq!(stats.geometry_writes, 0, "stats: {stats:?}");
     diff.gate.note_applied(&geometry_reply);
     // A racing native invalidation stops the pass before any setter.
     native.pending_invalidation = true;
@@ -1208,7 +1211,7 @@ fn busy_command_reports_unverified_not_cached_reply() {
 
 #[test]
 fn rejected_command_catchup_never_strands_the_next_command() {
-    use tiler_core::directional::WindowId;
+    use tiler_core::directional::{WindowId, WindowSubject};
     use tiler_core::world_report::{WorldCommand, WorldReplyV4};
     // Production-shaped catchup-starvation probe through the real
     // owner/command/scheduling path: three tiled windows bootstrap, valid
@@ -1258,7 +1261,7 @@ fn rejected_command_catchup_never_strands_the_next_command() {
             .as_ref()
             .expect("one fresh focus request");
         assert!(
-            hit.id.starts_with("fx-"),
+            hit.id.starts_with("focus-"),
             "fresh command focus id, got {:?}",
             hit.id
         );
@@ -1347,11 +1350,28 @@ fn rejected_command_catchup_never_strands_the_next_command() {
         &command(&mut state, "w1", "up").expect("up dispatches").reply,
         "w3",
     );
-    // No neighbor: w1 focuses right off the edge. The core rejects
-    // unchanged, which arms observation-only catch-up.
+    // A relative selection past the ring rejects unchanged, arming
+    // observation-only catch-up.
+    state.tick += 1;
     assert!(
-        command(&mut state, "w1", "right").is_none(),
-        "edge right must core-reject"
+        super::world_tick::run_world_command(
+            &mut state,
+            &me,
+            &store,
+            &dir,
+            &observed,
+            &[],
+            &areas,
+            101,
+            &fulls,
+            WorldCommand::SelectRelative {
+                output: None,
+                delta: 99,
+            },
+            None,
+        )
+        .is_none(),
+        "out-of-range selection must core-reject"
     );
     // Same origin, no unrelated WinEvent between: the owed catch-up must
     // have run, so both dispatch again with their own fresh effects.

@@ -231,16 +231,12 @@ fn migrate_workspace_cli_intent_routes_through_production_dispatch() {
     );
     assert_eq!(outcome, "migrate-unverified");
     let lines = log_lines(&dir);
-    assert_eq!(lines.len(), 2, "core refusal plus outcome: {lines:?}");
-    assert_eq!(lines[0]["event"], serde_json::json!("world-apply"));
-    assert_eq!(
-        lines[0]["command"],
-        serde_json::json!("migrate-directional")
-    );
-    assert_eq!(lines[0]["delivery"], serde_json::json!("rejected"));
-    assert_eq!(lines[1]["event"], serde_json::json!("workspace-migrate"));
-    assert_eq!(lines[1]["direction"], serde_json::json!("right"));
-    assert_eq!(lines[1]["outcome"], serde_json::json!("migrate-unverified"));
+    // The core consumes the command with no migration result and no
+    // rejection row; the CLI outcome is the only record.
+    assert_eq!(lines.len(), 1, "outcome only: {lines:?}");
+    assert_eq!(lines[0]["event"], serde_json::json!("workspace-migrate"));
+    assert_eq!(lines[0]["direction"], serde_json::json!("right"));
+    assert_eq!(lines[0]["outcome"], serde_json::json!("migrate-unverified"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -635,16 +631,13 @@ fn migrate_workspace_refusal_logs_bounded_core_reason() {
         Some((10, 10)),
         7,
     );
-    assert_eq!(outcome, "migrate-unverified", "no neighbor must refuse");
+    assert_eq!(outcome, "migrate-unverified", "no neighbor must not migrate");
     let lines = log_lines(&dir);
-    assert!(
-        lines
-            .iter()
-            .any(|line| line["event"] == serde_json::json!("world-apply")
-                && line["command"] == serde_json::json!("migrate-directional")
-                && line["delivery"] == serde_json::json!("rejected")),
-        "bounded refusal row logged"
-    );
+    // A consumed no-effect command has no rejection row; the CLI outcome
+    // is the only record.
+    assert_eq!(lines.len(), 1, "outcome only: {lines:?}");
+    assert_eq!(lines[0]["event"], serde_json::json!("workspace-migrate"));
+    assert_eq!(lines[0]["outcome"], serde_json::json!("migrate-unverified"));
     clear_pending_seams();
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -933,7 +926,7 @@ fn migrate_workspace_dispatch_prefers_pointer_over_stale_cache() {
     // known-output registry rides the sorted native device map.
     let mut fx = seeded("dispatch-pointer");
     fx.state.active_output = "DEV1".to_owned();
-    let reply = run_world_command(
+    let outcome = run_world_command(
         &mut fx.state,
         &fx.me,
         &fx.store,
@@ -944,12 +937,12 @@ fn migrate_workspace_dispatch_prefers_pointer_over_stale_cache() {
         0,
         &fx.fulls,
         WorldCommand::MigrateDirectional {
-            direction: tiler_core::directional::Direction::Right,
+            direction: tiler_core::directional::Direction::Left,
         },
         Some((810, 10)),
     )
-    .expect("pointer resolves a live source")
-    .reply;
+    .expect("pointer resolves a live source");
+    let reply = outcome.reply;
     assert_eq!(migrated(&reply), (fx.wire1.clone(), fx.view_b.clone()));
     let _ = std::fs::remove_dir_all(&fx.dir);
     // A stale-but-registered cache pins for downstream refusal instead
@@ -972,7 +965,14 @@ fn migrate_workspace_dispatch_prefers_pointer_over_stale_cache() {
         },
         None,
     );
-    assert!(refused.is_none(), "stale cache refuses without retarget");
+    assert!(
+        refused.is_none_or(|outcome| !outcome
+            .reply
+            .transfers
+            .iter()
+            .any(|t| matches!(t.kind, TransferKind::Migration))),
+        "stale cache must not migrate or retarget"
+    );
     let _ = std::fs::remove_dir_all(&fx.dir);
     // No facts at all falls back to registry order: the first registered
     // output DEV1 migrates right.
