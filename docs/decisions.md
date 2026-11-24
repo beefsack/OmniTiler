@@ -63,6 +63,14 @@ Each current decision lives exactly once in its topic file under `docs/decisions
 
 - macOS event-first AX recovery with deduplicated 1 s reread remains provisional/tunable, not renderer/paint proof; configuration and scoped defaults are active ([macOS](decisions/macos.md#fixture-and-scoped-input-defaults)).
 - macOS preview presets and remaining native shortcut ownership remain tentative; explicit Apply only is active ([shortcuts](decisions/reference-and-shortcuts.md#macos-preview-presets-and-native-shortcut-ownership)).
+- 2026-11-24 tentative macOS follow-up decisions (pending later user confirmation; not yet active policy — see [follow-up review](changes/macos-v4-open-decisions-review.md#part-5-follow-up-code-review-and-tentative-decisions-2026-11-24)):
+  - **TD1 (D5 close-gap):** authorize the bounded second diagnostic recording notification identity, fresh `AXWindows` presence, and CG state across close, window hide, app hide, minimize, and Space switch; fall back to the CG-alive guard if window-hide is also AX-absent with no safe close-only discriminator.
+  - **TD2 (KDE reconnect same-numbered merge):** keep displaced same-numbered workspace units separate (never merge), matching Tier 1 evidence and the offline KDE leg-2 fix; final slice-7 acceptance still waits on physical KDE RC.
+  - **TD3 (M4 maximize sequencing):** implement and offline-test macOS composed maximize now (`maximize=false`, native `maximized:null`) while keeping final slice-5 native acceptance gated on KDE ST/RC.
+  - **TD4 (Host-settled geometry):** do not block R3/D4/D5/M4; defer core design/implementation post-0.1 unless dogfooding reproduces visible resize shortfalls or oscillation (approval still required before any core change).
+  - **TD5 (MX8 distribution):** reject Mac App Store (sandbox incompatible with AX/event-tap/Tier 2); use Developer ID signing + Apple notarization for DMG and Homebrew Cask; 0.1 update channel is Homebrew Cask + GitHub Releases DMG only (no in-app updater in 0.1).
+  - **TD6 (macOS 15 floor):** fix the R2 dual-surface bugs offline and retain the macOS 15 support floor with the recorded unverified risk (optional Apple Silicon macOS 15 VM validation at RC).
+  - **TD7 (D4 store slot):** confirm `~/Library/Application Support/OmniTiler/intent-v1-<uid>-<asid>.json` (`0700` dir, `0600` file, `O_NOFOLLOW`, atomic replace).
 
 ## Topics
 

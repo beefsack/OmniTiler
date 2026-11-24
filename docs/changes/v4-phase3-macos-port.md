@@ -37,6 +37,9 @@
   Direct notification pruning is therefore unsafe; the CG-alive oracle stays
   authoritative and transport remains unimplemented.
   Decisions are canonical in [macOS v4 open decisions](../decisions/macos.md#macos-v4-open-decisions-2026-11-24).
+  Follow-up code review findings (**F1–F7**) and tentative decisions (**TD1–TD7**,
+  pending later user confirmation) are recorded in
+  [Part 5 of the review](macos-v4-open-decisions-review.md#part-5-follow-up-code-review-and-tentative-decisions-2026-11-24).
 - Port/build/live work runs on a macOS host through the [development environment](../macos-dev-environment.md)
   and [live-testing guide](../live-macos-testing.md). Use the signed
   [fixture bundle and exact scope](../live-macos-testing.md#fixture-first-live-tests),
@@ -370,7 +373,7 @@ native acceptance.
 | Unified retained focus | Implemented and natively proven for automatic admission, explicit command, close reflow and the cursor-hit (focus-follows-cursor) cause. |
 | Pending-focus command subjects | Fixed (`a6451e41`): the four window-shape commands send core's current-focus subject, the observed-foreground substitution and its pre-dispatch refusals are gone, and the homing/domain gates run at apply time on the window core resolved. |
 | Retained settlement outcomes | Switch half consumed (`d67b1733`): the retained projection delivers the verdict once per settlement identity, survives a skipped reply, is inert on replay and is authoritative over an earlier reply. The operation half still has no consumer because macOS has no clear lane. |
-| Retained `intentDesired` | Partial and fail-closed: a nonempty desire latches the session; no persistence, so this waits on the M3 host-storage decision. |
+| Retained `intentDesired` | Adapter-owned atomic host store (`intent_store.rs`) and desired-vs-durable reconciler landed offline (permanent session latch removed); follow-up review findings **F1/F2/F5** and native restart/failure proof remain ([review](macos-v4-open-decisions-review.md#part-5-follow-up-code-review-and-tentative-decisions-2026-11-24)). |
 | Switch and fallback removals | No adapter-local policy remains. The no-neighbour directional stay is natively proven on a controller-owned Space 2026-11-24: one tiled fixture window stayed across the work area, `move-left` produced `planner-noop` + `move-accepted` with no frame/focus setter or retry, native AX/CG frame and owned-SID membership were stable pre/post, and teardown was clean. The earlier on-current-Space observation (925/925 identical samples) remains behaviour evidence only. Fixed-float send remains unproven: AppKit exposes no AX size-bound attributes on fixture windows (measured), the shared hints-only predicate requires all four bounds, and a post-admission `set` is repair rather than admission; a product/core admission decision is required ([detail](#fixed-size-admission-exposure-2026-11-24)). [Evidence](#optional-live-legs-2026-11-24). |
 | No-space removal | Inherited from core; the adapter writes core rects and produces no no-space rows. Native proof remains blocked: no fixture-scoped way to constrain `NSScreen.visibleFrame`, and 32 default-hint windows cannot geometrically exhaust a 2240×1123 work area. Oversized minimum hints are declared-minimum infeasibility, not the no-space discriminator. [Evidence](#optional-live-legs-2026-11-24). |
 | Perpendicular focus recency | Both arms natively proven: explicit-command history and accepted-hover recency (hover leg). |
@@ -379,8 +382,16 @@ native acceptance.
 | Settings-key parity | Implemented by construction (raw pass-through, no adapter caps). |
 | 16-output `actionOutputs` cap | Inert: the field is always empty because no action context is produced. |
 
-Ranked remaining adapter work: the batch-3 utility mapping with its native
-palette check. The M3 storage decision stays with its owner.
+Ranked remaining adapter work: resolve follow-up review findings **F1–F5**, run the
+D4 native restart/store proof, replace the four-leg JSON codec with R3 typed
+ingress, run the second bounded D5 diagnostic (tentative TD1), and implement/offline-test
+macOS M4 (tentative TD3) while final acceptance stays gated on KDE ST/RC.
+Batch-3 `AXSystemFloatingWindow` is withheld pending a truthful sample (see
+[the measurement gap](macos-batch3-utility-mapping.md#withheld-axsystemfloatingwindow)).
+Post-only owned-Space placement is now live-proven, so the optional live legs
+are blocked only on fixture capability: fixed-float admission and work-area
+controls, not adapter policy. The prior receipt is archived; no canonical
+receipt remains.
 
 ### Cursor/hover producer: implemented and natively proven (2026-11-24)
 
