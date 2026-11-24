@@ -4,12 +4,12 @@
 
 Resolve the five follow-up findings from
 `macos-v4-open-decisions-review.md#part-5-follow-up-code-review-and-tentative-decisions-2026-11-24`
-in the existing uncommitted D4/R1/R2 worktree, with focused offline regressions,
-before the D4 native restart proof or committing the worktree.
+in the existing D4/R1/R2 worktree, with focused offline regressions, before the
+D4 native restart proof.
 
 Acceptance: F1–F5 semantics below covered by targeted tests; `tiler-core` tests,
 `tiler-macos` lib/integration tests, `cargo fmt --all -- --check`, and strict
-clippy all clean. No live KWin/macOS/Windows testing in this unit. No commit/push.
+clippy all clean. No live KWin/macOS/Windows testing in this unit.
 
 ## Scope
 
@@ -59,7 +59,7 @@ Units 2 and 3 are disjoint from unit 1 and from each other.
 
 ## Outcome (2026-11-24)
 
-F1–F5 implemented in the existing D4/R1/R2 worktree; no commit or push.
+F1–F5 implemented in the existing D4/R1/R2 worktree.
 
 - **F1:** `WorldSession` keeps a per-window `intent_admitted` set; every dispatch
   site marks exactly the applied report's `intent_records`. Regressions cover a
