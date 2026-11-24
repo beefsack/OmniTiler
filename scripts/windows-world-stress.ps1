@@ -69,11 +69,20 @@ $Repo = Split-Path -Parent $PSScriptRoot
 
 $WS_STEPS = [System.Collections.ArrayList]@()
 $script:WsReq = 0
+# Per-output geometry memory for one run: the first observed world-apply row
+# seeds each screen's dispatch scale and presence-only identity; later
+# checkpoints must equal it. Ordinal keys keep distinct output ids distinct.
+$script:WsGeoSeen = [System.Collections.Generic.Dictionary[string, object]]::new([System.StringComparer]::Ordinal)
 function Rec-Ws([string]$Name, $Data) { $null = $WS_STEPS.Add(@{ name = $Name; data = $Data }) }
 function Fail-Ws([string]$Msg) { throw $Msg }
 function New-StressReqId([string]$Prefix) {
   $script:WsReq++
   return "$Prefix-$script:WsReq"
+}
+function Reset-StressApplyGeometrySeen {
+  # A fresh run starts with no geometry baseline, so scale/identity evidence
+  # never leaks across runs (including offline harness sessions).
+  $script:WsGeoSeen = [System.Collections.Generic.Dictionary[string, object]]::new([System.StringComparer]::Ordinal)
 }
 
 function Get-StressCase([string]$Path) {
@@ -384,11 +393,167 @@ function Test-StressOmissionZero($Event, [string]$Tag, [string]$Field) {
   if ([int64]$v -ne 0) { Fail-Ws "$Tag omitted $($Field)=$v" }
 }
 
+function Test-StressJsonInteger($Value) {
+  # JSON integer only: booleans, floating point, and numeric strings refuse.
+  # Live JSON integers arrive as Int32/Int64; unsigned/smaller widths are
+  # accepted for offline rows. Never cast first: $null/$false/"0" would pass.
+  if ($null -eq $Value) { return $false }
+  if ($Value -is [bool]) { return $false }
+  return ($Value -is [int] -or $Value -is [long] -or $Value -is [short] -or
+    $Value -is [sbyte] -or $Value -is [byte] -or $Value -is [uint16] -or
+    $Value -is [uint32] -or $Value -is [uint64] -or
+    $Value -is [System.Numerics.BigInteger])
+}
+
+function Test-StressNonEmptyString($Value) {
+  return ($Value -is [string] -and ([string]$Value).Length -gt 0)
+}
+
+function Test-StressJsonObject($Value) {
+  # Evidence objects are either live PSCustomObject (JSON roundtrip) or
+  # plain hashtables (fault injection). Arrays, strings, and numbers refuse.
+  if ($null -eq $Value) { return $false }
+  if ($Value -is [System.Collections.IDictionary]) { return $true }
+  return ($Value -is [System.Management.Automation.PSCustomObject])
+}
+
+function Assert-StressApplyWarpFields($Event, [string]$Tag) {
+  # Fixed Task 5 Slice A world-apply witness contract. Every key must be
+  # present even when its value is null; the object shape comes from the
+  # accepted reply's retained warp request. `warp_capability` is the
+  # effective Windows declaration and this build must declare exactly true;
+  # the observed value is always reported on refusal.
+  foreach ($f in @("pointer_activity", "warp_spent", "warp_request", "warp_capability")) {
+    if (-not (Test-StressHasField $Event $f)) { Fail-Ws "$Tag $f missing" }
+  }
+  $pa = Get-StressField $Event "pointer_activity"
+  if ($null -ne $pa -and -not (Test-StressJsonInteger $pa)) {
+    Fail-Ws "$Tag pointer_activity not null or integer"
+  }
+  $spent = Get-StressField $Event "warp_spent"
+  if ($null -ne $spent -and -not (Test-StressNonEmptyString $spent)) {
+    Fail-Ws "$Tag warp_spent not null or nonempty string"
+  }
+  $req = Get-StressField $Event "warp_request"
+  if ($null -ne $req) {
+    if (-not (Test-StressJsonObject $req)) { Fail-Ws "$Tag warp_request not null or object" }
+    foreach ($sf in @("id", "target", "out", "ws")) {
+      if (-not (Test-StressHasField $req $sf)) { Fail-Ws "$Tag warp_request.$sf missing" }
+      if (-not (Test-StressNonEmptyString (Get-StressRowField $req $sf))) {
+        Fail-Ws "$Tag warp_request.$sf not a nonempty string"
+      }
+    }
+    if (-not (Test-StressHasField $req "rev")) { Fail-Ws "$Tag warp_request.rev missing" }
+    if (-not (Test-StressJsonInteger (Get-StressRowField $req "rev"))) {
+      Fail-Ws "$Tag warp_request.rev not an integer"
+    }
+    if (-not (Test-StressHasField $req "point")) { Fail-Ws "$Tag warp_request.point missing" }
+    $pt = Get-StressRowField $req "point"
+    if ($pt -isnot [System.Array]) { Fail-Ws "$Tag warp_request.point not an array" }
+    if (@($pt).Count -ne 2) { Fail-Ws "$Tag warp_request.point count $(@($pt).Count) != 2" }
+    foreach ($c in @($pt)) {
+      if (-not (Test-StressJsonInteger $c)) { Fail-Ws "$Tag warp_request.point component not an integer" }
+    }
+    if (-not (Test-StressHasField $req "pointer_baseline")) {
+      Fail-Ws "$Tag warp_request.pointer_baseline missing"
+    }
+    $pb = Get-StressRowField $req "pointer_baseline"
+    if ($null -ne $pb -and -not (Test-StressJsonInteger $pb)) {
+      Fail-Ws "$Tag warp_request.pointer_baseline not null or integer"
+    }
+  }
+  $cap = Get-StressField $Event "warp_capability"
+  if ($cap -isnot [bool]) {
+    $shown = if ($null -eq $cap) { "null" } else { "$cap" }
+    Fail-Ws "$Tag warp_capability not boolean: observed $shown"
+  }
+  if ($cap -ne $true) {
+    Fail-Ws "$Tag warp_capability observed $cap; adapter must declare true"
+  }
+}
+
+function Assert-StressApplyGeometry($Event, [string]$Tag) {
+  # Per-screen dispatch evidence: `scale` is the target f64 scale (>0) and
+  # `identity` carries presence only, exactly four booleans
+  # (manufacturer/model/serial/connector) and never any identity text or
+  # extra member. Per-output scale and identity presence seed on the first
+  # observation and must remain equal across later checkpoints in the run.
+  $rows = @(Get-StressField $Event "desired_geometry")
+  $order = @("manufacturer", "model", "serial", "connector")
+  $wantNames = @($order | Sort-Object)
+  $i = 0
+  foreach ($row in $rows) {
+    $i++
+    if (-not (Test-StressJsonObject $row)) { Fail-Ws "$Tag geometry row $i not an object" }
+    if (-not (Test-StressHasField $row "output")) { Fail-Ws "$Tag geometry row $i output missing" }
+    $out = Get-StressRowField $row "output"
+    if (-not (Test-StressNonEmptyString $out)) {
+      Fail-Ws "$Tag geometry row $i output not a nonempty string"
+    }
+    if (-not (Test-StressHasField $row "scale")) { Fail-Ws "$Tag geometry row $i scale missing" }
+    $sv = Get-StressRowField $row "scale"
+    if ($null -eq $sv) { Fail-Ws "$Tag geometry row $i scale null" }
+    $isNum = (Test-StressJsonInteger $sv) -or ($sv -is [double]) -or
+      ($sv -is [single]) -or ($sv -is [decimal])
+    if (-not $isNum) { Fail-Ws "$Tag geometry row $i scale not numeric" }
+    $sd = [double]$sv
+    if ([double]::IsNaN($sd) -or [double]::IsInfinity($sd)) {
+      Fail-Ws "$Tag geometry row $i scale not finite"
+    }
+    if ($sd -le 0.0) { Fail-Ws "$Tag geometry row $i scale not positive: $sv" }
+    if (-not (Test-StressHasField $row "identity")) { Fail-Ws "$Tag geometry row $i identity missing" }
+    $id = Get-StressRowField $row "identity"
+    if ($null -eq $id) { Fail-Ws "$Tag geometry row $i identity null" }
+    if (-not (Test-StressJsonObject $id)) { Fail-Ws "$Tag geometry row $i identity not an object" }
+    $gotNames = @()
+    if ($id -is [System.Collections.IDictionary]) {
+      $gotNames = @($id.Keys | ForEach-Object { "$_" })
+    } else {
+      $gotNames = @($id.PSObject.Properties | ForEach-Object { "$($_.Name)" })
+    }
+    if ($gotNames.Count -ne 4) {
+      Fail-Ws "$Tag geometry row $i identity member count $($gotNames.Count) != 4"
+    }
+    $sorted = @($gotNames | Sort-Object)
+    if (($sorted -join ",") -ne ($wantNames -join ",")) {
+      Fail-Ws "$Tag geometry row $i identity members [$($sorted -join ',')] != [$($wantNames -join ',')]"
+    }
+    $idVals = @()
+    foreach ($name in $order) {
+      $iv = Get-StressRowField $id $name
+      if ($iv -isnot [bool]) {
+        Fail-Ws "$Tag geometry row $i identity.$name not boolean (text or non-boolean)"
+      }
+      $idVals += [bool]$iv
+    }
+    $key = "$out"
+    if (-not $script:WsGeoSeen.ContainsKey($key)) {
+      $script:WsGeoSeen[$key] = @{ scale = $sd; identity = @($idVals) }
+    } else {
+      $prev = $script:WsGeoSeen[$key]
+      if ([double]$prev.scale -ne $sd) {
+        Fail-Ws "$Tag geometry scale drift for output $($key): first $($prev.scale) now $sd"
+      }
+      if (@($prev.identity).Count -ne 4) {
+        Fail-Ws "$Tag geometry identity record malformed for output $key"
+      }
+      for ($k = 0; $k -lt 4; $k++) {
+        if ([bool]$prev.identity[$k] -ne [bool]$idVals[$k]) {
+          Fail-Ws "$Tag geometry identity drift for output $key at $($order[$k]): first $([bool]$prev.identity[$k]) now $([bool]$idVals[$k])"
+        }
+      }
+    }
+  }
+}
+
 function Test-StressApplyClean($Event, [string]$Tag) {
   # Every known honest omission section of a world-apply row must be present
   # and integer zero; pending intent arrays must be empty; required desired
   # arrays must be present; geometry must be paired with a numeric zero
-  # omission. Source: apply_diag_value in
+  # omission. The fixed warp witness fields (`pointer_activity`, `warp_spent`,
+  # `warp_request`, `warp_capability`) and per-screen `scale`/presence-only
+  # `identity` are strict here too, with null accepted only where the
+  # contract allows it. Source: apply_diag_value in
   # crates/tiler-windows/src/tiling_sys/world_tick.rs. A missing field is a
   # refusal, never a pass.
   foreach ($f in @("members_omitted", "views_omitted", "frames_omitted",
@@ -413,6 +578,8 @@ function Test-StressApplyClean($Event, [string]$Tag) {
   if (@(Get-StressField $Event "desired_transfers").Count -gt 0) { Fail-Ws "$Tag pending transfers" }
   if (@(Get-StressField $Event "desired_operations").Count -gt 0) { Fail-Ws "$Tag pending operations" }
   if (@(Get-StressField $Event "held_scopes").Count -gt 0) { Fail-Ws "$Tag held scopes" }
+  Assert-StressApplyWarpFields $Event $Tag
+  Assert-StressApplyGeometry $Event $Tag
   return $true
 }
 
@@ -2492,6 +2659,7 @@ function Invoke-StressCleanup($Ctx, [string]$Tag) {
 }
 
 function Invoke-Mock {
+  Reset-StressApplyGeometrySeen
   $case = Get-StressCase $Case
   Rec-Ws "case" @{ name = $case.name; actions = @($case.actions).Count }
   $n = Validate-StressCase $case
@@ -2526,6 +2694,9 @@ function Invoke-Mock {
 }
 
 function Invoke-LiveJourney {
+  # Per-run geometry evidence must start empty: the first settled apply seeds
+  # each output's scale and identity presence, later checkpoints compare.
+  Reset-StressApplyGeometrySeen
   # Pre-effect validation: range gates run before any cargo build, settings
   # write, owner/fixture launch, or run-dir creation.
   if ($DelayMs -lt 0 -or $DelayMs -gt 60000) { Fail-Ws "refuse: DelayMs must be 0..60000" }

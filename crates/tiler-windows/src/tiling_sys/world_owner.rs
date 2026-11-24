@@ -234,6 +234,14 @@ impl WorldOwner {
         self.witness_override = Some((pointer_activity, warp_spent));
     }
 
+    /// Read back the report witness staged for the dispatched report: the
+    /// raw-input pointer generation (`None` when uninstalled) and the exact
+    /// warp id spent this generation. Trace rows publish these verbatim.
+    #[must_use]
+    pub(super) fn report_witness(&self) -> (Option<u64>, Option<String>) {
+        self.seq.report_witness()
+    }
+
     #[allow(dead_code)]
     pub(super) fn push_foreground_events(&mut self, hwnds: Vec<u64>) {
         self.diff.push_foreground_events(hwnds);

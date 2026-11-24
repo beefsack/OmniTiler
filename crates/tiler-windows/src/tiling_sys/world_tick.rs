@@ -599,8 +599,10 @@ fn workspace_ref_covers(
 /// the logical views; `desired_workspaces`) rides from the exact accepted
 /// `reply`, never synthesized from native observations or expectations.
 /// The geometry basis (`desired_geometry` screen rows with wire `output`,
-/// `full`/`work` rects, per-screen `gap`/`outer_gap`, `complete`, `primary`)
-/// rides from the actual dispatched `report` screens, never a separate
+/// `full`/`work` rects, `complete`, `primary`, the target `scale`, and
+/// presence-only `identity` booleans for manufacturer/model/serial/
+/// connector — never the identity text) rides from the actual dispatched
+/// `report` screens, never a separate
 /// native area copy: the row is published only when the report/report-reply
 /// binding proves the screens are the reply's own accepted input
 /// (`request_id`, `observation_seq` vs `based_on_observation_seq`,
@@ -842,6 +844,13 @@ fn apply_diag_value(
                     "full": screen.full_rect.map(rect_value),
                     "work": screen.work_area.map(rect_value),
                     "complete": screen.complete,
+                    "scale": screen.scale,
+                    "identity": {
+                        "manufacturer": screen.identity.manufacturer.is_some(),
+                        "model": screen.identity.model.is_some(),
+                        "serial": screen.identity.serial.is_some(),
+                        "connector": screen.identity.connector.is_some(),
+                    },
                 })
             })
             .collect()
@@ -1071,6 +1080,23 @@ fn apply_diag_value(
         },
         "cursor_hit": cursor_hit,
         "ffc_enabled": ffc_enabled,
+        "warp_capability": super::settings::WARP_SUPPORTED,
+        "warp_request": reply.warp_request.as_ref().map_or(
+            serde_json::Value::Null,
+            |request| serde_json::json!({
+                "id": request.id.clone(),
+                "target": request.target.0.clone(),
+                "rev": request.revision,
+                "out": request.output.0.clone(),
+                "ws": request.workspace.0.clone(),
+                "point": [request.point.0, request.point.1],
+                "pointer_baseline": request.pointer_baseline,
+            }),
+        ),
+        // Witness defaults: the production sites attach the staged values
+        // from `WorldOwner::report_witness`; absent staging is null.
+        "pointer_activity": serde_json::Value::Null,
+        "warp_spent": serde_json::Value::Null,
         "members": member_rows,
         "members_omitted": member_attempts
             .len()
@@ -1209,15 +1235,25 @@ fn apply_diag_value(
     out
 }
 
+/// Attach the staged report witness to a `world-apply` row: the loop-thread
+/// raw-input pointer generation (`None` when uninstalled, never a fabricated
+/// count) and the exact warp id spent this generation. Both keys are set
+/// unconditionally so an absent witness is explicit `null`.
+fn attach_warp_witness(value: &mut serde_json::Value, witness: (Option<u64>, Option<String>)) {
+    let (pointer_activity, warp_spent) = witness;
+    value["pointer_activity"] = serde_json::json!(pointer_activity);
+    value["warp_spent"] = serde_json::json!(warp_spent);
+}
+
 /// Trace-only emission for one apply pass. Event-driven owner trace only:
 /// no input-hook cost, no native re-read, no per-window dump. Returns true
 /// when a row was emitted (the caller records the hover triple then, never
 /// on quiet ticks).
-// Twenty inputs are the disjoint trace context plus the pass products
+// Twenty-one inputs are the disjoint trace context plus the pass products
 // (reply, delivery, command kind, stats, raw attempts, fresh receipt proof,
-// cursor-hit/FFC, dispatched-report geometry basis, hover-change,
-// receipt-change, command-receipt stamp); bundling would hide the
-// call-site borrow split.
+// cursor-hit/FFC, dispatched-report geometry basis, staged report witness,
+// hover-change, receipt-change, command-receipt stamp); bundling would hide
+// the call-site borrow split.
 #[allow(clippy::too_many_arguments)]
 fn log_apply_diag(
     log_path: &std::path::Path,
@@ -1237,6 +1273,7 @@ fn log_apply_diag(
     report: &tiler_core::world_report::WorldReportV4,
     receipt_views: &[(String, String)],
     receipt_proof_mono_ms: Option<u64>,
+    witness: (Option<u64>, Option<String>),
     hover_changed: bool,
     receipt_changed: bool,
     recv_mono_ms: u64,
@@ -1276,6 +1313,7 @@ fn log_apply_diag(
         receipt_views,
         receipt_proof_mono_ms,
     );
+    attach_warp_witness(&mut value, witness);
     value["recv_mono_ms"] = serde_json::json!(recv_mono_ms);
     super::trace::log_json_at(log_path, value);
     true
@@ -1874,6 +1912,7 @@ pub(super) fn run_observation_tick(
             &receipt_views,
             receipt_proof_mono_ms,
         );
+        attach_warp_witness(&mut row, world.report_witness());
         row["recv_mono_ms"] = serde_json::json!(tick_ms);
         Some(row)
     } else {
@@ -1912,6 +1951,7 @@ pub(super) fn run_observation_tick(
         &report,
         &receipt_views,
         receipt_proof_mono_ms,
+        world.report_witness(),
         hover_changed,
         receipt_changed,
         tick_ms,
@@ -2788,6 +2828,7 @@ fn run_world_command_impl(
             &receipt_views,
             receipt_proof_mono_ms,
         );
+        attach_warp_witness(&mut row, world.report_witness());
         row["recv_mono_ms"] = serde_json::json!(recv_mono_ms);
         Some(row)
     } else {
@@ -2826,6 +2867,7 @@ fn run_world_command_impl(
         &report,
         &receipt_views,
         receipt_proof_mono_ms,
+        world.report_witness(),
         hover_changed,
         receipt_changed,
         recv_mono_ms,
@@ -4115,6 +4157,7 @@ mod apply_diag_tests {
             &report,
             &[],
             None,
+            (None, None),
             false,
             false,
             0,
@@ -4141,6 +4184,7 @@ mod apply_diag_tests {
             &report,
             &[],
             None,
+            (None, None),
             false,
             false,
             0,
@@ -4173,6 +4217,7 @@ mod apply_diag_tests {
             &report,
             &[],
             None,
+            (None, None),
             false,
             false,
             0,
@@ -4703,6 +4748,7 @@ mod apply_diag_tests {
             &report_shell(vec![]),
             &[],
             None,
+            (None, None),
             false,
             false,
             4242,
@@ -6773,6 +6819,7 @@ mod apply_diag_tests {
             &report,
             &empty,
             Some(10),
+            (None, None),
             false,
             true,
             0,
@@ -6797,6 +6844,7 @@ mod apply_diag_tests {
             &report,
             &empty,
             Some(11),
+            (None, None),
             false,
             false,
             0,
@@ -6821,6 +6869,7 @@ mod apply_diag_tests {
             &report,
             &proven,
             Some(12),
+            (None, None),
             false,
             true,
             0,
@@ -6862,6 +6911,7 @@ mod apply_diag_tests {
             &report,
             &proven,
             Some(13),
+            (None, None),
             false,
             false,
             0,
@@ -6886,6 +6936,7 @@ mod apply_diag_tests {
             &report,
             &empty,
             Some(14),
+            (None, None),
             false,
             true,
             0,
@@ -6933,6 +6984,7 @@ mod apply_diag_tests {
             &report,
             &[("o1".to_owned(), "ws2".to_owned())],
             Some(20),
+            (None, None),
             false,
             true,
             0,
@@ -6984,5 +7036,166 @@ mod apply_diag_tests {
         paired["paired"] = serde_json::json!(true);
         assert_eq!(paired["receipt_proof_mono_ms"], serde_json::json!(4242));
         assert_eq!(paired["receipt_views"], proof["receipt_views"]);
+    }
+
+    #[test]
+    fn warp_request_and_staged_witness_publish_exact_values() {
+        let mut reply = reply_shell();
+        reply.warp_request = Some(tiler_core::world_report::WarpRequest {
+            id: "warp-trace-7".to_owned(),
+            target: WindowId("w-42".to_owned()),
+            revision: 7,
+            output: OutputId("o1".to_owned()),
+            workspace: WorkspaceId("w1".to_owned()),
+            point: (900, 300),
+            pointer_baseline: Some(41),
+        });
+        let mut value = apply_diag_value(
+            61,
+            &reply,
+            "accepted",
+            "observation",
+            &stats_shell(),
+            &[],
+            &[],
+            None,
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &[],
+            None,
+        );
+        attach_warp_witness(&mut value, (Some(41), Some("warp-trace-7".to_owned())));
+        // The accepted reply's warp request rides verbatim: id, target,
+        // revision, output, workspace, point, and pointer baseline, never a
+        // re-derived or clamped copy.
+        assert_eq!(
+            value["warp_request"]["id"],
+            serde_json::json!("warp-trace-7")
+        );
+        assert_eq!(value["warp_request"]["target"], serde_json::json!("w-42"));
+        assert_eq!(value["warp_request"]["rev"], serde_json::json!(7));
+        assert_eq!(value["warp_request"]["out"], serde_json::json!("o1"));
+        assert_eq!(value["warp_request"]["ws"], serde_json::json!("w1"));
+        assert_eq!(
+            value["warp_request"]["point"],
+            serde_json::json!([900, 300])
+        );
+        assert_eq!(
+            value["warp_request"]["pointer_baseline"],
+            serde_json::json!(41)
+        );
+        // The staged witness rides as an integer generation and the exact
+        // spent id string; the capability is the effective declaration.
+        assert!(value["pointer_activity"].is_u64());
+        assert_eq!(value["pointer_activity"], serde_json::json!(41));
+        assert!(value["warp_spent"].is_string());
+        assert_eq!(value["warp_spent"], serde_json::json!("warp-trace-7"));
+        assert_eq!(
+            value["warp_capability"],
+            serde_json::json!(super::super::settings::WARP_SUPPORTED)
+        );
+        assert_eq!(value["warp_capability"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn absent_warp_request_and_witness_publish_explicit_nulls() {
+        let value = apply_diag_value(
+            62,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &stats_shell(),
+            &[],
+            &[],
+            None,
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![]),
+            &[],
+            None,
+        );
+        // No accepted warp request: an explicit null object, never an
+        // empty-bodied stand-in.
+        assert!(value["warp_request"].is_null());
+        assert!(value["pointer_activity"].is_null());
+        assert!(value["warp_spent"].is_null());
+        // The capability is still an effective boolean declaration.
+        assert!(value["warp_capability"].is_boolean());
+        assert_eq!(
+            value["warp_capability"],
+            serde_json::json!(super::super::settings::WARP_SUPPORTED)
+        );
+        // Attaching an absent witness keeps both keys explicit nulls.
+        let mut attached = value.clone();
+        attach_warp_witness(&mut attached, (None, None));
+        assert!(attached["pointer_activity"].is_null());
+        assert!(attached["warp_spent"].is_null());
+    }
+
+    #[test]
+    fn geometry_rows_carry_scale_and_presence_only_identity() {
+        let rect = tiler_core::geometry::Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        let mut screen = screen_shell("o1", rect, rect, 0, 0, true, true);
+        screen.scale = 1.5;
+        screen.identity = tiler_core::world_report::OutputIdentity {
+            manufacturer: Some("Mfr-Secret-Text".to_owned()),
+            model: Some("Model-Secret-Text".to_owned()),
+            serial: Some("Serial-Secret-Text".to_owned()),
+            connector: None,
+        };
+        let value = apply_diag_value(
+            63,
+            &reply_shell(),
+            "accepted",
+            "observation",
+            &stats_shell(),
+            &[],
+            &[],
+            None,
+            &[],
+            serde_json::json!({}),
+            None,
+            false,
+            &report_shell(vec![screen]),
+            &[],
+            None,
+        );
+        let geometry = value["desired_geometry"]
+            .as_array()
+            .expect("desired geometry");
+        assert_eq!(geometry.len(), 1);
+        let scale = geometry[0]["scale"].as_f64().expect("scale is a number");
+        assert!(scale.is_finite() && scale > 0.0);
+        assert_eq!(geometry[0]["scale"], serde_json::json!(1.5));
+        // Identity is presence only: exactly the four boolean keys, no
+        // manufacturer/model/serial/connector text values.
+        let identity = geometry[0]["identity"]
+            .as_object()
+            .expect("identity is an object");
+        assert_eq!(identity.len(), 4);
+        assert_eq!(identity["manufacturer"], serde_json::json!(true));
+        assert_eq!(identity["model"], serde_json::json!(true));
+        assert_eq!(identity["serial"], serde_json::json!(true));
+        assert_eq!(identity["connector"], serde_json::json!(false));
+        for key in ["manufacturer", "model", "serial", "connector"] {
+            assert!(
+                identity[key].is_boolean(),
+                "identity {key} is a presence boolean"
+            );
+        }
+        let text = value.to_string();
+        assert!(!text.contains("Mfr-Secret-Text"));
+        assert!(!text.contains("Model-Secret-Text"));
+        assert!(!text.contains("Serial-Secret-Text"));
     }
 }

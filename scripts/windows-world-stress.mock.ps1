@@ -407,6 +407,20 @@ $mockRoot = Join-Path ([IO.Path]::GetTempPath()) ("ws-mock-" + $PID)
 New-Item -ItemType Directory -Force -Path $mockRoot | Out-Null
 $logPath = Join-Path $mockRoot "owner.log"
 function Write-MockLog($Lines) { $Lines | Set-Content -LiteralPath $logPath -Encoding utf8 }
+function New-MockGeometryRow([double]$Scale) {
+  # Fixed Slice A dispatch geometry row: per-screen scale plus presence-only
+  # identity booleans (never identity text). One shape for every mock apply
+  # row so the stress listener's per-output stability check sees one truth.
+  return @{
+    output = "o1"
+    work = @{ x = 0; y = 0; w = 800; h = 560 }
+    full = @{ x = 0; y = 0; w = 800; h = 560 }
+    complete = $true; primary = $true
+    scale = $Scale
+    identity = @{ manufacturer = $true; model = $false; serial = $false; connector = $true }
+  }
+}
+
 function New-CleanApply([int]$Tick, [int]$Rev, [string]$Delivery) {
   return @{
     event = "world-apply"; tick = $Tick; delivery = $Delivery; revision = $Rev
@@ -420,6 +434,17 @@ function New-CleanApply([int]$Tick, [int]$Rev, [string]$Delivery) {
     desired_transfers = @(); desired_operations = @(); held_scopes = @()
     desired_windows = @(); desired_outputs = @(); desired_workspaces = @()
     desired_geometry = @()
+    # Fixed Slice A witness contract: every row carries the staged witness
+    # and the effective capability, with honest null values when nothing
+    # was staged. The non-null path is exercised by the base row.
+    pointer_activity = [int64]4
+    warp_spent = "warp-mock-1"
+    warp_request = @{
+      id = "warp-mock-1"; target = "tok-a"; rev = [int64]1
+      out = "o1"; ws = "ws-home"; point = @([int64]10, [int64]20)
+      pointer_baseline = [int64]3
+    }
+    warp_capability = $true
     focus_effects = @(@{ id = "fx-1"; kind = "focus"; target = "tok-a" })
   }
 }
@@ -476,6 +501,49 @@ $strict.views_omitted = "0"
 Write-MockLog @(($strict | ConvertTo-Json -Depth 8 -Compress))
 $m = 0
 Expect-Throw { Wait-StressFreshApply $logPath ([ref]$m) 15 2 "strict-string" } "not integer" "strict-string-omission"
+
+# Fixed Slice A witness/geometry contract: every world-apply row carries the
+# staged pointer/warp witness and effective capability, and every desired
+# geometry row carries scale plus presence-only identity. Nulls are honest
+# only where allowed; shape corruption refuses. Per-output scale and
+# identity presence must stay stable across observations in one run.
+$wit = New-CleanApply 18 9 "accepted"
+$wit.pointer_activity = $null; $wit.warp_spent = $null; $wit.warp_request = $null
+$null = Test-StressApplyClean $wit "witness-null"
+Rec-Mock "witness-null-allowed" @{ ok = $true }
+$wit = New-CleanApply 18 9 "accepted"; $wit.Remove("pointer_activity")
+Expect-Throw { $null = Test-StressApplyClean $wit "witness-pointer-missing" } "pointer_activity missing" "witness-missing-pointer"
+$wit = New-CleanApply 18 9 "accepted"; $wit.pointer_activity = 1.5
+Expect-Throw { $null = Test-StressApplyClean $wit "witness-pointer-type" } "pointer_activity not null or integer" "witness-pointer-type"
+$wit = New-CleanApply 18 9 "accepted"; $wit.warp_spent = ""
+Expect-Throw { $null = Test-StressApplyClean $wit "witness-spent-empty" } "warp_spent not null" "witness-spent-empty"
+$wit = New-CleanApply 18 9 "accepted"; $wit.warp_request.point = @(1, 2, 3)
+Expect-Throw { $null = Test-StressApplyClean $wit "witness-point-count" } "point count 3" "witness-point-count"
+$wit = New-CleanApply 18 9 "accepted"; $wit.warp_request.pointer_baseline = 0.5
+Expect-Throw { $null = Test-StressApplyClean $wit "witness-baseline-type" } "pointer_baseline not null or integer" "witness-baseline-type"
+$wit = New-CleanApply 18 9 "accepted"; $wit.Remove("warp_capability")
+Expect-Throw { $null = Test-StressApplyClean $wit "witness-capability-missing" } "warp_capability missing" "witness-capability-missing"
+$wit = New-CleanApply 18 9 "accepted"; $wit.warp_capability = $false
+Expect-Throw { $null = Test-StressApplyClean $wit "witness-capability-false" } "adapter must declare true" "witness-capability-false"
+
+Reset-StressApplyGeometrySeen
+$wit = New-CleanApply 18 9 "accepted"; $wit.desired_geometry = @(New-MockGeometryRow 1.0)
+$null = Test-StressApplyClean $wit "geometry-seed"
+Rec-Mock "geometry-seed" @{ ok = $true }
+$wit = New-CleanApply 18 9 "accepted"; $wit.desired_geometry = @(New-MockGeometryRow 2.0)
+Expect-Throw { $null = Test-StressApplyClean $wit "geometry-scale-drift" } "scale drift" "geometry-scale-drift"
+$wit = New-CleanApply 18 9 "accepted"; $g = New-MockGeometryRow 1.0; $g.identity.model = $true; $wit.desired_geometry = @($g)
+Expect-Throw { $null = Test-StressApplyClean $wit "geometry-identity-drift" } "identity drift" "geometry-identity-drift"
+$wit = New-CleanApply 18 9 "accepted"; $g = New-MockGeometryRow 1.0; $g.Remove("scale"); $wit.desired_geometry = @($g)
+Expect-Throw { $null = Test-StressApplyClean $wit "geometry-scale-missing" } "scale missing" "geometry-scale-missing"
+$wit = New-CleanApply 18 9 "accepted"; $g = New-MockGeometryRow 1.0; $g.scale = 0.0; $wit.desired_geometry = @($g)
+Expect-Throw { $null = Test-StressApplyClean $wit "geometry-scale-zero" } "scale not positive" "geometry-scale-zero"
+$wit = New-CleanApply 18 9 "accepted"; $g = New-MockGeometryRow 1.0; $g.identity.model = "Dell"; $wit.desired_geometry = @($g)
+Expect-Throw { $null = Test-StressApplyClean $wit "geometry-identity-text" } "identity.model not boolean" "geometry-identity-text"
+$wit = New-CleanApply 18 9 "accepted"; $g = New-MockGeometryRow 1.0; $g.identity.extra = $true; $wit.desired_geometry = @($g)
+Expect-Throw { $null = Test-StressApplyClean $wit "geometry-identity-extra" } "identity member count 5" "geometry-identity-extra"
+Reset-StressApplyGeometrySeen
+Rec-Mock "geometry-witness-contract" @{ ok = $true }
 
 # Torn trailing append (observed live: a world-apply line torn at byte 40
 # while the owner was still writing): the reader retries boundedly and
@@ -640,7 +708,7 @@ function New-LoopApply([int]$Tick, [int]$Rev) {
   })
   $base.desired_outputs = @(@{ output = "o1"; logical_view = "ws-home" })
   $base.desired_workspaces = @(@{ id = "ws-home"; output = "o1"; order = 0 }, @{ id = "ws-away"; output = "o1"; order = 1 })
-  $base.desired_geometry = @(@{ output = "o1"; work = @{ x = 0; y = 0; w = 800; h = 560 }; full = @{ x = 0; y = 0; w = 800; h = 560 }; complete = $true; primary = $true })
+  $base.desired_geometry = @(New-MockGeometryRow 1.0)
   return $base
 }
 function New-LoopPager([int]$Rev) {
@@ -1547,7 +1615,7 @@ function New-HiddenLoopApply([int]$Tick, [int]$Rev) {
   )
   $base.desired_outputs = @(@{ output = "o1"; logical_view = "ws-home" })
   $base.desired_workspaces = @(@{ id = "ws-home"; output = "o1"; order = 0 }, @{ id = "ws-away"; output = "o1"; order = 1 })
-  $base.desired_geometry = @(@{ output = "o1"; work = @{ x = 0; y = 0; w = 800; h = 560 }; full = @{ x = 0; y = 0; w = 800; h = 560 }; complete = $true; primary = $true })
+  $base.desired_geometry = @(New-MockGeometryRow 1.0)
   return $base
 }
 function New-HiddenLoopPager([int]$Rev, [int]$RawW) {
@@ -2000,7 +2068,7 @@ function New-BsApply([int]$Tick, [int]$Rev, [int]$Ax, [int]$Bx) {
   $base.desired_windows = @((New-BsRow "tok-a" $Ax), (New-BsRow "tok-b" $Bx))
   $base.desired_outputs = @(@{ output = "o1"; logical_view = "ws-home" })
   $base.desired_workspaces = @(@{ id = "ws-home"; output = "o1"; order = 0 }, @{ id = "ws-away"; output = "o1"; order = 1 })
-  $base.desired_geometry = @(@{ output = "o1"; work = @{ x = 0; y = 0; w = 800; h = 560 }; full = @{ x = 0; y = 0; w = 800; h = 560 }; complete = $true; primary = $true })
+  $base.desired_geometry = @(New-MockGeometryRow 1.0)
   return $base
 }
 function New-BsPager([int]$Rev, [int]$Ax, [int]$Bx, [string]$FocusTok) {
