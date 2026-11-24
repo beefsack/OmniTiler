@@ -353,3 +353,41 @@ impl Drop for DevKey {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::monitor_identities;
+
+    /// Live, read-only host probe: one `QueryDisplayConfig` active-path
+    /// enumeration joined to each target's SetupAPI device instance and
+    /// EDID value, under the product process. Needs real displays and a
+    /// readable monitor device key; mutates nothing (no mode, scale,
+    /// window, or setting) and prints only device names plus per-field
+    /// presence, never identity text. Ignored by default; run with
+    /// `-- --ignored --nocapture`.
+    #[test]
+    #[ignore = "live QDC/SetupAPI read-only"]
+    fn live_monitor_identities_are_readable() {
+        let identities = monitor_identities().expect("active display paths");
+        assert!(!identities.is_empty(), "at least one active output");
+        for (device, identity) in &identities {
+            println!(
+                "{device}: manufacturer={} model={} serial={} connector={}",
+                identity.manufacturer.is_some(),
+                identity.model.is_some(),
+                identity.serial.is_some(),
+                identity.connector.is_some(),
+            );
+            assert!(
+                device.starts_with(r"\\.\DISPLAY"),
+                "GDI device name shape: {device}"
+            );
+        }
+        assert!(
+            identities.values().any(|identity| identity.manufacturer.is_some()
+                || identity.model.is_some()
+                || identity.serial.is_some()),
+            "at least one identity field is known"
+        );
+    }
+}
