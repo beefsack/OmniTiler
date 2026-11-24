@@ -21,13 +21,18 @@ use crate::world_report::{EffectCause, EffectKind, OneShotEffect};
 /// fullscreen. Normalized staged facts only. Under the pause no
 /// focus-follows effect mints and no warp point publishes.
 pub(crate) fn cursor_game_paused(engine: &WorldTransaction<'_>) -> bool {
-    if engine.world.staged.observation.focused_global.is_empty() {
+    cursor_game_paused_in(&engine.world.staged)
+}
+
+/// Read-only form of [`cursor_game_paused`] over the retained staged report,
+/// for adapter live-state readers that hold no transaction (the pause is a
+/// pure predicate over the latest accepted observation and facts).
+pub(crate) fn cursor_game_paused_in(staged: &crate::world_staged::StagedReport) -> bool {
+    if staged.observation.focused_global.is_empty() {
         return false;
     }
-    let focused = WindowId(engine.world.staged.observation.focused_global.clone());
-    engine
-        .world
-        .staged
+    let focused = WindowId(staged.observation.focused_global.clone());
+    staged
         .facts
         .get(&focused)
         .is_some_and(|fact| fact.fullscreen == Some(true))

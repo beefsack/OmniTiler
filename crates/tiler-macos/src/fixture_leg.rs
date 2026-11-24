@@ -568,6 +568,14 @@ fn launch_product_ls(
         open.arg("--env")
             .arg(crate::fixture_hover::STAGE_TIMING_ENV);
     }
+    // Fixture-scoped durable intent isolation: never read or write the
+    // user's real Application Support store during a bounded leg. The
+    // product creates the 0700 private directory under this run.
+    open.arg("--env").arg(format!(
+        "{}={}",
+        crate::intent_store::STORE_DIR_ENV,
+        product_dir.join("intent-store").display()
+    ));
     let status = open
         .arg(bundle)
         .arg("--args")
@@ -654,10 +662,51 @@ fn launch_product_ls(
 }
 
 /// What the leg body returns to the envelope: every chord driver report in
-/// order, plus the opt-in hover-probe evidence when it ran.
+/// order, plus the opt-in hover-probe evidence and the established
+/// post-only owned-Space evidence when it ran.
 struct LegReports {
     chords: Vec<serde_json::Value>,
     hover_probe: Option<serde_json::Value>,
+    owned_space: Option<serde_json::Value>,
+}
+
+/// Completed success envelope: the chord reports plus any established
+/// owned-Space evidence. Pure over its inputs; unit-tested.
+fn completed_envelope(
+    chords: Vec<serde_json::Value>,
+    hover_probe: Option<serde_json::Value>,
+    owned_space: Option<serde_json::Value>,
+    teardown: serde_json::Value,
+) -> serde_json::Value {
+    let mut envelope = serde_json::json!({
+        "outcome": "completed",
+        "chords": chords,
+        "teardown": teardown,
+    });
+    if let Some(probe) = hover_probe {
+        envelope["hover_probe"] = probe;
+    }
+    if let Some(owned) = owned_space {
+        envelope["owned_space"] = owned;
+    }
+    envelope
+}
+
+/// Create AppKit's shared application singleton on the main thread.
+///
+/// `NSScreen.screensHaveSeparateSpaces` answers with a stale `false` until
+/// that singleton exists (a fresh process prints `false` cold and `true`
+/// after `NSApplication.shared`), so a baseline captured before the leg
+/// initializes AppKit stores an untruthful preimage for an unchanged Mission
+/// Control setting. The singleton handle is benign: no `finishLaunching`, no
+/// activation policy change, no activation, and no focus effect.
+#[cfg(target_os = "macos")]
+fn ensure_appkit_singleton() {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSApplication;
+    if let Some(mtm) = MainThreadMarker::new() {
+        let _ = NSApplication::sharedApplication(mtm);
+    }
 }
 
 /// Development-only fixture leg runner: the complete real entry point.
@@ -708,6 +757,16 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
     settle_ms(opts.seconds).map_err(|e| (2, e))?;
     let _interrupt = crate::space_drag_diag_live::InterruptArmed::arm()
         .map_err(|e| (2, format!("fixture-leg: interrupt arm refused ({e})")))?;
+    // The baseline precedes every effect, so the AppKit singleton must exist
+    // before it: `NSScreen.screensHaveSeparateSpaces` answers with a stale
+    // `false` default until the shared application exists, while the
+    // teardown read (after the return probe and observation setup) sees the
+    // real Mission Control setting. Initializing here keeps both edges of
+    // the unchanged-setting comparison on the same truthful value; it does
+    // not call `finishLaunching`, set an activation policy, activate, or
+    // take focus.
+    #[cfg(target_os = "macos")]
+    ensure_appkit_singleton();
     let mut transport = LiveLegTransport::new();
     let mut leg = LiveLeg::begin(&mut transport, opts.seconds.saturating_add(60))?;
     // From here every failure runs the teardown: finish consumes the leg.
@@ -717,17 +776,16 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
             let LegReports {
                 chords,
                 hover_probe,
+                owned_space,
             } = reports;
             match leg.finish() {
                 Ok(teardown) => {
-                    let mut envelope = serde_json::json!({
-                        "outcome": "completed",
-                        "chords": chords,
-                        "teardown": teardown,
-                    });
-                    if let Some(probe) = hover_probe {
-                        envelope["hover_probe"] = probe;
-                    }
+                    let envelope = completed_envelope(
+                        chords,
+                        hover_probe,
+                        owned_space,
+                        serde_json::json!(teardown),
+                    );
                     Ok(envelope.to_string())
                 }
                 Err(teardown) => {
@@ -750,6 +808,9 @@ pub fn run_fixture_leg(opts: FixtureLegOpts) -> Result<String, (i32, String)> {
                     });
                     if let Some(probe) = hover_probe {
                         envelope["hover_probe"] = probe;
+                    }
+                    if let Some(owned) = owned_space {
+                        envelope["owned_space"] = owned;
                     }
                     Err((teardown.0, envelope.to_string()))
                 }
@@ -876,6 +937,212 @@ fn plan_owned_destinations(
     Ok((baseline_count + 1)..=top)
 }
 
+/// Fresh occupancy inventory for the post-only owned-Space path: every
+/// non-fixture window whose membership includes a starting-display SID maps
+/// to that SID's 1-based ordinal within the row, and `n` is the highest such
+/// ordinal. Fixture-scope windows are auxiliary and never occupancy.
+/// Unreadable non-fixture membership is never guessed at: `n` degrades to
+/// the full row length (an explicit audit upper bound) and the unreadable
+/// count is recorded. Read-only; IDs and ordinals only.
+fn post_only_occupancy<'a>(
+    spaces_before: &[u64],
+    members: impl IntoIterator<Item = (&'a str, &'a Result<Vec<u64>, String>)>,
+) -> PostOnlyOccupancy {
+    let mut occupied = 0;
+    let mut unreadable = 0;
+    for (bundle, spaces) in members {
+        if bundle == FIXTURE_SCOPE {
+            continue;
+        }
+        match spaces {
+            Ok(spaces) => {
+                for sid in spaces {
+                    if let Some(index) = spaces_before.iter().position(|candidate| candidate == sid)
+                    {
+                        occupied = occupied.max(index + 1);
+                    }
+                }
+            }
+            Err(_) => unreadable += 1,
+        }
+    }
+    if unreadable > 0 {
+        PostOnlyOccupancy {
+            n: spaces_before.len(),
+            n_kind: "upper_bound",
+            n_unreadable_windows: unreadable,
+        }
+    } else {
+        PostOnlyOccupancy {
+            n: occupied,
+            n_kind: "occupied",
+            n_unreadable_windows: 0,
+        }
+    }
+}
+
+/// Plan the single post-only owned Space: exactly one append after the
+/// fresh starting-display row, refused when that ordinal would leave the
+/// Desktop-9 holder mapping (`spaces_before.len() >= 9`, the same ceiling
+/// [`plan_owned_destinations`] applies to appended destinations; position
+/// 10+ is unmappable by the send path).
+fn post_only_owned_ordinal(spaces_before: &[u64]) -> Result<usize, String> {
+    let ordinal = spaces_before.len() + 1;
+    if ordinal > 9 {
+        return Err(format!(
+            "fixture-leg: {} user Spaces leave no representable post-only owned Space (holders map 1..=9); refusing instead of using user Spaces",
+            spaces_before.len()
+        ));
+    }
+    Ok(ordinal)
+}
+
+/// Fresh occupancy inventory result (see [`post_only_occupancy`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PostOnlyOccupancy {
+    n: usize,
+    n_kind: &'static str,
+    n_unreadable_windows: usize,
+}
+
+/// Established post-only owned-Space evidence: the starting display, the
+/// fresh occupancy inventory, the created SID at its append ordinal, the
+/// recorded starting SID, and the row before/after. IDs and ordinals only,
+/// no titles.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PostOnlyOwnedSpace {
+    display: usize,
+    n: usize,
+    n_kind: &'static str,
+    n_unreadable_windows: usize,
+    sid: u64,
+    ordinal: usize,
+    starting_sid: u64,
+    spaces_before: Vec<u64>,
+    spaces_after: Vec<u64>,
+}
+
+impl PostOnlyOwnedSpace {
+    fn evidence(&self) -> serde_json::Value {
+        serde_json::json!({
+            "display": self.display,
+            "n": self.n,
+            "n_kind": self.n_kind,
+            "n_unreadable_windows": self.n_unreadable_windows,
+            "sid": self.sid,
+            "ordinal": self.ordinal,
+            "starting_sid": self.starting_sid,
+            "spaces_before": self.spaces_before,
+            "spaces_after": self.spaces_after,
+        })
+    }
+}
+
+/// Bounded harness pacing between the fixture-side focus and the synthetic
+/// chord post (milliseconds): comfortably longer than the product's input
+/// eligibility attest cadence (250ms) plus the observation publish/reconcile
+/// that follows a foreground change, so the single owned post is dispatched
+/// rather than consumed-refused. Purely harness-side; product policy is
+/// unchanged.
+const FOCUS_SETTLE_MS: u64 = 500;
+
+/// Bounded settle for the post-only occupancy proof after the window join
+/// (milliseconds): the join already proved CG existence, so only the SLS
+/// membership read can lag.
+const POST_ONLY_PLACEMENT_POLL_MS: u64 = 2_000;
+
+/// One joined window's fresh membership read: the wid plus either readable
+/// SIDs or the read failure (never a guess).
+#[cfg(target_os = "macos")]
+type WindowMembership = (u32, Result<Vec<u64>, String>);
+
+/// One fresh membership read per joined window: `Ok(spaces)` when readable,
+/// `Err` with the read failure otherwise. A window absent from the
+/// inventory is unreadable, never assumed placed.
+#[cfg(target_os = "macos")]
+fn joined_window_memberships(wids: &[u32]) -> Vec<WindowMembership> {
+    match crate::mc_observe::enumerate_window_members() {
+        Ok(members) => {
+            let mut by_wid: std::collections::HashMap<u32, Result<Vec<u64>, String>> = members
+                .into_iter()
+                .map(|member| (member.wid, member.spaces))
+                .collect();
+            wids.iter()
+                .map(|wid| {
+                    let spaces = by_wid.remove(wid).unwrap_or_else(|| {
+                        Err("window absent from the fresh CG/SLS inventory".to_owned())
+                    });
+                    (*wid, spaces)
+                })
+                .collect()
+        }
+        Err(error) => wids
+            .iter()
+            .map(|wid| {
+                (
+                    *wid,
+                    Err(format!("CG/SLS membership inventory unreadable ({error})")),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// Bounded poll proving every joined window is readable on the owned Space.
+/// Returns the last observed memberships when the deadline passes, so the
+/// refusal names each wid and what was read (never a guess).
+#[cfg(target_os = "macos")]
+fn await_joined_on_owned_space(
+    joined: &[(String, u32)],
+    owned_sid: u64,
+) -> Result<(), Vec<WindowMembership>> {
+    let wids: Vec<u32> = joined.iter().map(|(_, wid)| *wid).collect();
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(POST_ONLY_PLACEMENT_POLL_MS);
+    loop {
+        let observed = joined_window_memberships(&wids);
+        if observed.iter().all(|(_, spaces)| {
+            spaces
+                .as_ref()
+                .is_ok_and(|spaces| spaces.contains(&owned_sid))
+        }) {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(observed);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// Refusal body for the post-only placement checks: the established
+/// owned-Space evidence plus one entry per joined window (wid with its
+/// observed membership or read failure; no titles).
+#[cfg(target_os = "macos")]
+fn post_only_placement_refusal(
+    evidence: &PostOnlyOwnedSpace,
+    observed: &[WindowMembership],
+    error: &str,
+    current_owned_space: Option<bool>,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "stage": "post-only-owned-space",
+        "error": error,
+        "owned_space": evidence.evidence(),
+        "windows": observed
+            .iter()
+            .map(|(wid, spaces)| match spaces {
+                Ok(spaces) => serde_json::json!({"wid": wid, "spaces": spaces}),
+                Err(read_error) => serde_json::json!({"wid": wid, "membership_error": read_error}),
+            })
+            .collect::<Vec<_>>(),
+    });
+    if let Some(current) = current_owned_space {
+        body["current_owned_space"] = current.into();
+    }
+    body
+}
+
 /// macOS-only leg body (see [`run_leg_body`]).
 #[cfg(target_os = "macos")]
 #[allow(clippy::too_many_lines)]
@@ -953,19 +1220,154 @@ fn run_leg_body_macos(
     // socket, then joined to native window IDs before anything posts.
     // Registration precedes action: unjoined callers refuse with no posts.
     let callers: Vec<String> = (0..opts.chords.len()).map(|i| format!("w{i}")).collect();
+    let needs_probe = opts
+        .chords
+        .iter()
+        .any(|chord| required_scope(chord) == Some(AdmissionScope::SpaceMutating));
+    // Post-only legs driven by this controller run on one controller-owned
+    // Space beyond the fresh occupancy inventory, so no chord can post on a
+    // user Space. The return route is proven by execution first (it also
+    // proves the teardown restore), then the fresh row/inventory, the single
+    // append, and the switch. Mixed or space-mutating legs keep the existing
+    // ordering below exactly.
+    let post_only = !opts.chords.is_empty()
+        && opts
+            .chords
+            .iter()
+            .all(|chord| required_scope(chord) == Some(AdmissionScope::PostOnly));
+    let mut owned_sids: Vec<u64> = Vec::new();
+    let mut starting_sid: Option<u64> = None;
+    let mut owned_space: Option<PostOnlyOwnedSpace> = None;
+    if post_only {
+        leg.prove_return()?;
+        let before = leg.transport_mut().space_snapshot().map_err(|e| {
+            (
+                1,
+                format!("fixture-leg: post-only starting snapshot unreadable ({e})"),
+            )
+        })?;
+        let row = before.displays.first().ok_or_else(|| {
+            (
+                1,
+                "fixture-leg: post-only starting snapshot has no display; refusing".to_owned(),
+            )
+        })?;
+        starting_sid = Some(row.current);
+        let spaces_before = row.spaces.clone();
+        let ordinal = post_only_owned_ordinal(&spaces_before).map_err(|e| (2, e))?;
+        // Fresh occupancy inventory, read-only: no synthetic posts, no
+        // writes. Fixture auxiliary windows are excluded; unreadable
+        // non-fixture membership degrades to the explicit row upper bound.
+        let members = crate::mc_observe::enumerate_window_members().map_err(|e| {
+            (
+                1,
+                format!("fixture-leg: post-only occupancy inventory unreadable ({e})"),
+            )
+        })?;
+        let occupancy = post_only_occupancy(
+            &spaces_before,
+            members
+                .iter()
+                .map(|member| (member.bundle.as_str(), &member.spaces)),
+        );
+        let created = leg.transport_mut().space_create(0).map_err(|e| {
+            (
+                1,
+                format!("fixture-leg: post-only owned Space creation refused ({e})"),
+            )
+        })?;
+        let sid = created.sid;
+        // Register before any later refusal so teardown removes exactly this
+        // owned Space.
+        leg.note_owned_space(0, sid);
+        owned_sids.push(sid);
+        if let Some(shortfall) = created.mc.shortfall_text("post-only owned Space create") {
+            return Err((
+                1,
+                format!("fixture-leg: post-only owned Space creation: {shortfall}"),
+            ));
+        }
+        leg.transport_mut().space_goto(0, sid).map_err(|e| {
+            (
+                1,
+                format!("fixture-leg: post-only owned Space switch refused ({e})"),
+            )
+        })?;
+        let after = leg.transport_mut().space_snapshot().map_err(|e| {
+            (
+                1,
+                format!("fixture-leg: post-only owned Space switch unverified ({e})"),
+            )
+        })?;
+        let after_row = after.displays.first().ok_or_else(|| {
+            (
+                1,
+                "fixture-leg: post-only switch snapshot has no display; refusing".to_owned(),
+            )
+        })?;
+        let evidence = PostOnlyOwnedSpace {
+            display: 0,
+            n: occupancy.n,
+            n_kind: occupancy.n_kind,
+            n_unreadable_windows: occupancy.n_unreadable_windows,
+            sid,
+            ordinal,
+            starting_sid: row.current,
+            spaces_before,
+            spaces_after: after_row.spaces.clone(),
+        };
+        let observed_ordinal = after_row
+            .spaces
+            .iter()
+            .position(|candidate| *candidate == sid)
+            .map(|index| index + 1);
+        // The switch must land on the owned SID at exactly one append past
+        // the fresh row; anything else refuses (teardown restores/removes).
+        if after_row.current != sid
+            || observed_ordinal != Some(ordinal)
+            || after_row.spaces.len() != evidence.spaces_before.len() + 1
+        {
+            return Err((
+                1,
+                serde_json::json!({
+                    "stage": "post-only-owned-space",
+                    "error": format!(
+                        "post-only owned Space switch unverified (current {}, observed ordinal {:?}, expected ordinal {ordinal} after exactly one append)",
+                        after_row.current, observed_ordinal
+                    ),
+                    "owned_space": evidence.evidence(),
+                })
+                .to_string(),
+            ));
+        }
+        owned_space = Some(evidence);
+    }
     spawn_owned_windows(&parsed.socket, &nonce, &callers).map_err(|e| (1, e))?;
     let joined =
         join_fixture_windows(parsed.pid, &parsed.socket, &nonce, &callers).map_err(|e| (1, e))?;
     for (caller, wid) in &joined {
         leg.note_owned_window(caller, parsed.pid, *wid);
     }
+    // Post-only placement is proven before the product launches: every
+    // joined window must be readable on the owned Space, so no later chord
+    // can post on a user Space.
+    if let Some(evidence) = &owned_space
+        && let Err(observed) = await_joined_on_owned_space(&joined, evidence.sid)
+    {
+        return Err((
+            1,
+            post_only_placement_refusal(
+                evidence,
+                &observed,
+                "post-only fixture windows are not readable on the owned Space before product launch; refusing without posting",
+                None,
+            )
+            .to_string(),
+        ));
+    }
     // Executed return probe before any space-mutating chord, and before
     // the product starts (fewer moving parts during the proof; the holder
     // baseline captured at begin still precedes the Authentic ensure).
-    let needs_probe = opts
-        .chords
-        .iter()
-        .any(|chord| required_scope(chord) == Some(AdmissionScope::SpaceMutating));
     // Retained owned destinations for space-mutating chords: after the
     // full preflight plus the successful independent probe, pre-append the
     // planned finite test Spaces and register each for owned-only removal
@@ -974,9 +1376,8 @@ fn run_leg_body_macos(
     // numbered selects/sends address appended ordinary positions with the
     // product chords (semantics preserved) while the actuator gate keeps
     // every dispatch off baseline SIDs even if the mapping moves.
-    // Post-only legs retain no destinations.
-    let mut owned_sids: Vec<u64> = Vec::new();
-    let mut starting_sid: Option<u64> = None;
+    // Post-only legs already created and switched to their single owned
+    // Space above and never enter this block.
     if needs_probe {
         leg.prove_return()?;
         let baseline = leg.baseline().clone();
@@ -1070,6 +1471,35 @@ fn run_leg_body_macos(
     if settle > 0 {
         settle_hold(settle)?;
     }
+    // Post-only safety gate: the owned Space must still be current and every
+    // joined window still readable on it immediately before any chord posts.
+    // Any drift refuses without posting (teardown restores/removes).
+    if let Some(evidence) = &owned_space {
+        let current_owned_space = leg
+            .transport_mut()
+            .space_snapshot()
+            .map(|topology| {
+                topology
+                    .displays
+                    .first()
+                    .is_some_and(|row| row.current == evidence.sid)
+            })
+            .unwrap_or(false);
+        let placement = await_joined_on_owned_space(&joined, evidence.sid);
+        if !current_owned_space || placement.is_err() {
+            let observed = placement.err().unwrap_or_default();
+            return Err((
+                1,
+                post_only_placement_refusal(
+                    evidence,
+                    &observed,
+                    "post-only owned-Space placement drifted before the chord posts; refusing without posting",
+                    Some(current_owned_space),
+                )
+                .to_string(),
+            ));
+        }
+    }
     let mut reports = Vec::new();
     for (chord, (caller, wid)) in opts.chords.iter().zip(joined.iter()) {
         if crate::space_drag_diag_live::diag_interrupted() {
@@ -1082,6 +1512,14 @@ fn run_leg_body_macos(
         // fixture's own socket first (the post path refuses a target that is
         // not the app's selected window), then post.
         driver.focus(caller, *wid)?;
+        // Harness pacing, not product policy: the product consumes owned
+        // chords before dispatch and its input owner refuses a basic hit
+        // until the eligibility facts attest the fresh focus (250ms attest
+        // cadence plus the observation publish/reconcile that follows a
+        // foreground change). A post issued while focus is still settling is
+        // consumed-refused-basic and never reaches the core, so keep one
+        // bounded margin here; the settle polls the interrupt latch.
+        settle_hold(FOCUS_SETTLE_MS)?;
         let report: serde_json::Value =
             serde_json::from_str(&driver.post(caller, *wid, chord, opts.modifier)?)
                 .map_err(|e| (1, e.to_string()))?;
@@ -1122,6 +1560,7 @@ fn run_leg_body_macos(
     Ok(LegReports {
         chords: reports,
         hover_probe,
+        owned_space: owned_space.map(|evidence| evidence.evidence()),
     })
 }
 
@@ -1280,6 +1719,49 @@ mod tests {
     }
 
     #[test]
+    fn chord_post_waits_for_focus_eligibility() {
+        // The product consumes owned chords before dispatch and refuses a
+        // basic hit until its eligibility attest catches the fresh focus, so
+        // the runner must pace between the fixture-side focus and the post.
+        let source = include_str!("fixture_leg.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let focus_at = production
+            .find("driver.focus(caller, *wid)?;")
+            .expect("focus");
+        let pace_at = production
+            .find("settle_hold(FOCUS_SETTLE_MS)?;")
+            .expect("focus pacing");
+        let post_at = production
+            .find("driver.post(caller, *wid, chord")
+            .expect("post");
+        assert!(focus_at < pace_at && pace_at < post_at);
+        // 500ms constant is documented above the runner's constant; the
+        // ordering is the code fact this test pins.
+    }
+
+    #[test]
+    fn appkit_singleton_precedes_the_baseline() {
+        // `NSScreen.screensHaveSeparateSpaces` answers with a stale `false`
+        // until AppKit's shared application exists; a baseline captured
+        // before that stores an untruthful preimage and the unchanged
+        // Mission Control setting then compares unequal at teardown. Scoped
+        // to the production section so this test's own literals cannot
+        // self-match.
+        let source = include_str!("fixture_leg.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let init_at = production
+            .find("ensure_appkit_singleton();")
+            .expect("fixture leg initializes the AppKit singleton");
+        let begin_at = production
+            .find("LiveLeg::begin(")
+            .expect("fixture leg captures its baseline");
+        assert!(
+            init_at < begin_at,
+            "AppKit singleton must exist before the baseline preimage"
+        );
+    }
+
+    #[test]
     fn settle_window_is_bounded_and_lifetime_fitted() {
         // Unset/empty/zero: no hold at all (unchanged leg timing).
         assert_eq!(settle_ms_from(None, 90).expect("unset"), 0);
@@ -1341,11 +1823,22 @@ mod tests {
             .find(|pair| pair[0] == "--fixture-starting-space")
             .map(|pair| pair[1].parse().expect("starting SID"));
         assert_eq!(starting, Some(11));
-        // Post-only legs carry no gate IDs (gate disabled in the product).
+        // Post-only legs driven by this controller now carry the single
+        // created owned SID plus the recorded starting SID, arming the
+        // existing product gate (no other argv change).
         let post = test_opts(vec!["focus-h"]);
-        let argv = product_argv(&post, product_dir, &[], None);
-        assert!(!argv.iter().any(|arg| arg == "--fixture-owned-space"));
-        assert!(!argv.iter().any(|arg| arg == "--fixture-starting-space"));
+        let argv = product_argv(&post, product_dir, &[2001], Some(11));
+        let owned: Vec<u64> = argv
+            .windows(2)
+            .filter(|pair| pair[0] == "--fixture-owned-space")
+            .map(|pair| pair[1].parse().expect("owned SID"))
+            .collect();
+        assert_eq!(owned, vec![2001]);
+        let starting = argv
+            .windows(2)
+            .find(|pair| pair[0] == "--fixture-starting-space")
+            .map(|pair| pair[1].parse().expect("starting SID"));
+        assert_eq!(starting, Some(11));
         assert!(!argv.iter().any(|arg| arg == "--focus-follows-cursor"));
         let mut ffc = test_opts(vec!["focus-h"]);
         ffc.focus_follows_cursor = true;
@@ -1391,6 +1884,122 @@ mod tests {
         assert_eq!(static_chord_ordinal("select-0"), Some(10));
         assert_eq!(static_chord_ordinal("rel-prev"), None);
         assert_eq!(static_chord_ordinal("focus-h"), None);
+    }
+
+    #[test]
+    fn post_only_occupancy_excludes_fixture_windows_and_bounds_unreadable() {
+        let spaces_before = [10, 11, 12];
+        let readable = |sids: &[u64]| Ok::<Vec<u64>, String>(sids.to_vec());
+        let unreadable = Err::<Vec<u64>, String>("SLS read refused".to_owned());
+        // Windows map to the starting row's 1-based ordinal; the max is n.
+        let occupancy = post_only_occupancy(
+            &spaces_before,
+            [
+                ("com.apple.Safari", &readable(&[10])),
+                ("com.apple.Terminal", &readable(&[11, 12])),
+            ],
+        );
+        assert_eq!(
+            occupancy,
+            PostOnlyOccupancy {
+                n: 3,
+                n_kind: "occupied",
+                n_unreadable_windows: 0,
+            }
+        );
+        // A window on a SID outside the starting row is not occupancy.
+        let occupancy =
+            post_only_occupancy(&spaces_before, [("com.apple.Safari", &readable(&[99]))]);
+        assert_eq!(occupancy.n, 0);
+        // Fixture auxiliary windows never count as occupancy, even when
+        // their membership read failed.
+        let occupancy = post_only_occupancy(
+            &spaces_before,
+            [
+                (FIXTURE_SCOPE, &unreadable),
+                (FIXTURE_SCOPE, &readable(&[12])),
+            ],
+        );
+        assert_eq!(
+            occupancy,
+            PostOnlyOccupancy {
+                n: 0,
+                n_kind: "occupied",
+                n_unreadable_windows: 0,
+            }
+        );
+        // Any unreadable non-fixture membership degrades to the explicit
+        // row-length upper bound and is counted, never guessed at.
+        let occupancy = post_only_occupancy(
+            &spaces_before,
+            [
+                ("com.apple.Safari", &readable(&[10])),
+                ("com.apple.Terminal", &unreadable),
+            ],
+        );
+        assert_eq!(
+            occupancy,
+            PostOnlyOccupancy {
+                n: 3,
+                n_kind: "upper_bound",
+                n_unreadable_windows: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn post_only_owned_ordinal_is_one_append_within_desktop_nine() {
+        // Exactly one append past the fresh row.
+        assert_eq!(post_only_owned_ordinal(&[]).expect("empty row"), 1);
+        assert_eq!(post_only_owned_ordinal(&[10]).expect("one Space"), 2);
+        assert_eq!(
+            post_only_owned_ordinal(&[10, 11, 12, 13, 14, 15, 16, 17]).expect("eight Spaces"),
+            9
+        );
+        // Position 10+ is unmappable by the holders: the same ceiling
+        // plan_owned_destinations applies to appended destinations.
+        let nine = [10, 11, 12, 13, 14, 15, 16, 17, 18];
+        assert!(post_only_owned_ordinal(&nine).is_err());
+        let no_chords: Vec<String> = Vec::new();
+        assert!(plan_owned_destinations(&no_chords, 9).is_err());
+    }
+
+    #[test]
+    fn completed_envelope_carries_established_owned_space() {
+        let evidence = serde_json::json!({
+            "display": 0,
+            "n": 2,
+            "n_kind": "occupied",
+            "n_unreadable_windows": 0,
+            "sid": 9001,
+            "ordinal": 4,
+            "starting_sid": 11,
+            "spaces_before": [11, 12, 13],
+            "spaces_after": [11, 12, 13, 9001],
+        });
+        let built = PostOnlyOwnedSpace {
+            display: 0,
+            n: 2,
+            n_kind: "occupied",
+            n_unreadable_windows: 0,
+            sid: 9001,
+            ordinal: 4,
+            starting_sid: 11,
+            spaces_before: vec![11, 12, 13],
+            spaces_after: vec![11, 12, 13, 9001],
+        };
+        assert_eq!(built.evidence(), evidence);
+        let envelope = completed_envelope(
+            vec![serde_json::json!({"chord": "move-left"})],
+            None,
+            Some(evidence.clone()),
+            serde_json::json!({"clean": true}),
+        );
+        assert_eq!(envelope["outcome"], "completed");
+        assert_eq!(envelope["owned_space"], evidence);
+        // No owned Space (space-mutating/mixed legs) leaves the key absent.
+        let envelope = completed_envelope(vec![], None, None, serde_json::json!({"clean": true}));
+        assert!(envelope.get("owned_space").is_none());
     }
 
     #[test]

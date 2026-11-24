@@ -790,6 +790,15 @@ impl WorldEngine {
         self.connection.cursor_warp_setting()
     }
 
+    /// Whether the latest accepted observation runs under a focused
+    /// fullscreen game pause. Read-only adapter-facing form of the
+    /// stage-4b core predicate; it never mutates or stages anything and
+    /// changes no policy.
+    #[must_use]
+    pub fn cursor_game_paused(&self) -> bool {
+        crate::world_cursor::cursor_game_paused_in(&self.world.staged)
+    }
+
     /// Normalized cursor retained from the latest accepted report, `None`
     /// when the adapter could not read it.
     #[must_use]
@@ -1110,11 +1119,6 @@ impl WorldEngine {
             .unwrap_or(&[]);
         let tx = WorldTransaction::new(&self.connection, prev_transfers, &mut world);
         f(&tx)
-    }
-
-    /// Test-only adapter for the read-only cursor pause predicate.
-    pub(crate) fn cursor_game_paused(&self) -> bool {
-        self.tx_ro(crate::world_cursor::cursor_game_paused)
     }
 
     /// Test-only adapter for the unproven-sticky swap source predicate.

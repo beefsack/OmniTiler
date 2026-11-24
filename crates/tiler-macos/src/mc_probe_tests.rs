@@ -226,19 +226,45 @@ fn dock_gate_matches_exactly_and_refuses_protected() {
 }
 
 #[test]
-fn mc_surface_gate_matches_exactly_and_refuses_other_surfaces() {
-    assert_eq!(MC_SURFACE_BUNDLE_ID, "com.apple.WindowManager");
-    assert_ne!(MC_SURFACE_BUNDLE_ID, DOCK_BUNDLE_ID);
-    assert!(require_mc_surface_bundle(MC_SURFACE_BUNDLE_ID).is_ok());
-    assert!(require_mc_surface_bundle("").is_err());
+fn mc_surface_gate_matches_each_exact_bundle_and_refuses_foreign() {
+    assert_eq!(
+        McSurface::WindowManager.bundle_id(),
+        "com.apple.WindowManager"
+    );
+    assert_eq!(McSurface::Dock.bundle_id(), "com.apple.dock");
+    assert!(require_mc_surface_bundle(McSurface::WindowManager, MC_SURFACE_BUNDLE_ID).is_ok());
+    assert!(require_mc_surface_bundle(McSurface::Dock, DOCK_BUNDLE_ID).is_ok());
+    // Cross-surface bundles are foreign to each route: the WindowManager
+    // route never accepts the Dock bundle and vice versa.
+    for (surface, bundle) in [
+        (McSurface::WindowManager, DOCK_BUNDLE_ID),
+        (McSurface::Dock, MC_SURFACE_BUNDLE_ID),
+    ] {
+        let err = require_mc_surface_bundle(surface, bundle).unwrap_err();
+        assert!(matches!(err, McError::Ownership(_)), "{surface:?} {bundle}");
+    }
+    assert!(require_mc_surface_bundle(McSurface::WindowManager, "").is_err());
+    assert!(require_mc_surface_bundle(McSurface::Dock, "").is_err());
     for b in [
-        DOCK_BUNDLE_ID,
         "com.apple.finder",
         "com.mitchellh.ghostty",
         "com.apple.Terminal",
         "com.googlecode.iterm2",
+        "com.apple.WindowManager.helper",
+        "windowmanager",
     ] {
-        let err = require_mc_surface_bundle(b).unwrap_err();
+        let err = require_mc_surface_bundle(McSurface::WindowManager, b).unwrap_err();
+        assert!(matches!(err, McError::Ownership(_)), "{b}");
+    }
+    for b in [
+        "com.apple.finder",
+        "com.mitchellh.ghostty",
+        "com.apple.Terminal",
+        "com.googlecode.iterm2",
+        "com.apple.dock.helper",
+        "dock",
+    ] {
+        let err = require_mc_surface_bundle(McSurface::Dock, b).unwrap_err();
         assert!(matches!(err, McError::Ownership(_)), "{b}");
     }
 }
@@ -246,11 +272,120 @@ fn mc_surface_gate_matches_exactly_and_refuses_other_surfaces() {
 #[test]
 fn mc_child_identifiers_are_exact_and_distinct() {
     // The live traversal matches these byte-exactly on AXIdentifier.
+    assert_eq!(MC_ID_ROOT, "mc");
     assert_eq!(MC_ID_DISPLAY, "mc.display");
     assert_eq!(MC_ID_SPACES, "mc.spaces");
     assert_eq!(MC_ID_SPACES_LIST, "mc.spaces.list");
     assert_eq!(MC_ID_SPACES_ADD, "mc.spaces.add");
     assert_ne!(MC_ID_DISPLAY, MC_ID_SPACES);
+    // WindowManager owns `mc.display` directly; the Dock fallback keeps the
+    // historical `mc` root hop.
+    assert!(McSurface::WindowManager.direct_display());
+    assert!(!McSurface::Dock.direct_display());
+}
+
+#[test]
+fn presentation_check_follows_the_observed_owner_not_window_manager_running() {
+    // Unknown owner (macOS 15 Stage Manager keeps WindowManager running
+    // without owning `mc`): presence alone verifies absence.
+    assert_eq!(mc_presentation_cg_owner(None), None);
+    // Dock owner: its persistent layer-0+ chrome makes a layer test
+    // meaningless, so absence is verified on fresh AX presence alone.
+    assert_eq!(mc_presentation_cg_owner(Some(McSurface::Dock)), None);
+    // WindowManager owner: the CG layer check is required for that exact PID.
+    assert_eq!(
+        mc_presentation_cg_owner(Some(McSurface::WindowManager)),
+        Some(McSurface::WindowManager)
+    );
+}
+
+#[test]
+fn owner_record_tracks_the_last_present_surface() {
+    record_mc_owner(McSurface::Dock);
+    assert_eq!(mc_owner(), Some(McSurface::Dock));
+    assert_eq!(mc_presentation_cg_owner(mc_owner()), None);
+    record_mc_owner(McSurface::WindowManager);
+    assert_eq!(mc_owner(), Some(McSurface::WindowManager));
+    assert_eq!(
+        mc_presentation_cg_owner(mc_owner()),
+        Some(McSurface::WindowManager)
+    );
+}
+
+#[test]
+fn window_manager_present_short_circuits_the_dock() {
+    let routed = select_mc_surface::<&str>(Ok(McSurfaceExposure::Present("wm")), || {
+        panic!("Dock must not be probed when WindowManager owns mc.display")
+    });
+    assert_eq!(routed, Ok(Some((McSurface::WindowManager, "wm"))));
+}
+
+#[test]
+fn window_manager_absent_or_ax_unavailable_falls_through_to_the_dock() {
+    // No exact WindowManager entry (macOS 15) or no `mc.display` under it:
+    // the Dock `mc` -> `mc.display` surface is selected.
+    for window_manager in [
+        Ok(McSurfaceExposure::Absent),
+        Err(McError::System("AXChildren unreadable".to_owned())),
+        Err(McError::System("AXIdentifier unreadable".to_owned())),
+    ] {
+        let routed =
+            select_mc_surface::<&str>(window_manager, || Ok(McSurfaceExposure::Present("dock")));
+        assert_eq!(routed, Ok(Some((McSurface::Dock, "dock"))));
+    }
+    // Falling through to an absent Dock surface means Mission Control is not
+    // displayed (`Ok(None)`), never a guessed surface.
+    let routed = select_mc_surface::<&str>(
+        Err(McError::System("AXChildren unreadable".to_owned())),
+        || Ok(McSurfaceExposure::Absent),
+    );
+    assert_eq!(routed, Ok(None));
+}
+
+#[test]
+fn ownership_refusals_never_fall_back() {
+    // Protected, empty, and another surface's exact bundle all refuse on the
+    // WindowManager route without ever probing the Dock fallback.
+    for bundle in ["", "com.mitchellh.ghostty", DOCK_BUNDLE_ID] {
+        let refusal = require_mc_surface_bundle(McSurface::WindowManager, bundle).unwrap_err();
+        assert!(matches!(refusal, McError::Ownership(_)), "{bundle}");
+        let routed = select_mc_surface::<&str>(Err(refusal), || {
+            panic!("an ownership refusal must never probe the Dock fallback")
+        });
+        assert!(matches!(routed, Err(McError::Ownership(_))), "{bundle}");
+    }
+    // The Dock route refuses its own foreign bundles just as fatally.
+    for bundle in [MC_SURFACE_BUNDLE_ID, "com.apple.finder"] {
+        let refusal = require_mc_surface_bundle(McSurface::Dock, bundle).unwrap_err();
+        assert!(matches!(refusal, McError::Ownership(_)), "{bundle}");
+        let routed = select_mc_surface::<&str>(Ok(McSurfaceExposure::Absent), move || Err(refusal));
+        assert!(matches!(routed, Err(McError::Ownership(_))), "{bundle}");
+    }
+}
+
+#[test]
+fn dock_ax_failures_are_fatal() {
+    for routed in [
+        select_mc_surface::<&str>(Ok(McSurfaceExposure::Absent), || {
+            Err(McError::System("Dock AXChildren unreadable".to_owned()))
+        }),
+        select_mc_surface::<&str>(
+            Err(McError::System(
+                "WindowManager AXChildren unreadable".to_owned(),
+            )),
+            || Err(McError::System("Dock AXChildren unreadable".to_owned())),
+        ),
+    ] {
+        assert!(matches!(routed, Err(McError::System(_))), "{routed:?}");
+    }
+}
+
+#[test]
+fn neither_surface_exposing_mc_display_means_mission_control_absent() {
+    let routed = select_mc_surface::<&str>(Ok(McSurfaceExposure::Absent), || {
+        Ok(McSurfaceExposure::Absent)
+    });
+    assert_eq!(routed, Ok(None));
 }
 
 #[test]

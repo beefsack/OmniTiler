@@ -27,6 +27,7 @@
 
 pub mod active_border;
 pub mod ax;
+pub mod ax_destroyed_probe;
 pub mod ax_session;
 pub mod border_runtime;
 pub mod border_session;
@@ -74,6 +75,7 @@ pub mod input_policy;
 pub mod input_session;
 pub mod input_session_legs;
 pub mod input_session_physical;
+pub(crate) mod intent_store;
 pub mod live_baseline;
 pub mod live_leg;
 pub mod mc_lifecycle;

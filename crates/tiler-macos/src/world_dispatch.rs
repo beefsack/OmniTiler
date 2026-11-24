@@ -240,31 +240,16 @@ pub(crate) fn codec_transact(
     }
 }
 
-/// Adapter-side fail-closed gate for unpersisted intent desires: the core has
-/// no durable backend yet, so any nonempty `intent_desired` refuses before
-/// any dependent native apply (no slot/outbox write).
-/// Ordinary admission/reflow emits none, so this never fires honestly.
-fn intent_desired_hold(reply: &WorldReplyV4) -> bool {
-    !reply.intent_desired.is_empty()
-}
-
-/// Session-lifetime fail-closed latch over [`intent_desired_hold`]: the
-/// first applied reply carrying nonempty `intent_desired` latches
-/// [`WorldSession`] for its whole lifetime, so a later reply without
-/// desires stays held (a bare per-reply check would wrongly release it).
-/// Never clears: no filesystem storage/backend or recovery exists, so no
-/// later empty reply can prove persistence, and nothing here claims
-/// durability. Call at every real apply route after acceptance and before
-/// any slot/outbox write or presentation publish.
-fn unpersisted_hold(session: &mut WorldSession, reply: &WorldReplyV4) -> bool {
-    if session.unpersisted_intent_hold() {
-        return true;
-    }
-    if intent_desired_hold(reply) {
-        session.mark_unpersisted_intent_desired();
-        return true;
-    }
-    false
+/// Adapter-side durable-intent gate: reconciliation persists any changed
+/// `intent_desired` row before dependent native apply (see
+/// [`WorldSession::reconcile_intent`]). `true` means the whole reply must be
+/// held because the durable store could not be updated or the target process
+/// is gone with no verifiable lifetime; the next accepted reply retries while
+/// unequal. A live process with an unverifiable lifetime is skipped, not held.
+/// There is no session-lifetime latch and no timer: a transient failure
+/// recovers on the next accepted reply.
+fn intent_write_hold(session: &mut WorldSession, reply: &WorldReplyV4) -> bool {
+    session.reconcile_intent(reply)
 }
 
 /// Dispatch outcome for one engine job: what the caller counts and whether
@@ -581,20 +566,21 @@ pub(crate) fn dispatch_gesture_report(
     match outcome {
         WorldOutcome::Accepted(reply) => match session.sequencer().accept_reply(&reply) {
             ReplyVerdict::Applied(applied) => {
-                if unpersisted_hold(session, &applied) {
-                    count_token(shared, &format!("{op}-refused-intent-write-unpersisted"));
+                session.mark_intent_admitted(&report.intent_records);
+                if intent_write_hold(session, &applied) {
+                    count_token(shared, &format!("{op}-refused-intent-write-held"));
                     emit(
                         shared,
                         pid,
                         generation,
                         seq,
                         "core-reply",
-                        "intent-write-unpersisted",
+                        "intent-write-held",
                         0,
                     );
                     return (
                         DispatchVerdict::Refused {
-                            token: "intent-write-unpersisted".to_owned(),
+                            token: "intent-write-held".to_owned(),
                             select_operation: None,
                         },
                         PreviewOutcome::HideTransient { reason: "held" },
@@ -671,20 +657,21 @@ pub(crate) fn dispatch_gesture_report(
         },
         WorldOutcome::CommandConsumed(reply) => match session.sequencer().accept_reply(&reply) {
             ReplyVerdict::Applied(applied) => {
-                if unpersisted_hold(session, &applied) {
-                    count_token(shared, &format!("{op}-refused-intent-write-unpersisted"));
+                session.mark_intent_admitted(&report.intent_records);
+                if intent_write_hold(session, &applied) {
+                    count_token(shared, &format!("{op}-refused-intent-write-held"));
                     emit(
                         shared,
                         pid,
                         generation,
                         seq,
                         "core-reply",
-                        "intent-write-unpersisted",
+                        "intent-write-held",
                         0,
                     );
                     return (
                         DispatchVerdict::Refused {
-                            token: "intent-write-unpersisted".to_owned(),
+                            token: "intent-write-held".to_owned(),
                             select_operation: None,
                         },
                         PreviewOutcome::HideTransient { reason: "held" },
@@ -1024,19 +1011,20 @@ fn dispatch_ticket_inner(
             let accept_clock = crate::stage_timing::PhaseClock::start();
             match session.sequencer().accept_reply(&reply) {
                 ReplyVerdict::Applied(applied) => {
-                    if unpersisted_hold(session, &applied) {
-                        count_token(shared, &format!("{op}-refused-intent-write-unpersisted"));
+                    session.mark_intent_admitted(&report.intent_records);
+                    if intent_write_hold(session, &applied) {
+                        count_token(shared, &format!("{op}-refused-intent-write-held"));
                         emit(
                             shared,
                             pid,
                             generation,
                             seq,
                             "core-reply",
-                            "intent-write-unpersisted",
+                            "intent-write-held",
                             0,
                         );
                         return DispatchVerdict::Refused {
-                            token: "intent-write-unpersisted".to_owned(),
+                            token: "intent-write-held".to_owned(),
                             select_operation: None,
                         };
                     }
@@ -1172,19 +1160,20 @@ fn dispatch_ticket_inner(
             // like an accept (the sequencer applies it as observation).
             match session.sequencer().accept_reply(&reply) {
                 ReplyVerdict::Applied(applied) => {
-                    if unpersisted_hold(session, &applied) {
-                        count_token(shared, &format!("{op}-refused-intent-write-unpersisted"));
+                    session.mark_intent_admitted(&report.intent_records);
+                    if intent_write_hold(session, &applied) {
+                        count_token(shared, &format!("{op}-refused-intent-write-held"));
                         emit(
                             shared,
                             pid,
                             generation,
                             seq,
                             "core-reply",
-                            "intent-write-unpersisted",
+                            "intent-write-held",
                             0,
                         );
                         return DispatchVerdict::Refused {
-                            token: "intent-write-unpersisted".to_owned(),
+                            token: "intent-write-held".to_owned(),
                             select_operation: None,
                         };
                     }
@@ -4593,47 +4582,447 @@ mod tests {
         }
     }
 
-    #[test]
-    fn unpersisted_writes_latch_holds_later_empty_reply() {
-        use tiler_core::directional::WindowId;
-        // Fail-closed latch through the production gate (the same
-        // `unpersisted_hold` the four real apply sites call, after
-        // acceptance and before any slot/outbox write): the first applied
-        // reply carries an opaque save, the next carries none, yet both
-        // hold.
-        let mut session = focus_session();
-        let shared = focus_shared();
-        let focus_queue = Arc::new(Mutex::new(Vec::new()));
-        let mut first = empty_reply();
-        first
+    /// Deterministic live-lifetime bindings for adapter intent tests.
+    #[derive(Clone)]
+    struct IdentityCell(Arc<Mutex<BTreeMap<u32, crate::intent_store::LiveBinding>>>);
+
+    impl IdentityCell {
+        fn new(pid: u32, launch_date_ns: u64, bundle_id: &str) -> Self {
+            let cell = Self(Arc::new(Mutex::new(BTreeMap::new())));
+            cell.set(pid, launch_date_ns, bundle_id);
+            cell
+        }
+
+        fn set(&self, pid: u32, launch_date_ns: u64, bundle_id: &str) {
+            self.0.lock().expect("identity cell").insert(
+                pid,
+                crate::intent_store::LiveBinding {
+                    launch_date_ns,
+                    bundle_id: bundle_id.to_owned(),
+                },
+            );
+        }
+
+        fn probe(&self) -> crate::intent_store::IdentityProbe {
+            let cell = self.clone();
+            Box::new(move |pid| cell.0.lock().expect("identity cell").get(&pid).cloned())
+        }
+    }
+
+    fn intent_reply(
+        win: &str,
+        data: Option<tiler_core::intent_data::IntentData>,
+    ) -> tiler_core::world_report::WorldReplyV4 {
+        let mut reply = empty_reply();
+        reply
             .intent_desired
             .push(tiler_core::world_report::IntentDesire {
-                win: WindowId("4242_7".to_owned()),
-                data: Some(tiler_core::intent_data::IntentData::new(Some(true), None)),
+                win: tiler_core::directional::WindowId(win.to_owned()),
+                data,
             });
-        assert!(
-            unpersisted_hold(&mut session, &first),
-            "write reply must hold"
+        reply
+    }
+
+    fn intent_session(
+        store: crate::intent_store::IntentStore,
+        identity: &IdentityCell,
+    ) -> WorldSession {
+        let mut session = focus_session();
+        session.attach_intent_store(store);
+        session.set_intent_identity(identity.probe());
+        // Existing intent tests always supply a live binding, so liveness is
+        // never consulted; pin it deterministically anyway rather than read
+        // the host's real process table.
+        session.set_intent_process_liveness(Box::new(|_| true));
+        session
+    }
+
+    fn store_snapshot(path: &std::path::Path) -> (Vec<u8>, std::time::SystemTime) {
+        (
+            std::fs::read(path).expect("read intent store"),
+            std::fs::metadata(path)
+                .expect("intent store metadata")
+                .modified()
+                .expect("intent store mtime"),
+        )
+    }
+
+    #[test]
+    fn intent_reconcile_writes_once_then_zero_on_equality_and_clears() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, store) = crate::intent_store::test_store_parts();
+        let store_dir = root.dir();
+        let identity = IdentityCell::new(4242, 777, "com.example.app");
+        let mut session = intent_session(store, &identity);
+        let save = intent_reply(
+            "4242_7",
+            Some(tiler_core::intent_data::IntentData::new(Some(true), None)),
         );
         assert!(
-            session.unpersisted_intent_hold(),
-            "latch sets on the write reply"
+            !session.reconcile_intent(&save),
+            "first save persists and proceeds"
         );
-        // Later reply without writes stays held: never clears simply
-        // because the later reply has no writes.
-        let second = empty_reply();
+        let path = store_dir.join(format!(
+            "intent-v{}-{}-{}.json",
+            crate::intent_store::STORE_VERSION,
+            crate::ffi::audit_self().map(|(uid, _)| uid).unwrap_or(0),
+            crate::ffi::audit_self().map(|(_, asid)| asid).unwrap_or(0),
+        ));
+        assert!(path.exists(), "durable entry written: {path:?}");
+        let (bytes, mtime) = store_snapshot(&path);
+        // A later accepted reply carries the same retained projection:
+        // exact equality costs zero writes.
         assert!(
-            unpersisted_hold(&mut session, &second),
-            "latch must hold the later empty reply"
+            !session.reconcile_intent(&save),
+            "equal verified desire never holds"
+        );
+        let (again, again_mtime) = store_snapshot(&path);
+        assert_eq!(bytes, again, "equal desire writes zero bytes");
+        assert_eq!(mtime, again_mtime, "equal desire touches no mtime");
+        // Explicit null clears the persisted entry and is remembered.
+        let clear = intent_reply("4242_7", None);
+        assert!(!session.reconcile_intent(&clear));
+        let cleared = std::fs::read(&path).expect("read cleared store");
+        assert!(
+            !String::from_utf8_lossy(&cleared).contains("4242_7"),
+            "clear removes the row"
+        );
+        let (_, cleared_mtime) = store_snapshot(&path);
+        assert!(
+            !session.reconcile_intent(&clear),
+            "repeated clear carries no authority"
+        );
+        assert_eq!(
+            store_snapshot(&path).1,
+            cleared_mtime,
+            "null equality costs zero writes"
+        );
+        // A later changed save persists again (repeatable storage).
+        let tile = intent_reply(
+            "4242_7",
+            Some(tiler_core::intent_data::IntentData::new(Some(false), None)),
+        );
+        assert!(!session.reconcile_intent(&tile));
+        let stored = std::fs::read(&path).expect("read store");
+        assert!(String::from_utf8_lossy(&stored).contains("4242_7"));
+        let mode = std::fs::metadata(&path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn intent_failed_write_holds_then_recovers_on_later_accept() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, store) = crate::intent_store::test_store_parts();
+        let store_dir = root.dir();
+        std::fs::create_dir_all(&store_dir).expect("store dir");
+        std::fs::set_permissions(&store_dir, std::fs::Permissions::from_mode(0o500))
+            .expect("read-only store dir");
+        let identity = IdentityCell::new(4242, 777, "com.example.app");
+        let mut session = intent_session(store, &identity);
+        let save = intent_reply(
+            "4242_7",
+            Some(tiler_core::intent_data::IntentData::new(Some(true), None)),
         );
         assert!(
-            session.unpersisted_intent_hold(),
-            "latch persists across dispatches"
+            session.reconcile_intent(&save),
+            "unwritable store holds the whole reply"
         );
-        // No dependent native write/presentation queued either route:
-        // neither gate call touched slots, outbox, or retained presentation.
-        assert!(lock_shared(&shared).last_desired.is_empty());
-        assert!(lock_focus(&focus_queue).is_empty());
+        let path = store_dir.join({
+            let (uid, asid) = crate::ffi::audit_self().unwrap_or((0, 0));
+            format!("intent-v1-{uid}-{asid}.json")
+        });
+        assert!(!path.exists(), "failed write persists nothing");
+        // Restore storage; the NEXT accepted reply retries the still-unequal
+        // desire and recovers with no timer or latch.
+        std::fs::set_permissions(&store_dir, std::fs::Permissions::from_mode(0o700))
+            .expect("restore store dir");
+        assert!(
+            !session.reconcile_intent(&save),
+            "later accepted reply recovers"
+        );
+        assert!(path.exists(), "recovered reply persists");
+        assert!(
+            !session.reconcile_intent(&save),
+            "recovered equality is open"
+        );
+    }
+
+    #[test]
+    fn intent_skipped_issuing_publication_persists_on_later_reply() {
+        let (root, store) = crate::intent_store::test_store_parts();
+        let store_dir = root.dir();
+        let identity = IdentityCell::new(4242, 777, "com.example.app");
+        let mut session = intent_session(store, &identity);
+        let save = intent_reply(
+            "4242_7",
+            Some(tiler_core::intent_data::IntentData::new(Some(true), None)),
+        );
+        // Issuing publication skipped entirely (never reconciled): nothing
+        // is written from it, and no continuation is retained.
+        let path = store_dir.join({
+            let (uid, asid) = crate::ffi::audit_self().unwrap_or((0, 0));
+            format!("intent-v1-{uid}-{asid}.json")
+        });
+        assert!(!path.exists());
+        // A later accepted commandless publication carries the retained
+        // target: exactly one write, then native apply is free.
+        assert!(!session.reconcile_intent(&save));
+        assert!(path.exists());
+        let (bytes, mtime) = store_snapshot(&path);
+        assert!(!session.reconcile_intent(&save));
+        assert_eq!(bytes, store_snapshot(&path).0);
+        assert_eq!(mtime, store_snapshot(&path).1);
+    }
+
+    #[test]
+    fn intent_store_mode_attaches_only_the_configured_store() {
+        use crate::runtime_types::IntentStoreMode;
+        let mut session = focus_session();
+        assert!(
+            session
+                .open_intent_store(&IntentStoreMode::Disabled)
+                .is_none(),
+            "disabled mode opens nothing"
+        );
+        assert!(!session.intent_store_attached(), "no implicit store");
+
+        let (root, _unused) = crate::intent_store::test_store_parts();
+        let dir = root.dir();
+        if crate::ffi::audit_self().is_err() {
+            assert!(
+                session
+                    .open_intent_store(&IntentStoreMode::Isolated(dir))
+                    .is_none(),
+                "no live audit namespace: the store refuses closed"
+            );
+            return;
+        }
+        let identity = IdentityCell::new(4242, 777, "com.example.app");
+        session.set_intent_identity(identity.probe());
+        session.set_intent_process_liveness(Box::new(|_| true));
+        let opened = session.open_intent_store(&IntentStoreMode::Isolated(dir.clone()));
+        assert_eq!(
+            opened.as_deref(),
+            Some(dir.as_path()),
+            "exact configured dir"
+        );
+        assert!(session.intent_store_attached());
+        let save = intent_reply(
+            "4242_7",
+            Some(tiler_core::intent_data::IntentData::new(Some(true), None)),
+        );
+        assert!(!session.reconcile_intent(&save));
+        let path = dir.join({
+            let (uid, asid) = crate::ffi::audit_self().unwrap_or((0, 0));
+            format!("intent-v1-{uid}-{asid}.json")
+        });
+        assert!(path.exists(), "reconcile writes inside the isolated store");
+    }
+
+    #[test]
+    fn intent_alive_unverifiable_row_is_skipped_once_and_never_freezes() {
+        let (root, store) = crate::intent_store::test_store_parts();
+        let store_dir = root.dir();
+        // No live binding for the target pid: the identity cell holds a
+        // different process only.
+        let identity = IdentityCell::new(9999, 777, "com.example.app");
+        let mut session = intent_session(store, &identity);
+        session.set_intent_process_liveness(Box::new(|pid| pid == 4242));
+        let save = intent_reply(
+            "4242_7",
+            Some(tiler_core::intent_data::IntentData::new(Some(true), None)),
+        );
+        let path = store_dir.join({
+            let (uid, asid) = crate::ffi::audit_self().unwrap_or((0, 0));
+            format!("intent-v1-{uid}-{asid}.json")
+        });
+        assert!(
+            !session.reconcile_intent(&save),
+            "alive-but-unverifiable row never freezes the reply"
+        );
+        assert!(
+            !path.exists(),
+            "an unverifiable lifetime binding is never persisted"
+        );
+        assert!(
+            session.intent_unverifiable_windows().contains("4242_7"),
+            "one bounded diagnostic is recorded for the window"
+        );
+        // Later accepted replies stay open and never repeat the diagnostic.
+        assert!(!session.reconcile_intent(&save));
+        assert!(!session.reconcile_intent(&save));
+        assert!(!path.exists());
+        assert_eq!(session.intent_unverifiable_windows().len(), 1);
+    }
+
+    #[test]
+    fn intent_gone_process_without_binding_still_holds() {
+        let (root, store) = crate::intent_store::test_store_parts();
+        let store_dir = root.dir();
+        let identity = IdentityCell::new(9999, 777, "com.example.app");
+        let mut session = intent_session(store, &identity);
+        session.set_intent_process_liveness(Box::new(|_| false));
+        let save = intent_reply(
+            "4242_7",
+            Some(tiler_core::intent_data::IntentData::new(Some(true), None)),
+        );
+        let path = store_dir.join({
+            let (uid, asid) = crate::ffi::audit_self().unwrap_or((0, 0));
+            format!("intent-v1-{uid}-{asid}.json")
+        });
+        assert!(
+            session.reconcile_intent(&save),
+            "gone process keeps the recoverable whole-reply hold"
+        );
+        assert!(!path.exists(), "nothing persisted while unverifiable");
+        assert!(
+            session.intent_unverifiable_windows().is_empty(),
+            "a gone process is a hold, not a skip diagnostic"
+        );
+        // The process returns with still no readable lifetime binding: the
+        // row is skipped (never persisted) and the reply opens.
+        session.set_intent_process_liveness(Box::new(|_| true));
+        assert!(!session.reconcile_intent(&save));
+        assert!(!path.exists());
+        assert!(session.intent_unverifiable_windows().contains("4242_7"));
+    }
+
+    #[test]
+    fn intent_lifetime_change_fences_equality_and_hydration() {
+        let (root, store) = crate::intent_store::test_store_parts();
+        let store_dir = root.dir();
+        let identity = IdentityCell::new(4242, 777, "com.example.app");
+        let mut session = intent_session(store, &identity);
+        let save = intent_reply(
+            "4242_7",
+            Some(tiler_core::intent_data::IntentData::new(Some(true), None)),
+        );
+        assert!(!session.reconcile_intent(&save));
+        let path = store_dir.join({
+            let (uid, asid) = crate::ffi::audit_self().unwrap_or((0, 0));
+            format!("intent-v1-{uid}-{asid}.json")
+        });
+        let original = std::fs::read(&path).expect("read store");
+        // PID reuse with a different numeric launch date is a different
+        // lifetime: the same data is NOT equal, so it rewrites the binding.
+        identity.set(4242, 778, "com.example.app");
+        assert!(!session.reconcile_intent(&save));
+        let rewritten = std::fs::read(&path).expect("read store");
+        assert_ne!(original, rewritten, "new lifetime rewrites the binding");
+
+        // Hydration against the old binding must refuse; the live binding
+        // imports. Late import after admission is ignored.
+        let (root, mut store) = crate::intent_store::test_store_parts();
+        let store_dir = root.dir();
+        let seed = crate::intent_store::StoredEntry {
+            win: "4242_7".to_owned(),
+            wid: 7,
+            pid: 4242,
+            launch_date_ns: 777,
+            bundle_id: "com.example.app".to_owned(),
+            data: tiler_core::intent_data::encode_intent_data(
+                &tiler_core::intent_data::IntentData::new(Some(true), None),
+            ),
+        };
+        let mut changes = BTreeMap::new();
+        changes.insert("4242_7".to_owned(), Some(seed));
+        store.apply_changes(changes).expect("seed store");
+        let identity = IdentityCell::new(4242, 778, "com.example.app");
+        let mut session = focus_session();
+        session.attach_intent_store(store);
+        session.set_intent_identity(identity.probe());
+        assert!(
+            session.intent_records_for_admission(&["4242_7"]).is_empty(),
+            "ID reuse with a new launch date imports nothing"
+        );
+        assert!(
+            session.intent_records_for_admission(&["4242_8"]).is_empty(),
+            "store rows only import for a window present in the report"
+        );
+        identity.set(4242, 777, "com.example.app");
+        let imported = session.intent_records_for_admission(&["4242_7"]);
+        assert_eq!(
+            imported,
+            vec![tiler_core::world_report::IntentRecord {
+                win: tiler_core::directional::WindowId("4242_7".to_owned()),
+                data: tiler_core::intent_data::encode_intent_data(
+                    &tiler_core::intent_data::IntentData::new(Some(true), None)
+                ),
+            }]
+        );
+        session.mark_intent_admitted(&imported);
+        assert!(
+            session.intent_records_for_admission(&["4242_7"]).is_empty(),
+            "an imported window never rides a later report"
+        );
+        let _ = store_dir;
+    }
+
+    #[test]
+    fn intent_hydration_is_per_window_and_admits_late_apps_once() {
+        let (root, mut store) = crate::intent_store::test_store_parts();
+        let store_dir = root.dir();
+        let data_a = tiler_core::intent_data::encode_intent_data(
+            &tiler_core::intent_data::IntentData::new(Some(true), None),
+        );
+        let data_b = tiler_core::intent_data::encode_intent_data(
+            &tiler_core::intent_data::IntentData::new(Some(false), None),
+        );
+        let mut changes = BTreeMap::new();
+        for (win, wid, data) in [("4242_7", 7, &data_a), ("4242_9", 9, &data_b)] {
+            changes.insert(
+                win.to_owned(),
+                Some(crate::intent_store::StoredEntry {
+                    win: win.to_owned(),
+                    wid,
+                    pid: 4242,
+                    launch_date_ns: 777,
+                    bundle_id: "com.example.app".to_owned(),
+                    data: data.clone(),
+                }),
+            );
+        }
+        store.apply_changes(changes).expect("seed two windows");
+        let identity = IdentityCell::new(4242, 777, "com.example.app");
+        let mut session = focus_session();
+        session.attach_intent_store(store);
+        session.set_intent_identity(identity.probe());
+
+        // Report #1 sees only A: only A hydrates and is marked imported.
+        let first = session.intent_records_for_admission(&["4242_7"]);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].win.0, "4242_7");
+        session.mark_intent_admitted(&first);
+
+        // Report #2 sees A and B: A never rides again, while late-arriving
+        // B still hydrates exactly once.
+        let second = session.intent_records_for_admission(&["4242_7", "4242_9"]);
+        assert_eq!(second.len(), 1, "only the newly present window imports");
+        assert_eq!(second[0].win.0, "4242_9");
+        assert_eq!(second[0].data, data_b);
+        session.mark_intent_admitted(&second);
+
+        // Report #3: every stored window already rode, so nothing imports.
+        assert!(
+            session
+                .intent_records_for_admission(&["4242_7", "4242_9"])
+                .is_empty(),
+            "each stored window imports at most once"
+        );
+        // A present-but-lifetime-mismatched window still refuses, and the
+        // imported set is per window: a different pid never suppresses it.
+        identity.set(4242, 778, "com.example.app");
+        assert!(
+            session
+                .intent_records_for_admission(&["4242_9", "4242_11"])
+                .is_empty(),
+            "ID reuse with a new launch date imports nothing"
+        );
+        let _ = store_dir;
     }
 
     // -- Retained switch settlement projection (once per identity) --
@@ -4962,14 +5351,13 @@ mod tests {
 
     #[test]
     fn ordinary_save_free_reply_not_held_and_dispatches() {
-        // Ordinary admission/reflow emits no saves, so the production gate
-        // stays open — and the real production dispatch still applies.
+        // Ordinary admission/reflow emits no intent desires, so the durable
+        // gate stays open — and the real production dispatch still applies.
         let mut session = focus_session();
         assert!(
-            !unpersisted_hold(&mut session, &empty_reply()),
+            !intent_write_hold(&mut session, &empty_reply()),
             "save-free reply must not hold"
         );
-        assert!(!session.unpersisted_intent_hold());
         let mut retained = crate::runtime_core::RetainedCore::default();
         let shared = focus_shared();
         let inbox = Arc::new(Inbox::new(16));
@@ -4994,10 +5382,6 @@ mod tests {
             DispatchVerdict::Applied { .. } => {}
             other => panic!("save-free synthetic dispatch must apply, got {other:?}"),
         }
-        assert!(
-            !session.unpersisted_intent_hold(),
-            "save-free dispatch must not latch"
-        );
     }
 
     #[test]

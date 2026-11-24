@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use tiler_core::directional::WindowId;
 
+use crate::cursor_observer::CoreCursorGate;
 use crate::runtime::{
     AxCompletion, FocusCommand, FocusRequest, FrameCommand, InputSemanticAction, ObservedWindow,
     Shared, emit, lock_shared, window_id,
@@ -1293,6 +1294,14 @@ fn handle_drag_gesture(
 
 // -- Thread bodies -------------------------------------------------------------
 
+/// Publish the effective core cursor state to the shared observer gate.
+/// Read-only over the session's engine; the observer never infers either
+/// value itself.
+fn publish_cursor_gate(cursor_gate: &CoreCursorGate, session: &mut WorldSession) {
+    let engine = session.engine_mut();
+    cursor_gate.publish(engine.focus_follows_cursor(), engine.cursor_game_paused());
+}
+
 /// Engine owner: the sole owner of the [`WorldSession`] (retained world
 /// engine plus adapter-side sequencing) and retained observation state.
 /// Never waits for AX; frame emission is a non-blocking slot overwrite
@@ -1301,13 +1310,14 @@ pub(crate) fn engine_main(
     shared: Arc<Mutex<Shared>>,
     inbox: Arc<Inbox>,
     focus_queue: Arc<Mutex<Vec<FocusRequest>>>,
+    cursor_gate: Arc<CoreCursorGate>,
     focus_capacity: usize,
     stop: Arc<AtomicBool>,
     ready_tx: mpsc::Sender<()>,
 ) -> EngineExit {
     // The watermark clock is the shared
     // input mark (submitters advance it; dispatches only stamp it).
-    let (native_mode, focus_route, clock, core_settings) = {
+    let (native_mode, focus_route, clock, core_settings, intent_store_mode) = {
         let guard = lock_shared(&shared);
         (
             matches!(
@@ -1317,9 +1327,19 @@ pub(crate) fn engine_main(
             guard.config.focus_route,
             Arc::clone(&guard.clock),
             guard.config.core_settings.clone(),
+            guard.config.intent_store.clone(),
         )
     };
     let mut session = WorldSession::new(native_mode, focus_route, clock, &core_settings);
+    // Attach the configured durable intent store exactly once. Disabled (the
+    // default) leaves the session storeless; the published directory is the
+    // integration-observable proof of what the engine actually opened.
+    let intent_store_dir = session.open_intent_store(&intent_store_mode);
+    {
+        let mut guard = lock_shared(&shared);
+        guard.diagnostics.intent_store_dir =
+            intent_store_dir.map(|dir| dir.to_string_lossy().into_owned());
+    }
     let reported = session
         .initial_settings_reply()
         .map(crate::world_connection::format_setting_errors)
@@ -1334,6 +1354,10 @@ pub(crate) fn engine_main(
         let style = session.core_border_presentation();
         lock_shared(&shared).presentation_style = style;
     }
+    // The observer's gate starts closed (default off): publish the effective
+    // settings before readiness so an enabled run samples immediately and a
+    // disabled run never touches AX.
+    publish_cursor_gate(&cursor_gate, &mut session);
     let mut retained = RetainedCore::default();
     let _ = ready_tx.send(());
     loop {
@@ -1353,6 +1377,9 @@ pub(crate) fn engine_main(
             &focus_queue,
             focus_capacity,
         );
+        // Settings and staged focus change only through engine jobs, so the
+        // gate is republished once per job (lock-free atomics, no timer).
+        publish_cursor_gate(&cursor_gate, &mut session);
     }
     // An exit that was never asked for (inbox closed without stop) is
     // observable evidence, not a silent idle end: counted, logged, and
@@ -1599,6 +1626,14 @@ pub(crate) fn process_job(
             {
                 let mut guard = lock_shared(shared);
                 guard.cursor_ack_seq = guard.cursor_ack_seq.max(seq);
+            }
+            // Defense in depth for the observer's gate: a sample that raced
+            // a setting/game-pause change never becomes an OP_CURSOR report.
+            // The ack above already stands, so no retry churn follows.
+            let engine = session.engine_mut();
+            let sampling_allowed = engine.focus_follows_cursor() && !engine.cursor_game_paused();
+            if !sampling_allowed {
+                return;
             }
             // Sample-time attribution: the hit is resolved exactly once,
             // here, and the stored sample is never re-attributed at build
@@ -3494,6 +3529,20 @@ mod trailing_join_tests {
         )
     }
 
+    /// Session with the core focus-follows setting enabled, for tests whose
+    /// subject is the cursor sample lane.
+    fn focus_follows_session() -> WorldSession {
+        WorldSession::new(
+            true,
+            FocusRoute::Slps,
+            Arc::new(ObservationClock::new()),
+            &[(
+                "focusFollowsCursor".to_owned(),
+                tiler_core::connection::RawSettingValue::Bool(true),
+            )],
+        )
+    }
+
     fn close_app(shared: &Arc<Mutex<Shared>>, pid: u32, generation: u64) {
         use crate::runtime_shared::AppRecord;
         lock_shared(shared).apps.insert(
@@ -4302,8 +4351,23 @@ mod trailing_join_tests {
         Arc<Inbox>,
         Arc<Mutex<Vec<FocusRequest>>>,
     ) {
+        harness_with_session(session(), ctx, retained)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn harness_with_session(
+        session: WorldSession,
+        ctx: Arc<NativeContext>,
+        retained: RetainedCore,
+    ) -> (
+        WorldSession,
+        RetainedCore,
+        Arc<Mutex<Shared>>,
+        Arc<Inbox>,
+        Arc<Mutex<Vec<FocusRequest>>>,
+    ) {
         (
-            session(),
+            session,
             retained,
             test_shared(ctx),
             Arc::new(Inbox::new(16)),
@@ -4315,7 +4379,7 @@ mod trailing_join_tests {
     fn cursor_sample_job_stores_acks_and_dispatches_one_report() {
         use tiler_core::directional::WindowId;
         let (mut session, mut retained, shared, inbox, focus_queue) =
-            harness(ctx(), retained_occupied_trailing());
+            harness_with_session(focus_follows_session(), ctx(), retained_occupied_trailing());
         process_job(
             EngineJob::CursorSample {
                 seq: 1,
@@ -4354,6 +4418,44 @@ mod trailing_join_tests {
             replies.contains_key("cursor-accepted") || replies.contains_key("cursor-consumed"),
             "cursor dispatch takes the enumerated reply path: {replies:?}"
         );
+    }
+
+    #[test]
+    fn cursor_sample_with_focus_follows_off_acks_without_storing_or_reporting() {
+        // Default core setting is off: the observer would not have posted,
+        // but a sample racing a settings change (or any stray submit) still
+        // must never become a report.
+        let (mut session, mut retained, shared, inbox, focus_queue) =
+            harness(ctx(), retained_occupied_trailing());
+        process_job(
+            EngineJob::CursorSample {
+                seq: 1,
+                point: (10, 20),
+                owner: Some((4243, 9)),
+            },
+            &mut session,
+            &mut retained,
+            &shared,
+            &inbox,
+            &focus_queue,
+            0,
+        );
+        assert_eq!(
+            lock_shared(&shared).cursor_ack_seq,
+            1,
+            "the ack still ends the observer retry"
+        );
+        assert!(
+            session.cursor_sample().is_none(),
+            "no sample is stored when sampling is disallowed"
+        );
+        let replies = lock_shared(&shared).diagnostics.core_replies.clone();
+        let cursor_replies: u64 = replies
+            .iter()
+            .filter(|(token, _)| token.starts_with("cursor-"))
+            .map(|(_, count)| *count)
+            .sum();
+        assert_eq!(cursor_replies, 0, "no OP_CURSOR report: {replies:?}");
     }
 
     /// Fixture admission gate: the genuine handshake binds the session
@@ -4451,6 +4553,7 @@ mod trailing_join_tests {
             inbox: Arc::clone(&inbox),
             focus_queue: Arc::clone(&focus_queue),
             ax_factory: Arc::new(RefusingAx),
+            cursor_gate: Arc::new(CoreCursorGate::default()),
         };
         assert!(
             !handle.take_select_claim_pending(),
@@ -4621,6 +4724,7 @@ mod trailing_join_tests {
             inbox: Arc::clone(&inbox),
             focus_queue: Arc::clone(&focus_queue),
             ax_factory: Arc::new(StubAx),
+            cursor_gate: Arc::new(CoreCursorGate::default()),
         };
         // Mixed burst through the REAL public ingress (the exact functions
         // production calls): a send, taps, a focus step, and a directional
@@ -4901,6 +5005,7 @@ mod trailing_join_tests {
             inbox: Arc::clone(&inbox),
             focus_queue: Arc::clone(&focus_queue),
             ax_factory: Arc::new(StubAx),
+            cursor_gate: Arc::new(CoreCursorGate::default()),
         };
         use crate::runtime_types::SubmitOutcome;
         assert_eq!(
@@ -5378,6 +5483,7 @@ mod trailing_join_tests {
             inbox: Arc::clone(inbox),
             focus_queue: Arc::clone(focus_queue),
             ax_factory: Arc::new(RefusingFocusAx),
+            cursor_gate: Arc::new(CoreCursorGate::default()),
         }
     }
 
@@ -9869,15 +9975,16 @@ mod trailing_join_tests {
         );
     }
 
-    /// Slice-1 pending-unpersisted-intent hold through the production
-    /// dispatch: explicit synthetic ordinary captures (production caps) admit
-    /// three windows, then a real `ToggleFloat` core command dispatches
-    /// through genuine `dispatch_report`/`codec_transact`. The first
-    /// intent-write reply holds native-dependent effects, geometry,
-    /// presentation, and outbox; a later empty-writes reply still cannot
-    /// bypass the session latch. A separate save-free control still applies.
+    /// Durable intent through the production dispatch: explicit synthetic
+    /// ordinary captures (production caps) admit three windows, then a real
+    /// `ToggleFloat` core command dispatches through genuine
+    /// `dispatch_report`/`codec_transact`. The adapter-owned atomic store
+    /// persists the changed desire BEFORE dependent native apply; the reply
+    /// then applies normally (no permanent `ToggleFloat` freeze). A later
+    /// accepted reply carrying the same retained projection writes nothing.
+    /// A separate save-free control applies too.
     #[test]
-    fn unpersisted_intent_hold_through_production_dispatch() {
+    fn durable_intent_toggle_float_does_not_freeze_the_session() {
         use crate::classifier::{ActivationPolicy, ROLE_WINDOW, SUBROLE_STANDARD};
         use crate::ffi::{AxFrame, CgBounds};
         use crate::native_facts::{NativeAppFacts, NativeReadOutcome, NativeWindowFacts};
@@ -9979,12 +10086,38 @@ mod trailing_join_tests {
         let ctx = ctx();
         let (mut session, mut retained, shared, inbox, focus_queue) =
             harness(Arc::clone(&ctx), RetainedCore::default());
+        let (store_root, mut store) = crate::intent_store::test_store_parts();
+        let store_dir = store_root.dir();
+        // Restart hydration: seed one lifetime-verified row before the first
+        // admission. Admission must import it without rewriting the file.
+        let seeded_bytes = {
+            store
+                .apply_changes(std::collections::BTreeMap::from([(
+                    "4242_1".to_owned(),
+                    Some(crate::intent_store::StoredEntry {
+                        win: "4242_1".to_owned(),
+                        wid: 1,
+                        pid: PID,
+                        launch_date_ns: 777,
+                        bundle_id: "com.example.app".to_owned(),
+                        data: "{\"v\":1,\"float\":true,\"stickyPrior\":null}".to_owned(),
+                    }),
+                )]))
+                .expect("seed durable intent before admission");
+            std::fs::read(store_dir.join(store.file_name())).expect("seeded store")
+        };
+        let store_name = store.file_name();
+        session.attach_intent_store(store);
+        session.set_intent_identity(Box::new(|pid| {
+            (pid == PID).then_some(crate::intent_store::LiveBinding {
+                launch_date_ns: 777,
+                bundle_id: "com.example.app".to_owned(),
+            })
+        }));
         assert!(
             session.connection_bound(),
             "genuine handshake binds the session"
         );
-        let bound = session.sequencer().bound_generation();
-        assert!(!bound.is_empty());
         let frames = Arc::new(FrameSlot::new());
         lock_shared(&shared).apps.insert(
             PID,
@@ -10024,18 +10157,17 @@ mod trailing_join_tests {
                 8,
             );
         }
-        assert!(
-            !session.unpersisted_intent_hold(),
-            "save-free admission must not latch"
+        assert_eq!(
+            std::fs::read(store_dir.join(&store_name)).expect("store still readable"),
+            seeded_bytes,
+            "hydration imports the verified row without rewriting it"
         );
         let desired_base = lock_shared(&shared).last_desired.clone();
-        assert_eq!(desired_base.len(), 3, "admission publishes plan truth");
-        let presentation_base = lock_shared(&shared).last_presentation.clone();
-        let workspaces_base = lock_shared(&shared).last_workspace_desires.clone();
-        let generation_base = lock_shared(&shared).last_core_generation.clone();
-        assert_eq!(generation_base, bound);
-        let rev_base = frames.current_rev();
-        let emitted_base = lock_shared(&shared).diagnostics.frames_emitted;
+        assert_eq!(
+            desired_base.len(),
+            2,
+            "the imported float=true keeps 4242_1 out of the tiled plan"
+        );
         assert!(
             focus_queue.lock().expect("focus queue").is_empty(),
             "admission moves no focus"
@@ -10069,52 +10201,36 @@ mod trailing_join_tests {
             GENERATION,
             seq,
         ) {
-            DispatchVerdict::Refused { token, .. } => assert_eq!(
-                token, "intent-write-unpersisted",
-                "first intent-write reply must hold"
-            ),
-            other => panic!("toggle-float dispatch must hold, got {other:?}"),
+            DispatchVerdict::Applied { .. } => {}
+            other => panic!("toggle-float dispatch must persist then apply, got {other:?}"),
         }
-        assert!(
-            session.unpersisted_intent_hold(),
-            "write reply latches the session"
-        );
+        // The changed desire was persisted before apply, and the session is
+        // NOT frozen: the tiling publish proceeded.
+        let store_path = store_dir.join({
+            let (uid, asid) = crate::ffi::audit_self().unwrap_or((0, 0));
+            format!("intent-v1-{uid}-{asid}.json")
+        });
+        let stored = std::fs::read(&store_path).expect("durable intent written before apply");
+        let stored_text = String::from_utf8(stored.clone()).expect("store utf8");
+        assert!(stored_text.contains("4242_1"), "{stored_text}");
+        let stored_json: serde_json::Value = serde_json::from_slice(&stored).expect("store JSON");
+        let stored_data = stored_json["entries"][0]["data"]
+            .as_str()
+            .expect("persisted intent data string");
+        let stored_intent =
+            tiler_core::intent_data::decode_intent_data(stored_data).expect("valid intent data");
         assert_eq!(
-            lock_shared(&shared).last_desired,
-            desired_base,
-            "held reply publishes no geometry"
+            stored_intent.float,
+            Some(false),
+            "ToggleFloat flipped the imported true desire: {stored_text}"
         );
-        assert_eq!(
-            lock_shared(&shared).last_presentation,
-            presentation_base,
-            "held reply publishes no presentation"
-        );
-        assert_eq!(
-            lock_shared(&shared).last_workspace_desires,
-            workspaces_base,
-            "held reply publishes no workspace desires"
-        );
-        assert_eq!(
-            lock_shared(&shared).last_core_generation,
-            generation_base,
-            "held reply publishes no generation"
-        );
-        assert!(
-            focus_queue.lock().expect("focus queue").is_empty(),
-            "held reply enqueues no focus outbox"
-        );
-        assert_eq!(
-            frames.current_rev(),
-            rev_base,
-            "held reply emits no frame slot write"
-        );
-        assert_eq!(
-            lock_shared(&shared).diagnostics.frames_emitted,
-            emitted_base,
-            "held reply spends no native effect"
-        );
+        let stored_mtime = std::fs::metadata(&store_path)
+            .expect("store metadata")
+            .modified()
+            .expect("mtime");
 
-        // Later empty-writes reply still cannot bypass the latch.
+        // A later accepted observation-only reply carries the retained
+        // projection: equality costs zero writes, and native apply proceeds.
         seq += 1;
         match dispatch_report(
             &mut session,
@@ -10133,41 +10249,26 @@ mod trailing_join_tests {
             GENERATION,
             seq,
         ) {
-            DispatchVerdict::Refused { token, .. } => assert_eq!(
-                token, "intent-write-unpersisted",
-                "latched session must hold the later empty reply"
-            ),
-            other => panic!("latched dispatch must still hold, got {other:?}"),
+            DispatchVerdict::Applied { .. } => {}
+            other => panic!("later accepted reply must apply after persistence, got {other:?}"),
         }
-        assert!(
-            session.unpersisted_intent_hold(),
-            "latch persists across dispatches"
+        assert_eq!(
+            std::fs::read(&store_path).expect("store still readable"),
+            stored,
+            "unchanged retained desire writes zero bytes"
         );
         assert_eq!(
-            lock_shared(&shared).last_desired,
-            desired_base,
-            "latched hold still publishes no geometry"
-        );
-        assert_eq!(
-            lock_shared(&shared).last_presentation,
-            presentation_base,
-            "latched hold still publishes no presentation"
-        );
-        assert!(
-            focus_queue.lock().expect("focus queue").is_empty(),
-            "latched hold still enqueues no focus"
-        );
-        assert_eq!(frames.current_rev(), rev_base);
-        assert_eq!(
-            lock_shared(&shared).diagnostics.frames_emitted,
-            emitted_base,
-            "latched hold still spends nothing"
+            std::fs::metadata(&store_path)
+                .expect("store metadata")
+                .modified()
+                .expect("mtime"),
+            stored_mtime,
+            "unchanged retained desire touches no mtime"
         );
 
         // Separate save-free control: ordinary observation stays open.
         let (mut c_session, mut c_retained, c_shared, c_inbox, c_focus) =
             harness(Arc::clone(&ctx), RetainedCore::default());
-        assert!(!c_session.unpersisted_intent_hold());
         match dispatch_report(
             &mut c_session,
             &mut c_retained,
@@ -10188,10 +10289,6 @@ mod trailing_join_tests {
             DispatchVerdict::Applied { .. } => {}
             other => panic!("save-free control must apply, got {other:?}"),
         }
-        assert!(
-            !c_session.unpersisted_intent_hold(),
-            "save-free dispatch must not latch"
-        );
     }
 
     /// Scripted native leg for the handoff regression below: the ONLY

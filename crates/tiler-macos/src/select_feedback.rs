@@ -444,6 +444,7 @@ mod tests {
             inbox: Arc::new(crate::runtime_thread::Inbox::new(16)),
             focus_queue: Arc::new(std::sync::Mutex::new(Vec::new())),
             ax_factory: Arc::new(StubAx),
+            cursor_gate: Arc::new(crate::cursor_observer::CoreCursorGate::default()),
         }
     }
 

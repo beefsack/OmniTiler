@@ -998,6 +998,44 @@ pub struct AxSessionOutcome {
     pub messaging_timeout_set: bool,
 }
 
+/// One `AXUIElementDestroyed` delivery observed by the bounded
+/// exact-identity destroyed observer. `matched_wid` is `Some` only when the
+/// callback element compared equal (`CFEqual`) to the retained element for
+/// that window id; `get_window_wid` is a secondary best-effort
+/// `_AXUIElementGetWindow` read taken only after a failed match (never
+/// guessed). `at_ms` is the callback's offset from observer start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DestroyedEvent {
+    pub matched_wid: Option<u32>,
+    pub get_window_wid: Option<u32>,
+    pub at_ms: u64,
+}
+
+/// One notification registration (or teardown removal) status for the
+/// bounded destroyed observer. Every attempted leg is reported: a silent
+/// empty watch is never returned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AxDestroyedRegistration {
+    pub wid: u32,
+    pub notification: String,
+    pub status: i32,
+    pub status_name: String,
+}
+
+/// Outcome of one bounded exact-identity destroyed observation run. Events
+/// stream over the caller's channel while the observer pumps; the outcome
+/// carries the registration/removal audit plus any other notification names
+/// the callback saw (it must ignore them for identity).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AxDestroyedOutcome {
+    pub joined_wids: Vec<u32>,
+    pub registrations: Vec<AxDestroyedRegistration>,
+    pub removals: Vec<AxDestroyedRegistration>,
+    pub other_notifications: Vec<(String, u32)>,
+    pub messaging_timeout_set: bool,
+    pub timed_out: bool,
+}
+
 /// One managed display's Space membership. IDs only; no names, no content.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlsDisplay {
@@ -3151,6 +3189,312 @@ mod macos {
         }
     }
 
+    // -- Bounded exact-identity destroyed observer (diagnostic only) --
+    //
+    // Diagnostic seam for the D5 destroyed-identity question. A dedicated
+    // observer thread creates one observer for the subject pid, joins exactly
+    // the requested wids from `AXWindows`, retains each joined element in an
+    // immutable map, registers `AXUIElementDestroyed` on each exact element,
+    // and pumps a finite runloop in bounded slices. The callback compares the
+    // delivered element to the retained elements with `CFEqual` BEFORE any
+    // attribute read; it never retains or copies the callback element and
+    // never panics. Everything AX stays on this thread; only plain
+    // [`DestroyedEvent`] data leaves via the channel. Registration and
+    // teardown statuses are all reported (no silent empty watch).
+
+    struct DestroyedRefcon {
+        events: std::sync::mpsc::Sender<DestroyedEvent>,
+        retained: std::collections::BTreeMap<u32, AxElement>,
+        others: Mutex<std::collections::BTreeMap<String, u32>>,
+        started: Instant,
+    }
+
+    unsafe extern "C-unwind" fn ax_destroyed_callback(
+        _observer: NonNull<AXObserver>,
+        element: NonNull<AXUIElement>,
+        notification: NonNull<CFString>,
+        refcon: *mut std::ffi::c_void,
+    ) {
+        // SAFETY: `refcon` is the live `Box<DestroyedRefcon>` installed below,
+        // reclaimed only after notifications are removed and the runloop
+        // source is invalidated on this thread. `element`/`notification` are
+        // borrowed for the callback duration only (never retained/copied).
+        // No panics: all fallible work is bounded and failure is dropped.
+        if refcon.is_null() {
+            return;
+        }
+        let state = unsafe { &*(refcon as *const DestroyedRefcon) };
+        let name = unsafe { notification.as_ref() }.to_string();
+        if name != "AXUIElementDestroyed" {
+            // Other names are counted, never used for identity.
+            if let Ok(mut counts) = state.others.try_lock() {
+                *counts.entry(name).or_insert(0) += 1;
+            }
+            return;
+        }
+        // Identity first: compare the borrowed callback element against the
+        // immutable retained map. No AX read happens before this loop.
+        let callback_cf: &CFType = unsafe { element.as_ref() }.as_ref();
+        let mut matched: Option<u32> = None;
+        for (wid, retained) in &state.retained {
+            let retained_cf: &CFType = retained.inner.as_ref();
+            if objc2_core_foundation::CFEqual(Some(callback_cf), Some(retained_cf)) {
+                matched = Some(*wid);
+                break;
+            }
+        }
+        // Secondary only: an unmatched destroyed may expose its wid through
+        // the private SPI. This is a read AFTER the failed `CFEqual` and is
+        // best-effort (`None` when the SPI refuses, never guessed).
+        let get_window_wid = if matched.is_some() {
+            None
+        } else {
+            let mut wid: u32 = 0;
+            let ptr = element.as_ptr() as *const std::ffi::c_void;
+            // SAFETY: borrowed live element for the callback duration; valid
+            // out-pointer; status gates the value.
+            let err =
+                unsafe { private_raw::_AXUIElementGetWindow(ptr, std::ptr::addr_of_mut!(wid)) };
+            if err == 0 { Some(wid) } else { None }
+        };
+        let at_ms = state
+            .started
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64;
+        let _ = state.events.send(DestroyedEvent {
+            matched_wid: matched,
+            get_window_wid,
+            at_ms,
+        });
+    }
+
+    /// Bounded exact-identity destroyed observation on the calling thread's
+    /// runloop. Joins exactly the requested wids (refuses when any wid is not
+    /// among the live `AXWindows`), registers `AXUIElementDestroyed` on each
+    /// retained element, reports readiness with every registration status
+    /// (any failure is a hard error, never a silent empty watch), pumps
+    /// `CFRunLoopRunInMode` in bounded slices until the deadline or a stop
+    /// signal, then removes every subscription and reports the teardown
+    /// statuses. A destroyed element's removal may fail; that is tolerated
+    /// and recorded. Every `AxElement` is constructed, used, and dropped on
+    /// this thread; only plain event data crosses to the caller.
+    pub fn ax_observe_destroyed(
+        pid: i32,
+        wids: &[u32],
+        timeout: Duration,
+        messaging_timeout_secs: f32,
+        ready: &SyncSender<Result<Vec<AxDestroyedRegistration>, String>>,
+        events: &std::sync::mpsc::Sender<DestroyedEvent>,
+        stop: &std::sync::mpsc::Receiver<()>,
+    ) -> Result<AxDestroyedOutcome, String> {
+        let fail_ready = |ready: &SyncSender<Result<Vec<AxDestroyedRegistration>, String>>,
+                          error: String|
+         -> Result<AxDestroyedOutcome, String> {
+            let _ = ready.send(Err(error.clone()));
+            Err(error)
+        };
+        if pid <= 1 {
+            return fail_ready(ready, format!("refusing reserved pid {pid}"));
+        }
+        if wids.is_empty() {
+            return fail_ready(
+                ready,
+                "destroyed observer needs at least one wid".to_owned(),
+            );
+        }
+        let mut unique: Vec<u32> = wids.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        if unique.len() != wids.len() {
+            return fail_ready(
+                ready,
+                "destroyed observer wid set has duplicates".to_owned(),
+            );
+        }
+        let app = match AxElement::application(pid) {
+            Some(app) => app,
+            None => return fail_ready(ready, format!("bad pid {pid}")),
+        };
+        let messaging_timeout_set = ax_set_messaging_timeout(&app, messaging_timeout_secs) == 0;
+        // Join every requested wid before creating the observer: an unjoined
+        // wid fails here, never as a silent empty watch.
+        let windows = match app.windows() {
+            Ok(windows) => windows,
+            Err(code) => {
+                return fail_ready(
+                    ready,
+                    format!("AXWindows unreadable: {}", ax_error_name(code)),
+                );
+            }
+        };
+        let mut retained: std::collections::BTreeMap<u32, AxElement> =
+            std::collections::BTreeMap::new();
+        for window in windows {
+            let Some(wid) = ax_window_id(&window) else {
+                continue;
+            };
+            if !wids.contains(&wid) || retained.contains_key(&wid) {
+                continue;
+            }
+            let _ = ax_set_messaging_timeout(&window, messaging_timeout_secs);
+            retained.insert(wid, window);
+        }
+        if retained.len() != wids.len() {
+            let joined: Vec<u32> = retained.keys().copied().collect();
+            return fail_ready(
+                ready,
+                format!(
+                    "requested wids {wids:?} not all joined (joined {joined:?}); refusing empty watch"
+                ),
+            );
+        }
+        let mut observer_raw: *mut AXObserver = std::ptr::null_mut();
+        // SAFETY: out-pointer valid; maintained `AXObserver::create`; nonzero
+        // status leaves `observer_raw` null and returns fast.
+        let status = unsafe {
+            AXObserver::create(
+                pid,
+                Some(ax_destroyed_callback),
+                NonNull::new(std::ptr::addr_of_mut!(observer_raw)).expect("non-null"),
+            )
+        };
+        if status.0 != 0 || observer_raw.is_null() {
+            return fail_ready(
+                ready,
+                format!("AXObserverCreate pid {pid}: {}", ax_error_name(status.0)),
+            );
+        }
+        // SAFETY: create-rule +1 retained; owned by `CFRetained` exactly once.
+        let observer: CFRetained<AXObserver> =
+            unsafe { CFRetained::from_raw(NonNull::new(observer_raw).expect("non-null")) };
+        let refcon = Box::new(DestroyedRefcon {
+            events: events.clone(),
+            retained,
+            others: Mutex::new(std::collections::BTreeMap::new()),
+            started: Instant::now(),
+        });
+        let refcon_ptr = Box::into_raw(refcon);
+        // SAFETY: `refcon_ptr` is the live Box owned below; `*refcon_ptr` is
+        // only borrowed immutably here and by callbacks, and reclaimed after
+        // every notification is removed and the source invalidated.
+        let retained_map = unsafe { &(*refcon_ptr).retained };
+        let mut registrations: Vec<AxDestroyedRegistration> = Vec::with_capacity(wids.len());
+        // SAFETY: observer/app/retained elements live in maintained wrappers;
+        // the notification name is a fresh `CFString`; refcon valid until
+        // reclaimed below after notifications are removed.
+        let registered_ok = unsafe {
+            let cf_name = CFString::from_str("AXUIElementDestroyed");
+            for (wid, window) in retained_map {
+                let status = observer.add_notification(
+                    &window.inner,
+                    &cf_name,
+                    refcon_ptr as *mut std::ffi::c_void,
+                );
+                registrations.push(AxDestroyedRegistration {
+                    wid: *wid,
+                    notification: "AXUIElementDestroyed".to_owned(),
+                    status: status.0,
+                    status_name: ax_error_name(status.0),
+                });
+            }
+            registrations.iter().all(|r| r.status == 0)
+        };
+        if !registered_ok {
+            // Drop the box before returning: no callbacks can have run yet
+            // (nothing was added to a runloop), but the observer may hold
+            // successful registrations for the successful legends.
+            // SAFETY: observer is live on this thread; `*refcon_ptr` is the
+            // live Box installed above.
+            unsafe {
+                let cf_name = CFString::from_str("AXUIElementDestroyed");
+                for window in retained_map.values() {
+                    let _ = observer.remove_notification(&window.inner, &cf_name);
+                }
+                drop(Box::from_raw(refcon_ptr));
+            }
+            let message = "AXUIElementDestroyed registration refused on at least one wid; \
+                           refusing a partial empty watch"
+                .to_owned();
+            let _ = ready.send(Err(message.clone()));
+            return Err(message);
+        }
+        let runloop = match CFRunLoop::current() {
+            Some(rl) => rl,
+            None => {
+                // SAFETY: observer is live on this thread; `*refcon_ptr` is
+                // the live Box installed above.
+                unsafe {
+                    let cf_name = CFString::from_str("AXUIElementDestroyed");
+                    for window in retained_map.values() {
+                        let _ = observer.remove_notification(&window.inner, &cf_name);
+                    }
+                    drop(Box::from_raw(refcon_ptr));
+                }
+                let message = "AX observer runloop unavailable".to_owned();
+                let _ = ready.send(Err(message.clone()));
+                return Err(message);
+            }
+        };
+        // Note: the maintained `run_loop_source` asserts non-null; a null
+        // source here would be an OS contract violation (live observer).
+        // SAFETY: the live observer on this thread vends its runloop source;
+        // the default-mode constant is a valid extern static.
+        let (source, mode) = unsafe { (observer.run_loop_source(), kCFRunLoopDefaultMode) };
+        runloop.add_source(Some(&source), mode);
+        // Ready only after every registration succeeded and the source is
+        // installed: the driver may now drive the subject.
+        let _ = ready.send(Ok(registrations.clone()));
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            match stop.try_recv() {
+                Ok(()) | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+            // Bounded slices: stop/deadline latency never exceeds one slice.
+            CFRunLoop::run_in_mode(mode, 0.05, false);
+        }
+        let timed_out = Instant::now() >= deadline;
+        runloop.remove_source(Some(&source), mode);
+        source.invalidate();
+        let mut removals: Vec<AxDestroyedRegistration> = Vec::with_capacity(wids.len());
+        // SAFETY: source invalidated and notifications removed on this
+        // thread; no callback can run past this point, so the refcon is
+        // reclaimed exactly once after the audit reads below.
+        let other_notifications: Vec<(String, u32)> = unsafe {
+            let cf_name = CFString::from_str("AXUIElementDestroyed");
+            for (wid, window) in retained_map {
+                let status = observer.remove_notification(&window.inner, &cf_name);
+                removals.push(AxDestroyedRegistration {
+                    wid: *wid,
+                    notification: "AXUIElementDestroyed".to_owned(),
+                    status: status.0,
+                    status_name: ax_error_name(status.0),
+                });
+            }
+            (&*refcon_ptr)
+                .others
+                .lock()
+                .map(|counts| counts.iter().map(|(k, v)| (k.clone(), *v)).collect())
+                .unwrap_or_default()
+        };
+        // SAFETY: notifications removed and the source invalidated above; no
+        // callback can fire afterwards, so the refcon is reclaimed exactly
+        // once here.
+        unsafe { drop(Box::from_raw(refcon_ptr)) };
+        let joined_wids: Vec<u32> = wids.to_vec();
+        let mut other_notifications = other_notifications;
+        other_notifications.sort_unstable();
+        Ok(AxDestroyedOutcome {
+            joined_wids,
+            registrations,
+            removals,
+            other_notifications,
+            messaging_timeout_set,
+            timed_out,
+        })
+    }
+
     // -- Phase 1 thread-affine observer guard (isolated) --
     //
     // Long-lived per-app observer for the Phase 1 runtime worker. Shape
@@ -5245,13 +5589,16 @@ mod macos {
     /// optional (`None` = unreadable there, never a claim); callers refuse
     /// whatever their contract requires (the scoped backend requires all
     /// three — a missing launch date refuses, never falls back).
-    /// `launch_ref_bits` is an additive diagnostic only: the exact
+    /// `launch_ref_bits` is the exact
     /// `NSDate.timeIntervalSinceReferenceDate` `f64` bits (finite-only,
     /// `None` when `launchDate` is nil or non-finite) beside the preserved
-    /// whole-second `launch_date` debug string. It never feeds identity,
-    /// ownership, store, or protocol decisions: production binding still
-    /// compares the `launch_date` string, and no caller may promote the
-    /// bits to a fence. It is not a boot/login fence: it carries no boot
+    /// whole-second `launch_date` debug string. D4's adapter-owned macOS
+    /// intent store converts these bits to integer nanoseconds and uses the
+    /// result as the persisted app-lifetime binding; that store decision is
+    /// the only promotion of this value. It still never feeds ownership, the
+    /// scoped backend identity, or protocol decisions: other production
+    /// binding compares the `launch_date` string. It is not a boot/login
+    /// fence: it carries no boot
     /// nonce and no audit session (`kern.boottime` via `KERN_BOOTTIME`
     /// fences boot only, not relogin within one boot; own-process
     /// `getaudit_addr` `ai_asid`/`ai_auid` is tested same-login only and
@@ -6766,8 +7113,9 @@ mod macos {
             std::thread::sleep(Duration::from_millis(hung_ms.min(20_000)));
         }
         // Owned transient fixtures (opt-in, disposable, helper-only): a
-        // native `NSPanel` utility window (dialog subrole natively, no role
-        // spoof) and/or a true attached sheet on the main owned window
+        // native `NSPanel` utility window (measured 2026-11-24:
+        // `AXWindow`/`AXFloatingWindow`, no role spoof) and/or a true attached
+        // sheet on the main owned window
         // (`beginSheet` with no completion work). Both open immediately after
         // `ready` and close only themselves at their deadline while the main
         // owned window stays alive to its seconds deadline. Markers carry
@@ -9842,6 +10190,30 @@ mod macos {
         }
     }
 
+    /// Hide or unhide the app owning `pid` through public AppKit
+    /// (`NSRunningApplication.hide`/`unhide`, the controller-side equivalent
+    /// of Cmd+H), returning the observed `isHidden` state after the request.
+    /// No synthetic keyboard/mouse events and no new TCC service. Callers
+    /// still verify the transition with a subsequent read; a request that
+    /// AppKit ignores reports the unchanged observed state, never a claim.
+    pub fn app_set_hidden(pid: i32, hide: bool) -> Result<bool, String> {
+        if pid <= 1 {
+            return Err(format!("refusing reserved pid {pid}"));
+        }
+        use objc2_app_kit::NSRunningApplication;
+        match NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+            Some(app) => {
+                if hide {
+                    let _ = app.hide();
+                } else {
+                    let _ = app.unhide();
+                }
+                Ok(app.isHidden())
+            }
+            None => Err(format!("no running application for pid {pid}")),
+        }
+    }
+
     /// Raw activation policy for `pid` (`NSApplicationActivationPolicy`
     /// discriminant: 0=Regular, 1=Accessory, 2=Prohibited). Mapped to
     /// [`crate::classifier::ActivationPolicy`] by the pure layer; unknown
@@ -10332,31 +10704,32 @@ pub use macos::{
     NsDisplay, Phase1Observer, SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SegmentReadback,
     SegmentRow, SlpsPsn, SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec,
     TapHit, TapPump, TapSource, TapSourceReport, WorkspaceIndicator, activate_app,
-    activation_policy_raw_for_pid, app_hidden_for_pid, audit_self, ax_action_names,
+    activation_policy_raw_for_pid, app_hidden_for_pid, app_set_hidden, audit_self, ax_action_names,
     ax_app_focus_leg, ax_attribute_names, ax_bool_attribute, ax_children, ax_direct_focused_read,
     ax_display_id, ax_element_at_position, ax_element_attribute, ax_elements_equal,
     ax_focused_preimage, ax_focused_preimage_detailed, ax_focused_preimage_evidence,
     ax_fullscreen_state, ax_get_frame, ax_hit_test_detail, ax_hit_test_owner, ax_identifier,
     ax_is_process_trusted, ax_is_size_settable, ax_min_size, ax_observe_bounded,
-    ax_observe_session, ax_perform_action, ax_raise, ax_selected_focus_evidence,
-    ax_set_bool_attribute, ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout,
-    ax_set_position, ax_set_size, ax_string_attribute, ax_system_focus_leg, ax_window_id,
-    ax_window_id_detailed, ax_window_title, border_system_accent, bundle_id_for_pid,
-    cg_carrier_above_target, cg_carrier_below_targets, cg_display_uuid, cg_post_event_access_known,
-    cg_window_list_all, cg_window_list_basic, copy_symbolic_hotkeys, drain_app_events,
-    drain_app_events_counted, frontmost_app, host_now_ns, host_timebase, hotkey_read,
-    hotkey_set_enabled, hotkey_spi_available, install_display_change_guard, key_counts_snapshot,
-    launch_date_for_pid, macos_major, mc_launch_toggle, mouse_counts_snapshot,
-    ns_app_identity_for_pid, ns_display_snapshot, ns_image_for_bundle, ns_separate_spaces,
-    own_bundle_id, process_executable_path, process_exists, pump_runloop_once, resolve_hotkey_spi,
-    run_event_tap_bounded, run_owned_probe_window, runloop_present, running_apps,
-    secure_input_known, session_state, slps_available, slps_front_available, slps_front_pid,
-    slps_post_event, slps_psn_for_pid, slps_set_front, sls_bridged_availability,
-    sls_connection_available, sls_display_rows, sls_display_spaces, sls_main_connection_id,
-    sls_move_symbols, sls_move_windows_bridged, sls_move_windows_direct, sls_order_available,
-    sls_order_below, sls_order_below_txn, sls_order_txn_available, sls_space_front_available,
-    sls_space_set_front_psn, sls_space_type, sls_spaces_for_window, sls_spaces_for_windows,
-    sls_window_at_point, terminate_process, warp_cursor_position,
+    ax_observe_destroyed, ax_observe_session, ax_perform_action, ax_raise,
+    ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window, ax_set_frame,
+    ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
+    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
+    border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_carrier_below_targets,
+    cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
+    copy_symbolic_hotkeys, drain_app_events, drain_app_events_counted, frontmost_app, host_now_ns,
+    host_timebase, hotkey_read, hotkey_set_enabled, hotkey_spi_available,
+    install_display_change_guard, key_counts_snapshot, launch_date_for_pid, macos_major,
+    mc_launch_toggle, mouse_counts_snapshot, ns_app_identity_for_pid, ns_display_snapshot,
+    ns_image_for_bundle, ns_separate_spaces, own_bundle_id, process_executable_path,
+    process_exists, pump_runloop_once, resolve_hotkey_spi, run_event_tap_bounded,
+    run_owned_probe_window, runloop_present, running_apps, secure_input_known, session_state,
+    slps_available, slps_front_available, slps_front_pid, slps_post_event, slps_psn_for_pid,
+    slps_set_front, sls_bridged_availability, sls_connection_available, sls_display_rows,
+    sls_display_spaces, sls_main_connection_id, sls_move_symbols, sls_move_windows_bridged,
+    sls_move_windows_direct, sls_order_available, sls_order_below, sls_order_below_txn,
+    sls_order_txn_available, sls_space_front_available, sls_space_set_front_psn, sls_space_type,
+    sls_spaces_for_window, sls_spaces_for_windows, sls_window_at_point, terminate_process,
+    warp_cursor_position,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -10793,6 +11166,22 @@ mod stub {
     }
 
     pub fn app_hidden_for_pid(_pid: i32) -> Result<bool, String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn app_set_hidden(_pid: i32, _hide: bool) -> Result<bool, String> {
+        Err("macOS-only".to_owned())
+    }
+
+    pub fn ax_observe_destroyed(
+        _pid: i32,
+        _wids: &[u32],
+        _timeout: Duration,
+        _messaging_timeout_secs: f32,
+        _ready: &SyncSender<Result<Vec<AxDestroyedRegistration>, String>>,
+        _events: &std::sync::mpsc::Sender<DestroyedEvent>,
+        _stop: &std::sync::mpsc::Receiver<()>,
+    ) -> Result<AxDestroyedOutcome, String> {
         Err("macOS-only".to_owned())
     }
 
@@ -11515,15 +11904,15 @@ pub use stub::{
     SLPS_CPS_USER_GENERATED, SLPS_EVENT_LEN, SegmentReadback, SegmentRow, SlpsPsn,
     SlsBridgedAvailability, SlsDisplayRow, SlsMoveSymbols, TapChordSpec, TapHit, TapPump,
     TapSource, TapSourceReport, WorkspaceIndicator, activate_app, activation_policy_raw_for_pid,
-    app_hidden_for_pid, audit_self, ax_action_names, ax_app_focus_leg, ax_attribute_names,
-    ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id, ax_element_at_position,
-    ax_element_attribute, ax_elements_equal, ax_focused_preimage, ax_focused_preimage_detailed,
-    ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame, ax_hit_test_detail,
-    ax_hit_test_owner, ax_identifier, ax_is_process_trusted, ax_is_size_settable, ax_min_size,
-    ax_observe_bounded, ax_observe_session, ax_perform_action, ax_raise,
-    ax_selected_focus_evidence, ax_set_bool_attribute, ax_set_focused_window, ax_set_frame,
-    ax_set_messaging_timeout, ax_set_position, ax_set_size, ax_string_attribute,
-    ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
+    app_hidden_for_pid, app_set_hidden, audit_self, ax_action_names, ax_app_focus_leg,
+    ax_attribute_names, ax_bool_attribute, ax_children, ax_direct_focused_read, ax_display_id,
+    ax_element_at_position, ax_element_attribute, ax_elements_equal, ax_focused_preimage,
+    ax_focused_preimage_detailed, ax_focused_preimage_evidence, ax_fullscreen_state, ax_get_frame,
+    ax_hit_test_detail, ax_hit_test_owner, ax_identifier, ax_is_process_trusted,
+    ax_is_size_settable, ax_min_size, ax_observe_bounded, ax_observe_destroyed, ax_observe_session,
+    ax_perform_action, ax_raise, ax_selected_focus_evidence, ax_set_bool_attribute,
+    ax_set_focused_window, ax_set_frame, ax_set_messaging_timeout, ax_set_position, ax_set_size,
+    ax_string_attribute, ax_system_focus_leg, ax_window_id, ax_window_id_detailed, ax_window_title,
     border_system_accent, bundle_id_for_pid, cg_carrier_above_target, cg_carrier_below_targets,
     cg_display_uuid, cg_post_event_access_known, cg_window_list_all, cg_window_list_basic,
     copy_symbolic_hotkeys, frontmost_app, host_now_ns, host_timebase, hotkey_read,

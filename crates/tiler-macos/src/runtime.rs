@@ -50,12 +50,12 @@ use crate::world_sequencer::ObservationClock;
 pub use crate::focus_route::FocusRoute;
 pub use crate::runtime_types::{
     AX_CALL_TIMEOUT, AxCompletion, AxObservation, ClaimedSelect, DesiredFrame, FocusCommand,
-    FocusEvidence, FocusRequest, FrameCommand, InputDirection, InputSemanticAction, LifecycleEvent,
-    LifecycleLogEntry, NativeContext, NativeCreationRequest, NativeDomain, ObservedWindow,
-    PHASE1_BOUNDS, PHASE1_GAP, PHASE1_GENERATION, PHASE1_OUTER_GAP, PHASE1_OUTPUT, PHASE1_OWNER,
-    PHASE1_WORKSPACE, RuntimeConfig, RuntimeDiagnostics, ScopedBackendSnapshot, ScopedWindowMeta,
-    StartupError, SubmitOutcome, TerminateOutcome, TileBinding, TopologyMode, WorkerReadiness,
-    parse_window_id, window_id,
+    FocusEvidence, FocusRequest, FrameCommand, InputDirection, InputSemanticAction,
+    IntentStoreMode, LifecycleEvent, LifecycleLogEntry, NativeContext, NativeCreationRequest,
+    NativeDomain, ObservedWindow, PHASE1_BOUNDS, PHASE1_GAP, PHASE1_GENERATION, PHASE1_OUTER_GAP,
+    PHASE1_OUTPUT, PHASE1_OWNER, PHASE1_WORKSPACE, RuntimeConfig, RuntimeDiagnostics,
+    ScopedBackendSnapshot, ScopedWindowMeta, StartupError, SubmitOutcome, TerminateOutcome,
+    TileBinding, TopologyMode, WorkerReadiness, parse_window_id, window_id,
 };
 pub use crate::scope::{AppScope, ProcessIdentity};
 pub use crate::topology::TopologySnapshot;
@@ -201,12 +201,14 @@ fn partial_handle(
     inbox: &Arc<Inbox>,
     focus_queue: &Arc<Mutex<Vec<FocusRequest>>>,
     ax_factory: &Arc<dyn AxBackendFactory>,
+    cursor_gate: &Arc<crate::cursor_observer::CoreCursorGate>,
 ) -> RuntimeHandle {
     RuntimeHandle {
         shared: Arc::clone(shared),
         inbox: Arc::clone(inbox),
         focus_queue: Arc::clone(focus_queue),
         ax_factory: Arc::clone(ax_factory),
+        cursor_gate: Arc::clone(cursor_gate),
     }
 }
 
@@ -258,6 +260,7 @@ fn take_live_handles(guard: &mut Shared) -> Vec<LiveHandle> {
 impl Runtime {
     /// Start the engine and input owners with the default stderr normal-log
     /// sink. See [`Runtime::start_with_sink`] for the full contract.
+    #[allow(clippy::result_large_err)] // the recoverable handle/report are the error contract
     pub fn start(
         config: RuntimeConfig,
         ax_factory: Arc<dyn AxBackendFactory>,
@@ -281,12 +284,17 @@ impl Runtime {
     /// Stop-signalled threads that still have not exited after the bound
     /// are retained as zombies (same exposure as post-shutdown zombies)
     /// and the report is dirty, never clean.
+    #[allow(clippy::result_large_err)] // the recoverable handle/report are the error contract
     pub fn start_with_sink(
         config: RuntimeConfig,
         ax_factory: Arc<dyn AxBackendFactory>,
         input_factory: Arc<dyn InputSourceFactory>,
         sink: Arc<dyn LogSink>,
     ) -> Result<RuntimeHandle, StartFailure> {
+        // Core cursor state shared with the pointer observer. The engine
+        // thread publishes the effective setting/game pause; default off
+        // keeps the observer silent until the first publication.
+        let cursor_gate = Arc::new(crate::cursor_observer::CoreCursorGate::default());
         if let Err(reason) = config.validate() {
             // No threads exist yet: build a detached handle-shaped failure
             // without owners so the caller still gets a uniform type.
@@ -344,7 +352,7 @@ impl Runtime {
             }));
             let inbox = Arc::new(Inbox::new(config.engine_queue_depth.max(1)));
             let focus_queue = Arc::new(Mutex::new(Vec::<FocusRequest>::new()));
-            let handle = partial_handle(&shared, &inbox, &focus_queue, &ax_factory);
+            let handle = partial_handle(&shared, &inbox, &focus_queue, &ax_factory, &cursor_gate);
             let report =
                 handle.shutdown(config.startup_ready_timeout.max(Duration::from_millis(1)));
             return Err(StartFailure {
@@ -416,6 +424,7 @@ impl Runtime {
         let engine_shared = Arc::clone(&shared);
         let engine_inbox = Arc::clone(&inbox);
         let engine_focus = Arc::clone(&focus_queue);
+        let engine_cursor_gate = Arc::clone(&cursor_gate);
         let stop_engine = { lock_shared(&shared).stop_engine.clone() };
         let engine_thread = std::thread::Builder::new()
             .name("phase1-engine".to_owned())
@@ -424,6 +433,7 @@ impl Runtime {
                     engine_shared,
                     engine_inbox,
                     engine_focus,
+                    engine_cursor_gate,
                     focus_capacity,
                     stop_engine,
                     ready_tx,
@@ -432,7 +442,8 @@ impl Runtime {
         let engine_thread = match engine_thread {
             Ok(handle) => handle,
             Err(e) => {
-                let handle = partial_handle(&shared, &inbox, &focus_queue, &ax_factory);
+                let handle =
+                    partial_handle(&shared, &inbox, &focus_queue, &ax_factory, &cursor_gate);
                 let report = cleanup_failed_start(&shared, &inbox, ready_bound);
                 return Err(StartFailure {
                     error: StartupError::EngineSpawn(e.to_string()),
@@ -447,7 +458,7 @@ impl Runtime {
         if ready_rx.recv_timeout(ready_bound).is_err() {
             // The engine never became ready: bounded cleanup keeps the
             // handle reachable for reap instead of leaking behind the error.
-            let handle = partial_handle(&shared, &inbox, &focus_queue, &ax_factory);
+            let handle = partial_handle(&shared, &inbox, &focus_queue, &ax_factory, &cursor_gate);
             let report = cleanup_failed_start(&shared, &inbox, ready_bound);
             return Err(StartFailure {
                 error: StartupError::EngineNotReady,
@@ -507,7 +518,8 @@ impl Runtime {
         let input_thread = match input_thread {
             Ok(handle) => handle,
             Err(e) => {
-                let handle = partial_handle(&shared, &inbox, &focus_queue, &ax_factory);
+                let handle =
+                    partial_handle(&shared, &inbox, &focus_queue, &ax_factory, &cursor_gate);
                 let report = cleanup_failed_start(&shared, &inbox, ready_bound);
                 return Err(StartFailure {
                     error: StartupError::InputSpawn(e.to_string()),
@@ -522,7 +534,8 @@ impl Runtime {
         match input_ready_rx.recv_timeout(ready_bound) {
             Ok(Ok(())) => {}
             Ok(Err(reason)) => {
-                let handle = partial_handle(&shared, &inbox, &focus_queue, &ax_factory);
+                let handle =
+                    partial_handle(&shared, &inbox, &focus_queue, &ax_factory, &cursor_gate);
                 let report = cleanup_failed_start(&shared, &inbox, ready_bound);
                 // Sanitize the refusal for the typed error: the raw backend
                 // string never becomes a log outcome.
@@ -535,7 +548,8 @@ impl Runtime {
                 });
             }
             Err(_) => {
-                let handle = partial_handle(&shared, &inbox, &focus_queue, &ax_factory);
+                let handle =
+                    partial_handle(&shared, &inbox, &focus_queue, &ax_factory, &cursor_gate);
                 let report = cleanup_failed_start(&shared, &inbox, ready_bound);
                 emit(&shared, 0, 0, 0, "startup", "input-not-ready", 0);
                 return Err(StartFailure {
@@ -554,6 +568,7 @@ impl Runtime {
             inbox,
             focus_queue,
             ax_factory,
+            cursor_gate,
         })
     }
 }
@@ -670,6 +685,11 @@ pub struct RuntimeHandle {
     pub(crate) inbox: Arc<Inbox>,
     pub(crate) focus_queue: Arc<Mutex<Vec<FocusRequest>>>,
     pub(crate) ax_factory: Arc<dyn AxBackendFactory>,
+    /// Core cursor state shared with the `phase1-cursor` observer: the
+    /// engine thread publishes the effective `focusFollowsCursor` setting
+    /// and the focused-fullscreen game pause after every job. Default
+    /// (off, no pause) until the engine's first publication.
+    pub(crate) cursor_gate: Arc<crate::cursor_observer::CoreCursorGate>,
 }
 
 impl Clone for RuntimeHandle {
@@ -684,6 +704,7 @@ impl Clone for RuntimeHandle {
             inbox: Arc::clone(&self.inbox),
             focus_queue: Arc::clone(&self.focus_queue),
             ax_factory: Arc::clone(&self.ax_factory),
+            cursor_gate: Arc::clone(&self.cursor_gate),
         }
     }
 }

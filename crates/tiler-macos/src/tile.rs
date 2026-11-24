@@ -690,7 +690,9 @@ mod native {
     use crate::input_policy::effective_bindings;
     use crate::native_input::{OffTileFactory, TapTileFactory, interception_gate};
     use crate::native_tile_backend::ScopedAxFactory;
-    use crate::runtime::{FocusEvidence, Runtime, RuntimeConfig, TopologyMode, WorkerReadiness};
+    use crate::runtime::{
+        FocusEvidence, IntentStoreMode, Runtime, RuntimeConfig, TopologyMode, WorkerReadiness,
+    };
     use crate::runtime_backend::InputSourceFactory;
     use crate::topology::{TopologyPoll, TopologySnapshot, build_snapshot};
 
@@ -2197,6 +2199,9 @@ mod native {
             modifier: request.modifier,
             tile_bindings: Some(catalogue),
             core_settings: request.core_settings.clone(),
+            // The product run owns the real per-user durable intent store;
+            // every other config literal inherits the Disabled default.
+            intent_store: IntentStoreMode::Default,
             ..RuntimeConfig::default()
         };
         config.validate().map_err(|reason| (2, reason))?;
@@ -4174,6 +4179,7 @@ mod native {
                 inbox: Arc::new(crate::runtime_thread::Inbox::new(16)),
                 focus_queue: Arc::new(std::sync::Mutex::new(Vec::new())),
                 ax_factory: Arc::new(StubAx),
+                cursor_gate: Arc::new(crate::cursor_observer::CoreCursorGate::default()),
             }
         }
 

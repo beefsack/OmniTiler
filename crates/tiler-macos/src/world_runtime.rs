@@ -41,6 +41,7 @@
 //! The synthetic skeleton carries zero outer gap and raw [`PHASE1_BOUNDS`].
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
@@ -49,9 +50,9 @@ use tiler_core::gesture::GestureIngress;
 use tiler_core::session::DomainKey;
 use tiler_core::world_engine::WorldEngine;
 use tiler_core::world_report::{
-    FocusFeedback, FrameAttempt, FramePurpose, FrameSetter, HoldReason, MemberAttempt,
-    NativeCreationAttempt, SwitchEvent, SwitchFocus, SwitchOutcome, ViewAttempt, WorldCommand,
-    WorldReportV4,
+    FocusFeedback, FrameAttempt, FramePurpose, FrameSetter, HoldReason, IntentRecord,
+    MemberAttempt, NativeCreationAttempt, SwitchEvent, SwitchFocus, SwitchOutcome, ViewAttempt,
+    WorldCommand, WorldReplyV4, WorldReportV4,
 };
 
 use crate::focus_route::FocusRoute;
@@ -201,12 +202,26 @@ pub(crate) struct WorldSession {
     /// field here with last-good retained core-side while valid siblings
     /// still apply; omitted keys diagnose `Missing` with core defaults.
     initial_settings: Option<tiler_core::connection::SettingsReply>,
-    /// Session-lifetime fail-closed latch for unpersisted opaque intent
-    /// desires: set when an applied reply carries nonempty `intent_desired`
-    /// (no durable backend exists, so nothing is persisted). Once set it
-    /// never clears - later replies without desires stay held. Ordinary
-    /// admission/reflow emits no desires, so this never fires honestly.
-    unpersisted_intent_desired: bool,
+    /// Adapter-owned durable intent store for this login namespace. `None`
+    /// when `$HOME`/the audit-session namespace is unavailable (fail closed:
+    /// a save then holds until a durable backend exists, always retried on a
+    /// later accepted reply, never latched permanently).
+    intent_store: Option<crate::intent_store::IntentStore>,
+    /// Live-lifetime binding probe for the intent store. Production reads
+    /// the OS; tests supply deterministic lifetimes without spawning apps.
+    intent_identity: Option<crate::intent_store::IdentityProbe>,
+    /// Process-liveness probe for the intent store. Production reads the
+    /// OS; tests supply deterministic liveness without spawning apps.
+    /// `None` means [`crate::intent_store::live_process`].
+    intent_process: Option<crate::intent_store::ProcessProbe>,
+    /// Windows whose stored row was already imported into a report, each
+    /// imported at most once: a window admitted in one report never rides a
+    /// later report, while a window first seen later still hydrates.
+    intent_admitted: BTreeSet<String>,
+    /// Windows already diagnosed as live-but-unverifiable for persistence,
+    /// so the recovery path emits one bounded line per window, never one per
+    /// accepted reply.
+    intent_unverifiable: BTreeSet<String>,
     /// Applied retained switch terminals, latest per owning output in the
     /// projection's stable output order (see
     /// [`WorldSession::apply_switch_settlements`]). Adapter-visible
@@ -275,7 +290,11 @@ impl WorldSession {
                 presentation_style: crate::active_border::PresentationStylePx::default(),
                 connection_bound: false,
                 initial_settings: None,
-                unpersisted_intent_desired: false,
+                intent_store: None,
+                intent_identity: None,
+                intent_process: None,
+                intent_admitted: BTreeSet::new(),
+                intent_unverifiable: BTreeSet::new(),
                 switch_settlements: Vec::new(),
             };
         };
@@ -315,7 +334,11 @@ impl WorldSession {
             presentation_style: crate::active_border::PresentationStylePx::default(),
             connection_bound,
             initial_settings,
-            unpersisted_intent_desired: false,
+            intent_store: None,
+            intent_identity: None,
+            intent_process: None,
+            intent_admitted: BTreeSet::new(),
+            intent_unverifiable: BTreeSet::new(),
             switch_settlements: Vec::new(),
         }
     }
@@ -335,17 +358,239 @@ impl WorldSession {
         self.initial_settings.as_ref()
     }
 
-    /// Whether the session already holds unpersisted intent writes
-    /// (fail-closed latch, session lifetime).
-    pub(crate) fn unpersisted_intent_hold(&self) -> bool {
-        self.unpersisted_intent_desired
+    /// Attach the adapter-owned durable intent store.
+    #[cfg(test)]
+    pub(crate) fn attach_intent_store(&mut self, store: crate::intent_store::IntentStore) {
+        self.intent_store = Some(store);
     }
 
-    /// Latch unpersisted intent writes for the session lifetime. Never
-    /// cleared: no durability backend exists, so no later reply can prove
-    /// persistence.
-    pub(crate) fn mark_unpersisted_intent_desired(&mut self) {
-        self.unpersisted_intent_desired = true;
+    /// Resolve and attach the configured durable intent store, returning
+    /// its directory. `None` when the mode is disabled or the store cannot
+    /// be opened (fail closed: no store, no persistence). The engine owner
+    /// calls this once at startup; it never opens a store implicitly.
+    pub(crate) fn open_intent_store(
+        &mut self,
+        mode: &crate::runtime_types::IntentStoreMode,
+    ) -> Option<PathBuf> {
+        let store = mode.open()?;
+        let dir = store.dir().to_path_buf();
+        self.intent_store = Some(store);
+        Some(dir)
+    }
+
+    /// Override the live-lifetime binding probe (tests only; production
+    /// reads the OS through [`crate::intent_store::live_binding`]).
+    #[cfg(test)]
+    pub(crate) fn set_intent_identity(&mut self, probe: crate::intent_store::IdentityProbe) {
+        self.intent_identity = Some(probe);
+    }
+
+    /// Override the process-liveness probe (tests only; production reads
+    /// the OS through [`crate::intent_store::live_process`]).
+    #[cfg(test)]
+    pub(crate) fn set_intent_process_liveness(&mut self, probe: crate::intent_store::ProcessProbe) {
+        self.intent_process = Some(probe);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn intent_unverifiable_windows(&self) -> &BTreeSet<String> {
+        &self.intent_unverifiable
+    }
+
+    #[cfg(test)]
+    pub(crate) fn intent_store_attached(&self) -> bool {
+        self.intent_store.is_some()
+    }
+
+    fn live_intent_binding(&self, pid: u32) -> Option<crate::intent_store::LiveBinding> {
+        match &self.intent_identity {
+            Some(probe) => probe(pid),
+            None => crate::intent_store::live_binding(pid),
+        }
+    }
+
+    fn process_alive(&self, pid: u32) -> bool {
+        match &self.intent_process {
+            Some(probe) => probe(pid),
+            None => crate::intent_store::live_process(pid),
+        }
+    }
+
+    /// Per-window hydration: stored rows whose lifetime binding still
+    /// matches the live process AND whose window appears in this report AND
+    /// that were never shipped in an earlier report. Each window's row is
+    /// imported at most once (the first applied reply for that window
+    /// initializes core desire); a window first observed later still
+    /// hydrates, while an already-imported window never rides again and
+    /// never overwrites runtime intent.
+    pub(crate) fn intent_records_for_admission(&self, present: &[&str]) -> Vec<IntentRecord> {
+        let Some(store) = self.intent_store.as_ref() else {
+            return Vec::new();
+        };
+        let mut records = Vec::new();
+        for entry in store.entries().values() {
+            if self.intent_admitted.contains(&entry.win) {
+                continue;
+            }
+            if !present.iter().any(|win| *win == entry.win) {
+                continue;
+            }
+            let Some((pid, wid)) = parse_window_id(&entry.win) else {
+                continue;
+            };
+            let live = self.live_intent_binding(pid);
+            if !entry.matches_live(pid, wid, live.as_ref()) {
+                continue;
+            }
+            records.push(IntentRecord {
+                win: WindowId(entry.win.clone()),
+                data: entry.data.clone(),
+            });
+        }
+        records
+    }
+
+    /// Record the stored records actually shipped with an applied report.
+    /// Only those windows are imported; a stored row that never rode (for
+    /// example, its window was absent) keeps its chance to hydrate later.
+    pub(crate) fn mark_intent_admitted(&mut self, records: &[IntentRecord]) {
+        for record in records {
+            self.intent_admitted.insert(record.win.0.clone());
+        }
+    }
+
+    /// Adapter-local desired-versus-durable reconciliation.
+    ///
+    /// Applied to every accepted/consumed reply before any dependent native
+    /// write. Core publishes one authoritative current target per window;
+    /// rows absent from `intent_desired` carry no authority and never delete
+    /// a persisted row. `Some(data)` persists the canonical encoding,
+    /// `None` clears the entry (while remembering the clear for equality),
+    /// and an equal verified binding+value costs zero writes. A failed
+    /// write/verification holds the whole reply; the next accepted reply
+    /// retries the difference (no timer, no permanent session latch). A
+    /// target whose process is alive but whose lifetime binding is
+    /// unreadable is skipped (never persisted, diagnosed once per window;
+    /// other rows still reconcile and the reply is not held), while a gone
+    /// process keeps the recoverable whole-reply hold.
+    /// Returns `true` when the reply must be held.
+    pub(crate) fn reconcile_intent(&mut self, reply: &WorldReplyV4) -> bool {
+        if reply.intent_desired.is_empty() {
+            return false;
+        }
+        let mut targets: BTreeMap<String, Option<String>> = BTreeMap::new();
+        for row in &reply.intent_desired {
+            let win = row.win.0.clone();
+            if canonical_intent_identity(&win).is_none() {
+                return true;
+            }
+            let data = row
+                .data
+                .as_ref()
+                .map(tiler_core::intent_data::encode_intent_data);
+            if let Some(previous) = targets.insert(win, data.clone())
+                && previous != data
+            {
+                // Conflicting duplicate rows for one lifetime: no honest
+                // single target, so never guess.
+                return true;
+            }
+        }
+        if self.intent_store.is_none() {
+            // No durable backend: a save cannot be persisted. An explicit
+            // clear is satisfied by the absence of any adapter-owned entry.
+            return targets.values().any(Option::is_some);
+        }
+        let mut identities: BTreeMap<u32, (Option<crate::intent_store::LiveBinding>, bool)> =
+            BTreeMap::new();
+        for win in targets.keys() {
+            if let Some((pid, _)) = canonical_intent_identity(win) {
+                identities
+                    .entry(pid)
+                    .or_insert_with(|| (self.live_intent_binding(pid), self.process_alive(pid)));
+            }
+        }
+        let mut changes: BTreeMap<String, Option<crate::intent_store::StoredEntry>> =
+            BTreeMap::new();
+        let mut unverifiable: Vec<String> = Vec::new();
+        {
+            let store = self.intent_store.as_ref().expect("checked above");
+            for (win, target) in targets {
+                let (pid, wid) =
+                    canonical_intent_identity(&win).expect("targets validated canonical ids");
+                let (live, alive) = identities
+                    .get(&pid)
+                    .cloned()
+                    .expect("identity sampled for every target pid");
+                let existing = store.entries().get(&win).cloned();
+                match target {
+                    Some(data) => {
+                        let unchanged = existing.as_ref().is_some_and(|entry| {
+                            entry.data == data && entry.matches_live(pid, wid, live.as_ref())
+                        });
+                        if unchanged {
+                            continue;
+                        }
+                        let Some(live) = live else {
+                            if alive {
+                                // Live process without a durable lifetime
+                                // identity: never persist a guessed binding.
+                                // Skip this row (no persistence claim) and
+                                // diagnose once per window below; other rows
+                                // still reconcile and the reply is not held.
+                                unverifiable.push(win);
+                            } else {
+                                // Gone process: unverifiable for now, but the
+                                // lifetime may become readable once the app
+                                // is back. Hold the whole reply and retry on a
+                                // later accepted reply (no timer, no latch).
+                                return true;
+                            }
+                            continue;
+                        };
+                        changes.insert(
+                            win.clone(),
+                            Some(crate::intent_store::StoredEntry {
+                                win,
+                                wid,
+                                pid,
+                                launch_date_ns: live.launch_date_ns,
+                                bundle_id: live.bundle_id,
+                                data,
+                            }),
+                        );
+                    }
+                    None => {
+                        let known_absent = match store.durable().get(&win) {
+                            Some(None) => true,
+                            _ => !store.entries().contains_key(&win),
+                        };
+                        if known_absent {
+                            continue;
+                        }
+                        changes.insert(win, None);
+                    }
+                }
+            }
+        }
+        for win in unverifiable {
+            if self.intent_unverifiable.insert(win.clone()) {
+                // Static, bounded wording: the canonical window id is the
+                // only variable text, and only the first occurrence per
+                // window speaks.
+                eprintln!(
+                    "intent-store: intent binding unverifiable for window {win}; row not persisted"
+                );
+            }
+        }
+        if changes.is_empty() {
+            return false;
+        }
+        self.intent_store
+            .as_mut()
+            .expect("checked above")
+            .apply_changes(changes)
+            .is_err()
     }
 
     /// Apply one applied reply's `switch_settled` rows.
@@ -721,6 +966,14 @@ impl WorldSession {
     pub(crate) fn spend_frame_op(&mut self, operation: &str) -> bool {
         self.spent_frame_ops.insert(operation.to_owned())
     }
+}
+
+/// Canonical runtime window identity (`"<pid>_<wid>"`) for an intent
+/// subject. Non-canonical text (leading zeros, extra separators) and the
+/// reserved low PID range are refused rather than guessed.
+fn canonical_intent_identity(win: &str) -> Option<(u32, u32)> {
+    let (pid, wid) = parse_window_id(win)?;
+    (pid > 1 && wid > 0 && window_id(pid, wid) == win).then_some((pid, wid))
 }
 
 /// Minimized lifetimes for one report, in stable order.
@@ -1128,7 +1381,16 @@ pub(crate) fn build_dispatch_report(
                 cursor_hit,
                 presentation,
             };
-            let report = build_report(&mut input);
+            let mut report = build_report(&mut input);
+            let records = {
+                let present: Vec<&str> = report
+                    .windows
+                    .iter()
+                    .map(|window| window.window.0.as_str())
+                    .collect();
+                session.intent_records_for_admission(&present)
+            };
+            report.intent_records = records;
             Some(report)
         }
         DispatchContext::Synthetic => {
@@ -1220,7 +1482,16 @@ pub(crate) fn build_dispatch_report(
                     &style,
                 ),
             };
-            let report = build_report(&mut input);
+            let mut report = build_report(&mut input);
+            let records = {
+                let present: Vec<&str> = report
+                    .windows
+                    .iter()
+                    .map(|window| window.window.0.as_str())
+                    .collect();
+                session.intent_records_for_admission(&present)
+            };
+            report.intent_records = records;
             Some(report)
         }
     }

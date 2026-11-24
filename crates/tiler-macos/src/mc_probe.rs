@@ -25,29 +25,38 @@
 //! glide filters below-normal layers (desktop layer -1) and screensaver 25:
 //! https://github.com/tmandry/glide/blob/ef3b30f88445fe4b517eb4c60023011f6d3725dd/src/actor/window_server.rs#L502
 //!
-//! This probe keeps Hammerspoon's public AX identifier shape, but on this
-//! host the surface is `com.apple.WindowManager` with no `mc` root hop; it
-//! replaces the private toggle with public
-//! `NSWorkspace.launchApplication("Mission Control")`:
+//! This probe keeps Hammerspoon's public AX identifier shape and prefers the
+//! `com.apple.WindowManager` surface (its application element owns
+//! `mc.display` directly, no `mc` root hop). When that surface is absent,
+//! unavailable, or exposes no `mc.display` — the macOS 15 shape — it falls
+//! back automatically to the Dock root `mc` → `mc.display` path, verifying
+//! each surface against its exact bundle on every traversal. It replaces the
+//! private toggle with public `NSWorkspace.launchApplication("Mission
+//! Control")`:
 //! app launch needs no Accessibility trust and no Automation consent. AX
 //! legs still need observed (never prompted) trust. No synthetic input,
 //! AppleScript, or System Events anywhere. TCC: launch needs no grant; AX
 //! needs trust; `CGPreflightPostEventAccess` is observed context only.
 
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU8, Ordering};
 
-/// Exact Dock bundle: retained for Dock window/exit-watch identity, not the
-/// MC AX surface. Exact match, never substring; protected bundles refuse
-/// even on PID coincidence.
+/// Exact Dock bundle: the macOS 15 Mission Control AX fallback surface (and
+/// Dock window/exit-watch identity). Exact match, never substring; protected
+/// bundles refuse even on PID coincidence.
 pub const DOCK_BUNDLE_ID: &str = "com.apple.dock";
-/// Exact Mission Control AX surface bundle on this host. Its application
-/// element owns the `mc.display` children directly (no `mc` root group).
+/// Exact preferred Mission Control AX surface bundle. Its application
+/// element owns the `mc.display` children directly (no `mc` root group);
+/// the Dock fallback below owns them under [`MC_ID_ROOT`].
 pub const MC_SURFACE_BUNDLE_ID: &str = "com.apple.WindowManager";
 /// Read-only Ghostty inclusion substring for the protective snapshot.
 /// Deliberately broader than refusal matching: reads must never miss an
 /// ordinary Ghostty window. Inclusion is read-only and never excludes.
 pub const GHOSTTY_SUBSTR: &str = "ghostty";
-/// Mission Control AX identifiers (Hammerspoon shape).
+/// Mission Control AX identifiers (Hammerspoon shape). The Dock fallback
+/// nests `mc.display` under this root group; WindowManager exposes
+/// `mc.display` directly.
+pub const MC_ID_ROOT: &str = "mc";
 pub const MC_ID_DISPLAY: &str = "mc.display";
 pub const MC_ID_SPACES: &str = "mc.spaces";
 pub const MC_ID_SPACES_ADD: &str = "mc.spaces.add";
@@ -79,6 +88,116 @@ pub const MC_MIN_LIFECYCLE_SECS: u64 = MC_CLEANUP_RESERVE_SECS + 30;
 /// Hard dispatch cap (toggles, presses, restores). The time deadline is the
 /// primary bound; this backstops pathological display counts.
 pub const MC_MAX_ACTIONS: u32 = 32;
+
+/// The two exact application surfaces that can own Mission Control's public
+/// AX identifiers across supported macOS releases. Preference order is
+/// [`Self::ALL`]: the current WindowManager shape first, the Dock
+/// compatibility shape second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McSurface {
+    /// macOS 26 shape: `com.apple.WindowManager`'s application element owns
+    /// the `mc.display` children directly.
+    WindowManager,
+    /// macOS 15 shape: `com.apple.dock` owns `mc` → `mc.display`.
+    Dock,
+}
+
+impl McSurface {
+    /// Automatic dual-route preference order.
+    pub const ALL: [Self; 2] = [Self::WindowManager, Self::Dock];
+
+    /// The exact bundle this surface's AX target must resolve to.
+    #[must_use]
+    pub const fn bundle_id(self) -> &'static str {
+        match self {
+            Self::WindowManager => MC_SURFACE_BUNDLE_ID,
+            Self::Dock => DOCK_BUNDLE_ID,
+        }
+    }
+
+    /// `true` when `mc.display` hangs off the application element directly
+    /// (no root group hop).
+    #[must_use]
+    pub const fn direct_display(self) -> bool {
+        matches!(self, Self::WindowManager)
+    }
+}
+
+/// What one exact-bundle-verified surface exposes for Mission Control
+/// routing.
+pub enum McSurfaceExposure<T> {
+    /// `mc.display` is present, with the traversal's join nodes.
+    Present(T),
+    /// No exact running-application entry, no addressable application
+    /// element, or an exact-verified surface with no `mc.display`.
+    Absent,
+}
+
+/// Automatic dual-surface routing: the WindowManager surface wins when it
+/// exposes `mc.display`; the Dock closure is probed only when WindowManager
+/// is absent or its application/child AX reads are unavailable
+/// ([`McError::System`]). Every other WindowManager refusal (ownership,
+/// blocked, unsupported) propagates without a fallback, and every Dock
+/// result is final — a Dock read failure is fatal.
+pub fn select_mc_surface<T>(
+    window_manager: Result<McSurfaceExposure<T>, McError>,
+    probe_dock: impl FnOnce() -> Result<McSurfaceExposure<T>, McError>,
+) -> Result<Option<(McSurface, T)>, McError> {
+    match window_manager {
+        Ok(McSurfaceExposure::Present(nodes)) => Ok(Some((McSurface::WindowManager, nodes))),
+        Ok(McSurfaceExposure::Absent) | Err(McError::System(_)) => match probe_dock()? {
+            McSurfaceExposure::Present(nodes) => Ok(Some((McSurface::Dock, nodes))),
+            McSurfaceExposure::Absent => Ok(None),
+        },
+        Err(error) => Err(error),
+    }
+}
+
+const MC_OWNER_UNKNOWN: u8 = 0;
+const MC_OWNER_WINDOW_MANAGER: u8 = 1;
+const MC_OWNER_DOCK: u8 = 2;
+
+/// Process-global record of the last surface observed owning an open Mission
+/// Control AX tree (`MC_OWNER_UNKNOWN` = never observed). WindowManager
+/// running is not ownership: macOS 15 keeps it alive for Stage Manager while
+/// the Dock owns `mc` → `mc.display`, so the presentation check must follow
+/// the surface the traversal actually selected.
+static MC_OWNER: AtomicU8 = AtomicU8::new(MC_OWNER_UNKNOWN);
+
+/// Record `surface` as the last exact-verified owner of a present
+/// `mc.display` tree. Called by every traversal that selects one.
+pub fn record_mc_owner(surface: McSurface) {
+    let tag = match surface {
+        McSurface::WindowManager => MC_OWNER_WINDOW_MANAGER,
+        McSurface::Dock => MC_OWNER_DOCK,
+    };
+    MC_OWNER.store(tag, Ordering::Relaxed);
+}
+
+/// Last surface observed owning an open Mission Control AX tree; `None`
+/// until a present tree has been observed in this process.
+#[must_use]
+pub fn mc_owner() -> Option<McSurface> {
+    match MC_OWNER.load(Ordering::Relaxed) {
+        MC_OWNER_WINDOW_MANAGER => Some(McSurface::WindowManager),
+        MC_OWNER_DOCK => Some(McSurface::Dock),
+        _ => None,
+    }
+}
+
+/// Surface whose CG presentation layers must be checked to verify Mission
+/// Control absence: only a WindowManager-owned tree needs that read. A
+/// Dock-owned tree draws its overlay alongside persistent layer-0+ Dock
+/// chrome, and an unknown owner is verified on fresh AX presence alone —
+/// otherwise a macOS 15 close (Dock owns `mc`, WindowManager merely running)
+/// would never settle.
+#[must_use]
+pub const fn mc_presentation_cg_owner(owner: Option<McSurface>) -> Option<McSurface> {
+    match owner {
+        Some(McSurface::WindowManager) => Some(McSurface::WindowManager),
+        Some(McSurface::Dock) | None => None,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McError {
@@ -316,10 +435,11 @@ pub fn require_dock_bundle(bundle: &str) -> Result<(), McError> {
     Ok(())
 }
 
-/// Require the exact MC surface bundle for the AX target PID. Empty,
-/// protected (Ghostty/terminals included), or non-surface bundles refuse
-/// before any AX call — traversal never addresses a foreign app.
-pub fn require_mc_surface_bundle(bundle: &str) -> Result<(), McError> {
+/// Require `bundle` to be the exact bundle of `surface` for the AX target
+/// PID. Empty, protected (Ghostty/terminals included), another surface's
+/// bundle, or any substring match refuses before any AX call — traversal
+/// never addresses a foreign app.
+pub fn require_mc_surface_bundle(surface: McSurface, bundle: &str) -> Result<(), McError> {
     if bundle.is_empty() {
         return Err(McError::Ownership(
             "refusing Mission Control traversal: target bundle unreadable".to_owned(),
@@ -330,9 +450,10 @@ pub fn require_mc_surface_bundle(bundle: &str) -> Result<(), McError> {
             "refusing Mission Control traversal on protected bundle '{bundle}'"
         )));
     }
-    if bundle != MC_SURFACE_BUNDLE_ID {
+    if bundle != surface.bundle_id() {
         return Err(McError::Ownership(format!(
-            "refusing Mission Control traversal: target bundle '{bundle}' != '{MC_SURFACE_BUNDLE_ID}'"
+            "refusing Mission Control traversal: target bundle '{bundle}' != '{}'",
+            surface.bundle_id()
         )));
     }
     Ok(())

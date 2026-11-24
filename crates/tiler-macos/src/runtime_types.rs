@@ -8,6 +8,7 @@
 //! here, so paths like `crate::runtime::RuntimeConfig` keep working.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use tiler_core::directional::{OutputId, WindowId, WorkspaceId};
@@ -530,9 +531,12 @@ pub struct WindowRawFacts {
 /// - `AXSheet` role maps to `Sheet`.
 /// - `AXWindow` + `AXStandardWindow` maps to `Normal`.
 /// - `AXWindow` + `AXDialog`/`AXSystemDialog` maps to `Dialog`.
-/// - `AXWindow` + `AXFloatingWindow`/`AXSystemFloatingWindow` maps to `None`
-///   (native utility/palette meaning unverified locally; withhold, never a
-///   compatibility `Dialog` echo and never an unverified `Utility` claim).
+/// - `AXWindow` + `AXFloatingWindow` maps to `Utility` (natively measured
+///   2026-11-24: an opt-in transient utility `NSPanel` reports this subrole
+///   at CG layer 3, onscreen, with matching AX/CG frame).
+/// - `AXWindow` + `AXSystemFloatingWindow` maps to `None` (no truthful local
+///   sample yet; withhold, never a compatibility `Dialog` echo and never an
+///   unverified `Utility` claim).
 /// - `AXWindow` + known other subrole (e.g. `AXUnknown`) maps to `Other`.
 /// - Missing role+subrole, missing subrole on `AXWindow`, or missing role
 ///   maps to `None` (unknown, never a default `Normal` or `Other`).
@@ -548,7 +552,8 @@ pub fn normalize_window_type(
         (Some("AXSheet"), _) => Some(WindowType::Sheet),
         (Some("AXWindow"), Some("AXStandardWindow")) => Some(WindowType::Normal),
         (Some("AXWindow"), Some("AXDialog" | "AXSystemDialog")) => Some(WindowType::Dialog),
-        (Some("AXWindow"), Some("AXFloatingWindow" | "AXSystemFloatingWindow")) => None,
+        (Some("AXWindow"), Some("AXFloatingWindow")) => Some(WindowType::Utility),
+        (Some("AXWindow"), Some("AXSystemFloatingWindow")) => None,
         (Some("AXWindow"), Some(_)) => Some(WindowType::Other),
         (Some("AXWindow"), None) => None,
         (None, None) => None,
@@ -1230,6 +1235,25 @@ impl TileBinding {
 
 // -- Configuration -------------------------------------------------------------
 
+/// How the engine owner attaches the adapter-owned durable intent store.
+///
+/// Defaults to [`Disabled`](Self::Disabled): no store is opened unless a
+/// caller opts in, so a forgotten product wiring can never touch the real
+/// per-user store. [`Default`](Self::Default) opens the production store
+/// under `~/Library/Application Support/OmniTiler/` for the live login
+/// namespace. [`Isolated`](Self::Isolated) opens exactly the supplied
+/// directory (tests and offline runs) under the live namespace.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum IntentStoreMode {
+    /// Never open a store (default).
+    #[default]
+    Disabled,
+    /// Production per-user store for the live login namespace.
+    Default,
+    /// Store rooted at exactly this directory (live login namespace).
+    Isolated(PathBuf),
+}
+
 /// Runtime configuration. All queues are bounded; all waits are finite.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
@@ -1287,6 +1311,11 @@ pub struct RuntimeConfig {
     /// settings exchange; core owns validation/defaulting with per-field
     /// diagnostics. Empty runs on core defaults.
     pub core_settings: Vec<(String, tiler_core::connection::RawSettingValue)>,
+    /// Durable intent-store attachment for the engine owner (default
+    /// [`IntentStoreMode::Disabled`]). The engine opens the store once at
+    /// startup and publishes its directory through
+    /// [`RuntimeDiagnostics::intent_store_dir`].
+    pub intent_store: IntentStoreMode,
 }
 
 impl Default for RuntimeConfig {
@@ -1308,6 +1337,7 @@ impl Default for RuntimeConfig {
             focus_route: FocusRoute::default(),
             fixed_size_predicate: FixedSizePredicate::BothAxes,
             core_settings: Vec::new(),
+            intent_store: IntentStoreMode::Disabled,
         }
     }
 }
@@ -1440,6 +1470,11 @@ pub struct RuntimeDiagnostics {
     /// Normal-log sink drops under saturation (bounded queue full or sink
     /// gone). The ring entry is still kept; only the async copy drops.
     pub logger_dropped: u64,
+    /// Directory of the durable intent store attached by the engine owner,
+    /// set once when the engine opens it. `None` when the store is disabled
+    /// or unavailable: no store directory means nothing can persist or read
+    /// retained window intent.
+    pub intent_store_dir: Option<String>,
     pub apps_live: usize,
     pub log_rotated: u64,
 }
@@ -1571,8 +1606,8 @@ mod tests {
     fn normalize_window_type_uses_factual_neutral_vocabulary() {
         use tiler_core::world_report::WindowType;
         // Sheet role maps by role; standard maps to normal; dialogs map
-        // to dialog; unverified floating withholds (never a compatibility
-        // dialog echo, never an unverified utility claim).
+        // to dialog; floating maps to utility from the measured sample,
+        // while system floating stays withheld (unmeasured).
         assert_eq!(
             normalize_window_type(Some("AXSheet"), None),
             Some(WindowType::Sheet)
@@ -1591,6 +1626,11 @@ mod tests {
         );
         assert_eq!(
             normalize_window_type(Some("AXWindow"), Some("AXFloatingWindow")),
+            Some(WindowType::Utility)
+        );
+        // Unmeasured, withheld: never a utility claim without a sample.
+        assert_eq!(
+            normalize_window_type(Some("AXWindow"), Some("AXSystemFloatingWindow")),
             None
         );
         // Unknown reads withhold; known non-ordinary shapes read other.

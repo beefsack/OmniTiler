@@ -9,11 +9,18 @@
 //! gates immediately pre-press → effect readback → verified close. A sent
 //! press always yields an outcome carrying the post-press snapshot and MC
 //! presence, even when the close fails, so a press is never lost to a close
-//! error. The close is verified against both MC signals (the AX presence
-//! group AND the CG presentation windows, since the group disappears before
-//! the transform settles): a goto press is never toggled before its own
-//! dismissal is observed, and an absent surface is never toggled back open.
-//! Error paths close MC only when this leg opened it and gates still pass. A
+//! error. The close is verified against the AX presence group plus, only
+//! when the tree was owned by WindowManager, its CG presentation windows
+//! (the group disappears before the transform settles); Dock-owned and
+//! not-yet-observed trees verify on presence alone. A goto press is never
+//! toggled before its own dismissal is observed, and an absent surface is
+//! never toggled back open.
+//! AX traversal prefers `com.apple.WindowManager` (`mc.display` directly on
+//! the application element) and falls back automatically to `com.apple.dock`
+//! (`mc` → `mc.display`) when the WindowManager surface is absent, has no
+//! exact running-application entry, or exposes no `mc.display` (macOS 15);
+//! each surface's exact bundle is re-verified on every access. Error paths
+//! close MC only when this leg opened it and gates still pass. A
 //! dispatched-but-unverified remove is never replayed in cleanup (indices
 //! shift under a missing Space); goto restoration re-targets by fresh SID
 //! join, which is safe.
@@ -21,18 +28,19 @@
 use crate::mc_probe::{
     ActionBudget, FocusLegs, GhosttyWindow, LegLatency, MC_CLEANUP_RESERVE_SECS,
     MC_EFFECT_SETTLE_MS, McAction, McError, McErrorReport, McFailEvidence, McInspectReport,
-    McLayout, McLifecycleReport, TopologySnapshot, error_json, focus_restored, removal_eligibility,
-    require_dock_bundle, require_mc_surface_bundle, validate_create_effect, validate_goto_effect,
-    validate_removal_effect,
+    McLayout, McLifecycleReport, McSurface, TopologySnapshot, error_json, focus_restored,
+    removal_eligibility, require_dock_bundle, require_mc_surface_bundle, validate_create_effect,
+    validate_goto_effect, validate_removal_effect,
 };
 // macOS-only live dispatch names (used via `live` on macOS; off-mac the stub
 // never touches them, so gate them to keep strict Clippy clean).
 #[cfg(target_os = "macos")]
 use crate::mc_probe::{
     DOCK_BUNDLE_ID, MC_ACTION_PRESS, MC_ACTION_REMOVE_DESKTOP, MC_ACTION_TIMEOUT_MS,
-    MC_AX_TIMEOUT_SECS, MC_GROUP_POLL_MS, MC_ID_DISPLAY, MC_ID_SPACES, MC_ID_SPACES_ADD,
-    MC_ID_SPACES_LIST, MC_STABILIZE_MS, MC_SURFACE_BUNDLE_ID, require_ax_trust,
-    require_unlocked_session,
+    MC_AX_TIMEOUT_SECS, MC_GROUP_POLL_MS, MC_ID_DISPLAY, MC_ID_ROOT, MC_ID_SPACES,
+    MC_ID_SPACES_ADD, MC_ID_SPACES_LIST, MC_STABILIZE_MS, McSurfaceExposure, mc_owner,
+    mc_presentation_cg_owner, record_mc_owner, require_ax_trust, require_unlocked_session,
+    select_mc_surface,
 };
 // Read-only observation helpers live in `mc_observe`; re-exported here so
 // existing `mc_lifecycle::…` paths keep working with no interface change.
@@ -227,49 +235,75 @@ pub(crate) mod live {
         }
     }
 
-    /// Live MC surface PID: exactly one `com.apple.WindowManager` entry
-    /// (never guessed).
-    pub fn mc_surface_pid() -> Result<i32, McError> {
+    /// Exact-verified PID for one MC surface: exactly one exact bundle
+    /// entry in the running-application table (never guessed). `None` means
+    /// the surface is not running; ambiguous or reserved identities refuse
+    /// as ownership failures instead of falling through.
+    fn exact_surface_pid(surface: McSurface) -> Result<Option<i32>, McError> {
         let mut found = Vec::new();
         for (pid, bundle) in crate::ffi::running_apps() {
-            if bundle == MC_SURFACE_BUNDLE_ID {
+            if bundle == surface.bundle_id() {
                 found.push(pid);
             }
         }
         match found.len() {
-            1 if found[0] > 1 => Ok(found[0]),
-            1 => Err(McError::Ownership(
-                "refusing reserved Mission Control surface pid".to_owned(),
-            )),
-            0 => Err(McError::Unsupported(
-                "no live com.apple.WindowManager entry in the running-application table".to_owned(),
-            )),
-            _ => Err(McError::Blocked(format!(
-                "ambiguous Mission Control surface identity ({} entries); refusing to guess",
+            1 if found[0] > 1 => Ok(Some(found[0])),
+            1 => Err(McError::Ownership(format!(
+                "refusing reserved {} pid",
+                surface.bundle_id()
+            ))),
+            0 => Ok(None),
+            _ => Err(McError::Ownership(format!(
+                "ambiguous {} identity ({} entries); refusing to guess",
+                surface.bundle_id(),
                 found.len()
             ))),
         }
     }
 
-    /// MC surface AX element with a FRESH exact bundle verification on every
+    /// Owning surface identity for inspection: the surface that actually
+    /// owns a present `mc.display` tree, else a running surface when no
+    /// tree is present. WindowManager merely running is never reported as
+    /// the owner while the Dock owns the open tree.
+    pub fn mc_surface_identity() -> Result<(McSurface, i32), McError> {
+        if let Some((surface, _)) = surface_displays()?
+            && let Some(pid) = exact_surface_pid(surface)?
+        {
+            return Ok((surface, pid));
+        }
+        for surface in McSurface::ALL {
+            if let Some(pid) = exact_surface_pid(surface)? {
+                return Ok((surface, pid));
+            }
+        }
+        Err(McError::Unsupported(
+            "no live com.apple.WindowManager or com.apple.dock entry in the running-application table"
+                .to_owned(),
+        ))
+    }
+
+    /// Surface AX element with a FRESH exact bundle verification on every
     /// traversal (never the inspect-time PID alone), plus a finite messaging
-    /// timeout before any read.
-    fn mc_surface_element(pid: i32) -> Result<crate::ffi::AxElement, McError> {
+    /// timeout before any read. `None` only when the exact-verified process
+    /// has no addressable application element (surface absent).
+    fn surface_element(
+        surface: McSurface,
+        pid: i32,
+    ) -> Result<Option<crate::ffi::AxElement>, McError> {
         let bundle = crate::ffi::bundle_id_for_pid(pid).unwrap_or_default();
-        super::require_mc_surface_bundle(&bundle)?;
-        let element = crate::ffi::AxElement::application(pid).ok_or_else(|| {
-            McError::System(format!(
-                "Mission Control surface AX element unavailable for pid {pid}"
-            ))
-        })?;
+        super::require_mc_surface_bundle(surface, &bundle)?;
+        let Some(element) = crate::ffi::AxElement::application(pid) else {
+            return Ok(None);
+        };
         let status = crate::ffi::ax_set_messaging_timeout(&element, MC_AX_TIMEOUT_SECS);
         if status != 0 {
             return Err(McError::System(format!(
-                "Mission Control surface AX messaging timeout unset: {}",
+                "{} AX messaging timeout unset: {}",
+                surface.bundle_id(),
                 crate::ffi::ax_error_name(status)
             )));
         }
-        Ok(element)
+        Ok(Some(element))
     }
 
     fn child_with_id(
@@ -297,10 +331,89 @@ pub(crate) mod live {
         Ok(None)
     }
 
-    /// Read-only MC-group presence: a direct `mc.display` child of the
-    /// WindowManager application element.
+    /// Every exact-identifier child (bounded by the surface's AXChildren).
+    fn children_with_id(
+        element: &crate::ffi::AxElement,
+        want: &str,
+    ) -> Result<Vec<crate::ffi::AxElement>, McError> {
+        let mut found = Vec::new();
+        for child in crate::ffi::ax_children(element).map_err(|code| {
+            McError::System(format!(
+                "AXChildren unreadable: {}",
+                crate::ffi::ax_error_name(code)
+            ))
+        })? {
+            match crate::ffi::ax_identifier(&child) {
+                Ok(Some(id)) if id == want => found.push(child),
+                Ok(_) => {}
+                Err(code) => {
+                    return Err(McError::System(format!(
+                        "AXIdentifier unreadable: {}",
+                        crate::ffi::ax_error_name(code)
+                    )));
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    /// Exact-bundle-verified `mc.display` nodes for one surface. `Absent`
+    /// covers a surface that is not running, has no addressable application
+    /// element, or exposes no `mc.display`; AX read failures stay errors so
+    /// routing can classify them (WindowManager `System` is routing-inert,
+    /// Dock errors and ownership refusals are fatal).
+    fn probe_surface(
+        surface: McSurface,
+    ) -> Result<McSurfaceExposure<Vec<crate::ffi::AxElement>>, McError> {
+        let Some(pid) = exact_surface_pid(surface)? else {
+            return Ok(McSurfaceExposure::Absent);
+        };
+        let Some(app) = surface_element(surface, pid)? else {
+            return Ok(McSurfaceExposure::Absent);
+        };
+        let owner = if surface.direct_display() {
+            app
+        } else {
+            match child_with_id(&app, MC_ID_ROOT)? {
+                Some(root) => root,
+                None => return Ok(McSurfaceExposure::Absent),
+            }
+        };
+        let displays = children_with_id(&owner, MC_ID_DISPLAY)?;
+        if displays.is_empty() {
+            Ok(McSurfaceExposure::Absent)
+        } else {
+            Ok(McSurfaceExposure::Present(displays))
+        }
+    }
+
+    /// Fresh `mc.display` nodes and the exact surface that owns them.
+    /// Selection prefers WindowManager and falls through to the Dock only
+    /// when WindowManager is absent or its application/child AX reads are
+    /// unavailable; the selected surface is recorded as the presentation
+    /// owner.
+    fn surface_displays() -> Result<Option<(McSurface, Vec<crate::ffi::AxElement>)>, McError> {
+        let selected = select_mc_surface(probe_surface(McSurface::WindowManager), || {
+            probe_surface(McSurface::Dock)
+        })?;
+        if let Some((surface, _)) = &selected {
+            record_mc_owner(*surface);
+        }
+        Ok(selected)
+    }
+
+    /// Read-only MC-group presence: `mc.display` under the preferred surface
+    /// (WindowManager direct, else the Dock `mc` root).
     pub fn mc_group_present() -> Result<bool, McError> {
-        Ok(child_with_id(&mc_surface_element(mc_surface_pid()?)?, MC_ID_DISPLAY)?.is_some())
+        Ok(surface_displays()?.is_some())
+    }
+
+    /// Fresh `mc.display` nodes owned by the selected surface (empty when
+    /// Mission Control is not displayed).
+    fn mc_display_children() -> Result<Vec<crate::ffi::AxElement>, McError> {
+        Ok(surface_displays()?
+            .map(|(_, displays)| displays)
+            .unwrap_or_default())
     }
 
     /// Shared bounded poll: first `Some` wins; `None` at the deadline.
@@ -344,13 +457,28 @@ pub(crate) mod live {
 
     /// MC-surface windows above the subnormal desktop seam: the presentation
     /// overlay, thumbnails, and buttons that exist only while Mission
-    /// Control is displayed (observed: layers 14/19 overlay plus layer-0
-    /// controls; closed leaves only the subnormal wallpaper windows). The AX
-    /// presence group disappears before this CG transform settles, and those
-    /// windows can still be Space members when an emptiness read runs, so a
-    /// close is not verified on presence absence alone.
+    /// Control is displayed (observed on the WindowManager route: layers
+    /// 14/19 overlay plus layer-0 controls; closed leaves only the subnormal
+    /// wallpaper windows). The AX presence group disappears before this CG
+    /// transform settles, and those windows can still be Space members when
+    /// an emptiness read runs, so a close is not verified on presence
+    /// absence alone.
+    ///
+    /// The CG read is keyed on the surface that actually owned the open MC
+    /// AX tree ([`mc_owner`]), never on WindowManager merely running. The
+    /// Dock owns persistent layer-0+ chrome (its bar), so a bare layer test
+    /// cannot prove a Dock-owned overlay is gone: Dock-owned and not-yet-
+    /// observed trees verify on the fresh AX presence group alone (the
+    /// historical macOS 15 behavior), while a WindowManager-owned tree checks
+    /// `layer >= 0` for that exact PID with a PID-reuse fence.
     fn mc_presentation_windows_present() -> Result<bool, McError> {
-        let pid = mc_surface_pid()?;
+        let Some(owner) = mc_presentation_cg_owner(mc_owner()) else {
+            return Ok(false);
+        };
+        let Some(pid) = exact_surface_pid(owner)? else {
+            // The owning surface is gone, so it owns no lingering windows.
+            return Ok(false);
+        };
         let pid_u32 = u32::try_from(pid).map_err(|_| {
             McError::System(format!(
                 "Mission Control surface pid {pid} out of range for the window list"
@@ -360,7 +488,7 @@ pub(crate) mod live {
             .map_err(|e| McError::Unsupported(format!("CG window list unreadable: {e}")))?;
         // PID-reuse fence: the identity that authorized this read must still
         // hold after it; any drift voids the verification.
-        if mc_surface_pid()? != pid {
+        if exact_surface_pid(owner)? != Some(pid) {
             return Err(McError::Blocked(
                 "Mission Control surface identity changed during the close verification; refusing"
                     .to_owned(),
@@ -371,7 +499,9 @@ pub(crate) mod live {
 
     /// Verified Mission Control absence: the AX presence group is absent AND
     /// no MC-surface presentation window remains above the subnormal desktop
-    /// seam. Read failures propagate (never read as closed).
+    /// seam on the WindowManager route (Dock fallback: presence alone; see
+    /// [`Self::mc_presentation_windows_present`]). Read failures propagate
+    /// (never read as closed).
     pub fn mc_closed_verified() -> Result<bool, McError> {
         if mc_group_present()? {
             return Ok(false);
@@ -470,17 +600,18 @@ pub(crate) mod live {
         ))
     }
 
-    /// Fresh AX join of one display's `mc.spaces` group: WindowManager
-    /// application element → `mc.display` with `AXDisplayID == cgid` →
-    /// `mc.spaces`.
+    /// Fresh AX join of one display's `mc.spaces` group: the preferred
+    /// surface's `mc.display` with `AXDisplayID == cgid` → `mc.spaces`
+    /// (WindowManager direct, else Dock `mc` root).
     fn spaces_group(cgid: u32) -> Result<crate::ffi::AxElement, McError> {
-        let surface = mc_surface_element(mc_surface_pid()?)?;
-        let displays = crate::ffi::ax_children(&surface).map_err(|code| {
-            McError::System(format!(
-                "Mission Control surface AXChildren unreadable: {}",
-                crate::ffi::ax_error_name(code)
-            ))
-        })?;
+        let displays = mc_display_children()?;
+        if displays.is_empty() {
+            return Err(McError::Blocked(format!(
+                "no mc.display owned by {} or {}; refusing without an exact display join",
+                McSurface::WindowManager.bundle_id(),
+                McSurface::Dock.bundle_id()
+            )));
+        }
         for candidate in displays {
             if !matches!(
                 crate::ffi::ax_identifier(&candidate),
@@ -912,7 +1043,7 @@ pub(crate) mod live {
         unsupported("Mission Control lifecycle")
     }
 
-    pub fn mc_surface_pid() -> Result<i32, McError> {
+    pub fn mc_surface_identity() -> Result<(McSurface, i32), McError> {
         unsupported("Mission Control lifecycle")
     }
 
@@ -1441,10 +1572,11 @@ pub fn run_mc_inspect() -> Result<String, (i32, String)> {
         }
         Err(e) => (None, None, Some(e.to_string())),
     };
-    let (surface_pid, surface_bundle, presence, presence_error) = match live::mc_surface_pid() {
-        Ok(pid) => {
+    let (surface_pid, surface_bundle, presence, presence_error) = match live::mc_surface_identity()
+    {
+        Ok((surface, pid)) => {
             let bundle = crate::ffi::bundle_id_for_pid(pid).unwrap_or_default();
-            let (present, err) = match require_mc_surface_bundle(&bundle) {
+            let (present, err) = match require_mc_surface_bundle(surface, &bundle) {
                 Ok(()) => match live::mc_group_present() {
                     Ok(p) => (Some(p), None),
                     Err(e) => (None, Some(e.to_string())),

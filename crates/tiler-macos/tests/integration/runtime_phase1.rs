@@ -18,9 +18,10 @@ use tiler_macos::ffi::{DisplayRect, NsDisplay, SlsDisplayRow};
 use tiler_macos::input::cg_flag_bits;
 use tiler_macos::input_match::TapKeyKind;
 use tiler_macos::runtime::{
-    AxCompletion, FocusCommand, FrameCommand, InputDirection, ObservedWindow, Runtime,
-    RuntimeConfig, RuntimeHandle, ScopedBackendSnapshot, ScopedObservation, ScopedWindowMeta,
-    ShutdownOutcome, StartupError, SubmitOutcome, TerminateOutcome, TopologyMode, WorkerReadiness,
+    AxCompletion, FocusCommand, FrameCommand, InputDirection, IntentStoreMode, ObservedWindow,
+    Runtime, RuntimeConfig, RuntimeHandle, ScopedBackendSnapshot, ScopedObservation,
+    ScopedWindowMeta, ShutdownOutcome, StartupError, SubmitOutcome, TerminateOutcome, TopologyMode,
+    WorkerReadiness,
 };
 use tiler_macos::runtime_backend::{
     AxBackend, AxBackendFactory, InputSource, InputSourceFactory, RawKeyEvent,
@@ -659,6 +660,28 @@ fn win(wid: u32, x: i32, y: i32, w: i32, h: i32) -> ObservedWindow {
         floating: false,
         fullscreen: false,
         hints: tiler_macos::runtime::WindowSizeHints::none(),
+    }
+}
+
+/// Proven-windowless observation: the app is the frontmost owner and its
+/// selected-oracle read is genuine NoValue. `obs(.., None, ..)` cannot carry
+/// this distinction (it reports unknown foreground), and only the proven
+/// shape lets the adapter stamp `foreground_known` with empty focus, which
+/// the core needs to originate a positive-close request.
+fn windowless_obs(pid: u32, generation: u64, seq: u64, revision: u64) -> ScopedObservation {
+    ScopedObservation {
+        pid,
+        generation,
+        seq,
+        windows: Vec::new(),
+        focused_wid: None,
+        revision,
+        frontmost_pid: Some(pid),
+        ax_focus: Some((pid, None)),
+        cg_owned: false,
+        meta: Vec::new(),
+        cg_complete: true,
+        cg_owner_wids: Vec::new(),
     }
 }
 
@@ -1621,9 +1644,10 @@ fn focus_saturation_drops_counted_and_survives() {
     let revision = fixture
         .handle
         .update_topology_with(single_display_snapshot(), &user_space);
+    // APP_A's observation is the baseline report, so its three newcomers
+    // emit no automatic-admission focus intent (the baseline placement
+    // phase stays quiet).
     let generation = fixture.handle.launch_app(APP_A).expect("launch");
-    // Three windows in a row so two consecutive focus-right steps both
-    // resolve through the core.
     fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
@@ -1638,51 +1662,120 @@ fn focus_saturation_drops_counted_and_survives() {
     ));
     flush(&fixture.handle);
     drain_applied(&fixture);
+
+    // A second live app joins the same workspace and is itself focused, so
+    // its automatic-admission intent is already satisfied by the observed
+    // focus (spent, never dispatched) while its tiled leaf stays behind as
+    // the close survivor.
+    let generation_b = fixture.handle.launch_app(APP_B).expect("launch B");
+    fixture.handle.submit_scoped_observation(obs(
+        APP_B,
+        generation_b,
+        1,
+        vec![win(21, 0, 0, 640, 1080)],
+        Some(21),
+        revision,
+    ));
+    flush(&fixture.handle);
+    drain_applied(&fixture);
+
+    // Return observed focus to APP_A's window 11: the prior accepted focus
+    // is then the lifetime the proven-windowless close will terminate, and
+    // APP_B's known leaf is still a same-domain tiled survivor. No newcomer
+    // arrives here, so this report mints no admission intent.
+    fixture.handle.submit_scoped_observation(obs(
+        APP_A,
+        generation,
+        2,
+        vec![
+            win(11, 0, 0, 640, 1080),
+            win(12, 640, 0, 640, 1080),
+            win(13, 1280, 0, 640, 1080),
+        ],
+        Some(11),
+        revision,
+    ));
+    flush(&fixture.handle);
+    drain_applied(&fixture);
     // The fixture establishes observed focus 11, so its own owner-thread
     // oracle read attests exactly that: the pre-dispatch baseline gate
-    // proceeds (never a fabricated proof).
+    // proceeds (never a fabricated proof). Both owner threads read the same
+    // selected oracle, so both attest the established pair whichever app
+    // the explicit step resolves to.
     attest_focus(&fixture, APP_A, 11);
+    {
+        let mut evidence = fixture.ax.focus_evidence.lock().expect("mutex");
+        evidence.insert(APP_B, (APP_A, Some(11)));
+    }
 
-    // Two focus replies, one outbox slot: the second request is expected to
-    // drop with a counted outcome instead of blocking actuation. The worker
-    // is gated inside its first dispatch (entry signalled before the wait),
-    // so that command left the latest-only slot with its outbox row still
-    // queued.
-    //
-    // KNOWN RED (single-session premise unattainable; evidence-backed stop).
-    //
-    // With one app session the core never publishes a *second distinct*
-    // focus request while its first is unsettled: while a request is
-    // pending, a further step either resolves from the pending planned
-    // target (`OBSERVED_FILE_TRACE`: subject=1001_12, internal=unchanged)
-    // or re-emits the same request id, which the adapter correctly dedups
-    // (`kind=close-focus outcome=duplicate`, world_sequencer.rs:476-482
-    // same-id `CloseEnvelope::Duplicate`, world_dispatch.rs:3611) before any
-    // capacity fence is reached. The outbox can therefore hold at most one
-    // live row per session, so `focus_dropped_full` is unreachable from a
-    // second step in the same session and `focus_outbox_depth: 1` cannot be
-    // saturated this way. Reaching the fence needs a distinct cause/id
-    // (e.g. a PositiveClose selection publication from a terminating
-    // window), which this module does not yet drive.
-    let focus_gate = gate_focus_app(&fixture, APP_A);
+    // The single explicit step dispatches; the gate holds its command's
+    // outbox row queued (entry is signalled before the wait). The depth-1
+    // outbox then has no free slot for a second, distinct publication.
+    let focus_gate_a = gate_focus_app(&fixture, APP_A);
+    let focus_gate_b = gate_focus_app(&fixture, APP_B);
     send_input_and_flush(&fixture, &[focus_key()], 1, 0);
     wait_focus_entered(&fixture);
     assert!(
         fixture.handle.diagnostics().focus_dispatched >= 1,
-        "first focus must dispatch before the second step"
+        "explicit focus must dispatch before the close is observed"
     );
-    send_input_and_flush(&fixture, &[focus_key()], 2, 0);
+
+    // A proven-windowless observation closes APP_A's focused window while
+    // the explicit row still occupies the single outbox slot. The core
+    // mints a distinct positive-close request (its issuing revision differs
+    // from the explicit step's), so it reaches the adapter's native
+    // pre-dispatch capacity fence instead of the same-id duplicate path.
+    fixture
+        .handle
+        .submit_scoped_observation(windowless_obs(APP_A, generation, 3, revision));
+    flush(&fixture.handle);
+    // Wait on the ring row itself, not the counter: `no_call` bumps
+    // `focus_dropped_full` directly and then emits the ring entry (the
+    // notify), so the row is the causal settle marker. Pin the drop to the
+    // close lane: the only `close-focus no-call` belongs to APP_A's close
+    // observation report, while the explicit step runs on the input lane
+    // (report pid 0). An explicit refusal would surface as a pid-0 no-call.
+    let entries = wait_log_entries(
+        &fixture.handle,
+        |entries| {
+            entries
+                .iter()
+                .any(|e| e.kind == "close-focus" && e.outcome == "no-call")
+        },
+        "positive-close capacity drop",
+    );
+    let no_calls: Vec<_> = entries
+        .iter()
+        .filter(|e| e.kind == "close-focus" && e.outcome == "no-call")
+        .collect();
+    assert_eq!(no_calls.len(), 1, "one close-lane drop: {entries:?}");
+    assert_eq!(
+        no_calls[0].pid, APP_A,
+        "the drop comes from the close observation, not the input lane"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.kind == "close-focus" && e.outcome == "dispatched"),
+        "the explicit step dispatched into the queued slot: {entries:?}"
+    );
+    // The close cause is distinct, not a same-id replay: a deduped second
+    // publication would emit `close-focus duplicate` instead of reaching the
+    // capacity fence.
+    assert!(
+        !entries
+            .iter()
+            .any(|e| e.kind == "close-focus" && e.outcome == "duplicate"),
+        "the close publication must not dedup: {entries:?}"
+    );
 
     let diagnostics = fixture.handle.diagnostics();
-    let focus_replies: u64 = diagnostics
-        .core_replies
-        .iter()
-        .filter(|(k, _)| k.starts_with("focus-"))
-        .map(|(_, v)| v)
-        .sum();
+    // Exactly the one explicit step reached the core on the focus lane; the
+    // close reaches the adapter through its reconcile reply instead.
     assert_eq!(
-        focus_replies, 2,
-        "both focus steps reach the core: {diagnostics:?}"
+        diagnostics.core_replies.get("focus-accepted"),
+        Some(&1),
+        "one explicit focus step reached the core: {diagnostics:?}"
     );
     assert_eq!(diagnostics.focus_dispatched, 1);
     assert_eq!(diagnostics.focus_dropped_full, 1);
@@ -1692,7 +1785,8 @@ fn focus_saturation_drops_counted_and_survives() {
     assert!(requests[0].dispatched);
     // Dispatch is never verified focus.
     assert!(!requests[0].verified);
-    release_gate(&focus_gate);
+    release_gate(&focus_gate_a);
+    release_gate(&focus_gate_b);
 
     // The runtime survives saturation: new observations still actuate. The
     // pair swap makes the act a real geometry change (a focus-only change
@@ -1700,7 +1794,7 @@ fn focus_saturation_drops_counted_and_survives() {
     fixture.handle.submit_scoped_observation(obs(
         APP_A,
         generation,
-        2,
+        4,
         vec![
             win(11, 640, 0, 640, 1080),
             win(12, 0, 0, 640, 1080),
@@ -3750,4 +3844,50 @@ fn borrowed_clone_drop_leaves_engine_and_workers_usable() {
         "effect-backend clone drop must not stop the engine either"
     );
     shutdown_clean(&fixture);
+}
+
+#[test]
+fn intent_store_mode_is_disabled_by_default_and_isolated_reaches_engine() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Default test config inherits `IntentStoreMode::Disabled`: start must
+    // open no store, so nothing in the process can read or write the real
+    // per-user intent store.
+    let fixture = start(test_config());
+    assert!(
+        fixture.handle.diagnostics().intent_store_dir.is_none(),
+        "disabled default must not open an intent store"
+    );
+    shutdown_clean(&fixture);
+
+    // Opt-in isolated mode reaches engine startup and publishes the exact
+    // directory the engine opened.
+    let dir = std::env::temp_dir().join(format!(
+        "omnitiler-intent-integration-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("create isolated intent dir");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+        .expect("isolated intent dir mode");
+    let config = RuntimeConfig {
+        intent_store: IntentStoreMode::Isolated(dir.clone()),
+        ..test_config()
+    };
+    let fixture = start(config);
+    let reported = fixture.handle.diagnostics().intent_store_dir;
+    if tiler_macos::ffi::audit_self().is_ok() {
+        assert_eq!(
+            reported.as_deref(),
+            Some(dir.to_string_lossy().as_ref()),
+            "engine publishes the exact isolated store dir"
+        );
+    } else {
+        assert_eq!(reported, None, "no live namespace: store refuses closed");
+    }
+    shutdown_clean(&fixture);
+    let _ = std::fs::remove_dir_all(&dir);
 }
