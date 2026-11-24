@@ -1181,6 +1181,27 @@ fn run_leg_body_macos(
     let product_dir = run_dir.join("product");
     std::fs::create_dir(&product_dir)
         .map_err(|e| (1, format!("fixture-leg: product dir refused ({e})")))?;
+    if opts.corrupt_intent_store {
+        use std::os::unix::fs::PermissionsExt;
+        let (uid, asid) = crate::ffi::audit_self()
+            .map_err(|e| (1, format!("fixture-leg: audit identity unreadable ({e})")))?;
+        let store_dir = product_dir.join("intent-store");
+        std::fs::create_dir_all(&store_dir)
+            .map_err(|e| (1, format!("fixture-leg: corrupt store dir refused ({e})")))?;
+        std::fs::set_permissions(&store_dir, std::fs::Permissions::from_mode(0o700)).map_err(
+            |e| {
+                (
+                    1,
+                    format!("fixture-leg: corrupt store dir mode refused ({e})"),
+                )
+            },
+        )?;
+        let path = store_dir.join(format!("intent-v1-{uid}-{asid}.json"));
+        std::fs::write(&path, b"{}")
+            .map_err(|e| (1, format!("fixture-leg: corrupt store write refused ({e})")))?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| (1, format!("fixture-leg: corrupt store mode refused ({e})")))?;
+    }
     // Pending fixture launch BEFORE `open`: any post-open/pre-bind failure
     // below holds residue until the identity joins or absence proves, and
     // finish can never report clean over it.
@@ -1612,6 +1633,36 @@ fn run_leg_body_macos(
                 ));
             }
         }
+    } else {
+        None
+    };
+    // The corrupt-store diagnostic owns this pre-seeded leaf: capture the
+    // product's bounded `intent-store:` diagnostic, then remove it after the
+    // final chord so teardown sees only product-owned leaves. The product
+    // has already failed closed at startup; this is not a product path.
+    let corrupt_store = if opts.corrupt_intent_store {
+        let stderr = std::fs::read_to_string(product_dir.join("stderr.log")).unwrap_or_default();
+        let diagnostic = stderr
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("intent-store:"))
+            .map(str::to_owned);
+        let store_dir = product_dir.join("intent-store");
+        std::fs::remove_dir_all(&store_dir).map_err(|e| {
+            (
+                1,
+                format!("fixture-leg: corrupt store cleanup refused ({e})"),
+            )
+        })?;
+        let diagnostic = diagnostic.ok_or((
+            1,
+            "fixture-leg: corrupt store produced no product diagnostic".to_owned(),
+        ))?;
+        Some(serde_json::json!({
+            "outcome": "degraded",
+            "diagnostic": diagnostic,
+            "note": "pre-seeded malformed intent JSON; the product launched, tiled, and shut down cleanly with the store failed closed"
+        }))
     } else {
         None
     };
@@ -2060,7 +2111,8 @@ mod tests {
         assert_eq!(envelope["owned_space"], evidence);
         assert!(envelope.get("corrupt_store").is_none());
         // No owned Space (space-mutating/mixed legs) leaves the key absent.
-        let envelope = completed_envelope(vec![], None, None, serde_json::json!({"clean": true}));
+        let envelope =
+            completed_envelope(vec![], None, None, None, serde_json::json!({"clean": true}));
         assert!(envelope.get("owned_space").is_none());
         let store = serde_json::json!({"outcome": "degraded", "diagnostic": "intent-store: test"});
         let envelope = completed_envelope(
