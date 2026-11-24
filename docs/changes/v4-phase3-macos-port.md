@@ -34,8 +34,10 @@
   user-approved: D0–D6 are decided, R1–R5 rectifications are tracked there, and
   the bounded D5 fixture diagnostic ran: close identity matched exactly, but
   one window hide emitted a false destroyed event for a still-alive window.
-  Direct notification pruning is therefore unsafe; the CG-alive oracle stays
-  authoritative and transport remains unimplemented.
+  The second bounded diagnostic (2026-11-24) captured event-time AX/CG state:
+  that hide delivery was AX-absent while CG-present/onscreen, identical to the
+  close delivery. No safe close-only predicate exists; the CG-alive oracle
+  stays authoritative and transport remains unimplemented.
   Decisions are canonical in [macOS v4 open decisions](../decisions/macos.md#macos-v4-open-decisions-2026-11-24).
   Follow-up code review findings (**F1–F7**) and tentative decisions (**TD1–TD7**,
   pending later user confirmation) are recorded in
@@ -382,10 +384,11 @@ native acceptance.
 | Settings-key parity | Implemented by construction (raw pass-through, no adapter caps). |
 | 16-output `actionOutputs` cap | Inert: the field is always empty because no action context is produced. |
 
-Ranked remaining adapter work: resolve follow-up review findings **F1–F5**, run the
-D4 native restart/store proof, replace the four-leg JSON codec with R3 typed
-ingress, run the second bounded D5 diagnostic (tentative TD1), and implement/offline-test
-macOS M4 (tentative TD3) while final acceptance stays gated on KDE ST/RC.
+Follow-up findings **F1–F5**, R3 typed ingress, M4 offline implementation, and
+the D4 native restart/store proof are landed. The second D5 diagnostic resolved
+to fallback Option A (no safe close-only predicate; CG-alive guard retained).
+Remaining native-Space, physical, workspace, renderer, lifecycle and release
+acceptance stays gated on KDE ST/RC where slice 5 or 7 is involved.
 Batch-3 `AXSystemFloatingWindow` is withheld pending a truthful sample (see
 [the measurement gap](macos-batch3-utility-mapping.md#withheld-axsystemfloatingwindow)).
 Post-only owned-Space placement is now live-proven, so the optional live legs
