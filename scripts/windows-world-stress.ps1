@@ -474,28 +474,23 @@ function Compare-StressCheckpoint($Expected, $Actual) {
     $tile = $Expected.Tiles[$id]
     if ($null -eq $tile) { Fail-Ws "no normalized tile for $id" }
     $shownHere = ($Expected.Homing[$id] -eq $Expected.View)
-    if ($shownHere) {
-      foreach ($f in @("allocation", "effective_frame")) {
-        $r = Get-StressRowField $row $f
-        if ($null -eq $r) { Fail-Ws "$id $f missing" }
-        if ([int]$r.x -ne [int]$tile[0] -or [int]$r.y -ne [int]$tile[1] -or
-            [int]$r.w -ne [int]$tile[2] -or [int]$r.h -ne [int]$tile[3]) {
-          Fail-Ws "$id $f [$($r.x),$($r.y),$($r.w),$($r.h)] != tile [$($tile -join ',')]"
-        }
-      }
-      $hv = Get-StressRowField $row "frame_hold"
-      if ($null -ne $hv -and "$hv" -ne "") { Fail-Ws "$id frame_hold present" }
-      if ("$($row.frame_authority)" -ne "controlled") { Fail-Ws "$id frame authority not controlled" }
-    } else {
-      # Hidden members are retained with a minimized hold and no managed
-      # geometry; their native outer is proven against the pager raw below.
-      foreach ($f in @("allocation", "effective_frame")) {
-        if ($null -ne (Get-StressRowField $row $f)) { Fail-Ws "$id $f present while hidden" }
-      }
-      if ("$($row.frame_authority)" -ne "hold" -or "$($row.frame_hold)" -ne "minimized") {
-        Fail-Ws "$id hidden frame hold $($row.frame_authority)/$($row.frame_hold) != hold/minimized"
+    # Desired geometry is view-independent in v4: every tiled member
+    # publishes its retained home-tile allocation/frame under controlled
+    # frame authority whether or not its home is the current view.
+    # Hidden-ness is native visibility, proven below, never a desired-row
+    # hold. Restored after 9a98994d's minimized-hold oracle outlived the
+    # Task 1 revert of its core ordering workarounds.
+    foreach ($f in @("allocation", "effective_frame")) {
+      $r = Get-StressRowField $row $f
+      if ($null -eq $r) { Fail-Ws "$id $f missing" }
+      if ([int]$r.x -ne [int]$tile[0] -or [int]$r.y -ne [int]$tile[1] -or
+          [int]$r.w -ne [int]$tile[2] -or [int]$r.h -ne [int]$tile[3]) {
+        Fail-Ws "$id $f [$($r.x),$($r.y),$($r.w),$($r.h)] != tile [$($tile -join ',')]"
       }
     }
+    $hv = Get-StressRowField $row "frame_hold"
+    if ($null -ne $hv -and "$hv" -ne "") { Fail-Ws "$id frame_hold present" }
+    if ("$($row.frame_authority)" -ne "controlled") { Fail-Ws "$id frame authority not controlled" }
     $hv = Get-StressRowField $row "membership_hold"
     if ($null -ne $hv -and "$hv" -ne "") { Fail-Ws "$id membership_hold present" }
     if ($row.floating -ne $false) { Fail-Ws "$id floating" }
