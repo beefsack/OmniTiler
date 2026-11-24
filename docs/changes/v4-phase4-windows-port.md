@@ -256,9 +256,12 @@ test ...live_set_cursor_pos_does_not_advance_raw_input_generation ... ok
 - This is the clean-HEAD run that authorizes the `WARP_SUPPORTED = true` flip
   in the following commit; the stage-2 commits themselves kept it `false`.
 - Ownership gate: the probe creates its own visible topmost window, requires
-  the foreground HWND plus PID to be that test process and `WindowFromPoint`'s
-  root to be the probe window immediately before every position write, and
-  restores the cursor preimage under the same gate.
+  the foreground HWND plus PID to be that test process, and checks
+  `WindowFromPoint`'s root against the probe window immediately before every
+  forward `SetCursorPos`. The saved cursor preimage is restored only while the
+  probe window still owns the foreground; that cleanup write is not
+  target-checked (the saved point is by definition arbitrary) and sends no
+  click or key.
 - Limit: Windows Raw Input does not distinguish physical from injected input.
   The positive leg proves handler liveness (a delivered mouse record advanced
   the same generation the warp lane re-reads) and asserts it; the flip
