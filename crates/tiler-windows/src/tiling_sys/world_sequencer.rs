@@ -74,9 +74,8 @@ use tiler_core::ids::{GenerationId, OwnerId};
 use tiler_core::world_engine::{WorldEngine, WorldOutcome};
 use tiler_core::world_report::{
     BatchDisposition, BatchSettlement, CommandDisposition, CommandResult, FrameAttempt,
-    MemberAttempt,
-    PresentationRowV4, ViewAttempt, WORLD_CONTRACT_VERSION_V4, WorldCommand, WorldReplyV4,
-    WorldReportV4,
+    MemberAttempt, PresentationRowV4, ViewAttempt, VisibilityAttempt, WORLD_CONTRACT_VERSION_V4,
+    WorldCommand, WorldReplyV4, WorldReportV4,
 };
 
 /// One outstanding sequenced report: the exact facts the core incorporation
@@ -96,6 +95,7 @@ struct SequencerFlight {
     delivered_frames: Vec<FrameAttempt>,
     delivered_members: Vec<MemberAttempt>,
     delivered_views: Vec<ViewAttempt>,
+    delivered_visibility: Vec<VisibilityAttempt>,
 }
 
 /// Exact incorporation receipt for the native owner to prune against. Close
@@ -179,6 +179,9 @@ pub(super) struct WorldSequencer {
     /// Latest-wins raw view attempts per owning view phase, drained into
     /// the next report (same ack semantics as members).
     pending_views: BTreeMap<String, ViewAttempt>,
+    /// Latest-wins visibility readbacks per window lifetime, drained into
+    /// the next report (same ack semantics as frames).
+    pending_visibility: BTreeMap<String, VisibilityAttempt>,
     last_desired: Option<WorldReplyV4>,
     /// Last delivery's per-command settlement rows, index-aligned with the
     /// commands the core executed (inline command first, then any queued
@@ -257,6 +260,7 @@ impl WorldSequencer {
             pending_frames: BTreeMap::new(),
             pending_members: BTreeMap::new(),
             pending_views: BTreeMap::new(),
+            pending_visibility: BTreeMap::new(),
             last_desired: None,
             last_settlements: Vec::new(),
             last_command_seq: None,
@@ -391,6 +395,13 @@ impl WorldSequencer {
             .insert(attempt.operation_id.clone(), attempt);
     }
 
+    /// Stage one raw visibility attempt for the next report, replacing any
+    /// entry for the same window lifetime (same ack semantics as frames).
+    pub(super) fn note_visibility_attempt(&mut self, attempt: VisibilityAttempt) {
+        self.pending_visibility
+            .insert(attempt.window.0.clone(), attempt);
+    }
+
     /// Closes the current capture still obliges: every carried close plus
     /// every unhomed (absent-workspace, uncarried) close. The native map is
     /// the sole authority, so obligations read straight from the capture with
@@ -419,6 +430,7 @@ impl WorldSequencer {
             || !self.pending_frames.is_empty()
             || !self.pending_members.is_empty()
             || !self.pending_views.is_empty()
+            || !self.pending_visibility.is_empty()
             || !self.outstanding_closes(captured).is_empty()
     }
 
@@ -428,9 +440,9 @@ impl WorldSequencer {
     ///
     /// The report carries no settings or capability projection in v4: the
     /// engine's bound connection state owns both, and the handshake/settings
-    /// route set them once. Windows has no native domains, visibility/state
-    /// setter lanes, focus-feedback producer, intent storage, or renderer, so
-    /// those sections stay empty (never fabricated). Capture holds unreadable
+    /// route set them once. Windows has no native domains, state setter lane,
+    /// focus-feedback producer, intent storage, or renderer; visibility
+    /// attempts ride only target-matching apply readbacks. Capture holds unreadable
     /// per-output scale inside `held_screens`; failing window facts stay
     /// inside `windows` with `rect: None` plus an incomplete inventory, so
     /// `held_windows` is empty. No restoration ingress exists: every report
@@ -459,6 +471,8 @@ impl WorldSequencer {
             Vec::new()
         };
         view_attempts.sort_by(|a, b| a.operation_id.cmp(&b.operation_id));
+        let visibility_attempts: Vec<VisibilityAttempt> =
+            self.pending_visibility.values().cloned().collect();
         WorldReportV4 {
             contract_version: WORLD_CONTRACT_VERSION_V4,
             adapter_incarnation: self.adapter_incarnation.clone(),
@@ -494,7 +508,7 @@ impl WorldSequencer {
             creation_attempts: Vec::new(),
             held_attempts: Vec::new(),
             state_attempts: Vec::new(),
-            visibility_attempts: Vec::new(),
+            visibility_attempts,
             focus_feedback: Vec::new(),
             presentation: PresentationRowV4::Valid(captured.presentation.clone()),
             intent_records: Vec::new(),
@@ -572,6 +586,7 @@ impl WorldSequencer {
             delivered_frames: report.frames.clone(),
             delivered_members: report.member_attempts.clone(),
             delivered_views: report.view_attempts.clone(),
+            delivered_visibility: report.visibility_attempts.clone(),
         });
         self.next_request_seq += 1;
         if command_seq.is_some() {
@@ -772,6 +787,7 @@ impl WorldSequencer {
         self.pending_frames.clear();
         self.pending_members.clear();
         self.pending_views.clear();
+        self.pending_visibility.clear();
         self.last_desired = None;
         self.last_settlements.clear();
         self.last_command_seq = None;
@@ -830,6 +846,15 @@ impl WorldSequencer {
             {
                 self.pending_views.remove(&delivered.operation_id);
                 views_acked.push(delivered.operation_id.clone());
+            }
+        }
+        for delivered in &flight.delivered_visibility {
+            if self
+                .pending_visibility
+                .get(&delivered.window.0)
+                .is_some_and(|pending| pending == delivered)
+            {
+                self.pending_visibility.remove(&delivered.window.0);
             }
         }
         AckReceipt {
