@@ -369,20 +369,28 @@ mod tests {
             after_sets, baseline,
             "SetCursorPos advanced the Raw Input generation (baseline {baseline}, after {after_sets})"
         );
-        // Leg 2 (informational): a relative injected move exercises the
-        // pump; whether Windows delivers it as Raw Input is reported, never
-        // assumed by the capability gate.
-        if owned_foreground(hwnd) {
-            let inserted = crate::ffi::input::send_mouse_move_relative(1, 0);
-            pump_for(200);
-            let after_inject = pointer_activity().expect("witness installed");
-            println!(
-                "raw-input witness: SetCursorPos gen {baseline} -> {after_sets} (unchanged); \
-                 synthetic move inserted={inserted}, gen {after_sets} -> {after_inject}"
-            );
-        } else {
-            println!("raw-input witness: synthetic leg skipped (foreground ownership changed)");
-        }
+        // Leg 2: witness liveness. Raw Input does not distinguish injected
+        // from physical input, so this leg never claims hardware origin; it
+        // proves the same handler that must see user motion actually sees a
+        // delivered mouse record. A negative/absent witness fails the probe
+        // and therefore cannot support a capability flip.
+        assert!(owned_foreground(hwnd), "refused: foreground changed before synthetic leg");
+        let inserted = crate::ffi::input::send_mouse_move_relative(1, 0);
+        assert!(
+            inserted > 0,
+            "synthetic move was not inserted; Raw Input witness liveness unproven"
+        );
+        pump_for(200);
+        let after_inject = pointer_activity().expect("witness installed");
+        println!(
+            "raw-input witness: SetCursorPos gen {baseline} -> {after_sets} (unchanged); \
+             synthetic move inserted={inserted}, gen {after_sets} -> {after_inject}"
+        );
+        assert!(
+            after_inject > after_sets,
+            "Raw Input witness did not observe injected motion \
+             (gen {after_sets} -> {after_inject}); witness liveness unproven"
+        );
         assert!(owned_foreground(hwnd), "probe ownership changed before teardown");
     }
 }
