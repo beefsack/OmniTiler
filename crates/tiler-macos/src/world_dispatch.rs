@@ -15300,14 +15300,17 @@ mod tests {
             ),
         );
         dispatch(&mut session, &mut retained, &seed, None);
+        let observed_subject = mf_fact(FF_SUBJECT, 100, false);
+        let observed_tile_frame = observed_subject.rect.expect("readable tile frame");
+        let allocation = ff_row(&seed, FF_SUBJECT)
+            .allocation
+            .expect("core allocated a tile");
+        assert_ne!(observed_tile_frame, allocation);
         let floated = tiler_protocol::world_admission::handle_report_checked(
             &mut engine,
             &mf_report(
                 2,
-                vec![
-                    mf_fact(FF_SIBLING, 0, false),
-                    mf_fact(FF_SUBJECT, 100, false),
-                ],
+                vec![mf_fact(FF_SIBLING, 0, false), observed_subject],
                 FF_SUBJECT,
                 Some(2),
                 Some(command.clone()),
@@ -15317,8 +15320,8 @@ mod tests {
         let tiler_core::world_engine::WorldOutcome::Accepted(ref first) = floated.outcome else {
             panic!("expected accepted float, got {:?}", floated.outcome);
         };
-        // First float at the execution-time frame: the subject's current
-        // tile slot, never the centered 60% fallback.
+        // First float uses the subject's observed frame, not the layout
+        // allocation or the centered 60% fallback.
         let placed = floated
             .dispositions
             .iter()
@@ -15327,13 +15330,13 @@ mod tests {
                 _ => None,
             })
             .expect("float applied");
-        assert_eq!(placed, ff_rect(100, 0, 40, 90), "{floated:?}");
+        assert_eq!(placed, observed_tile_frame, "{floated:?}");
         assert_ne!(placed, ff_rect(160, 120, 480, 360), "not centered 60%");
         let subject = ff_row(first, FF_SUBJECT);
         assert!(subject.floating, "subject floats: {subject:?}");
         assert_eq!(
             subject.effective_frame,
-            Some(ff_rect(100, 0, 40, 90)),
+            Some(observed_tile_frame),
             "the durable placement is the current frame: {subject:?}"
         );
         assert_eq!(

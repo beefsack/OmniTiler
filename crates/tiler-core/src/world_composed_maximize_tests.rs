@@ -2246,13 +2246,25 @@ fn composed_float_cursorless_resize_retains_bit() {
 
 #[test]
 fn composed_float_unknown_output_release_retains_bit() {
+    assert_composed_float_fenced_output_release(false);
+}
+
+#[test]
+fn composed_float_held_output_release_retains_bit() {
+    assert_composed_float_fenced_output_release(true);
+}
+
+fn assert_composed_float_fenced_output_release(held: bool) {
+    use crate::directional::OutputId;
+    use crate::world_report::{AuthorityScope, HeldScreenRow, RowDiagnostic};
+
     let mut engine = engine();
     let _base = float_compose_on(&mut engine);
     let mut start_fact = cfact("win-a", "out-a", 0);
     start_fact.rect = Some(work_area());
     accepted(
         &mut engine,
-        &greport(
+        &greport_two(
             5,
             vec![start_fact],
             "win-a",
@@ -2265,8 +2277,8 @@ fn composed_float_unknown_output_release_retains_bit() {
             ),
         ),
     );
-    // Only out-a is reported: a release naming unknown out-b refuses
-    // with the bit retained, unlike a valid cross-output release.
+    // The destination was previously valid. A missing or held screen on
+    // release must not authorize adopting geometry or clearing the bit.
     let mut moved_fact = cfact("win-a", "out-b", 0);
     moved_fact.rect = Some(Rect {
         x: 900,
@@ -2274,34 +2286,45 @@ fn composed_float_unknown_output_release_retains_bit() {
         w: 400,
         h: 300,
     });
-    let released = accepted(
-        &mut engine,
-        &greport(
-            6,
-            vec![moved_fact],
+    let mut report = greport(
+        6,
+        vec![moved_fact],
+        "win-a",
+        gingress(
             "win-a",
-            gingress(
-                "win-a",
-                GestureKind::Move,
-                Some((950, 60)),
-                GesturePhase::Released,
-                work_area(),
-            ),
+            GestureKind::Move,
+            Some((950, 60)),
+            GesturePhase::Released,
+            work_area(),
         ),
     );
+    if held {
+        let output = OutputId("out-b".to_owned());
+        report.held_screens.push(HeldScreenRow {
+            output: output.clone(),
+            ordinal: 1,
+            diagnostic: RowDiagnostic {
+                scope: AuthorityScope::Output(output),
+                row: RowDiagnosticLane::Screen,
+                id: Some("out-b".to_owned()),
+                kind: RowDiagnosticKind::Unreadable,
+            },
+        });
+    }
+    let released = accepted(&mut engine, &report);
     assert!(
         engine
             .world
             .runtime
             .composed_maximized
             .contains(&WindowId("win-a".to_owned())),
-        "unknown-output float release retains the bit"
+        "unreadable destination retains the bit"
     );
     assert!(
         released
             .gesture_settled
             .is_none_or(|settled| !settled.committed),
-        "unknown-output float release never commits, got {:?}",
+        "unreadable destination never commits, got {:?}",
         released.gesture_settled
     );
 }
@@ -2473,6 +2496,55 @@ fn composed_empty_output_drag_matches_ordinary_float_outcome() {
         w: 400,
         h: 300,
     };
+    let source_sibling = || cfact("win-b", "out-a", 100);
+    let source_roster = || vec![cfact("win-a", "out-a", 0), source_sibling()];
+    let source = crate::session::DomainKey {
+        output: crate::directional::OutputId("out-a".to_owned()),
+        workspace: crate::directional::WorkspaceId("ws-1".to_owned()),
+    };
+    let assert_drop = |engine: &WorldEngine, reply: &crate::world_report::WorldReplyV4, phase| {
+        let row = desire(reply, "win-a");
+        assert!(row.floating, "{phase}: {row:?}");
+        assert_eq!(row.effective_frame, Some(release), "{phase}: {row:?}");
+        assert_eq!(row.frame_authority, ScopeAuthority::Untouched, "{phase}");
+        assert_eq!(
+            row.membership_authority,
+            ScopeAuthority::Untouched,
+            "{phase}"
+        );
+        assert!(reply.transfers.is_empty(), "{phase}: no native transfer");
+        assert!(row.frame_operation.is_none(), "{phase}: no placement token");
+        let window = WindowId("win-a".to_owned());
+        assert!(
+            engine
+                .world
+                .settlement
+                .retained_floats
+                .iter()
+                .all(|pending| pending.window != window),
+            "{phase}: no pending placement"
+        );
+        assert_eq!(row.output.0, "out-b", "{phase}: {row:?}");
+        assert_eq!(row.workspace, "ws-2", "{phase}: {row:?}");
+        let home = crate::session::DomainKey {
+            output: row.output.clone(),
+            workspace: crate::directional::WorkspaceId(row.workspace.clone()),
+        };
+        assert_eq!(
+            engine.world.layout.retained_float_geometry(&home, &window),
+            Some(release),
+            "{phase}: durable placement belongs to the destination"
+        );
+        assert!(engine.world.layout.contains_domain(&source), "{phase}");
+        assert_eq!(
+            engine
+                .world
+                .layout
+                .retained_float_geometry(&source, &window),
+            None,
+            "{phase}: no stale source placement"
+        );
+    };
     let drag_release = |engine: &mut WorldEngine, seq: u64, base: Rect| {
         let mut moved_fact = cfact("win-a", "out-b", 0);
         moved_fact.rect = Some(release);
@@ -2480,7 +2552,7 @@ fn composed_empty_output_drag_matches_ordinary_float_outcome() {
             engine,
             &greport_two(
                 seq,
-                vec![moved_fact],
+                vec![moved_fact, source_sibling()],
                 "win-a",
                 gingress(
                     "win-a",
@@ -2495,56 +2567,45 @@ fn composed_empty_output_drag_matches_ordinary_float_outcome() {
     // Ordinary arm: float on out-a, then the native drag observes the
     // release frame on the empty out-b.
     let mut ordinary = engine();
-    accepted(
-        &mut ordinary,
-        &bootstrap_two(1, vec![cfact("win-a", "out-a", 0)], "win-a"),
-    );
+    accepted(&mut ordinary, &bootstrap_two(1, source_roster(), "win-a"));
     let (_floated, floated_settlements) = accepted_with_settlements(
         &mut ordinary,
-        &cmd_two(
-            2,
-            1,
-            vec![cfact("win-a", "out-a", 0)],
-            "win-a",
-            toggle_float("win-a"),
-        ),
+        &cmd_two(2, 1, source_roster(), "win-a", toggle_float("win-a")),
     );
     let float_base = float_placement(&floated_settlements);
     let mut settled_fact = cfact("win-a", "out-a", 0);
     settled_fact.rect = Some(float_base);
     accepted(
         &mut ordinary,
-        &bootstrap_two(3, vec![settled_fact], "win-a"),
+        &bootstrap_two(3, vec![settled_fact, source_sibling()], "win-a"),
     );
     let ordinary_reply = drag_release(&mut ordinary, 4, float_base);
+    assert_drop(&ordinary, &ordinary_reply, "ordinary release");
     // Composed arm: identical fixture plus the composed overlay.
     let mut composed = engine();
-    accepted(
-        &mut composed,
-        &bootstrap_two(1, vec![cfact("win-a", "out-a", 0)], "win-a"),
-    );
+    accepted(&mut composed, &bootstrap_two(1, source_roster(), "win-a"));
     let (_floated, floated_settlements) = accepted_with_settlements(
         &mut composed,
-        &cmd_two(
-            2,
-            1,
-            vec![cfact("win-a", "out-a", 0)],
-            "win-a",
-            toggle_float("win-a"),
-        ),
+        &cmd_two(2, 1, source_roster(), "win-a", toggle_float("win-a")),
     );
     let float_base = float_placement(&floated_settlements);
     let mut settled_fact = cfact("win-a", "out-a", 0);
     settled_fact.rect = Some(float_base);
     accepted(
         &mut composed,
-        &bootstrap_two(3, vec![settled_fact], "win-a"),
+        &bootstrap_two(3, vec![settled_fact, source_sibling()], "win-a"),
     );
     let mut toggle_fact = cfact("win-a", "out-a", 0);
     toggle_fact.rect = Some(float_base);
     let (_toggled, toggled_settlements) = accepted_with_settlements(
         &mut composed,
-        &cmd_two(4, 2, vec![toggle_fact], "win-a", toggle("win-a")),
+        &cmd_two(
+            4,
+            2,
+            vec![toggle_fact, source_sibling()],
+            "win-a",
+            toggle("win-a"),
+        ),
     );
     assert_eq!(maximize_result(&toggled_settlements), (true, false, false));
     assert!(
@@ -2560,7 +2621,7 @@ fn composed_empty_output_drag_matches_ordinary_float_outcome() {
         &mut composed,
         &greport_two(
             5,
-            vec![start_fact],
+            vec![start_fact, source_sibling()],
             "win-a",
             gingress(
                 "win-a",
@@ -2571,7 +2632,26 @@ fn composed_empty_output_drag_matches_ordinary_float_outcome() {
             ),
         ),
     );
-    let composed_reply = drag_release(&mut composed, 6, work_area());
+    // A prior observation can rehome membership while the open gesture
+    // still shields the layout at the source. Release must keep the base.
+    let mut update_fact = cfact("win-a", "out-b", 0);
+    update_fact.rect = Some(release);
+    accepted(
+        &mut composed,
+        &greport_two(
+            6,
+            vec![update_fact, source_sibling()],
+            "win-a",
+            gingress(
+                "win-a",
+                GestureKind::Move,
+                Some((950, 60)),
+                GesturePhase::Updated,
+                work_area(),
+            ),
+        ),
+    );
+    let composed_reply = drag_release(&mut composed, 7, work_area());
     // The explicit drag clears the bit regardless of destination session.
     assert!(
         !composed
@@ -2581,28 +2661,7 @@ fn composed_empty_output_drag_matches_ordinary_float_outcome() {
             .contains(&WindowId("win-a".to_owned())),
         "explicit empty-output drag clears the bit"
     );
-    // Parity with the ordinary dragged outcome on the same fixture.
-    let ordinary_row = desire(&ordinary_reply, "win-a").clone();
-    let composed_row = desire(&composed_reply, "win-a").clone();
-    assert_eq!(
-        (
-            ordinary_row.output.clone(),
-            ordinary_row.workspace.clone(),
-            ordinary_row.floating,
-            ordinary_row.effective_frame,
-            ordinary_row.frame_authority,
-            ordinary_row.membership_authority,
-        ),
-        (
-            composed_row.output.clone(),
-            composed_row.workspace.clone(),
-            composed_row.floating,
-            composed_row.effective_frame,
-            composed_row.frame_authority,
-            composed_row.membership_authority,
-        ),
-        "composed-then-dragged matches ordinary-float-dragged, ordinary={ordinary_row:?} composed={composed_row:?}",
-    );
+    assert_drop(&composed, &composed_reply, "composed release");
     assert_eq!(
         ordinary_reply
             .gesture_settled
@@ -2612,19 +2671,19 @@ fn composed_empty_output_drag_matches_ordinary_float_outcome() {
             .map(|settled| settled.committed),
         "commit attribution matches the ordinary outcome",
     );
-    // Quiet follow-up on the same observation: no overlay reasserts, and
-    // the base stays whatever the ordinary path produces.
+    // Quiet follow-up on the same observation: both arms keep the dropped
+    // placement, and no overlay or compensating frame write reasserts.
     let mut ordinary_quiet_fact = cfact("win-a", "out-b", 0);
     ordinary_quiet_fact.rect = Some(release);
     let ordinary_quiet = accepted(
         &mut ordinary,
-        &bootstrap_two(5, vec![ordinary_quiet_fact], "win-a"),
+        &bootstrap_two(5, vec![ordinary_quiet_fact, source_sibling()], "win-a"),
     );
     let mut composed_quiet_fact = cfact("win-a", "out-b", 0);
     composed_quiet_fact.rect = Some(release);
     let composed_quiet = accepted(
         &mut composed,
-        &bootstrap_two(7, vec![composed_quiet_fact], "win-a"),
+        &bootstrap_two(8, vec![composed_quiet_fact, source_sibling()], "win-a"),
     );
     assert!(
         !composed
@@ -2634,27 +2693,8 @@ fn composed_empty_output_drag_matches_ordinary_float_outcome() {
             .contains(&WindowId("win-a".to_owned())),
         "quiet follow-up keeps the bit cleared"
     );
-    let ordinary_quiet_row = desire(&ordinary_quiet, "win-a").clone();
-    let composed_quiet_row = desire(&composed_quiet, "win-a").clone();
-    assert_eq!(
-        (
-            ordinary_quiet_row.output.clone(),
-            ordinary_quiet_row.workspace.clone(),
-            ordinary_quiet_row.floating,
-            ordinary_quiet_row.effective_frame,
-            ordinary_quiet_row.frame_authority,
-            ordinary_quiet_row.membership_authority,
-        ),
-        (
-            composed_quiet_row.output.clone(),
-            composed_quiet_row.workspace.clone(),
-            composed_quiet_row.floating,
-            composed_quiet_row.effective_frame,
-            composed_quiet_row.frame_authority,
-            composed_quiet_row.membership_authority,
-        ),
-        "quiet base matches the ordinary outcome, ordinary={ordinary_quiet_row:?} composed={composed_quiet_row:?}",
-    );
+    assert_drop(&ordinary, &ordinary_quiet, "ordinary quiet");
+    assert_drop(&composed, &composed_quiet, "composed quiet");
 }
 
 #[test]

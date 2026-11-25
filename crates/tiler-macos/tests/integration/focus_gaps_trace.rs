@@ -19,7 +19,11 @@
 //! focus. No live AX, no taps, no Spaces, no desktop effects.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, atomic::AtomicBool, mpsc};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::time::Duration;
 
 use tiler_macos::config::ProbeModifier;
@@ -28,8 +32,7 @@ use tiler_macos::input::cg_flag_bits;
 use tiler_macos::input_match::TapKeyKind;
 use tiler_macos::runtime::{
     AxCompletion, FocusCommand, FocusEvidence, ObservedWindow, Runtime, RuntimeConfig,
-    RuntimeHandle, ScopedBackendSnapshot, ScopedObservation, ScopedWindowMeta, ShutdownOutcome,
-    SubmitOutcome, TopologyMode,
+    RuntimeHandle, ScopedBackendSnapshot, ScopedWindowMeta, ShutdownOutcome, TopologyMode,
 };
 use tiler_macos::runtime_backend::{
     AxBackend, AxBackendFactory, InputSource, InputSourceFactory, RawKeyEvent,
@@ -49,6 +52,7 @@ struct FakeInner {
     applied_tx: mpsc::Sender<AppliedRecord>,
     scoped: Mutex<BTreeMap<u32, ScopedBackendSnapshot>>,
     focus_tx: mpsc::Sender<FocusCommand>,
+    scoped_changed: AtomicBool,
 }
 
 struct FakeFactory {
@@ -117,7 +121,10 @@ impl AxBackend for FakeBackend {
     }
 
     fn poll_scoped(&mut self, _stop: &AtomicBool) -> Option<Result<ScopedBackendSnapshot, String>> {
-        None
+        self.inner
+            .scoped_changed
+            .swap(false, Ordering::AcqRel)
+            .then(|| self.snapshot_scoped())
     }
 
     fn dispatch_focus(&mut self, cmd: &FocusCommand) -> AxCompletion {
@@ -182,6 +189,7 @@ fn start() -> Fixture {
         applied_tx,
         scoped: Mutex::new(BTreeMap::new()),
         focus_tx,
+        scoped_changed: AtomicBool::new(false),
     });
     let config = RuntimeConfig {
         topology_mode: TopologyMode::Native,
@@ -314,69 +322,28 @@ fn agreeing(pid: u32, wid: u32) -> FocusEvidence {
     }
 }
 
-/// Manual arrival observation with agreeing global legs (frontmost, AX and
-/// CG all name the reporter), so the engine promotes the reported focus.
-fn arrival(
-    pid: u32,
-    generation: u64,
-    seq: u64,
-    windows: Vec<ObservedWindow>,
-    focused_wid: u32,
-    revision: u64,
-) -> ScopedObservation {
-    let meta: Vec<ScopedWindowMeta> = windows
-        .iter()
-        .map(|w| {
-            let mut row = meta(w.wid);
-            row.fullscreen = w.fullscreen;
-            row
-        })
-        .collect();
-    // Fake attests a fresh complete CG read for its own windows.
-    let mut cg_owner_wids: Vec<u32> = windows.iter().map(|w| w.wid).collect();
-    cg_owner_wids.sort_unstable();
-    cg_owner_wids.dedup();
-    ScopedObservation {
-        pid,
-        generation,
-        seq,
-        windows,
-        focused_wid: Some(focused_wid),
-        revision,
-        frontmost_pid: Some(pid),
-        ax_focus: Some((pid, Some(focused_wid))),
-        cg_owned: true,
-        meta,
-        cg_complete: true,
-        cg_owner_wids,
-    }
-}
-
-/// Establish one focused arrival end to end: the manual observation names
-/// the focus, and the owner-thread selected-oracle leg (the fake's
-/// `sys_focus` script) attests the same window. A stale oracle makes the
-/// close-focus owner recheck refuse every later step as
-/// `superseded-observed` even though the engine promoted the arrival, so
-/// the fixture must attest the focus it establishes.
-fn arrive_focused(
-    fixture: &Fixture,
-    generation: u64,
-    seq: u64,
-    windows: Vec<ObservedWindow>,
-    focused_wid: u32,
-    revision: u64,
-) {
-    install(fixture, APP_A, scripted(windows.clone(), Some(focused_wid)));
-    assert_eq!(
-        fixture.handle.submit_scoped_observation(arrival(
-            APP_A,
-            generation,
-            seq,
-            windows,
-            focused_wid,
-            revision
-        )),
-        SubmitOutcome::Accepted
+/// Drive arrivals through the same worker sequence as startup and readback.
+/// Injecting a second sequence can make a fresh worker cut look stale.
+fn arrive_focused(fixture: &Fixture, generation: u64, windows: Vec<ObservedWindow>, focused: u32) {
+    let watermark = fixture
+        .handle
+        .log_snapshot()
+        .last()
+        .map_or(0, |entry| entry.seq);
+    install(fixture, APP_A, scripted(windows, Some(focused)));
+    fixture.inner.scoped_changed.store(true, Ordering::Release);
+    assert!(
+        fixture
+            .handle
+            .wait_log_for_test(WAIT, |log| log.iter().any(|entry| {
+                entry.seq > watermark
+                    && entry.kind == "observation"
+                    && entry.outcome == "applied"
+                    && entry.pid == APP_A
+                    && entry.generation == generation
+            }))
+            .is_some(),
+        "worker observation of focus arrival on window {focused} never applied"
     );
 }
 
@@ -516,7 +483,7 @@ fn native_focus_walk_retains_at_edge_per_tier1() {
     // the exhausted edge retains (no wrap, no workspace cycling) counted
     // as `focus-rejected`, and later steps still dispatch after the miss.
     let fixture = start();
-    let revision = fixture.handle.update_topology_with(one_display(), &|_| {
+    fixture.handle.update_topology_with(one_display(), &|_| {
         Some(tiler_macos::ffi::SlsSpaceType::User)
     });
     install(
@@ -562,13 +529,13 @@ fn native_focus_walk_retains_at_edge_per_tier1() {
     assert!(fixture.handle.flush(FLUSH));
 
     // Arrival on win2, step 2: win2 -> win3.
-    let generation = fixture.handle.app_generation(APP_A).expect("generation");
+    let generation = startup_generation;
     let windows = vec![
         win_at(1, 8, 8, 100, 100),
         win_at(2, 200, 8, 100, 100),
         win_at(3, 400, 8, 100, 100),
     ];
-    arrive_focused(&fixture, generation, 50, windows.clone(), 2, revision);
+    arrive_focused(&fixture, generation, windows.clone(), 2);
     assert!(fixture.handle.flush(FLUSH));
     send_focus_right(&fixture);
     let cmd = fixture
@@ -579,8 +546,7 @@ fn native_focus_walk_retains_at_edge_per_tier1() {
     assert!(fixture.handle.flush(FLUSH));
 
     // Arrival on win3, step 3 at the exhausted edge: no dispatch.
-    let generation = fixture.handle.app_generation(APP_A).expect("generation");
-    arrive_focused(&fixture, generation, 51, windows.clone(), 3, revision);
+    arrive_focused(&fixture, generation, windows.clone(), 3);
     assert!(fixture.handle.flush(FLUSH));
     while fixture.focus_rx.try_recv().is_ok() {}
     // Before/after invariants across the refused edge: no plan change, no
@@ -650,8 +616,7 @@ fn native_focus_walk_retains_at_edge_per_tier1() {
 
     // Recovery: an external arrival back on win2 steps to win3 again, so a
     // retained edge never wedges later focus.
-    let generation = fixture.handle.app_generation(APP_A).expect("generation");
-    arrive_focused(&fixture, generation, 52, windows, 2, revision);
+    arrive_focused(&fixture, generation, windows, 2);
     assert!(fixture.handle.flush(FLUSH));
     send_focus_right(&fixture);
     let cmd = fixture

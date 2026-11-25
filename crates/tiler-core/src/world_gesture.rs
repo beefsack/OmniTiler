@@ -1035,13 +1035,12 @@ impl WorldTransaction<'_> {
     /// cross-output path. An explicit drag to a valid readable unheld
     /// destination clears the bit before destination admission,
     /// independent of whether a destination session exists: an empty
-    /// destination (no session) then refuses with no transfer and no
-    /// minted session, and the window flows through exactly the existing
-    /// ordinary-float observation path, so its base is whatever that path
-    /// already produces. Unhomed, unreadable or held targets and
-    /// malformed frames refuse with the bit retained. No Engine handle,
-    /// no transfer, no placement token on the float lane: the native
-    /// frame already moved, so the commit only records it.
+    /// destination (no session) refuses the gesture with no transfer or
+    /// gesture-owned admission. The ordinary observation sweep admits the
+    /// float and adopts its observed frame without a write. Unhomed,
+    /// unreadable or held targets and malformed frames refuse with the
+    /// bit retained. No Engine handle, transfer or placement token is
+    /// needed: the native frame already moved.
     fn gesture_float_release(
         &mut self,
         retained: &RetainedGesture,
@@ -1097,8 +1096,8 @@ impl WorldTransaction<'_> {
         {
             // Restage without the cleared gesture shield so the scopes
             // below converge the same unshielded staging the ordinary
-            // refused-gesture path swept: no transfer, no membership
-            // change from the gesture lane, no minted session.
+            // refused-gesture path swept: the destination sweep retains
+            // the native frame with no gesture-owned membership change.
             self.build_staged_domains();
             // Converge exactly the two scopes the shield diverged with
             // the existing sweep, mirroring the report sweep tail: the
@@ -1112,7 +1111,11 @@ impl WorldTransaction<'_> {
                 if !domain.readable {
                     continue;
                 }
-                self.sweep_domain(domain, held_scopes);
+                self.sweep_domain_with_float_source(
+                    domain,
+                    held_scopes,
+                    Some((&retained.window, &retained.home)),
+                );
             }
             self.settle_intent_admissions();
             return GestureOutcome::Settled { committed: false };

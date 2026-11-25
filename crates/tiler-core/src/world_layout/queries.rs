@@ -384,6 +384,24 @@ impl WorldLayout {
         true
     }
 
+    /// Adopt a native rehome's frame after destination convergence, retiring
+    /// the previous home's durable base only if the destination accepts it.
+    pub(crate) fn adopt_rehomed_float_placement(
+        &mut self,
+        source: &DomainKey,
+        target: &DomainKey,
+        window: &WindowId,
+        rect: Rect,
+    ) -> bool {
+        if source == target || !self.adopt_float_placement(target, window, rect) {
+            return false;
+        }
+        if let Some(domain) = self.domains.get_mut(source) {
+            domain.retained_float_geometry.remove(window);
+        }
+        true
+    }
+
     /// Atomically move a floating non-sticky exception from `from` to `to`
     /// while adopting `rect` as its live and durable float placement.
     /// Revision-neutral. Returns `false` without mutating either domain when

@@ -4046,6 +4046,10 @@ win-h retained: []
   An earlier source-adopt plus membership-commit attempt lost the base on the
   next sweep and was reverted; clear-only and restage-only attempts also left
   shielded session state until the ordinary sweep reconverged the affected scopes.
+- [Shared float geometry](archive/shared-float-geometry.md) fixes the
+  ordinary empty-output loss in the destination observation sweep. Both
+  arms keep the observed drop frame through quiet follow-up with untouched
+  frame and membership authority and no placement token or transfer.
 - Directional float move clears before dependent half-snap constraints, matching
   the native proven-clear continuation. A constrained half-snap refusal originally
   only echoed the base without actuation; failing-first coverage now requires its

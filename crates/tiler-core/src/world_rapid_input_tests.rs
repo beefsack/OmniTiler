@@ -2364,3 +2364,54 @@ fn cut_tiled_frame_becomes_first_float_geometry_in_place() {
     // pre-float cut frame is not re-adopted once the toggle changed state.
     assert_eq!(settled[2].result, settled[0].result);
 }
+
+#[test]
+fn rectless_refloat_restores_placement_instead_of_new_observed_tile_frame() {
+    let mut engine = engine();
+    run_batched(&mut engine, &observe(1, cut_frame_roster(), "win-a"), &[]);
+    let remembered = cut_frame_roster()[0].rect.expect("readable first frame");
+    let expected = Some(CommandResult::Float {
+        window: WindowId("win-a".to_owned()),
+        rect: Some(remembered),
+        no_space: false,
+    });
+    let (_, floated) = run_batched(
+        &mut engine,
+        &observe(2, cut_frame_roster(), "win-a"),
+        &[(1, implicit_toggle_float())],
+    );
+    assert_accepted(&floated, "first float");
+    assert_eq!(floated[0].result, expected);
+    run_batched(&mut engine, &observe(3, cut_frame_roster(), "win-a"), &[]);
+
+    let (unfloat_reply, unfloated) = run_batched(
+        &mut engine,
+        &observe(4, cut_frame_roster(), "win-a"),
+        &[(2, implicit_toggle_float())],
+    );
+    assert_accepted(&unfloated, "unfloat");
+    let tiled = unfloat_reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-a")
+        .expect("subject row");
+    assert!(!tiled.floating);
+    let tile_frame = tiled.effective_frame.expect("tile frame after unfloat");
+    assert_ne!(tile_frame, remembered);
+    let mut windows = cut_frame_roster();
+    windows[0].rect = Some(tile_frame);
+    let (reply, refloated) = run_batched(
+        &mut engine,
+        &observe(5, windows, "win-a"),
+        &[(3, implicit_toggle_float())],
+    );
+    assert_accepted(&refloated, "re-float after observing the new tile frame");
+    assert_eq!(refloated[0].result, expected);
+    let subject = reply
+        .windows
+        .iter()
+        .find(|row| row.lifetime.0 == "win-a")
+        .expect("subject row");
+    assert!(subject.floating);
+    assert_eq!(subject.effective_frame, Some(remembered));
+}

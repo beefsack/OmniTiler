@@ -26,7 +26,7 @@ Non-goals: signed-fixture/native acceptance; Windows parity for fresh post-place
 - Injection resolves the execution-time subject once (`CurrentFocus` already resolved to a window), looks the subject up in the first-float lane and then the cut lane, and sets `float_rect` only on the owned dispatched copy. Explicit rectangles never enter either lane.
 - A remembered placement outranks the observed frame: the first-float lane requires `retained_float_geometry_any(window).is_none()`, so float → unfloat → re-float restores the previous float placement instead of adopting the current tile slot. `WorldLayout::retained_float_geometry_any` is a read-only query beside `is_tiled_window_any`.
 - Excluding fullscreen subjects preserves the never-capture-fullscreen-frame rule and leaves the deferred fullscreen reveal at the fallback; excluding native/core maximize and pending placements keeps published placements from fighting in-flight work; requiring a readable non-zero rect keeps the centered fallback when no truthful frame exists.
-- After any executed float toggle, the report's captured frame for that subject is dropped, so a later same-batch command never reuses a pre-toggle frame.
+- Any executed float toggle retires the report's captured frame for its subject, regardless of outcome, so later commands in the same batch cannot reuse the pre-toggle frame.
 
 ## Units
 
@@ -49,7 +49,7 @@ Focused regressions:
 
 - Core: `world_rapid_input_tests::cut_tiled_frame_becomes_first_float_geometry_in_place` — a tiled subject's rect-less first float publishes exactly the observed tile frame (not the centered fallback), and the same-batch re-float restores that durable placement rather than re-adopting the pre-toggle frame.
 - Core: the existing fullscreen case in `world_rapid_input_tests::cut_float_frame_comes_from_resolved_subject_until_its_float_state_changes` and `world_coverage_gaps_tests` keep the centered fallback for fullscreen subjects; the remembered-placement case keeps the retained frame for an unsealed snapshot.
-- macOS: `world_dispatch::tests::macos_first_float_lands_at_current_tile_frame` — production `world_command_map::operation_command` command (asserted `float_rect: None`), real `macos_capabilities()` core and macOS-shaped facts; the `Float` result and the subject's `effective_frame` are the current tile frame `(100,0,40,90)`, not `(160,120,480,360)`; the subject row stays `Untouched` with the unspent token, and `consume_world_reply` stages only the sibling reflow frame with no deferral.
+- macOS: `world_dispatch::tests::macos_first_float_lands_at_current_tile_frame` — production `world_command_map::operation_command` command (asserted `float_rect: None`), real `macos_capabilities()` core and macOS-shaped facts; the `Float` result and the subject's `effective_frame` are the observed frame `(100,0,40,90)`, not the layout allocation or the centered fallback `(160,120,480,360)`; the subject row stays `Untouched` with the unspent token, and `consume_world_reply` stages only the sibling reflow frame with no deferral.
 - macOS: `world_dispatch::tests::fullscreen_toggle_float_ordinary_first_float_stays_write_free` still passes (authority, token, counter deltas unchanged); its comment now says the placement is the execution-time frame.
 
 ## Material decisions

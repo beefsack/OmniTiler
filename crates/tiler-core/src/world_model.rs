@@ -1967,6 +1967,17 @@ impl WorldTransaction<'_> {
         domain: &StagedDomain,
         held_scopes: &mut BTreeSet<DomainKey>,
     ) {
+        self.sweep_domain_with_float_source(domain, held_scopes, None);
+    }
+
+    /// An open composed gesture can shield layout at its start home even
+    /// after native observations move logical membership to the target.
+    pub(crate) fn sweep_domain_with_float_source(
+        &mut self,
+        domain: &StagedDomain,
+        held_scopes: &mut BTreeSet<DomainKey>,
+        gesture_source: Option<(&WindowId, &DomainKey)>,
+    ) {
         let key = domain.key.clone();
         let staged_domain = OutputDomain {
             id: key.output.clone(),
@@ -1993,10 +2004,8 @@ impl WorldTransaction<'_> {
         // update-gaps path (legacy parity); unchanged shapes reconcile.
         // Unknown domains reconcile (fresh seed), never update-gaps
         // (which refuses unknown domains so the fresh route seeds them).
-        let is_update_gaps = match (
-            self.world.layout.domain_geometry(&key),
-            self.world.layout.domain_outer_gap(&key),
-        ) {
+        let prior_geometry = self.world.layout.domain_geometry(&key);
+        let is_update_gaps = match (prior_geometry, self.world.layout.domain_outer_gap(&key)) {
             (Some((bounds, gap)), Some(outer)) => {
                 bounds != inset.bounds || gap != inset.gap || outer != domain.outer_gap
             }
@@ -2066,6 +2075,57 @@ impl WorldTransaction<'_> {
                 held_scopes.insert(key);
                 return;
             }
+        }
+        // A retained float observed alone in a fresh destination has no
+        // placement after ordinary convergence. The native crossing already
+        // moved it: adopt its observed frame rather than issuing a write.
+        // Use the gesture's start home when shielded, otherwise pre-sweep
+        // membership: the source domain may already have converged empty.
+        if prior_geometry.is_none()
+            && !held_scopes.contains(&key)
+            && self.world.staged.observation.inventory_complete
+            && domain.minimized.is_empty()
+            && !self.world.workspace.is_floating(&key)
+            && let [entry] = windows.as_slice()
+            && entry.floating
+            && !entry.sticky
+            && !entry.fullscreen
+            && !entry.maximized
+            && !self
+                .world
+                .runtime
+                .composed_maximized
+                .contains(&entry.window)
+            && !self.is_held_window(&entry.window)
+            && self
+                .world
+                .staged
+                .facts
+                .get(&entry.window)
+                .is_some_and(|fact| fact.output.as_ref() == Some(&key.output))
+            && let Some(source) = gesture_source
+                .filter(|(window, _)| *window == &entry.window)
+                .map(|(_, home)| home)
+                .or_else(|| {
+                    self.world
+                        .workspace
+                        .members
+                        .get(&entry.window)
+                        .filter(|member| member.floating && !member.minimized)
+                        .map(|member| &member.home)
+                })
+            && source.output != key.output
+            && self.world.layout.adopt_rehomed_float_placement(
+                source,
+                &key,
+                &entry.window,
+                entry.rect,
+            )
+        {
+            self.world
+                .settlement
+                .retained_floats
+                .retain(|pending| pending.window != entry.window);
         }
         // Safety-exclusion focus hold: the retained focus converged away as a
         // safety/own-process exclusion (never an explicit positive close) with
