@@ -2331,7 +2331,7 @@ fn cut_float_frame_comes_from_resolved_subject_until_its_float_state_changes() {
 }
 
 #[test]
-fn cut_tiled_frame_does_not_become_float_geometry_after_same_batch_float() {
+fn cut_tiled_frame_becomes_first_float_geometry_in_place() {
     use crate::world_report::FocusChanges;
 
     let mut engine = engine();
@@ -2357,6 +2357,10 @@ fn cut_tiled_frame_does_not_become_float_geometry_after_same_batch_float() {
     else {
         panic!("expected initial float frame, got {:?}", settled[0].result);
     };
-    assert_ne!(Some(rect), cut.windows[0].rect);
+    // A first float has no remembered placement: it lands at the tiled
+    // subject's current frame, never the centered fallback.
+    assert_eq!(Some(rect), cut.windows[0].rect);
+    // The re-float after unfloat restores that same durable placement; the
+    // pre-float cut frame is not re-adopted once the toggle changed state.
     assert_eq!(settled[2].result, settled[0].result);
 }

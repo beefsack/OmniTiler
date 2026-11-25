@@ -51,11 +51,11 @@
 - Evidence: [N5 outcome](../changes/kde-world-v2-port.md#n5-membership-and-immediate-eligibility-2026-10-28).
 
 ### Float-toggle intent and output targeting
-- Decision: `ToggleFloat` has no intent-time rectangle; core resolves remembered float geometry or current frame at execution, and explicit rectangles mean genuine placement. macOS first float uses current frame in place. Implicit selection/send/move leaves output unset for core execution-time cursor/focus resolution; explicit output requires genuine user choice. Explicit-send current-view sampling remains separate.
+- Decision: `ToggleFloat` has no intent-time rectangle; core resolves remembered float geometry or current frame at execution, and explicit rectangles mean genuine placement. macOS first float uses current frame in place. A rect-less first float of a tiled subject publishes the execution-time observed frame as the durable placement (no frame write needed); the centered 60% work-area fallback applies only when no truthful current frame exists (omitted rect, fullscreen or maximized subject, or a pending placement), and remembered float geometry outranks the observed frame on a re-float. Implicit selection/send/move leaves output unset for core execution-time cursor/focus resolution; explicit output requires genuine user choice. Explicit-send current-view sampling remains separate.
 - Why: not recorded.
 - Assumes / revisit if: prove Windows float-placement parity.
-- Status: active, 2026-10-28
-- Evidence: [KDE audit](../changes/kde-world-v2-port.md#n6-core-intents-outcome-and-blocker-2026-10-26), [output targeting](../changes/archive/output-targeting-race-audit.md).
+- Status: active, 2026-10-28; first-float in-place delivery implemented offline, 2026-11-25.
+- Evidence: [KDE audit](../changes/kde-world-v2-port.md#n6-core-intents-outcome-and-blocker-2026-10-26), [output targeting](../changes/archive/output-targeting-race-audit.md), [first-float in-place placement](../changes/archive/macos-first-float-placement.md).
 
 ### KDE pager
 - Decision: KDE uses native Plasma pager; OmniTiler does not render one and core pager-focused-window color does not apply.

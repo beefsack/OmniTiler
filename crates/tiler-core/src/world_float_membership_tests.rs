@@ -1643,8 +1643,9 @@ fn retained_explicit_automatic_null_cycle_keeps_home() {
         row_of(&reply, "win-e")
     );
     assert!(reply.transfers.is_empty(), "{:?}", reply.transfers);
-    // Readable recovery: same home, still floating, same ToggleFloat
-    // op resumes (never reminted).
+    // Readable recovery: same home, still floating. The explicit first
+    // float landed at the observed frame, so recovery proves the op at
+    // that frame instead of resuming a write.
     let reply = accepted(
         &mut explicit,
         &report(
@@ -1658,7 +1659,16 @@ fn retained_explicit_automatic_null_cycle_keeps_home() {
     );
     let row = row_of(&reply, "win-e");
     assert!(row.floating, "{row:?}");
-    assert_eq!(row.frame_operation.as_deref(), Some("op-11"), "{row:?}");
+    assert!(row.frame_operation.is_none(), "{row:?}");
+    assert_eq!(
+        row.effective_frame,
+        Some(crate::geometry::Rect {
+            x: 0,
+            y: 0,
+            w: 40,
+            h: 90
+        })
+    );
     assert!(!row.state.iter().any(|t| t.automatic_clear), "{row:?}");
     assert_eq!(
         explicit

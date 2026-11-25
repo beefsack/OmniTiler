@@ -13604,6 +13604,95 @@ mod tests {
         .expect("generation")
     }
 
+    /// Engine bound to the real macOS handshake: every fact the adapter
+    /// declares unavailable stays null, native sticky/maximize are absent,
+    /// and host-owned native domains need a roster row.
+    fn mf_engine() -> tiler_core::world_engine::WorldEngine {
+        use tiler_core::connection::RawSettingValue;
+        tiler_core::world_engine::WorldEngine::new_test_bound_with_initial_settings(
+            "gen-1",
+            "adapter-1",
+            crate::world_connection::macos_capabilities(),
+            vec![("outer".to_owned(), RawSettingValue::Number(0.0))],
+        )
+        .expect("generation")
+    }
+
+    /// One macOS-shaped fact: truthful readable geometry/role/process/layer
+    /// ride, every capability-unavailable fact rides null.
+    fn mf_fact(window: &str, x: i32, fullscreen: bool) -> tiler_core::world_report::WindowFact {
+        use tiler_core::directional::{OutputId, WindowId};
+        use tiler_core::world_report::{
+            ActivationPolicy, NativeWorkspaceFact, VisibilityFact, WindowType,
+        };
+        let (w, h) = if fullscreen { (800, 600) } else { (40, 90) };
+        tiler_core::world_report::WindowFact {
+            window: WindowId(window.to_owned()),
+            output: Some(OutputId("out-a".to_owned())),
+            rect: Some(ff_rect(x, 0, w, h)),
+            fullscreen: Some(fullscreen),
+            maximized: None,
+            sticky: None,
+            hints: Some(tiler_core::size_hints::WindowSizeHints::none()),
+            minimized: Some(false),
+            native_workspace: NativeWorkspaceFact::Value("native-a-0".to_owned()),
+            host_hidden: Some(false),
+            privileged: None,
+            managed: None,
+            accepts_input: None,
+            activation_inhibited: None,
+            tool_window: None,
+            owned: None,
+            transient: None,
+            modal: Some(false),
+            resizable: Some(true),
+            above: None,
+            below: None,
+            owner: None,
+            parent: None,
+            role: Some(crate::classifier::ROLE_WINDOW.to_owned()),
+            app_id: Some("com.example.app".to_owned()),
+            executable: None,
+            process_id: Some(FF_PID.to_string()),
+            class: None,
+            title: None,
+            window_type: Some(WindowType::Normal),
+            activation_policy: Some(ActivationPolicy::Regular),
+            layer: Some(0),
+            fullscreen_owner: None,
+            fullscreen_exitable: None,
+            suppression_available: None,
+            visibility: VisibilityFact {
+                visible: Some(true),
+                suppression_owned: None,
+            },
+        }
+    }
+
+    /// A macOS report: the ff fixture plus the host-owned native roster row
+    /// the capability-gated domain needs to admit its windows.
+    fn mf_report(
+        seq: u64,
+        windows: Vec<tiler_core::world_report::WindowFact>,
+        focused: &str,
+        command_seq: Option<u64>,
+        command: Option<tiler_core::world_report::WorldCommand>,
+    ) -> tiler_core::world_report::WorldReportV4 {
+        use tiler_core::directional::OutputId;
+        use tiler_core::world_report::{NativeObservation, NativeOccupancy};
+        let mut report = ff_report(seq, windows, focused, command_seq, command);
+        report.native = vec![NativeObservation {
+            output: OutputId("out-a".to_owned()),
+            native_order: vec!["native-a-0".to_owned()],
+            current_native: Some("native-a-0".to_owned()),
+            occupancy: vec![NativeOccupancy {
+                native: "native-a-0".to_owned(),
+                count: None,
+            }],
+        }];
+        report
+    }
+
     fn ff_accepted(
         engine: &mut tiler_core::world_engine::WorldEngine,
         report: &tiler_core::world_report::WorldReportV4,
@@ -14974,9 +15063,10 @@ mod tests {
 
     #[test]
     fn fullscreen_toggle_float_ordinary_first_float_stays_write_free() {
-        // Ordinary (not fullscreen) first float: core publishes the durable
-        // fallback with `Untouched` authority and keeps the token; the
-        // adapter must not stage a subject write or spend the token.
+        // Ordinary (not fullscreen) first float: core publishes the
+        // execution-time placement (the subject's current frame) with
+        // `Untouched` authority and keeps the token; the adapter must not
+        // stage a subject write or spend the token.
         let (command, token) = ff_toggle_float_command();
         let shared = focus_shared();
         live_focus_app(&shared, FF_PID, 1);
@@ -15147,6 +15237,131 @@ mod tests {
         assert!(
             session.spend_frame_op("op-2"),
             "ordinary float token stays unspent (no write)"
+        );
+    }
+
+    #[test]
+    fn macos_first_float_lands_at_current_tile_frame() {
+        use tiler_core::world_report::{CommandDisposition, CommandResult, ScopeAuthority};
+        // The production intent carries no rectangle: core owns placement.
+        let (command, token) = ff_toggle_float_command();
+        assert!(
+            matches!(
+                &command,
+                tiler_core::world_report::WorldCommand::Operation(
+                    tiler_core::boundary::CoreCommand::ToggleFloat {
+                        float_rect: None,
+                        ..
+                    }
+                )
+            ),
+            "production ToggleFloat must not preselect a rectangle: {command:?}"
+        );
+        let shared = focus_shared();
+        live_focus_app(&shared, FF_PID, 1);
+        let mut session = focus_session();
+        let mut retained = ff_retained();
+        let focus_queue = Arc::new(Mutex::new(Vec::new()));
+        let mut engine = mf_engine();
+        let dispatch =
+            |session: &mut WorldSession,
+             retained: &mut RetainedCore,
+             reply: &tiler_core::world_report::WorldReplyV4,
+             ticket: Option<(&tiler_core::world_report::WorldCommand, u64)>| {
+                consume_world_reply(
+                    session,
+                    retained,
+                    &shared,
+                    &focus_queue,
+                    16,
+                    reply,
+                    &[],
+                    ticket.map(|(command, _)| command),
+                    ticket.map(|(_, seq)| seq),
+                    token,
+                    "accepted",
+                    0,
+                    0,
+                    0,
+                    0,
+                );
+            };
+        let seed = ff_accepted(
+            &mut engine,
+            &mf_report(
+                1,
+                vec![
+                    mf_fact(FF_SIBLING, 0, false),
+                    mf_fact(FF_SUBJECT, 100, false),
+                ],
+                FF_SIBLING,
+                None,
+                None,
+            ),
+        );
+        dispatch(&mut session, &mut retained, &seed, None);
+        let floated = tiler_protocol::world_admission::handle_report_checked(
+            &mut engine,
+            &mf_report(
+                2,
+                vec![
+                    mf_fact(FF_SIBLING, 0, false),
+                    mf_fact(FF_SUBJECT, 100, false),
+                ],
+                FF_SUBJECT,
+                Some(2),
+                Some(command.clone()),
+            ),
+            &[],
+        );
+        let tiler_core::world_engine::WorldOutcome::Accepted(ref first) = floated.outcome else {
+            panic!("expected accepted float, got {:?}", floated.outcome);
+        };
+        // First float at the execution-time frame: the subject's current
+        // tile slot, never the centered 60% fallback.
+        let placed = floated
+            .dispositions
+            .iter()
+            .find_map(|entry| match &entry.disposition {
+                CommandDisposition::Executed(Some(CommandResult::Float { rect, .. })) => *rect,
+                _ => None,
+            })
+            .expect("float applied");
+        assert_eq!(placed, ff_rect(100, 0, 40, 90), "{floated:?}");
+        assert_ne!(placed, ff_rect(160, 120, 480, 360), "not centered 60%");
+        let subject = ff_row(first, FF_SUBJECT);
+        assert!(subject.floating, "subject floats: {subject:?}");
+        assert_eq!(
+            subject.effective_frame,
+            Some(ff_rect(100, 0, 40, 90)),
+            "the durable placement is the current frame: {subject:?}"
+        );
+        assert_eq!(
+            subject.frame_authority,
+            ScopeAuthority::Untouched,
+            "an in-place placement needs no adapter write: {subject:?}"
+        );
+        assert_eq!(
+            subject.frame_operation.as_deref(),
+            Some("op-2"),
+            "the placement token rides the row unspent: {subject:?}"
+        );
+        let before = ff_counters(&shared);
+        dispatch(&mut session, &mut retained, first, Some((&command, 2)));
+        let after = ff_counters(&shared);
+        assert_eq!(
+            after.0 - before.0,
+            1,
+            "only the sibling's reflow frame stages: {after:?} vs {before:?}"
+        );
+        assert!(
+            session.pending_fullscreen_float_placements.is_empty(),
+            "an ordinary first float never enters the deferred lane: {:?}",
+            session.pending_fullscreen_float_placements
+        );
+        assert!(
+            session.spend_frame_op("op-2"),
+            "the placement token stays unspent (no subject write)"
         );
     }
 

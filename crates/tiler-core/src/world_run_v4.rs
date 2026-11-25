@@ -50,6 +50,20 @@ fn is_implicit_float_without_frame(command: &WorldCommand) -> bool {
     )
 }
 
+/// A float toggle carrying no rectangle: core resolves the execution-time
+/// placement instead of accepting an intent-time frame. Both implicit
+/// (`CurrentFocus`) and explicit-window subjects qualify; an explicit
+/// rectangle always means genuine placement.
+fn is_float_without_frame(command: &WorldCommand) -> bool {
+    matches!(
+        command,
+        WorldCommand::Operation(CoreCommand::ToggleFloat {
+            float_rect: None,
+            ..
+        })
+    )
+}
+
 /// Genuine outcome of one v4 accepted run: the v4 reply on
 /// observation/command progression, or the envelope refusal kind when
 /// creation exhaustion discards the staged candidate (legacy parity: the
@@ -195,6 +209,43 @@ impl WorldTransaction<'_> {
                 (fact.fullscreen == Some(false)
                     && fact.maximized != Some(true)
                     && self.is_ordinary_float(window)
+                    && !self
+                        .world
+                        .settlement
+                        .retained_floats
+                        .iter()
+                        .any(|pending| &pending.window == window))
+                .then_some((window, rect))
+            }));
+        }
+        // A first float has no remembered placement to restore, so a
+        // rectangle-less toggle adopts the tiled subject's current observed
+        // frame in place instead of the centered fallback. Only a truthful
+        // non-overlay frame of a subject core already holds tiled qualifies:
+        // a fullscreen, native- or core-composed-maximized, newly admitted,
+        // re-float with remembered geometry, or pending-placement subject
+        // keeps that geometry / the centered fallback because its observed
+        // frame is not a float base.
+        let mut first_float_frames: BTreeMap<&WindowId, Rect> = BTreeMap::new();
+        if report
+            .command
+            .as_ref()
+            .into_iter()
+            .chain(queued.iter().map(|(_, command)| command))
+            .any(is_float_without_frame)
+        {
+            first_float_frames.extend(effective.windows.iter().filter_map(|fact| {
+                let rect = fact.rect?;
+                let window = &fact.window;
+                (fact.fullscreen == Some(false)
+                    && fact.maximized != Some(true)
+                    && self.world.layout.is_tiled_window_any(window)
+                    && !self.world.runtime.composed_maximized.contains(window)
+                    && self
+                        .world
+                        .layout
+                        .retained_float_geometry_any(window)
+                        .is_none()
                     && !self
                         .world
                         .settlement
@@ -579,6 +630,17 @@ impl WorldTransaction<'_> {
         // above; every command below owns post-previous-command state.
         self.snapshot_batch_focus_baseline();
         cut_float_frames.retain(|window, _| self.is_ordinary_float(window));
+        // A pending placement that settled during this observation owns the
+        // frame; its pre-settlement tile echo must never become the float
+        // base.
+        first_float_frames.retain(|window, _| {
+            !self
+                .world
+                .settlement
+                .retained_floats
+                .iter()
+                .any(|pending| &pending.window == *window)
+        });
         // Retained intent updates in execution order: sticky mutations
         // already updated the single owner during execution, and each
         // successful command below upserts its ordinary ToggleFloat save
@@ -665,18 +727,39 @@ impl WorldTransaction<'_> {
             // execution: both bookkeeping and dispatch share the single
             // resolved command (explicit commands borrow without cloning).
             let (resolved_focus, mut dispatched) = self.resolve_command_subject(command);
-            if !cut_float_frames.is_empty()
-                && is_implicit_float_without_frame(command)
-                && let Some(rect) = resolved_focus
-                    .as_ref()
-                    .and_then(|window| cut_float_frames.get(window))
-                && let std::borrow::Cow::Owned(WorldCommand::Operation(CoreCommand::ToggleFloat {
-                    float_rect,
-                    ..
-                })) = &mut dispatched
+            // Execution-time float placement: a rectangle-less toggle adopts
+            // the subject's current observed frame (implicit subjects are
+            // already resolved to their explicit window, so one lookup covers
+            // both shapes). A first float takes the tiled frame in place; a
+            // pre-existing float keeps the sealed-cut lane's frame. Explicit
+            // rectangles never reach this branch.
+            let current_float_frame = match dispatched.as_ref() {
+                WorldCommand::Operation(CoreCommand::ToggleFloat {
+                    window: WindowSubject::Window(window),
+                    float_rect: None,
+                }) => first_float_frames
+                    .get(window)
+                    .or_else(|| cut_float_frames.get(window))
+                    .copied(),
+                _ => None,
+            };
+            if let Some(rect) = current_float_frame
+                && let WorldCommand::Operation(CoreCommand::ToggleFloat { float_rect, .. }) =
+                    dispatched.to_mut()
             {
-                *float_rect = Some(*rect);
+                *float_rect = Some(rect);
             }
+            // Any float toggle retires this report's captured frame for its
+            // subject: a placement or unfloat changes the window's membership
+            // (and possibly its native frame), so a later command in the same
+            // batch must not reuse the pre-command frame even if it re-floats.
+            let toggled_float_subject = match dispatched.as_ref() {
+                WorldCommand::Operation(CoreCommand::ToggleFloat {
+                    window: WindowSubject::Window(window),
+                    ..
+                }) => Some(window.clone()),
+                _ => None,
+            };
             let applied = self.execute_resolved_command(
                 issue,
                 command_seq,
@@ -776,9 +859,12 @@ impl WorldTransaction<'_> {
                     last_bookkeeping = Some(dispatched);
                 }
             }
-            // Once a command changes a donor's state, this cut cannot supply
-            // a frame for it again, even if a later command re-floats it.
-            cut_float_frames.retain(|window, _| self.is_ordinary_float(window));
+            // Once a command changes a donor's state, this report's frame
+            // cannot supply it again, even if a later command re-floats it.
+            if let Some(window) = toggled_float_subject {
+                cut_float_frames.remove(&window);
+                first_float_frames.remove(&window);
+            }
         }
         if dispositions
             .iter()

@@ -861,14 +861,24 @@ fn composed_max_on_revokes_stale_same_window_float_placement() {
             .all(|held| held.window != WindowId("win-a".to_owned())),
         "stale same-window placement revoked"
     );
+    // win-b's first float landed at its current tiled frame, so the next
+    // readable report proves the placement with no write left pending.
+    // The maximize revoke is same-window only: win-b keeps floating at
+    // that frame.
+    let row_b = desire(&toggled, "win-b");
+    assert!(row_b.floating, "{row_b:?}");
+    assert_eq!(
+        row_b.effective_frame,
+        Some(Rect {
+            x: 100,
+            y: 0,
+            w: 40,
+            h: 90,
+        })
+    );
     assert!(
-        engine
-            .world
-            .settlement
-            .retained_floats
-            .iter()
-            .any(|held| held.window == WindowId("win-b".to_owned())),
-        "other windows keep their placements"
+        row_b.frame_operation.is_none(),
+        "in-place placement proven, not pending: {row_b:?}"
     );
 }
 

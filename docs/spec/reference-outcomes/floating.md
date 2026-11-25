@@ -72,7 +72,7 @@ Column legs below use separately stated column Givens with the same identities a
   insertion applies under shipped defaults). Neither leg issues a focus
   write, so focus stays B. `S(S-pan-flt)` + `S(S-pan-ins)` +
   `S(S-pan-stripwidth)`.
-- Then Ours KDE: leaves tree, siblings reflow; first float centered 60%, then retained frame; unfloat fresh admission, focus retained; `D(D-dec-ww)`
+- Then Ours KDE: leaves tree, siblings reflow; first float at the current tile frame in place, then retained frame; unfloat fresh admission, focus retained; `D(D-dec-ww)`
 - Then Ours Windows: same leaves-tree/reflow/frame/admission/focus leg as KDE (`D(D-dec-ww)` shared), plus keep-above preimages; behavior rows user-owned `D(D-float)`
 - Variant hook: V-FLOAT-GEO.
 

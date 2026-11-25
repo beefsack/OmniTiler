@@ -69,6 +69,16 @@ impl WorldLayout {
             .any(|domain| domain.leaves.contains_key(window))
     }
 
+    /// Durable retained intentional-float geometry for `window` from any
+    /// retained domain: a re-float restores this placement instead of
+    /// adopting the window's current tiled frame.
+    #[must_use]
+    pub(crate) fn retained_float_geometry_any(&self, window: &WindowId) -> Option<Rect> {
+        self.domains
+            .values()
+            .find_map(|domain| domain.retained_float_geometry.get(window).copied())
+    }
+
     /// Whether any retained domain excepts a window.
     #[must_use]
     pub(crate) fn is_exception_window_any(&self, window: &WindowId) -> bool {
